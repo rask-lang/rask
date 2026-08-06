@@ -14,7 +14,7 @@ This doc checks each friction point against Rask's specs and sorts them into thr
 | Friction | Whose | Rask's answer | Where |
 |----------|-------|---------------|-------|
 | Lifetime annotations (`'a`) | Rust | No storable references, so nothing to annotate — borrows are block- or expression-scoped | `mem.borrowing/S3` |
-| Turbofish `::<>` | Rust | Same angle brackets, but the parser disambiguates with bounded lookahead; call sites write `sort<i32>(v)` | rask-parser |
+| Turbofish `::<>` | Rust | None — call sites write plain `sort<i32>(v)`; the parser resolves `<` with bounded lookahead instead of a user-facing sigil | rask-parser |
 | Borrow checker rejects graphs | Rust | `Pool` + `Handle` is the design, not a workaround | `mem.pools` |
 | `Pin` / self-referential structs | Rust | Unrepresentable — types hold values and integer handles, never addresses, so every value is trivially movable | `mem.relocatable/NP2` |
 | Async coloring | Rust | Fibers, not compiled state machines; effects are tooling metadata, not types | `conc.async`, rejected-features.md |
@@ -26,7 +26,7 @@ This doc checks each friction point against Rask's specs and sorts them into thr
 | No operator overloading | Zig | `a + b` expands to `a.add(b)` — a method someone deliberately wrote | `type.generics/G4, OP1` |
 | No closures | Zig | Closures with capture mode visible at the use site: `\|x\|` borrows, `own \|x\|` moves | `mem.closures` |
 | `Error!Payload` syntax | Zig | `T or E` reads as words; no `Ok`/`Err` wrappers to unwrap | `type.errors`, rejected-features.md |
-| Compile error on unused variables | Zig | Warning, `_` prefix silences | `tool.warnings/W3` |
+| Compile errors on unused variables/imports | Zig | Warnings, promotable to errors per-package or in CI | `tool.warnings/W1, W3` |
 
 ## Gone by construction
 
@@ -51,8 +51,7 @@ Three of the essay's complaints apply to Rask on purpose. Naming them beats pret
 Where the essay's warnings should keep bothering us:
 
 - **Cross-package conformance (#312) is Rask's seat at the orphan-rule table.** The shape is good — the corruption class Rust's rule prevents is already closed by owner-only core traits, so everything else can be permissive with loud use-site errors on the rare collision. But it's an issue, not a spec, and it must land before the registry sees real use. Until then Rask hasn't actually answered Rust's most-hated restriction; it has a plan to.
-- **Angle brackets carry the same grammar debt Rust paid with the turbofish.** Rask pays it in parser lookahead heuristics (`looks_like_generic_method_call`) instead of user-facing sigils. That's the better trade until a heuristic misfires on real code; edge cases here deserve tests, because this is exactly where Rust's debt hid.
-- **Unused imports are a hard error (`struct.modules/IM7`).** This is the one Zig-style liveness rule Rask kept, and the essay's "washing dishes mid-dinner" complaint applies verbatim: comment out a call to isolate a bug and the compiler blocks on the now-unused import. Unused *variables* got the warning treatment (`W3`) for exactly this reason; the import rule is the same situation with a colder answer. Cheap to fix mechanically, but it's compiler-enforced tidiness during the phase where tidiness costs the most.
+- **No turbofish, but the grammar debt didn't vanish** — it moved into parser lookahead heuristics (`looks_like_generic_method_call`). Better trade than a user-facing sigil, until a heuristic misfires on real code; edge cases here deserve tests, because this is exactly where Rust's debt hid.
 - **The anti-coloring answer rests on unbuilt machinery.** Fibers-without-coloring is only as good as the Phase B runtime — stackful fibers, safe-point preemption, pluggable reactors — which is decided but unprototyped. Rust shipped state-machine async early and bought `Pin` forever; the lesson cuts the other way too — the fiber model is unproven until the prototype exists.
 - **The redistribution law applies here too.** Rask moved complexity out of annotations and into runtime checks, `with` scopes, and a wide spec surface. Whether a developer can hold the mechanisms in their head when they collide is an empirical question — [complexity-stress-test.md](complexity-stress-test.md) exists because the answer isn't obviously yes.
 
