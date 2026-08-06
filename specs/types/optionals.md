@@ -85,6 +85,31 @@ const name = entry.as_string() orelse continue
 
 There is no `orelse e =>` form on an optional — `none` carries no payload to bind. That form exists on the failure shape, where there's an error to name (ER44).
 
+## Taking Out of a Mutable Slot
+
+| Rule | Description |
+|------|-------------|
+| **OPT32: `take <place>`** | `take slot` on a mutable place of type `T?` moves the payload out and leaves `none` behind. The expression yields `T?` — present if the slot was, absent if it already was. The place must be mutable (`mut` binding, or a field path with mutable access); `take` on a `const` place is a compile error |
+
+<!-- test: skip -->
+```rask
+struct Connection {
+    pending: Request?,
+}
+
+// move the request out, leave the slot empty — one step, no clone
+const req = take conn.pending
+if req? as r {
+    dispatch(r)
+}
+```
+
+This is the swap-out idiom — state machines moving a waker, a buffer, or a queued item out of a `mut` field they'll refill later. It's a *mutation*, so neither `match` nor the operators can express it: every other read of an optional either copies, borrows, or consumes the whole slot. Without `take`, moving a non-Copy payload out of a field means dancing around the ownership rules or cloning for no reason.
+
+The keyword is the parameter mode's word on purpose — `take` means "ownership moves out of here" in both positions (`mem.parameters`). For linear payloads the usual rules apply: the taken value must be consumed; the slot itself is left `none` and owes nothing.
+
+Measured need: the move-out-and-leave-none idiom runs at 11 sites per 10k lines in tokio (wakers and futures in `mut` slots) — see [docs/rust-corpus-census.md](../../docs/rust-corpus-census.md). Implementation tracked in [#586](https://github.com/rask-lang/rask/issues/586). `take` on a wider union (`T or E`) is rejected — an error is not a slot you empty; use `match`.
+
 ## Conditions and Narrowing
 
 Narrowing rides on `const` — the same rule for any union with a recognised predicate. See [error-types.md](error-types.md) for the shared semantics; the rules below apply identically to `T or none`.
