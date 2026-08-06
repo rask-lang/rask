@@ -298,3 +298,23 @@ A corpus that exercises those four is worth having before the implementation fre
 **Verdict:** the flagship reads better, not worse — mostly from deleting the fake binder and
 the four-line optional ceremony. No spec change requested from this pass; the two debts
 (formatter rule for continuation `orelse`, weaker margin scan) are known and priced.
+
+**Addendum — the four gaps, exercised (`examples/tiered_store.rk`).** A ~260-line LSM-shaped
+store (the ER47 rationale's example, made real) hits all four. Verdicts:
+
+- **The composite is the best line in the file.** `const v = try t.lookup(key) orelse continue`
+  routes both bad branches visibly — error up, absence to the next tier. The ER16b precedence
+  ruling (no parens) carries its weight.
+- **`take` composes with `orelse` naturally** — `const staged = take self.pending orelse return`
+  reads as one clause for "grab the staged work or go back to sleep". But the grouping
+  (`(take place) orelse …`) is a precedence ruling OPT32 never states. Flagged on #586.
+- **Both binder flavors earn their keep once context exists to attach**: diverging
+  (`orelse e => return StoreError.FlushFailed(n, e)` — `n` is context only this frame has) and
+  value (`orelse e => println("stats dropped: {e.message()}")` — best-effort stats).
+- **New finding: the flat shape is match-only at infallible boundaries.** In `main`, `try` has
+  nowhere to propagate and `orelse` can't consume a three-branch left side (ER14), so
+  `string? or StoreError` is consumed by a three-arm `match` — which turns out to be *right*
+  (three outcomes genuinely differ) but nothing in the spec says so. Worth one line in
+  error-types.md's flat-shape section when it's next touched.
+
+No spec change forced; one grammar ruling owed (take/orelse precedence, #586).
