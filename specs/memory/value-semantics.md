@@ -6,7 +6,7 @@
 
 # Value Semantics
 
-All types are values with single ownership. Small types (≤16 bytes) copy implicitly; larger types need explicit `.clone()` or move. `@unique` opts out of implicit copy.
+All types are values with single ownership. Small types (≤16 bytes) copy implicitly; larger types need explicit `.clone()` or move. `@unique` opts out of implicit copy; `@copy` pins it as a checked promise.
 
 ## Copy vs Move
 
@@ -83,6 +83,30 @@ const user4 = user3              // Moves, user3 invalid
 | API contracts | Force callers to explicitly clone |
 | Must-use semantics | Small types that should behave like resources |
 
+## Pinned Copy (Opt-In Assertion)
+
+Copy eligibility is automatic (VS1), but it's also fragile at a distance: add a field that pushes a struct past 16 bytes and every assignment flips from copy to move, with the errors landing at use sites far from the field that caused them. `@copy` pins copyability at the definition, so the flip errors exactly where the change happened.
+
+| Rule | Description |
+|------|-------------|
+| **PC1: Assertion, not a request** | `@copy` asserts the type is Copy (VS1) and must stay Copy. It never *makes* a type Copy — the 16-byte threshold is fixed (VS6). On a type that's already Copy, it changes nothing |
+| **PC2: Fails at the definition** | If the type isn't Copy-eligible — over 16 bytes, a non-Copy field — the error lands at the annotation and names the field or size that broke it, not at use sites |
+| **PC3: Contradictions error** | `@copy` + `@unique` on the same type is a compile error. `@copy` on `Vec`/`Map`/`any Trait` fields fails via PC2 (never Copy, VS3/VS3.1) |
+| **PC4: Generic types check per instantiation** | `@copy` on a generic type requires every instantiation to be Copy, checked at monomorphization like other bounds (`type.generics/G2`); the error names the offending type arguments |
+
+<!-- test: parse -->
+```rask
+@copy
+struct Point3D {
+    x: f32
+    y: f32
+    z: f32
+}
+// 12 bytes, Copy — @copy records that callers depend on it
+```
+
+Use it where copyability is API: math primitives, IDs, handles, anything callers pass around freely. Unannotated types keep the automatic behavior — `@copy` adds a fence, not a requirement.
+
 ## Copy Trait and Generics
 
 | Rule | Description |
@@ -158,6 +182,25 @@ NOTE: `Big` is 24 bytes (copy threshold is 16) — assignment moves instead of c
 HELP: add `x.clone()` if you need an independent copy
 ```
 
+**Pinned Copy broken [PC2]:**
+```
+ERROR [mem.value/PC2]: @copy type `Point` is no longer Copy
+   |
+1  |  @copy
+   |  ----- copyability pinned here
+2  |  struct Point {
+   |
+5  |      id: u64
+   |      ^^^^^^^ adding this made Point 20 bytes (copy threshold is 16)
+
+WHY: @copy asserts this type's copyability is part of its API. The threshold
+     is fixed (VS6) — the annotation checks it, it never raises it.
+
+FIX: shrink the type (id: u32 fits in 16), or remove @copy and let Point
+     move — call sites that relied on copying will error with a note
+     pointing back to the size change.
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -166,6 +209,10 @@ HELP: add `x.clone()` if you need an independent copy
 | Generic type usage | VS5 | Copy derived when the compiler generates code for a specific type |
 | Removing `@unique` from a type | U1 | Non-breaking change (makes type more permissive) |
 | Copy type in `take` parameter | — | Value is copied in; `take` is semantically redundant but allowed |
+| `@copy` on an already-Copy type | PC1 | No-op assertion — that's the intended use |
+| `@copy` + `@unique` on one type | PC3 | Compile error (contradiction) |
+| Removing `@copy` from a type | PC1 | Non-breaking by itself; the type stays Copy until its structure changes |
+| `@copy` on generic type, one bad instantiation | PC4 | Error at that instantiation, naming the type arguments |
 
 ---
 
@@ -178,6 +225,8 @@ HELP: add `x.clone()` if you need an independent copy
 **VS6 (fixed threshold):** The threshold is a design judgment, not a hardware law. Below 16 bytes, copies are cheap enough that making them visible would add noise. Above it, copies involve real memory traffic, so you must be explicit. Configurable thresholds would mean the same source code has different semantics per build, violating local analysis.
 
 **U1–U4 (unique types):** Default ergonomic — most small types are Copy automatically. `@unique` is opt-in strictness for when semantics require it.
+
+**PC1–PC4 (pinned Copy):** The cliff's real problem was never the threshold — it was error locality. A struct crossing 16 bytes surfaces as "use of moved value" at distant call sites, and until the move-error NOTE (above) landed, nothing connected them to the field that caused it. `@copy` finishes the job: for types whose copyability callers depend on, the break errors at the definition, before any call site sees it. I considered the full Rust model — everything moves, annotation opts in — which fixes locality completely, but it fails the litmus test: Go copies structs implicitly at any size, and requiring an annotation on every `Point` and `Vec3` makes Rask noisier than Go on the most basic code in the language. Automatic below the threshold, pinnable where it's API, is both. The name is `@copy` because it mirrors `@unique` — the two poles of the same dial. The known misread (`@copy` as a *request* to copy a big type) gets one compile error that explains itself; `@assert_copy` would have prevented the misread at the cost of reading like ceremony everywhere it's used correctly.
 
 **Why 16 bytes:**
 
