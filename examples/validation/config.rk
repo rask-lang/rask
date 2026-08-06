@@ -29,7 +29,7 @@ extend Config {
     func from_env() -> Config {
         mut c = Config.new()
         c.host = os.env_or("TRACKER_HOST", c.host)
-        c.port = parse_port(os.env("TRACKER_PORT")) ?? c.port
+        c.port = parse_port(os.env("TRACKER_PORT")) orelse c.port
         return c
     }
 
@@ -47,9 +47,8 @@ public extend Config with Displayable {
 }
 
 func parse_port(raw: string?) -> u16? {
-    const s = raw ?? return none
-    const n = s.parse<u16>() ?? return none
-    return n
+    const s = try raw
+    return try s.parse<u16>()
 }
 
 // Read-heavy shared state (conc.sync SY1): many request tasks read it,

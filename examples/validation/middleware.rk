@@ -49,8 +49,8 @@ extend AuthGuard with Middleware {
     func before(self, req: Request) -> MwOutcome {
         if req.method is Method.Get { return MwOutcome.Continue }
 
-        const header = req.headers.get("Authorization") ?? return deny(AuthError.Missing)
-        const token = bearer(header) ?? return deny(AuthError.Invalid)
+        const header = req.headers.get("Authorization") orelse return deny(AuthError.Missing)
+        const token = bearer(header) orelse return deny(AuthError.Invalid)
         if token != self.required_token { return deny(AuthError.Invalid) }
         return MwOutcome.Continue
     }
@@ -88,7 +88,7 @@ extend RateLimiter with Middleware {
 
         // Inline .lock() per access: `with self.counters as c` on a field
         // Mutex doesn't unwrap in the current checker (FINDINGS).
-        const used = self.counters.lock().get(key) ?? 0
+        const used = self.counters.lock().get(key) orelse 0
         if used >= limit {
             return MwOutcome.Short(error_response(ApiError.RateLimited(60)))
         }
@@ -98,7 +98,7 @@ extend RateLimiter with Middleware {
 }
 
 func client_key(req: Request) -> string {
-    return req.headers.get("X-Client-Id") ?? "anonymous"
+    return req.headers.get("X-Client-Id") orelse "anonymous"
 }
 
 // ─── Chain ───────────────────────────────────────────────────────────
