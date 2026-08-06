@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Wire DTOs. Request types auto-derive Decode, response types auto-derive
+// Encode — no declarations and no annotations, since auto-derive covers every
+// non-private field (E12, E13). These are plain data, so nothing is `private`
+// and nothing needs `public`: visibility is about code access, not the wire.
+//
+// Field annotations (@rename/@no_serialize/@default, std.encoding/E18–E20) are
+// the spec mechanism for reshaping the JSON, but the parser doesn't accept
+// field-level annotations yet — see FINDINGS. So the wire names match the
+// field names, and "optional on the wire" is expressed with `T?` fields plus
+// a fallback in the handler.
+//
+// Enums travel as strings on the wire and are parsed to Priority/Status in
+// the handlers, so the DTOs stay pure data.
+
+import json
+
+// ─── Requests ────────────────────────────────────────────────────────
+
+struct CreateTaskRequest {
+    title: string
+    project_id: u64
+    priority: string?     // absent → handler defaults to "medium"
+}
+
+struct UpdateTaskRequest {
+    // All optional — absent means "leave unchanged". Missing optionals
+    // decode to none.
+    status: string?
+    priority: string?
+    assignee: u64?
+    add_tags: Vec<string>?
+}
+
+struct CreateUserRequest {
+    name: string
+    email: string
+}
+
+// ─── Responses ───────────────────────────────────────────────────────
+
+struct TaskView {
+    id: u64
+    title: string
+    project_id: u64
+    priority: string
+    status: string
+    assignee: u64?
+    tags: Vec<string>
+    blocked: bool
+}
+
+struct UserView {
+    id: u64
+    name: string
+    email: string
+    active: bool
+}
+
+struct ProjectView {
+    id: u64
+    name: string
+    owner: u64
+    archived: bool
+}
+
+struct ListResponse {
+    items: Vec<TaskView>
+    total: usize
+    offset: usize
+}
+
+struct ErrorBody {
+    error: string
+    code: string
+}
+
+// ─── Validation conformances ─────────────────────────────────────────
+// Comma-list conformance: one block claims both traits (CD1). Displayable
+// gives a compact log line; Validate is the request gate.
+
+extend CreateTaskRequest with Validate, Displayable {
+    func validate(self) -> void or ValidationError {
+        try check_len("title", self.title, MAX_TITLE_LEN)
+        return
+    }
+
+    func to_string(self) -> string {
+        return "CreateTask(title={self.title}, project={self.project_id})"
+    }
+}
+
+extend UpdateTaskRequest with Validate {
+    func validate(self) -> void or ValidationError {
+        // Enum parses happen in the handler where a bad value becomes
+        // ValidationError.BadEnum; only the tag count is bounded here.
+        if self.add_tags? as tags {
+            if tags.len() > 20 { return ValidationError.TooLong("add_tags", 20) }
+        }
+        return
+    }
+}
+
+// public extend: the conformance is part of the crate's public API surface,
+// so it's declared public (never inferred — G1).
+public extend CreateUserRequest with Validate {
+    func validate(self) -> void or ValidationError {
+        try check_len("name", self.name, MAX_NAME_LEN)
+        if !self.email.contains("@") {
+            return ValidationError.BadEnum("email", self.email)
+        }
+        return
+    }
+}

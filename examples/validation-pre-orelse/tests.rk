@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Unit tests as first-class blocks (std.testing). No framework, no harness —
+// `rask test` runs these.
+
+test "priority order follows variant order" {
+    // Compared with the operators — `Ordering` can't be named in user code
+    // yet (FINDINGS), so no `== Ordering.Less`.
+    assert Priority.Low < Priority.Urgent
+    assert Priority.Urgent > Priority.Low
+    assert !(Priority.High < Priority.High)
+}
+
+test "priority parses known labels and rejects the rest" {
+    assert_eq(Priority.from_label("high")!, Priority.High)
+    const bad = Priority.from_label("epic")
+    assert bad is ValidationError
+}
+
+test "status terminality" {
+    assert Status.Done.is_terminal()
+    assert Status.Cancelled.is_terminal()
+    assert !Status.Open.is_terminal()
+    assert !Status.InProgress.is_terminal()
+}
+
+test "email equality is case-insensitive (custom Equal)" {
+    const a = EmailAddress { raw: "Bo@Example.IO" }
+    const b = EmailAddress { raw: "bo@example.io" }
+    assert a == b
+    // OC1: the redeclared Hashable must agree with the override.
+    assert_eq(a.hash(), b.hash())
+}
+
+test "ids are distinct values, stepped through .value" {
+    // TaskId is a struct, so it's built field-by-field — `TaskId(1)` is the
+    // nominal-type constructor (T7), and structs have no tuple form (S1).
+    const a = TaskId { value: 1 }
+    const b = a.next()
+    assert_eq(b.value, 2)
+    assert a != b
+}
+
+test "config carries its defaults" {
+    const c = Config.new()
+    assert_eq(c.port, 8080)
+    assert_eq(c.host, "0.0.0.0")
+    assert c.request_log
+}
+
+test "validation catches an empty title" {
+    const req = CreateTaskRequest {
+        title: "",
+        project_id: 1,
+        priority: "medium",
+    }
+    const result = req.validate()
+    assert result is ValidationError
+    if result is ValidationError as e {
+        assert e.message().contains("title")
+    }
+}
+
+test "percentile handles the empty and single-sample cases" {
+    mut empty = Vec.new()
+    assert_eq(percentile(empty, 50), 0.0)
+
+    mut one = Vec.from([42.0])
+    assert_eq(percentile(one, 95), 42.0)
+}
