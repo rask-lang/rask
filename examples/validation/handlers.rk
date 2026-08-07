@@ -89,7 +89,7 @@ func handle_list_tasks(req: Request) -> Response or ApiError {
 
 func handle_create_task(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateTaskRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
     try dto.validate()
 
     let label = dto.priority ?? "medium"
@@ -108,7 +108,7 @@ func handle_get_task(id: TaskId) -> Response or ApiError {
 
 func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
     let dto = json.decode<UpdateTaskRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
     try dto.validate()
     let patch = try build_patch(dto)
 
@@ -123,7 +123,7 @@ func handle_delete_task(id: TaskId) -> Response or ApiError {
 
 func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
     let dto = json.decode<AddDepRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
     let dep = TaskId { value: dto.dep_id }
     try store.lock().add_dependency(id, dep)
     return json_response(200, json.encode(OkBody { ok: true }))
@@ -131,7 +131,7 @@ func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
 
 func handle_batch(req: Request) -> Response or ApiError {
     let dto = json.decode<BatchRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
 
     mut ops = Vec.new()
     for raw in dto.ops {
@@ -147,7 +147,7 @@ func handle_batch(req: Request) -> Response or ApiError {
 
 func handle_create_user(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateUserRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
     try dto.validate()
 
     let email = EmailAddress { raw: dto.email }
@@ -163,7 +163,7 @@ func handle_get_user(id: UserId) -> Response or ApiError {
 
 func handle_create_project(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateProjectRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+        ?? return ApiError.BadRequest("invalid JSON")
     if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
 
     let owner = UserId { value: dto.owner }
