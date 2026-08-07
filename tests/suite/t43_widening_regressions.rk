@@ -35,7 +35,7 @@ test "optional call-argument widening then predicate" {
 test "if r? as v binds the result success value" {
     let r = ok_value()
     mut got = 0
-    if r? as v { got = v }
+    if r is i64 as v { got = v }
     assert got == 42
 }
 

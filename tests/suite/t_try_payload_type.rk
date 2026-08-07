@@ -109,10 +109,8 @@ test "type.errors — plain try keeps the payload's struct type too" {
 test "type.errors — a miss still takes the err path" {
     let store = Store.new()
     let missing = store.view(99)
-    let found = missing?
-    assert !found
+    assert missing is StoreError
 
     let hit = store.view(1)
-    let present = hit?
-    assert present
+    assert (hit is StoreError) == false
 }

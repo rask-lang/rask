@@ -57,14 +57,14 @@ test "T or E return auto-wrap + force (ER9/ER15)" {
     // Bare i64 wraps to the T branch, DivError to the E branch, both by type.
     assert divide(10, 2)! == 5
     let r = divide(8, 4)
-    assert r?                         // ER12 boolean-ok
+    assert r is i64                   // ER23 — the test names the branch
     assert r! == 2
 }
 
 test "try propagates the error early (ER16)" {
     // propagate returns the error when the inner call fails; the caller sees it.
     let bad = propagate(3, 0)
-    assert bad? == false
+    assert (bad is i64) == false
     assert first_err(bad) == "div by zero"
 }
 

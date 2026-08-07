@@ -42,7 +42,7 @@ func double(x: i32) -> i32 or DivError {
 
 test "auto-wrap at return" {
     let result = double(21)
-    assert result?
+    assert result is i32
     assert result! == 42
 }
 
@@ -54,7 +54,7 @@ func do_nothing() -> void or DivError {
 
 test "implicit unit success" {
     let result = do_nothing()
-    assert result?
+    assert result is i32
 }
 
 // --- try propagation (ER16) ---
@@ -118,24 +118,24 @@ test "try else passes through" {
     assert result! == 42
 }
 
-// --- Result methods from spec ---
+// --- The operator surface replaces the combinators (#599) ---
 
-test "map on present" {
-    let result = safe_div(10, 2).map(|v| v * 3)
-    assert result! == 15
+test "transform the value by extracting first" {
+    let result = safe_div(10, 2) catch _ => return
+    assert result * 3 == 15
 }
 
-test "map on error" {
-    let result = safe_div(10, 0).map(|v| v * 3)
+test "a failure skips the transform" {
+    let result = safe_div(10, 0)
     assert result is DivError
 }
 
-test "ok() lifts to Option (present)" {
+test "dropping the error leaves an optional (present)" {
     let opt = safe_div(10, 2) catch _ => none
     assert opt! == 5
 }
 
-test "ok() lifts to Option (absent)" {
+test "dropping the error leaves an optional (absent)" {
     let opt = safe_div(10, 0) catch _ => none
     assert opt is none
 }

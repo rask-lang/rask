@@ -279,7 +279,7 @@ pub struct TypedProgram {
     /// ER14a: `??` sites whose right side is still wrapped. There the present
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
-    pub coalesce_keeps_shape: std::collections::HashSet<NodeId>,
+    pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).

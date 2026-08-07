@@ -47,7 +47,7 @@ test "a handle option compares against none through a binding" {
     assert hit?
     assert !(hit is none)
     assert miss is none
-    assert !(miss?)
+    assert miss is none
 }
 
 test "`??` on a missed lookup falls through to the default" {

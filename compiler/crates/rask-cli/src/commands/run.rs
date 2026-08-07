@@ -24,7 +24,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
     interp.set_error_wraps(result.typed.error_wraps.clone());
-    interp.set_coalesce_keeps_shape(result.typed.coalesce_keeps_shape.clone());
+    interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());
     // Set source info from the first source file (single-file mode).
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
@@ -274,7 +274,7 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
     interp.set_error_wraps(result.typed.error_wraps.clone());
-    interp.set_coalesce_keeps_shape(result.typed.coalesce_keeps_shape.clone());
+    interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());
     if let Some((_, source)) = result.source_files.first() {
         interp.set_source_info(path, source);
     }
@@ -701,7 +701,7 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::new();
     interp.set_node_types(result.typed.node_types.clone());
     interp.set_error_wraps(result.typed.error_wraps.clone());
-    interp.set_coalesce_keeps_shape(result.typed.coalesce_keeps_shape.clone());
+    interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }

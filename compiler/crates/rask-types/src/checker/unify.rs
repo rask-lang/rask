@@ -303,7 +303,7 @@ impl TypeChecker {
                 if collapses {
                     (def.clone(), def.clone())
                 } else {
-                    self.coalesce_keeps_shape.insert(node);
+                    self.fallback_keeps_shape.insert(node);
                     ((**def_ok).clone(), def.clone())
                 }
             }

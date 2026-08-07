@@ -2054,7 +2054,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Try { expr: inner } => self.lower_try(expr.id, inner),
 
             // ER14: `r catch <binder> => <body>`.
-            ExprKind::Catch { value, ref clause } => self.lower_catch(value, clause),
+            ExprKind::Catch { value, ref clause } => self.lower_catch(expr.id, value, clause),
 
             // OPT32: read the slot, write `none` back, hand back what was read.
             ExprKind::Take { place } => {
@@ -2150,7 +2150,7 @@ impl<'a> MirLowerer<'a> {
                 // ER14a: a still-wrapped right side means the chain carries the
                 // layer onward, so a present left operand goes back untouched.
                 // Only a collapsing `??` reads the payload out.
-                let keeps_shape = self.ctx.coalesce_keeps_shape.contains(&expr.id);
+                let keeps_shape = self.ctx.fallback_keeps_shape.contains(&expr.id);
                 // The checker often leaves this node's type an unresolved var,
                 // and reading the payload as an opaque pointer hands back the
                 // slot's address instead of the value. The lowered receiver

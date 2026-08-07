@@ -881,6 +881,42 @@ impl TypeChecker {
 
             // ER14: `r catch e => body` / `r catch _ => body`. Results only.
             ExprKind::Catch { value, ref clause } => {
+                // ER18: `try { … } catch e => …`. The handler covers the block,
+                // so what it binds is the enclosing function's error type — the
+                // block itself has an ordinary value type.
+                let is_try_block = match &value.kind {
+                    ExprKind::Try { expr: inner } => matches!(inner.kind, ExprKind::Block(_)),
+                    _ => false,
+                };
+                if is_try_block {
+                    let block_ty = self.infer_expr(value);
+                    let err_ty = self
+                        .current_return_type
+                        .as_ref()
+                        .map(|t| self.ctx.apply(t))
+                        .and_then(|t| match t {
+                            Type::Result { err, .. } => Some(*err),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| self.ctx.fresh_var());
+                    self.push_scope();
+                    if !clause.is_discard() {
+                        self.define_local_const(clause.binder.clone(), err_ty);
+                    }
+                    let handler_ty = self.infer_expr(&clause.body);
+                    self.pop_scope();
+                    // A diverging handler produces nothing, and constraining it
+                    // would drag the whole expression's type down to `!`.
+                    if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            block_ty.clone(),
+                            handler_ty,
+                            expr.span,
+                        ));
+                    }
+                    return block_ty;
+                }
+
                 let val_ty = self.infer_expr(value);
                 let resolved = self.ctx.apply(&val_ty);
                 let (ok_ty, err_ty) = match &resolved {
@@ -930,6 +966,7 @@ impl TypeChecker {
                 // The layers don't stack: on a success type that's already
                 // optional, the drop lands on the outer one (OPT30).
                 if matches!(clause.body.kind, ExprKind::None) {
+                    self.fallback_keeps_shape.insert(expr.id);
                     let ok_ty = self.ctx.apply(&ok_ty);
                     return if ok_ty.is_option() { ok_ty } else { Type::option(ok_ty) };
                 }
@@ -940,6 +977,7 @@ impl TypeChecker {
                     if let Err(e) = self.unify(&body_ok, &ok_ty, expr.span) {
                         self.errors.push(e);
                     }
+                    self.fallback_keeps_shape.insert(expr.id);
                     return resolved_body;
                 }
                 self.ctx.add_constraint(TypeConstraint::Equal(

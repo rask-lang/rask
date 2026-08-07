@@ -467,6 +467,7 @@ impl<'a> MirLowerer<'a> {
     /// which is what makes the right side lazy.
     pub(super) fn lower_catch(
         &mut self,
+        node: rask_ast::NodeId,
         inner: &Expr,
         clause: &CatchClause,
     ) -> Result<TypedOperand, LoweringError> {
@@ -502,13 +503,23 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        let ok_ty = Self::better_payload_ty(
+        // ER14a: when the handler's value is itself two-branch (`catch _ =>
+        // none`), the whole expression stays wrapped — but in the *handler's*
+        // shape, not the operand's, so the success has to be re-wrapped rather
+        // than passed through. The two differ in what the other branch holds.
+        let keeps_shape = self.ctx.fallback_keeps_shape.contains(&node);
+        let payload_ty = Self::better_payload_ty(
             self.extract_payload_type(inner),
             match &result_ty {
                 MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
                 _ => None,
             },
         ).unwrap_or(MirType::I64);
+        let ok_ty = if keeps_shape {
+            MirType::Option(Box::new(payload_ty.clone()))
+        } else {
+            payload_ty.clone()
+        };
         let value = self.builder.alloc_temp(ok_ty.clone());
 
         // Err path — bind the error (unless it's `_`) and run the handler.
@@ -547,16 +558,23 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        // Ok path — extract the payload.
+        // Ok path — read the payload out, and re-wrap it when the shape stays.
         self.builder.switch_to_block(ok_block);
+        let payload = self.builder.alloc_temp(payload_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: value,
+            dst: payload,
             rvalue: MirRValue::Field {
                 base: result,
                 field_index: 0,
-                byte_offset: self.payload_byte_offset(&ok_ty),
+                byte_offset: self.payload_byte_offset(&payload_ty),
                 access: FieldAccess::Word,
             },
+        }));
+        // Assigning a bare payload into an option-typed slot is the wrap —
+        // codegen and the interpreter both read the destination's type.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Use(MirOperand::Local(payload)),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,

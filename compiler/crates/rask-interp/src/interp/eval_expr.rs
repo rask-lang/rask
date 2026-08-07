@@ -1751,8 +1751,13 @@ impl Interpreter {
                     };
                 }
                 let val = self.eval_expr(value)?;
+                // ER14a: a handler that produces a two-branch value (`catch _ =>
+                // none` is the common one) keeps the shape, so a success goes
+                // back wrapped rather than unwrapped.
+                let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
                 match &val {
                     Value::Enum { variant, fields, .. } => match variant.as_str() {
+                        "Ok" | "Some" if keeps_shape => Ok(val.clone()),
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {
                             let bound = fields.first().cloned().unwrap_or(Value::Unit);
@@ -1950,7 +1955,7 @@ impl Interpreter {
                 // ER14a: when the right side is still wrapped the chain carries
                 // the layer onward, so a present left operand goes back
                 // untouched. Only a collapsing `??` hands back the payload.
-                let keeps_shape = self.coalesce_keeps_shape.contains(&expr.id);
+                let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
                 match &val {
                     Value::Enum { name, variant, fields, .. }
                         if matches!(name.as_str(), "Option" | "Result")

@@ -229,7 +229,7 @@ pub struct MirContext<'a> {
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
-    pub coalesce_keeps_shape: &'a std::collections::HashSet<NodeId>,
+    pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -326,7 +326,7 @@ impl<'a> MirContext<'a> {
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
-            coalesce_keeps_shape: &EMPTY_COALESCE_SHAPE,
+            fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -2245,6 +2245,12 @@ impl<'a> MirLowerer<'a> {
             MirType::Option(inner) => (Some(inner.as_ref()), None),
             _ => (None, None),
         };
+        // OPT15: `none` names the absent branch, which is always the other
+        // side. Without this the lowercase-means-ok fallback below claimed it
+        // for the payload, and `x is none` answered backwards on native.
+        if name == "none" {
+            return true;
+        }
         // Exact identity match wins.
         if let Some(ok) = ok_ty {
             if self.mir_type_name(ok).as_deref() == Some(name) {
@@ -2263,10 +2269,22 @@ impl<'a> MirLowerer<'a> {
         }
         // One side named but unmatched ⇒ the pattern is the other side. Handles
         // generic ok types (`Vec<i32>` → Ptr) that lose their nominal name.
-        if err_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+        //
+        // Only a *nominal* name counts. An error type that didn't get a layout
+        // lowers to `i64`, and taking that as "the err side is named, so this
+        // pattern must be the ok side" routed `r is SysError` on a
+        // `void or SysError` to tag 0 — the success arm.
+        let is_nominal = |n: &str| n.chars().next().is_some_and(|c| c.is_uppercase());
+        if err_ty
+            .and_then(|t| self.mir_type_name(t))
+            .is_some_and(|n| is_nominal(&n))
+        {
             return false;
         }
-        if ok_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+        if ok_ty
+            .and_then(|t| self.mir_type_name(t))
+            .is_some_and(|n| is_nominal(&n))
+        {
             return true;
         }
         // Last resort: lowercase ⇒ ok, uppercase ⇒ err.
@@ -2300,7 +2318,12 @@ impl<'a> MirLowerer<'a> {
                 // otherwise a nested enum variant → its own tag.
                 if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
                     let matches_side = self.mir_side_names_contain(val_ty, name);
-                    if matches_side {
+                    // A side whose type never got a layout lowers to `i64`, so
+                    // the name comparison can't find it. Falling through to the
+                    // variant lookup then answered 0 for every such name, and
+                    // `r is SysError` on a `void or SysError` routed to the
+                    // success arm.
+                    if matches_side || !self.names_a_known_variant(name) {
                         return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
                     }
                 }
@@ -2312,6 +2335,16 @@ impl<'a> MirLowerer<'a> {
             }
             _ => self.pattern_tag(pattern),
         }
+    }
+
+    /// True when some declared enum has a variant by this name.
+    fn names_a_known_variant(&self, name: &str) -> bool {
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        self.ctx
+            .enum_layouts
+            .iter()
+            .any(|l| l.variants.iter().any(|v| v.name == bare))
+            || rask_stdlib::ordering_tag(bare).is_some()
     }
 
     /// True when `name` is the nominal name of the ok side, err side, or an err
