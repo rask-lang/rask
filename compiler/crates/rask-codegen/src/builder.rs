@@ -1648,9 +1648,15 @@ impl<'a> FunctionBuilder<'a> {
         // works if `p = ...` copies bytes into `*p`'s slot.
         let needs_copy = match (&dst_local.ty, rvalue) {
             (MirType::String, _) => true,
-            // Field on aggregate base returns pointer for aggregate elements
+            // Field on aggregate base returns pointer for aggregate elements.
+            // TraitObject belongs here: it's a 16-byte fat pointer, so reading one
+            // out of a `T?` payload as a scalar took the data half and left the
+            // vtable behind. The call through it then read the concrete value's
+            // first word as a vtable — for `Circle { r: 2.0 }` that meant
+            // jumping through 2.0 (#552).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
-             MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+             MirType::Result { .. } | MirType::Option(_) |
+             MirType::TraitObject { .. }, MirRValue::Field { .. }) => true,
             // Whole-aggregate copy: rvalue produces a pointer to the source
             // aggregate, dst has its own storage (either a stack slot or an
             // external pointer for mutate-params).
@@ -4862,6 +4868,11 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::String
                 | MirType::Option(_)
                 | MirType::Result { .. }
+                // A trait object is two words, so the payload read has to hand
+                // back its address like any other aggregate. Loading the first
+                // 8 bytes as a scalar kept the data pointer and dropped the
+                // vtable (#552).
+                | MirType::TraitObject { .. }
         )
     }
 

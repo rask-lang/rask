@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Reading a trait object back out of a `T?` payload. A trait object is two
+// words — data pointer plus vtable — so the payload read has to hand back its
+// address like any other aggregate. Natively it was loaded as a scalar, which
+// kept the data half and dropped the vtable, and the call through it jumped
+// through the concrete value's first field. Non-optional reads (for-loop,
+// direct index) were always fine, which is what made this look like a Map bug.
+
+trait Shape {
+    func area(self) -> f64
+}
+
+struct Circle {
+    r: f64
+}
+
+extend Circle with Shape {
+    func area(self) -> f64 {
+        return 3.14159 * self.r * self.r
+    }
+}
+
+struct Square {
+    side: f64
+}
+
+extend Square with Shape {
+    func area(self) -> f64 {
+        return self.side * self.side
+    }
+}
+
+test "a trait object survives a Vec.get optional binding" {
+    mut v: Vec<any Shape> = Vec.new()
+    v.push(Square { side: 3.0 })
+    let g = v.get(0)
+    if g? as s {
+        assert_eq(s.area(), 9.0)
+    } else {
+        assert(false)
+    }
+}
+
+test "a trait object survives a Map.get optional binding" {
+    mut m: Map<string, any Shape> = Map.new()
+    m.insert("square", Square { side: 4.0 })
+    let g = m.get("square")
+    if g? as s {
+        assert_eq(s.area(), 16.0)
+    } else {
+        assert(false)
+    }
+}
+
+test "the non-optional reads still agree" {
+    mut v: Vec<any Shape> = Vec.new()
+    v.push(Square { side: 2.0 })
+    assert_eq(v[0].area(), 4.0)
+    for s in v {
+        assert_eq(s.area(), 4.0)
+    }
+}
+
+test "a missing key gives none, not a bad trait object" {
+    mut m: Map<string, any Shape> = Map.new()
+    m.insert("square", Square { side: 5.0 })
+    let g = m.get("circle")
+    if g? as s {
+        assert(false)
+    } else {
+        assert(true)
+    }
+}
+
+test "two concrete types dispatch to their own bodies" {
+    mut v: Vec<any Shape> = Vec.new()
+    v.push(Circle { r: 1.0 })
+    v.push(Square { side: 3.0 })
+
+    let a = v.get(0)
+    if a? as s {
+        assert_eq(s.area(), 3.14159)
+    } else {
+        assert(false)
+    }
+
+    let b = v.get(1)
+    if b? as s {
+        assert_eq(s.area(), 9.0)
+    } else {
+        assert(false)
+    }
+}
