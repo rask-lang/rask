@@ -3,6 +3,7 @@
 //! Closure and spawn lowering.
 
 use super::{LoweringError, MirLowerer, TypedOperand};
+use rask_ast::NodeId;
 use crate::{
     stmt::ClosureCapture, BlockBuilder, FunctionRef, LocalId, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -18,14 +19,18 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `is_own` mirrors `mem.closures`: owned closures start heap-allocated (may
     /// escape); scope-limited closures are always stack-allocated.
+    /// `closure_id` is the closure expression's own node, which carries the
+    /// checker's `Fn` type — the return type an unannotated closure would
+    /// otherwise have to guess.
     pub(super) fn lower_closure(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
         ret_ty: Option<&str>,
         body: &Expr,
         is_own: bool,
+        closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, is_own, &[])
+        self.lower_closure_expecting(params, ret_ty, body, is_own, &[], closure_id)
     }
 
     /// As `lower_closure`, with the parameter types the callee declares for this
@@ -40,6 +45,7 @@ impl<'a> MirLowerer<'a> {
         body: &Expr,
         is_own: bool,
         expected_param_tys: &[String],
+        closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
@@ -63,10 +69,26 @@ impl<'a> MirLowerer<'a> {
         }
 
         // 4. Synthesize a MIR function for the closure body.
-        // Detect void closures: if no ret_ty annotation and body has bare returns, use Void.
+        //
+        // Prefer the written annotation, then what the checker inferred for the
+        // closure, and only then guess. Guessing means i64, and i64 is only right
+        // for a payload that already fits a machine word: an unannotated
+        // `|| { return captured }` over a bool printed 1, over a char 120, over a
+        // string or a struct its address. The checker had the type all along —
+        // this just asks it.
         let inferred_void = ret_ty.is_none() && Self::body_has_bare_return(body);
+        let checked_ret = closure_id
+            .and_then(|id| self.ctx.lookup_raw_type(id))
+            .and_then(|ty| match ty {
+                rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
+                _ => None,
+            })
+            // A closure whose body diverges or yields nothing types as Void here;
+            // don't let that override the bare-return detection below.
+            .filter(|t| !matches!(t, MirType::Void));
         let closure_ret = ret_ty
             .map(|s| self.ctx.resolve_type_str(s))
+            .or(checked_ret)
             .unwrap_or(if inferred_void { MirType::Void } else { MirType::I64 });
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 

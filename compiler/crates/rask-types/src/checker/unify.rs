@@ -424,6 +424,19 @@ impl TypeChecker {
                 Ok(false)
             }
 
+            // Never is the bottom type: it fits anywhere, so unifying it must
+            // never *bind* anything. These arms sit above the Var arms for that
+            // reason — below them, `(Never, Var)` matched the var arm and pinned
+            // the variable to Never. That's how a closure over an inferred float
+            // lost its type: the body `{ return c }` diverges, so its type is
+            // Never, and unifying that with the closure's return variable
+            // clobbered the literal var the `return` had just bound it to. Once
+            // it read Never instead of Var, literal defaulting skipped it, MIR
+            // fell back to i64, and `|| { return 2.5 }` printed 2. Integers hid
+            // it — i64 was the right guess for them.
+            (Type::Never, _) => Ok(false),
+            (_, Type::Never) => Ok(false),
+
             // Two bare vars, one of them a literal's: point the plain var at the
             // literal var, not the other way round. Binding the literal var
             // takes it off the defaulting list, and if nothing else ever pins
@@ -650,9 +663,6 @@ impl TypeChecker {
             }
 
             (Type::Error, _) | (_, Type::Error) => Ok(false),
-
-            (Type::Never, _) => Ok(false),
-            (_, Type::Never) => Ok(false),
 
             (Type::Result { ok: _, err: _ }, Type::Named(id)) | (Type::Named(id), Type::Result { ok: _, err: _ }) => {
                 if Some(*id) == self.types.get_result_type_id() {

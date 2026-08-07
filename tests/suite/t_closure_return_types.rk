@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure's return type comes from the checker, not from a guess. MIR used to
+// default an unannotated closure to i64, which is only right for a payload that
+// already fits a machine word — a bool came back 1, a char 120, a string or a
+// struct its address.
+//
+// The float cases are the second half: a diverging body types as Never, and
+// unifying that with the closure's return variable used to pin the variable to
+// Never, which took the numeric literal off the defaulting list. Integers hid it
+// because i64 was the right guess for them anyway.
+
+struct Pair {
+    public a: i64
+    public b: i64
+}
+
+test "bool survives an unannotated closure" {
+    let c = true
+    let f = || { return c }
+    assert_eq(f(), true)
+}
+
+test "char survives" {
+    let c = 'x'
+    let f = || { return c }
+    assert_eq(f(), 'x')
+}
+
+// Bound before comparing on purpose. Passing `f()` straight in as an operand
+// corrupts the string on native — that is #611, a separate defect in how a
+// closure call's 16-byte result is held, not the return type this file is about.
+test "string survives" {
+    let c = "hi"
+    let f = || { return c }
+    let got = f()
+    assert_eq(got, "hi")
+    assert_eq(got.len(), 2)
+}
+
+test "a struct survives" {
+    let c = Pair { a: 1, b: 2 }
+    let f = || { return c }
+    let got = f()
+    assert_eq(got.a, 1)
+    assert_eq(got.b, 2)
+}
+
+test "an inferred float survives" {
+    let c = 2.5
+    let f = || { return c }
+    assert_eq(f(), 2.5)
+}
+
+test "an annotated float survives" {
+    let c: f64 = 2.5
+    let f = || { return c }
+    assert_eq(f(), 2.5)
+}
+
+test "a float literal in the body survives" {
+    let f = || { return 2.5 }
+    assert_eq(f(), 2.5)
+}
+
+test "an expression-bodied closure keeps its type" {
+    let c = 2.5
+    let f = || c
+    assert_eq(f(), 2.5)
+}
+
+test "integers still work" {
+    let n = 42
+    let f = || { return n }
+    assert_eq(f(), 42)
+
+    let big = 3000000000
+    let g = || { return big }
+    assert_eq(g(), 3000000000)
+}
+
+// A void body must not pick up a return type from any of this — the guess is
+// still the right answer when there's genuinely nothing to return. No `println`
+// to witness it: stdout from inside a `test` block reaches the terminal on the
+// interpreter and is dropped on native (#612), so printing here would make this
+// file diverge for reasons that have nothing to do with closures.
+test "a void closure stays void" {
+    mut reached = 0
+    let f = || { }
+    f()
+    reached = 1
+    assert_eq(reached, 1)
+}

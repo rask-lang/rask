@@ -846,7 +846,7 @@ impl<'a> MirLowerer<'a> {
                         let expected = Self::expected_closure_param_tys(&callee_params, i);
                         self.lower_closure_expecting(
                             params, ret_ty.as_deref(), body,
-                            *is_own || spawns_closure, &expected,
+                            *is_own || spawns_closure, &expected, Some(a.expr.id),
                         )?
                     } else {
                         self.lower_call_arg(&a.expr, smut)?
@@ -2369,7 +2369,7 @@ impl<'a> MirLowerer<'a> {
 
             // Closure — synthesize a separate MIR function and emit ClosureCreate
             ExprKind::Closure { params, ret_ty, body, is_own } => {
-                self.lower_closure(params, ret_ty.as_deref(), body, *is_own)
+                self.lower_closure(params, ret_ty.as_deref(), body, *is_own, Some(expr.id))
             }
 
             // Cast
@@ -3356,6 +3356,7 @@ impl<'a> MirLowerer<'a> {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                                     self.lower_closure_expecting(
                                         params, ret_ty.as_deref(), body, *is_own, &expected,
+                                        Some(arg.expr.id),
                                     )?
                                 } else {
                                     self.lower_expr(&arg.expr)?
@@ -3535,7 +3536,7 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected)?
+                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
             } else {
                 self.lower_expr(&arg.expr)?
             };
