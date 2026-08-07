@@ -2,9 +2,9 @@
 // tiered_store — a miniature LSM-shaped key-value store: active memtable →
 // staged table pending flush → sorted tables on a fake disk.
 //
-// Stress corpus for the four try/orelse forms the validation flagship never
+// Stress corpus for the four fallback forms the validation flagship never
 // exercises (its FINDINGS §F): the flat-shape composite (ER16b/ER47), a *used*
-// `orelse e =>` binder, `orelse` chains (ER14a), and `take <place>` (OPT32).
+// `catch e =>` binder, fallback chains (ER14a), and `take <place>` (OPT32).
 // Each occurs here because the domain wants it, not as a demo. This is also
 // the LSM lookup from the ER47 rationale, made into a real program.
 //
@@ -46,10 +46,9 @@ extend StoreError with ErrorMessage {
 }
 
 // ─── Config: a result chain ──────────────────────────────────────────
-// "First source that works." Both fallible sources stay wrapped through the
-// chain (same success type, ER14a); the bare default collapses it. The env
-// error is discarded when the file works — the ER14a information-loss rule,
-// accepted here because the last error is the one worth reporting anyway.
+// "First source that works." Each step's discarded error is acknowledged in
+// the text (`catch _ =>`) — two errors genuinely die here, and the noise is
+// honest. The bare default ends the chain (ER14a).
 
 struct Config {
     dir: string
@@ -58,7 +57,7 @@ struct Config {
 
 extend Config {
     func from_env() -> Config or ConfigError {
-        const dir = os.env("TIERED_DIR") orelse return ConfigError.NoEnv
+        const dir = os.env("TIERED_DIR") ?? return ConfigError.NoEnv
         return Config { dir: dir, memtable_cap: 4 }
     }
 
@@ -73,7 +72,9 @@ extend Config {
 }
 
 func load_config() -> Config {
-    return Config.from_env() orelse Config.from_file(".tiered.conf") orelse Config.default()
+    return Config.from_env()
+        catch _ => Config.from_file(".tiered.conf")
+        catch _ => Config.default()
 }
 
 // ─── Fake block device ───────────────────────────────────────────────
@@ -143,7 +144,7 @@ extend SsTable {
         for row in self.rows {
             // Absence-to-error conversion: a '='-less row has no payload to
             // bind, so the exit names the error itself (the old ok_or shape).
-            const eq = row.find("=") orelse return StoreError.Corrupt(self.path, row)
+            const eq = row.find("=") ?? return StoreError.Corrupt(self.path, row)
             if row[..eq] == key { return row[eq + 1..].to_string() }
         }
         return none
@@ -198,38 +199,38 @@ extend Tiered {
 
     // Background flush: move the staged table OUT of the slot (take leaves
     // none behind — OPT32/#586), write it, promote it. `take` binds the
-    // place, `orelse` the result: (take self.pending) orelse return.
+    // place, `??` the result: (take self.pending) ?? return.
     func tick(mutate self) -> void or StoreError {
-        const staged = take self.pending orelse return       // idle — nothing staged
+        const staged = take self.pending ?? return       // idle — nothing staged
         const n = staged.rows.len()
 
         // The used binder, diverging flavor: wrap the disk error with the
         // context only this frame has (how many rows were lost).
         self.disk.write(staged.rows.join("\n"))
-            orelse e => return StoreError.FlushFailed(n, e)
+            catch e => return StoreError.FlushFailed(n, e)
 
         self.tables.push(staged)
 
         // The used binder, value flavor: stats are best-effort — a full disk
         // must not fail the write path, but it's worth a line in the log.
-        self.disk.write("# flushed {n}") orelse e => println("stats dropped: {e.message()}")
+        self.disk.write("# flushed {n}") catch e => println("stats dropped: {e.message()}")
         return
     }
 
     // The read path, newest tier first.
     //
     // The memtable tiers are plain optionals, so they chain — still-wrapped
-    // through frozen_get (ER14a, #578). The table tier can also FAIL, so it
-    // propagates with `try` and falls through on absence with `orelse` — the
-    // ER16b composite, no parens: (try t.lookup(key)) orelse continue.
+    // through pending_get (ER14a, #578). The table tier can also FAIL, so it
+    // propagates with `try` and falls through on absence with `??` — the
+    // ER16b composite, no parens: (try t.lookup(key)) ?? continue.
     // Bare `try t.lookup(key)` is the ER47 compile error here: both `none`
     // and StoreError could leave, and the line wouldn't say which.
     func get(self, key: string) -> string? or StoreError {
-        const hot = self.active.get(key) orelse self.pending_get(key)
+        const hot = self.active.get(key) ?? self.pending_get(key)
         if hot? as v { return v }
 
         for t in self.tables {
-            const v = try t.lookup(key) orelse continue
+            const v = try t.lookup(key) ?? continue
             return v
         }
         return none
@@ -247,8 +248,8 @@ extend Tiered {
 }
 
 // ─── Driver ──────────────────────────────────────────────────────────
-// main is infallible, so the flat shape can't propagate here — and `orelse`
-// alone can't consume it either (three branches, ER14 needs two). match is
+// main is infallible, so the flat shape can't propagate here — and no single
+// fallback can consume it either (three branches, two-branch operators). match is
 // the honest tool at this boundary: three outcomes, three arms.
 
 func report(store: Tiered, key: string) {

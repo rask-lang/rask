@@ -762,15 +762,15 @@ if conn is ConnectError as e { return e }
 use(conn)                                      // conn: Connection here
 ```
 
-One-liners cover the common cases — `try` propagates, `orelse` supplies the other branch:
+One-liners cover the common cases — `try` propagates, `??` fills in for absence, `catch` handles failure:
 
 ```rask
 const data = try read_file(path)                              // propagate the error
-const ms = raw.parse() orelse return BadRequest("not a number")     // absence → leave
-const port = config.port orelse 8080                          // a value instead
+const ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
+const port = config.port ?? 8080                              // a value instead
 ```
 
-Both words work on optionals and results alike. `try` propagates the bad branch to the caller; `orelse`'s right side is a value to carry on with, or an exit written where it happens (`type.errors/ER14`).
+`try` works on optionals and results alike. The fallback is one word per shape: `??` for absence, `catch e =>` for failure — either right side is a value to carry on with, or an exit written where it happens (`type.optionals/OPT11`, `type.errors/ER14`).
 
 ### Loops
 
@@ -871,7 +871,7 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 // Optional shorthand — bare value auto-wraps
 const x: i32? = 42
 const name = user?.profile?.name    // `none` if any step is `none`
-const port = config.port orelse 8080
+const port = config.port ?? 8080
 const must_exist = optional!
 
 // Error union
@@ -882,25 +882,26 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
-**One family, two words.** `try` propagates the bad branch to the caller unchanged. `orelse` handles it here — the right side is a value to carry on with, or any divergence (`return`, `break`, `continue`, `panic(…)`), so every exit is written where it happens. Both words work on both shapes.
+**One family, one word per job.** `try` propagates the bad branch to the caller unchanged. The fallback handles it here — `??` for absence, `catch` for failure — and the right side is a value to carry on with, or any divergence (`return`, `break`, `continue`, `panic(…)`), so every exit is written where it happens. `catch`'s binder is mandatory: `e =>` to use the error, `_ =>` to drop it — a discarded error is always visible in the text. The glance rule: `try` means something leaves, `?` means something missing, `catch` means something failed.
 
 | Form | Leaves? | The other branch |
 |------|---------|------------------|
-| `x orelse v` | no | is this value |
-| `r orelse e => f(e)` | no | is this value, computed from the error |
+| `x ?? v` | no | is this value (an absence carried nothing) |
+| `r catch e => f(e)` | no | is this value, computed from the error |
+| `r catch _ => v` | no | is this value; the error is dropped, acknowledged |
 | `try x` | **yes** | propagates the other branch |
-| `x orelse return y` | **yes — and the line says so** | leaves the function with `y` |
-| `x orelse break` / `orelse continue` | **yes — and the line says so** | leaves the loop |
-| `r orelse e => return f(e)` | **yes — and the line says so** | exits with something built from the error |
+| `x ?? return y` | **yes — and the line says so** | leaves the function with `y` |
+| `x ?? break` / `?? continue` | **yes — and the line says so** | leaves the loop |
+| `r catch e => return f(e)` | **yes — and the line says so** | exits with something built from the error |
 
 ```rask
-const port = config.port orelse 8080                             // nothing leaves
-return dispatch(req) orelse e => error_response(e)                // handled at a boundary
+const port = config.port ?? 8080                                 // nothing leaves
+return dispatch(req) catch e => error_response(e)                 // handled at a boundary
 
 const data = try read_file(path)                                 // propagates — leaves
-const ms   = raw.parse() orelse return BadRequest("bad ms")
-const dto  = json.decode(body) orelse return BadRequest("bad JSON")
-const text = fs.read_text(p) orelse e => return context("reading {p}", e)
+const ms   = raw.parse() ?? return BadRequest("bad ms")
+const dto  = json.decode(body) catch _ => return BadRequest("bad JSON")
+const text = fs.read_text(p) catch e => return context("reading {p}", e)
 ```
 
 The `?`-family stays absence-only: nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
@@ -1198,7 +1199,7 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
-| Other branch | `x orelse v` | Both shapes; right side is a value or a written-out exit |
+| Other branch | `x ?? v` (absent) / `r catch e => f(e)` (failed) | Right side is a value or a written-out exit; `catch` always binds — `e =>` or `_ =>` |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
 | Guard extraction | `const v = x is P else { }` | Enum patterns only; binds to outer scope |

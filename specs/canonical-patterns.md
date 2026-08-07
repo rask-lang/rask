@@ -41,8 +41,8 @@ Rask uses words where other languages use symbols:
 | Concept | Rask | Alternative |
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
-| Handle it here | `x orelse v` — both shapes | a symbol like `??` |
-| Leave the function | `try x`, `x orelse return E` | an unmarked `return` mid-expression |
+| Handle it here | `x ?? v` (absent) / `r catch e => f(e)` (failed) | one operator for both shapes |
+| Leave the function | `try x`, `x ?? return E` | an unmarked `return` mid-expression |
 | Ownership transfer | `own value` | implicit move |
 | Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
@@ -156,7 +156,7 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `orelse e => return`.
+Propagate with `try`, handle with `match`, add context with `catch e => return`.
 
 ```rask
 // Propagation — pass the error up as-is
@@ -182,30 +182,30 @@ func get_user(id: i64) -> User or NotFound {
 
 ### Error context
 
-Use `orelse e =>` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
+Use `catch e =>` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
 
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = fs.read_text(path) orelse e => return context("reading {path}", e)
-    return Config.parse(text) orelse e => return context("parsing {path}", e)
+    const text = fs.read_text(path) catch e => return context("reading {path}", e)
+    return Config.parse(text) catch e => return context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = fs.read_text(path) orelse e => return ConfigError.Io { path, source: e }
-    return Config.parse(text) orelse e => return ConfigError.Parse { path, source: e }
+    const text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
+    return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before leaving
-const text = fs.read_text(path) orelse e => {
+const text = fs.read_text(path) catch e => {
     log("failed to read {path}: {e.message()}")
     return context("reading {path}", e)
 }
 
-// No binding — the original error carries nothing worth keeping
-const dto = json.decode(req.body) orelse return ApiError.BadRequest("invalid JSON")
+// The original error carries nothing worth keeping — `_` drops it, visibly
+const dto = json.decode(req.body) catch _ => return ApiError.BadRequest("invalid JSON")
 ```
 
 ### The terminal fold
@@ -215,18 +215,18 @@ The outermost boundary — a router, `main`, a task body — has nothing above i
 ```rask
 // Router: every handler's error becomes a response
 func route(req: Request) -> Response {
-    return dispatch(req) orelse e => error_response(e)
+    return dispatch(req) catch e => error_response(e)
 }
 ```
 
-`orelse` supplies a value instead when the error isn't needed: `const port = read_port() orelse 8080`. Same word on an optional.
+`catch _ =>` supplies a value instead when the error isn't needed: `const port = read_port() catch _ => 8080` — the dropped error stays visible in the text. On an optional the fallback is `??`: `opt ?? v`.
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
-- Using `context()` in library code where callers need to match on error types — use typed domain errors with `orelse e => return` instead.
-- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r orelse e => f(e)`.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `catch e => return` instead.
+- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r catch e => f(e)`.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -275,14 +275,14 @@ if opt? as v {
 }
 
 // Fallback — provide a default
-const name = opt orelse "anonymous"
+const name = opt ?? "anonymous"
 
 // Early exit if absent — the binding keeps its name
 if opt == none { return none }
 use(opt)   // opt: T here (early-exit narrow)
 
 // Absence should leave — one line
-const v = opt orelse return MyError.NotFound
+const v = opt ?? return MyError.NotFound
 
 // Full handling — both branches matter, use if/else (not match)
 if opt? {
@@ -667,9 +667,9 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `orelse return E` (exit with something else), `orelse e => f(e)` (handle here), `match` |
+| Handle errors | `try` (propagate), `catch e => return f(e)` (exit with something else), `catch e => f(e)` (handle here), `catch _ => v` (drop, acknowledged), `match` |
 | Clean up resources | `ensure` |
-| Handle optionals | `if x?`, `orelse v`, `try` (propagate `none`), `match` |
+| Handle optionals | `if x?`, `?? v`, `try` (propagate `none`), `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |

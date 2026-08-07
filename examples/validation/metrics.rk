@@ -23,7 +23,7 @@ extend Metrics {
         self.total_requests += 1
         if status >= 400 { self.total_errors += 1 }
 
-        const prior = self.status_counts.get(status) orelse 0
+        const prior = self.status_counts.get(status) ?? 0
         self.status_counts.insert(status, prior + 1)
         self.latencies_ms.push(latency_ms)
     }

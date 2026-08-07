@@ -91,12 +91,12 @@ extend Store {
     }
 
     func view_task(self, id: TaskId) -> TaskView or StoreError {
-        const h = self.by_id.get(id) orelse return StoreError.NotFound(id.value)
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
         return to_view(h)
     }
 
     func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
-        const h = self.by_id.get(id) orelse return StoreError.NotFound(id.value)
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
 
         with self.tasks[h] as t {
             if patch.status? as s { t.status = s }
@@ -115,15 +115,15 @@ extend Store {
     }
 
     func delete_task(mutate self, id: TaskId) -> void or StoreError {
-        const h = self.by_id.get(id) orelse return StoreError.NotFound(id.value)
+        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
         self.tasks.remove(h)
         self.by_id.remove(id)
         return
     }
 
     func add_dependency(mutate self, task: TaskId, dep: TaskId) -> void or StoreError {
-        const th = self.by_id.get(task) orelse return StoreError.NotFound(task.value)
-        const dh = self.by_id.get(dep) orelse return StoreError.NotFound(dep.value)
+        const th = self.by_id.get(task) ?? return StoreError.NotFound(task.value)
+        const dh = self.by_id.get(dep) ?? return StoreError.NotFound(dep.value)
         with self.tasks[th] as t {
             t.deps.push(dh)
         }
@@ -195,7 +195,7 @@ extend Store {
     }
 
     func view_user(self, id: UserId) -> UserView or StoreError {
-        const u = self.users.get(id) orelse return StoreError.NotFound(id.value)
+        const u = self.users.get(id) ?? return StoreError.NotFound(id.value)
         return UserView { id: u.id.value, name: u.name, email: u.email.raw, active: u.active }
     }
 
@@ -312,19 +312,19 @@ extend TaskTx {
             match op {
                 SetStatus(id, st) => {
                     mut h = index.get(id)
-                        orelse return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
                     h.status = st
                 }
                 SetPriority(id, p) => {
                     mut h = index.get(id)
-                        orelse return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
                     h.priority = p
                 }
                 AddDep(id, dep_id) => {
                     mut h = index.get(id)
-                        orelse return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
                     const dh = index.get(dep_id)
-                        orelse return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                        ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
                     h.deps.push(dh)
                 }
             }

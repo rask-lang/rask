@@ -24,7 +24,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | 10 | `&` | Bitwise AND | Left |
 | 9 | `^` | Bitwise XOR | Left |
 | 8 | `\|` | Bitwise OR | Left |
-| 7 | `orelse` | Other branch, both shapes (`type.optionals/OPT11`, `type.errors/ER14`) | Left |
+| 7 | `??` `catch` | Fallbacks — `??` for absence (`type.optionals/OPT11`), `catch <binder> =>` for failure (`type.errors/ER14`) | Left |
 | 6 | `==` `!=` `<` `>` `<=` `>=` | Comparison | None |
 | 5 | `&&` | Logical AND | Left |
 | 4 | `\|\|` | Logical OR | Left |
@@ -33,11 +33,11 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
 
-`orelse` binds tighter than comparison, looser than the bitwise operators, so `port orelse 8080 == want` is `(port orelse 8080) == want` — the reading you want, without parens. It is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a orelse b orelse fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
+The fallbacks bind tighter than comparison, looser than the bitwise operators, so `port ?? 8080 == want` is `(port ?? 8080) == want` — the reading you want, without parens. `??` is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a ?? b ?? fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578). A `catch` body is an ordinary expression extending rightward, so error chains nest naturally: `a() catch _ => b() catch _ => c()`.
 
-`try` is a prefix keyword and sits outside the numeric table — its placement follows two rules. **It binds tighter than `orelse`** (`type.errors/ER16b`), so `try f() orelse v` is `(try f()) orelse v` with no parens — `try` peels the error, `orelse` handles the absence. That order is the common composite (Zig's stdlib has ~160 of it against ~4 reversed, and Zig's reversed precedence forces parens on it — their issue #5436).
+`try` is a prefix keyword and sits outside the numeric table — its placement follows two rules. **It binds tighter than `??`** (`type.errors/ER16b`), so `try f() ?? v` is `(try f()) ?? v` with no parens — `try` peels the error, `??` handles the absence. That order is the common composite (Zig's stdlib has ~160 of it against ~4 reversed, and Zig's reversed precedence forces parens on it — their issue #5436).
 
-The `orelse` right side may be a value or any divergence — `return`, `break`, `continue`, `panic(…)` — written where it happens (`type.errors/ER14`). Inside a comma list a diverging right side needs parens (`type.errors/ER45a`).
+The `??` right side and the `catch` body may be a value or any divergence — `return`, `break`, `continue`, `panic(…)` — written where it happens (`type.optionals/OPT11`, `type.errors/ER14`). `catch`'s binder (`e =>` or `_ =>`) is mandatory. Inside a comma list a diverging right side needs parens (`type.errors/ER45a`).
 
 `try` attaches to the fallible step of the postfix chain rather than to the whole of it (`type.errors/ER16a`): `try store.get(id)` is `try (store.get(id))`, while `try read_file(p).len()` is `(try read_file(p)).len()`. A wrapped value has no payload methods, so normally only one placement type-checks; when two do it is an error asking for parens.
 

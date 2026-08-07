@@ -18,9 +18,9 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 4. **Parameter modes.** Read-only by default. `mutate` marks mutable access at both ends — `func f(mutate x: T)` and `f(mutate x)`. `take` consumes; callers may write `own x` for emphasis. Receivers are never marked.
 
-5. **Errors are values.** `T or E` in the return type. `try x` propagates the error to the caller. `orelse` handles it here — a value (`x orelse v`), or an exit written where it happens (`x orelse return E`). `!` panics with the error's message. No exceptions.
+5. **Errors are values.** `T or E` in the return type. `try x` propagates the error to the caller. `catch` handles it here, binder mandatory — a value (`x catch e => f(e)`, or `x catch _ => v` when the error is dropped), or an exit written where it happens (`x catch _ => return E`). `!` panics with the error's message. No exceptions.
 
-6. **Optionals.** `T?` is "value or absent." `if x? as v` unwraps and narrows; `x orelse v` supplies a value instead; `try x` propagates the absence. Same two words as errors.
+6. **Optionals.** `T?` is "value or absent." `if x? as v` unwraps and narrows; `x ?? v` supplies a value instead; `try x` propagates the absence. `try` is shared with errors; the fallback word is not — `?` marks something missing, `catch` something failed.
 
 7. **Collections.** `Vec<T>` and `Map<K, V>`. Element access is inline (`v[i].field`, one expression) or `with v[i] as x { ... }` for several statements.
 

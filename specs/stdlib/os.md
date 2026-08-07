@@ -283,7 +283,7 @@ struct Config {
 func load_config() -> Config {
     return Config {
         host: os.env_or("HOST", "localhost"),
-        port: os.env("PORT")?.parse_int().ok() orelse 8080,
+        port: os.env("PORT")?.parse_int().ok() ?? 8080,
         debug: os.env("DEBUG")?.to_lowercase() == "true",
     }
 }

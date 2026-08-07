@@ -4,7 +4,7 @@ Program: `examples/validation/` — an in-memory work-item tracker (16 files,
 ~1600 lines), written to the **spec**. This pass was redone against `main`
 after ~112 compiler commits landed.
 
-> **2026-08-06:** the dir now targets the settled `try`/`orelse` family
+> **2026-08-06:** the dir now targets the settled `try`/`??`/`catch` family
 > (#565/#573/#574) and won't parse until the implementation lands (tasks in
 > flight). `examples/validation-pre-orelse/` is the byte-identical snapshot in
 > implemented syntax — the §A–§D status below describes *that* version.
@@ -318,3 +318,29 @@ store (the ER47 rationale's example, made real) hits all four. Verdicts:
   error-types.md's flat-shape section when it's next touched.
 
 No spec change forced; one grammar ruling owed (take/orelse precedence, #586).
+
+**Addendum 2 — round three: the merged word failed the designer's reading test.** Reading the
+migrated flagship at length surfaced the constant unpaid question at every fallback site: *was
+that an error just now, and did it survive?* `orelse` couldn't answer it without a signature
+lookup — elegant, low-info. Resolution (now spec): fallbacks split by what they destroy. `??` is
+back for absence (a miss carries nothing; terse is right), and keeps the diverging right side.
+Failures get `catch e =>` / `catch _ =>` — binder **mandatory**, no bare-value form, so a
+swallowed error is always written down (`catch _ =>` is one grep). `try` unchanged; the composite
+is `try f() ?? continue` and now glosses itself: error up, absence here. Both corpora
+re-migrated: the flagship's 28 absence sites wear `??`, its 6 decode guards wear
+`catch _ => return …` — the discard the old `|e|` form hid is now the loudest thing on the line.
+This closes the "swallowed errors are unmarked" debt at the grammar level; the fmt continuation
+rule now covers `catch` bodies too.
+
+**Addendum 2 — round three: the merged word failed the designer's reading test.** Reading the
+migrated flagship at length surfaced the constant unpaid question at every fallback site: *was
+that an error just now, and did it survive?* `orelse` couldn't answer it without a signature
+lookup — elegant, low-info. Resolution (now spec): fallbacks split by what they destroy. `??` is
+back for absence (a miss carries nothing; terse is right), and keeps the diverging right side.
+Failures get `catch e =>` / `catch _ =>` — binder **mandatory**, no bare-value form, so a
+swallowed error is always written down (`catch _ =>` is one grep). `try` unchanged; the composite
+is `try f() ?? continue` and now glosses itself: error up, absence here. Both corpora
+re-migrated: the flagship's 28 absence sites wear `??`, its 6 decode guards wear
+`catch _ => return …` — the discard the old `|e|` form hid is now the loudest thing on the line.
+This closes the "swallowed errors are unmarked" debt at the grammar level; the fmt continuation
+rule now covers `catch` bodies too.

@@ -313,7 +313,7 @@ func process(file1: File, file2: File) -> void or Error {
 
 Methods in `extend` blocks, separate from definition. Default to non-consuming (borrow `self`).
 
-> Note: builtin `T?` (Option) cannot be pattern-matched and isn't a user enum; use its operator surface (`?`, `!`, `orelse`). See [optionals.md](optionals.md). The example below defines a user enum with a similar shape.
+> Note: builtin `T?` (Option) cannot be pattern-matched and isn't a user enum; use its operator surface (`?`, `!`, `??`). See [optionals.md](optionals.md). The example below defines a user enum with a similar shape.
 
 <!-- test: parse -->
 ```rask
