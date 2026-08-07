@@ -13,6 +13,14 @@ I know the compiler pipeline — MIR, lowering, codegen, and the rest aren't the
 
 (This is about explaining to me. Code comments still follow the style guide below.)
 
+## I work from my phone
+
+Chat is my interface. Reading diffs and files on a phone is painful — never point me at a diff as the explanation. The explanation in chat IS the deliverable.
+
+- Bring code to me, don't send me to it: quote the 10–20 relevant lines in chat with your commentary when a decision needs my eyes.
+- End every substantial piece of work with a **judgment digest**: the 2–4 most questionable calls you made, each with the few lines of code that embody it, framed so I can react in one word ("keep / wrong / show me more"). Put decisions you need from me first, not buried after the summary.
+- The durable record lives in **commit messages and issues** — write those to stand alone, they're what future sessions read. PR bodies get one sentence plus the closing keywords (`Closes #N`); nobody reads more than that there.
+
 Prefer long term proper fixes over quick-fixes.
 
 Choose simple over easy.
@@ -57,7 +65,7 @@ and file what you learned — that's a finished piece of work, not a blocker.
 ## Debugging discipline
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
-- Fix causes, not symptoms.
+- Fix causes, not symptoms. State the root cause in one sentence before writing the fix; if the diff doesn't touch the thing that sentence names, it's a patch, not a fix — trace deeper. Workarounds are allowed only when labeled as workarounds (in the code comment and the commit) with the real cause filed as an issue.
 - **When a reduction won't reproduce, stop writing reductions.** Guessing at what's
   essential can cost hours and still miss. Copy the real program, instrument it —
   print each field, each hop — and let it tell you which one is wrong. Two of this

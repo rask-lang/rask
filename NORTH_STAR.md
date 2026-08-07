@@ -4,7 +4,7 @@ Rask is a systems language for a world where code is increasingly written by mac
 
 Rust proved that a compiler can carry correctness. It also front-loads its complexity into deep, composing concepts (lifetimes, variance, `Pin`) and pays for zero-cost purity with slow feedback. Go proved that simplicity wins adoption, and pays with GC pauses, nil, and silent resource leaks. Rask takes the third position: **strict like Rust, local like Go, reproducible like neither.**
 
-## The four commitments
+## The five commitments
 
 Every feature, rule, and tool decision must serve these. When two conflict, they're listed in priority order.
 
@@ -19,6 +19,9 @@ Every failure a Rask developer meets is one of two things: a compile error (fix 
 
 **4. Every rule teaches.**
 A rule the compiler enforces is a rule the compiler explains: diagnostics cite the spec rule they enforce, say why, and show the fix as code. The error messages are the tutorial — for people and for models. A confusing error is a bug.
+
+**5. Ceremony must carry information.**
+Every token the language forces you to write must tell the reader something they need: a decision (the order of a middleware chain), a cost (`.clone()`, `as any`), or a contract (`mutate self`, a conformance claim). Restating what the compiler already knows is legal exactly when the reader at that line needs the fact — that's visibility, and it's commitment 2 working. Code that informs neither reader nor compiler is boilerplate, and boilerplate is a design bug: fix it by composing existing forms or deleting the requirement, never by adding a shortcut concept or generating the noise faster. The test for any proposed syntax: what does the reader learn from it? No answer, no syntax.
 
 ## What this rules out
 
