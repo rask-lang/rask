@@ -5,16 +5,20 @@ the comptime staging model, and the panic/ensure work all landed as spec-only ch
 the full gap and orders the work. Sourced from a spec-by-spec audit of the implementation
 (2026-07-21, at 6153d73) plus empirical runs.
 
-**Where things actually stand:**
+**Read this before trusting any number below.** The status lines in this plan were measured on
+2026-07-21 and 324 commits have landed since. Several issues cited here as open are fixed; the suite
+has grown from 31 files to 158. **Re-run `tests/differential.sh` and `tests/examples_gate.sh` and
+write the numbers down before planning off this document.** Every stale claim in here got that way
+because someone read it instead of measuring.
 
-- Core suite is healthy: 30/31 of `tests/suite/` pass check + interp + native (only `t25_iterator_adapters`
-  fails — fold accumulator type never resolves). `rask test-specs` passes 178/178, but it only checks that
-  spec snippets *parse* — weak conformance signal.
-- Validation programs: grep_clone and text_editor compile natively. game_loop fails MIR lowering
-  (unresolved closure capture in `spawn`), sensor_processor fails Cranelift verification (generic layout
-  miscompile), http_api_server fails `check` (import shadowing) and is blocked on typed JSON + `http.serve`.
+**Where things stand (numbers as of 2026-07-21, structure still current):**
+
+- `rask test-specs` only checks that spec snippets *parse* — weak conformance signal, still true.
+- Validation programs: `tests/known_fail_examples.txt` is the live registry, not this list. As of
+  2026-07-26 it had game_loop and sensor_processor native-red, grep_clone and http_api_server red on
+  both — but `fa5e30e` claims game_loop's native bugs since. Re-measure.
 - The optimization/analysis passes claimed in TODO genuinely exist and run (clone elision, RC elision,
-  generation coalescing, typestate, intervals). The lag is elsewhere: soundness holes, the recent spec
+  generation coalescing, typestate, intervals). The lag is elsewhere: soundness holes, the spec
   delta, interp/native divergence, and stdlib wiring.
 - The interpreter masks native gaps: `@binary`, trait dispatch, typed JSON, and `os.env` all "work" under
   `rask run` and fail or miscompile natively. Interpreter success must not be read as conformance.
@@ -23,6 +27,33 @@ Tracks are ordered. Within a track, items are ordered by impact. Bugs get filed 
 starts; items marked **(file)** aren't tracked yet.
 
 ---
+
+## Track 0 — The error family (added 2026-08-07, leads the queue)
+
+A second spec wave landed in August and none of it exists in the compiler — there isn't even a
+`catch` token in the lexer. This goes first because it changes the **language surface**: 464 `.rk`
+files are written against the old spelling, and every new line of stdlib, example or test code adds
+to the migration. Codegen bugs don't get worse while they wait; this does.
+
+Ordered by dependency. The old spellings become hard errors, so A1–A8 land close together or the
+tree is broken in between.
+
+| # | Item | Issue |
+|---|------|-------|
+| A1 | Split the fallback: `??` becomes optionals-only, results get `catch e => …`. `??` currently serves both shapes on purpose (`check_expr.rs:1358-1390`, cites #394) — so this is splitting one node in two, not new machinery. `try` binds tighter than `??`; the catch body runs greedily rightward like a match arm. | #597, #578 |
+| A2 | Cut every method from `T?` and `T or E`. Registered in three places — `rask-stdlib/src/registry.rs:148-152`, the stubs, and `resolve.rs:2892-2990` — and asserted by cargo tests that must flip to assert absence. 52 call sites. | #599 |
+| A3 | Delete scrutinee flow typing. Four functions in `check_expr.rs` (`extract_is_some_narrowing` 2813, `extract_is_present_narrowing` 2849, `apply_early_exit_narrowing` 2930, `narrow_result_from_err_pattern` 3006) plus if-plumbing at 345-392. **Match** narrowing lives apart in `unify.rs:170-228` and survives. | #601 |
+| A4 | Shape-agnostic `try` — on optionals too, plus the shape rule against the enclosing return and the flat `T? or E` operand error. | #598 |
+| A5 | `x is none` + the `== none` lint. | #600 |
+| A6 | `take <place>` — moves the payload out of a mutable `T?`, leaves `none`. Token already exists in parameter position; don't collide. | #586 |
+| A7 | `while expr? as v` parses but the binder never enters scope. Resolver bug, small. | #593 |
+| A8 | Migrate the corpus, one sweep, after A1–A7. `stdlib/`, `examples/`, `tests/`, fixtures, `tutorials/`. Leave `projects/` out — design content, already partly unparseable (#592). | #602 |
+
+Every rule above needs a conformance test tagged with the rule it witnesses — positive in
+`tests/suite/`, negative in `tests/compile_errors/`. That's what keeps this delta from recurring.
+
+Diagnostics are half the work, not a follow-up: `r?`, `r ?? v` and each removed method name must
+error with the replacement shown as code.
 
 ## Track 1 — Soundness: make the safety guarantees true
 
@@ -41,6 +72,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
 | 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | T1 send-consumption + take-param consumption now enforced; T3 borrow-capture already rejected by SL2; T2 structural | #359 (done, folds in #296); #360 (native non-scalar channel recv) |
 | 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | C4 enforced (E0821); maybe-consumed merges rejected. Runtime flag kept as per-exit mechanism, backstopped by the static guarantee | #293 (done), #295 (mooted), #296 (done) |
+| 1.11 | **Native binding forms extract payloads at the wrong representation.** `with cell as v` hands back the box pointer instead of the value; `if opt? as s` hands back a trait object whose vtable half is lost, then segfaults on the call. Non-binding reads are correct — for-loop, direct index, and `with mutex as v` all work — which is what made these look like separate bugs. Probed 2026-08-07: one defect, two issues. | — | #558, #552 (mistitled: nothing to do with Map) |
 
 Exit criteria: each item has a compile-error (or panic) conformance test in `tests/compile_errors/` or
 `tests/suite/`, passing on both backends. Ready-to-use session prompts: [PLAN_PROMPTS.md](PLAN_PROMPTS.md).
@@ -222,3 +254,16 @@ Existing issues cover ~half the plan (refs inline above). Items marked **(file)*
 work starts: ownership branch-merge unsoundness (generalizing #294), overflow semantics, `as`-cast
 holes + missing conversions, linear-in-containers, cross-task ownership, orphaned stdlib stubs,
 cancellation stubs, the green.c link hole, and the t25 fold-inference bug.
+
+Found while probing 2026-08-07, needs filing:
+
+- `rask run` swallows a segfault: the compiled binary dies with SIGSEGV and `rask run` prints
+  *nothing* and exits 1, which reads exactly like a silent compile failure. Mechanical safety says
+  memory unsafety becomes a named failure — this is the surface where that promise gets kept.
+- `(any Shape)?` doesn't parse as a return type, so an optional trait object can't be spelled in a
+  signature.
+- `Pool.insert` returns a bare `Handle`, not a result — so `ROADMAP.md`'s "Pool.insert returns Result
+  now" is stale, and a bounded pool (#435, PL2/PL8) has no way to report a rejected insert.
+
+Close on sight: **#554 is fixed** — `4bd68b8` fixed it while fixing #567 and nobody closed it
+(probed, both backends agree).
