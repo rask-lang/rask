@@ -316,6 +316,8 @@ match store.get(key) {
 
 Narrowing rides on `const`. See [optionals.md](optionals.md) for the shared semantics; on `T or E` the predicate is a type pattern rather than `?`.
 
+These rules exist on results because `T or E` is an ordinary union and `is` narrows every union — carving results out would seam the model. They are **mechanism, not idiom**: error handling has one canonical form per situation (`try` to propagate, `catch` to handle, `match` to dispatch — [canonical-patterns.md](../canonical-patterns.md)), and an `is`-guard whose arm diverges is `catch` in more lines (lint `tool.lint/I6` says so). The idiomatic residue on results is the opportunistic one-armed success narrow — code that continues either way, error valueless in context.
+
 | Rule | Description |
 |------|-------------|
 | **ER23: Type pattern narrow** | `if r is ErrType as e { … }` narrows and binds when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way |
@@ -340,6 +342,8 @@ if r is DivError as e {
     return
 }
 // r: f64 here (early-exit narrow)   [ER24]
+// (shown for the narrowing rule — as error handling this is the guard,
+//  and the guard is `r catch e => …`; lint I6 points there)
 ```
 
 ## Match
@@ -370,7 +374,7 @@ match load() {
 }
 ```
 
-Match earns its keep on multi-error unions. Two-branch cases usually read better as the fold (`r catch e => f(e)`) or a type-pattern narrow.
+Match earns its keep on multi-error unions. Two-branch cases read better as the fold (`r catch e => f(e)`).
 
 ## Methods
 
@@ -856,7 +860,7 @@ On the word: `catch` was rejected in an earlier round when it had a binderless v
 
 **What the mark costs, measured.** Catch-shaped sites (a result's error handled in place, rather than propagated or asserted) run rare in real code: 3/10k lines in tokio, 9/10k in ripgrep, 26/10k in the rask compiler. How often the error is *discarded* at those sites is domain-shaped — the compiler binds it 68% of the time (errors become diagnostics), tokio discards 82% (best-effort I/O), ripgrep splits evenly — so `_ =>` versus Zig-style silence costs five characters at somewhere between 2 and 20 sites per 10k lines. The rarity is also why the mark won't wear out: Go's `if err != nil` at ~100/10k went invisible from repetition; a form a reader meets a couple of times per file stays load-bearing. Precedent runs one direction: Rust code already writes `let _ =` as an acknowledged discard at similar rates (112 sites in tokio src) without complaint; Go's silent error-drop in statement position spawned `errcheck`, one of its most-installed linters; Zig's silent `catch v` draws recurring "make swallowing harder" threads. Ecosystems that shipped the silent form retrofit the check.
 
-**The boundary of the guarantee.** What the binder rule buys, stated precisely: **no error dies inside an expression without a mark.** Errors can still die *structurally*, and the spec owns the list rather than implying it's empty. (1) A one-armed narrow — `if r is T as v { … }` with no else — ignores the error case; the drop is visible as a missing else but not greppable. Measured at 0.5–4.6/10k (Rust's `if let Ok` rate), and reading those sites shrinks the category twice over: most are *probes* (env lookup, "does this parse as an IP") that Rask's stdlib returns as `T?` — so they're `if x? as v`, where the one-armed test drops nothing — and of the genuine results, the guard-shaped ones belong to `catch` or the `is` + early-exit-narrow statement guard (ER24) — both keep the happy path flat; [canonical-patterns.md](../canonical-patterns.md) has the ladder. What's left is genuine opportunism — continue either way, error valueless in context — which is why this stays legal. Lint candidate for the I-series, with a sharper trigger than first thought: a one-armed `is T` narrow whose body is the function's tail is a guard wearing a costume; suggest the `catch` form. (2) `ensure f.close()` drops a cleanup failure by default (`ctrl.ensure/ER1`). Deliberate: scope exit has nowhere to send an error mid-unwind, and taxing every ensure with `catch _ =>` to mark the rare interesting case would invert the economy — the drop lives in ensure's documented semantics, not in an innocent-looking expression. (3) `const _ = save(d)` discards result and error together — but that's already the acknowledged form, same class as `catch _`.
+**The boundary of the guarantee.** What the binder rule buys, stated precisely: **no error dies inside an expression without a mark.** Errors can still die *structurally*, and the spec owns the list rather than implying it's empty. (1) A one-armed narrow — `if r is T as v { … }` with no else — ignores the error case; the drop is visible as a missing else but not greppable. Measured at 0.5–4.6/10k (Rust's `if let Ok` rate), and reading those sites shrinks the category twice over: most are *probes* (env lookup, "does this parse as an IP") that Rask's stdlib returns as `T?` — so they're `if x? as v`, where the one-armed test drops nothing — and of the genuine results, the guard-shaped ones belong to `catch` — one canonical guard, lint I6 routes the `is`-spelled ones to it; [canonical-patterns.md](../canonical-patterns.md) has the ladder. What's left is genuine opportunism — continue either way, error valueless in context — which is why this stays legal. Lint candidate for the I-series, with a sharper trigger than first thought: a one-armed `is T` narrow whose body is the function's tail is a guard wearing a costume; suggest the `catch` form. (2) `ensure f.close()` drops a cleanup failure by default (`ctrl.ensure/ER1`). Deliberate: scope exit has nowhere to send an error mid-unwind, and taxing every ensure with `catch _ =>` to mark the rare interesting case would invert the economy — the drop lives in ensure's documented semantics, not in an innocent-looking expression. (3) `const _ = save(d)` discards result and error together — but that's already the acknowledged form, same class as `catch _`.
 
 **ER12 (`?` means absence, and only absence).** Two spec files used to disagree: `optionals.md` OPT3 restricted the `?`-family to `T or none`, while this file handed out `r?` as a success test and `if r?` narrowing on results. Under the split, `?` never touches a result's success test — `is` does it, and `is` is strictly more informative, since `if r is IoError as e` names what it's testing while `if r?` makes the reader recall what `r` was.
 

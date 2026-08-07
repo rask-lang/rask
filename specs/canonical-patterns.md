@@ -177,33 +177,28 @@ const conn = pool.acquire() catch e => {
 // 3. Statement position — react to a failure you won't propagate
 save(d) catch e => log("save failed: {e.message()}")
 
-// 4. Both branches genuinely live — two-armed narrow or match
-if r is Data as data {
-    process(data)
-} else as e {
-    schedule_retry(e)
+// 4. Multi-way dispatch — several error variants genuinely handled differently
+match r {
+    Data as data     => process(data),
+    Timeout as t     => schedule_retry(t),
+    Corrupt as e     => return e,
 }
 ```
 
-**Guards check the failure, not the success.** Test-the-success-then-work is the pyramid anti-pattern — the happy path indents once per fallible step, and the error arms trail the logic they belong to. Checking the failure keeps the happy path flat, and Rask has two spellings of it:
+**Guards check the failure, not the success — and the guard is `catch`.** Test-the-success-then-work is the pyramid anti-pattern: the happy path indents once per fallible step, and the error arms trail the logic they belong to. The guard keeps it flat, binds the success directly, and a block body covers multi-statement handling without changing shape:
 
 ```rask
-// The operator guard — one line, binds the success directly. The default.
 const found = db.find(id) catch e => return ApiError.from(e)
 
-// The statement guard — `is` + early-exit narrowing (ER24): after a diverging
-// error arm, the binding IS the success type in the fall-through. No re-extract.
-const found = db.find(id)
-if found is NotFound as e {
-    metrics.incr("miss")
-    return ApiError.from(e)
+const conn = pool.acquire() catch e => {
+    metrics.incr("pool_exhausted")
+    return ServiceError.Busy
 }
-return render(found)                 // found: User here
 ```
 
-Reach for the statement guard when the error handling is genuinely multi-statement *and* testing a specific variant of a wider union; otherwise the operator form says the same thing in a third of the lines (a `catch` block body covers "a few statements before leaving" without giving up the one-liner shape). Never write `found!` after an `is`-guard — ER24 already narrowed; the assert is dead ceremony.
+There is deliberately no second spelling. `if r is E as e { return … }` type-checks — `is` narrows every union, and `T or E` is one — but it's the guard in more lines, and lint I6 points it at `catch`. `is` on a result is mechanism, not idiom; its one idiomatic result-shaped use is below.
 
-**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume.
+**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume — I6 fires.
 
 ### Error context
 
