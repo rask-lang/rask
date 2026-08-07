@@ -107,3 +107,31 @@ cover the ones that matter?
 Grep-level, unparsed; `.map`/`.filter` conflate Option/Result/Iterator receivers; domain and
 authorship are entangled (three data points); ripgrep's inline tests inflate unwrap/assert;
 tokio counted src-only. Treat ratios above ~3× as signal, smaller differences as noise.
+
+## Discard vs use at catch-shaped sites
+
+Added 2026-08-07, while pricing the mandatory `catch` binder. Sites where a result's error is
+handled in place (the population that becomes `catch <binder> =>` in Rask), split by whether the
+handler binds the error or ignores it — measured directly off closure params (`|_|` vs `|e|`)
+plus the always-discarding `.ok()`:
+
+| corpus | error used | error discarded | discard share | catch sites /10k |
+|---|---|---|---|---|
+| rask compiler | 256 (`map_err(\|e\|)` 249, `unwrap_or_else(\|e\|)` 7) | 122 (`\|_\|` 49, `.ok()` 73) | 32% | 26 |
+| tokio (src) | 7 | 32 (`\|_\|` 14, `.ok()` 18) | 82% | 3 |
+| ripgrep | 26 | 23 (all `.ok()`) | 47% | 9 |
+
+Readings:
+
+1. **The split is domain-shaped, not universal.** A compiler binds the error (it becomes a
+   diagnostic); best-effort I/O discards it; a CLI tool does both. Any design that optimizes one
+   side flat-out loses somewhere.
+2. **Catch-shaped sites are rare everywhere** — 3–26/10k against 100–174/10k for propagation. The
+   mandatory binder's ceremony lands on the rarest form in the family; five characters (`_ => `)
+   at ≤20 sites per 10k lines.
+3. **Acknowledged discard is already expert idiom**: `let _ =` runs at 9/10k in tokio src with no
+   ecosystem pushback, while the two ecosystems that shipped *silent* drops retrofitted the check
+   (Go's errcheck; Zig's recurring make-swallowing-harder threads).
+4. **One-armed narrows bound the residual hole**: `if let Ok(` at 0.5–4.6/10k is the ceiling on
+   errors that die structurally (no else arm) rather than in an expression. Lint territory —
+   `type.errors` rationale has the boundary statement.

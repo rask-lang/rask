@@ -113,7 +113,7 @@ Cleanup actions may fail. Errors are ignored by default; opt-in handling with a 
 
 | Rule | Description |
 |------|-------------|
-| **ER1: Default ignore** | If ensure body returns an error, error silently ignored |
+| **ER1: Default ignore** | If ensure body returns an error, error silently ignored. This is a deliberate exception to the family rule that a discarded error is always marked (`type.errors/ER14`): scope exit has nowhere to send an error mid-unwind, and requiring `catch _ =>` on every ensure would tax all cleanup to mark the rare interesting case. The drop lives here, in ensure's documented semantics — not in an innocent-looking expression |
 | **ER2: Opt-in catch clause** | `ensure expr catch e => handler` passes error to handler |
 | **ER3: Infallible handler** | The `catch` handler must not use `try`—nowhere to propagate |
 | **ER4: try forbidden** | Cannot use `try` inside ensure body |

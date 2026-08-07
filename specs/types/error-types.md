@@ -230,6 +230,22 @@ Deliberately ignoring the error entirely is `const _ = save(d)`, which silences 
 
 **`e =>` is the match-arm binder.** Same marker, same rules: it names a value and its body belongs to the enclosing function, so `return` there leaves the *function* (`ctrl.flow/CF26`). Braces are optional exactly as in a match arm.
 
+The body is not restricted to a return. It's an ordinary expression of the enclosing function — a value, a call, a brace block with statements, even a `try` (which propagates from the enclosing function, as it would anywhere else). The only requirement is the usual typing one: the body's value is the success type (carry on), or the body diverges (leave). So all of these are one rule, not four:
+
+<!-- test: skip -->
+```rask
+save(d) catch e => log(e.message())                     // run code, carry on (void)
+const t = load() catch _ => Theme.default()             // value
+const c = fetch() catch _ => try load_cached()          // fall back to another fallible source
+const text = fs.read_text(path) catch e => {            // block: arbitrary statements
+    metrics.incr("read_failures")
+    log("falling back to defaults: {e.message()}")
+    default_text()                                      // block's value carries on
+}
+```
+
+The one place a `catch` body is restricted is `ensure expr catch e => …` — cleanup runs at scope exit, so there is nowhere to propagate and `try` is rejected inside that handler (`ctrl.ensure/ER3`).
+
 <!-- test: skip -->
 ```rask
 const text = fs.read_text(path) catch e => return context("reading {path}", e)
@@ -838,6 +854,10 @@ On the word: `catch` was rejected in an earlier round when it had a binderless v
 
 **The debt this closes.** Earlier revisions carried "swallowed errors are unmarked" as an accepted cost, softened by a someday-lint. The mandatory binder deletes the debt at the grammar level instead: the lint that had no design is now the rule `catch` can't be written without.
 
+**What the mark costs, measured.** Catch-shaped sites (a result's error handled in place, rather than propagated or asserted) run rare in real code: 3/10k lines in tokio, 9/10k in ripgrep, 26/10k in the rask compiler. How often the error is *discarded* at those sites is domain-shaped — the compiler binds it 68% of the time (errors become diagnostics), tokio discards 82% (best-effort I/O), ripgrep splits evenly — so `_ =>` versus Zig-style silence costs five characters at somewhere between 2 and 20 sites per 10k lines. The rarity is also why the mark won't wear out: Go's `if err != nil` at ~100/10k went invisible from repetition; a form a reader meets a couple of times per file stays load-bearing. Precedent runs one direction: Rust code already writes `let _ =` as an acknowledged discard at similar rates (112 sites in tokio src) without complaint; Go's silent error-drop in statement position spawned `errcheck`, one of its most-installed linters; Zig's silent `catch v` draws recurring "make swallowing harder" threads. Ecosystems that shipped the silent form retrofit the check.
+
+**The boundary of the guarantee.** What the binder rule buys, stated precisely: **no error dies inside an expression without a mark.** Errors can still die *structurally*, and the spec owns the list rather than implying it's empty. (1) A one-armed narrow — `if r is T as v { … }` with no else — ignores the error case; the drop is visible as a missing else but not greppable. Measured at 0.5–4.6/10k (Rust's `if let Ok` rate); legitimate uses (opportunistic reads, retry loops) make this lint territory, not error territory — candidate for the I-series. (2) `ensure f.close()` drops a cleanup failure by default (`ctrl.ensure/ER1`). Deliberate: scope exit has nowhere to send an error mid-unwind, and taxing every ensure with `catch _ =>` to mark the rare interesting case would invert the economy — the drop lives in ensure's documented semantics, not in an innocent-looking expression. (3) `const _ = save(d)` discards result and error together — but that's already the acknowledged form, same class as `catch _`.
+
 **ER12 (`?` means absence, and only absence).** Two spec files used to disagree: `optionals.md` OPT3 restricted the `?`-family to `T or none`, while this file handed out `r?` as a success test and `if r?` narrowing on results. Under the split, `?` never touches a result's success test — `is` does it, and `is` is strictly more informative, since `if r is IoError as e` names what it's testing while `if r?` makes the reader recall what `r` was.
 
 Deleting the `if r?` narrowing family costs less than it looks like. On results the high-frequency operations are `try` and the fold; the narrowing family was the rare one, and where it's wanted `is` covers it in the same number of tokens.
@@ -924,6 +944,8 @@ return Config { host: host, port: 8080 }
 Making it a genuine closure was the other way out, and it doesn't work. `r catch |e| return f(e)` would fold rather than leave, so the transform-and-leave form becomes unwritable and the error goes back to being returned implicitly — which is the thing #574 and the written-out `return` exist to prevent.
 
 `=>` is the match-arm binder, and match arms already have the exact semantics wanted: a name bound over a body that belongs to the enclosing function, so `return` leaves the function. Braces optional, same as an arm. Nothing needs to be said about what it isn't, which is the whole point. It also frees the rule that had been explaining the resemblance — one fewer thing to hold.
+
+**Why not `:`?** `catch e: fallback` is one character shorter and echoes Python's `except E as e:`. It loses on three concrete grounds. First, `:` already carries two meanings in this grammar — type annotation and struct-literal field — and both put it in exactly the positions `catch` appears in: `Config { host: g() catch _: "localhost", port: 8080 }` has three colons meaning three things, and `catch e:` on its own reads as "e has type …". Second, Rask has no colon-introduced body anywhere (Python's colon opens a suite; ours would separate a binder from an expression, a construct the language doesn't otherwise have), while `=>` reuses the one body-introducer that already exists with the right `return` semantics. Third, `=>` keeps the left side reading as a *pattern slot*: today's `e` and `_` are the two degenerate patterns (bind-all, ignore-all), and if a filtered catch is ever wanted (`catch DiskError.Full(n) => …`) the syntax is already sitting there — with `:` it would read as an annotation. Nesting was checked and is a wash: a `catch` inside a match arm puts two `=>` on one line, but they mean the *same* thing (a bound body follows), which is exactly the property Scala's `case e =>` inside try/catch has shipped on for two decades. The colon version nested in a struct literal is strictly worse.
 
 The cost was checked before committing: 83 binding sites in the tree, **zero** of them inside a match arm, so the one thing `=>` could plausibly have collided with never co-occurs. `|_e|` and `|_|` sites (authors underscoring a binding they didn't want) become `_ =>` or drop the binding entirely.
 
