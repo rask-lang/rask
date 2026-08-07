@@ -65,7 +65,7 @@ and file what you learned — that's a finished piece of work, not a blocker.
 ## Debugging discipline
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
-- Fix causes, not symptoms.
+- Fix causes, not symptoms. State the root cause in one sentence before writing the fix; if the diff doesn't touch the thing that sentence names, it's a patch, not a fix — trace deeper. Workarounds are allowed only when labeled as workarounds (in the code comment and the commit) with the real cause filed as an issue.
 - **When a reduction won't reproduce, stop writing reductions.** Guessing at what's
   essential can cost hours and still miss. Copy the real program, instrument it —
   print each field, each hop — and let it tell you which one is wrong. Two of this
