@@ -135,7 +135,7 @@ const task = event is Ready else { break }
 // task available here
 ```
 
-The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates, and an ordinary `if` on the early-exit narrow works too (`type.optionals/OPT21`, `type.errors/ER24`):
+The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates. (An `if` on a diverging `is` arm also narrows the fall-through via the general union rule, `type.errors/ER24` — mechanism, not the idiom):
 
 ```rask
 const item = queue.pop()

@@ -577,8 +577,8 @@ extend Connection {
 ### Option
 ```rask
 const opt: i32? = 5
-if opt? {           // ✅ opt still valid, narrowed to i32 in block
-    const val = opt!   // ✅ force-extract
+if opt? as v {      // ✅ opt still valid; v: i32 in the block
+    use(v)
 }
 ```
 

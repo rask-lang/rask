@@ -281,32 +281,27 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ## Optional Handling
 
-Four patterns, each for a different situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers; the operator family covers the common cases. `match` is legal but linted toward operators when there are only two arms.
+One pattern per situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers. The tests are plain booleans; touching the payload is always the `as v` bind or an operator — there is no in-place narrowing to remember.
 
 ```rask
-// Single check — narrow in place (const scrutinee)
-if opt? {
-    use(opt)
-}
-
-// Single check — bind for mut or when renaming reads better
+// Test and use — the bind is the one spelling
 if opt? as v {
     use(v)
 }
 
+// Test only — no payload touched
+if opt? { hits += 1 }
+
 // Fallback — provide a default
 const name = opt ?? "anonymous"
 
-// Early exit if absent — the binding keeps its name
-if opt is none { return none }
-use(opt)   // opt: T here (early-exit narrow)
-
-// Absence should leave — one line
+// Guard — absence exits (or supplies a default), the binding is the payload after
 const v = opt ?? return MyError.NotFound
+const user = load(id) ?? return "guest"
 
 // Full handling — both branches matter, use if/else (not match)
-if opt? {
-    process(opt)
+if opt? as v {
+    process(v)
 } else {
     handle_missing()
 }
@@ -314,6 +309,8 @@ if opt? {
 
 **Anti-patterns:**
 - `x!` without checking — crashes on none.
+- `use(x)` inside `if x? { … }` — the test doesn't narrow; bind with `as v`.
+- `if x is none { return } use(x)` as a guard — type-checks via the union narrowing mechanism, but the guard is `x ?? return`, one line.
 - `match` on optionals — rejected with a migration diagnostic. Use the operator family.
 - `!x?` — parse error. Use `x is none`.
 
@@ -553,9 +550,9 @@ See [stdlib/fs.md](stdlib/fs.md), [stdlib/io.md](stdlib/io.md).
 `if x is` for single checks, `match` for multiple branches.
 
 ```rask
-// Single success check — result narrows to T inside the block
-if result? {
-    use(result)
+// Single check with the payload in hand — bind it
+if result is Data as d {
+    use(d)
 }
 
 // Multiple branches

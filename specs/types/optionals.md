@@ -1,6 +1,6 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., `is none`) tests and projects; `??` supplies the other branch — a value or an exit; bare `try` propagates the absence to a T?-returning caller. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., `is none`) tests and projects — as plain booleans, no narrowing; payload access is always the `as v` bind. `??` supplies the other branch — a value or an exit; bare `try` propagates the absence to a T?-returning caller. No Some/None constructors. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
@@ -34,7 +34,7 @@ Construction follows the general union widening rule: a value of type `A` widens
 
 | Rule | Description |
 |------|-------------|
-| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x?`, `x!`, `x ?? <expr>`, or `try x` |
+| **OPT5: No auto-unwrap** | `T?` does not coerce to `T`. Unwrap explicitly via `if x? as v`, `x!`, `x ?? <expr>`, or `try x` |
 | **OPT6: `none` widens at use** | `none` has type `none` on its own; widens to `T or none` at any position with a target union type |
 
 <!-- test: skip -->
@@ -55,7 +55,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
-| **OPT15: Absent check** | `x is none` | tests the absent branch; narrows identically to `x?`. Presence is `x?` — there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
+| **OPT15: Absent check** | `x is none` | tests the absent branch. As an `is` test it participates in the general union narrowing rules (mechanism, not idiom — the canonical forms bind or use `??`). Presence is `x?` — there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
 
 OPT12 (the `try x else <diverge>` absence-exit construct) is deleted — `try`'s clause is gone language-wide. Propagating absence is bare `try x`; leaving with anything else is `??` with the exit written out.
@@ -110,24 +110,25 @@ The keyword is the parameter mode's word on purpose — `take` means "ownership 
 
 Measured need: the move-out-and-leave-none idiom runs at 11 sites per 10k lines in tokio (wakers and futures in `mut` slots) — see [docs/rust-corpus-census.md](../../docs/rust-corpus-census.md). Implementation tracked in [#586](https://github.com/rask-lang/rask/issues/586). `take` on a wider union (`T or E`) is rejected — an error is not a slot you empty; use `match`.
 
-## Conditions and Narrowing
+## Conditions and Binding
 
-Narrowing rides on `const` — the same rule for any union with a recognised predicate. See [error-types.md](error-types.md) for the shared semantics; the rules below apply identically to `T or none`.
+The `?`-tests don't narrow — they're plain booleans. Getting at the payload is always a **binding**, and there is one way to write it: `as v`.
 
 | Rule | Description |
 |------|-------------|
-| **OPT18: `if x?` narrows** | On a const scrutinee, `if x?` narrows `x` to `T` inside the block |
-| **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees, and for renaming |
-| **OPT20: Both branches narrow** | On a const scrutinee, the `else` branch narrows `x` to `none` |
-| **OPT21: Early-exit narrow** | If a branch of `if x is none { … }` diverges, `x` is `T` in the fall-through |
-| **OPT22: No compound narrowing** | `x? && y?` is a legal bool expression but does not narrow either side — use nested `if` or `as v` bind |
-| **OPT23: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `const` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
+| **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block. Works on any scrutinee — `const`, `mut`, field paths, call results — with no restrictions to remember |
+| **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on const scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
+| **OPT21 folds into ER24** | Early-exit narrowing after a diverging `is none` arm isn't optional-specific — it's the general union rule (`type.errors/ER24`). Mechanism, not idiom; the canonical guard is `?? <exit>` |
+| **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |
 
 <!-- test: skip -->
 ```rask
 const user: User? = load()
+if user? as u {
+    greet(u)                 // the binding is the payload
+}
 if user? {
-    greet(user)              // user: User here
+    hits += 1                // test-only — no payload touched; user: User? throughout
 }
 
 mut cache: Cache? = try_load()
@@ -135,16 +136,21 @@ if cache? as c {
     c.sweep()                // c: Cache (const) in the block
     // cache still Cache? — may be reassigned below
 }
-
-// Early-exit guard
-const user: User? = load()
-if user is none {
-    return
-}
-greet(user)                   // user: User after the guard
 ```
 
-**Anonymous expressions don't narrow.** `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` then `if v?`, or `if compute()? as v` to bind at the check site.
+`use(x)` inside `if x? { … }` is a compile error (`x` is still `T?`) whose FIX line writes the `as` bind.
+
+The guard idiom — check absence, leave, use the value flat — is the fallback operator, not a narrowing if:
+
+<!-- test: skip -->
+```rask
+const user = load() ?? return
+greet(user)
+```
+
+(`if x is none { return }` followed by using `x` at `T` still type-checks — `is` is the union operator and the general early-exit narrowing applies, `type.errors/ER24`. That's mechanism, not idiom, same as on results: the canonical guard is `??` with the exit written out.)
+
+**Anonymous expressions and binding.** `if compute()? as v` binds the result at the check site — no double call, no intermediate binding needed.
 
 ## Nesting
 
@@ -194,7 +200,7 @@ const present: Config?? = load_config()        // widens through both layers
 
 **Spelling.** Write `T??` for two layers — two optional markers, only ever in type position. Nothing else in the language spells two question marks together.
 
-**Linear payloads.** Each layer narrows separately, so a linear `T` is consumed on the innermost present path (OPT24 applies at that layer). `?.` still can't reach through a linear payload (OPT25).
+**Linear payloads.** Each layer binds separately, so a linear `T` is consumed on the innermost present path (OPT24 applies at that layer). `?.` still can't reach through a linear payload (OPT25).
 
 **Depth beyond two** is legal and falls out of the same rules, but it's almost always a sign that two questions got layered where one nominal type would read better — `enum SlotState { Missing, Empty, Filled(Config) }`.
 
@@ -212,7 +218,7 @@ A union is linear if any variant is linear (general union rule). For `T or none`
 
 | Rule | Description |
 |------|-------------|
-| **OPT24: Narrow consumes on present path** | `if x?` / `if x? as v` treats the present path as a resource site — the payload must be consumed on that branch |
+| **OPT24: Bind consumes on present path** | `if x? as v` treats the present path as a resource site — the bound payload must be consumed on that branch |
 | **OPT25: `?.` forbidden on linear** | Optional chaining cannot partially move out of a linear `T`. Use `if x? as v { … v.field … }` |
 | **OPT26: `??` consumes one branch** | Short-circuits; exactly one `T` is produced and must be consumed |
 
@@ -248,9 +254,9 @@ user?.name ?? "guest"
 
 | Match form | Operator form |
 |------------|---------------|
-| `match x { none => a, v => f(v) }` | `if x? { f(x) } else { a }` |
+| `match x { none => a, v => f(v) }` | `if x? as v { f(v) } else { a }` |
 | `match x { none => default, u => u.name }` | `x?.name ?? default` |
-| `match x { none => return, v => v }` | `x ?? return` (or `if x is none { return }` then use `x`) |
+| `match x { none => return, v => v }` | `x ?? return` |
 | `match x { none => panic("…"), v => v }` | `x! "…"` |
 
 The lint is non-fatal. Match earns its keep on multi-error unions where the dispatch genuinely has more than two outcomes.
@@ -271,7 +277,7 @@ No optional-specific equality rule.
 | Nested optionals (`T??`) | OPT28 | Legal — layers stay distinct |
 | Bare `none` at a `T??` position | OPT29 | Outer absent |
 | `x ?? default` on `T??` | OPT30 | `default` must be `T?`, not `T` |
-| `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Narrow first |
+| `x?.field` on `T??` | OPT3/OPT30 | Compile error — the outer payload is `T?`, not a struct. Bind through the layers |
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
 | `x ?? return E` | OPT11 | Legal — the exit is written where it happens |
@@ -281,8 +287,8 @@ No optional-specific equality rule.
 | `x catch e => …` on an optional | ER14 | Compile error — `catch` handles failures; absence has nothing to catch. Use `??` |
 | `try x` in a `U?`-returning function | ER16/ER47 | Legal — propagates `none`; the ordinary spelling |
 | `try x` in a `T or E`-returning function | ER47 | Compile error — `none` doesn't fit an error branch. Use `x ?? return <error>` |
-| `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
-| Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
+| `use(x)` inside `if x? { … }` | OPT19 | Compile error — `x` is still `T?`; the test doesn't narrow. FIX writes `if x? as v` |
+| `if compute()? as v` | OPT19 | Legal — binds the call result at the check site, no intermediate binding |
 | `!x?` syntax | OPT16 | Parse error suggesting `x is none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
 | `x ?? return MyError` where `MyError` isn't in the function's return type | ER9 | Compile error — normal `return` rules apply |
@@ -393,7 +399,7 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 **OPT29 (`none` binds outermost).** Both readings are defensible; picking one and stating it is what matters. Outermost wins because it matches how the layers get built: the outer layer is the one the immediate context added (`first()` may fail to find anything), so `none` at that position means "the thing right here is absent". Reaching an inner absent means you already have an inner-typed value in hand, and widening it is explicit.
 
-**Narrowing rides on `const`.** The usual flow-typing complications (mutation, intervening calls, closure capture, field paths) collapse into one structural fact the language already enforces: const bindings cannot be reassigned. Narrowing on a const scrutinee is trivially stable; `mut` requires an explicit `as v` bind. No flow analysis beyond "is this const?"
+**The `?`-tests don't narrow (OPT18/OPT20/OPT23 deleted).** An earlier revision let `if x?` narrow `x` in place on const scrutinees, with an else-narrow and a rule excluding `mut`-rooted field paths. Cut, for the one-way principle: `if x? { use(x) }` and `if x? as v { use(v) }` were two spellings of test-and-use, and only one of them worked everywhere. The restrictions were the tell — "const scrutinees only", "not through a `mut` path", "anonymous expressions don't narrow" were three rules whose whole job was propping up the redundant spelling; the `as v` bind has none of them. What in-place narrowing remains comes from the general union `is` machinery (early-exit after a diverging `is none` arm, `type.errors/ER24`) — mechanism, not idiom; the canonical guard is `?? <exit>`. The cut also thins the checker: no `?`-triggered flow typing at all.
 
 ### Patterns & Guidance
 
@@ -404,18 +410,17 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 const theme = config.theme ?? "default"
 ```
 
-**Early exit on absence.** Bind, then narrow. The binding keeps its name, so nothing has to be renamed after the check:
+**Early exit on absence.** The guard is the fallback operator with the exit (or the default) written out — one line, and the binding is the payload from then on:
 
 <!-- test: skip -->
 ```rask
 func greet(id: UserId) -> string {
-    const user = load_user(id)
-    if user is none { return "Hello, guest" }
-    return "Hello, {user.name}"          // user: User here
+    const user = load_user(id) ?? return "Hello, guest"
+    return "Hello, {user.name}"
 }
 ```
 
-When absence should leave rather than produce a value, that's one line — the exit is written where it happens:
+When absence should leave rather than produce a value, same shape:
 
 <!-- test: skip -->
 ```rask
@@ -435,7 +440,7 @@ func lookup(id: UserId) -> Profile? {
 }
 ```
 
-**Mutation inside a narrow.** `mut` needs explicit bind; the const `v` inside the block is safely narrowed:
+**Binding from a `mut` scrutinee.** The bind works the same on `mut` — the const `c` is a stable name for the payload while the slot stays reassignable:
 
 <!-- test: skip -->
 ```rask
@@ -457,14 +462,14 @@ func find(id: UserId) -> (User or DatabaseError)? {
 
 ### IDE Integration
 
-- Ghost text shows the narrowed type on hover inside `if x?` blocks.
+- Ghost text shows the bound type on hover for `as v` bindings.
 - Quick action "Convert `match` to operator form" for the two-arm none/value case.
-- Quick action "Convert `try … else <diverge>` to `?? <diverge>`" and "Convert `orelse` to `??`/`catch` by shape" for code written against the older rules.
+- Quick action "Convert `try … else <diverge>` to `?? <diverge>`", "Convert `orelse` to `??`/`catch` by shape", and "Add `as v` bind" for `use(x)` inside `if x?` — code written against the older rules.
 - Quick action "Convert `?? return none` to `try`" when the enclosing function returns an optional.
 
 ### See Also
 
 - [Union Types](union-types.md) — general union rules (`type.unions`)
-- [Error Types](error-types.md) — `T or E`, `try`, `??`, narrowing rules shared with optionals (`type.errors`)
+- [Error Types](error-types.md) — `T or E`, `try`, `catch`, the union narrowing mechanism (`type.errors`)
 - [Control Flow](../control/control-flow.md) — if/match/narrowing (`ctrl.flow`)
 - [Type Aliases](type-aliases.md) — nominal vs transparent (`type.aliases`)
