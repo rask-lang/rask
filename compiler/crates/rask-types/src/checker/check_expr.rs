@@ -2,7 +2,7 @@
 //! Expression type inference and specific type checks.
 
 use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::StmtKind;
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
@@ -340,29 +340,22 @@ impl TypeChecker {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, expr.span));
 
-                // Type narrowing: if the condition is `opt is Some` (legacy OPT10),
-                // rebind `opt` to the inner type inside the then-branch.
-                let narrowing = self.extract_is_some_narrowing(cond);
+                // OPT19: `if x? as v` binds the payload in the then-branch.
+                // The test itself narrows nothing — there is no flow typing.
+                let presence_binding = self.extract_presence_binding(cond);
 
-                // OPT19/ER19: `if x?` on a const Option/Result narrows.
-                // ER21: for Result, the else-branch narrows to E.
-                let presence_narrowing = self.extract_is_present_narrowing(cond);
-
-                if let Some((ref var_name, ref inner_ty)) = narrowing {
+                if let Some((ref name, ref payload_ty, _)) = presence_binding {
                     self.push_scope();
-                    self.define_local(var_name.clone(), inner_ty.clone());
-                } else if let Some((ref var_name, ref then_ty, _)) = presence_narrowing {
-                    self.push_scope();
-                    self.define_local(var_name.clone(), then_ty.clone());
+                    self.define_local_const(name.clone(), payload_ty.clone());
                 }
                 let then_ty = self.infer_expr(then_branch);
-                if narrowing.is_some() || presence_narrowing.is_some() {
+                if presence_binding.is_some() {
                     self.pop_scope();
                 }
 
-                // ER22: `else as e` requires a Result cond. Reject otherwise.
+                // ER22: `else as e` needs a scrutinee with a branch to bind.
                 if let Some(name) = else_binding {
-                    let has_err = matches!(presence_narrowing, Some((_, _, Some(_))));
+                    let has_err = matches!(presence_binding, Some((_, _, Some(_))));
                     if !has_err {
                         self.errors.push(TypeError::ElseBindingNotResult {
                             name: name.clone(),
@@ -372,15 +365,11 @@ impl TypeChecker {
                 }
 
                 if let Some(else_branch) = else_branch {
-                    // ER21/ER22: narrow the else branch to E for Result scrutinees.
-                    // `else as e` picks a separate name; otherwise reuse the
-                    // cond's `as v` / scrutinee name.
-                    let else_narrow = match (else_binding, &presence_narrowing) {
+                    // ER22: `else as e` binds the complement. A binding, not a
+                    // narrow — the scrutinee's own type never changes.
+                    let else_narrow = match (else_binding, &presence_binding) {
                         (Some(e_name), Some((_, _, Some(err_ty)))) => {
                             Some((e_name.clone(), err_ty.clone()))
-                        }
-                        (None, Some((var_name, _, Some(err_ty)))) => {
-                            Some((var_name.clone(), err_ty.clone()))
                         }
                         _ => None,
                     };
@@ -544,11 +533,7 @@ impl TypeChecker {
                 self.push_scope();
                 for stmt in stmts {
                     self.check_stmt(stmt);
-                    // ER24 / CF22 — early-exit narrowing. Solve constraints
-                    // first so method-call return types are resolved before
-                    // we inspect the scrutinee type.
                     self.solve_constraints();
-                    self.apply_early_exit_narrowing(stmt);
                 }
                 let result = if let Some(last) = stmts.last() {
                     match &last.kind {
@@ -986,11 +971,24 @@ impl TypeChecker {
                 }
             }
 
-            // Postfix `?` — presence predicate. OPT10/ER12.
+            // OPT9: postfix `?` is the presence test — a plain bool. It
+            // narrows nothing; the payload comes from the `as v` bind.
             ExprKind::IsPresent { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
+                    // ER12: `?` marks absence. A result's other branch is an
+                    // error, which is tested with `is` and handled with `catch`.
+                    Type::Result { err, .. }
+                        if **err != Type::None
+                            && !matches!(**err, Type::Var(_) | Type::Error) =>
+                    {
+                        self.errors.push(TypeError::PresenceTestOnResult {
+                            found: resolved.clone(),
+                            span: expr.span,
+                        });
+                        Type::Error
+                    }
                     Type::Result { .. } => Type::Bool,
                     Type::Var(_) => {
                         // Unresolved scrutinee — leave as bool, let later context constrain.
@@ -2821,65 +2819,31 @@ impl TypeChecker {
     /// Detect `opt is Some` (no bindings) in an if-condition and extract
     /// the variable name and its narrowed inner type (OPT10 type narrowing).
     /// Also handles `opt is Some` within `&&` chains.
-    fn extract_is_some_narrowing(&self, cond: &Expr) -> Option<(String, Type)> {
-        match &cond.kind {
-            ExprKind::IsPattern { expr: value, pattern } => {
-                // Only narrow for `is Some` with no explicit binding
-                if let Pattern::Constructor { name, fields } = pattern {
-                    if name == "Some" && fields.is_empty() {
-                        if let ExprKind::Ident(var_name) = &value.kind {
-                            let var_ty = self.lookup_local(var_name)?;
-                            let resolved = self.ctx.apply(&var_ty);
-                            if let Some(inner) = resolved.as_option() {
-                                return Some((var_name.clone(), inner.clone()));
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            // Handle `opt is Some && ...` — narrow on the left side
-            ExprKind::Binary { op: rask_ast::expr::BinOp::And, left, .. } => {
-                self.extract_is_some_narrowing(left)
-            }
-            _ => None,
-        }
-    }
-
-    /// Detect a presence check (`x?` or `x? as v`) in an if-condition and
-    /// return the narrow name, the then-branch type, and (for Result) the
-    /// else-branch type.
+    /// OPT19/ER23: the `as v` bind on a presence test — `if x? as v`. Returns
+    /// the name, the type `v` gets, and (when the scrutinee can fail) the type
+    /// an `else as e` would bind.
     ///
-    /// OPT19/ER19 — plain `if x?`: narrows the scrutinee when it's a
-    /// const-bound ident; mut is rejected (user needs `as v`).
-    /// OPT20/ER20 — `if expr? as v`: binds a fresh const `v: T` regardless
-    /// of the scrutinee's shape or mutability.
+    /// This is a *binding*, not a narrow: the scrutinee keeps its own type
+    /// everywhere. Without the `as`, there's nothing to introduce.
     ///
-    /// Must run after the cond has been inferred so the scrutinee's type is
-    /// available in `node_types`.
-    pub(super) fn extract_is_present_narrowing(
+    /// Must run after the cond has been inferred, so the scrutinee's type is
+    /// in `node_types`.
+    pub(super) fn extract_presence_binding(
         &mut self,
         cond: &Expr,
     ) -> Option<(String, Type, Option<Type>)> {
         let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
             return None;
         };
+        let name = binding.clone()?;
 
-        // Use the already-inferred scrutinee type; no re-inference.
         let scrutinee_ty = self.node_types.get(&inner.id).cloned()?;
         let resolved = self.ctx.apply(&scrutinee_ty);
 
-        let narrow_name = match (binding, &inner.kind) {
-            (Some(v), _) => v.clone(),
-            (None, ExprKind::Ident(n)) if self.is_local_read_only(n) => n.clone(),
-            _ => return None,
-        };
-
-        // If the scrutinee is still an unsolved type variable (e.g. Map.get
-        // on a Map.new() whose V is only fixed by later inserts), constrain
-        // it to a Result shape so we can extract ok/err vars right now.
-        // The fresh err var defers Option vs Result distinction to constraint
-        // solving — it will unify to None for `T?` and to E for `T or E`.
+        // An unsolved scrutinee (a `Map.get` whose V is only fixed by later
+        // inserts) gets constrained to a two-branch shape now, so the payload
+        // var is available. The fresh error var defers the optional-vs-result
+        // question to constraint solving.
         let resolved = if let Type::Var(_) = resolved {
             let ok = self.ctx.fresh_var();
             let err = self.ctx.fresh_var();
@@ -2894,50 +2858,10 @@ impl TypeChecker {
         };
 
         match resolved {
-            Type::Result { ok, err } if *err == Type::None => Some((narrow_name, *ok, None)),
-            Type::Result { ok, err } => Some((narrow_name, *ok, Some(*err))),
+            Type::Result { ok, err } if *err == Type::None => Some((name, *ok, None)),
+            Type::Result { ok, err } => Some((name, *ok, Some(*err))),
             _ => None,
         }
-    }
-
-    /// ER24/CF22 — early-exit narrowing. If `stmt` is `if cond { diverges }`
-    /// (no else, or else is non-diverging), narrow the scrutinee to the
-    /// opposite variant for the rest of the enclosing block.
-    ///
-    /// Supported cond shapes:
-    /// - `r is ErrType` (or `r is ErrType as e`) where scrutinee is `T or E` —
-    ///   narrows `r` to `T` after the if.
-    /// - `x == none` where scrutinee is `T?` — narrows `x` to `T` after.
-    /// - `!r?` is a parse error already, so not handled here.
-    /// True when `expr` always diverges — i.e. the last statement in its
-    /// block is `return` / `break` / `continue`, or the expression is
-    /// itself a bare divergent keyword. Approximate; doesn't chase every
-    /// control-flow path, which is good enough for ER24 early-exit.
-    fn block_diverges(expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Block(stmts) => match stmts.last().map(|s| &s.kind) {
-                Some(StmtKind::Return(_))
-                | Some(StmtKind::Break { .. })
-                | Some(StmtKind::Continue(_)) => true,
-                Some(StmtKind::Expr(inner)) => matches!(
-                    inner.kind,
-                    ExprKind::Call { .. }
-                ) && Self::is_panic_call(inner) || Self::block_diverges(inner),
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-
-    /// Two types that unify without committing anything — used to tell a
-    /// still-wrapped `??`/`catch` right side (same success type, chain carries
-    /// on) from a collapse (ER14a).
-    fn same_shape(&mut self, a: &Type, b: &Type) -> bool {
-        let (a, b) = (self.ctx.apply(a), self.ctx.apply(b));
-        if matches!(a, Type::Var(_)) || matches!(b, Type::Var(_)) {
-            return false;
-        }
-        a == b
     }
 
     /// ER47: bare `try` on an optional needs a return with an absent branch.
@@ -2998,80 +2922,6 @@ impl TypeChecker {
         }
     }
 
-    fn is_panic_call(expr: &Expr) -> bool {
-        if let ExprKind::Call { func, .. } = &expr.kind {
-            if let ExprKind::Ident(name) = &func.kind {
-                return matches!(name.as_str(), "panic" | "todo" | "unreachable");
-            }
-        }
-        false
-    }
-
-    pub(super) fn apply_early_exit_narrowing(&mut self, stmt: &Stmt) {
-        let expr = match &stmt.kind {
-            StmtKind::Expr(e) => e,
-            _ => return,
-        };
-
-        // `if <IsPattern/==none> { diverge }` — the parser lowers `is`
-        // patterns into IfLet; `== none` stays as If with a Binary cond.
-        match &expr.kind {
-            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
-                if !Self::block_diverges(then_branch) { return; }
-                if let Some(else_b) = else_branch {
-                    if Self::block_diverges(else_b) { return; }
-                }
-                self.narrow_result_from_err_pattern(scrutinee, pattern);
-            }
-            ExprKind::If { cond, then_branch, else_branch, .. } => {
-                if !Self::block_diverges(then_branch) { return; }
-                if let Some(else_b) = else_branch {
-                    if Self::block_diverges(else_b) { return; }
-                }
-                // After desugar, `x == none` is `x.eq(none)`.
-                let scrutinee_opt = match &cond.kind {
-                    ExprKind::Binary { op, left, right } if matches!(op, rask_ast::expr::BinOp::Eq) => {
-                        match (&left.kind, &right.kind) {
-                            (_, ExprKind::None) => Some(left.as_ref()),
-                            (ExprKind::None, _) => Some(right.as_ref()),
-                            _ => None,
-                        }
-                    }
-                    ExprKind::MethodCall { object, method, args, .. } if method == "eq" && args.len() == 1 => {
-                        match &args[0].expr.kind {
-                            ExprKind::None => Some(object.as_ref()),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(scrutinee) = scrutinee_opt {
-                    let (name, kind) = match &scrutinee.kind {
-                        ExprKind::Ident(n) => match self.lookup_binding_kind(n) {
-                            Some(k) if k.is_read_only() => (n.clone(), k),
-                            _ => return,
-                        },
-                        _ => return,
-                    };
-                    let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
-                        Some(t) => self.ctx.apply(&t),
-                        None => return,
-                    };
-                    if let Some(inner) = scrutinee_ty.as_option() {
-                        let inner = inner.clone();
-                        match kind {
-                            super::BindingKind::Let => self.define_local_const(name, inner),
-                            super::BindingKind::Param => self.define_local_param(name, inner),
-                            super::BindingKind::WithRead => self.define_local_with_read(name, inner),
-                            super::BindingKind::Mut => self.define_local(name, inner),
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Is this expression's inferred type `Shared<...>`? (Receiver must have
     /// been inferred already — with-binding sources are.)
     fn expr_is_shared(&mut self, e: &Expr) -> bool {
@@ -3080,44 +2930,6 @@ impl TypeChecker {
             Type::Generic { base, .. } => self.types.type_name(base) == "Shared",
             Type::UnresolvedGeneric { name, .. } => name == "Shared",
             _ => false,
-        }
-    }
-
-    fn narrow_result_from_err_pattern(&mut self, scrutinee: &Expr, pattern: &rask_ast::expr::Pattern) {
-        let (name, kind) = match &scrutinee.kind {
-            ExprKind::Ident(n) => match self.lookup_binding_kind(n) {
-                Some(k) if k.is_read_only() => (n.clone(), k),
-                _ => return,
-            },
-            _ => return,
-        };
-        let scrutinee_ty = match self.node_types.get(&scrutinee.id).cloned() {
-            Some(t) => self.ctx.apply(&t),
-            None => return,
-        };
-        let Type::Result { ok, err } = scrutinee_ty else { return };
-        let pattern_ty_name = match pattern {
-            rask_ast::expr::Pattern::TypePat { ty_name, .. } => ty_name.clone(),
-            rask_ast::expr::Pattern::Ident(ty_name) => ty_name.clone(),
-            _ => return,
-        };
-        let narrow_ty = super::check_pattern::normalize_type(
-            &super::parse_type::parse_type_string(&pattern_ty_name, &self.types)
-                .unwrap_or(Type::Error),
-            &self.types,
-        );
-        let err_applied = super::check_pattern::normalize_type(&self.ctx.apply(&err), &self.types);
-        let matches_err = match &err_applied {
-            Type::Union(variants) => variants.contains(&narrow_ty),
-            other => other == &narrow_ty,
-        };
-        if matches_err {
-            match kind {
-                super::BindingKind::Let => self.define_local_const(name, *ok),
-                super::BindingKind::Param => self.define_local_param(name, *ok),
-                super::BindingKind::WithRead => self.define_local_with_read(name, *ok),
-                super::BindingKind::Mut => self.define_local(name, *ok),
-            }
         }
     }
 

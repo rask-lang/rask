@@ -108,6 +108,9 @@ pub enum TypeError {
     /// ER14: `catch` is results-only.
     #[error("`catch` on an optional — absence carries no error")]
     CatchOnOptional { found: Type, span: Span },
+    /// ER12: `?` is optionals-only.
+    #[error("`?` on a result — `?` marks absence, not failure")]
+    PresenceTestOnResult { found: Type, span: Span },
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },

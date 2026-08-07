@@ -213,11 +213,9 @@ impl TypeChecker {
 
         for stmt in &f.body {
             self.check_stmt(stmt);
-            // ER24: early-exit narrowing after each top-level stmt.
-            // Solve pending constraints first so method-call return types
-            // are resolved (otherwise scrutinee stays `Var`).
+            // Solve as we go so a later statement sees method-call return
+            // types that are already pinned, instead of a bare var.
             self.solve_constraints();
-            self.apply_early_exit_narrowing(stmt);
         }
 
         // ER20: Finalize error union from accumulated error types

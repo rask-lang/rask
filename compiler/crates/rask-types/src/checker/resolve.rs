@@ -2889,40 +2889,41 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let self_ty = Type::option(inner.clone());
         match method {
-            "is_some" | "is_none" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
+            // `x == none` desugars to `x.eq(none)`. Equality on a zero-field
+            // type is ordinary; `tool.lint/I5` steers it toward `x is none`.
+            "eq" | "ne" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
+            _ => Err(Self::wrapper_method_cut(self_ty, method, span)),
+        }
+    }
+
+    /// std.api/SD4: neither wrapper has methods — the operators are the whole
+    /// API. Name the operator that does this job, so the migration is one
+    /// reading rather than a search.
+    fn wrapper_method_cut(receiver: Type, method: &str, span: Span) -> TypeError {
+        let optional = receiver.is_option();
+        let fix = match (method, optional) {
+            ("unwrap_or", true) => "write `x ?? <value>` — the right side is lazy by construction",
+            ("unwrap_or", false) => "write `r catch _ => <value>`, which says an error is being dropped",
+            ("unwrap_or_else", true) => "write `x ?? <expr>`",
+            ("unwrap_or_else", false) => "write `r catch e => <expr using e>`",
+            ("unwrap", _) | ("expect", _) => "write `x!`, or `x! \"message\"` to say why it can't be absent",
+            ("map_err", _) => "write `r catch e => return <wrapped>` — transform and leave in one line",
+            ("ok", _) | ("to_option", _) => "write `r catch _ => none` — the discard is acknowledged",
+            ("ok_or", _) | ("ok_or_else", _) => "write `x ?? return <error>`",
+            ("is_some", _) | ("is_ok", _) => "write `x?`",
+            ("is_none", _) => "write `x is none`",
+            ("is_err", _) => "write `r is <ErrorType>`",
+            ("map", _) | ("and_then", _) | ("filter", _) => {
+                "extract first — `try x`, `x ?? <value>` or `r catch e => …` — then work with the value"
             }
-            "unwrap" if args.is_empty() => {
-                self.unify(ret, inner, span)
-            }
-            "unwrap_or" if args.len() == 1 => {
-                let _ = self.unify(&args[0], inner, span);
-                self.unify(ret, inner, span)
-            }
-            "map" if args.len() == 1 => {
-                let result_inner = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![inner.clone()],
-                    ret: Box::new(result_inner.clone()),
-                };
-                let _ = self.unify(&args[0], &expected_fn, span);
-                self.unify(ret, &Type::option(result_inner), span)
-            }
-            "filter" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![inner.clone()],
-                    ret: Box::new(Type::Bool),
-                };
-                let _ = self.unify(&args[0], &expected_fn, span);
-                self.unify(ret, &self_ty, span)
-            }
-            // `x == none` desugars to `x.eq(none)` — presence/absence comparison
-            "eq" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
+            _ if optional => "reach the value with `try`, `??`, `!` or an `if x? as v` bind",
+            _ => "reach the value with `try`, `catch`, `!` or a `match`",
+        };
+        TypeError::WrapperMethodCut {
+            method: method.to_string(),
+            receiver,
+            fix: fix.to_string(),
+            span,
         }
     }
 
@@ -2940,52 +2941,8 @@ impl TypeChecker {
             ok: Box::new(ok.clone()),
             err: Box::new(err.clone()),
         };
-        match method {
-            "is_ok" | "is_err" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            "unwrap" if args.is_empty() => {
-                self.unify(ret, ok, span)
-            }
-            "unwrap_or" if args.len() == 1 => {
-                let _ = self.unify(&args[0], ok, span);
-                self.unify(ret, ok, span)
-            }
-            "map" if args.len() == 1 => {
-                let result_inner = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![ok.clone()],
-                    ret: Box::new(result_inner.clone()),
-                };
-                let _ = self.unify(&args[0], &expected_fn, span);
-                let result_type = Type::Result {
-                    ok: Box::new(result_inner),
-                    err: Box::new(err.clone()),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "map_err" if args.len() == 1 => {
-                let result_err = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![err.clone()],
-                    ret: Box::new(result_err.clone()),
-                };
-                let _ = self.unify(&args[0], &expected_fn, span);
-                let result_type = Type::Result {
-                    ok: Box::new(ok.clone()),
-                    err: Box::new(result_err),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "to_option" | "ok" if args.is_empty() => {
-                self.unify(ret, &Type::option(ok.clone()), span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
-        }
+        let _ = (args, ret);
+        Err(Self::wrapper_method_cut(self_ty, method, span))
     }
 
     /// Resolve methods on primitive integer types (i8..i128, u8..u128).

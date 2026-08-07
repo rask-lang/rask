@@ -519,6 +519,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`catch` names or drops an error; `none` isn't one [type.errors/ER14]")
             }
 
+            PresenceTestOnResult { found, span } => {
+                Diagnostic::error(format!("`?` on `{}` — `?` asks whether a value is there, and this can fail", found))
+                    .with_code("E0368")
+                    .with_primary(*span, "this is a result, not an optional")
+                    .with_fix("test the error with `r is <ErrorType> as e`, or handle it with `r catch e => …`")
+                    .with_why("presence and failure are different questions: a miss carries nothing, a failure carries an error you shouldn't step over [type.errors/ER12]")
+            }
+
             CoalesceOnResult { found, span } => {
                 Diagnostic::error(format!("`??` on `{}` — `?` marks absence, and this can fail", found))
                     .with_code("E0364")
