@@ -40,6 +40,7 @@ This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate ra
 | Module genuinely needs > one screen (e.g. `math`) | SD1 | Split into submodules with one-screen surfaces, or document the exception in the module spec's rationale |
 | Fallibility pair (`push`/`try_push`) | SD2 | Allowed — the pair is the pattern (`std.collections/C2`), not surface growth |
 | Cost-family conversions (`as_`/`to_`/`into_`) | SD2 | Allowed — the prefixes are one concept, learned once ([canonical-patterns](../canonical-patterns.md)) |
+| Callers would routinely discard the error | SD3 | The API is absence-shaped — return `T?`, not `T or E`. A probe's failure is a non-answer, and an error branch nobody reads is ceremony at every call site ([canonical-patterns](../canonical-patterns.md)) |
 | A Rust name really is the right one | SD4 | Fine — justified from the Rask side in the module spec's rationale, not from precedent |
 | Deprecating toward one spelling | SD5 | The loser gets a lint pointing at the winner for one release, then removal (pre-1.0: immediate removal) |
 

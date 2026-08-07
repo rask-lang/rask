@@ -127,6 +127,8 @@ const vec = list.into_vec()
 
 **`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse_int`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
 
+**Probes return `T?`, not `T or E`:** when failure is a non-answer carrying nothing — env lookup, map/find, "does this parse as an IP" — the error branch shouldn't exist. If callers would routinely discard the error, that's the API telling you it's absence-shaped. (This is why Rust corpora are full of one-armed `if let Ok` on `env::var` and `metadata`: `Result` standing in for the optional Rust's stdlib didn't give them.)
+
 **Builders:** one-shot optional settings use `with_*` (`with_timeout`, `with_capacity`). Repeatable accumulator methods on builders whose whole job is accumulating use bare nouns (`Command.arg()`, `.env()`; `cli.Parser.flag()`, `.option()`) — `with_arg().with_arg()` is ceremony without information. Builders terminate with `build()` — one verb everywhere (`StringBuilder`, `BinaryBuilder`, `JsonWriter`).
 
 ### Domain-Specific Patterns
@@ -156,29 +158,52 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `catch e => return`.
+The ladder, top to bottom — reach for the first rung that fits:
 
 ```rask
-// Propagation — pass the error up as-is
+// 1. Propagate — pass the error up as-is. The default.
 func load_config(path: string) -> Config or IoError {
     const text = try fs.read_text(path)
-    const config = try Config.from_str(text)
-    return config
+    return try Config.from_str(text)
 }
 
-// Handling — react to the specific error
-match fs.read_text(path) {
-    Data as data => process(data),
-    IoError as e => log("failed to read {path}: {e.message()}"),
+// 2. Guard — handle the failure, rebind, stay flat. The happy path never indents.
+const user = db.find(id) catch e => return ApiError.from(e)
+const conn = pool.acquire() catch e => {
+    log("pool exhausted: {e.message()}")
+    return ServiceError.Busy
 }
 
-// Guard pattern — early return on error
-func get_user(id: i64) -> User or NotFound {
-    const found = db.find(id)
-    if found is NotFound as e { return e }
-    return found!
+// 3. Statement position — react to a failure you won't propagate
+save(d) catch e => log("save failed: {e.message()}")
+
+// 4. Both branches genuinely live — two-armed narrow or match
+if r is Data as data {
+    process(data)
+} else as e {
+    schedule_retry(e)
 }
 ```
+
+**Guards check the failure, not the success.** Test-the-success-then-work is the pyramid anti-pattern — the happy path indents once per fallible step, and the error arms trail the logic they belong to. Checking the failure keeps the happy path flat, and Rask has two spellings of it:
+
+```rask
+// The operator guard — one line, binds the success directly. The default.
+const found = db.find(id) catch e => return ApiError.from(e)
+
+// The statement guard — `is` + early-exit narrowing (ER24): after a diverging
+// error arm, the binding IS the success type in the fall-through. No re-extract.
+const found = db.find(id)
+if found is NotFound as e {
+    metrics.incr("miss")
+    return ApiError.from(e)
+}
+return render(found)                 // found: User here
+```
+
+Reach for the statement guard when the error handling is genuinely multi-statement *and* testing a specific variant of a wider union; otherwise the operator form says the same thing in a third of the lines (a `catch` block body covers "a few statements before leaving" without giving up the one-liner shape). Never write `found!` after an `is`-guard — ER24 already narrowed; the assert is dead ceremony.
+
+**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume.
 
 ### Error context
 
@@ -278,7 +303,7 @@ if opt? as v {
 const name = opt ?? "anonymous"
 
 // Early exit if absent — the binding keeps its name
-if opt == none { return none }
+if opt is none { return none }
 use(opt)   // opt: T here (early-exit narrow)
 
 // Absence should leave — one line
@@ -295,7 +320,7 @@ if opt? {
 **Anti-patterns:**
 - `x!` without checking — crashes on none.
 - `match` on optionals — rejected with a migration diagnostic. Use the operator family.
-- `!x?` — parse error. Use `x == none`.
+- `!x?` — parse error. Use `x is none`.
 
 See [types/optionals.md](types/optionals.md).
 
