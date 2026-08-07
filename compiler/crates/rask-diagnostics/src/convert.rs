@@ -482,6 +482,75 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("`try` only wraps on its own when exactly one variant of the boundary enum takes the error [error-types/ER31a]")
             }
 
+            TryAbsenceIntoResult { return_ty, span } => {
+                Diagnostic::error("`try` here would propagate `none`, and this function has no absent branch")
+                    .with_code("E0360")
+                    .with_primary(*span, "`none` has nowhere to go")
+                    .with_note(format!("this function returns `{}`", return_ty))
+                    .with_fix("name the error instead: `x ?? return <error>`")
+                    .with_why("bare `try` sends the operand's other branch out unchanged, so it has to fit the return — an absence doesn't fit an error branch [type.errors/ER47]")
+            }
+
+            TryErrorIntoOptional { return_ty, span } => {
+                Diagnostic::error("`try` here would propagate an error, and this function only returns absence")
+                    .with_code("E0361")
+                    .with_primary(*span, "the error has nowhere to go")
+                    .with_note(format!("this function returns `{}`", return_ty))
+                    .with_fix("drop the error where it happens: `r catch _ => return none`")
+                    .with_why("bare `try` sends the operand's other branch out unchanged, so it has to fit the return [type.errors/ER47]")
+            }
+
+            TryOnFlatShape { found, span } => {
+                Diagnostic::error(format!(
+                    "`try` on `{}` has two ways to leave — the error and the absence",
+                    found
+                ))
+                .with_code("E0362")
+                .with_primary(*span, "which branch should leave?")
+                .with_fix("say both: `try f() ?? return none` — `try` sends the error up, `??` handles the absence here")
+                .with_why("a value that can fail and can be absent needs each outcome spelled out; `try` alone would guess [type.errors/ER47, ER16b]")
+            }
+
+            CatchOnOptional { found, span } => {
+                Diagnostic::error(format!("`catch` on `{}` — an absence carries no error to bind", found))
+                    .with_code("E0363")
+                    .with_primary(*span, "nothing to catch")
+                    .with_fix("use `??` for the absent case: `x ?? <value>`")
+                    .with_why("`catch` names or drops an error; `none` isn't one [type.errors/ER14]")
+            }
+
+            CoalesceOnResult { found, span } => {
+                Diagnostic::error(format!("`??` on `{}` — `?` marks absence, and this can fail", found))
+                    .with_code("E0364")
+                    .with_primary(*span, "this is a result, not an optional")
+                    .with_fix("use `catch _ => <value>`, which says an error is being dropped")
+                    .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
+            }
+
+            TakeOnNonOptional { found, span } => {
+                Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
+                    .with_code("E0365")
+                    .with_primary(*span, "not a `T?` place")
+                    .with_fix("if this is a `T or E`, use `match` — an error is not a slot you empty")
+                    .with_why("`take` leaves `none` behind, so the place has to have an absent branch to leave [type.optionals/OPT32]")
+            }
+
+            TakeOnImmutablePlace { name, span } => {
+                Diagnostic::error(format!("`take` would empty `{}`, which is a `let` binding", name))
+                    .with_code("E0366")
+                    .with_primary(*span, "not writable")
+                    .with_fix(format!("declare it `mut {} = …`", name))
+                    .with_why("`take` writes `none` back into the slot — that's a mutation [type.optionals/OPT32]")
+            }
+
+            WrapperMethodCut { method, receiver, fix, span } => {
+                Diagnostic::error(format!("no method `{}` on `{}`", method, receiver))
+                    .with_code("E0367")
+                    .with_primary(*span, "the wrapper shapes have no methods")
+                    .with_fix(fix.clone())
+                    .with_why("`T?` and `T or E` are operator-only: one spelling per job, and the right side is lazy by construction [std.api/SD4]")
+            }
+
             TryOutsideFunction { span } => {
                 Diagnostic::error("`try` can only be used within a function")
                     .with_code("E0317")

@@ -1239,13 +1239,16 @@ impl<'a> OwnershipChecker<'a> {
                 // All arms diverge → code after is unreachable; keep pre-match.
                 self.bindings = merged.unwrap_or(pre_arms);
             }
-            ExprKind::Try { expr: inner, ref else_clause } => {
+            ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.check_expr(inner);
-                if let Some(ec) = else_clause {
-                    let pre_else = self.bindings.clone();
-                    self.check_expr(&ec.body);
-                    self.bindings = pre_else;
-                }
+            }
+            ExprKind::Catch { value, ref clause } => {
+                self.check_expr(value);
+                // The handler runs only on failure, so what it consumes doesn't
+                // count against the success path.
+                let pre_handler = self.bindings.clone();
+                self.check_expr(&clause.body);
+                self.bindings = pre_handler;
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.check_expr(inner);
@@ -2383,11 +2386,12 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::IsPattern { expr: scrutinee, .. } => {
                 self.collect_free_vars_inner(scrutinee, locals, out, projections);
             }
-            ExprKind::Try { expr: inner, else_clause } => {
+            ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.collect_free_vars_inner(inner, locals, out, projections);
-                if let Some(tc) = else_clause {
-                    self.collect_free_vars_inner(&tc.body, locals, out, projections);
-                }
+            }
+            ExprKind::Catch { value, clause } => {
+                self.collect_free_vars_inner(value, locals, out, projections);
+                self.collect_free_vars_inner(&clause.body, locals, out, projections);
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.collect_free_vars_inner(inner, locals, out, projections);

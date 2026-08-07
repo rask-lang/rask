@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, Field, Param, TypeParam,
                      ContextClause};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit,
-                     MatchArm, Pattern, SelectArm, SelectArmKind, TryElse, UnaryOp,
+                     CatchClause, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp,
                      WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
@@ -693,15 +693,18 @@ impl Hasher {
                     self.hash_match_arm(arm);
                 }
             }
-            ExprKind::Try { expr, else_clause } => {
+            ExprKind::Try { expr } => {
                 self.feed_tag(60);
                 self.hash_expr(expr);
-                if let Some(ec) = else_clause {
-                    self.feed_bool(true);
-                    self.hash_try_else(ec);
-                } else {
-                    self.feed_bool(false);
-                }
+            }
+            ExprKind::Take { place } => {
+                self.feed_tag(61);
+                self.hash_expr(place);
+            }
+            ExprKind::Catch { value, clause } => {
+                self.feed_tag(62);
+                self.hash_expr(value);
+                self.hash_catch_clause(clause);
             }
             ExprKind::IsPresent { expr, binding } => {
                 self.feed_tag(100);
@@ -967,9 +970,9 @@ impl Hasher {
         }
     }
 
-    fn hash_try_else(&mut self, te: &TryElse) {
-        self.feed_var(&te.error_binding);
-        self.hash_expr(&te.body);
+    fn hash_catch_clause(&mut self, c: &CatchClause) {
+        self.feed_var(&c.binder);
+        self.hash_expr(&c.body);
     }
 
     fn hash_field_init(&mut self, fi: &FieldInit) {

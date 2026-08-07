@@ -842,11 +842,10 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            ExprKind::Try { expr: e, ref else_clause } => {
-                self.visit_expr(e);
-                if let Some(ec) = else_clause {
-                    self.visit_expr(&ec.body);
-                }
+            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => self.visit_expr(e),
+            ExprKind::Catch { value, ref clause } => {
+                self.visit_expr(value);
+                self.visit_expr(&clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
             ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),

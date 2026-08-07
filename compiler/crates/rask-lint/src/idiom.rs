@@ -186,11 +186,12 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(object, source, diags);
             walk_expr_for_unwrap(index, source, diags);
         }
-        ExprKind::Try { expr: inner, ref else_clause } => {
+        ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
             walk_expr_for_unwrap(inner, source, diags);
-            if let Some(ec) = else_clause {
-                walk_expr_for_unwrap(&ec.body, source, diags);
-            }
+        }
+        ExprKind::Catch { value, clause } => {
+            walk_expr_for_unwrap(value, source, diags);
+            walk_expr_for_unwrap(&clause.body, source, diags);
         }
         ExprKind::IsPresent { expr: inner, .. } => {
             walk_expr_for_unwrap(inner, source, diags);

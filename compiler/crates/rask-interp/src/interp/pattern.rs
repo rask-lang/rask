@@ -224,6 +224,14 @@ impl Interpreter {
             // ER23/ER27: `TypeName [as name]` type pattern.
             // For Result scrutinees, match either the Ok branch (T side) or
             // Err branch (E side) by inspecting the payload's runtime type.
+            // OPT15: `x is none` — the absent branch, which carries no payload.
+            Pattern::TypePat { ty_name, .. } if ty_name == "none" => {
+                match value {
+                    Value::Enum { variant, .. } if variant == "None" => Some(HashMap::new()),
+                    _ => None,
+                }
+            }
+
             Pattern::TypePat { ty_name, binding } => {
                 let Value::Enum { name: sc_name, variant, fields, .. } = value else {
                     return None;

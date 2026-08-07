@@ -761,106 +761,49 @@ impl TypeChecker {
                 Type::UnresolvedNamed("Range".to_string())
             }
 
-            ExprKind::Try { expr: inner, ref else_clause } => {
-                // ER17/ER18: `try { ... } [else |e| handler]` block form.
-                // Inner `try` expressions inside the block propagate E.
-                // The else clause catches and transforms; without else, this
-                // is just the block's value (errors keep propagating).
+            ExprKind::Try { expr: inner } => {
+                // ER17: `try { … }` block form. Inner `try`s propagate on their
+                // own; the block's value is this expression's.
                 if matches!(&inner.kind, ExprKind::Block(_)) {
-                    let block_ty = self.infer_expr(inner);
-                    if let Some(ec) = else_clause {
-                        let err_ty = self
-                            .current_return_type
-                            .as_ref()
-                            .map(|t| self.ctx.apply(t))
-                            .and_then(|t| match t {
-                                Type::Result { err, .. } => Some(*err),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| self.ctx.fresh_var());
-                        self.push_scope();
-                        if let Some(scope) = self.local_types.last_mut() {
-                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
-                        }
-                        let handler_ty = self.infer_expr(&ec.body);
-                        self.pop_scope();
-                        // Block and handler must produce the same type — unless
-                        // the handler diverges (`else |e| return …`), which
-                        // produces nothing and would otherwise drag the whole
-                        // expression's type down to `!`.
-                        if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
-                            self.ctx.add_constraint(TypeConstraint::Equal(
-                                block_ty.clone(),
-                                handler_ty,
-                                expr.span,
-                            ));
-                        }
-                    }
-                    return block_ty;
+                    return self.infer_expr(inner);
                 }
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
-                    Type::Result { ok: inner, err } if **err == Type::None => {
-                        if else_clause.is_some() {
-                            // try...else on Option doesn't make sense (no error value)
-                            self.errors.push(TypeError::TryOnNonResult {
+                    // ER16 on an optional: the `none` leaves to the caller.
+                    Type::Result { ok, err } if **err == Type::None => {
+                        self.check_absence_can_leave(expr.span);
+                        *ok.clone()
+                    }
+                    Type::Result { ok, err } => {
+                        // ER47: a flat `T? or E` has two branches that could
+                        // leave. Only the `try … ??` composite says which.
+                        if ok.is_option() && !self.flat_try_sites.contains(&expr.id) {
+                            self.errors.push(TypeError::TryOnFlatShape {
                                 found: resolved.clone(),
                                 span: expr.span,
                             });
                             return Type::Error;
                         }
-                        *inner.clone()
-                    }
-                    Type::Result { ok, err } => {
-                        if let Some(ec) = else_clause {
-                            // try...else: bind error, infer handler, unify handler type with
-                            // function's error return type
-                            self.push_scope();
-                            if let Some(scope) = self.local_types.last_mut() {
-                                scope.insert(ec.error_binding.clone(), (*err.clone(), super::BindingKind::Let));
-                            }
-                            let handler_ty = self.infer_expr(&ec.body);
-                            self.pop_scope();
-                            // Handler produces the transformed error; unify with function's error type
-                            if let Some(return_ty) = &self.current_return_type {
-                                let resolved_ret = self.ctx.apply(return_ty);
-                                if self.accumulate_errors {
-                                    // ER20: Collect instead of unifying
-                                    self.inferred_errors.push(handler_ty);
-                                } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
-                                        self.errors.push(e);
-                                    }
-                                } else if matches!(resolved_ret, Type::Var(_)) {
-                                    // GC7/ER20: Return type is inferred — make it Result
-                                    let ret_ok = self.ctx.fresh_var();
-                                    let ret_result = Type::Result {
-                                        ok: Box::new(ret_ok),
-                                        err: Box::new(handler_ty),
-                                    };
-                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
-                                }
-                            }
-                        } else {
-                            // Plain try: unify error types directly
-                            if let Some(return_ty) = &self.current_return_type {
-                                let resolved_ret = self.ctx.apply(return_ty);
-                                if self.accumulate_errors {
-                                    // ER20: Collect instead of unifying
-                                    self.inferred_errors.push(*err.clone());
-                                } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                    let (err, ret_err) = (err.clone(), ret_err.clone());
-                                    self.propagate_try_error(expr.id, &err, &ret_err, expr.span);
-                                } else if matches!(resolved_ret, Type::Var(_)) {
-                                    // GC7/ER20: Return type is inferred — make it Result
-                                    let ret_ok = self.ctx.fresh_var();
-                                    let ret_result = Type::Result {
-                                        ok: Box::new(ret_ok),
-                                        err: err.clone(),
-                                    };
-                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
-                                }
+                        if !self.error_can_leave(expr.span) {
+                            return Type::Error;
+                        }
+                        if let Some(return_ty) = &self.current_return_type {
+                            let resolved_ret = self.ctx.apply(return_ty);
+                            if self.accumulate_errors {
+                                self.inferred_errors.push(*err.clone());
+                            } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                let (err, ret_err) = (err.clone(), ret_err.clone());
+                                self.propagate_try_error(expr.id, &err, &ret_err, expr.span);
+                            } else if matches!(resolved_ret, Type::Var(_)) {
+                                // GC7: the return type is still inferred — `try`
+                                // says it has an error branch.
+                                let ret_ok = self.ctx.fresh_var();
+                                let ret_result = Type::Result {
+                                    ok: Box::new(ret_ok),
+                                    err: err.clone(),
+                                };
+                                let _ = self.unify(&resolved_ret, &ret_result, expr.span);
                             }
                         }
                         *ok.clone()
@@ -883,22 +826,7 @@ impl TypeChecker {
                                         err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &result_ty, expr.span);
-                                    if let Some(ec) = else_clause {
-                                        // try...else with unresolved inner: bind error, infer handler,
-                                        // unify handler type with function's error return type
-                                        self.push_scope();
-                                        if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
-                                        }
-                                        let handler_ty = self.infer_expr(&ec.body);
-                                        self.pop_scope();
-                                        if self.accumulate_errors {
-                                            self.inferred_errors.push(handler_ty);
-                                        } else if let Err(e) = self.unify(&handler_ty, ret_err, expr.span) {
-                                            self.errors.push(e);
-                                        }
-                                    } else if self.accumulate_errors {
-                                        // ER20: Collect instead of unifying with return
+                                    if self.accumulate_errors {
                                         self.inferred_errors.push(err_ty);
                                     } else {
                                         let ret_err = ret_err.clone();
@@ -907,8 +835,8 @@ impl TypeChecker {
                                     ok_ty
                                 }
                                 Type::Var(_) => {
-                                    // GC7/ER20: Both inner and return type unresolved.
-                                    // Create Result structure — try implies error propagation.
+                                    // GC7: neither side is pinned yet. `try`
+                                    // implies a two-branch operand and return.
                                     let ok_ty = self.ctx.fresh_var();
                                     let err_ty = self.ctx.fresh_var();
                                     let inner_result = Type::Result {
@@ -916,34 +844,15 @@ impl TypeChecker {
                                         err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &inner_result, expr.span);
-                                    if let Some(ec) = else_clause {
-                                        // try...else with both types unresolved
-                                        self.push_scope();
-                                        if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
-                                        }
-                                        let handler_ty = self.infer_expr(&ec.body);
-                                        self.pop_scope();
-                                        if self.accumulate_errors {
-                                            self.inferred_errors.push(handler_ty.clone());
-                                        }
-                                        let ret_ok = self.ctx.fresh_var();
-                                        let ret_result = Type::Result {
-                                            ok: Box::new(ret_ok),
-                                            err: Box::new(handler_ty),
-                                        };
-                                        let _ = self.unify(&resolved_ret, &ret_result, expr.span);
-                                    } else if self.accumulate_errors {
-                                        // ER20: Collect instead of unifying with return
-                                        self.inferred_errors.push(err_ty);
-                                    } else {
-                                        let ret_ok = self.ctx.fresh_var();
-                                        let ret_result = Type::Result {
-                                            ok: Box::new(ret_ok),
-                                            err: Box::new(err_ty),
-                                        };
-                                        let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                    if self.accumulate_errors {
+                                        self.inferred_errors.push(err_ty.clone());
                                     }
+                                    let ret_ok = self.ctx.fresh_var();
+                                    let ret_result = Type::Result {
+                                        ok: Box::new(ret_ok),
+                                        err: Box::new(err_ty),
+                                    };
+                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
                                     ok_ty
                                 }
                                 _ => {
@@ -966,6 +875,110 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
+                            span: expr.span,
+                        });
+                        Type::Error
+                    }
+                }
+            }
+
+            // ER14: `r catch e => body` / `r catch _ => body`. Results only.
+            ExprKind::Catch { value, ref clause } => {
+                let val_ty = self.infer_expr(value);
+                let resolved = self.ctx.apply(&val_ty);
+                let (ok_ty, err_ty) = match &resolved {
+                    Type::Result { err, .. } if **err == Type::None => {
+                        self.errors.push(TypeError::CatchOnOptional {
+                            found: resolved.clone(),
+                            span: expr.span,
+                        });
+                        return Type::Error;
+                    }
+                    Type::Result { ok, err } => (*ok.clone(), *err.clone()),
+                    Type::Var(_) => {
+                        let ok = self.ctx.fresh_var();
+                        let err = self.ctx.fresh_var();
+                        let shape = Type::Result {
+                            ok: Box::new(ok.clone()),
+                            err: Box::new(err.clone()),
+                        };
+                        let _ = self.unify(&val_ty, &shape, expr.span);
+                        (ok, err)
+                    }
+                    Type::Error => return Type::Error,
+                    _ => {
+                        self.errors.push(TypeError::TryOnNonResult {
+                            found: resolved.clone(),
+                            span: expr.span,
+                        });
+                        return Type::Error;
+                    }
+                };
+
+                self.push_scope();
+                if !clause.is_discard() {
+                    self.define_local_const(clause.binder.clone(), err_ty);
+                }
+                let body_ty = self.infer_expr(&clause.body);
+                self.pop_scope();
+                let resolved_body = self.ctx.apply(&body_ty);
+
+                // ER14a, three cases in order: a still-wrapped body with the
+                // same success type keeps the shape; `Never` and a bare `T`
+                // both collapse to `T`.
+                if matches!(resolved_body, Type::Never) {
+                    return ok_ty;
+                }
+                // `catch _ => none` is the acknowledged drop — the old `.ok()`.
+                // The layers don't stack: on a success type that's already
+                // optional, the drop lands on the outer one (OPT30).
+                if matches!(clause.body.kind, ExprKind::None) {
+                    let ok_ty = self.ctx.apply(&ok_ty);
+                    return if ok_ty.is_option() { ok_ty } else { Type::option(ok_ty) };
+                }
+                // Still wrapped with the same success type — the shape carries
+                // on, and so does the chain.
+                if let Type::Result { ok: body_ok, .. } = &resolved_body {
+                    let body_ok = (**body_ok).clone();
+                    if let Err(e) = self.unify(&body_ok, &ok_ty, expr.span) {
+                        self.errors.push(e);
+                    }
+                    return resolved_body;
+                }
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    ok_ty.clone(),
+                    body_ty,
+                    expr.span,
+                ));
+                ok_ty
+            }
+
+            // OPT32: `take slot` moves the payload out and leaves `none`.
+            ExprKind::Take { place } => {
+                let place_ty = self.infer_expr(place);
+                let resolved = self.ctx.apply(&place_ty);
+                if let Some(name) = Self::place_root_name(place) {
+                    if let Some(kind) = self.lookup_binding_kind(&name) {
+                        if kind.is_read_only() {
+                            self.errors.push(TypeError::TakeOnImmutablePlace {
+                                name,
+                                span: expr.span,
+                            });
+                        }
+                    }
+                }
+                match &resolved {
+                    Type::Result { err, .. } if **err == Type::None => resolved.clone(),
+                    Type::Var(_) => {
+                        let inner = self.ctx.fresh_var();
+                        let opt = Type::option(inner);
+                        let _ = self.unify(&place_ty, &opt, expr.span);
+                        opt
+                    }
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.errors.push(TypeError::TakeOnNonOptional {
+                            found: resolved.clone(),
                             span: expr.span,
                         });
                         Type::Error
@@ -1356,18 +1369,31 @@ impl TypeChecker {
 
 
             ExprKind::NullCoalesce { value, default } => {
+                // ER16b: `try f() ?? v` is the composite for a flat `T? or E`.
+                // Tell the `try` it's the left half, so ER47 lets it through.
+                if matches!(value.kind, ExprKind::Try { .. }) {
+                    self.flat_try_sites.insert(value.id);
+                }
                 let val_ty = self.infer_expr(value);
+                let resolved_val = self.ctx.apply(&val_ty);
+
+                // ER12: `?` marks absence. A result's other branch is an error,
+                // and dropping it should say so.
+                if let Type::Result { err, .. } = &resolved_val {
+                    if **err != Type::None && !matches!(**err, Type::Var(_) | Type::Error) {
+                        self.errors.push(TypeError::CoalesceOnResult {
+                            found: resolved_val.clone(),
+                            span: expr.span,
+                        });
+                        return Type::Error;
+                    }
+                }
+
                 let def_ty = self.infer_expr(default);
                 let resolved_def = self.ctx.apply(&def_ty);
-                // OPT13: diverging default (`?? return y`, `?? break`, `?? continue`,
-                // `?? panic(…)`) unwraps the scrutinee and yields the inner type.
-                // ER14: the fallback replaces the *success* value, so only the
-                // ok side has to match it. Forcing the whole scrutinee to be
-                // `Option<default>` demanded `E == none` and rejected every
-                // `T or E` — `divide(10, 0) ?? -1` reported "expected DivError,
-                // found none" (#394).
-                // The error side stays a free var so both shapes fit: `T?`
-                // binds it to `none`, `T or E` binds it to E.
+                // The left side's success type has to match whatever the right
+                // side supplies. The error side stays a free var so an operand
+                // whose shape isn't pinned yet still fits.
                 let constrain_ok = |checker: &mut Self, want: &Type| {
                     let free_err = checker.ctx.fresh_var();
                     checker.ctx.add_constraint(TypeConstraint::Equal(
@@ -1379,14 +1405,28 @@ impl TypeChecker {
                         expr.span,
                     ));
                 };
+
+                // ER14a, three cases in order.
                 if matches!(resolved_def, Type::Never) {
+                    // A divergence — `?? return e`, `?? break`. The chain ends.
                     let inner = self.ctx.fresh_var();
                     constrain_ok(self, &inner);
-                    inner
-                } else {
-                    constrain_ok(self, &def_ty);
-                    def_ty
+                    return inner;
                 }
+                if let (Type::Result { ok: val_ok, .. }, Type::Result { ok: def_ok, .. }) =
+                    (&resolved_val, &resolved_def)
+                {
+                    // Still wrapped with the same success type — keep the shape
+                    // so `b ?? a ?? 7` chains flat. Different success types mean
+                    // a layer collapse instead (OPT30).
+                    if self.same_shape(val_ok, def_ok) {
+                        constrain_ok(self, def_ok);
+                        return resolved_def;
+                    }
+                }
+                // A bare success value. The chain collapses to `T`.
+                constrain_ok(self, &def_ty);
+                def_ty
             }
 
             ExprKind::OptionalField { object, field } => {
@@ -2915,6 +2955,75 @@ impl TypeChecker {
                 _ => false,
             },
             _ => false,
+        }
+    }
+
+    /// Two types that unify without committing anything — used to tell a
+    /// still-wrapped `??`/`catch` right side (same success type, chain carries
+    /// on) from a collapse (ER14a).
+    fn same_shape(&mut self, a: &Type, b: &Type) -> bool {
+        let (a, b) = (self.ctx.apply(a), self.ctx.apply(b));
+        if matches!(a, Type::Var(_)) || matches!(b, Type::Var(_)) {
+            return false;
+        }
+        a == b
+    }
+
+    /// ER47: bare `try` on an optional needs a return with an absent branch.
+    fn check_absence_can_leave(&mut self, span: rask_ast::Span) {
+        let Some(return_ty) = &self.current_return_type else {
+            self.errors.push(TypeError::TryOutsideFunction { span });
+            return;
+        };
+        let resolved = self.ctx.apply(return_ty);
+        match &resolved {
+            _ if resolved.is_option() => {}
+            // Not pinned yet — `try` says the return has an absent branch.
+            Type::Var(_) => {
+                let ok = self.ctx.fresh_var();
+                let _ = self.unify(&resolved, &Type::option(ok), span);
+            }
+            Type::Error => {}
+            Type::Result { .. } => {
+                self.errors.push(TypeError::TryAbsenceIntoResult {
+                    return_ty: resolved.clone(),
+                    span,
+                });
+            }
+            _ => {
+                self.errors.push(TypeError::TryInNonPropagatingContext {
+                    return_ty: resolved.clone(),
+                    span,
+                });
+            }
+        }
+    }
+
+    /// ER47: bare `try` on a result needs a return with an error branch. False
+    /// when it reported, so the caller stops rather than piling on.
+    fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
+        let Some(return_ty) = &self.current_return_type else {
+            return true;
+        };
+        let resolved = self.ctx.apply(return_ty);
+        if resolved.is_option() {
+            self.errors.push(TypeError::TryErrorIntoOptional {
+                return_ty: resolved,
+                span,
+            });
+            return false;
+        }
+        true
+    }
+
+    /// The variable a place expression is rooted at — `conn.pending` → `conn`.
+    fn place_root_name(place: &Expr) -> Option<String> {
+        match &place.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+                Self::place_root_name(object)
+            }
+            _ => None,
         }
     }
 

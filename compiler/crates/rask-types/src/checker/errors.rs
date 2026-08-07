@@ -94,6 +94,38 @@ pub enum TypeError {
     },
     #[error("try can only be used within a function")]
     TryOutsideFunction { span: Span },
+    /// ER47: bare `try` on an optional inside a function that returns `T or E`.
+    /// `none` has no error branch to land in.
+    #[error("`try` on an optional needs a `T?`-returning function, found `{return_ty}`")]
+    TryAbsenceIntoResult { return_ty: Type, span: Span },
+    /// ER47: bare `try` on a result inside a function that returns `T?`.
+    #[error("`try` on a result needs an error branch to leave through, found `{return_ty}`")]
+    TryErrorIntoOptional { return_ty: Type, span: Span },
+    /// ER47: bare `try` on a flat `T? or E` — two branches could leave, so the
+    /// composite has to say which is which.
+    #[error("`try` on a `{found}` has two ways to leave")]
+    TryOnFlatShape { found: Type, span: Span },
+    /// ER14: `catch` is results-only.
+    #[error("`catch` on an optional — absence carries no error")]
+    CatchOnOptional { found: Type, span: Span },
+    /// ER12: `??` is optionals-only.
+    #[error("`??` on a result — `?` marks absence, not failure")]
+    CoalesceOnResult { found: Type, span: Span },
+    /// OPT32: `take` needs a `T?` place.
+    #[error("`take` needs an optional slot, found `{found}`")]
+    TakeOnNonOptional { found: Type, span: Span },
+    /// OPT32: `take` empties the slot, so the slot has to be writable.
+    #[error("`take` needs a mutable place")]
+    TakeOnImmutablePlace { name: String, span: Span },
+    /// std.api/SD4: the wrapper shapes have no methods; the operator replaces it.
+    #[error("no method `{method}` on `{receiver}`")]
+    WrapperMethodCut {
+        method: String,
+        receiver: Type,
+        /// The operator spelling that does this job.
+        fix: String,
+        span: Span,
+    },
     #[error("missing return statement")]
     MissingReturn {
         function_name: String,

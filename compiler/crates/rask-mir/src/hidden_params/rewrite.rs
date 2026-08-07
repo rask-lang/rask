@@ -322,11 +322,12 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
                 rewrite_expr(pass, caller, &mut arm.body);
             }
         }
-        ExprKind::Try { expr: e, ref mut else_clause } => {
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => {
             rewrite_expr(pass, caller, e);
-            if let Some(ec) = else_clause {
-                rewrite_expr(pass, caller, &mut ec.body);
-            }
+        }
+        ExprKind::Catch { value, ref mut clause } => {
+            rewrite_expr(pass, caller, value);
+            rewrite_expr(pass, caller, &mut clause.body);
         }
         ExprKind::IsPresent { expr: e, .. } => {
             rewrite_expr(pass, caller, e);

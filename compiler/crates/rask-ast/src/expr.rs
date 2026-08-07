@@ -112,15 +112,28 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// Try expression (prefix `try expr` for propagation; optional `else |e| handler`)
+    /// Propagation (prefix `try expr`) — extracts the success payload, or the
+    /// other branch leaves to the caller. Works on both wrapper shapes: the
+    /// error of a `T or E`, the `none` of a `T?` (type.errors/ER16).
+    /// It has no clause; substituting a value is `??` or `catch` instead.
     Try {
         expr: Box<Expr>,
-        else_clause: Option<TryElse>,
     },
-    /// Presence predicate (postfix `expr?`) — evaluates to bool.
-    /// `true` if scrutinee is `Some`/`Ok`, `false` if `None`/`Err`.
-    /// `binding` (OPT20/ER20) is the optional `as v` that binds the inner
-    /// payload as a fresh const in the then-branch — `if x? as v { ... v ... }`.
+    /// Failure fallback (`r catch e => body` / `r catch _ => body`, ER14).
+    /// Results only — absence uses `??`. The binder is never optional.
+    Catch {
+        value: Box<Expr>,
+        clause: CatchClause,
+    },
+    /// `take <place>` — move the payload out of a mutable `T?` slot and leave
+    /// `none` behind (type.optionals/OPT32). Yields `T?`.
+    Take {
+        place: Box<Expr>,
+    },
+    /// Presence predicate (postfix `expr?`) — a plain bool, `true` when the
+    /// optional is present. It narrows nothing; reaching the payload is the
+    /// `as v` bind in `binding` (OPT19), which introduces `v: T` in the
+    /// then-branch.
     IsPresent {
         expr: Box<Expr>,
         binding: Option<String>,
@@ -265,11 +278,19 @@ pub struct FieldInit {
     pub value: Expr,
 }
 
-/// Error transformation clause for `try...else |e| expr`.
+/// The handler of `r catch <binder> => <body>`. `binder` is `_` for a visible
+/// discard; the body is a value or a divergence.
 #[derive(Debug, Clone)]
-pub struct TryElse {
-    pub error_binding: String,
+pub struct CatchClause {
+    pub binder: String,
     pub body: Box<Expr>,
+}
+
+impl CatchClause {
+    /// `catch _ =>` drops the error without naming it.
+    pub fn is_discard(&self) -> bool {
+        self.binder == "_"
+    }
 }
 
 /// A `with...as` binding: source expression and binding name.

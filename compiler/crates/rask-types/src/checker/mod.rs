@@ -138,6 +138,9 @@ pub struct TypeChecker {
     /// target error enum could wrap it. Settled after constraint solving.
     /// (`try` node, source error, target error, span).
     pub(super) pending_try_errors: Vec<(NodeId, Type, Type, rask_ast::Span)>,
+    /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
+    /// Only there may a `try` take a flat `T? or E` operand (ER47).
+    pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -213,6 +216,7 @@ impl TypeChecker {
             trait_coercions: HashMap::new(),
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
+            flat_try_sites: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             accumulate_errors: false,

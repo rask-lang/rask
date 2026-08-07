@@ -2188,23 +2188,27 @@ impl Resolver {
                     self.scopes.pop();
                 }
             }
-            ExprKind::Try { expr: inner, ref else_clause } => {
+            ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.resolve_expr(inner);
-                if let Some(ec) = else_clause {
-                    self.scopes.push(ScopeKind::Block);
+            }
+            ExprKind::Catch { value, ref clause } => {
+                self.resolve_expr(value);
+                // The binder scopes to the handler body only. `_` binds nothing.
+                self.scopes.push(ScopeKind::Block);
+                if !clause.is_discard() {
                     let sym_id = self.symbols.insert(
-                        ec.error_binding.clone(),
+                        clause.binder.clone(),
                         SymbolKind::Variable { mutable: false },
                         None,
                         Span::new(0, 0),
                         false,
                     );
-                    if let Err(e) = self.scopes.define(ec.error_binding.clone(), sym_id, Span::new(0, 0)) {
+                    if let Err(e) = self.scopes.define(clause.binder.clone(), sym_id, Span::new(0, 0)) {
                         self.errors.push(e);
                     }
-                    self.resolve_expr(&ec.body);
-                    self.scopes.pop();
                 }
+                self.resolve_expr(&clause.body);
+                self.scopes.pop();
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.resolve_expr(inner);

@@ -804,15 +804,15 @@ pub struct MirLowerer<'a> {
     /// checker leaves `collect()`'s element an inference variable — and a binding
     /// needs it so `for v in page` knows what it is iterating.
     collected_elem_types: HashMap<LocalId, MirType>,
-    /// Stack of enclosing `try { … } else |e| …` handlers (innermost last).
+    /// Stack of enclosing `try { … } catch e => …` handlers (innermost last).
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
-    try_else_stack: Vec<TryElseFrame>,
+    catch_frames: Vec<CatchFrame>,
 }
 
-/// Where a `try` inside a `try { … } else |e| …` block sends its error.
+/// Where a `try` inside a `try { … } catch e => …` block sends its error.
 #[derive(Clone)]
-pub(crate) struct TryElseFrame {
+pub(crate) struct CatchFrame {
     /// Block that binds `e` and runs the handler body.
     pub(crate) handler_block: BlockId,
     /// Slot the failing error payload is copied into before the jump.
@@ -1806,7 +1806,7 @@ impl<'a> MirLowerer<'a> {
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
-            try_else_stack: Vec::new(),
+            catch_frames: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -2743,13 +2743,14 @@ impl<'a> MirLowerer<'a> {
                 for p in inner_params { inner_bound.insert(p.name.clone()); }
                 self.walk_free_vars(body, &inner_bound, seen, free);
             }
-            ExprKind::Try { expr: inner, ref else_clause } => {
+            ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.walk_free_vars(inner, bound, seen, free);
-                if let Some(ec) = else_clause {
-                    let mut inner_bound = bound.clone();
-                    inner_bound.insert(ec.error_binding.clone());
-                    self.walk_free_vars(&ec.body, &inner_bound, seen, free);
-                }
+            }
+            ExprKind::Catch { value, ref clause } => {
+                self.walk_free_vars(value, bound, seen, free);
+                let mut inner_bound = bound.clone();
+                inner_bound.insert(clause.binder.clone());
+                self.walk_free_vars(&clause.body, &inner_bound, seen, free);
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);

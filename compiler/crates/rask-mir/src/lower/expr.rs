@@ -2014,17 +2014,36 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result), MirType::Bool))
             }
 
-            // Try expression (spec L3)
-            ExprKind::Try { expr: inner, ref else_clause } => {
-                match (else_clause, &inner.kind) {
-                    // ER18 block form: the block's own value is the result, and
-                    // any `try` inside it lands in the handler.
-                    (Some(try_else), ExprKind::Block(_)) => {
-                        self.lower_try_else_block(inner, try_else)
-                    }
-                    (Some(try_else), _) => self.lower_try_else(inner, try_else),
-                    (None, _) => self.lower_try(expr.id, inner),
-                }
+            // ER16: `try` propagates; ER17: a block operand propagates per `try`.
+            ExprKind::Try { expr: inner } => self.lower_try(expr.id, inner),
+
+            // ER14: `r catch <binder> => <body>`.
+            ExprKind::Catch { value, ref clause } => self.lower_catch(value, clause),
+
+            // OPT32: read the slot, write `none` back, hand back what was read.
+            ExprKind::Take { place } => {
+                let (val, ty) = self.lower_expr(place)?;
+                let taken = self.builder.alloc_temp(ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: taken,
+                    rvalue: MirRValue::Use(val),
+                }));
+                // The `none` carries the place's own node id so it picks up the
+                // slot's option layout (niche or tagged) instead of guessing.
+                let absent = Expr {
+                    id: place.id,
+                    kind: ExprKind::None,
+                    span: expr.span,
+                };
+                self.lower_stmt(&rask_ast::stmt::Stmt {
+                    id: expr.id,
+                    kind: rask_ast::stmt::StmtKind::Assign {
+                        target: (**place).clone(),
+                        value: absent,
+                    },
+                    span: expr.span,
+                })?;
+                Ok((MirOperand::Local(taken), ty))
             }
 
             // Presence predicate (postfix ?) — evaluates to bool.
