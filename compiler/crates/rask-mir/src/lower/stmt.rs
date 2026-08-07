@@ -1630,7 +1630,9 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| matches!(binding, ForBinding::Tuple(_))
                     .then(|| self.vec_tuple_elem_type(iter_expr))
                     .flatten())
-                .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/stmt:for_loop_elem"))
+                // Last: the source collection's own declared element type.
+                .or_else(|| self.collection_elem_of_expr(iter_expr))
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:for_loop_elem"))
         };
         let (pair_tys, binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);

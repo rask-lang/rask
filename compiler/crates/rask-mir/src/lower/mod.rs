@@ -131,6 +131,9 @@ pub struct ComptimeGlobalMeta {
     pub elem_count: usize,
     /// Type prefix for method dispatch ("Vec", "Array", etc.)
     pub type_prefix: String,
+    /// What the elements are, for a Vec/Array global. Without it, indexing one
+    /// had no element type to resolve and lowering fell back to a guess.
+    pub elem_type: Option<String>,
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
@@ -1013,12 +1016,52 @@ impl<'a> MirLowerer<'a> {
 
     /// Element MIR type of a checker `Vec<T>`, in either the pre-resolve
     /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
-    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+    /// The name and type arguments of a possibly-generic checker type.
+    ///
+    /// `type_names` stores the *declaration* form, so a resolved `Generic` for a
+    /// Map comes back as `"Map<K, V>"`, not `"Map"`. Comparing that against a
+    /// bare name never matched, which quietly disabled the resolved-`Generic`
+    /// path entirely — only `UnresolvedGeneric`, which carries a bare name, ever
+    /// resolved. Strip the parameters before comparing.
+    pub(crate) fn generic_head<'t>(&self, ty: &'t Type) -> Option<(String, &'t Vec<rask_types::GenericArg>)> {
         let (name, args) = match ty {
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             Type::Generic { base, args } => (self.ctx.type_names.get(base)?.clone(), args),
             _ => return None,
         };
+        let bare = name.split('<').next().unwrap_or(&name).trim().to_string();
+        Some((bare, args))
+    }
+
+    /// What a collection holds: the element of a `Vec`/`Pool`, the *value* of a
+    /// `Map`. Indexing any of them yields this type.
+    pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = self.generic_head(ty)?;
+        // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
+        // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
+        // exactly that.
+        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Owned") {
+            let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
+            return self.collection_elem_of_checker_type(inner);
+        }
+        let arg = match name.as_str() {
+            // Iterator is here because a `for` source is often one, and it
+            // carries its element type the same way.
+            "Vec" | "Pool" | "Iterator" => args.first()?,
+            // `m[k]` and `m.get(k)` yield V, not K.
+            "Map" => args.get(1)?,
+            _ => return None,
+        };
+        match arg {
+            // An unresolved variable is not an answer — see below.
+            rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
+            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = self.generic_head(ty)?;
         if name != "Vec" {
             return None;
         }
@@ -1109,6 +1152,56 @@ impl<'a> MirLowerer<'a> {
     /// A `Vec.new()` filled by `push` leaves the checker with an inference
     /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
     /// argument node.
+    /// What the collection this expression evaluates to holds — element for a
+    /// `Vec`/`Pool`, value for a `Map`.
+    ///
+    /// Tries the checker's type for the expression, then the declared type of a
+    /// struct field, then `Vec`-specific tracking. The field case is the one that
+    /// matters most: push-tracking is per-function and the checker doesn't type
+    /// every node, so a collection that arrived as a field of something built
+    /// elsewhere has only its declaration to go on.
+    pub(crate) fn collection_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            if let Some(elem) = self.collection_elem_of_checker_type(ty) {
+                return Some(elem);
+            }
+        }
+        if let ExprKind::Field { object, field } = &expr.kind {
+            if let Some(layout) = self.struct_layout_of_expr(object) {
+                if let Some(f) = layout.fields.iter().find(|f| f.name == *field) {
+                    if let Some(elem) = self.collection_elem_of_checker_type(&f.ty.clone()) {
+                        return Some(elem);
+                    }
+                }
+            }
+        }
+        // A comptime-built global — `const SQUARES = comptime { … }` — records
+        // what it holds alongside its bytes.
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(elem) = self.ctx.comptime_globals.get(name)
+                .and_then(|g| g.elem_type.as_deref())
+            {
+                return Some(self.ctx.resolve_type_str(elem));
+            }
+        }
+        // A view over a collection holds what the collection holds, so ask the
+        // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
+        // leaves the element a variable — while `PRIMES` itself knows.
+        // `iter`/`values` view a collection; `lock`/`read`/`write` unwrap a box
+        // around one. Either way the receiver is the thing that knows.
+        if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
+            if matches!(
+                method.as_str(),
+                "iter" | "values" | "into_iter" | "lock" | "read" | "write"
+            ) {
+                if let Some(elem) = self.collection_elem_of_expr(object) {
+                    return Some(elem);
+                }
+            }
+        }
+        self.vec_elem_of_expr(expr)
+    }
+
     pub(crate) fn vec_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             if let Some(elem) = self.vec_elem_of_checker_type(ty) {
@@ -3388,6 +3481,29 @@ pub enum LoweringError {
     /// miscompile — an f64 loses its value, a string or a struct becomes an
     /// address. Carries the sites that gave up so the report names them.
     UnknownType(Vec<(&'static str, u32)>),
+}
+
+impl std::fmt::Display for LoweringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoweringError::UnresolvedVariable(name) => write!(f, "unresolved variable `{name}`"),
+            LoweringError::UnresolvedGeneric(name) => write!(f, "unresolved generic `{name}`"),
+            LoweringError::InvalidConstruct(what) => write!(f, "{what}"),
+            LoweringError::UnknownType(sites) => {
+                let where_ = sites.iter().map(|(s, _)| *s).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "couldn't work out a type here, so there's nothing safe to \
+                     compile — a guess is only ever right for a value that fits a \
+                     machine word, and would silently corrupt an f64, a string or \
+                     a struct.\n         \
+                     A type annotation on the binding usually settles it \
+                     (`const xs: Vec<i64> = …`).\n         \
+                     Gave up in: {where_}"
+                )
+            }
+        }
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

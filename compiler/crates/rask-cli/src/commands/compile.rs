@@ -110,7 +110,7 @@ fn lower_to_mir(
     if skip_main {
         match rask_mir::lower::MirLowerer::lower_const_init_thunks(all_mono_decls, mir_ctx) {
             Ok(thunks) => mir_functions.extend(thunks),
-            Err(e) => errors.push(format!("MIR lowering const initializers: {:?}", e)),
+            Err(e) => errors.push(format!("MIR lowering const initializers: {}", e)),
         }
     }
 
@@ -133,7 +133,7 @@ fn lower_to_mir(
             &mono_fn.body, all_mono_decls, mir_ctx, Some(&mono_fn.name)
         ) {
             Ok(mir_fns) => mir_functions.extend(mir_fns),
-            Err(e) => errors.push(format!("MIR lowering '{}': {:?}", mono_fn.name, e)),
+            Err(e) => errors.push(format!("MIR lowering '{}': {}", mono_fn.name, e)),
         }
     }
 

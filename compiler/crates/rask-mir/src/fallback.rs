@@ -18,10 +18,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 thread_local! {
-    /// Fatal: lowering couldn't resolve a type it needs.
     static HITS: RefCell<BTreeMap<&'static str, u32>> = RefCell::new(BTreeMap::new());
-    /// Counted but tolerated — see `element_type_fallback`.
-    static SOFT_HITS: RefCell<BTreeMap<&'static str, u32>> = RefCell::new(BTreeMap::new());
 }
 
 fn trace() -> bool {
@@ -51,26 +48,6 @@ pub fn fallback_allowed() -> bool {
     std::env::var_os("RASK_ALLOW_TYPE_FALLBACK").is_some()
 }
 
-/// The element or value type of a collection the checker didn't type.
-///
-/// Same guess as `i64_fallback` and just as wrong for an f64 or a string, but
-/// **not yet fatal**, because five sites share one unfinished piece of plumbing:
-/// nothing carries a `Vec`/`Map`/iterator element type down to lowering when the
-/// checker didn't record it on the node. i64 is accidentally right often enough
-/// that the corpus leans on it — the flagship example and seven suite tests stop
-/// compiling the moment these throw.
-///
-/// Kept separate and counted so the debt is one named thing rather than
-/// scattered guesses, and so flipping it to fatal is a one-line change once the
-/// element type is plumbed through. Tracked in #615.
-pub fn element_type_fallback(site: &'static str) -> MirType {
-    SOFT_HITS.with(|h| *h.borrow_mut().entry(site).or_insert(0) += 1);
-    if trace() {
-        eprintln!("[element-fallback] {site} could not resolve an element type");
-    }
-    MirType::I64
-}
-
 /// Every site that gave up, with a count, most frequent first.
 pub fn hits() -> Vec<(&'static str, u32)> {
     let mut v: Vec<_> = HITS.with(|h| h.borrow().iter().map(|(k, v)| (*k, *v)).collect());
@@ -86,15 +63,7 @@ pub fn take_hits() -> Vec<(&'static str, u32)> {
     v
 }
 
-/// Every tolerated element-type guess, with a count. Debt, not failure.
-pub fn soft_hits() -> Vec<(&'static str, u32)> {
-    let mut v: Vec<_> = SOFT_HITS.with(|h| h.borrow().iter().map(|(k, v)| (*k, *v)).collect());
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    v
-}
-
-/// Forget the fatal record. Soft hits accumulate across the whole run so a
-/// build can report the total.
+/// Forget everything recorded.
 pub fn reset() {
     HITS.with(|h| h.borrow_mut().clear());
 }

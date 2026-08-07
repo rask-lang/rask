@@ -83,6 +83,7 @@ pub fn evaluate_comptime_globals(
                         bytes,
                         elem_count: val.elem_count(),
                         type_prefix: val.type_prefix().to_string(),
+                        elem_type: val.elem_type_name().map(str::to_string),
                     });
                 }
             }
@@ -90,7 +91,11 @@ pub fn evaluate_comptime_globals(
                 let div0 = matches!(e, rask_comptime::ComptimeError::DivisionByZero);
                 diags.push(comptime_diagnostic(&e.to_string(), div0, init.span));
             }
-            Err(_) => {} // soft: not foldable → runs at runtime
+            Err(e) => {
+                if std::env::var_os("RASK_DBG_COMPTIME").is_some() {
+                    eprintln!("[comptime] AST path gave up on `{}`: {}", name, e);
+                }
+            } // soft: not foldable → runs at runtime
         }
     }
 
@@ -271,12 +276,18 @@ fn try_eval_comptime_mir(
             *hard_err = Some(e);
             return None;
         }
-        Err(_) => return None,
+        Err(e) => {
+            if std::env::var_os("RASK_DBG_COMPTIME").is_some() {
+                eprintln!("[comptime] MIR path gave up: {}", e);
+            }
+            return None;
+        }
     };
 
     Some(ComptimeGlobalMeta {
         type_prefix: result.type_prefix().to_string(),
         elem_count: result.elem_count(),
+        elem_type: result.elem_type_name().map(str::to_string),
         bytes: result.serialize()?,
     })
 }

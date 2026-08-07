@@ -475,6 +475,15 @@ impl<'a> MirLowerer<'a> {
         if let Some(n) = &inner_name {
             self.meta_mut(&guard_name).type_prefix = Some(n.clone());
         }
+        // What the payload holds, when the payload is a collection. The guard is
+        // a synthetic local with no checker type of its own, so
+        // `self.counters.lock().get(k)` on a `Mutex<Map<string, u64>>` had
+        // nothing to resolve the value type from once `.lock()` desugared away.
+        if let Some(elem) = self.ctx.lookup_raw_type(box_obj.id)
+            .and_then(|ty| self.collection_elem_of_checker_type(ty))
+        {
+            self.meta_mut(&guard_name).elem_type = Some(elem);
+        }
 
         // Lower the trailing operation on the guard through the normal path.
         let guard_ident = Expr {

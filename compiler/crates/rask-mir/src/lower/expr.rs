@@ -1549,8 +1549,8 @@ impl<'a> MirLowerer<'a> {
                     // other way — a field of a struct returned from a call, or of
                     // a `json.decode` result — fell through to i64 and
                     // `h.names[0]` printed a string's first bytes as a number.
-                    .or_else(|| self.vec_elem_of_expr(object))
-                    .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:vec_index_elem"));
+                    .or_else(|| self.collection_elem_of_expr(object))
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_index_elem"));
                 let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
@@ -3780,7 +3780,8 @@ impl<'a> MirLowerer<'a> {
             // dereferenced the id.
             let payload = self.extract_payload_type(expr)
                 .or_else(|| self.map_value_mir(object))
-                .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:map_get_value"));
+                .or_else(|| self.collection_elem_of_expr(object))
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:map_get_value"));
             Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
@@ -3823,22 +3824,13 @@ impl<'a> MirLowerer<'a> {
                     self.meta(&key).and_then(|m| m.elem_type.clone())
                         .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                 })
-                // Fallback: extract from Pool<T> generic parameter
-                .or_else(|| {
-                    self.ctx.lookup_raw_type(object.id)
-                        .and_then(|ty| match ty {
-                            rask_types::Type::UnresolvedGeneric { args, .. } => {
-                                args.first().and_then(|a| match a {
-                                    rask_types::GenericArg::Type(t) => Some(t.as_ref()),
-                                    _ => None,
-                                })
-                            }
-                            _ => None,
-                        })
-                        .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
-                        .filter(|t| !matches!(t, MirType::Ptr))
-                })
-                .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:vec_get_elem"));
+                // Then whatever the receiver's own type says it holds — a
+                // `Vec<T>`/`Pool<T>` element or a `Map<K, V>` value, resolved or
+                // not. This used to read the first generic arg of an
+                // `UnresolvedGeneric` only, so a resolved type or a Map missed.
+                .or_else(|| self.collection_elem_of_expr(object)
+                    .filter(|t| !matches!(t, MirType::Ptr)))
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
             Some(MirType::Option(Box::new(elem_ty)))
         } else if matches!(qualified_name.as_str(), "Cell_get" | "Cell_replace" | "Cell_into_inner") {
             // What the cell holds — all three hand back the payload. The stub's

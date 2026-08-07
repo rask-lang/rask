@@ -447,6 +447,26 @@ impl ComptimeValue {
         }
     }
 
+    /// The Rask type name of what an Array holds, spelled the way a type
+    /// annotation would be.
+    ///
+    /// A comptime global keeps its bytes and its length but used to drop what
+    /// those bytes *are*, so `SQUARES[i]` on a `const SQUARES = comptime { … }`
+    /// had nothing to go on and lowering guessed i64 — right for these, wrong
+    /// the moment a comptime block builds floats or strings.
+    pub fn elem_type_name(&self) -> Option<&'static str> {
+        let ComptimeValue::Array(elems) = self else { return None };
+        let first = elems.first()?;
+        Some(match first {
+            // `type_name` spells this one for error messages, not as a type.
+            ComptimeValue::String(_) => "string",
+            ComptimeValue::Array(_) | ComptimeValue::Tuple(_)
+            | ComptimeValue::Struct { .. } | ComptimeValue::Enum { .. }
+            | ComptimeValue::Closure { .. } | ComptimeValue::Unit => return None,
+            other => other.type_name(),
+        })
+    }
+
     /// Convert to bool if possible.
     pub fn as_bool(&self) -> Option<bool> {
         match self {

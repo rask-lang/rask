@@ -589,6 +589,26 @@ impl DataflowAnalysis for TypestateAnalysis {
                     new_info.state = HandleState::Unknown;
                     new_info.state_span = old_info.state_span;
                 }
+                // The mirror case. A handle invalidated in one iteration arrives
+                // Invalid on the back edge, but the binding is re-established at
+                // the top of the next one — so "provably stale" isn't provable
+                // here, it's just the previous trip's handle:
+                //
+                //     for h in pool.handles() {
+                //         let e = pool[h]          // flagged stale
+                //         if e.health < 50 { pool.remove(h) }
+                //     }
+                //
+                // Each `h` is a distinct handle out of a snapshot, so that read
+                // is fine. Widen to Unknown rather than reporting: the access
+                // still carries its generation check, so a genuinely stale read
+                // is caught there instead of being missed.
+                if old_info.state != HandleState::Invalid
+                    && new_info.state == HandleState::Invalid
+                {
+                    new_info.state = HandleState::Unknown;
+                    new_info.state_span = old_info.state_span;
+                }
             }
         }
         result
