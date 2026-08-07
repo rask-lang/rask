@@ -67,7 +67,7 @@ extend Db {
         for meta in discovered {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
             if meta.level < MAX_LEVELS {
-                with levels[meta.level as usize] as level_ssts {
+                with levels[meta.level as usize] as mut level_ssts {
                     level_ssts.push(meta)
                 }
             }
@@ -212,7 +212,7 @@ extend Db {
         let meta = try write_sstable(id, 0, self.config.dir, entries)
             else |e| DbError.Sst(e)
 
-        with self.levels[0] as l0 {
+        with self.levels[0] as mut l0 {
             l0.push(meta)
         }
 
@@ -249,7 +249,7 @@ extend Db {
         }
 
         let next_level_idx = (level + 1) truncate to usize
-        with self.levels[next_level_idx] as ssts {
+        with self.levels[next_level_idx] as mut ssts {
             ssts.push(merged)
         }
 

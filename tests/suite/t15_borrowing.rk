@@ -119,7 +119,7 @@ test "with block mutates vec element" {
     mut v = Vec<i32>.new()
     v.push(10)
     v.push(20)
-    with v[0] as item {
+    with v[0] as mut item {
         item = item + 5
     }
     assert v[0] == 15
@@ -129,7 +129,7 @@ test "with block mutates second element" {
     mut v = Vec<i32>.new()
     v.push(100)
     v.push(200)
-    with v[1] as item {
+    with v[1] as mut item {
         item = 999
     }
     assert v[1] == 999

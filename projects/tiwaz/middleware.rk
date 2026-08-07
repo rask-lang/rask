@@ -15,7 +15,7 @@ func logging(next: |Request| -> Response) -> |Request| -> Response {
 func with_metrics(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
         let response = next(request)
-        with metrics.write() as m {
+        with metrics.write() as mut m {
             m.request_count = m.request_count + 1
             if response.status >= 400 {
                 m.error_count = m.error_count + 1

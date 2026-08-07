@@ -101,7 +101,7 @@ Use `with` for multi-statement operations on pool elements (`mem.borrowing/W1`).
 
 <!-- test: skip -->
 ```rask
-with pool[h] as entity {
+with pool[h] as mut entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
@@ -110,14 +110,14 @@ with pool[h] as entity {
 }
 
 // One-liner shorthand
-with pool[h] as e: e.health -= damage
+with pool[h] as mut e: e.health -= damage
 ```
 
 Pool handles survive reallocation (PL9), so `insert` and `remove(other)` are allowed inside `with` blocks — the compiler re-resolves bindings after each structural mutation (`mem.borrowing/W2a`, `W2b`). Removing the bound handle or clearing the pool remain compile errors (`W2c`, `W2d`):
 
 <!-- test: skip -->
 ```rask
-with pool[h] as entity {
+with pool[h] as mut entity {
     entity.health -= pool[other_h].bonus    // OK: read other element
     let ally = pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
     entity.allies.push(ally)                // entity still valid
@@ -136,7 +136,7 @@ with pool[h] as entity {
 <!-- test: skip -->
 ```rask
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
-    with pool[h] as entity {
+    with pool[h] as mut entity {
         entity.strength += 10
         try log_buff_applied(entity.id)   // propagates to function
     }
@@ -639,7 +639,7 @@ if should_remove {
 }
 
 // Pattern 4: Multi-element access
-with pool[h1] as e1, pool[h2] as e2 {
+with pool[h1] as mut e1, pool[h2] as e2 {
     e1.health -= e2.attack
 }
 ```

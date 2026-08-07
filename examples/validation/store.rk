@@ -98,7 +98,7 @@ extend Store {
     func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
         let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
 
-        with self.tasks[h] as t {
+        with self.tasks[h] as mut t {
             if patch.status? as s { t.status = s }
             if patch.priority? as p { t.priority = p }
             if patch.clear_assignee {

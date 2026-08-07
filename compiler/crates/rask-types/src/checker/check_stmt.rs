@@ -171,8 +171,14 @@ impl TypeChecker {
                     }
                     if !through_handle {
                         match self.lookup_binding_kind(&root) {
-                            Some(super::BindingKind::Const) => {
+                            Some(super::BindingKind::Let) => {
                                 self.errors.push(TypeError::MutateConst {
+                                    name: root.clone(),
+                                    span: stmt.span,
+                                });
+                            }
+                            Some(super::BindingKind::WithRead) => {
+                                self.errors.push(TypeError::MutateWithBinding {
                                     name: root.clone(),
                                     span: stmt.span,
                                 });

@@ -34,7 +34,7 @@ extend Store {
 
     // A scalar write and a heap write in the same block — both must stick.
     func finish(mutate self, h: Handle<Task>) {
-        with self.tasks[h] as t {
+        with self.tasks[h] as mut t {
             t.tags.push("urgent")
             t.status = Status.Done
             t.priority = Priority.High
@@ -70,7 +70,7 @@ extend Bag {
         return Bag { items: v }
     }
     func bump(mutate self) {
-        with self.items[0] as it { it.n = 99 }
+        with self.items[0] as mut it { it.n = 99 }
     }
     func first(self) -> i64 {
         return with self.items[0] as it { it.n }
@@ -98,7 +98,7 @@ test "every field written in one block persists" {
 test "the write is visible inside the block too" {
     mut s = Store.new()
     let h = s.add()
-    with s.tasks[h] as t {
+    with s.tasks[h] as mut t {
         t.weight = 7
         assert_eq(t.weight, 7)
     }
@@ -114,7 +114,7 @@ test "a pool reached by a plain name still works" {
         weight: 1,
         tags: Vec.new(),
     })
-    with pool[h] as t { t.weight = 5 }
+    with pool[h] as mut t { t.weight = 5 }
     let w = with pool[h] as t { t.weight }
     assert_eq(w, 5)
 }
@@ -128,7 +128,7 @@ test "a vec write through a struct field persists past the block" {
 test "a vec reached by a plain name still works" {
     mut v = Vec<Item>.new()
     v.push(Item { n: 1 })
-    with v[0] as it { it.n = 77 }
+    with v[0] as mut it { it.n = 77 }
     let got = with v[0] as it { it.n }
     assert_eq(got, 77)
 }

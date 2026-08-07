@@ -328,10 +328,10 @@ task takes ownership of its captures. Extending `own` to all closures unifies th
 let counter = Cell.new(0)
 
 button1.on_click(own |event| {
-    with counter as c { c += 1 }
+    with counter as mut c { c += 1 }
 })
 button2.on_click(own |event| {
-    with counter as c { c += 10 }
+    with counter as mut c { c += 10 }
 })
 ```
 

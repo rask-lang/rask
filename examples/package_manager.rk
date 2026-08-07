@@ -763,7 +763,7 @@ func fetch_packages(
             let item_counter = counter.clone()
             spawn(own || {
                 if fetch_one(item, registry)? as path {
-                    with item_counter.lock() as c { c += 1 }
+                    with item_counter.lock() as mut c { c += 1 }
                     item_tx.send(FetchResult.Done(path))
                 } else as e {
                     item_tx.send(FetchResult.Failed(e))

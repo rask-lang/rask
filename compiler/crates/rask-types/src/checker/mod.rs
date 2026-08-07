@@ -41,15 +41,17 @@ use borrow::{ActiveBorrow, PersistentBorrow};
 pub enum BindingKind {
     /// `mut x` — rebindable, mutable
     Mut,
-    /// `const x` — deep-immutable local binding
-    Const,
+    /// `let x` — deep-immutable local binding
+    Let,
     /// Default parameter (read-only; use `mutate` to allow mutation)
     Param,
+    /// `with expr as v` — read-only with-binding (use `as mut v` to mutate)
+    WithRead,
 }
 
 impl BindingKind {
     pub fn is_read_only(&self) -> bool {
-        matches!(self, BindingKind::Const | BindingKind::Param)
+        matches!(self, BindingKind::Let | BindingKind::Param | BindingKind::WithRead)
     }
 }
 

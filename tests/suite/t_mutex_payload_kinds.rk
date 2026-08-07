@@ -21,7 +21,7 @@ struct Store { public entries: Mutex<Map<string, i64>> }
 
 extend Store {
     func put(self, k: string, v: i64) {
-        with self.entries.lock() as m {
+        with self.entries.lock() as mut m {
             m.insert(k, v)
         }
     }
@@ -32,7 +32,7 @@ extend Store {
 
 test "struct payload" {
     let m = Mutex.new(Counter { n: 0 })
-    with m.lock() as c {
+    with m.lock() as mut c {
         c.bump()
         c.bump()
     }
@@ -41,7 +41,7 @@ test "struct payload" {
 
 test "map payload" {
     let mm: Mutex<Map<string, i64>> = Mutex.new(Map.new())
-    with mm.lock() as m {
+    with mm.lock() as mut m {
         m.insert("a", 1)
         m.insert("b", 2)
     }
@@ -50,7 +50,7 @@ test "map payload" {
 
 test "vec payload" {
     let mv: Mutex<Vec<i64>> = Mutex.new(Vec.new())
-    with mv.lock() as v {
+    with mv.lock() as mut v {
         v.push(3)
         v.push(4)
     }

@@ -111,11 +111,19 @@ impl TypeChecker {
         }
     }
 
-    /// Define a `const` binding. Deep-immutable: rebinding, index/field assign,
+    /// Define a `let` binding. Deep-immutable: rebinding, index/field assign,
     /// and mutating method calls all forbidden.
     pub(super) fn define_local_const(&mut self, name: String, ty: Type) {
         if let Some(scope) = self.local_types.last_mut() {
-            scope.insert(name, (ty, super::BindingKind::Const));
+            scope.insert(name, (ty, super::BindingKind::Let));
+        }
+    }
+
+    /// Define a read-only with-binding (`with expr as v`). Same deep
+    /// immutability as `let`, but errors point at `as mut v` instead.
+    pub(super) fn define_local_with_read(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, (ty, super::BindingKind::WithRead));
         }
     }
 

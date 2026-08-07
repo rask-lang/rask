@@ -21,7 +21,7 @@ button.on_click(|event| pool[h].count += 1)
 // Cell: direct
 let state = Cell.new(AppState{...})
 button.on_click(|event, state| {
-    with state as s { s.count += 1 }
+    with state as mut s { s.count += 1 }
 })
 ```
 
@@ -32,8 +32,8 @@ button.on_click(|event, state| {
 | **CE1: Heap-allocated** | `Cell.new(value)` heap-allocates the value |
 | **CE2: Value semantics** | `Cell<T>` is a value that owns its heap data (like Vec, string) |
 | **CE3: Move-only** | `Cell<T>` is never Copy; assignment moves |
-| **CE4: with access** | Access through `with cell as v { ... }` — always mutable binding |
-| **CE5: Exclusive mutation** | `with...as v` (mutable, default) takes exclusive access; no concurrent reads or writes |
+| **CE4: with access** | Access through `with cell as [mut] v { ... }` — read-only by default, `mut` to modify |
+| **CE5: Exclusive mutation** | `with...as v` takes exclusive access either way; no concurrent reads or writes |
 | **CE6: Convenience methods** | `.get()` returns a copy (Copy types only), `.set(value)` replaces the inner value — single-expression alternatives to `with` |
 
 ## API
@@ -57,8 +57,8 @@ let current = counter.get()            // Copy out (Copy types only)
 counter.set(42)                          // Replace inner value
 
 // with access (CE4) — still needed for multi-statement or non-Copy
-with counter as c { c += 1 }
-with counter as c: c += 1               // one-liner shorthand
+with counter as mut c { c += 1 }
+with counter as mut c: c += 1               // one-liner shorthand
 
 // Expression context
 let doubled = with counter as c { c * 2 }
@@ -81,10 +81,10 @@ For multiple closures to share a Cell, use a handle or pass it as a parameter:
 // Pattern: closures receive cell as parameter
 func setup(state: Cell<AppState>) {
     button1.on_click(|event, state| {
-        with state as s { s.mode = Mode.Edit }
+        with state as mut s { s.mode = Mode.Edit }
     })
     button2.on_click(|event, state| {
-        with state as s { s.mode = Mode.View }
+        with state as mut s { s.mode = Mode.View }
     })
     app.run_with(state)
 }
@@ -96,7 +96,7 @@ struct App {
 
 extend App {
     func on_click(self, event: Event) {
-        with self.state as s { s.click_count += 1 }
+        with self.state as mut s { s.click_count += 1 }
     }
 }
 ```

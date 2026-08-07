@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// with-bindings are read-only by default (mem.borrowing/W5).
+// Mutation needs `as mut`; a shared read lock never hands one out (conc.sync/R1).
+
+struct Config {
+    timeout: i64
+}
+
+// ERROR: E0360 — cannot mutate, with-binding is read-only (use `as mut c`)
+func mutate_readonly_binding() {
+    let counter = Mutex.new(0)
+    with counter as c {
+        c += 1
+    }
+}
+
+// ERROR: E0361 — `as mut` on a shared read lock; use `.write()` or drop `mut`
+func mut_binding_on_read_lock() {
+    let config = Shared.new(Config { timeout: 5 })
+    with config.read() as mut c {
+        c.timeout = 10
+    }
+}
+
+func main() {
+    mutate_readonly_binding()
+    mut_binding_on_read_lock()
+}

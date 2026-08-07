@@ -26,7 +26,7 @@ $ rask annotate src/round.rk
 
 src/round.rk
    1 | func damage(h, amount) {                     « func damage(h: Handle<Player>, amount: i32) · using Pool<Player>
-   2 |     with pools[h] as player {
+   2 |     with pools[h] as mut player {
    3 |         player.hp -= amount
    4 |     }
    5 | }

@@ -27,8 +27,8 @@ Cross-task shared state when channels aren't enough.
 
 | Rule | Description |
 |------|-------------|
-| **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Mutation through binding is a compile error |
-| **R2: Write** | `with shared.write() as v { ... }` — exclusive write lock; blocks until readers finish |
+| **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Read bindings never take `mut` — mutation through the binding is a compile error |
+| **R2: Write** | `with shared.write() as mut v { ... }` — exclusive write lock; blocks until readers finish |
 | **R2a: Unused write warning** | Compiler warns when `.write()` used but binding never mutated — suggests `.read()` |
 | **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `none` if contended |
 | **R4: Bare access forbidden** | `with shared as v { ... }` is a compile error — must use `.read()` or `.write()` |
@@ -48,7 +48,7 @@ let name = config.read().user.name
 
 // Multi-statement access (with block)
 let timeout = with config.read() as c { c.timeout }
-with config.write() as c {
+with config.write() as mut c {
     c.timeout = 60.seconds
     c.max_retries = 5
 }
@@ -72,7 +72,7 @@ extend Shared<T> {
 
 Three access patterns:
 - **Inline:** `shared.read().field` / `shared.write().field = x` — single-expression access, lock scoped to expression
-- **`with` block:** `with shared.read() as v { ... }` / `with shared.write() as v { ... }` — multi-statement access
+- **`with` block:** `with shared.read() as v { ... }` / `with shared.write() as mut v { ... }` — multi-statement access
 - **Non-blocking closures:** `try_read(f)` / `try_write(f)` — return `none` if contended
 
 Bare `with shared as v` is a compile error — the lock type must be explicit.
@@ -81,7 +81,7 @@ Bare `with shared as v` is a compile error — the lock type must be explicit.
 
 | Rule | Description |
 |------|-------------|
-| **MX1: Lock** | `with mutex as v { ... }` — exclusive lock; blocks until available |
+| **MX1: Lock** | `with mutex as v { ... }` — exclusive lock; blocks until available. `as mut v` to modify; plain `as v` is read access under the lock |
 | **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `none` if held |
 | **MX3: Inline access** | `mutex.lock().chain` — expression-scoped exclusive lock for single-expression access. Follows `mem.borrowing/E5` rules |
 
@@ -94,7 +94,7 @@ queue.lock().push(item)
 let len = queue.lock().len()
 
 // Multi-statement access (with block)
-with queue as q {
+with queue as mut q {
     q.push(item_a)
     q.push(item_b)
 }
@@ -116,7 +116,7 @@ extend Mutex<T> {
 
 Three access patterns:
 - **Inline:** `mutex.lock().field` — single-expression access, lock scoped to expression
-- **`with` block:** `with mutex as v { ... }` — multi-statement access
+- **`with` block:** `with mutex as [mut] v { ... }` — multi-statement access
 - **Non-blocking closure:** `try_lock(f)` — returns `none` if held
 
 ## `with`-Based Access
@@ -131,7 +131,7 @@ Three access patterns:
 <!-- test: skip -->
 ```rask
 // with-based (Rask) — reference cannot escape, control flow works
-with mutex as data {
+with mutex as mut data {
     data.field = value
     try validate(data)    // propagates to enclosing function
 }
@@ -206,7 +206,7 @@ Panic-atomic updates, opt-in per site. A panic mid-`with` releases the lock clea
 ```rask
 // Vulnerable: panic between the two writes leaves state torn
 func transfer_torn(amount: i64) {
-    with accounts as a {
+    with accounts as mut a {
         a.checking -= amount
         a.savings += amount      // panic here → survivors see money destroyed
     }
@@ -214,7 +214,7 @@ func transfer_torn(amount: i64) {
 
 // Staged: both writes land as one commit, or not at all
 func transfer(amount: i64) {
-    with accounts.staged() as a {
+    with accounts.staged() as mut a {
         a.checking -= amount
         a.savings += amount      // panic here → nothing committed (ST3)
     }                            // clean exit → one commit (ST2)
@@ -234,7 +234,7 @@ Panic is the only way another task can see a half-done update. Suspension keeps 
 <!-- test: skip -->
 ```rask
 // Blocking: with
-with mutex as v { v.push(item) }
+with mutex as mut v { v.push(item) }
 
 // Non-blocking: closure
 let got_it = mutex.try_lock(|v| v.push(item))
@@ -314,8 +314,8 @@ func transfer(from: Mutex<Account>, to: Mutex<Account>, amount: u64) {
 func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
     let a_val = a.lock().clone()
     let b_val = b.lock().clone()
-    with a as v { v = b_val }
-    with b as v { v = a_val }
+    with a as mut v { v = b_val }
+    with b as mut v { v = a_val }
 }
 ```
 

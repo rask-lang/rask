@@ -209,6 +209,12 @@ impl Default for ErrorCodeRegistry {
                 "E0359" => ("ambiguous error wrap in try", Type,
                     "Two or more variants of the function's error enum take the propagated error as their only payload, so `try` has no way to choose. Name the variant at the call site.",
                     "enum StoreError { NotFound(string) }\nenum ApiError { Store(StoreError), Fatal(StoreError) }\n\nfunc outer() -> i32 or ApiError {\n    let x = try lookup()  // error: Store or Fatal?\n\n    // Fix: say which\n    let y = try lookup() else |e| ApiError.Store(e)\n    return y\n}"),
+                "E0361" => ("mut binding on shared read lock", Type,
+                    "`.read()` takes a shared lock — other readers may hold it at the same time, so no mutable binding can be handed out. Use `.write()` for exclusive access, or drop `mut` if you only read.",
+                    "let config = Shared.new(Config {})\nwith config.read() as mut c { }   // error\nwith config.write() as mut c { }  // exclusive — ok\nwith config.read() as c { }       // read-only — ok"),
+                "E0360" => ("mutate read-only with-binding", Type,
+                    "with-bindings are read-only by default. Only `as mut` bindings write the modified value back to the source when the block exits — without it, a mutation would be silently lost, so the compiler rejects it instead.",
+                    "let counter = Mutex.new(0)\nwith counter as c {\n    c += 1  // error: bound with `as c`, read access only\n}\n// fix:\nwith counter as mut c {\n    c += 1  // written back on block exit\n}"),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait,

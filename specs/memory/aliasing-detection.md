@@ -62,7 +62,7 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 ```
 ERROR [mem.aliasing/AL5]: cannot structurally mutate `pool` inside with block
    |
-1  |  with pool[h] as e {
+1  |  with pool[h] as mut e {
    |  ---- element borrowed here
 2  |      pool.remove(h)
    |      ^^^^^^^^^^^^^^ structural mutation not allowed
@@ -82,7 +82,7 @@ FIX: Separate the check from the mutation:
 ```
 ERROR [mem.aliasing/AL4]: cannot structurally mutate `pool` inside with block
    |
-1  |  with pool[h] as e {
+1  |  with pool[h] as mut e {
    |  ---- element borrowed here
 2  |      pool.remove(other_h)
    |      ^^^^^^^^^^^^^^^^^^^^ structural mutation not allowed
@@ -99,7 +99,7 @@ FIX: Move the mutation outside the with block:
 
 Non-structural access to other elements is allowed:
 ```rask
-with pool[h] as e {
+with pool[h] as mut e {
     e.health -= pool[other_h].bonus    // OK: inline read of other element
     pool[other_h].hit_count += 1       // OK: inline write to other element
 }
@@ -143,7 +143,7 @@ with pool[h] as e {
 **Non-structural access — reading/writing other elements is fine:**
 <!-- test: skip -->
 ```rask
-with pool[h] as e {
+with pool[h] as mut e {
     e.health -= pool[other_h].attack    // OK: inline read of different element
 }
 // Borrow stack: [ElementBorrow(pool, h)]

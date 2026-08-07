@@ -975,6 +975,16 @@ fn error_let_reassign() {
     assert!(compile_error("let_reassign.rk"), "should reject let reassignment");
 }
 
+// with-bindings are read-only by default (mem.borrowing/W5); a shared read
+// lock never hands out a mut binding (conc.sync/R1).
+#[test]
+fn error_with_binding_readonly() {
+    let (failed, out) = compile_error_output("with_binding_readonly.rk");
+    assert!(failed, "read-only with-binding mutation must be rejected: {}", out);
+    assert!(out.contains("E0360"), "should flag the readonly-binding mutation: {}", out);
+    assert!(out.contains("E0361"), "should flag `as mut` on a read lock: {}", out);
+}
+
 #[test]
 fn error_context_ambiguous_cc8() {
     // mem.context/CC8: two Pool<Player> in scope where a callee needs the

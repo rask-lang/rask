@@ -126,6 +126,16 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("cannot mutate `{name}` — with-binding is read-only")]
+    MutateWithBinding {
+        name: String,
+        span: Span,
+    },
+    #[error("`as mut {name}` on a shared read lock")]
+    MutBindingOnReadLock {
+        name: String,
+        span: Span,
+    },
     #[error("string slices are temporary — cannot store `{view_var}`")]
     StringSliceStored {
         source_var: String,

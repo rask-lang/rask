@@ -43,15 +43,15 @@ with pool[h] as entity {
     entity.update()
     entity.mark_dirty()
 }
-with shared.write() as c {
+with shared.write() as mut c {
     c.timeout = 60.seconds
     c.retries = 5
 }
-with mutex as q {
+with mutex as mut q {
     q.push(a)
     q.push(b)
 }
-with cell as v { v.count += 1 }
+with cell as mut v { v.count += 1 }
 ```
 
 `return`, `try`, `break`, and `continue` work through every `with` block (`mem.borrowing/W1`). This is why Rask uses `with` instead of closure-based access — control flow propagates naturally.

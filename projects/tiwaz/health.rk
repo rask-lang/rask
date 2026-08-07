@@ -21,7 +21,7 @@ func check_health(backends : Vec<Backend>) -> void or HttpError  {
     for backend in backends {
         let url = "http://{backend.url}{health_url}"
         let response = try http.get(url)
-        with status.write() as s {
+        with status.write() as mut s {
             s.insert(backend.url, response.status == 200)
         }
     }
