@@ -196,9 +196,9 @@ const conn = pool.acquire() catch e => {
 }
 ```
 
-There is deliberately no second spelling. `if r is E as e { return … }` type-checks — `is` narrows every union, and `T or E` is one — but it's the guard in more lines, and lint I6 points it at `catch`. `is` on a result is mechanism, not idiom; its one idiomatic result-shaped use is below.
+There is deliberately no second spelling. `if r is E as e { return … }` type-checks — `is` narrows every union, and `T or E` is one — but it's the guard in more lines. `is` on a result is mechanism, not idiom; its one idiomatic result-shaped use is below.
 
-**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume — I6 fires.
+**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume.
 
 ### Error context
 

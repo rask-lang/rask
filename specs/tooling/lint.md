@@ -53,13 +53,10 @@ Common mistakes the canonical patterns address.
 | **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 | **I5: equality-absent-check** | `x == none` / `x != none` on an optional — the branch test is `x is none`, presence is `x?` (`type.optionals/OPT15`) | warning |
-| **I6: is-guard-on-result** | `if r is E as e { … }` on a result where the arm diverges — that's a guard, and the guard is `catch`: `const v = r catch e => …` says the same thing in one line and binds the success directly (`type.errors/ER14`). Also fires on the mirrored costume: one-armed `if r is T as v` whose body is the function's tail | warning |
 
 I3 and I4 both say "this was a sketch — is it still?" Neither is about correctness: the code type-checks fine either way, and neither blocks anything. They fire on the two constructs whose whole point is being temporary, so that "we'll harden it later" has something reminding you. Both are suppressible per SU1 when the sketch is deliberate.
 
 I4 is scoped to packages carrying `description` and `license` — the metadata `struct.build/PB2` requires for publishing — so a throwaway directory stays quiet. I3 has no such scope: the `duck` keyword is itself the declaration that this contract is loose, so it's worth a nudge anywhere.
-
-I6 exists because `is` works on results at all only as a consequence of the union model — `T or E` is an ordinary union, and carving results out of the general narrowing rule would seam the design. So the mechanism stays, and the lint holds the canon: error handling has one way per situation (`try` / `catch` / `match`), and an `is`-guard is `catch` in more lines. What I6 deliberately does *not* fire on: a one-armed success narrow whose code continues either way (opportunism — the error is valueless in context), and `is` tests on non-result unions, which are the operator's actual job.
 
 ## Purity
 
