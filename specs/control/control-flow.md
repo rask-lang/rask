@@ -135,12 +135,11 @@ let task = event is Ready else { break }
 // task available here
 ```
 
-The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates. (An `if` on a diverging `is` arm also narrows the fall-through via the general union rule, `type.errors/ER24` — mechanism, not the idiom):
+The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates — and each binds the payload directly:
 
 ```rask
-let item = queue.pop()
-if item is none: break
-process(item)                  // item: Task here
+let item = queue.pop() ?? break
+process(item)
 ```
 
 ## Infinite Loop: loop
@@ -451,7 +450,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out, and early-exit narrowing binds and bails in two lines with the `if` naming the condition.
+**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out and the payload bound.
 
 **CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
 

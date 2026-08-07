@@ -139,7 +139,7 @@ let content = try {
 } catch e => return context("reading {path}", e)
 ```
 
-ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged. ER44 folds into ER14 (the binder *is* the form now, so there's nothing separate to say). ER45 and ER46 (the `try … else` clause and its transform form) are deleted — the fallbacks' diverging right sides do both jobs; ER48 (fallbacks never transfer control) is deleted with them.
+ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER22 survives: `else as e` is a binding, not a narrow, so it re-homes onto the `is` test unchanged. (ER21, ER24 and ER25 — the scrutinee-narrowing rules — were deleted in a follow-up pass; see Conditions and Binding.) ER44 folds into ER14 (the binder *is* the form now, so there's nothing separate to say). ER45 and ER46 (the `try … else` clause and its transform form) are deleted — the fallbacks' diverging right sides do both jobs; ER48 (fallbacks never transfer control) is deleted with them.
 
 **ID history.** Two IDs in this file were repurposed with *reversed* meanings during the redesign, before the never-repurpose convention existed (`CONVENTIONS.md`): **ER12** once meant "`r?` is a boolean ok-test" and now means "no `?` on a result"; **ER14** once meant the bare-value fallback and now means `catch`. Citations of these IDs in issues, commits, or diagnostics from before #596 refer to the old meanings. No other ID in this file is reused, and none will be again.
 
@@ -314,39 +314,29 @@ match store.get(key) {
 }
 ```
 
-## Conditions and Narrowing
+## Conditions and Binding
 
-Narrowing rides on `const`. See [optionals.md](optionals.md) for the shared semantics; on `T or E` the predicate is a type pattern rather than `?`.
-
-These rules exist on results because `T or E` is an ordinary union and `is` narrows every union — carving results out would seam the model. They are **mechanism, not idiom**: error handling has one canonical form per situation (`try` to propagate, `catch` to handle, `match` to dispatch — [canonical-patterns.md](../canonical-patterns.md)), and an `is`-guard whose arm diverges is `catch` in more lines. (A lint for that shape was considered and dropped — the trigger heuristics couldn't be made safe; the canon lives in the patterns doc.) The idiomatic residue on results is the opportunistic one-armed success narrow — code that continues either way, error valueless in context.
+There is **no flow typing anywhere in the language**. An `is` test is a plain boolean, exactly like `x?` on an optional — it never changes the scrutinee's type, in the block, in the else, or after a diverging arm. Getting at a branch's payload is always a **binding**: `as name`, on the test or on the else.
 
 | Rule | Description |
 |------|-------------|
-| **ER23: Type pattern narrow** | `if r is ErrType as e { … }` narrows and binds when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way |
-| **ER21: else branch narrows** | On a let scrutinee, the `else` of an `is` test narrows to the complement: `if r is Config { … } else { … }` gives the error side in the `else` |
+| **ER23: Type pattern test and bind** | `if r is ErrType as e { … }` tests and binds `e` when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way. Without `as`, it's a bare bool. `r` itself is unchanged everywhere |
 | **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch |
-| **ER24: Early-exit narrow** | If a branch diverges, the fall-through is narrowed to the opposite variant |
-| **ER25: Compound does not narrow** | `r is A && s is B` is a legal bool but does not narrow either side |
+| **ER21, ER24, ER25 deleted** | Scrutinee narrowing is gone: the else-narrow (ER21) and the early-exit fall-through narrow (ER24) let non-canonical error handling type-check — machinery maintained solely for forms the canon says not to write ([canonical-patterns.md](../canonical-patterns.md)). With them cut, `if r is E as e { return e }; use(r)` simply fails to type-check (`r` is still `T or E`), and the fix the compiler suggests is the guard: `let v = r catch e => return e`. No lint needed — the shape routes itself. ER25 (compounds don't narrow) is vacuously true now and retired |
 
 <!-- test: skip -->
 ```rask
 let r = divide(a, b)
 
 if r is f64 as v {
-    use(v)                        // v: f64
+    use(v)                        // v: f64 — the binding is the access
 }
 
-if r is f64 { use(r) }
+if r is f64 as v { use(v) }
 else as e { log(e.message()) }    // e: DivError            [ER22]
-
-if r is DivError as e {
-    log(e.message())              // e: DivError
-    return
-}
-// r: f64 here (early-exit narrow)   [ER24]
-// (shown for the narrowing rule — as error handling this is the guard,
-//  and the guard is `r catch e => …`)
 ```
+
+What this buys: the checker has **zero** flow typing — tests are bools, payloads come from bindings, and the rule set is the same for `?` and `is`. What it costs: the two-line statement guard is gone; its job belongs to `catch` (which binds the success by construction) and was already the canon.
 
 ## Match
 

@@ -762,16 +762,13 @@ if state is Connected(sock) && sock.is_ready() {
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
-**Early-exit narrow:**
+**Guards bind:**
 
-Bind, then check. The binding keeps its name, so nothing needs renaming after the guard:
+The fallback operators are the guards, and the binding is the payload from then on — no test ever changes a binding's type:
 
 ```rask
-let opt = load() ?? return                     // guard: absent diverts, opt: T after
-
-let conn = connect()
-if conn is ConnectError as e { return e }
-use(conn)                                      // conn: Connection here (ER24 narrow)
+let opt = load() ?? return                     // absent diverts; opt: T after
+let conn = connect() catch e => return e       // failure diverts; conn: Connection after
 ```
 
 One-liners cover the common cases — `try` propagates, `??` fills in for absence, `catch` handles failure:

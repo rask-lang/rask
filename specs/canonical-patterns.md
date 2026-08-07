@@ -310,7 +310,7 @@ if opt? as v {
 **Anti-patterns:**
 - `x!` without checking — crashes on none.
 - `use(x)` inside `if x? { … }` — the test doesn't narrow; bind with `as v`.
-- `if x is none { return } use(x)` as a guard — type-checks via the union narrowing mechanism, but the guard is `x ?? return`, one line.
+- `if x is none { return } use(x)` as a guard — a compile error (`x` is still `T?`; tests never narrow). The guard is `let v = x ?? return`.
 - `match` on optionals — rejected with a migration diagnostic. Use the operator family.
 - `!x?` — parse error. Use `x is none`.
 
@@ -567,10 +567,9 @@ if point is Point { x, y } {
     draw_at(x, y)
 }
 
-// Guard pattern
-let conn = try_connect()
-if conn is ConnectFailed as e { return e }
-use(conn!)   // or narrow via early-exit rule
+// Guard — catch binds the success
+let conn = try_connect() catch e => return e
+use(conn)
 ```
 
 **Anti-patterns:**

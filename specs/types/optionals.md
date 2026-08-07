@@ -118,7 +118,7 @@ The `?`-tests don't narrow — they're plain booleans. Getting at the payload is
 |------|-------------|
 | **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember |
 | **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on let scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
-| **OPT21 folds into ER24** | Early-exit narrowing after a diverging `is none` arm isn't optional-specific — it's the general union rule (`type.errors/ER24`). Mechanism, not idiom; the canonical guard is `?? <exit>` |
+| **OPT21 deleted (with ER21/ER24)** | Early-exit narrowing after a diverging `is none` arm is gone along with all scrutinee narrowing (`type.errors`, Conditions and Binding). `is none` is a plain bool; the guard is `?? <exit>`, and it binds |
 | **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |
 
 <!-- test: skip -->
@@ -148,7 +148,7 @@ let user = load() ?? return
 greet(user)
 ```
 
-(`if x is none { return }` followed by using `x` at `T` still type-checks — `is` is the union operator and the general early-exit narrowing applies, `type.errors/ER24`. That's mechanism, not idiom, same as on results: the canonical guard is `??` with the exit written out.)
+(`if x is none { return }` followed by `use(x)` at `T` is a compile error — `x` is still `T?`; no test changes a type. The guard that binds is `let v = x ?? return`.)
 
 **Anonymous expressions and binding.** `if compute()? as v` binds the result at the check site — no double call, no intermediate binding needed.
 
@@ -401,7 +401,7 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 **Why `x? as v` and not a let-in-condition.** The bind looks like Rust's `if let Some(v) = x` only functionally — syntactically it's the C# shape (`if (x is string s)`): scrutinee first, test, then name, reading forward. What makes let-Some unintuitive is exactly what this form doesn't do: the name appearing before the value it comes from, the wrapper noise, and a declaration smuggled into a condition. A Swift-style let-in-condition (`if let v = x`) was the alternative; it buys familiarity with a new grammar position, reads value-last again, and breaks the language's one binding habit — **`as name` comes after whatever just proved a value exists**, uniformly: `if x? as v`, `if r is Timeout as t`, `match { User as u => … }`, `else as e`. One rule, four positions. The honest seam — `as v` sits after a boolean-looking expression but binds the *payload* — is resolved by that same rule: `as` always names what the test proved, and `is E as e` trains the reading. `while queue.pop()? as item` falls out for free. And the no-rename convenience the narrowing cut removed is recoverable per-site with ordinary shadowing: `if x? as x { … }` — no fine print.
 
-**The `?`-tests don't narrow (OPT18/OPT20/OPT23 deleted).** An earlier revision let `if x?` narrow `x` in place on let scrutinees, with an else-narrow and a rule excluding `mut`-rooted field paths. Cut, for the one-way principle: `if x? { use(x) }` and `if x? as v { use(v) }` were two spellings of test-and-use, and only one of them worked everywhere. The restrictions were the tell — "let scrutinees only", "not through a `mut` path", "anonymous expressions don't narrow" were three rules whose whole job was propping up the redundant spelling; the `as v` bind has none of them. What in-place narrowing remains comes from the general union `is` machinery (early-exit after a diverging `is none` arm, `type.errors/ER24`) — mechanism, not idiom; the canonical guard is `?? <exit>`. The cut also thins the checker: no `?`-triggered flow typing at all.
+**The `?`-tests don't narrow (OPT18/OPT20/OPT23 deleted).** An earlier revision let `if x?` narrow `x` in place on let scrutinees, with an else-narrow and a rule excluding `mut`-rooted field paths. Cut, for the one-way principle: `if x? { use(x) }` and `if x? as v { use(v) }` were two spellings of test-and-use, and only one of them worked everywhere. The restrictions were the tell — "let scrutinees only", "not through a `mut` path", "anonymous expressions don't narrow" were three rules whose whole job was propping up the redundant spelling; the `as v` bind has none of them. A follow-up pass cut the `is`-side scrutinee narrowing too (ER21/ER24/OPT21) — no test of any kind changes a type now, and the checker has zero flow typing. Payload access is bindings, everywhere.
 
 ### Patterns & Guidance
 
