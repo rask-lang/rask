@@ -107,9 +107,9 @@ func transform(x: int) -> int or string {
 }
 
 // Error handling
-const result = try process(42) else |e| {
+const result = process(42) catch e => {
     log("failed: {e}")
-    return 0
+    0                       // last expression is the value — `result` is 0 on error
 }
 ```
 

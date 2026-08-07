@@ -29,7 +29,7 @@ yield(value)
 
 ```raido
 // Catch coroutine errors
-const value = try co.resume() else |e| {
+const value = co.resume() catch e => {
     log("coroutine failed: {e}")
     return fallback
 }

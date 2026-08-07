@@ -27,7 +27,7 @@ func print_fields<T>(value: T) {
     }
 }
 
-struct Point { public x: f64, public y: f64 }
+struct Point { x: f64, y: f64 }
 
 // print_fields(Point { x: 1.0, y: 2.0 }) unrolls to:
 //   print("x = {value.x}")
@@ -39,8 +39,8 @@ struct Point { public x: f64, public y: f64 }
 | Rule | Description |
 |------|-------------|
 | **E11: Marker traits** | `Encode` and `Decode` are marker traits with no methods. They signal that a type's structure is serialization-compatible |
-| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where all public fields have `Encode` types, unless the struct is marked `@no_encode`. Same for `Decode` |
-| **E13: Public fields only** | Auto-derived encoding covers public fields only. Non-public fields are invisible to external serialization code (`std.reflect/R4`) |
+| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode` |
+| **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
 | **E15: Collection types** | `Vec<T>` where `T: Encode`, `Map<string, T>` where `T: Encode`, `T?` where `T: Encode` — all auto-implement `Encode`. Same for `Decode` |
 | **E16: Opt-out** | `@no_encode` on a struct prevents auto-derive of `Encode`. `@no_decode` prevents `Decode`. For types where automatic serialization is semantically wrong |
@@ -55,19 +55,48 @@ trait Decode { }
 <!-- test: skip -->
 ```rask
 struct User {
-    public name: string
-    public age: i32
-    public email: string?
+    name: string
+    age: i32
+    email: string?
 }
-// Auto-derives Encode and Decode — all public fields are compatible types
+// Auto-derives Encode and Decode — nothing to annotate, no `public` needed
+
+struct Account {
+    email: string
+    private password_hash: string      // never on the wire, either direction
+}
+// Encodes as {"email": "…"} — see E13a for what decode does with the hash
 
 @no_encode
 struct InternalState {
-    public data: Vec<u8>
-    secret: string
+    data: Vec<u8>
 }
 // Opted out — won't satisfy Encode bound
 ```
+
+`public` means one thing: cross-package code visibility. It has no say in the wire format.
+
+### Private Fields and Decode [E13a]
+
+| Rule | Description |
+|------|-------------|
+| **E13a: Excluded fields need a default** | A field left out of the wire form — `private` or `@no_serialize` — takes its **declared default** (`type.structs/FD1`, FD6) on decode, or its `@default(expr)` override. A field with neither means the type is not auto-`Decode`; the compile error names the field |
+| **E13b: Never read from input** | An excluded field is never filled from the input, even when a key of that name is present. Such keys are ignored under the general unknown-key policy (`std.json/J10`) |
+
+<!-- test: skip -->
+```rask
+struct Account {
+    email: string
+    private password_hash: string = ""     // declared default → Account: Decode
+}
+
+struct Session {
+    token: string
+    private started: Instant               // no default → Session is not Decode
+}
+```
+
+E13b is the mass-assignment rail: an attacker who puts `"password_hash": "…"` in the request body cannot reach the field, because decode never looks for it.
 
 ### Generic Bounds
 
@@ -118,60 +147,48 @@ extend DateTime {
 | Rule | Description |
 |------|-------------|
 | **E18: @rename** | `@rename("name")` on a struct field overrides the serialized key name. Reflected as `FieldInfo.serial_name` |
-| **E19: @skip** | `@skip` excludes a field from serialization and deserialization. Reflected as `FieldInfo.is_skipped` |
-| **E20: @default** | `@default(expr)` provides a comptime value used when the field is missing during deserialization. The field becomes optional in the input. Reflected as `FieldInfo.has_default` |
+| **E19: @no_serialize** | `@no_serialize` excludes a non-private field from the serialized form in **both** directions. Decode value comes from the declared default (E13a). Reflected as `FieldInfo.serialized == false` |
+| **E20: @default** | `@default(expr)` provides a comptime value used when the field is missing during deserialization. The field becomes optional in the input. A decode-only override of the declared default (`type.structs/FD6`). Reflected as `FieldInfo.has_default` |
 | **E21: Comptime expressions** | `@rename` takes a string literal. `@default` takes a comptime expression. Both validated at compile time |
-| **E28: @skip zero values** | `@skip` without `@default` requires a type with a known zero value. During decode, skipped fields are initialized to this value |
 
-**Types with known zero values (E28):**
-
-| Type | Zero value |
-|------|-----------|
-| `bool` | `false` |
-| `i8`–`i64`, `u8`–`u64` | `0` |
-| `f32`, `f64` | `0.0` |
-| `string` | `""` (empty) |
-| `T?` (optionals) | `none` |
-| `Vec<T>` | empty vec |
-| `Map<K,V>` | empty map |
-| Structs, enums, other types | **No zero value** — `@skip` requires `@default(expr)` or compile error |
+`@no_serialize` covers both directions on purpose. One-directional exclusion — off the wire on encode, still filled on decode — is how mass-assignment holes get built.
 
 <!-- test: skip -->
 ```rask
 struct ApiUser {
     @rename("user_name")
-    public name: string
+    name: string
 
-    @skip
-    public cache_key: string
+    @no_serialize
+    cache_key: string = ""
 
     @default(0)
-    public login_count: i32
+    login_count: i32
 
     @default("unknown")
-    public role: string
+    role: string
 }
 
 // JSON: {"user_name": "alice", "login_count": 5, "role": "admin"}
 // Missing login_count → defaults to 0
 // Missing role → defaults to "unknown"
-// cache_key never appears in output, never expected in input
+// cache_key never appears in output, never read from input — decodes to ""
 ```
 
-### @skip and Auto-Derive
+### Excluded Fields and Auto-Derive
 
-A `@skip` field doesn't need to be `Encode`/`Decode`. A struct with a non-serializable private field that's also `@skip` still auto-derives `Encode`:
+An excluded field doesn't need to be `Encode`/`Decode`. It's out of the wire form, so it gets no say in whether the type qualifies:
 
 <!-- test: skip -->
 ```rask
 struct CachedUser {
-    public name: string
-    public age: i32
+    name: string
+    age: i32
 
-    @skip
-    internal_id: u64          // Not Encode, but skipped — doesn't block auto-derive
+    @no_serialize
+    internal_id: Connection = Connection.stub()   // not Encode, but excluded
 }
-// CachedUser: Encode — the compiler ignores @skip fields for auto-derive eligibility
+// CachedUser: Encode and Decode
 ```
 
 ## Enum Serialization
@@ -252,7 +269,7 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
     } else if reflect.is_struct<T>() {
         try w.begin_object()
         comptime for field in reflect.fields<T>() {
-            comptime if !field.is_skipped {
+            comptime if field.serialized {
                 try w.write_key(field.serial_name)
                 try encode_value(value.(field.name), mutate w)
             }
@@ -311,7 +328,7 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 
     return T {
         comptime for field in reflect.fields<T>() {
-            comptime if !field.is_skipped {
+            comptime if field.serialized {
                 (field.name): comptime if field.has_default {
                     if fields.get(field.serial_name)? as v {
                         try decode_from_value(v)
@@ -319,9 +336,9 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
                         field.default_value
                     }
                 } else {
-                    try decode_from_value(
-                        fields.get(field.serial_name) ?? return JsonError.MissingField(field.serial_name)
-                    )
+                    let raw = fields.get(field.serial_name)
+                        ?? return JsonError.MissingField(field.serial_name)
+                    try decode_from_value(raw)
                 },
             }
         }
@@ -345,13 +362,14 @@ ERROR [E0333]: `Connection` cannot be decoded
 5  |  json.decode<Connection>(body)
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `socket` has type `Socket`, which can't be decoded
 
-FIX: mark `socket` with `@skip`, or hold it in a serializable type
+FIX: mark `socket` with `@no_serialize` (and give it a default), make it
+     `private`, or hold it in a serializable type
 
 WHY: `Decode` isn't implemented by hand — a type has it when its fields do,
      all the way down (std.encoding/E12)
 ```
 
-The field is named through nesting, so a struct-in-a-struct reports `inner.socket`. `@skip` really does resolve it: a skipped field is out of the wire form, so it gets no say in whether the type qualifies (E19).
+The field is named through nesting, so a struct-in-a-struct reports `inner.socket`. Excluding the field really does resolve it: it's out of the wire form, so it gets no say in whether the type qualifies (E19).
 
 **Opted-out type used as Encode [E16]:**
 ```
@@ -389,35 +407,53 @@ ERROR [ctrl.comptime/CT54]: no field "z" on type `Point`
    |                    ^^^ Point has fields: x, y
 ```
 
-**@skip without default on type without zero value [E28]:**
+**Excluded field with no default [E13a]:**
 ```
-ERROR [std.encoding/E28]: @skip field has no default value
+ERROR [std.encoding/E13a]: `Session` cannot be decoded
+   |
+3  |  private started: Instant
+   |          ^^^^^^^ left out of the wire form, and has no default
+
+WHY: Decode never reads a private or @no_serialize field from the input, so it
+     needs a value from somewhere else. Rask has no universal zero — a value
+     the author didn't choose is the Go mistake (type.structs/FD4).
+
+FIX: Declare a default:
+
+  private started: Instant = Instant.epoch()
+
+  or a decode-only override (comptime expression, E21):
+
+  @default(Instant.epoch()) private started: Instant
+
+  A decode-TIME value (e.g. "now") can't come from @default — it's evaluated
+  at compile time. Make the field `Instant?` and fill it after decode.
+```
+
+**`@skip` [migration]:**
+```
+ERROR [std.encoding/E19]: `@skip` is now `@no_serialize`
    |
 4  |  @skip
-5  |  public state: GameState
-   |                ^^^^^^^^^ GameState has no known zero value
+   |  ^^^^^ skip from what? the name didn't say
 
-WHY: Skipped fields are initialized to a zero value during decode.
-     GameState is a struct — no automatic zero value exists.
-
-FIX: Add @default with an explicit value:
-
-  @skip @default(GameState.initial())
-  public state: GameState
+FIX: @no_serialize
 ```
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Struct with no public fields | E13 | Encodes as empty object `{}` |
+| Struct with only `private` fields | E13 | Encodes as empty object `{}` |
 | Recursive types (`struct Node { children: Vec<Node> }`) | E15 | Works — `Vec<Node>` where `Node: Encode` |
-| All fields `@skip` | E19, E27 | Encodes as `{}`; decode produces struct with all defaults |
+| All fields excluded | E19, E27 | Encodes as `{}`; decode produces the struct from declared defaults |
 | `@default` on non-optional required field | E20 | Field becomes optional in input, required in struct definition. Default fills the gap |
 | `@rename` collision (two fields same serial name) | E18 | Compile error: duplicate serial name |
-| `@skip` field without `@default` during decode | E19, E28 | Field must have a known zero value (E28) or `@default`. Compile error otherwise |
+| Excluded field without a default | E13a | Compile error naming the field — the type is not auto-`Decode` |
+| Input carries a key matching an excluded field | E13b | Ignored, like any unknown key (`std.json/J10`) |
+| `@no_serialize` on a `private` field | E19 | Accepted but redundant; lint suggests dropping it |
+| `@rename` on a `private` field | E13 | Accepted but ineffective — the field isn't on the wire. Useful for same-module custom encoding |
 | Nested comptime for (struct within struct) | CT48 | Works — `encode_value` recursively monomorphizes |
-| Private field with `@rename` | — | Annotation accepted but ineffective — field not encoded externally. Useful for same-module custom encoding |
 | Generic struct `Wrapper<T>` | E12 | `Encode` if `T: Encode`. Checked at monomorphization |
 | Enum with non-Encode payload | E17 | Enum is not `Encode`. Error points to the non-Encode variant |
 
@@ -429,11 +465,30 @@ FIX: Add @default with an explicit value:
 
 **E11 (marker traits):** I wanted Encode/Decode for generic bounds (`T: Encode`) but Rask doesn't have associated types in MVP. A Serializer trait hierarchy (like serde) would need them. Marker traits are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through trait methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
 
-**E12-E13 (auto-derive, public fields only):** Matches Go's exported-fields-only behavior. I chose auto-derive with opt-out because the zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
+**E12 (auto-derive with opt-out):** The zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
+
+**E13 (non-private, not public-only).** This used to be public-fields-only, copied from Go's exported-fields rule. It had the polarity backwards. The common case is "serialize the whole value", and it was the one paying per-field ceremony: every DTO field wore a `public` it didn't need for code access — the validation example's `dto.rk` was columns of `public` doing wire-work, not visibility-work — to guard against an uncommon accident.
+
+The visibility tiers already mean the right things, so the gate just had to move to the tier that means "protected":
+
+- `private` — guarded by the type's own code: invariants, secrets. `password_hash` is `private` because it must be, and is thereby off the wire.
+- package-default — plain data. Every function in the package can already read it; serialization now agrees with the language's own position on what that tier means.
+
+`public` goes back to meaning exactly one thing: cross-package code visibility. Under E13 `dto.rk` needs zero `public`, zero annotations, and produces the identical wire format.
+
+The leak rail is stronger than before, not weaker. Under the old rule, protecting a field meant *remembering* not to write `public` on it — an omission, invisible in review. Now it's `private`, which states the intent and is enforced by the compiler for code access too.
+
+**E13a/E28 (declared defaults, not invented zeros).** E28 used to carry a "known zero values" table — `0`, `false`, `""`, empty vec — purely to have something to put in a skipped field on decode. That's a shadow `Default` trait, the same disease that got `Default` removed (`type.generics`): values the author never chose, appearing in their struct. Declared field defaults (FD1/FD6) already do this job properly, with the value written where the reader can see it. So E28 and its table are gone; an excluded field without a default is a compile error that names the field. `@default(expr)` stays as the decode-only override.
 
 **E16 (@no_encode):** The opt-out exists for types where automatic serialization is semantically wrong — connection pools, caches, types with invariants that can't survive a round-trip. The compiler won't silently serialize something you've explicitly excluded.
 
 **E18-E20 (field annotations):** Field-level annotations keep customization at the point of use. I chose format-agnostic annotations (`@rename`, not `@json_rename`) because format-specific renaming is rare enough to handle with custom encoding. The annotations are typed and compiler-checked, unlike Go's stringly-typed struct tags.
+
+**E19 (`@skip` → `@no_serialize`).** `@skip` failed the guess test (`std.api/SD2`) — skip from what? Iteration? Validation? The field-level concept is "not part of this type's serialized form, either direction", and `@no_serialize` says that. It also joins the `@no_X` directive family already in the language (`@no_encode`, `@no_decode`), so the shape is familiar.
+
+The umbrella verb is deliberate. Separate `@no_encode`/`@no_decode` at field level would let you write a field that's hidden from output but still filled from input — which is a mass-assignment hole with extra steps.
+
+**Deferred: serializing `private` fields.** Persistence and checkpoint snapshots genuinely want the whole value, secrets included. That's not this rule — it belongs to durable-state work with its own author-consent design. Manual implementations cover it meanwhile.
 
 **E22-E24 (enum serialization):** Externally tagged is the simplest default — unambiguous, requires no configuration. `@tag("type")` for internal tagging covers the common API pattern. I intentionally left out adjacently tagged and untagged — they add complexity and the escape hatch (custom encoding) covers the rare cases.
 
@@ -454,7 +509,7 @@ func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> vo
     } else if reflect.is_struct<T>() {
         try w.begin_table(key)
         comptime for field in reflect.fields<T>() {
-            comptime if !field.is_skipped {
+            comptime if field.serialized {
                 try encode_value(value.(field.name), mutate w, field.serial_name)
             }
         }
@@ -474,13 +529,13 @@ import json
 
 struct Config {
     @rename("server_host")
-    public host: string
+    host: string
 
     @default(8080)
-    public port: i32
+    port: i32
 
-    @skip
-    public cached_at: i64
+    @no_serialize
+    cached_at: i64 = 0
 }
 
 func main() -> void or Error {
@@ -502,20 +557,21 @@ import json
 import http
 
 struct CreateUserRequest {
-    public name: string
-    public email: string
-    public age: i32?
+    name: string
+    email: string
+    age: i32?
 }
 
 struct UserResponse {
-    public id: i64
-    public name: string
-    public email: string
+    id: i64
+    name: string
+    email: string
 }
 
 func handle_create_user(req: http.Request) -> http.Response {
     if req.body.is_empty() { return http.Response.bad_request("missing body") }
-    let input = json.decode<CreateUserRequest>(req.body) ?? return http.Response.bad_request("invalid JSON")
+    let input = json.decode<CreateUserRequest>(req.body)
+        catch _ => return http.Response.bad_request("invalid JSON")
     let user = create_user(input.name, input.email, input.age)
     let response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))

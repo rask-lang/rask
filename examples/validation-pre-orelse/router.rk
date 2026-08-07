@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Routing. `route` times the request, runs the middleware chain, dispatches
+// on (method, path), and collapses the handler's `Response or ApiError` into
+// one Response. It's the `func(Request) -> Response` that listen_and_serve
+// wants (http.md S4).
+
+import http
+import json
+import time
+
+func route(req: Request) -> Response {
+    let t0 = time.Instant.now()
+    let resp = route_inner(req)
+    let dt = t0.elapsed()
+    record_request(resp.status, dt.as_millis() as f64)
+    return resp
+}
+
+func route_inner(req: Request) -> Response {
+    match run_chain(middleware_chain, req) {
+        MwOutcome.Short(resp) => return resp,
+        MwOutcome.Continue    => {},
+    }
+
+    let outcome = dispatch(req)
+    if outcome? as resp {
+        return resp
+    } else as e {
+        return error_response(e)
+    }
+}
+
+func dispatch(req: Request) -> Response or ApiError {
+    let path = req.path()
+    match (req.method, path) {
+        (Method.Get, "/health")        => return handle_health(),
+        (Method.Get, "/metrics")       => return handle_metrics(),
+        (Method.Get, "/debug/sleep")   => return handle_sleep(req),
+        (Method.Get, "/debug/inspect") => return handle_inspect(),
+        (Method.Get, "/tasks")         => return handle_list_tasks(req),
+        (Method.Post, "/tasks")        => return handle_create_task(req),
+        (Method.Post, "/tasks/batch")  => return handle_batch(req),
+        (Method.Post, "/users")        => return handle_create_user(req),
+        (Method.Post, "/projects")     => return handle_create_project(req),
+
+        (Method.Get, p) if p.starts_with("/users/") => {
+            let id = try user_id(p)
+            return handle_get_user(id)
+        }
+        (Method.Post, p) if p.ends_with("/deps") => {
+            let id = try task_id(p)
+            return handle_add_dep(id, req)
+        }
+        (Method.Get, p) if p.starts_with("/tasks/") => {
+            let id = try task_id(p)
+            return handle_get_task(id)
+        }
+        (Method.Patch, p) if p.starts_with("/tasks/") => {
+            let id = try task_id(p)
+            return handle_update_task(id, req)
+        }
+        (Method.Delete, p) if p.starts_with("/tasks/") => {
+            let id = try task_id(p)
+            return handle_delete_task(id)
+        }
+
+        _ => return json_response(404, json.encode(ErrorBody { error: "no route for {path}", code: "not_found" })),
+    }
+}
+
+// ─── Path parsing ────────────────────────────────────────────────────
+
+func task_id(path: string) -> TaskId or ApiError {
+    let n = try segment_id(path, "/tasks/")
+    return TaskId { value: n }
+}
+
+func user_id(path: string) -> UserId or ApiError {
+    let n = try segment_id(path, "/users/")
+    return UserId { value: n }
+}
+
+func segment_id(path: string, prefix: string) -> u64 or ApiError {
+    let rest = path[prefix.len()..].to_string()
+    let trimmed = strip_suffix(rest, "/deps")
+    let n = trimmed.parse<u64>() ?? return ApiError.BadRequest("invalid id in path: {path}")
+    return n
+}
+
+func strip_suffix(s: string, suffix: string) -> string {
+    if s.ends_with(suffix) {
+        return s[0..s.len() - suffix.len()].to_string()
+    }
+    return s
+}

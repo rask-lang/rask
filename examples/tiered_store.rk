@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// tiered_store — a miniature LSM-shaped key-value store: active memtable →
+// staged table pending flush → sorted tables on a fake disk.
+//
+// Stress corpus for the four fallback forms the validation flagship never
+// exercises (its FINDINGS §F): the flat-shape composite (ER16b/ER47), a *used*
+// `catch e =>` binder, fallback chains (ER14a), and `take <place>` (OPT32).
+// Each occurs here because the domain wants it, not as a demo. This is also
+// the LSM lookup from the ER47 rationale, made into a real program.
+//
+// Targets the settled spec (#565/#573/#574, #586); parses once the
+// implementation lands.
+
+import os
+
+// ─── Errors ──────────────────────────────────────────────────────────
+
+@message
+enum DiskError {
+    @message("disk full ({0} blocks)")
+    Full(usize),
+}
+
+@message
+enum ConfigError {
+    @message("TIERED_DIR not set")
+    NoEnv,
+    @message("config file missing: {0}")
+    NoFile(string),
+}
+
+// Hand-written message() — @message auto-delegation for the wrapped
+// DiskError isn't implemented yet (validation FINDINGS §B4).
+enum StoreError {
+    Corrupt(string, string)
+    FlushFailed(usize, DiskError)
+}
+
+extend StoreError with ErrorMessage {
+    func message(self) -> string {
+        match self {
+            StoreError.Corrupt(path, row)  => return "corrupt table {path}: bad row {row}",
+            StoreError.FlushFailed(n, e)   => return "flush of {n} rows failed: {e.message()}",
+        }
+    }
+}
+
+// ─── Config: a result chain ──────────────────────────────────────────
+// "First source that works." Each step's discarded error is acknowledged in
+// the text (`catch _ =>`) — two errors genuinely die here, and the noise is
+// honest. The bare default ends the chain (ER14a).
+
+struct Config {
+    dir: string
+    memtable_cap: usize
+}
+
+extend Config {
+    func from_env() -> Config or ConfigError {
+        let dir = os.env("TIERED_DIR") ?? return ConfigError.NoEnv
+        return Config { dir: dir, memtable_cap: 4 }
+    }
+
+    // No real file I/O in this example — stands in for a loader that can fail.
+    func from_file(path: string) -> Config or ConfigError {
+        return ConfigError.NoFile(path)
+    }
+
+    func default() -> Config {
+        return Config { dir: "/tmp/tiered", memtable_cap: 4 }
+    }
+}
+
+func load_config() -> Config {
+    return Config.from_env()
+        catch _ => Config.from_file(".tiered.conf")
+        catch _ => Config.default()
+}
+
+// ─── Fake block device ───────────────────────────────────────────────
+
+struct Disk {
+    blocks: Vec<string>
+    cap: usize
+}
+
+extend Disk {
+    func new(cap: usize) -> Disk {
+        return Disk { blocks: Vec.new(), cap: cap }
+    }
+
+    func write(mutate self, block: string) -> void or DiskError {
+        if self.blocks.len() >= self.cap { return DiskError.Full(self.cap) }
+        self.blocks.push(block)
+        return
+    }
+}
+
+// ─── Memtable ────────────────────────────────────────────────────────
+
+struct Entry {
+    key: string
+    value: string
+}
+
+struct MemTable {
+    entries: Vec<Entry>
+}
+
+extend MemTable {
+    func new() -> MemTable {
+        return MemTable { entries: Vec.new() }
+    }
+
+    func put(mutate self, key: string, value: string) {
+        self.entries.push(Entry { key: key, value: value })
+    }
+
+    // Newest write wins, so scan from the end.
+    func get(self, key: string) -> string? {
+        mut i = self.entries.len()
+        while i > 0 {
+            i -= 1
+            if self.entries[i].key == key { return self.entries[i].value }
+        }
+        return none
+    }
+
+    func len(self) -> usize { return self.entries.len() }
+}
+
+// ─── Sorted table: the flat shape ────────────────────────────────────
+// A row without '=' means the table is corrupt — an ERROR. A key that isn't
+// here is an ANSWER. So lookup returns the flat `string? or StoreError`:
+// both bad branches are real, and they mean different things to the caller.
+
+struct SsTable {
+    path: string
+    rows: Vec<string>
+}
+
+extend SsTable {
+    func lookup(self, key: string) -> string? or StoreError {
+        for row in self.rows {
+            // Absence-to-error conversion: a '='-less row has no payload to
+            // bind, so the exit names the error itself (the old ok_or shape).
+            let eq = row.find("=") ?? return StoreError.Corrupt(self.path, row)
+            if row[..eq] == key { return row[eq + 1..].to_string() }
+        }
+        return none
+    }
+}
+
+// ─── The store ───────────────────────────────────────────────────────
+
+struct Tiered {
+    active: MemTable
+    pending: SsTable?
+    tables: Vec<SsTable>
+    disk: Disk
+    cap: usize
+    sealed: usize
+}
+
+extend Tiered {
+    func new(cfg: Config) -> Tiered {
+        return Tiered {
+            active: MemTable.new(),
+            pending: none,
+            tables: Vec.new(),
+            disk: Disk.new(64),
+            cap: cfg.memtable_cap,
+            sealed: 0,
+        }
+    }
+
+    func put(mutate self, key: string, value: string) -> void or StoreError {
+        self.active.put(key, value)
+        if self.active.len() >= self.cap {
+            self.seal()
+            try self.tick()
+        }
+        return
+    }
+
+    // Seal the active memtable into the staged slot. Building the table only
+    // READS the entries (strings are Copy), so nothing moves out of self;
+    // the reset is a plain reassignment.
+    func seal(mutate self) {
+        if self.pending? { return }              // one staged table at a time
+        mut rows = Vec.new()
+        for e in self.active.entries {
+            rows.push("{e.key}={e.value}")
+        }
+        self.pending = SsTable { path: "L0-{self.sealed}", rows: rows }
+        self.sealed += 1
+        self.active = MemTable.new()
+    }
+
+    // Background flush: move the staged table OUT of the slot (take leaves
+    // none behind — OPT32/#586), write it, promote it. `take` binds the
+    // place, `??` the result: (take self.pending) ?? return.
+    func tick(mutate self) -> void or StoreError {
+        let staged = take self.pending ?? return       // idle — nothing staged
+        let n = staged.rows.len()
+
+        // The used binder, diverging flavor: wrap the disk error with the
+        // context only this frame has (how many rows were lost).
+        self.disk.write(staged.rows.join("\n"))
+            catch e => return StoreError.FlushFailed(n, e)
+
+        self.tables.push(staged)
+
+        // The used binder, value flavor: stats are best-effort — a full disk
+        // must not fail the write path, but it's worth a line in the log.
+        self.disk.write("# flushed {n}") catch e => println("stats dropped: {e.message()}")
+        return
+    }
+
+    // The read path, newest tier first.
+    //
+    // The memtable tiers are plain optionals, so they chain — still-wrapped
+    // through pending_get (ER14a, #578). The table tier can also FAIL, so it
+    // propagates with `try` and falls through on absence with `??` — the
+    // ER16b composite, no parens: (try t.lookup(key)) ?? continue.
+    // Bare `try t.lookup(key)` is the ER47 compile error here: both `none`
+    // and StoreError could leave, and the line wouldn't say which.
+    func get(self, key: string) -> string? or StoreError {
+        let hot = self.active.get(key) ?? self.pending_get(key)
+        if hot? as v { return v }
+
+        for t in self.tables {
+            let v = try t.lookup(key) ?? continue
+            return v
+        }
+        return none
+    }
+
+    func pending_get(self, key: string) -> string? {
+        if self.pending? as t {
+            // A staged table is trusted — it was built by seal(), so a
+            // corrupt row is a bug, not an error: force with context.
+            let kv = t.lookup(key)
+            return kv! "staged table corrupt"
+        }
+        return none
+    }
+}
+
+// ─── Driver ──────────────────────────────────────────────────────────
+// main is infallible, so the flat shape can't propagate here — and no single
+// fallback can consume it either (three branches, two-branch operators). match is
+// the honest tool at this boundary: three outcomes, three arms.
+
+func report(store: Tiered, key: string) {
+    match store.get(key) {
+        string as v      => println("{key} = {v}"),
+        none             => println("{key} is absent"),
+        StoreError as e  => println("{key} failed: {e.message()}"),
+    }
+}
+
+func main() {
+    let cfg = load_config()
+    mut store = Tiered.new(cfg)
+
+    // Enough writes to seal + flush once (cap is 4).
+    let _ = store.put("alpha", "1")
+    let _ = store.put("beta", "2")
+    let _ = store.put("gamma", "3")
+    let _ = store.put("delta", "4")
+    let _ = store.put("epsilon", "5")          // lands in the fresh memtable
+
+    report(store, "epsilon")                     // memtable tier
+    report(store, "alpha")                       // table tier, through the composite
+    report(store, "omega")                       // absent everywhere
+
+    // Corrupt a flushed table by hand: the '='-less row turns lookup's
+    // absence walk into the error branch, and report's match shows it.
+    if store.tables.len() > 0 {
+        with store.tables[0] as t {
+            t.rows.push("not-a-row")
+        }
+        report(store, "omega")                   // now: failed, corrupt table
+    }
+}

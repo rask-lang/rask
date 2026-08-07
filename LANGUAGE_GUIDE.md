@@ -152,7 +152,7 @@ type alias Bytes = Vec<u8>                   // transparent alias
 ```
 
 - Tuples: `(a, b)`, arity ≥ 2. Unions `A | B` appear only in error position.
-- Conversions: `as` is lossless-widening only. Lossy needs a named op: `x truncate to u8`, `x saturate to u8`, `x try convert to u8` (returns optional) (`type.primitives`).
+- Conversions: `as` is lossless-widening only. Lossy needs a named op: `x truncate to u8`, `x saturate to u8`, `x convert to u8?` (the `?` marks the partial one — `none` if it doesn't fit) (`type.primitives`).
 - Integer overflow **panics in all builds**. Opt out per-value with `Wrapping<T>`/`Saturating<T>` from `num` (`type.integer-overflow`).
 - Floats are not Hashable/Comparable — structs containing `f64` can't be Map keys or `sort()`ed without a custom conformance (HA4/CO4).
 
@@ -172,19 +172,27 @@ func read_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Operator surface (works on both `T?` and `T or E`):
+Operator surface — three words, three jobs: `try` means something **leaves**, a `?` means something is **missing**, `catch` means something **failed**:
 
 | Form | Meaning |
 |---|---|
-| `r?` | `bool` — success/present test; narrows a `let` scrutinee inside the block |
-| `r? as v` | test and bind `v` |
-| `r?.field` | chain — projects on success, propagates absence/error |
-| `r ?? fallback` | extract or fallback; `fallback` must be `T` (never widens); `?? return`/`?? continue` diverge |
+| `x?` | `bool` — present test on an optional. A plain boolean; touching the payload is the bind below |
+| `x? as v` | test and bind `v` — works on any scrutinee, no restrictions |
+| `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
+| `x ?? <expr>` | **absence fallback:** the payload, or the right side — a value, or any written-out exit (`?? return E`, `?? break`) |
+| `r catch e => <expr>` | **failure fallback:** the payload, or the body with the error bound — a value, or a written-out exit |
+| `r catch _ => <expr>` | same, dropping the error *visibly*. There is no bare-value `catch` — an error never dies silently |
+| `try x` | **leaves:** propagate the bad branch to the caller (error widened, or `none` in a `T?` fn) |
+| `try f() ?? <expr>` | the flat-shape composite (`T? or E` callee): error up, absence here |
 | `r!` / `r! "msg"` | extract or panic |
-| `try r` | extract or return the error (widened into the function's error union) |
-| `try r else \|e\| f(e)` | transform the error while propagating |
-| `let v = x is Pattern else { return }` | guard: bind or diverge (`ctrl.flow/CF13`) |
 | `if r is IoError as e { }` | error-side type test and bind |
+| `let v = x is Pattern else { return }` | pattern guard, enum patterns only |
+
+**Every exit is written where it happens.** Bare `try` leaves to the caller — one keyword, one meaning. Everything else that leaves does so with a visible `return`/`break`/`continue`/`panic` on the fallback's right side. And a *discarded error* is always visible too: `catch _ =>` is the loud, greppable spelling of "an error dies here" — the fallbacks are split per shape precisely because dropping a `none` loses nothing while dropping an `E` loses information.
+
+The error-conversion rules — widening into a union, wrapping into a boundary enum, boxing into `any Error` — are attached to `try`, so bare `try r` does work no other form does. `try` also places itself in a postfix chain: `try read_file(p).len()` needs no parens (`type.errors/ER16a`).
+
+**The line shows which shape.** Nothing with a `?` applies to a result — no `r?` test, no `r ?? v`, no `r?.field` chain; failures use `catch`, tests use `is`, and projection is `try r.field` (`try` attaches to the fallible step). `catch` never appears on an optional — absence has nothing to catch. `try`, `!` and `match` work on both.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
@@ -277,7 +285,7 @@ func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {
 }
 ```
 
-No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@skip`/`@default` field annotations (`std.encoding`) — there are no macros.
+No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
 
 ## Modules, build, unsafe
 

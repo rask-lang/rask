@@ -109,7 +109,7 @@ The binary format embeds a schema descriptor for forward/backward compatibility.
 | Rule | Description |
 |------|-------------|
 | **SE1: Field matching** | On `from_bytes()`, fields are matched by name using the embedded schema descriptor |
-| **SE2: Added fields** | Fields present in the current type but absent in the stored schema get their `@default` value, or zero value if applicable (`std.encoding/E20`, `E28`) |
+| **SE2: Added fields** | Fields present in the current type but absent in the stored schema get their `@default` value, or their declared default (`std.encoding/E20`, `type.structs/FD6`). A field with neither is a compile error naming it |
 | **SE3: Removed fields** | Fields present in the stored schema but absent in the current type are skipped |
 | **SE4: Type mismatch** | If a field exists in both schemas but the type changed, `from_bytes()` returns `DecodeError` |
 
@@ -215,7 +215,7 @@ ERROR [mem.relocatable/PB4]: cannot serialize Pool<Connection>
 
 WHY: pool.to_bytes() requires T: Encode + Decode.
 
-FIX: Mark non-serializable fields @skip, or use @no_encode and implement
+FIX: Mark non-serializable fields @no_serialize, or use @no_encode and implement
      custom serialization.
 ```
 

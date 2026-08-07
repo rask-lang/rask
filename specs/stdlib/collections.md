@@ -330,7 +330,7 @@ At compile time, collections use a compiler-managed allocator and must be frozen
 
 <!-- test: parse -->
 ```rask
-const PRIMES: [u32; _] = comptime {
+let PRIMES: [u32; _] = comptime {
     let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }

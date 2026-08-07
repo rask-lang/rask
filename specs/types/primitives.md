@@ -34,14 +34,14 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
 | **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64` |
-| **L7: Must fit** | Any literal | `let b: u8 = 300` | Compile error |
+| **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
 
-L6 only moves the *default*. Context still wins: `let x: i64 = 5` is an `i64`.
+L6 only moves the *default*. Context still wins: `const x: i64 = 5` is an `i64`.
 A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
-nothing wraps silently here — `let b: u8 = 300` is an error, not `44`. Say
-what you mean with `truncate to`, `saturate to`, or `try convert to` (CV5–CV7).
+nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
+what you mean with `truncate to`, `saturate to`, or `convert to T?` (CV5–CV7).
 
 ## Type Conversions
 
@@ -63,7 +63,7 @@ let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 |------|-----------|----------|
 | **CV5: Truncate** | `truncate to T` | Wrapping/bitwise truncation |
 | **CV6: Saturate** | `saturate to T` | Clamp to target range |
-| **CV7: Try convert** | `try convert to T` | `T?`, `none` if out of range |
+| **CV7: Checked convert** | `convert to T?` | `T?`, `none` if out of range. The `?` on the target is required — it says the conversion is partial |
 
 **Float to int:**
 
@@ -71,7 +71,7 @@ let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 |------|-----------|----------|
 | **CV8: Float truncate** | `float to int T` | Truncate toward zero, panic on NaN/infinity |
 | **CV9: Float saturate** | `float to int T (saturating)` | Clamp to T.MIN/T.MAX, NaN → 0 |
-| **CV10: Float try** | `try float to int T` | `T?` |
+| **CV10: Checked float to int** | `float to int T?` | `T?`, `none` on out-of-range, NaN or infinity |
 
 ## `char` Type
 
@@ -171,8 +171,8 @@ mut port: u16 = header.port   // Native u16
 | Rule | Description |
 |------|-------------|
 | **NT1: Common constants** | All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX` |
-| **NT2: Integer trait** | `trait Integer: Numeric { let MIN, MAX, BITS; }` |
-| **NT3: Float trait** | `trait Float: Numeric { let INFINITY, NAN, EPSILON; func is_nan(); }` |
+| **NT2: Integer trait** | `trait Integer: Numeric { const MIN, MAX, BITS; }` |
+| **NT3: Float trait** | `trait Float: Numeric { const INFINITY, NAN, EPSILON; func is_nan(); }` |
 
 ## Edge Cases
 
@@ -203,7 +203,7 @@ FIX: Use an explicit conversion:
 
   let x: i8 = big_val truncate to i8    // wraps
   let x: i8 = big_val saturate to i8    // clamps
-  let x = try big_val convert to i8     // i8?
+  let x = big_val convert to i8?        // i8?
 ```
 
 **Direct u32-to-char cast [CH5]:**
@@ -236,7 +236,19 @@ FIX: let flag: bool = n != 0
 
 **P5 (char as dedicated type):** A dedicated `char` type guarantees validity at the type level. Without it, every function taking a "character" would need runtime validation. The compiler knows the value is always a valid Unicode scalar, enabling better optimization and clearer APIs (`c.is_alphabetic()` makes sense on a char, not on an arbitrary `u32`).
 
-**CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions use named operations (`truncate`, `saturate`, `try convert`) that document intent. Consistent with the overflow philosophy in `type.integer-overflow`.
+**CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions use named operations (`truncate`, `saturate`, `convert`) that document intent. Consistent with the overflow philosophy in `type.integer-overflow`.
+
+**CV7/CV10 (the `?` moved from `try` to the target type).** These used to be spelled `try convert to T` and `try float to int T`. That was a second meaning for `try`: not "an error may leave this function" (`type.errors/ER16`) but "hand me an optional instead of failing". Nothing propagates — the result is `T?`, an *absence*, which is `?` territory rather than `try`'s.
+
+Writing the `?` on the target says the same thing in the marker the language already uses for it, and says it where the reader is looking for the result type:
+
+<!-- test: skip -->
+```rask
+let x = big_val convert to i8?          // i8? — none if it doesn't fit
+let n = (x convert to i64?) ?? return MyError.OutOfRange
+```
+
+The old spelling put two unrelated `try`s in that second line. `truncate to` and `saturate to` are total, so a `?` on *their* target is a type error — the `?` is what marks a conversion as partial.
 
 **CH3 (runtime construction returns `T?`):** `char.from_u32(n)` returning `char?` forces handling of invalid code points. The unsafe `char.from_u32_unchecked(n)` exists for performance-critical paths where validity is known.
 

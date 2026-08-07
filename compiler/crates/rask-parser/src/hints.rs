@@ -51,7 +51,7 @@ pub fn for_expected(expected: &str, found: &TokenKind) -> Option<&'static str> {
         ("type", _) => Some("try a type like 'i32', 'string', or a struct name"),
 
         // Pattern hints
-        ("pattern", _) => Some("try a name, literal, or constructor like Some(x)"),
+        ("pattern", _) => Some("try a name, literal, `none`, or an enum variant like 'Token.Plus'"),
 
         // Declaration hints (match the full string from parser.rs)
         (s, _) if s.starts_with("declaration (") => {

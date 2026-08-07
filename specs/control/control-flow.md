@@ -96,9 +96,14 @@ if event is Tick {
     process(event)  // event unwrapped, same name
 }
 
-// Status types use `?` predicate + `as` binding
+// Optionals use the `?` predicate + `as` binding
 if user? as u {
     process(u)
+}
+
+// Results use a type pattern — `?` is absence, not failure
+if load() is Config as c {
+    apply(c)
 }
 
 // Loop while status holds a value
@@ -128,6 +133,13 @@ let sock = state is Connected else { return }
 // Break from loop when task missing
 let task = event is Ready else { break }
 // task available here
+```
+
+The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates — and each binds the payload directly:
+
+```rask
+let item = queue.pop() ?? break
+process(item)
 ```
 
 ## Infinite Loop: loop
@@ -438,7 +450,9 @@ FIX: Match the number of bindings, use _ to discard:
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Status types (`T?`, `T or E`) use dedicated operators (`?`, `? as v`, `??`, `try`), not `is`.
+**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out and the payload bound.
+
+**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 

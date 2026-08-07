@@ -259,7 +259,7 @@ func to_view(h: Handle<Task>) -> TaskView using frozen Pool<Task> {
 }
 
 func opt_id(x: UserId?) -> u64? {
-    let v = try x
+    let v = x ?? return none
     return v.value
 }
 
@@ -311,20 +311,16 @@ extend TaskTx {
         for op in self.ops {
             match op {
                 SetStatus(id, st) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
                     h.status = st
                 }
                 SetPriority(id, p) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
                     h.priority = p
                 }
                 AddDep(id, dep_id) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
-                    let dh = index.get(dep_id)
-                        ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    let dh = index.get(dep_id) ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
                     h.deps.push(dh)
                 }
             }

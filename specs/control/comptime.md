@@ -27,8 +27,8 @@ comptime func factorial(n: u32) -> u32 {
     return n * factorial(n - 1)
 }
 
-const LOOKUP_TABLE: [u8; 256] = comptime build_table()
-const MAX_SIZE: usize = comptime calculate_max()
+let LOOKUP_TABLE: [u8; 256] = comptime build_table()
+let MAX_SIZE: usize = comptime calculate_max()
 
 func fixed_array<comptime N: usize>() -> [u8; N] {
     return [0u8; N]
@@ -108,7 +108,7 @@ Being callable at comptime is a property of what a function does, not of its mar
 ```rask
 func is_prime(n: u32) -> bool { ... }      // unmarked, pure
 
-const PRIMES: [u32; _] = comptime {
+let PRIMES: [u32; _] = comptime {
     let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }       // OK: is_prime is comptime-evaluable (CT6)
@@ -217,7 +217,7 @@ Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed a
 <!-- test: parse -->
 ```rask
 // Array generation - unknown size
-const PRIMES: [u32; _] = comptime {
+let PRIMES: [u32; _] = comptime {
     let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
@@ -226,7 +226,7 @@ const PRIMES: [u32; _] = comptime {
 }
 
 // Map generation - lookup table
-const KEYWORDS: Map<str, TokenKind> = comptime {
+let KEYWORDS: Map<str, TokenKind> = comptime {
     let m = Map<str, TokenKind>.new()
     m.insert("if", TokenKind.If)
     m.insert("else", TokenKind.Else)
@@ -318,13 +318,13 @@ comptime func large_computation() -> [u8; 10000] {
 <!-- test: skip -->
 ```rask
 // Embed file contents as byte array
-const SCHEMA: []u8 = comptime @embed_file("schema.json")
+let SCHEMA: []u8 = comptime @embed_file("schema.json")
 
 // Embed as string (file must be valid UTF-8)
-const VERSION: string = comptime @embed_file("VERSION")
+let VERSION: string = comptime @embed_file("VERSION")
 
 // Use in comptime computation
-const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
+let CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
 ```
 
 ## Error Handling
@@ -475,7 +475,7 @@ ERROR [ctrl.comptime/CT67]: comptime dependency cycle
   → comptime reflect.size_of<Bad>() at bad.rk:3:15
   → layout of struct Bad (cycle)
 
-WHY: A comptime result cannot depend on itself. Layouts, const initializers, and
+WHY: A comptime result cannot depend on itself. Layouts, let initializers, and
      instantiations form one dependency graph; cycles have no answer.
 
 FIX: Break the cycle — size the buffer from the fields it holds, not from the
@@ -486,14 +486,14 @@ FIX: Break the cycle — size the buffer from the fields it holds, not from the
 ```
 ERROR [ctrl.comptime/CT19]: cannot return unfrozen Vec from comptime
    |
-3  |  const BAD = comptime {
+3  |  let BAD = comptime {
 4  |      let v = Vec<u32>.new()
 5  |      v.push(1)
 6  |      v  // cannot escape unfrozen
    |      ^ collection must be frozen with .freeze()
 
 WHY: Comptime collections use compiler-managed memory and must be
-     materialized as const data to be embedded in the binary.
+     materialized as let data to be embedded in the binary.
 
 FIX: Call .freeze() to convert to let data:
 
@@ -525,7 +525,7 @@ comptime func crc8_table() -> [u8; 256] {
     return table
 }
 
-const CRC8_TABLE: [u8; 256] = comptime crc8_table()
+let CRC8_TABLE: [u8; 256] = comptime crc8_table()
 
 func crc8(data: []u8) -> u8 {
     mut crc = 0u8
@@ -556,8 +556,8 @@ let large = try read_packet<4096>(socket2)
 ### Conditional Compilation
 <!-- test: parse -->
 ```rask
-const DEBUG_MODE: bool = comptime cfg.debug
-const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
+let DEBUG_MODE: bool = comptime cfg.debug
+let LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
 func process(data: []u8) -> void or Error {
     comptime if LOGGING_ENABLED {
@@ -636,7 +636,7 @@ Need to transform/process files (not just embed)?
 
 Use collections with freeze:
 ```rask
-const PRIMES: [u32; _] = comptime {
+let PRIMES: [u32; _] = comptime {
     let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
@@ -653,8 +653,8 @@ comptime func count_primes(max: u32) -> usize { ... }
 // Step 2: Fill
 comptime func fill_primes<comptime N: usize>(max: u32) -> [u32; N] { ... }
 
-const PRIME_COUNT: usize = comptime count_primes(100)
-const PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
+let PRIME_COUNT: usize = comptime count_primes(100)
+let PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
 ```
 
 ### Debugging Tools

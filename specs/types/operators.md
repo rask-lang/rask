@@ -16,20 +16,37 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 
 | Prec | Operators | Description | Assoc |
 |------|-----------|-------------|-------|
-| 14 | `()` `[]` `.` | Grouping, indexing, field | Left |
-| 13 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
-| 12 | `*` `/` `%` | Mul, div, remainder | Left |
-| 11 | `+` `-` | Add, subtract | Left |
-| 10 | `<<` `>>` | Bit shifts | Left |
-| 9 | `&` | Bitwise AND | Left |
-| 8 | `^` | Bitwise XOR | Left |
-| 7 | `\|` | Bitwise OR | Left |
+| 15 | `()` `[]` `.` `?` `?.` `!` (postfix) | Grouping, indexing, field, absence, force | Left |
+| 14 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
+| 13 | `*` `/` `%` | Mul, div, remainder | Left |
+| 12 | `+` `-` | Add, subtract | Left |
+| 11 | `<<` `>>` | Bit shifts | Left |
+| 10 | `&` | Bitwise AND | Left |
+| 9 | `^` | Bitwise XOR | Left |
+| 8 | `\|` | Bitwise OR | Left |
+| 7 | `??` `catch` | Fallbacks — `??` for absence (`type.optionals/OPT11`), `catch <binder> =>` for failure (`type.errors/ER14`) | Left |
 | 6 | `==` `!=` `<` `>` `<=` `>=` | Comparison | None |
 | 5 | `&&` | Logical AND | Left |
 | 4 | `\|\|` | Logical OR | Left |
 | 3 | `..` `..=` | Range | None |
-| 2 | `try` (prefix) `??` `!` (postfix) | Propagation, optional ops | Left |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Assignment | Right |
+
+Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
+
+The fallbacks bind tighter than comparison, looser than the bitwise operators, so `port ?? 8080 == want` is `(port ?? 8080) == want` — the reading you want, without parens. `??` is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a ?? b ?? fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
+
+`catch` needs one more ruling than `??`, because it has two sides with different behavior:
+
+- **Left of `catch`, level 7, left-associative** — same as `??`. Mixed chains group left on their left operands: `x ?? y catch e => z` is `(x ?? y) catch e => z` — which parses fine and then rarely type-checks, since `??` produced an optional or a `T` and `catch` needs a result; the mistake surfaces as a type error naming the shapes.
+- **Right of `=>`, the body is greedy** — a full expression extending as far right as it can, exactly like a match-arm body. `a catch _ => b ?? c` is `a catch _ => (b ?? c)`; `a catch _ => b catch _ => c` right-nests, which is the wanted chain; and `r catch _ => a == b` is `r catch _ => (a == b)`. The body ends at a comma, a closing bracket, or the statement end — parenthesize the `catch` expression to end it earlier.
+
+So the two rules a parser needs: the *operand* chain is level-7-left, and everything after `=>` belongs to the body until a list or statement boundary.
+
+`try` is a prefix keyword and sits outside the numeric table — its placement follows two rules. **It binds tighter than `??`** (`type.errors/ER16b`), so `try f() ?? v` is `(try f()) ?? v` with no parens — `try` peels the error, `??` handles the absence. That order is the common composite (Zig's stdlib has ~160 of it against ~4 reversed, and Zig's reversed precedence forces parens on it — their issue #5436).
+
+The `??` right side and the `catch` body may be a value or any divergence — `return`, `break`, `continue`, `panic(…)` — written where it happens (`type.optionals/OPT11`, `type.errors/ER14`). `catch`'s binder (`e =>` or `_ =>`) is mandatory. Inside a comma list a diverging right side needs parens (`type.errors/ER45a`).
+
+`try` attaches to the fallible step of the postfix chain rather than to the whole of it (`type.errors/ER16a`): `try store.get(id)` is `try (store.get(id))`, while `try read_file(p).len()` is `(try read_file(p)).len()`. The wrappers have no methods or fields at all, so exactly one placement type-checks — the compiler finds it, and no parens are ever needed.
 
 ## Indexing
 

@@ -211,7 +211,7 @@ struct EthernetFrame {
 
 <!-- test: skip -->
 ```rask
-const MAGIC_HEADER: [u8; 8] = comptime {
+let MAGIC_HEADER: [u8; 8] = comptime {
     @binary
     struct Header {
         magic: u32be

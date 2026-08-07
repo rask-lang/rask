@@ -324,7 +324,7 @@ func load_config(path: string) -> Config or string {
 }
 
 // Catch and handle
-const config = try load_config("app.cfg") else |e| {
+const config = load_config("app.cfg") catch e => {
     log("fallback: {e}")
     return default_config()
 }

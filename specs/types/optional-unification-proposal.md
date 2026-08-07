@@ -6,6 +6,10 @@
 > **Status: Accepted (2026-04-26).** This proposal is the chosen design. The normative rules now live in [optionals.md](optionals.md) (the operator surface and narrowing), [primitives.md](primitives.md) (`none` as P7), and [union-types.md](union-types.md) (U5 duplicate-variant, U6 disjointness). This file is retained as the design rationale and the decision record.
 >
 > **One part superseded (2026-07-30, issue #488).** This proposal deleted OPT4 by folding "`T??` is forbidden" into the duplicate-variant rule. That didn't survive generics: `func head<T>(v: Vec<T>) -> T?` produced `T??` for every optional `T`. Optionals now nest, with the layers kept distinct — see `type.optionals/OPT28`–OPT31. The rest of the proposal stands.
+>
+> **A second part superseded (2026-08-03, issues #565/#573/#574).** The `?`-family here spans both shapes, `??` included. It no longer does. There is **one operator per shape**: the `?`-family (`?`, `?.`, `??`, `== none`) for absence, and `or`/`try` for failure. So `??` survives but narrows to optionals, `?.` and `r?` no longer apply to results (use `is`), `try` is failure-only (absence propagates with `?? return none`), and `.to_result` is retired in favour of `opt ?? return err`. See `type.errors/ER12`–ER18 and ER44–ER48. The unification argument itself stands — `T?` being `T or none` is what lets the two operator sets share their typing rules rather than being two systems, as in Swift.
+>
+> **And a third (2026-08-06, settled the same day after a reading review).** `try` is back on both shapes, propagating `none` from a `T?` exactly as it propagates the error from a `T or E` (bare `try` on a flat `T? or E` operand is a compile error, resolved by the composite `try f() ?? …`). The fallbacks stay split — and gained a rule: `??` remains the absence fallback with its right side now allowed to diverge (`x ?? return Token.Eof`); the failure fallback is `catch e =>` / `catch _ =>` with a **mandatory binder** and no bare-value form, so discarding an error is always visible in the text. (An intermediate round merged both fallbacks into one word, `orelse`; it was semantically defensible — `T?` *is* `T or none`, so "the payload or this instead" is one operation — and it failed reading: a fallback site must say whether an error is being discarded. Information loss, not operation shape, turned out to be what the syntax owes the reader.) `?`, `?.`, `x? as v`, `is none` remain absence-only. Normative: `type.errors/ER14`, ER16, ER47; `type.optionals/OPT11`.
 
 
 # Option Unification
@@ -129,7 +133,7 @@ Every line of Rask source code compiles identically. The changes are all inside 
 | Chain | `x?.field` | `x?.field` |
 | Fallback | `x ?? default` | `x ?? default` |
 | Force | `x!` | `x!` |
-| Propagate | `try x` | `try x` |
+| Propagate | `try x` | `x ?? return none` (`try` is failure-only) |
 | Present check | `x?`, `x == none` | `x?`, `x == none` |
 | Narrow | `if x?`, `if x? as v` | `if x?`, `if x? as v` |
 | Auto-wrap at return | works | works (by widening) |

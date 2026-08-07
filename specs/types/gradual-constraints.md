@@ -240,7 +240,7 @@ public func load_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-See `type.errors/ER20–ER22` for full rules.
+See `type.errors/ER23–ER25` for full rules.
 
 ## Self Mode Inference
 

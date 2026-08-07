@@ -14,7 +14,7 @@ Block-scoped `ensure` statement schedules an expression to run when the enclosin
 | **EN2: LIFO ordering** | Multiple ensure statements run in reverse order (last scheduled runs first) |
 | **EN3: Linear consumption commitment** | `ensure` on linear resource counts as consumption guarantee |
 | **EN4: Errors ignored by default** | If ensure body returns `T or E` and fails, error silently ignored |
-| **EN5: try forbidden in ensure** | Cannot use `try` inside ensure body or else handler |
+| **EN5: try forbidden in ensure** | Cannot use `try` inside an ensure body or its `catch` handler |
 | **EN6: Explicit consumption cancels ensure** | If value is consumed before scope exit, ensure is void |
 
 ## Basic Usage
@@ -109,26 +109,26 @@ func process(a: File, b: File) -> void or Error {
 
 ## Error Handling in Ensure
 
-Cleanup actions may fail. Errors are ignored by default; opt-in handling with `else` clause.
+Cleanup actions may fail. Errors are ignored by default; opt-in handling with a `catch` clause.
 
 | Rule | Description |
 |------|-------------|
-| **ER1: Default ignore** | If ensure body returns an error, error silently ignored |
-| **ER2: Opt-in else clause** | `ensure expr else \|e\| handler` passes error to handler |
-| **ER3: Infallible handler** | `else` handler must not use `try`—nowhere to propagate |
+| **ER1: Default ignore** | If ensure body returns an error, error silently ignored. This is a deliberate exception to the family rule that a discarded error is always marked (`type.errors/ER14`): scope exit has nowhere to send an error mid-unwind, and requiring `catch _ =>` on every ensure would tax all cleanup to mark the rare interesting case. The drop lives here, in ensure's documented semantics — not in an innocent-looking expression |
+| **ER2: Opt-in catch clause** | `ensure expr catch e => handler` passes error to handler |
+| **ER3: Infallible handler** | The `catch` handler must not use `try`—nowhere to propagate |
 | **ER4: try forbidden** | Cannot use `try` inside ensure body |
-| **ER5: Multi-failure independent** | When multiple ensures run (LIFO), each runs regardless of whether previous ensures failed. Errors are independent — each is ignored (ER1) or handled by its own `else` clause (ER2). The function's return value is unaffected by ensure failures |
+| **ER5: Multi-failure independent** | When multiple ensures run (LIFO), each runs regardless of whether previous ensures failed. Errors are independent — each is ignored (ER1) or handled by its own `catch` clause (ER2). The function's return value is unaffected by ensure failures |
 
 <!-- test: skip -->
 ```rask
 ensure file.close()                        // ER1: errors silently ignored
 
-ensure file.close() else |e| log(e)       // ER2: handle the error
+ensure file.close() catch e => log(e)       // ER2: handle the error
 
-ensure file.close() else |_| panic("!")   // ER2: panic on error
+ensure file.close() catch _ => panic("!")   // ER2: panic on error
 
 ensure { try file.close() }                     // ❌ Error: ER4
-ensure file.close() else |e| { try fallible() }   // ❌ Error: ER3
+ensure file.close() catch e => { try fallible() }   // ❌ Error: ER3
 ```
 
 **Multiple ensure failures (ER5):**
@@ -137,13 +137,13 @@ ensure file.close() else |e| { try fallible() }   // ❌ Error: ER3
 ```rask
 func process() -> void or Error {
     let a = try open("a.txt")
-    ensure a.close() else |e| log("a close failed: {e}")
+    ensure a.close() catch e => log("a close failed: {e}")
 
     let b = try open("b.txt")
-    ensure b.close() else |e| log("b close failed: {e}")
+    ensure b.close() catch e => log("b close failed: {e}")
 
     let c = try open("c.txt")
-    ensure c.close() else |e| log("c close failed: {e}")
+    ensure c.close() catch e => log("c close failed: {e}")
 
     try do_work()
     return
@@ -360,27 +360,27 @@ ERROR [ctrl.ensure/ER4]: cannot use try inside ensure
 
 WHY: Ensure handlers run during scope exit—there's nowhere to propagate errors.
 
-FIX: Remove try and optionally handle errors with else clause:
+FIX: Remove try and optionally handle errors with a catch clause:
 
   // Ignore errors (default)
   ensure file.close()
 
   // Handle errors
-  ensure file.close() else |e| log(e)
+  ensure file.close() catch e => log(e)
 ```
 
-**Using `try` in else handler [ER3]:**
+**Using `try` in a `catch` handler [ER3]:**
 ```
-ERROR [ctrl.ensure/ER3]: cannot use try in else handler
+ERROR [ctrl.ensure/ER3]: cannot use try in a catch handler
    |
-5  |  ensure file.close() else |e| { try log(e) }
-   |                                  ^^^ try forbidden in else handler
+5  |  ensure file.close() catch e => { try log(e) }
+   |                                      ^^^ try forbidden in a catch handler
 
-WHY: Else handlers run during scope exit—there's nowhere to propagate errors.
+WHY: Handlers run during scope exit—there's nowhere to propagate errors.
 
-FIX: Use infallible operations in else handler:
+FIX: Use infallible operations in the catch handler:
 
-  ensure file.close() else |e| println("Failed: {}", e)
+  ensure file.close() catch e => println("Failed: {}", e)
 ```
 
 **Linear resource not consumed [L2]:**
@@ -430,7 +430,7 @@ Or consume on every path:
   if fast_path { tx.commit() } else { tx.rollback() }
 ```
 
-**Ensure on non-linear without else [ER1]:**
+**Ensure on non-linear without a `catch` clause [ER1]:**
 ```
 NOTE [ctrl.ensure/ER1]: ensure result ignored
    |
@@ -439,9 +439,9 @@ NOTE [ctrl.ensure/ER1]: ensure result ignored
 
 WHY: Ensure errors are silently ignored by default.
 
-FIX: Add else clause to handle errors:
+FIX: Add a catch clause to handle errors:
 
-  ensure file.close() else |e| log("Close failed: {}", e)
+  ensure file.close() catch e => log("Close failed: {}", e)
 
   // Or explicitly handle errors without ensure
   try file.close()
@@ -459,7 +459,7 @@ FIX: Add else clause to handle errors:
 
 **EN3 (linear consumption commitment):** Linear resources must be consumed exactly once. `ensure` commits to consumption at scope exit, allowing the compiler to accept `try` after the ensure. Without this, every `try` after acquiring a linear resource would be an error.
 
-**EN4 (errors ignored by default):** Most cleanup errors are unrecoverable. What do you do when `close()` fails? The OS has already released the resource. Silent ignore keeps simple cases simple (no ceremony). The `else` clause provides opt-in visibility for the rare cases where cleanup errors matter.
+**EN4 (errors ignored by default):** Most cleanup errors are unrecoverable. What do you do when `close()` fails? The OS has already released the resource. Silent ignore keeps simple cases simple (no ceremony). The `catch` clause provides opt-in visibility for the rare cases where cleanup errors matter.
 
 **EN5 (try forbidden in ensure):** Ensure runs during scope exit—there's nowhere to propagate errors. Forbidding `try` makes this explicit. If you need fallible cleanup, use explicit handling (not ensure).
 
@@ -550,7 +550,7 @@ Hover information shows:
 - Which ensures will run at this block exit
 - LIFO order
 - Cancellation status (if value consumed explicitly)
-- Whether errors are handled (else clause present)
+- Whether errors are handled (`catch` clause present)
 
 ### Concurrency Integration
 

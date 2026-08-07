@@ -370,7 +370,7 @@ Must-consume resource types (`@resource`) can be generic parameters. Narrowing o
 |---------|-----------------|-------|
 | `if opt? as f` | Binds f | Yes, f must be consumed |
 | `if opt?` (no bind, single-payload implicit) | Wildcard | No, compile error |
-| `opt == none` branch | No value | Yes, nothing to consume |
+| `opt is none` branch | No value | Yes, nothing to consume |
 | `if r? as f` on `Resource or E` | Binds f | Yes, f must be consumed |
 
 ## Trait Composition

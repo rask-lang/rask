@@ -47,8 +47,9 @@ public extend Config with Displayable {
 }
 
 func parse_port(raw: string?) -> u16? {
-    let s = try raw
-    return try s.parse<u16>()
+    let s = raw ?? return none
+    let n = s.parse<u16>() ?? return none
+    return n
 }
 
 // Read-heavy shared state (conc.sync SY1): many request tasks read it,

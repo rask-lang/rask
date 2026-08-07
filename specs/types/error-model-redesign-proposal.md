@@ -5,6 +5,12 @@
 
 > **Status: Accepted (2026-04-26).** The chosen design. Normative rules now live in [error-types.md](error-types.md), [optionals.md](optionals.md), [union-types.md](union-types.md), and [primitives.md](primitives.md). One amendment from this proposal: per the [optional-unification proposal](optional-unification-proposal.md), `T?` is sugar for `T or none` rather than a separate "status type" kind, and `match` on `T or none` is a style lint rather than a hard error. This file is retained as the design rationale and the decision record.
 
+> **Superseded again (2026-08-06, settled after three rounds in one day): `try` / `??` / `catch`.** The 08-03 revision below split the fallback per shape and routed every exit through `try`'s `else` clause; an intermediate round merged both fallbacks into one word (`orelse`), which failed the designer's own reading test — at a fallback site the reader must know whether an error is being discarded, and a merged word can't say. Final surface: **`try x`** propagates the bad branch of either shape (`none` from a `T?`, the error from a `T or E`; bare `try` on a flat `T? or E` operand is a compile error — write `try f() ?? …`, ER16b). **`x ?? <expr>`** is the absence fallback; its right side may be a value or any divergence, written where it happens (`?? return Token.Eof`, `?? break`). **`r catch e => <expr>` / `r catch _ => <expr>`** is the failure fallback — the binder is mandatory and there is no bare-value form, so a discarded error is always visible (`catch _ =>` is the greppable spelling of "an error dies here"); the body may be a value or a divergence. The `try … else` clause family (ER45/ER46/ER48) stays gone. `catch`'s earlier rejection (item 2's reasoning) applied to its binderless value form (`parse(s) catch 8080`), which does not exist — with the binder mandatory, `catch e` literally catches. Normative: [error-types.md](error-types.md) ER12–ER18, ER47; [optionals.md](optionals.md) OPT11. Translating the 08-03 forms: `x ?? v` stays; `r or v` → `r catch _ => v`; `try x else return E` → `x ?? return E`; `try r else e => return f(e)` → `r catch e => return f(e)`; `?? return none` → bare `try x`; `r or none` → `r catch _ => none`.
+>
+> **Superseded in part (2026-08-03, issues #565/#573/#574): one operator per shape, and `try` owns every exit.** The surface below shares `?` and `??` across both shapes and lets the fallback diverge. Neither holds now. `??` is absence-only and `or` is failure-only; both supply a **value** and never transfer control. Every line that can exit the function carries `try`, whose `else` clause must contain the `return` — so the control path is written out rather than implied. `r?`, `r?.field` and the `if r?` narrowing family are gone from results (use `is`, and project with `try r.field`), and `.to_result` is retired. Normative rules: [error-types.md](error-types.md) ER12–ER18, ER44–ER48. Read everything below as history. Translating: plain `x ?? v` survives for optionals and is `r or v` on a result; `x ?? return …` is `try x else return …`; `?? break`/`?? continue` are an `if` on the narrow; `?? panic(…)` is `x! "…"`; `try … else e => f(e)` needs an explicit `return` in the clause, and the binding is `e =>`, not `|e|` — closure syntax would capture the `return` (CF26). One entry below was wrong even when written and is corrected in place — `.unwrap_or_else` was mapped to the `try { … } else e => f(e)` block form, which early-returns and therefore cannot produce a value (issue #574). The bare fold it should have pointed at is now written `r or e => f(e)`.
+>
+> **Also superseded: the eight retained methods are down to zero.** This proposal cut the predicates and kept `map`, `filter`, `and_then`, `map_err` and friends on the theory that they keep a value in wrapper-land for the next chain step. Nothing in the tree does that — measured across stdlib, examples, projects and tests, `and_then` has zero uses, `map`/`filter` on either wrapper zero, `map_err` two. The operators made wrapper-land a place values pass through, not sit in. `.ok()` outlasted the rest as a "shape conversion" until its 45 sites were read: 41 are in statement position and discard the optional, which is `const _ = f()`. So neither wrapper has methods. `.ok()` is `r or none`, and `.to_result(err)` is `try opt else return err`.
+
 
 # Rask Error Model Redesign
 
@@ -127,10 +133,10 @@ Eight methods total. Compiler-provided on the builtin types — no `impl` blocks
 | `.is_ok()` / `.is_err()` | `r?` / `r is E` |
 | `.unwrap()` | `x!` / `r!` |
 | `.unwrap_or(default)` | `x ?? default` |
-| `.unwrap_or_else(f)` | `try { … } else \|e\| f(e)` block form |
+| `.unwrap_or_else(f)` | `r else \|e\| f(e)` — the bare fold (`type.errors/ER44`) |
 | `.to_option()` | `.ok()` (single survivor) |
 | `.or(other)` | `x ?? other` already returns `T?` |
-| `.or_else(f)` | `try { … } else \|e\| …` or `match` |
+| `.or_else(f)` | `r else \|e\| f(e)`, or `try { … } else \|e\| …` when it should propagate |
 
 Each removed method either duplicated an operator or can be reconstructed trivially. The retained eight are precisely the ones that keep a value in wrapper-land for the next chain step, plus the two explicit conversion paths (`.ok()`, `.to_result(err)`).
 
@@ -313,7 +319,7 @@ Don't reintroduce without strong reason.
 5. **Flow typing for mut bindings.** The `let`/`mut` split makes flow typing unnecessary. Mut narrowing requires explicit `as` bind.
 6. **Type-theoretic union (with disjointness in the union sense).** Terminology error early in the design. `T or E` is a sum type with a runtime tag, not a type-theoretic union. The disjointness rule is for *branch disambiguation at construction*, not for union soundness.
 7. **`is some` / `is ok` keywords.** `some` and `ok` would be destructure-only keywords with no construction counterpart. Inconsistent.
-8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only.
+8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only. **(Reversed — the premise stopped being true.)** Optional unification made `T?` desugar to `T or none` (`type.optionals/OPT1`) and `none` a zero-field *type* (OPT2), so `x is none` is a type-pattern test (`type.errors/ER23`), not an enum-variant test. `is none` is now the canonical absent check and `== none` lints (`tool.lint/I5`). Item 7 above still holds and for the same reason it always did: `some` and `ok` aren't types, so there's nothing for `is` to test.
 9. **Matching on Option.** Covered above — operators suffice and keep the builtin framing honest.
 
 ## Worked example

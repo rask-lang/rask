@@ -87,6 +87,12 @@ Use full citations when referencing rules from another spec or from compiler err
 
 Don't force IDs onto every paragraph. If a rule isn't something another spec or the compiler would cite, it doesn't need an ID.
 
+### Retirement — an ID is never repurposed
+
+When a rule dies, its number dies with it: mark it deleted in place (`ER45 and ER46 are deleted — …`) and never assign the number to a new rule. When a rule's meaning *reverses*, that's a delete plus a new rule under a new ID — a citation in an old issue, commit, or diagnostic must not silently point at the opposite claim.
+
+This convention arrived late; the error-family redesign repurposed two IDs before it existed (`type.errors/ER12` flipped from "`r?` is a boolean ok-test" to "no `?` on a result", ER14 from "value fallback" to "`catch`"). Those two stay — re-renumbering them now would invalidate the current spec's own cross-references — and the error-types spec carries an ID-history note naming them. They are the reason for the rule, not license to repeat it.
+
 ## Spec File Structure
 
 Every spec follows this structure. The `---` separates normative content from non-normative appendix.

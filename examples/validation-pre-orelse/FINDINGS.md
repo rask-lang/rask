@@ -4,12 +4,6 @@ Program: `examples/validation/` — an in-memory work-item tracker (16 files,
 ~1600 lines), written to the **spec**. This pass was redone against `main`
 after ~112 compiler commits landed.
 
-> **2026-08-06:** the dir now targets the settled `try`/`??`/`catch` family
-> (#565/#573/#574) and won't parse until the implementation lands (tasks in
-> flight). `examples/validation-pre-orelse/` is the byte-identical snapshot in
-> implemented syntax — the §A–§D status below describes *that* version.
-> Readability verdict on the migration: §F.
-
 **Status on current `main`:**
 
 | Stage | Result |
@@ -107,7 +101,7 @@ even though JsonError ∈ the union. **Workaround:** no union-returning helper;
 handlers decode + validate inline with explicit `else |e|` maps.
 
 ### B6 — `with <module-level const sync-box> as v` doesn't unwrap — [#448] (follow-up to #268)
-`let store = Mutex.new(...)` then `with store as s { s.method() }` →
+`const store = Mutex.new(...)` then `with store as s { s.method() }` →
 `no method … for Mutex<Store>`. A **local** `const` unwraps fine; module-level
 doesn't. **Workaround:** inline `store.lock().op()` / `config.read().field`
 everywhere. (This one also bites at codegen — §D.)
@@ -144,7 +138,7 @@ borrow and cannot escape`. With a literal (`ms >= 250.0`) it's fine.
 - **C5 `Channel.buffered` returns a tuple `(Sender, Receiver)`** ([#359]), not an object
   with `.sender`/`.receiver` — canonical-patterns' `ch.sender.send(...)` is wrong;
   async.md's `mut (tx, rx) = …` is right. Also: module-level tuple-destructure
-  (`let (tx, rx) = …` at file scope) is rejected as a "top-level statement",
+  (`const (tx, rx) = …` at file scope) is rejected as a "top-level statement",
   so the channel is created inside `main`.
 
 ---
@@ -250,84 +244,3 @@ information.
   and is terse.
 - **`T or E` + `try` + `try…else` + `??` + guards** cover the whole error surface
   with no `if err != nil` equivalents.
-
----
-
-## §F The try/orelse migration — readability verdict (2026-08-06)
-
-Every old form in the program mapped mechanically; nothing needed a `match` or lost information.
-34 sites across 7 files: 8 value fallbacks (`?? v` → `orelse v`), 17 diverging fallbacks
-(`?? return X` → `orelse return X`), 6 decode guards (`try … else |e| V` → `… orelse return V`),
-and 3 absence-propagations that collapsed into bare `try`.
-
-**Where it got better:**
-
-- The six decode guards dropped a binder nobody used. `try json.decode<T>(req.body) else |e|
-  ApiError.BadRequest("invalid JSON")` carried an `|e|` that looked like a closure and bound
-  nothing; `json.decode<T>(req.body) orelse return ApiError.BadRequest("invalid JSON")` says
-  return where it returns. The old form also *hid* the return entirely — the else-value was
-  implicitly returned, which is the invisible exit the redesign exists to kill.
-- `parse_port` went from four lines of ceremony to two honest ones:
-  `const s = try raw` / `return try s.parse<u16>()`. Same in `opt_id`. Bare `try` on optionals
-  is the right tool exactly where predicted (the 7-sites-propagate-none case).
-- The store's NotFound guards read as guard-lets:
-  `const h = self.by_id.get(id) orelse return StoreError.NotFound(id.value)` — one word instead
-  of a symbol, and the exit is in the line.
-- `orelse return deny(AuthError.Missing)` in the auth middleware shows the divergence isn't
-  error-flavored: `before()` returns a plain `MwOutcome`, and the same operator reads fine.
-
-**Where it costs:**
-
-- **Long lines got one wrap deeper.** The decode guards and TxConflict guards were already at
-  ~100 cols; `orelse return` pushed 7 lines over, and the fix is the continuation form
-  (`orelse` leading the next line). It reads well — the exit gets its own line — but the
-  formatter must handle it, and `rask fmt` has no rule for it yet. Flagging for task #3.
-- **The left-margin exit scan is genuinely weaker.** Under the old rule every exit line started
-  with `try`; now `to_txop`'s exits sit mid-line after `raw.value`. In *this* program the loss
-  is small — the wrapped continuation puts long exits back at the line head, and short ones
-  (`orelse return none` class) became bare `try` — but it's real, and it's the cost the spec's
-  reversal record already prices in (`type.errors` appendix).
-- One TxConflict continuation line still lands at 101 cols. Cosmetic.
-
-**What the program never exercises** — untested by this corpus, still spec-only:
-`try f() orelse v` on a flat `T? or E` (no such callee here), `orelse e =>` with the binder
-*used* (every error this program replaces is replaced blind), `orelse` chains (no
-multi-source fallback), and `take` (the store swaps nothing out of optional slots).
-A corpus that exercises those four is worth having before the implementation freezes.
-
-**Verdict:** the flagship reads better, not worse — mostly from deleting the fake binder and
-the four-line optional ceremony. No spec change requested from this pass; the two debts
-(formatter rule for continuation `orelse`, weaker margin scan) are known and priced.
-
-**Addendum — the four gaps, exercised (`examples/tiered_store.rk`).** A ~260-line LSM-shaped
-store (the ER47 rationale's example, made real) hits all four. Verdicts:
-
-- **The composite is the best line in the file.** `const v = try t.lookup(key) orelse continue`
-  routes both bad branches visibly — error up, absence to the next tier. The ER16b precedence
-  ruling (no parens) carries its weight.
-- **`take` composes with `orelse` naturally** — `const staged = take self.pending orelse return`
-  reads as one clause for "grab the staged work or go back to sleep". But the grouping
-  (`(take place) orelse …`) is a precedence ruling OPT32 never states. Flagged on #586.
-- **Both binder flavors earn their keep once context exists to attach**: diverging
-  (`orelse e => return StoreError.FlushFailed(n, e)` — `n` is context only this frame has) and
-  value (`orelse e => println("stats dropped: {e.message()}")` — best-effort stats).
-- **New finding: the flat shape is match-only at infallible boundaries.** In `main`, `try` has
-  nowhere to propagate and `orelse` can't consume a three-branch left side (ER14), so
-  `string? or StoreError` is consumed by a three-arm `match` — which turns out to be *right*
-  (three outcomes genuinely differ) but nothing in the spec says so. Worth one line in
-  error-types.md's flat-shape section when it's next touched.
-
-No spec change forced; one grammar ruling owed (take/orelse precedence, #586).
-
-**Addendum 2 — round three: the merged word failed the designer's reading test.** Reading the
-migrated flagship at length surfaced the constant unpaid question at every fallback site: *was
-that an error just now, and did it survive?* `orelse` couldn't answer it without a signature
-lookup — elegant, low-info. Resolution (now spec): fallbacks split by what they destroy. `??` is
-back for absence (a miss carries nothing; terse is right), and keeps the diverging right side.
-Failures get `catch e =>` / `catch _ =>` — binder **mandatory**, no bare-value form, so a
-swallowed error is always written down (`catch _ =>` is one grep). `try` unchanged; the composite
-is `try f() ?? continue` and now glosses itself: error up, absence here. Both corpora
-re-migrated: the flagship's 28 absence sites wear `??`, its 6 decode guards wear
-`catch _ => return …` — the discard the old `|e|` form hid is now the loudest thing on the line.
-This closes the "swallowed errors are unmarked" debt at the grammar level; the fmt continuation
-rule now covers `catch` bodies too.

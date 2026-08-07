@@ -231,4 +231,4 @@ No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 - **Script -> Host:** `raido.ScriptError` (kind, message, stack trace).
 - **Host -> Script:** Rask errors in extern funcs become Raido runtime errors (`HostError`).
-- **In-script:** `try expr` propagates errors. `try expr else |e| { ... }` catches them. `error(msg)` raises them. Same syntax as Rask.
+- **In-script:** `try expr` propagates errors. `expr catch e => { ... }` handles them. `error(msg)` raises them. Same syntax as Rask.

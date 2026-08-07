@@ -230,7 +230,7 @@ func publish(mutate pool: Pool<Reading>, value: Reading) {
 }
 
 func read_latest(pool: Pool<Reading>) -> Reading? {
-    let h = latest.load(Acquire) ?? return none
+    let h = try latest.load(Acquire)
     return pool.get(h)   // none if writer just swapped and removed
 }
 ```

@@ -114,9 +114,9 @@ let s = Saturating(255u8) + Saturating(1)     // Saturating(255)
 ```rask
 import num.Wrapping
 
-const X: u8 = 200 + 100                       // Compile error: overflow
-const Y: u8 = Wrapping(200u8) + Wrapping(100)  // OK via wrapping type
-const Z: u8 = (200u8).wrapping_add(100)        // OK via method
+let X: u8 = 200 + 100                       // Compile error: overflow
+let Y: u8 = Wrapping(200u8) + Wrapping(100)  // OK via wrapping type
+let Z: u8 = (200u8).wrapping_add(100)        // OK via method
 ```
 
 ## Unchecked Arithmetic (Unsafe)

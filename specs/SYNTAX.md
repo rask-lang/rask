@@ -762,28 +762,24 @@ if state is Connected(sock) && sock.is_ready() {
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
 
-**Guard pattern with early-exit narrow:**
+**Guards bind:**
 
-For optionals, use `?? return` or the early-exit absent check:
-
-```rask
-let value = result ?? return  // optional: divert on absent, value: T after
-
-if opt == none { return }
-use(opt)                         // opt: T here (early-exit narrow)
-```
-
-For results (`T or E`), use `try` for propagation, or type-pattern narrow with divergence:
+The fallback operators are the guards, and the binding is the payload from then on — no test ever changes a binding's type:
 
 ```rask
-let data = try read_file(path)             // propagates the error
-
-let conn = connect()
-if conn is ConnectError as e { return e }
-use(conn!)                                    // conn: Connection after
+let opt = load() ?? return                     // absent diverts; opt: T after
+let conn = connect() catch e => return e       // failure diverts; conn: Connection after
 ```
 
-The `else` block of a guard must diverge (`return`, `break`, `panic`).
+One-liners cover the common cases — `try` propagates, `??` fills in for absence, `catch` handles failure:
+
+```rask
+let data = try read_file(path)                              // propagate the error
+let ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
+let port = config.port ?? 8080                              // a value instead
+```
+
+`try` works on optionals and results alike. The fallback is one word per shape: `??` for absence, `catch e =>` for failure — either right side is a value to carry on with, or an exit written where it happens (`type.optionals/OPT11`, `type.errors/ER14`).
 
 ### Loops
 
@@ -895,6 +891,30 @@ func load_config() -> Config or (IoError | ParseError) {
 }
 ```
 
+**One family, one word per job.** `try` propagates the bad branch to the caller unchanged. The fallback handles it here — `??` for absence, `catch` for failure — and the right side is a value to carry on with, or any divergence (`return`, `break`, `continue`, `panic(…)`), so every exit is written where it happens. `catch`'s binder is mandatory: `e =>` to use the error, `_ =>` to drop it — a discarded error is always visible in the text. The glance rule: `try` means something leaves, `?` means something missing, `catch` means something failed.
+
+| Form | Leaves? | The other branch |
+|------|---------|------------------|
+| `x ?? v` | no | is this value (an absence carried nothing) |
+| `r catch e => f(e)` | no | is this value, computed from the error |
+| `r catch _ => v` | no | is this value; the error is dropped, acknowledged |
+| `try x` | **yes** | propagates the other branch |
+| `x ?? return y` | **yes — and the line says so** | leaves the function with `y` |
+| `x ?? break` / `?? continue` | **yes — and the line says so** | leaves the loop |
+| `r catch e => return f(e)` | **yes — and the line says so** | exits with something built from the error |
+
+```rask
+let port = config.port ?? 8080                                 // nothing leaves
+return dispatch(req) catch e => error_response(e)                 // handled at a boundary
+
+let data = try read_file(path)                                 // propagates — leaves
+let ms   = raw.parse() ?? return BadRequest("bad ms")
+let dto  = json.decode(body) catch _ => return BadRequest("bad JSON")
+let text = fs.read_text(p) catch e => return context("reading {p}", e)
+```
+
+The `?`-family stays absence-only: nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
+
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
 ### Development Panics
@@ -999,7 +1019,7 @@ test "addition" {
 | `@no_decode` | Struct | Prevent auto-derive of `Decode` (`std.encoding/E16`) |
 | `@tag("field")` | Enum | Internally tagged serialization (`std.encoding/E24`) |
 | `@rename("name")` | Field, Variant | Override serialized name (`std.encoding/E18`) |
-| `@skip` | Field | Exclude from serialization (`std.encoding/E19`) |
+| `@no_serialize` | Field | Exclude from the wire form, both directions (`std.encoding/E19`) |
 | `@default(expr)` | Field | Default value when field missing during decode (`std.encoding/E20`) |
 
 ### Comptime Field Access
@@ -1188,9 +1208,10 @@ println("{sum}")
 | Optional | `T?` | Sugar for `T or none`; bare value + `none` literal, no `Some`/`None` |
 | Error union | `T or E` | No `Ok`/`Err` — bare T auto-wraps at return; E is its own type |
 | Error prop | `try expr` | Prefix keyword |
+| Other branch | `x ?? v` (absent) / `r catch e => f(e)` (failed) | Right side is a value or a written-out exit; `catch` always binds — `e =>` or `_ =>` |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `let v = x is P else { }` | Binds to outer scope |
+| Guard extraction | `let v = x is P else { }` | Enum patterns only; binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

@@ -41,6 +41,8 @@ Rask uses words where other languages use symbols:
 | Concept | Rask | Alternative |
 |---------|------|------------|
 | Error propagation | `try expr` | `expr?` |
+| Handle it here | `x ?? v` (absent) / `r catch e => f(e)` (failed) | one operator for both shapes |
+| Leave the function | `try x`, `x ?? return E` | an unmarked `return` mid-expression |
 | Ownership transfer | `own value` | implicit move |
 | Pattern check | `if x? as v { … }` | `let Some(v) = x` |
 | Result type | `T or E` | `Result<T, E>` |
@@ -74,7 +76,7 @@ let buf = Buffer.new()
 let map = Map.new()
 
 // .with_* — builder-style for optional configuration
-let pool = Pool.new().with_capacity(64)
+const pool = Pool.new().with_capacity(64)
 let server = Server.new(8080).with_timeout(Duration.seconds(30))
 
 // Collection literals
@@ -125,6 +127,8 @@ let vec = list.into_vec()
 
 **`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse_int`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
 
+**Probes return `T?`, not `T or E`:** when failure is a non-answer carrying nothing — env lookup, map/find, "does this parse as an IP" — the error branch shouldn't exist. If callers would routinely discard the error, that's the API telling you it's absence-shaped. (This is why Rust corpora are full of one-armed `if let Ok` on `env::var` and `metadata`: `Result` standing in for the optional Rust's stdlib didn't give them.)
+
 **Builders:** one-shot optional settings use `with_*` (`with_timeout`, `with_capacity`). Repeatable accumulator methods on builders whose whole job is accumulating use bare nouns (`Command.arg()`, `.env()`; `cli.Parser.flag()`, `.option()`) — `with_arg().with_arg()` is ceremony without information. Builders terminate with `build()` — one verb everywhere (`StringBuilder`, `BinaryBuilder`, `JsonWriter`).
 
 ### Domain-Specific Patterns
@@ -154,60 +158,95 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`, add context with `try...else`.
+The ladder, top to bottom — reach for the first rung that fits:
 
 ```rask
-// Propagation — pass the error up as-is
+// 1. Propagate — pass the error up as-is. The default.
 func load_config(path: string) -> Config or IoError {
     let text = try fs.read_text(path)
-    let config = try Config.from_str(text)
-    return config
+    return try Config.from_str(text)
 }
 
-// Handling — react to the specific error
-match fs.read_text(path) {
-    Data as data => process(data),
-    IoError as e => log("failed to read {path}: {e.message()}"),
+// 2. Guard — handle the failure, rebind, stay flat. The happy path never indents.
+let user = db.find(id) catch e => return ApiError.from(e)
+let conn = pool.acquire() catch e => {
+    log("pool exhausted: {e.message()}")
+    return ServiceError.Busy
 }
 
-// Guard pattern — early return on error
-func get_user(id: i64) -> User or NotFound {
-    let found = db.find(id)
-    if found is NotFound as e { return e }
-    return found!
+// 3. Statement position — react to a failure you won't propagate
+save(d) catch e => log("save failed: {e.message()}")
+
+// 4. Multi-way dispatch — several error variants genuinely handled differently
+match r {
+    Data as data     => process(data),
+    Timeout as t     => schedule_retry(t),
+    Corrupt as e     => return e,
 }
 ```
 
+**Guards check the failure, not the success — and the guard is `catch`.** Test-the-success-then-work is the pyramid anti-pattern: the happy path indents once per fallible step, and the error arms trail the logic they belong to. The guard keeps it flat, binds the success directly, and a block body covers multi-statement handling without changing shape:
+
+```rask
+let found = db.find(id) catch e => return ApiError.from(e)
+
+let conn = pool.acquire() catch e => {
+    metrics.incr("pool_exhausted")
+    return ServiceError.Busy
+}
+```
+
+There is deliberately no second spelling. `if r is E as e { return … }` type-checks — `is` narrows every union, and `T or E` is one — but it's the guard in more lines. `is` on a result is mechanism, not idiom; its one idiomatic result-shaped use is below.
+
+**One-armed success narrows are for opportunism only.** `if r is T as v { … }` with no else silently ignores the error — legitimate exactly when the code continues either way and the error genuinely carries nothing wanted (a const-fold attempt falling back to runtime; a best-effort cache read). Most sites that look like this are really *probes* — "is there a value?" where failure is a non-answer — and probe-shaped APIs return `T?` in Rask (`os.env`, `find`, `parse<T>`), making them `if x? as v`. If you're one-arming a genuine `T or E` and the body is the rest of the function, it's rung 2 wearing a costume.
+
 ### Error context
 
-Use `try...else` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
+Use `catch e =>` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
 
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    let text = try fs.read_text(path) else |e| context("reading {path}", e)
-    return try Config.parse(text) else |e| context("parsing {path}", e)
+    let text = fs.read_text(path) catch e => return context("reading {path}", e)
+    return Config.parse(text) catch e => return context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    let text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
-    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+    let text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
+    return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
 }
 
-// Block form — when you need side effects before propagating
-let text = try fs.read_text(path) else |e| {
+// Block form — when you need side effects before leaving
+let text = fs.read_text(path) catch e => {
     log("failed to read {path}: {e.message()}")
-    context("reading {path}", e)
+    return context("reading {path}", e)
+}
+
+// The original error carries nothing worth keeping — `_` drops it, visibly
+let dto = json.decode(req.body) catch _ => return ApiError.BadRequest("invalid JSON")
+```
+
+### The terminal fold
+
+The outermost boundary — a router, `main`, a task body — has nothing above it to propagate to, so it folds `T or E` into `T`:
+
+```rask
+// Router: every handler's error becomes a response
+func route(req: Request) -> Response {
+    return dispatch(req) catch e => error_response(e)
 }
 ```
+
+`catch _ =>` supplies a value instead when the error isn't needed: `const port = read_port() catch _ => 8080` — the dropped error stays visible in the text. On an optional the fallback is `??`: `opt ?? v`.
 
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is E as e` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
-- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `catch e => return` instead.
+- `if r is T as v { return v } else as e { return f(e) }` at a boundary — that's the fold, write `r catch e => f(e)`.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -242,29 +281,27 @@ See [control/ensure.md](control/ensure.md), [memory/resource-types.md](memory/re
 
 ## Optional Handling
 
-Four patterns, each for a different situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers; the operator family covers the common cases. `match` is legal but linted toward operators when there are only two arms.
+One pattern per situation. `T?` is sugar for `T or none` — bare values on the present path, `none` literal for absent. No `Some`/`None` wrappers. The tests are plain booleans; touching the payload is always the `as v` bind or an operator — there is no in-place narrowing to remember.
 
 ```rask
-// Single check — narrow in place (let scrutinee)
-if opt? {
-    use(opt)
-}
-
-// Single check — bind for mut or when renaming reads better
+// Test and use — the bind is the one spelling
 if opt? as v {
     use(v)
 }
 
+// Test only — no payload touched
+if opt? { hits += 1 }
+
 // Fallback — provide a default
 let name = opt ?? "anonymous"
 
-// Guard — early return if absent
-if opt == none { return none }
-use(opt)   // opt: T here (early-exit narrow)
+// Guard — absence exits (or supplies a default), the binding is the payload after
+let v = opt ?? return MyError.NotFound
+let user = load(id) ?? return "guest"
 
 // Full handling — both branches matter, use if/else (not match)
-if opt? {
-    process(opt)
+if opt? as v {
+    process(v)
 } else {
     handle_missing()
 }
@@ -272,8 +309,10 @@ if opt? {
 
 **Anti-patterns:**
 - `x!` without checking — crashes on none.
+- `use(x)` inside `if x? { … }` — the test doesn't narrow; bind with `as v`.
+- `if x is none { return } use(x)` as a guard — a compile error (`x` is still `T?`; tests never narrow). The guard is `let v = x ?? return`.
 - `match` on optionals — rejected with a migration diagnostic. Use the operator family.
-- `!x?` — parse error. Use `x == none`.
+- `!x?` — parse error. Use `x is none`.
 
 See [types/optionals.md](types/optionals.md).
 
@@ -402,7 +441,7 @@ Message passing for communication, `Shared<T>` for shared data.
 
 ```rask
 // Shared data — with-based access, no lock leaks
-let db = Shared.new(Database.new())
+const db = Shared.new(Database.new())
 
 with db.read() as d {
     let user = d.users.get(id)
@@ -511,9 +550,9 @@ See [stdlib/fs.md](stdlib/fs.md), [stdlib/io.md](stdlib/io.md).
 `if x is` for single checks, `match` for multiple branches.
 
 ```rask
-// Single success check — result narrows to T inside the block
-if result? {
-    use(result)
+// Single check with the payload in hand — bind it
+if result is Data as d {
+    use(d)
 }
 
 // Multiple branches
@@ -528,10 +567,9 @@ if point is Point { x, y } {
     draw_at(x, y)
 }
 
-// Guard pattern
-let conn = try_connect()
-if conn is ConnectFailed as e { return e }
-use(conn!)   // or narrow via early-exit rule
+// Guard — catch binds the success
+let conn = try_connect() catch e => return e
+use(conn)
 ```
 
 **Anti-patterns:**
@@ -645,9 +683,9 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `try...else` (propagate with context), `match` (handle) |
+| Handle errors | `try` (propagate), `catch e => return f(e)` (exit with something else), `catch e => f(e)` (handle here), `catch _ => v` (drop, acknowledged), `match` |
 | Clean up resources | `ensure` |
-| Handle optionals | `if x?`, `??`, guard, `match` |
+| Handle optionals | `if x?`, `?? v`, `try` (propagate `none`), `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `StringBuilder` |
 | Share state | `Shared<T>`, channels |
