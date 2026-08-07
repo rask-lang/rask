@@ -143,6 +143,33 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 }
 ```
 
+## Cascading Removal
+
+Removing an element whose fields point at other pools usually means removing those too. `remove_with` collocates the cascade with the removal so it reads as one operation ([#582](https://github.com/rask-lang/rask/issues/582)).
+
+| Rule | Description |
+|------|-------------|
+| **RW1: Signature** | `pool.remove_with(h, f)` with `f: func(T) -> R` returns `R?` — `none` when the handle is stale, in which case the callback does not run. Mirrors `remove` (PL6) and `with_valid` |
+| **RW2: Owned element** | The callback receives the removed element owned — the same consumption shape as `take_all_with` (`mem.resources`). Linearity applies inside: `@resource` fields must be consumed (`mem.linear/L1`) |
+| **RW3: Source pool sealed** | The callback cannot touch the pool it removes from — the receiver is borrowed for the call (`mem.borrowing/B3`), so capturing it is the standard aliasing error. Other pools are unrestricted; cross-pool cleanup is the point |
+| **RW4: Removal precedes callback** | The element leaves the pool before the callback runs. A panic inside the callback leaves the pool valid; the in-flight element follows normal unwinding (`ctrl.panics`) |
+
+<!-- test: skip -->
+```rask
+// Before: the 4-step destruction dance
+const entity = world.entities.remove(h)!
+const body = world.bodies.remove(entity.body)!
+body.close(world.physics)
+
+// After: removal and cascade in one call
+world.entities.remove_with(h, |entity| {
+    const body = world.bodies.remove(entity.body)!
+    body.close(world.physics)
+})
+```
+
+The `R?` return carries a result out when the cascade produces one — `none` means the handle was already stale and nothing happened.
+
 ## Iteration
 
 Pools yield handles by default — consistent with their identity-based design. Handles are the primary abstraction; if you just need values, use `.values()`.
@@ -440,6 +467,26 @@ FIX: Separate the check from the mutation:
   }
 ```
 
+**Callback touches source pool [RW3]:**
+```
+ERROR [mem.pools/RW3]: callback cannot access the pool it removes from
+   |
+3  |  entities.remove_with(h, |e| {
+   |  -------- borrowed for the duration of the call
+4  |      entities.insert(spawn_loot(e))
+   |      ^^^^^^^^ already borrowed by remove_with
+
+WHY: remove_with borrows the pool for the whole call, and the callback runs
+     inside it. Other pools are fine — only the source pool is sealed.
+
+FIX: return the follow-up work out of the callback, apply it after:
+
+  const loot = entities.remove_with(h, |e| spawn_loot(e))
+  if loot? as l {
+      entities.insert(l)
+  }
+```
+
 **Frozen context write [PF5]:**
 ```
 ERROR [mem.pools/PF5]: cannot write through handle in frozen context
@@ -469,6 +516,10 @@ FIX: Remove the frozen annotation if mutation is needed:
 | Drop Pool<Resource> while non-empty | R5 | Runtime panic |
 | `clear()` on Pool<Resource> | — | Compile error (would abandon resources) |
 | Write in frozen context | PF5 | Compile error |
+| Stale handle to `remove_with` | RW1 | Callback not run; returns `none` |
+| `remove_with` callback captures source pool | RW3 | Compile error (aliasing) |
+| `remove_with` on `Pool<Resource>`, callback drops element | RW2 | Compile error — resource fields must be consumed |
+| Panic inside `remove_with` callback | RW4 | Element already removed; pool valid |
 | `get_unchecked` with stale handle | — | **Undefined behavior** |
 
 ## Examples
@@ -544,6 +595,8 @@ func render_entities() using frozen entities: Pool<Entity> {
 **PH3 (handle identity):** Handles are database primary keys. You can have 10 copies of the key `42` — they all access the same row. The keys aren't borrowed; only the access is.
 
 **PF5 (frozen context):** I considered making FrozenPool a separate type with freeze/thaw ownership ceremonies. That's the Rust approach — explicit state transitions. But it adds a whole type to learn, and `using frozen Pool<T>` already provides the compile-time guarantee. The `frozen` modifier is a context property, not a type.
+
+**RW1–RW4 (remove_with):** From the complexity stress test — destroying an entity with cross-pool resources took four separate steps and ten co-resident concepts, the scorecard's only ergonomic FAIL (#582). The callback shape collapses it to one call site without any new mechanism: element ownership transfers exactly as `take_all_with` already does, the receiver borrow already seals the source pool, and the `R?` return mirrors `remove`. The name stays in Pool's existing `-_with` callback family. On CP4 (`mem.closures` bans closure-declared `take` parameters): the parameter's ownership mode here comes from `remove_with`'s own signature, not from the closure literal — the same reading `take_all_with` has always relied on. RW3 could be relaxed later (the element is already out of the pool when the callback runs), but the receiver-borrow rule gives a correct, teachable answer today and relaxing is purely additive.
 
 **PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. A pointer into a reallocated buffer dangles; a handle doesn't, because it names a slot rather than an address. (A handle to a slot you *removed* still goes stale — that's the generation check's job, a separate thing from relocation.) This stability is what allows `insert` and `remove(other)` inside `with` blocks (W2a/W2b) — the compiler re-resolves the binding via the still-valid handle after each structural mutation. Vec/Map can't do this (indices shift, keys rehash), but pools can because handle stability is a structural guarantee.
 

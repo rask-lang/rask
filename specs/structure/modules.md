@@ -58,7 +58,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 | **IM4: Unqualified** | `import pkg.Name` → `Name` directly |
 | **IM5: Grouped** | `import pkg.{Name, Other}` for multiple unqualified |
 | **IM6: Glob** | `import pkg.*` — allowed but emits compiler warning |
-| **IM7: Unused** | Unused imports are compile errors |
+| **IM7: Unused** | Unused imports warn (`tool.warnings/W1`, `unused_import`) — promote to error via `@deny` or `--deny-warnings` for CI/publish |
 | **IM8: No shadowing** | Shadowing imported name with local definition is compile error |
 
 <!-- test: skip -->
@@ -158,13 +158,6 @@ ERROR [struct.modules/BI3]: built-in type shadowing
 ```
 
 ```
-ERROR [struct.modules/IM7]: unused import
-   |
-1  |  import json
-   |  ^^^^^^^^^^^ `json` imported but never used
-```
-
-```
 ERROR [struct.modules/PS3]: mutable global
    |
 5  |  mut counter: i32 = 0
@@ -194,6 +187,8 @@ ERROR [struct.modules/PS3]: mutable global
 **V1 (package default):** Everything defaults to package-visible — functions, types, and fields. Same package = same team. No asymmetry to learn. I chose this over struct-private default because data-oriented design (plain structs accessed by functions) is as common as encapsulated types, and shouldn't require annotation tax. When you need encapsulation, `private` is explicit and signals "this field has invariants."
 
 **BI2 (fixed built-in set):** Predictability. Reading any Rask file, you always know what's in scope. Go has no extension mechanism either — IDE auto-import handles repetition.
+
+**IM7 (unused imports warn, not error):** Originally a Go-style hard error, which contradicted `tool.warnings/W1` and the severity boundary (SB1: errors are for broken code). An unused import is untidy, not unsafe — and a hard error bites exactly when you comment out a call to isolate a bug. The warning is default-on; teams that want Go's strictness get it back with `@deny(unused_import)` in `build.rk` or `--deny-warnings` in CI.
 
 **RE2 (origin-based identity):** `std.Vec` (re-export of `core.Vec`) and `collections.Vec` (also `core.Vec`) are the same type. Preserves composability across re-export chains.
 

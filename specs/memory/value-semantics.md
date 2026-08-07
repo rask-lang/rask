@@ -6,7 +6,7 @@
 
 # Value Semantics
 
-All types are values with single ownership. Small types (≤16 bytes) copy implicitly; larger types need explicit `.clone()` or move. `@unique` opts out of implicit copy.
+All types are values with single ownership. Small types (≤16 bytes) copy implicitly; larger types need explicit `.clone()` or move. `@unique` opts out of implicit copy; `@small` fences a type's size at the threshold.
 
 ## Copy vs Move
 
@@ -83,6 +83,30 @@ const user4 = user3              // Moves, user3 invalid
 | API contracts | Force callers to explicitly clone |
 | Must-use semantics | Small types that should behave like resources |
 
+## Size Fence (Opt-In)
+
+Copy eligibility is automatic (VS1), but it's also fragile at a distance: add a field that pushes a struct past 16 bytes and every assignment flips from copy to move, with the errors landing at use sites far from the field that caused them. `@small` fences the size at the definition, so the growth errors exactly where it happened.
+
+| Rule | Description |
+|------|-------------|
+| **SM1: Pure size assertion** | `@small` asserts the type's total size stays ≤16 bytes — the copy threshold (VS6). It asserts nothing else and changes no semantics. A `@small` type with all-Copy fields is therefore guaranteed to copy implicitly (VS1) |
+| **SM2: Fails at the definition** | A `@small` type over 16 bytes errors at the annotation, naming the field and the sizes — not at use sites |
+| **SM3: Generic types check per instantiation** | `@small` on a generic type requires every instantiation to fit, checked at monomorphization like other bounds (`type.generics/G2`); the error names the offending type arguments |
+| **SM4: Composes with @unique** | `@small` + `@unique` is legal — a small, move-only ID type is coherent. `@small` is about layout; `@unique` is about copy semantics |
+
+<!-- test: parse -->
+```rask
+@small
+struct Point3D {
+    x: f32
+    y: f32
+    z: f32
+}
+// 12 bytes — @small records that callers depend on it staying register-sized
+```
+
+Use it where staying small is API: math primitives, IDs, anything callers pass around freely and cheaply. Unannotated types keep the automatic behavior — `@small` adds a fence, not a requirement.
+
 ## Copy Trait and Generics
 
 | Rule | Description |
@@ -158,6 +182,26 @@ NOTE: `Big` is 24 bytes (copy threshold is 16) — assignment moves instead of c
 HELP: add `x.clone()` if you need an independent copy
 ```
 
+**Size fence broken [SM2]:**
+```
+ERROR [mem.value/SM2]: @small type `Point` outgrew the copy threshold
+   |
+1  |  @small
+   |  ------ size fenced here
+2  |  struct Point {
+   |
+5  |      id: u64
+   |      ^^^^^^^ adding this made Point 20 bytes (limit is 16)
+
+WHY: @small asserts this type stays within the 16-byte copy threshold —
+     small enough to copy implicitly and pass in registers. The threshold
+     is fixed (VS6); the annotation checks it, it never raises it.
+
+FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
+     move — call sites that relied on copying will error with a note
+     pointing back to the size change.
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -166,6 +210,10 @@ HELP: add `x.clone()` if you need an independent copy
 | Generic type usage | VS5 | Copy derived when the compiler generates code for a specific type |
 | Removing `@unique` from a type | U1 | Non-breaking change (makes type more permissive) |
 | Copy type in `take` parameter | — | Value is copied in; `take` is semantically redundant but allowed |
+| `@small` on an already-small type | SM1 | No-op assertion — that's the intended use |
+| `@small` + `@unique` on one type | SM4 | Legal — size fence on a move-only type |
+| Removing `@small` from a type | SM1 | Non-breaking by itself; nothing changes until the type grows |
+| `@small` on generic type, one bad instantiation | SM3 | Error at that instantiation, naming the type arguments |
 
 ---
 
@@ -178,6 +226,8 @@ HELP: add `x.clone()` if you need an independent copy
 **VS6 (fixed threshold):** The threshold is a design judgment, not a hardware law. Below 16 bytes, copies are cheap enough that making them visible would add noise. Above it, copies involve real memory traffic, so you must be explicit. Configurable thresholds would mean the same source code has different semantics per build, violating local analysis.
 
 **U1–U4 (unique types):** Default ergonomic — most small types are Copy automatically. `@unique` is opt-in strictness for when semantics require it.
+
+**SM1–SM4 (size fence):** The cliff's real problem was never the threshold — it was error locality. A struct crossing 16 bytes surfaces as "use of moved value" at distant call sites, and until the move-error NOTE (above) landed, nothing connected them to the field that caused it. `@small` finishes the job: for types callers depend on staying cheap, the break errors at the definition, before any call site sees it. I considered the full Rust model — everything moves, annotation opts in — which fixes locality completely, but it fails the litmus test: Go copies structs implicitly at any size, and requiring an annotation on every `Point` and `Vec3` makes Rask noisier than Go on the most basic code in the language. Automatic below the threshold, fenceable where it's API, is both. Naming went two rounds: `@copy` mirrored `@unique` nicely but names a compiler concept — the reader has to know what Copy means in PL jargon to know what they promised. What the author actually controls, and any reader can check with a byte count, is size. `@small` asserts exactly that; copying is the consequence VS1 already explains. Keeping it a pure size assertion also dissolved a fake contradiction — `@small @unique` is a perfectly coherent small move-only ID type, where `@copy @unique` had to be an error.
 
 **Why 16 bytes:**
 

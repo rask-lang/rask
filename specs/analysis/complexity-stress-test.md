@@ -194,7 +194,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
 
 ## Recommendations
 
-### 1. `pool.remove_with()` for cascading cleanup
+### 1. `pool.remove_with()` for cascading cleanup ([#582](https://github.com/rask-lang/rask/issues/582))
 
 <!-- test: skip -->
 ```rask
@@ -210,7 +210,7 @@ world.entities.remove_with(h, |entity| {
 })
 ```
 
-### 2. Disjoint field borrows in thread closures
+### 2. Disjoint field borrows in thread closures ([#583](https://github.com/rask-lang/rask/issues/583))
 
 <!-- test: skip -->
 ```rask
@@ -220,11 +220,11 @@ const physics_handle = spawn thread(|| {
 })
 ```
 
-### 3. `ensure` ordering lint for @resource cleanup
+### 3. `ensure` ordering lint for @resource cleanup ([#584](https://github.com/rask-lang/rask/issues/584))
 
 Warn when LIFO ordering might close a dependency before its dependent is drained.
 
-### 4. Style guideline: max 3 context clauses
+### 4. Style guideline: max 3 context clauses ([#585](https://github.com/rask-lang/rask/issues/585))
 
 If a function needs >3, restructure (pass struct, pass individual fields, split function). Lint, not language rule.
 
