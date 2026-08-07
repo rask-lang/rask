@@ -77,32 +77,48 @@ impl<'a> MirLowerer<'a> {
         // string or a struct its address. The checker had the type all along —
         // this just asks it.
         let inferred_void = ret_ty.is_none() && Self::body_has_bare_return(body);
+        // Void counts as an answer. Filtering it out sent `|| { }` — nothing to
+        // return, and the checker says so — down to the guess instead.
         let checked_ret = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
             .and_then(|ty| match ty {
                 rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
                 _ => None,
-            })
-            // A closure whose body diverges or yields nothing types as Void here;
-            // don't let that override the bare-return detection below.
-            .filter(|t| !matches!(t, MirType::Void));
+            });
         let closure_ret = ret_ty
             .map(|s| self.ctx.resolve_type_str(s))
             .or(checked_ret)
-            .unwrap_or(if inferred_void { MirType::Void } else { MirType::I64 });
+            .unwrap_or_else(|| if inferred_void {
+                MirType::Void
+            } else {
+                crate::fallback::i64_fallback("lower/closures:closure_ret")
+            });
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
 
+        // The checker's parameter list for this closure, for a parameter that
+        // was neither annotated nor pinned by the callee's signature.
+        let checked_params: Vec<MirType> = closure_id
+            .and_then(|id| self.ctx.lookup_raw_type(id))
+            .and_then(|ty| match ty {
+                rask_types::Type::Fn { params, .. } => Some(
+                    params.iter().map(|p| self.ctx.type_to_mir(p)).collect()
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
+
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
-            // this position.
+            // this position, then what the checker inferred.
             let ty_str = param.ty.clone()
                 .or_else(|| expected_param_tys.get(i).cloned());
             let param_ty = ty_str.as_deref()
                 .map(|s| self.ctx.resolve_type_str(s))
-                .unwrap_or(MirType::I64);
+                .or_else(|| checked_params.get(i).cloned())
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:param"));
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
             closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
             if let Some(prefix) = self.mir_type_name(&param_ty) {

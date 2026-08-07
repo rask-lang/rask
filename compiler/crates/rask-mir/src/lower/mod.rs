@@ -1681,7 +1681,36 @@ impl<'a> MirLowerer<'a> {
             .map(|l| l.ty.clone()))
     }
 
+    /// Lower one function, and refuse to hand back MIR that was built on a
+    /// guessed type.
+    ///
+    /// Every place lowering can't resolve a type routes through
+    /// `fallback::i64_fallback`. Guessing i64 there is right only for a payload
+    /// that already fits a machine word, so it used to pass silently for
+    /// integers and quietly corrupt everything else. The record is drained
+    /// around each function so a failure names the function that caused it.
     fn lower_function_inner(
+        decl: &Decl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+        qualified_name: Option<&str>,
+        const_init: Option<(&str, &Expr)>,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
+        crate::fallback::reset();
+        let result = Self::lower_function_typed(decl, all_decls, ctx, qualified_name, const_init);
+        let gave_up = crate::fallback::take_hits();
+        // An empty node-type map means nobody ran the checker — the lowering unit
+        // tests hand-build ASTs to assert block structure, so *every* node is
+        // untyped there and "couldn't resolve a type" says nothing. A real
+        // compile always arrives with node types.
+        let synthetic = ctx.node_types.is_empty();
+        if !gave_up.is_empty() && !synthetic && !crate::fallback::fallback_allowed() {
+            return Err(LoweringError::UnknownType(gave_up));
+        }
+        result
+    }
+
+    fn lower_function_typed(
         decl: &Decl,
         all_decls: &[Decl],
         ctx: &MirContext,
@@ -2174,6 +2203,48 @@ impl<'a> MirLowerer<'a> {
         self.vec_elem_of_expr(expr)
     }
 
+    /// The success payload of an Option/Result being bound, from the checker if
+    /// it typed the node and from the value's own MIR type otherwise.
+    ///
+    /// The checker doesn't type every node, so `extract_payload_type` alone
+    /// returns None often enough to matter — and the lowered value's type is
+    /// sitting right there saying `Option(T)` or `Result { ok: T }`. Consulting
+    /// it turns most "couldn't work out the payload" cases into an answer instead
+    /// of a guess.
+    pub(super) fn payload_type_of(&self, expr: &Expr, val_ty: &MirType) -> Option<MirType> {
+        self.extract_payload_type(expr).or_else(|| match val_ty {
+            MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
+            MirType::Option(inner) => Some(inner.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    /// As `payload_type_of`, for a site that knows whether the optional is
+    /// niche-encoded.
+    ///
+    /// A niche optional carries no tag and no wrapper — a `Handle?` *is* a
+    /// `Handle`, with `none` as a sentinel — so `val_ty` is already the payload
+    /// type and there's no `Option` for the match above to see through.
+    pub(super) fn payload_type_of_niche(
+        &self,
+        expr: &Expr,
+        val_ty: &MirType,
+        is_niche: bool,
+    ) -> Option<MirType> {
+        if is_niche {
+            return Some(val_ty.clone());
+        }
+        self.payload_type_of(expr, val_ty)
+    }
+
+    /// The error payload, same two sources as `payload_type_of`.
+    pub(super) fn err_type_of(&self, expr: &Expr, val_ty: &MirType) -> Option<MirType> {
+        self.extract_err_type(expr).or_else(|| match val_ty {
+            MirType::Result { err, .. } => Some(err.as_ref().clone()),
+            _ => None,
+        })
+    }
+
     /// Extract the Ok/Some payload type from the raw type of an expression.
     /// For Option<T>, returns T. For Result<T, E>, returns T.
     /// MirType::Ptr is a legitimate result for Vec/Map/Pool/Channel/etc.,
@@ -2546,18 +2617,24 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
-        payload_ty: MirType,
+        payload_ty: Option<MirType>,
         scrutinee_ty: &MirType,
     ) {
         self.bind_pattern_payload_niche(pattern, value, payload_ty, false, scrutinee_ty);
     }
 
     /// Bind pattern payload — with niche awareness.
+    /// `payload_ty` is optional because for the common case there is no such
+    /// type to have: a Constructor pattern on a user enum takes each field's
+    /// type from the enum layout, and the Option/Result payload is never
+    /// consulted. Resolving it eagerly at the call site meant asking a question
+    /// with no answer on every `if m is Msg.Text(t)`. The paths that genuinely
+    /// need it demand it below, where not knowing it is a real gap.
     fn bind_pattern_payload_niche(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
-        payload_ty: MirType,
+        payload_ty: Option<MirType>,
         is_niche: bool,
         scrutinee_ty: &MirType,
     ) {
@@ -2572,12 +2649,15 @@ impl<'a> MirLowerer<'a> {
                 let variant_fields = self.variant_field_types(scrutinee_ty, name);
                 for (i, field_pat) in fields.iter().enumerate() {
                     if let Pattern::Ident(name) = field_pat {
+                        let demand = || payload_ty.clone().unwrap_or_else(|| {
+                            crate::fallback::i64_fallback("lower/mod:constructor_payload")
+                        });
                         let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
                             vf.get(i)
                                 .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
-                                .unwrap_or((payload_ty.clone(), None))
+                                .unwrap_or_else(|| (demand(), None))
                         } else {
-                            (payload_ty.clone(), None)
+                            (demand(), None)
                         };
                         let local = self.builder.alloc_local(name.clone(), field_ty.clone());
                         self.locals.insert(name.clone(), (local, field_ty.clone()));
@@ -2612,7 +2692,9 @@ impl<'a> MirLowerer<'a> {
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
             Pattern::TypePat { ty_name: _, binding: Some(name) } => {
-                let bound_ty = payload_ty.clone();
+                let bound_ty = payload_ty.clone().unwrap_or_else(|| {
+                    crate::fallback::i64_fallback("lower/mod:typepat_payload")
+                });
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
                 let is_aggregate = matches!(
                     bound_ty,
@@ -3300,6 +3382,12 @@ pub enum LoweringError {
     UnresolvedVariable(String),
     UnresolvedGeneric(String),
     InvalidConstruct(String),
+    /// Lowering couldn't work out a type and would have guessed i64. Fatal on
+    /// purpose: the guess is only ever right for a payload that already fits a
+    /// machine word, so silently taking it turns a missing feature into a
+    /// miscompile — an f64 loses its value, a string or a struct becomes an
+    /// address. Carries the sites that gave up so the report names them.
+    UnknownType(Vec<(&'static str, u32)>),
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

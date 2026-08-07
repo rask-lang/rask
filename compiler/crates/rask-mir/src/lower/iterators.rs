@@ -430,7 +430,7 @@ impl<'a> MirLowerer<'a> {
         // body: load element
         self.builder.switch_to_block(body_block);
         let elem_ty = self.extract_iterator_elem_type(chain.source)
-            .unwrap_or(MirType::I64);
+            .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/iterators:chain_elem"));
         let elem_local = self.builder.alloc_temp(elem_ty.clone());
         if is_array {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

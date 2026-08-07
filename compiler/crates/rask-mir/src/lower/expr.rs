@@ -601,6 +601,10 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U32) => MirType::U32,
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
+                    // An unsuffixed literal the checker didn't pin down takes the
+                    // language's own default rather than counting as a failure to
+                    // resolve — type.primitives/L1 says an integer literal
+                    // defaults, and i64 holds every value i32 does.
                     None => self
                         .ctx
                         .lookup_node_type(expr.id)
@@ -882,7 +886,7 @@ impl<'a> MirLowerer<'a> {
                                 tmp
                             }
                         };
-                        let ret_ty = self.lookup_expr_type(expr).unwrap_or(MirType::I64);
+                        let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:885"));
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                             dst: Some(result_local),
@@ -899,7 +903,7 @@ impl<'a> MirLowerer<'a> {
                         let ret_ty = self.func_sigs
                             .get(&func_name)
                             .map(|s| s.ret_ty.clone())
-                            .unwrap_or(MirType::I64);
+                            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:902"));
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                             dst: Some(result_local),
@@ -954,8 +958,8 @@ impl<'a> MirLowerer<'a> {
                         .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
                     let expected_op = arg_operands.get(1).cloned()
                         .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                    let got_ty = arg_mir_types.first().cloned().unwrap_or(MirType::I64);
-                    let expected_ty = arg_mir_types.get(1).cloned().unwrap_or(MirType::I64);
+                    let got_ty = arg_mir_types.first().cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:957"));
+                    let expected_ty = arg_mir_types.get(1).cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:958"));
 
                     let is_string = matches!(got_ty, MirType::String)
                         || matches!(expected_ty, MirType::String);
@@ -1081,7 +1085,7 @@ impl<'a> MirLowerer<'a> {
                         // Derive the result MirType from type checker info if available.
                         // Fallback uses the payload's actual type so aggregate payloads
                         // get a correctly-sized stack slot.
-                        let payload_ty = arg_mir_types.first().cloned().unwrap_or(MirType::I64);
+                        let payload_ty = arg_mir_types.first().cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:1084"));
                         let fallback_ty = if func_name == "Some" {
                             MirType::Option(Box::new(payload_ty.clone()))
                         } else if func_name == "Ok" {
@@ -1153,7 +1157,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(&func_name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:1156"));
 
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
 
@@ -1546,7 +1550,7 @@ impl<'a> MirLowerer<'a> {
                     // a `json.decode` result — fell through to i64 and
                     // `h.names[0]` printed a string's first bytes as a number.
                     .or_else(|| self.vec_elem_of_expr(object))
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:vec_index_elem"));
                 let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
@@ -1898,14 +1902,14 @@ impl<'a> MirLowerer<'a> {
                 let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty_name, .. } = pattern {
                     let err_side = self.pattern_is_err_side(ty_name, &val_ty);
                     if let MirType::Result { ok, err } = &val_ty {
-                        if err_side { *err.clone() } else { *ok.clone() }
+                        Some(if err_side { *err.clone() } else { *ok.clone() })
                     } else if err_side {
-                        self.extract_err_type(expr).unwrap_or(MirType::I64)
+                        self.err_type_of(expr, &val_ty)
                     } else {
-                        self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                        self.payload_type_of_niche(expr, &val_ty, is_niche)
                     }
                 } else {
-                    self.extract_payload_type(expr).unwrap_or(MirType::I64)
+                    self.payload_type_of_niche(expr, &val_ty, is_niche)
                 };
                 self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche, &val_ty);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
@@ -1985,9 +1989,12 @@ impl<'a> MirLowerer<'a> {
 
                 // Ok block: bind payload and continue
                 self.builder.switch_to_block(ok_block);
-                let payload_ty = self.extract_payload_type(expr)
-                    .unwrap_or(MirType::I64);
-                self.bind_pattern_payload_niche(pattern, val.clone(), payload_ty.clone(), is_niche, &val_ty);
+                // Demanded, not optional: `emit_option_payload` below extracts the
+                // value and needs its real width.
+                let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche)
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:try_else_payload"));
+                self.bind_pattern_payload_niche(
+                    pattern, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
                 // Extract the payload value for the result
                 let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
@@ -2070,7 +2077,7 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(ok_block);
                 let payload_ty = self.extract_payload_type(inner)
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2073"));
                 let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 Ok((MirOperand::Local(result_local), payload_ty))
             }
@@ -2104,7 +2111,7 @@ impl<'a> MirLowerer<'a> {
                         MirType::Option(inner) => Some((**inner).clone()),
                         _ => None,
                     },
-                ).unwrap_or(MirType::I64);
+                ).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2107"));
                 let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -2203,7 +2210,7 @@ impl<'a> MirLowerer<'a> {
                 // `Option<Option<T>>` raw type for the inner expression. We
                 // want the bare T to look up the field on.
                 let mut payload_ty = self.extract_payload_type(object)
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2206"));
                 while let MirType::Option(inner) = payload_ty {
                     payload_ty = *inner;
                 }
@@ -2650,7 +2657,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2653"));
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
@@ -3747,7 +3754,7 @@ impl<'a> MirLowerer<'a> {
             // callee): take the checker's `T?` payload first, then tracking.
             let elem = self.extract_payload_type(expr)
                 .or(tracked_elem)
-                .unwrap_or(MirType::I64);
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3750"));
             Some(MirType::Option(Box::new(elem)))
         } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
             // Same reasoning as Vec_get: these answer `T?`, and the payload type
@@ -3762,7 +3769,7 @@ impl<'a> MirLowerer<'a> {
             // type parameter; the receiver's tracked element type is the
             // concrete one after monomorphization.
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
-                .unwrap_or(MirType::I64);
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3765"));
             Some(MirType::Option(Box::new(elem)))
         } else if qualified_name == "Map_get" {
             // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
@@ -3773,7 +3780,7 @@ impl<'a> MirLowerer<'a> {
             // dereferenced the id.
             let payload = self.extract_payload_type(expr)
                 .or_else(|| self.map_value_mir(object))
-                .unwrap_or(MirType::I64);
+                .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:map_get_value"));
             Some(MirType::Option(Box::new(payload)))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
@@ -3831,7 +3838,7 @@ impl<'a> MirLowerer<'a> {
                         .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
                         .filter(|t| !matches!(t, MirType::Ptr))
                 })
-                .unwrap_or(MirType::I64);
+                .unwrap_or_else(|| crate::fallback::element_type_fallback("lower/expr:vec_get_elem"));
             Some(MirType::Option(Box::new(elem_ty)))
         } else if matches!(qualified_name.as_str(), "Cell_get" | "Cell_replace" | "Cell_into_inner") {
             // What the cell holds — all three hand back the payload. The stub's
@@ -4034,7 +4041,7 @@ impl<'a> MirLowerer<'a> {
                         let (op, _) = self.lower_expr(&arg.expr)?;
                         arg_operands.push(op);
                     }
-                    let ret_ty = self.lookup_expr_type(expr).unwrap_or(MirType::I64);
+                    let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4037"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),
@@ -4938,7 +4945,7 @@ impl<'a> MirLowerer<'a> {
 
             self.builder.switch_to_block(ok_block);
             let payload_ty = self.extract_payload_type(object)
-                .unwrap_or(MirType::I64);
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4941"));
             let result_local = self.emit_option_payload(obj_op.clone(), payload_ty.clone(), is_niche);
             return Ok(Some((MirOperand::Local(result_local), payload_ty)));
         }
@@ -4986,7 +4993,7 @@ impl<'a> MirLowerer<'a> {
                     // Resolve return type from type checker or fall back to i64
                     let ret_ty = self.ctx.lookup_raw_type(expr.id)
                         .map(|t| self.ctx.type_to_mir(t))
-                        .unwrap_or(MirType::I64);
+                        .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4989"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::TraitCall {
                         dst: Some(result_local),
@@ -5215,9 +5222,7 @@ impl<'a> MirLowerer<'a> {
 
         // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
-        let payload_ty = self
-            .extract_payload_type(scrutinee)
-            .unwrap_or(MirType::I64);
+        let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
         self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche, &val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result_local,
@@ -5271,7 +5276,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(then_block);
         let payload_ty = self.extract_payload_type(inner)
             .or_else(|| Self::payload_of_mir(&scrutinee_ty))
-            .unwrap_or(MirType::I64);
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:5274"));
         if let Some(name) = then_name.as_ref() {
             let local = self.builder.alloc_local(name.clone(), payload_ty.clone());
             let rvalue = if is_niche {

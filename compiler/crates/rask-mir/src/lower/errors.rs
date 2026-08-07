@@ -38,7 +38,7 @@ impl<'a> MirLowerer<'a> {
             .find(|t| !matches!(t, MirType::Ptr))
             .or_else(|| candidates.iter().flatten().next())
             .cloned()
-            .unwrap_or(MirType::I64)
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/errors:41"))
     }
 
     /// The ok payload type, from whichever source resolved it — same reasoning as
@@ -364,7 +364,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 None
             })
-            .unwrap_or(MirType::I64);
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/errors:367"));
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: ok_val,
@@ -602,7 +602,7 @@ impl<'a> MirLowerer<'a> {
                 MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
                 _ => None,
             },
-        ).unwrap_or(MirType::I64);
+        ).unwrap_or_else(|| crate::fallback::i64_fallback("lower/errors:605"));
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: ok_val,

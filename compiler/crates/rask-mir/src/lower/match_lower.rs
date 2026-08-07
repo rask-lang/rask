@@ -96,19 +96,22 @@ impl<'a> MirLowerer<'a> {
         let has_tag =
             (is_enum || is_result_or_option || patterns_imply_enum || is_niche) && !is_ordering_match;
 
+        // Left as Options. A match on a plain enum or an integer has no ok/err
+        // payload at all, so resolving one here would ask for a type that
+        // doesn't exist and report every such match as unknown. The two places
+        // that need these are both on the Result/Option path, and they demand
+        // the type there — where not knowing it really is a gap.
         let ok_payload_ty = self.extract_payload_type(scrutinee)
             .or_else(|| match &scrutinee_ty {
                 MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
                 MirType::Option(inner) => Some(inner.as_ref().clone()),
                 _ => None,
-            })
-            .unwrap_or(MirType::I64);
+            });
         let err_payload_ty = self.extract_err_type(scrutinee)
             .or_else(|| match &scrutinee_ty {
                 MirType::Result { err, .. } => Some(err.as_ref().clone()),
                 _ => None,
-            })
-            .unwrap_or(MirType::I64);
+            });
 
         let switch_val = if has_tag {
             let tag_local = self.emit_option_tag(&scrutinee_op, is_niche);
@@ -221,12 +224,18 @@ impl<'a> MirLowerer<'a> {
                             let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
                                 vf.get(j)
                                     .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
-                                    .unwrap_or((MirType::I64, None))
+                                    .unwrap_or_else(|| (
+                                        crate::fallback::i64_fallback(
+                                            "lower/match_lower:enum_variant_field"),
+                                        None,
+                                    ))
                             } else {
                                 let ty = match name.as_str() {
                                     "Err" => err_payload_ty.clone(),
                                     _ => ok_payload_ty.clone(),
-                                };
+                                }
+                                .unwrap_or_else(|| crate::fallback::i64_fallback(
+                                    "lower/match_lower:ok_err_binding"));
                                 (ty, None)
                             };
                             let payload_local = self.builder.alloc_local(
@@ -327,7 +336,9 @@ impl<'a> MirLowerer<'a> {
                                 err_payload_ty.clone()
                             } else {
                                 ok_payload_ty.clone()
-                            };
+                            }
+                            .unwrap_or_else(|| crate::fallback::i64_fallback(
+                                "lower/match_lower:typepat_payload"));
                             let payload_local = self.builder.alloc_local(
                                 binding_name.clone(), payload_ty.clone(),
                             );

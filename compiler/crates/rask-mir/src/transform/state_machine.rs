@@ -188,7 +188,7 @@ fn extract_captures(stmts: &[MirStmt], func: &MirFunction) -> Vec<CaptureInfo> {
                 let ty = func.locals.iter()
                     .find(|l| l.id == *dst)
                     .map(|l| l.ty.clone())
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("transform/state_machine:191"));
                 Some(CaptureInfo {
                     dst_local: *dst,
                     env_offset: *offset,
@@ -329,7 +329,7 @@ fn build_state_layout(
 
     for local_id in live_locals {
         let local = func.locals.iter().find(|l| l.id == local_id);
-        let ty = local.map(|l| l.ty.clone()).unwrap_or(MirType::I64);
+        let ty = local.map(|l| l.ty.clone()).unwrap_or_else(|| crate::fallback::i64_fallback("transform/state_machine:332"));
         let size = ty.size();
         let align = ty.align();
         offset = align_up(offset, align);
