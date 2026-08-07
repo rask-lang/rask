@@ -3,7 +3,7 @@
 //! Error handling lowering: try, try-else, map_err.
 
 use crate::FieldAccess;
-use super::{LoweringError, MirLowerer, TypedOperand};
+use super::{LoweringError, MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL};
 use crate::{
     operand::{BinOp, MirConst}, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
@@ -1001,7 +1001,6 @@ impl<'a> MirLowerer<'a> {
         };
         let result_ty = self.lookup_expr_type(expr)
             .unwrap_or(MirType::Option(Box::new(in_ok_ty.clone())));
-        let result_local = self.builder.alloc_temp(result_ty.clone());
 
         let tag_local = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1018,6 +1017,42 @@ impl<'a> MirLowerer<'a> {
             then_block: err_block,
             else_block: ok_block,
         }));
+
+        // `Handle?` is a niche — the sentinel *is* the None, with no tag or
+        // struct slot beside it (same shape `lower_none`/`emit_option_payload`
+        // use). Building the generic tagged-Option here — alloc a struct slot,
+        // `Store` a tag byte and payload into it — asked codegen to take the
+        // address of a value it never gave a stack slot, and the store landed
+        // on whatever that defaulted to (#556-adjacent; caught via
+        // `examples/game_loop.rk` segfaulting in `GameState.spawn_enemy(..).ok()`).
+        let is_niche = self.option_is_niche(expr, &result_ty);
+        if is_niche {
+            let result_local = self.builder.alloc_temp(MirType::Handle);
+
+            self.builder.switch_to_block(ok_block);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Field {
+                    base: obj_op.clone(),
+                    field_index: 0,
+                    byte_offset: Some(RESULT_PAYLOAD_OFFSET),
+                    access: FieldAccess::Word,
+                },
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+            self.builder.switch_to_block(err_block);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL))),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+            self.builder.switch_to_block(merge_block);
+            return Ok((MirOperand::Local(result_local), MirType::Handle));
+        }
+
+        let result_local = self.builder.alloc_temp(result_ty.clone());
 
         // Ok branch: result = Some(payload). Read the source Result's ok payload
         // at RESULT_PAYLOAD_OFFSET (scalars); aggregates use the None fast-path

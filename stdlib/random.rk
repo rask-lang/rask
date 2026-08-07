@@ -1,5 +1,26 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+/// Module-level shortcuts, seeded fresh each call. Use `Random.new()` instead
+/// when a sequence needs to share state or be reproducible from a seed.
+struct random { }
+
+extend random {
+    /// Generate a random signed 64-bit integer.
+    public func i64() -> i64 { }
+
+    /// Generate a random f64 in [0, 1).
+    public func f64() -> f64 { }
+
+    /// Generate a random f32 in [0, 1).
+    public func f32() -> f64 { }
+
+    /// Generate a random boolean.
+    public func bool() -> bool { }
+
+    /// Generate a random integer in [low, high).
+    public func range(low: i64, high: i64) -> i64 { }
+}
+
 /// Random number generator.
 public struct Random { }
 
