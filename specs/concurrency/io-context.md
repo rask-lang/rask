@@ -20,14 +20,14 @@ Stdlib I/O functions discover the active runtime by reading a process-global slo
 ```rask
 // What the programmer writes:
 using Multitasking {
-    const file = try File.open("data.txt")
-    const data = try file.read_text()
+    let file = try File.open("data.txt")
+    let data = try file.read_text()
 }
 
 // What the compiler generates (conceptual):
 __runtime_enter(default_config)            // fills RUNTIME_SLOT (panics if already full)
-const file = try File.open("data.txt")      // reads RUNTIME_SLOT at call time
-const data = try file.read_text()           // same
+let file = try File.open("data.txt")      // reads RUNTIME_SLOT at call time
+let data = try file.read_text()           // same
 __runtime_exit()                            // drains tasks, clears RUNTIME_SLOT
 ```
 
@@ -133,10 +133,10 @@ extend File with Reader {
 }
 
 func io.copy(reader: any Reader, writer: any Writer) -> usize or IoError {
-    const buf = [0u8; 8192]
+    let buf = [0u8; 8192]
     mut total = 0
     loop {
-        const n = try reader.read(buf)
+        let n = try reader.read(buf)
         if n == 0 { break }
         try writer.write_bytes(buf[..n])
         total += n
@@ -210,8 +210,8 @@ This is by design: `ThreadPool` is for CPU-bound work. If you need I/O, use `spa
 using Multitasking, ThreadPool {
     // Good: I/O in green task
     spawn(|| {
-        const data = try File.read("big.csv")  // Parks task
-        const result = try ThreadPool.spawn(|| {
+        let data = try File.read("big.csv")  // Parks task
+        let result = try ThreadPool.spawn(|| {
             parse_csv(data)  // CPU-bound, no I/O
         }).join()
         try File.write("output.json", result)   // Parks task
@@ -219,7 +219,7 @@ using Multitasking, ThreadPool {
 
     // Bad: I/O in thread pool (blocks pool thread)
     ThreadPool.spawn(|| {
-        const data = try File.read("big.csv")  // Blocks pool thread!
+        let data = try File.read("big.csv")  // Blocks pool thread!
         parse_csv(data)
     }).detach()
 }
@@ -234,9 +234,9 @@ IDE ghost annotations show where I/O can park a task:
 <!-- test: skip -->
 ```rask
 using Multitasking {
-    const file = try File.open("data.txt")    // ⟨pauses⟩
-    const data = try file.read_text()          // ⟨pauses⟩
-    const parsed = json.decode<Config>(data)   // (no annotation)
+    let file = try File.open("data.txt")    // ⟨pauses⟩
+    let data = try file.read_text()          // ⟨pauses⟩
+    let parsed = json.decode<Config>(data)   // (no annotation)
     try file.close()                           // ⟨pauses⟩
 }
 ```

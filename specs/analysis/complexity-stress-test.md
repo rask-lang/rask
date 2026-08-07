@@ -89,9 +89,9 @@ world.physics.step(dt)
 ```rask
 func sync_physics(mutate world: GameWorld) {
     for h in world.entities.cursor() {
-        const body_handle = world.entities[h].body
-        const body_ptr = world.bodies[body_handle].rigid_body
-        const transform = world.physics.get_transform(body_ptr)
+        let body_handle = world.entities[h].body
+        let body_ptr = world.bodies[body_handle].rigid_body
+        let transform = world.physics.get_transform(body_ptr)
         world.entities[h].position = transform.position
     }
 }
@@ -117,9 +117,9 @@ func update_entities(mutate world: GameWorld) -> void or Error {
     }
 
     for h in doomed {
-        const entity = world.entities.remove(h)!
-        const body_handle = entity.body
-        const body = world.bodies.remove(body_handle)!
+        let entity = world.entities.remove(h)!
+        let body_handle = entity.body
+        let body = world.bodies.remove(body_handle)!
         body.close(world.physics)
     }
 
@@ -157,10 +157,10 @@ func render_entities(world: GameWorld) using frozen Pool<Entity>, frozen Pool<Me
 func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
     using ThreadPool
 {
-    const (entity_snap, _) = world.entities.snapshot()
-    const (mesh_snap, _) = world.meshes.snapshot()
+    let (entity_snap, _) = world.entities.snapshot()
+    let (mesh_snap, _) = world.meshes.snapshot()
 
-    const render_handle = ThreadPool.spawn(|| {
+    let render_handle = ThreadPool.spawn(|| {
         for (h, entity) in entity_snap.entries() {
             if mesh_snap.get(entity.mesh)? as mesh {
                 draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
@@ -168,7 +168,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
         }
     })
 
-    const physics_handle = ThreadPool.spawn(|| {
+    let physics_handle = ThreadPool.spawn(|| {
         world.physics.step(dt)
     })
 
@@ -194,37 +194,37 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
 
 ## Recommendations
 
-### 1. `pool.remove_with()` for cascading cleanup
+### 1. `pool.remove_with()` for cascading cleanup ([#582](https://github.com/rask-lang/rask/issues/582))
 
 <!-- test: skip -->
 ```rask
 // Today: 4-step dance
-const entity = world.entities.remove(h)!
-const body = world.bodies.remove(entity.body)!
+let entity = world.entities.remove(h)!
+let body = world.bodies.remove(entity.body)!
 body.close(world.physics)
 
 // Proposed: callback collocates cleanup
 world.entities.remove_with(h, |entity| {
-    const body = world.bodies.remove(entity.body)!
+    let body = world.bodies.remove(entity.body)!
     body.close(world.physics)
 })
 ```
 
-### 2. Disjoint field borrows in thread closures
+### 2. Disjoint field borrows in thread closures ([#583](https://github.com/rask-lang/rask/issues/583))
 
 <!-- test: skip -->
 ```rask
 // Compiler tracks that the closure only captures world.physics
-const physics_handle = spawn thread(|| {
+let physics_handle = spawn thread(|| {
     world.physics.step(dt)
 })
 ```
 
-### 3. `ensure` ordering lint for @resource cleanup
+### 3. `ensure` ordering lint for @resource cleanup ([#584](https://github.com/rask-lang/rask/issues/584))
 
 Warn when LIFO ordering might close a dependency before its dependent is drained.
 
-### 4. Style guideline: max 3 context clauses
+### 4. Style guideline: max 3 context clauses ([#585](https://github.com/rask-lang/rask/issues/585))
 
 If a function needs >3, restructure (pass struct, pass individual fields, split function). Lint, not language rule.
 

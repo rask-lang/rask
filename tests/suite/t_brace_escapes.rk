@@ -9,7 +9,7 @@
 // interpolation. `println("literal {{braces}} here")` failed to compile.
 
 test "a string of only escapes is literal text" {
-    const text = "literal {{braces}} here"
+    let text = "literal {{braces}} here"
     assert text.len() == 21
     assert text == "literal {{braces}} here"
     assert text.starts_with("literal {{")
@@ -17,8 +17,8 @@ test "a string of only escapes is literal text" {
 }
 
 test "escapes and interpolations mix" {
-    const n = 5
-    const text = "value {n} and {{n}}"
+    let n = 5
+    let text = "value {n} and {{n}}"
     assert text == "value 5 and {{n}}"
     assert text.len() == 15
 }
@@ -34,15 +34,15 @@ test "a lone escaped brace on each side" {
 }
 
 test "an escape next to an interpolation" {
-    const v = 7
-    const text = "{{{v}}}"
+    let v = 7
+    let text = "{{{v}}}"
     assert text.len() == 3
     assert text == "{{7}}"
 }
 
 test "unescaped text is untouched" {
     assert "no braces at all" == "no braces at all"
-    const x = 1
+    let x = 1
     assert "just {x}" == "just 1"
 }
 

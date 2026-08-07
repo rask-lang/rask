@@ -18,8 +18,8 @@ Anonymous product types. Use when naming fields adds nothing — function return
 
 <!-- test: parse -->
 ```rask
-const pair: (i32, string) = (42, "hello")
-const nested: ((i32, i32), string) = ((1, 2), "point")
+let pair: (i32, string) = (42, "hello")
+let nested: ((i32, i32), string) = ((1, 2), "point")
 ```
 
 ## Element Access
@@ -31,17 +31,17 @@ const nested: ((i32, i32), string) = ((1, 2), "point")
 
 <!-- test: parse -->
 ```rask
-const point = (10, 20)
-const x = point.0
-const y = point.1
+let point = (10, 20)
+let x = point.0
+let y = point.1
 ```
 
 Destructuring also works:
 
 <!-- test: parse -->
 ```rask
-const point = (10, 20)
-const (x, y) = point
+let point = (10, 20)
+let (x, y) = point
 ```
 
 ## Value Semantics
@@ -68,7 +68,7 @@ const (x, y) = point
 ```
 ERROR [type.tuples/TU6]: tuple index out of bounds
    |
-3  |  const z = pair.2
+3  |  let z = pair.2
    |                 ^ index 2 out of range for (i32, i32) (length 2)
 
 FIX: Valid indices are .0 and .1.

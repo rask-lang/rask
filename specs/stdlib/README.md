@@ -152,7 +152,7 @@ import net
 import time
 import io
 
-const file = try fs.open("data.txt")
+let file = try fs.open("data.txt")
 ```
 
 ---
@@ -194,11 +194,11 @@ Addresses are plain strings — no `SocketAddr`/`IpAddr` types.
 ```rask
 import net
 
-const listener = try net.tcp_listen("0.0.0.0:8080")
+let listener = try net.tcp_listen("0.0.0.0:8080")
 ensure listener.close()
 
 loop {
-    const conn = try listener.accept()
+    let conn = try listener.accept()
     spawn {
         ensure conn.close()
         try handle_connection(conn)
@@ -209,11 +209,11 @@ loop {
 ### TCP Client
 
 ```rask
-const conn = try net.tcp_connect("example.com:80")
+let conn = try net.tcp_connect("example.com:80")
 ensure conn.close()
 
 try conn.write_text(request)
-const response = try conn.read_text()
+let response = try conn.read_text()
 ```
 
 **Status:** Specified — see [net.md](net.md).
@@ -281,11 +281,11 @@ HTTP client and server (RFC 7230-7235).
 ```rask
 import http
 
-const server = try http.Server.listen(":8080")
+let server = try http.Server.listen(":8080")
 ensure server.close()
 
 loop {
-    const (req, resp) = try server.accept()
+    let (req, resp) = try server.accept()
 
     if req.method == "GET" && req.path == "/health" {
         try resp.status(200).body("OK").send()
@@ -300,13 +300,13 @@ loop {
 ```rask
 import http
 
-const client = http.Client.new()
+let client = http.Client.new()
 
-const resp = try client.get("https://api.example.com/data")
-const body = try resp.body_string()
+let resp = try client.get("https://api.example.com/data")
+let body = try resp.body_string()
 
 // With headers
-const resp = try client.post("https://api.example.com/submit")
+let resp = try client.post("https://api.example.com/submit")
     .header("Content-Type", "application/json")
     .body(json_data)
     .send()
@@ -344,11 +344,11 @@ TLS/SSL connections (wraps system TLS library).
 ```rask
 import tls
 
-const stream = try tls.connect("example.com:443")
+let stream = try tls.connect("example.com:443")
 ensure stream.close()
 
 try stream.write_text(request)
-const response = try stream.read_text()
+let response = try stream.read_text()
 ```
 
 ### Server
@@ -356,15 +356,15 @@ const response = try stream.read_text()
 ```rask
 import tls
 
-const config = tls.Config.new()
-const config = try config.cert_file("server.crt")
-const config = try config.key_file("server.key")
+let config = tls.Config.new()
+let config = try config.cert_file("server.crt")
+let config = try config.key_file("server.key")
 
-const listener = try tls.listen(":443", config)
+let listener = try tls.listen(":443", config)
 ensure listener.close()
 
 loop {
-    const stream = try listener.accept()
+    let stream = try listener.accept()
     // handle encrypted connection
 }
 ```
@@ -388,25 +388,25 @@ Common encodings (RFC 4648). Planned additions to `std.encoding` ([encoding.md](
 ```rask
 import encoding
 
-const encoded = encoding.base64.encode(data)      // -> string
-const decoded = try encoding.base64.decode(encoded)  // -> []u8
+let encoded = encoding.base64.encode(data)      // -> string
+let decoded = try encoding.base64.decode(encoded)  // -> []u8
 
 // URL-safe variant
-const encoded = encoding.base64url.encode(data)
+let encoded = encoding.base64url.encode(data)
 ```
 
 ### Hex
 
 ```rask
-const hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
-const data = try encoding.hex.decode(hex)     // -> []u8
+let hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
+let data = try encoding.hex.decode(hex)     // -> []u8
 ```
 
 ### URL Encoding
 
 ```rask
-const encoded = encoding.url.encode("hello world")  // "hello%20world"
-const decoded = try encoding.url.decode(encoded)       // "hello world"
+let encoded = encoding.url.encode("hello world")  // "hello%20world"
+let decoded = try encoding.url.decode(encoded)       // "hello world"
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -431,14 +431,14 @@ Hash functions for integrity (not security).
 ```rask
 import hash
 
-const digest = hash.sha256(file_contents)
-const hex = encoding.hex.encode(digest)
+let digest = hash.sha256(file_contents)
+let hex = encoding.hex.encode(digest)
 
 // Incremental hashing
-const hasher = hash.Sha256.new()
+let hasher = hash.Sha256.new()
 hasher.update(chunk1)
 hasher.update(chunk2)
-const digest = hasher.digest()
+let digest = hasher.digest()
 ```
 
 **Note:** For cryptographic security (HMAC, signatures), use the `crypto` package.
@@ -469,7 +469,7 @@ struct Url {
 ```rask
 import url
 
-const u = try url.parse("https://example.com:8080/path?query=1")
+let u = try url.parse("https://example.com:8080/path?query=1")
 
 u.scheme    // "https"
 u.host      // "example.com"
@@ -481,17 +481,17 @@ u.query     // "query=1" (present)
 ### Query Parameters
 
 ```rask
-const params = try url.parse_query("name=Alice&age=30")
+let params = try url.parse_query("name=Alice&age=30")
 params["name"]  // "Alice" (present)
 
-const query = url.encode_query([("name", "Alice"), ("age", "30")])
+let query = url.encode_query([("name", "Alice"), ("age", "30")])
 // "name=Alice&age=30"
 ```
 
 ### Construction
 
 ```rask
-const u = Url {
+let u = Url {
     scheme: "https",
     host: "api.example.com",
     path: "/users",
@@ -530,8 +530,8 @@ unicode.to_titlecase('a')   // 'A'
 ### Normalization
 
 ```rask
-const nfc = unicode.normalize_nfc(text)   // Canonical composition
-const nfd = unicode.normalize_nfd(text)   // Canonical decomposition
+let nfc = unicode.normalize_nfc(text)   // Canonical composition
+let nfd = unicode.normalize_nfd(text)   // Canonical decomposition
 ```
 
 ### Categories
@@ -555,7 +555,7 @@ Terminal utilities and ANSI styling.
 ```rask
 import terminal
 
-const label = terminal.red("Error: ")
+let label = terminal.red("Error: ")
 println("{label}{message}")
 println(terminal.green("Success"))
 println(terminal.bold(terminal.blue("Header")))
@@ -606,33 +606,33 @@ CSV parsing and writing (RFC 4180).
 ```rask
 import csv
 
-const reader = csv.Reader.from_string(data)
+let reader = csv.Reader.from_string(data)
 for row in reader {
-    const name = row[0]
-    const age = row[1]
+    let name = row[0]
+    let age = row[1]
 }
 
 // With headers
-const reader = csv.Reader.from_string(data).with_headers()
+let reader = csv.Reader.from_string(data).with_headers()
 for row in reader {
-    const name = try row["name"]
-    const age = try row["age"]
+    let name = try row["name"]
+    let age = try row["age"]
 }
 ```
 
 ### Writing
 
 ```rask
-const writer = csv.Writer.new()
+let writer = csv.Writer.new()
 try writer.write_row(["name", "age"])
 try writer.write_row(["Alice", "30"])
-const output = writer.build()
+let output = writer.build()
 ```
 
 ### Options
 
 ```rask
-const reader = csv.Reader.from_string(data)
+let reader = csv.Reader.from_string(data)
     .delimiter(';')
     .quote('"')
     .with_headers()

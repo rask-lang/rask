@@ -127,7 +127,7 @@ http.request(request: Request) -> Response or HttpError
 ```rask
 import http
 
-const resp = try http.get("http://api.example.com/users")
+let resp = try http.get("http://api.example.com/users")
 if resp.is_ok() {
     println(resp.body)
 }
@@ -158,11 +158,11 @@ extend HttpClient {
 import http
 import time
 
-const client = HttpClient.new()
+let client = HttpClient.new()
     .with_timeout(Duration.seconds(30))
     .with_header("Authorization", "Bearer token123")
 
-const resp = try client.get("http://api.example.com/users")
+let resp = try client.get("http://api.example.com/users")
 ```
 
 ## Server
@@ -200,14 +200,14 @@ import http
 
 func main() -> void or Error {
     using Multitasking {
-        const server = try http.listen("0.0.0.0:8080")
+        let server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
         loop {
-            const (req, responder) = try server.accept()
+            let (req, responder) = try server.accept()
             spawn(|| {
                 ensure responder.respond(Response.internal_error("unhandled"))
-                const response = handle(req)
+                let response = handle(req)
                 responder.respond(response)
             }).detach()
         }
@@ -249,11 +249,11 @@ func handle(req: Request) -> Response {
 
 func handle_users(req: Request) -> Response {
     if req.method is Method.Get {
-        const users = get_all_users()
+        let users = get_all_users()
         return Response.json(json.encode(users))
     }
     if req.method is Method.Post {
-        const user = json.decode<User>(req.body)
+        let user = json.decode<User>(req.body)
             catch _ => return Response.bad_request("invalid json")
         save_user(user)
         return Response.json(json.encode(user)).with_status(201)
@@ -281,7 +281,7 @@ enum HttpError {
 ```
 ERROR [std.http/S2]: responder not consumed
    |
-5  |  const (req, responder) = try server.accept()
+5  |  let (req, responder) = try server.accept()
    |              ^^^^^^^^^ `Responder` is a @resource that must respond
 
 WHY: Every accepted HTTP request must get a response. Responder is linear.
@@ -292,7 +292,7 @@ FIX: Add `ensure responder.respond(Response.internal_error("unhandled"))` after 
 ```
 ERROR [std.http/C1]: request failed
    |
-3  |  const resp = try http.get("http://down.example.com")
+3  |  let resp = try http.get("http://down.example.com")
    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ HttpError.ConnectionFailed("connection refused")
 
 WHY: Could not establish TCP connection to the remote host.
@@ -362,13 +362,13 @@ func handle(req: Request) -> Response {
         "/health" => Response.ok("ok"),
         "/users" => match req.method {
             Method.Get => {
-                const users = db_list_users()
+                let users = db_list_users()
                 Response.json(json.encode(users))
             },
             Method.Post => {
-                const user = json.decode<User>(req.body)
+                let user = json.decode<User>(req.body)
                     catch _ => return Response.bad_request("invalid json")
-                const saved = db_create_user(user)
+                let saved = db_create_user(user)
                 Response.json(json.encode(saved)).with_status(201)
             },
             _ => Response.new(405, "method not allowed"),

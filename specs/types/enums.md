@@ -286,16 +286,16 @@ match file_result {
 ```rask
 // ❌ INVALID: file2 may leak on early return
 func process(file1: File, file2: File) -> void or Error {
-    const data = try file1.read()  // file2 not consumed!
+    let data = try file1.read()  // file2 not consumed!
     try file2.close()
 }
 // Error: "linear resource `file2` may leak on early return at `try`"
 
 // ✅ VALID: all linear resources resolved before `try`
 func process(file1: File, file2: File) -> void or Error {
-    const result1 = file1.read()
-    const result2 = file2.close()
-    const data = try result1
+    let result1 = file1.read()
+    let result2 = file2.close()
+    let data = try result1
     try result2
 }
 ```
@@ -305,7 +305,7 @@ Alternative: use `ensure` for guaranteed cleanup:
 func process(file1: File, file2: File) -> void or Error {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
-    const data = try file1.read()  // ✅ Safe: ensure registered
+    let data = try file1.read()  // ✅ Safe: ensure registered
 }
 ```
 
@@ -357,7 +357,7 @@ enum Tree<T> {
     Node(Owned<Tree<T>>, Owned<Tree<T>>)
 }
 
-const tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
+let tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 ```
 
 | Rule | Description |
@@ -383,7 +383,7 @@ Fieldless enums (all variants have zero fields) support `.variants()`, which ret
 ```rask
 enum Color { Red, Green, Blue }
 
-const all = Color.variants()       // [Color.Red, Color.Green, Color.Blue]
+let all = Color.variants()       // [Color.Red, Color.Green, Color.Blue]
 
 for color in Color.variants() {
     println(color)                 // Red, Green, Blue
@@ -407,8 +407,8 @@ Shape.variants()  // ❌ Compile error: variants() requires fieldless enum
 ```rask
 enum Status { Pending, Done, Failed }
 
-const s = Done
-const d = discriminant(s)  // 1 (Pending = 0, Done = 1)
+let s = Done
+let d = discriminant(s)  // 1 (Pending = 0, Done = 1)
 ```
 
 **Function signature:**
@@ -464,8 +464,8 @@ enum ObjectKind: u8 {
     Reserved = 0,
     String = 1,
 }
-const tag = ObjectKind.String as u8   // 1
-const wide = ObjectKind.String as i64 // 1
+let tag = ObjectKind.String as u8   // 1
+let wide = ObjectKind.String as i64 // 1
 
 // Auto-indexed (zero-based declaration order)
 enum Color { Red, Green, Blue }
@@ -489,8 +489,8 @@ When a backing type is specified, variant reordering is disabled (implies `@layo
 
 <!-- test: skip -->
 ```rask
-const kind: ObjectKind? = ObjectKind.from_value(1)  // ObjectKind.String
-const bad: ObjectKind? = ObjectKind.from_value(99)  // none
+let kind: ObjectKind? = ObjectKind.from_value(1)  // ObjectKind.String
+let bad: ObjectKind? = ObjectKind.from_value(99)  // none
 ```
 
 `from_value` is auto-generated for all fieldless enums. Returns optional — invalid values produce `none`.
@@ -516,7 +516,7 @@ enum Never {}  // Cannot be constructed
 ```rask
 func infallible() -> i32 or Never { return 42 }
 
-const value = infallible()!  // Cannot panic (compiler knows)
+let value = infallible()!  // Cannot panic (compiler knows)
 ```
 
 ## Edge Cases
@@ -554,7 +554,7 @@ extend Connection {
         match self {                    // IDE ghost: [consumes]
             Idle => Connecting(resolve_address()),
             Connecting(addr) => {
-                const attempt = try_connect(addr)
+                let attempt = try_connect(addr)
                 if attempt? as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
@@ -576,7 +576,7 @@ extend Connection {
 
 ### Option
 ```rask
-const opt: i32? = 5
+let opt: i32? = 5
 if opt? as v {      // ✅ opt still valid; v: i32 in the block
     use(v)
 }

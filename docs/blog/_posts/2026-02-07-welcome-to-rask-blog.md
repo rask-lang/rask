@@ -38,17 +38,17 @@ Here's what it looks like:
 
 ```rask
 func process_config(path: string) -> Config or Error {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()
 
-    const content = try file.read_to_string()
-    const lines = content.split('\n')
+    let content = try file.read_to_string()
+    let lines = content.split('\n')
 
     let settings = Map.new()
     for line in lines {
         if line.starts_with('#'): continue
 
-        const parts = line.split('=')
+        let parts = line.split('=')
         if parts.len() != 2: return Error.InvalidFormat
 
         settings.insert(parts[0].trim(), parts[1].trim())

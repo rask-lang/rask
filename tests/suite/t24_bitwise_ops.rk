@@ -63,7 +63,7 @@ test "right shift signed" {
 }
 
 test "right shift unsigned" {
-    const x: u32 = 0xFF000000
+    let x: u32 = 0xFF000000
     // Logical shift: fills with zeros
     assert (x >> 8) == 0x00FF0000
 }
@@ -152,8 +152,8 @@ test "underscore separators" {
 // Bitwise ops must work on all integer types, not just i64.
 
 test "bitwise on i32" {
-    const a: i32 = 0xFF
-    const b: i32 = 0x0F
+    let a: i32 = 0xFF
+    let b: i32 = 0x0F
     assert (a & b) == 0x0F
     assert (a | b) == 0xFF
     assert (a ^ b) == 0xF0
@@ -163,23 +163,23 @@ test "bitwise on i32" {
 }
 
 test "bitwise on u8" {
-    const a: u8 = 0xAA
-    const b: u8 = 0x55
+    let a: u8 = 0xAA
+    let b: u8 = 0x55
     assert (a & b) == 0
     assert (a | b) == 0xFF
     assert (a ^ b) == 0xFF
 }
 
 test "bitwise on u64" {
-    const a: u64 = 0xFF00FF00
-    const b: u64 = 0x0F0F0F0F
+    let a: u64 = 0xFF00FF00
+    let b: u64 = 0x0F0F0F0F
     assert (a & b) == 0x0F000F00
     assert (a | b) == 0xFF0FFF0F
 }
 
 test "bitwise on i128" {
-    const a: i128 = 0xFF
-    const b: i128 = 0x0F
+    let a: i128 = 0xFF
+    let b: i128 = 0x0F
     assert (a & b) == 0x0F
     assert (a | b) == 0xFF
     assert ~b == -16

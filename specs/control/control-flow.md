@@ -12,13 +12,13 @@ Assignment context determines whether a construct produces a value or executes f
 
 | Rule | Description |
 |------|-------------|
-| **CF1: Assignment = expression** | `const x = match/if/loop` makes arms/branches produce values |
+| **CF1: Assignment = expression** | `let x = match/if/loop` makes arms/branches produce values |
 | **CF2: Standalone = statement** | Standalone `match/if/while/for` are side effects, produce `()` |
 | **CF3: Block last expression** | In expression context, block's last expression is its value |
 
 ```rask
 // Expression context — arms produce values
-const color = match status {
+let color = match status {
     Active => "green",
     Failed => "red",
 }
@@ -30,7 +30,7 @@ match event {
 }
 
 // Block in expression context
-const token = match c {
+let token = match c {
     '+' => { self.advance(); Token.Plus }   // Token.Plus is the value
     '-' => { self.advance(); Token.Minus }
 }
@@ -53,7 +53,7 @@ only be a literal:
 ```rask
 if s == Shape.Dot { ... }                      // fine — unit variant, no braces
 if (c == Shape.Circle { r: 4 }) { ... }        // literal needs parens
-const want = Shape.Circle { r: 4 }             // or bind it first
+let want = Shape.Circle { r: 4 }             // or bind it first
 if c == want { ... }
 ```
 
@@ -63,10 +63,10 @@ parser hasn't read yet.
 
 ```rask
 // Inline expression
-const sign = if x > 0: "+" else: "-"
+let sign = if x > 0: "+" else: "-"
 
 // Block expression
-const x = if c { a } else { b }
+let x = if c { a } else { b }
 
 // Statement, no else needed
 if error {
@@ -117,7 +117,7 @@ if state is Connected(sock) && sock.is_ready() {
 }
 ```
 
-## Guard Pattern: const...is...else
+## Guard Pattern: let...is...else
 
 | Rule | Description |
 |------|-------------|
@@ -127,18 +127,18 @@ if state is Connected(sock) && sock.is_ready() {
 
 ```rask
 // Early return on non-matching variant
-const sock = state is Connected else { return }
+let sock = state is Connected else { return }
 // sock available here
 
 // Break from loop when task missing
-const task = event is Ready else { break }
+let task = event is Ready else { break }
 // task available here
 ```
 
 The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates. (An `if` on a diverging `is` arm also narrows the fall-through via the general union rule, `type.errors/ER24` — mechanism, not the idiom):
 
 ```rask
-const item = queue.pop()
+let item = queue.pop()
 if item is none: break
 process(item)                  // item: Task here
 ```
@@ -153,8 +153,8 @@ process(item)                  // item: Task here
 | **CF18: Bare break forbidden** | If any `break value` exists, bare `break` is an error |
 
 ```rask
-const input = loop {
-    const x = read_input()
+let input = loop {
+    let x = read_input()
     if x.is_valid() { break x }
     println("Invalid, try again")
 }
@@ -170,7 +170,7 @@ const input = loop {
 
 ```rask
 while queue.len() > 0 {
-    const task = queue.pop()
+    let task = queue.pop()
     process(task)
 }
 ```
@@ -231,7 +231,7 @@ func process_items(items: Vec<Item>) -> Vec<string> {
 
 func process(file: File) -> Data or Error {
     ensure file.close()
-    const data = try file.read()   // try may return early
+    let data = try file.read()   // try may return early
     return transform(data)
 }
 ```
@@ -246,14 +246,14 @@ func process(file: File) -> Data or Error {
 
 ```rask
 // Expression context
-const result = {
-    const temp = compute()
+let result = {
+    let temp = compute()
     transform(temp)   // this is the block's value
 }
 
 // Statement context
 {
-    const temp = compute()
+    let temp = compute()
     process(temp)   // return value discarded
 }
 ```
@@ -291,14 +291,14 @@ mut x: i32 = if cond { 42 } else { panic("nope") }
 ```
 ERROR [ctrl.flow/CF6]: if expression requires else branch
    |
-3  |  const x = if cond { 42 }
+3  |  let x = if cond { 42 }
    |            ^^^^^^^^^^^^^^ no else branch
 
 WHY: In expression context, both branches must produce a value.
 
 FIX: Add an else branch:
 
-  const x = if cond { 42 } else { 0 }
+  let x = if cond { 42 } else { 0 }
 ```
 
 **break value in while loop [CF20]:**
@@ -344,22 +344,22 @@ FIX: Ensure all break expressions match:
 ```
 ERROR [ctrl.flow/CF13]: else block must diverge
    |
-3  |  const x = event is Tick else { 0 }
+3  |  let x = event is Tick else { 0 }
    |                               ^ doesn't diverge
 
-WHY: const...is...else requires the else block to exit via return,
+WHY: let...is...else requires the else block to exit via return,
      break, continue, or panic.
 
 FIX: Use if is instead:
 
-  const x = if event is Tick(v) { v } else { default_value }
+  let x = if event is Tick(v) { v } else { default_value }
 ```
 
 **Linear resource consumed only in one branch [CF11]:**
 ```
 ERROR [ctrl.flow/CF11]: linear resource may not be consumed
    |
-3  |  const file = open("data.txt")
+3  |  let file = open("data.txt")
    |               ---------------- resource created here
 4  |  if cond {
 5  |      file.close()
@@ -387,19 +387,19 @@ FIX: Consume in both branches or use ensure:
 
 | Rule | Description |
 |------|-------------|
-| **DS1: Const destructuring** | `const (a, b) = expr` binds tuple elements as immutable |
+| **DS1: Const destructuring** | `let (a, b) = expr` binds tuple elements as immutable |
 | **DS2: Mut destructuring** | `mut (a, b) = expr` binds tuple elements as rebindable |
 | **DS3: For destructuring** | `for (k, v) in iter` destructures each iteration element |
 | **DS4: Arity match** | Number of bindings must match tuple length (compile error otherwise) |
-| **DS5: Nested** | `const (a, (b, c)) = expr` destructures nested tuples |
-| **DS6: Wildcard** | `_` discards an element: `const (_, b) = pair` |
-| **DS7: Guard pattern** | `const (a, b) = expr is Paired else { return }` combines destructuring with pattern matching on a user enum variant |
+| **DS5: Nested** | `let (a, (b, c)) = expr` destructures nested tuples |
+| **DS6: Wildcard** | `_` discards an element: `let (_, b) = pair` |
+| **DS7: Guard pattern** | `let (a, b) = expr is Paired else { return }` combines destructuring with pattern matching on a user enum variant |
 
 <!-- test: parse -->
 ```rask
 // Basic destructuring
-const point = (10, 20)
-const (x, y) = point
+let point = (10, 20)
+let (x, y) = point
 
 func use_destructuring() {
     // Mutable destructuring (mut requires function scope)
@@ -413,24 +413,24 @@ func use_destructuring() {
 }
 
 // Wildcard
-const (_, second) = pair
+let (_, second) = pair
 
 // Channel pattern
-const (tx, rx) = Channel<Message>.buffered(100)
+let (tx, rx) = Channel<Message>.buffered(100)
 ```
 
 **Arity mismatch [DS4]:**
 ```
 ERROR [ctrl.flow/DS4]: tuple destructuring arity mismatch
    |
-3  |  const (a, b, c) = (1, 2)
+3  |  let (a, b, c) = (1, 2)
    |        ^^^^^^^^^ expected 2 elements, found 3 bindings
 
 WHY: Destructuring requires exactly one binding per tuple element.
 
 FIX: Match the number of bindings, use _ to discard:
 
-  const (a, b) = (1, 2)
+  let (a, b) = (1, 2)
 ```
 
 ---
@@ -439,7 +439,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 ### Rationale
 
-**CF1/CF2 (context-dependent):** Most control flow is for side effects (logging, validation, mutation). Assignment context (`const x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity.
+**CF1/CF2 (context-dependent):** Most control flow is for side effects (logging, validation, mutation). Assignment context (`let x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity.
 
 **CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
 
@@ -447,7 +447,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 **CF8/CF13 (pattern binding):** Two forms for two use cases:
 - `if expr is Pattern(v) { ... }` — binding scoped to block, for conditional execution
-- `const v = expr is Pattern else { ... }` — binding escapes to outer scope, for early exit
+- `let v = expr is Pattern else { ... }` — binding escapes to outer scope, for early exit
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
@@ -463,9 +463,9 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 
 | Use Case | Recommended | Why |
 |----------|-------------|-----|
-| Value-producing conditional | `const x = if c: a else: b` | Inline, clear |
-| Value from multi-case enum | `const x = match e { ... }` | Exhaustive |
-| Value from repeated checks | `const x = loop { break ... }` | Clear exit |
+| Value-producing conditional | `let x = if c: a else: b` | Inline, clear |
+| Value from multi-case enum | `let x = match e { ... }` | Exhaustive |
+| Value from repeated checks | `let x = loop { break ... }` | Clear exit |
 | Side effect conditional | `if c { f() }` | No value needed |
 | Check other enum variant | `if x is Variant` | Pattern match |
 | Early exit on error | `if r? as v { … } else as e { return e }` | Guard |
@@ -513,7 +513,7 @@ do_other()
 do_thing(); do_other()
 
 // Semicolons separate statements within expression-context blocks
-const token = match c {
+let token = match c {
     '+' => { self.advance(); Token.Plus }
 }
 ```
@@ -562,17 +562,17 @@ mut x: i32 = if cond { 42 } else { return }
 **Value-producing constructs:**
 ```rask
 // Match expression
-const color = match status {
+let color = match status {
     Active => "green",
     Inactive => "gray",
     Failed => "red",
 }
 
 // Inline if
-const sign = if x > 0: "+" else: "-"
+let sign = if x > 0: "+" else: "-"
 
 // Match with block arms on error union
-const opts = match parse_args(args) {
+let opts = match parse_args(args) {
     Args as o => o,
     ParseError as e => {
         println("error: {e}")
@@ -583,8 +583,8 @@ const opts = match parse_args(args) {
 
 **Loop with break value:**
 ```rask
-const input = loop {
-    const x = read_input()
+let input = loop {
+    let x = read_input()
     if x.is_valid() {
         break x
     }
@@ -630,7 +630,7 @@ func find_in_matrix<T: Equal>(matrix: Vec<Vec<T>>, target: T) -> (usize, usize)?
 ```rask
 func drain_queue(queue: Queue<Task>) {
     while queue.len() > 0 {
-        const task = queue.pop()
+        let task = queue.pop()
         if task.is_cancelled() {
             continue
         }
@@ -644,7 +644,7 @@ func drain_queue(queue: Queue<Task>) {
 ```rask
 func run_server(server: Server) {
     loop {
-        const conn = server.accept()
+        let conn = server.accept()
         handle(conn)
     }
 }
@@ -678,11 +678,11 @@ if state is Connected(sock) && sock.is_ready() {
 **Guard pattern for early exit:**
 ```rask
 func process_file(path: string) -> void or Error {
-    const file = try open(path)
+    let file = try open(path)
     ensure file.close()
 
     if file.read_line()? as line {
-        const value = try parse(line)
+        let value = try parse(line)
         use(value)
     }
     return

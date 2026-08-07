@@ -13,17 +13,17 @@ import sync.Relaxed
 // Approach 1: Use ! to panic on task failure (simplest for tests)
 func flight_tracker() -> i32 {
     using Multitasking {
-        const sightings = Shared.new(Vec.new())
+        let sightings = Shared.new(Vec.new())
 
-        const h1 = spawn(|| {
+        let h1 = spawn(|| {
             sightings.write(|s| s.push("SAS937"))
             sightings.write(|s| s.push("BAW123"))
         })
-        const h2 = spawn(|| {
+        let h2 = spawn(|| {
             sightings.write(|s| s.push("DLH456"))
             sightings.write(|s| s.push("AFR789"))
         })
-        const h3 = spawn(|| {
+        let h3 = spawn(|| {
             sightings.write(|s| s.push("UAL100"))
         })
 
@@ -40,11 +40,11 @@ func flight_tracker() -> i32 {
 // For this version, we keep it simple and use ! since tests expect i64
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     using Multitasking {
-        const counter = AtomicI64.new(0)
+        let counter = AtomicI64.new(0)
 
-        const handles = Vec.new()
+        let handles = Vec.new()
         for i in 0..num_tasks {
-            const h = spawn(|| {
+            let h = spawn(|| {
                 for j in 0..count_per_task {
                     counter.fetch_add(1, Relaxed)
                 }
@@ -62,29 +62,29 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
 
 func shared_config_update() -> i32 {
     using Multitasking {
-        const config = Shared.new(35000)
+        let config = Shared.new(35000)
         mut (tx, rx) = Channel<bool>.buffered(1)
 
-        const atc = spawn(|| {
+        let atc = spawn(|| {
             config.write(|c| {
                 c = 37000
             })
             tx.send(true)
         })
 
-        const pilot = spawn(|| {
+        let pilot = spawn(|| {
             rx.receive()
             return config.read(|c| c)
         })
 
         atc.join()!
-        const result = pilot.join()!
+        let result = pilot.join()!
         return result
     }
 }
 
 test "flight tracker" {
-    const count = flight_tracker()
+    let count = flight_tracker()
     assert count > 0
     assert count >= 3
 }
@@ -101,18 +101,18 @@ test "shared config update" {
 // Example showing error handling approaches
 //
 // Approach 1: Use ! to panic on task failure (simplest)
-//   const h = spawn(|| { work() })
+//   let h = spawn(|| { work() })
 //   h.join()!  // panics if task panicked
 //
 // Approach 2: Propagate errors with try
 //   func process() -> T or JoinError {
-//       const h = spawn(|| { work() })
+//       let h = spawn(|| { work() })
 //       try h.join()  // propagates JoinError
 //       return result
 //   }
 //
 // Approach 3: Explicit match or narrowing
-//   const result = h.join()
+//   let result = h.join()
 //   if result? as val { use(val) }
 //   else if result is JoinError as e { handle(e) }
 

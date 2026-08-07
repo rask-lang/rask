@@ -21,8 +21,8 @@ func distance_sq(p: Point) -> i32 {
 }
 
 test "borrow mode reads without consuming" {
-    const p = Point { x: 3, y: 4 }
-    const d = distance_sq(p)
+    let p = Point { x: 3, y: 4 }
+    let d = distance_sq(p)
     assert d == 25
     // p still valid after borrow
     assert p.x == 3
@@ -83,10 +83,10 @@ func consume(take data: LargeData) -> u64 {
 }
 
 test "take mode transfers ownership" {
-    const data = LargeData { values: Vec.new() }
+    let data = LargeData { values: Vec.new() }
     data.values.push(1)
     data.values.push(2)
-    const len = consume(data)
+    let len = consume(data)
     assert len == 2u64
     // data is now invalid — using it would be a compile error (O3)
 }
@@ -112,7 +112,7 @@ extend Point {
 }
 
 test "self borrow" {
-    const p = Point { x: 3, y: 4 }
+    let p = Point { x: 3, y: 4 }
     assert p.magnitude_sq() == 25
     // p still valid
     assert p.x == 3
@@ -126,8 +126,8 @@ test "mutate self" {
 }
 
 test "take self" {
-    const p = Point { x: 5, y: 10 }
-    const (a, b) = p.into_tuple()
+    let p = Point { x: 5, y: 10 }
+    let (a, b) = p.into_tuple()
     assert a == 5
     assert b == 10
     // p is now invalid
@@ -151,7 +151,7 @@ test "mutate on copy type only affects local copy" {
 // --- Disjoint field borrows with mutate ---
 
 func swap_fields(mutate x: i32, mutate y: i32) {
-    const tmp = x
+    let tmp = x
     x = y
     y = tmp
 }

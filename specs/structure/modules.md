@@ -58,7 +58,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 | **IM4: Unqualified** | `import pkg.Name` → `Name` directly |
 | **IM5: Grouped** | `import pkg.{Name, Other}` for multiple unqualified |
 | **IM6: Glob** | `import pkg.*` — allowed but emits compiler warning |
-| **IM7: Unused** | Unused imports are compile errors |
+| **IM7: Unused** | Unused imports warn (`tool.warnings/W1`, `unused_import`) — promote to error via `@deny` or `--deny-warnings` for CI/publish |
 | **IM8: No shadowing** | Shadowing imported name with local definition is compile error |
 
 <!-- test: skip -->
@@ -68,8 +68,8 @@ import myapp.utils as u
 import json.{decode, encode}
 
 func main() {
-    const req = http.new("GET", "/")
-    const body = decode<JsonValue>(read())
+    let req = http.new("GET", "/")
+    let body = decode<JsonValue>(read())
 }
 ```
 
@@ -126,8 +126,8 @@ export internal.lexer.Lexer
 |------|-------------|
 | **PS1: Const only** | Package-level declarations must be `const` |
 | **PS2: Sync required** | Mutable state requires `Atomic`, `Mutex`, or `Shared` (via interior mutability) |
-| **PS3: No mutable globals** | `let` at package level is a compile error |
-| **PS4: Script mode** | Files without `main()` may have interleaved `const` and statements. All top-level code runs in source order within a synthetic entry point. Declarations (func, struct, enum, import) are hoisted; `const` is not. |
+| **PS3: No mutable globals** | `let` and `mut` at package level are compile errors (outside script mode) — bindings are local, `const` is the only package-level declaration |
+| **PS4: Script mode** | Files without `main()` may have interleaved `const` declarations and statements. All top-level code runs in source order within a synthetic entry point. Declarations (func, struct, enum, import) are hoisted; `const` is not. |
 
 ## Package Initialization
 
@@ -155,13 +155,6 @@ ERROR [struct.modules/BI3]: built-in type shadowing
    |
 3  |  struct Vec { }
    |  ^^^^^^^^^^ cannot define type with built-in name `Vec`
-```
-
-```
-ERROR [struct.modules/IM7]: unused import
-   |
-1  |  import json
-   |  ^^^^^^^^^^^ `json` imported but never used
 ```
 
 ```
@@ -194,6 +187,8 @@ ERROR [struct.modules/PS3]: mutable global
 **V1 (package default):** Everything defaults to package-visible — functions, types, and fields. Same package = same team. No asymmetry to learn. I chose this over struct-private default because data-oriented design (plain structs accessed by functions) is as common as encapsulated types, and shouldn't require annotation tax. When you need encapsulation, `private` is explicit and signals "this field has invariants."
 
 **BI2 (fixed built-in set):** Predictability. Reading any Rask file, you always know what's in scope. Go has no extension mechanism either — IDE auto-import handles repetition.
+
+**IM7 (unused imports warn, not error):** Originally a Go-style hard error, which contradicted `tool.warnings/W1` and the severity boundary (SB1: errors are for broken code). An unused import is untidy, not unsafe — and a hard error bites exactly when you comment out a call to isolate a bug. The warning is default-on; teams that want Go's strictness get it back with `@deny(unused_import)` in `build.rk` or `--deny-warnings` in CI.
 
 **RE2 (origin-based identity):** `std.Vec` (re-export of `core.Vec`) and `collections.Vec` (also `core.Vec`) are the same type. Preserves composability across re-export chains.
 

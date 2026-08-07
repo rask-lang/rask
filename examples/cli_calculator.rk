@@ -73,14 +73,14 @@ extend Lexer {
     }
 
     func advance(self) -> char? {
-        const c = try self.peek_char()
+        let c = try self.peek_char()
         self.pos += 1
         return c
     }
 
     func skip_whitespace(self) {
         while self.peek_char()? {
-            const c = self.peek_char()!
+            let c = self.peek_char()!
             if !c.is_whitespace(): break
             self.advance()
         }
@@ -89,10 +89,10 @@ extend Lexer {
     func next_token(self) -> Token or CalcError {
         self.skip_whitespace()
 
-        const c = if self.peek_char()? as ch { ch } else { return Token.Eof }
+        let c = if self.peek_char()? as ch { ch } else { return Token.Eof }
 
         // Single-character tokens
-        const token = match c {
+        let token = match c {
             '+' => { self.advance(); Token.Plus }
             '-' => { self.advance(); Token.Minus }
             '*' => { self.advance(); Token.Star }
@@ -113,7 +113,7 @@ extend Lexer {
         mut has_dot = false
 
         while self.peek_char()? {
-            const c = self.peek_char()!
+            let c = self.peek_char()!
             if c.is_digit() {
                 num_str.push(c)
                 self.advance()
@@ -126,7 +126,7 @@ extend Lexer {
             }
         }
 
-        const value: f64 = num_str.parse()!
+        let value: f64 = num_str.parse()!
         return Token.Number(value)
     }
 }
@@ -140,7 +140,7 @@ struct Parser {
 extend Parser {
     func new(input: string) -> Parser or CalcError {
         mut lexer = Lexer.new(input)
-        const current = try lexer.next_token()
+        let current = try lexer.next_token()
         return Parser { lexer: lexer, current: current }
     }
 
@@ -149,7 +149,7 @@ extend Parser {
     }
 
     func parse(self) -> Expr or CalcError {
-        const expr = try self.parse_expression()
+        let expr = try self.parse_expression()
 
         match self.current {
             Eof => return expr,
@@ -178,13 +178,13 @@ extend Parser {
         mut left = try self.parse_term()
 
         loop {
-            const op = match self.current {
+            let op = match self.current {
                 Plus => BinaryOp.Add,
                 Minus => BinaryOp.Sub,
                 _ => break
             }
             try self.advance()
-            const right = try self.parse_term()
+            let right = try self.parse_term()
             left = Expr.Binary(left: left, op: op, right: right)
         }
 
@@ -196,14 +196,14 @@ extend Parser {
         mut left = try self.parse_power()
 
         loop {
-            const op = match self.current {
+            let op = match self.current {
                 Star => BinaryOp.Mul,
                 Slash => BinaryOp.Div,
                 Percent => BinaryOp.Mod,
                 _ => break
             }
             try self.advance()
-            const right = try self.parse_power()
+            let right = try self.parse_power()
             left = Expr.Binary(left: left, op: op, right: right)
         }
 
@@ -212,11 +212,11 @@ extend Parser {
 
     // power = unary ('^' power)?  (right associative)
     func parse_power(self) -> Expr or CalcError {
-        const base = try self.parse_unary()
+        let base = try self.parse_unary()
 
         if self.current is Caret {
             try self.advance()
-            const exp = try self.parse_power()  // Right associative
+            let exp = try self.parse_power()  // Right associative
             return Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp)
         } else {
             return base
@@ -227,7 +227,7 @@ extend Parser {
     func parse_unary(self) -> Expr or CalcError {
         if self.current is Minus {
             try self.advance()
-            const expr = try self.parse_unary()
+            let expr = try self.parse_unary()
             return Expr.Unary(op: UnaryOp.Neg, expr: own expr)
         } else {
             return self.parse_primary()
@@ -243,7 +243,7 @@ extend Parser {
             }
             LParen => {
                 try self.advance()
-                const expr = try self.parse_expression()
+                let expr = try self.parse_expression()
                 match self.current {
                     RParen => {
                         try self.advance()
@@ -263,14 +263,14 @@ func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
         Number(n) => return n,
         Unary(op, inner) => {
-            const val = try evaluate(inner)
+            let val = try evaluate(inner)
             match op {
                 Neg => return -val,
             }
         }
         Binary(left, op, right) => {
-            const l = try evaluate(left)
-            const r = try evaluate(right)
+            let l = try evaluate(left)
+            let r = try evaluate(right)
             match op {
                 Add => return l + r,
                 Sub => return l - r,
@@ -291,7 +291,7 @@ func evaluate(expr: Expr) -> f64 or CalcError {
 
 func calc(input: string) -> f64 or CalcError {
     mut parser = try Parser.new(input)
-    const expr = try parser.parse()
+    let expr = try parser.parse()
     return evaluate(expr)
 }
 
@@ -322,7 +322,7 @@ func main() -> void or Error {
 
     loop {
         print("> ")
-        const input = (try io.read_line()).trim()
+        let input = (try io.read_line()).trim()
 
         if input.is_empty(): continue
 
@@ -330,7 +330,7 @@ func main() -> void or Error {
             "quit" | "exit" | "q" => break,
             "help" | "h" | "?" => print_help(),
             _ => {
-                const r = calc(input.to_string())
+                let r = calc(input.to_string())
                 if r? {
                     println("= {r}")
                 } else as e {

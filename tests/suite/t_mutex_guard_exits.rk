@@ -44,13 +44,13 @@ struct Counter {
 }
 
 test "return inside the guard returns from the function" {
-    const m = Mutex.new(1)
+    let m = Mutex.new(1)
     assert bump_then_return(m) == 6
 }
 
 test "the mutation survives an early return" {
-    const m = Mutex.new(1)
-    const r = bump_then_return(m)
+    let m = Mutex.new(1)
+    let r = bump_then_return(m)
     assert r == 6
     with m.lock() as v {
         assert v == 6
@@ -58,7 +58,7 @@ test "the mutation survives an early return" {
 }
 
 test "falling off the end still writes back" {
-    const m = Mutex.new(1)
+    let m = Mutex.new(1)
     assert bump_and_fall_through(m) == -1
     with m.lock() as v {
         assert v == 6
@@ -66,8 +66,8 @@ test "falling off the end still writes back" {
 }
 
 test "returning out of a loop releases and writes back" {
-    const m = Mutex.new(0)
-    const hit = count_to(m, 3)
+    let m = Mutex.new(0)
+    let hit = count_to(m, 3)
     assert hit == 300
     with m.lock() as v {
         assert v == 3
@@ -75,9 +75,9 @@ test "returning out of a loop releases and writes back" {
 }
 
 test "the lock is free again after an early return" {
-    const m = Mutex.new(1)
-    const a = bump_then_return(m)
-    const b = bump_then_return(m)
+    let m = Mutex.new(1)
+    let a = bump_then_return(m)
+    let b = bump_then_return(m)
     assert a == 6
     assert b == 11
     with m.lock() as v {
@@ -86,7 +86,7 @@ test "the lock is free again after an early return" {
 }
 
 test "a struct payload is mutated in place" {
-    const m = Mutex.new(Counter { hits: 0, misses: 0 })
+    let m = Mutex.new(Counter { hits: 0, misses: 0 })
     with m.lock() as c {
         c.hits = c.hits + 1
         c.misses = c.misses + 2

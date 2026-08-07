@@ -148,7 +148,7 @@ test "entry time" {
 }
 
 test "flight time" {
-    const log = Vec.from([
+    let log = Vec.from([
         LogEntry.EngineStart(800),
         LogEntry.Takeoff(815, "27L"),
         LogEntry.WaypointReached(900, "CEDAR", 35000.0),
@@ -160,7 +160,7 @@ test "flight time" {
 }
 
 test "flight time no takeoff" {
-    const log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
+    let log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
     assert flight_time(log) == 0
 }
 

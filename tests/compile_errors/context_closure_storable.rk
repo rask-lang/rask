@@ -11,7 +11,7 @@ func damage(h: Handle<Player>) using players: Pool<Player> {
 
 func main() {
     mut players = Pool<Player>.new()
-    const h = players.insert(Player { health: 100 })
-    const cb = |hh: Handle<Player>| { damage(hh) }    // ERROR: no explicit pool param
+    let h = players.insert(Player { health: 100 })
+    let cb = |hh: Handle<Player>| { damage(hh) }    // ERROR: no explicit pool param
     cb(h)
 }

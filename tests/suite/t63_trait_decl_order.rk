@@ -39,15 +39,15 @@ func level_name(l: Level) -> string {
 }
 
 test "a conformance doesn't depend on declaration order" {
-    const cold = Probe { hot: false }
+    let cold = Probe { hot: false }
     assert level_name(cold.status()) == "low"
-    const hot = Probe { hot: true }
+    let hot = Probe { hot: true }
     assert level_name(hot.status()) == "high"
 }
 
 test "a generic return type declared later also matches" {
-    const p = Probe { hot: false }
-    const tags = p.tags()
+    let p = Probe { hot: false }
+    let tags = p.tags()
     assert tags.len() == 1
     assert tags[0].text == "probe"
 }

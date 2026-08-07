@@ -33,7 +33,7 @@
 //   }
 //
 // match works as an expression — it produces a value:
-//   const area = match shape { Circle(r) => ..., Rectangle(w, h) => ... }
+//   let area = match shape { Circle(r) => ..., Rectangle(w, h) => ... }
 //
 
 // --- Example ---
@@ -153,14 +153,14 @@ test "classify water state" {
 test "distance to meters" {
     assert to_meters(Distance.Meters(100.0)) == 100.0
 
-    const feet_result = to_meters(Distance.Feet(1.0))
+    let feet_result = to_meters(Distance.Feet(1.0))
     assert feet_result > 0.304
     assert feet_result < 0.305
 
-    const nm = to_meters(Distance.NauticalMiles(1.0))
+    let nm = to_meters(Distance.NauticalMiles(1.0))
     assert nm == 1852.0
 
-    const ly = to_meters(Distance.Lightyears(1.0))
+    let ly = to_meters(Distance.Lightyears(1.0))
     assert ly > 9.4e15
     assert ly < 9.5e15
 }

@@ -10,7 +10,7 @@ func main() {
     print("\n\n")
 
     // Loop over Vec
-    const fruits = Vec.from(["apple", "banana", "cherry"])
+    let fruits = Vec.from(["apple", "banana", "cherry"])
 
     print("Fruits:\n")
     for fruit in fruits.iter() {

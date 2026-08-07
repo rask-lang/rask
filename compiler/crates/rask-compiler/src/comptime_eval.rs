@@ -47,7 +47,7 @@ pub fn evaluate_comptime_globals(
             }
             DeclKind::Fn(f) => {
                 for stmt in &f.body {
-                    if let StmtKind::Const { name, init, .. } = &stmt.kind {
+                    if let StmtKind::Let { name, init, .. } = &stmt.kind {
                         if is_comptime_init(init, decls) {
                             comptime_consts.push((name.clone(), init));
                         }

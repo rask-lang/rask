@@ -25,7 +25,7 @@ test "addition works" {
 ```rask
 @test
 func config_defaults_are_valid() -> bool {
-    const cfg = Config.defaults()
+    let cfg = Config.defaults()
     assert cfg.port > 0
     return cfg.is_valid()
 }
@@ -74,7 +74,7 @@ test "add cases" {
 <!-- test: skip -->
 ```rask
 test "file processing" {
-    const file = try open("test.txt")
+    let file = try open("test.txt")
     ensure file.close()
     assert file.read() == "expected"
 }
@@ -94,7 +94,7 @@ Tests are application code. `conc.async/C6` says application code opens the runt
 ```rask
 test "concurrent fetch joins all workers" {
     using Multitasking {
-        const (a, b) = join_all(
+        let (a, b) = join_all(
             spawn(|| { fetch(url_a) }),
             spawn(|| { fetch(url_b) })
         )
@@ -177,7 +177,7 @@ public func add(a: i32, b: i32) -> i32 { return a + b }
 
 ```rask
 benchmark "vec push" {
-    const vec = Vec.new()
+    let vec = Vec.new()
     for _ in 0..1000 {
         vec.push(42)
     }
@@ -195,7 +195,7 @@ benchmark "vec push" {
 trait Clock { func now() -> Timestamp }
 
 test "schedule" {
-    const fake = FakeClock { current: Timestamp(1000) }
+    let fake = FakeClock { current: Timestamp(1000) }
     assert schedule(fake, Duration.seconds(5)) == Timestamp(1005)
 }
 ```

@@ -18,7 +18,7 @@ A command-line tool for searching files with pattern matching.
 
 ```rask
 func search_file(path: string, pattern: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()  // Guaranteed cleanup
 
     for line in file.lines() {

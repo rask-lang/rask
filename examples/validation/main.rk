@@ -15,7 +15,7 @@ struct SeedSpec {
 
 func main() -> void or Error {
     using Multitasking {
-        const cfg = config.read().clone()
+        let cfg = config.read().clone()
         println("tracker starting — {cfg}")
 
         seed_store()
@@ -29,22 +29,22 @@ func main() -> void or Error {
 // main task receives them and inserts. Exercises spawn / channel send /
 // receive / join within the runtime block.
 func seed_store() {
-    const owner = store.lock().create_user("alice", EmailAddress { raw: "alice@example.com" })!
-    const proj = store.lock().create_project("bootstrap", owner)!
+    let owner = store.lock().create_user("alice", EmailAddress { raw: "alice@example.com" })!
+    let proj = store.lock().create_project("bootstrap", owner)!
 
     mut (tx, rx) = Channel<SeedSpec>.buffered(8)
-    const total = seed_specs().len()
+    let total = seed_specs().len()
 
-    const producer = spawn(own || {
+    let producer = spawn(own || {
         for spec in seed_specs() {
-            const sent = tx.send(spec.clone())
+            let sent = tx.send(spec.clone())
             if sent? { continue }
         }
     })
 
     mut count = 0
     while count < total {
-        const r = rx.receive()
+        let r = rx.receive()
         if r? as spec {
             store.lock().create_task(spec.title, proj, spec.priority)!
             count += 1

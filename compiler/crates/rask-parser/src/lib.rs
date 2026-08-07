@@ -208,25 +208,26 @@ mod tests {
 
     #[test]
     fn rust_syntax_double_colon() {
-        let result = parse("func main() { const x = Result::Ok }");
+        let result = parse("func main() { let x = Result::Ok }");
         assert!(!result.is_ok());
         assert_eq!(result.errors[0].message, "unexpected '::'");
         assert_eq!(result.errors[0].hint.as_deref(), Some("use '.' for paths (e.g., Result.Ok) instead of '::'"));
     }
 
     #[test]
-    fn rust_syntax_let() {
-        let result = parse("func main() { let counter = 0 }");
+    fn const_stmt_in_body_rejected() {
+        let result = parse("func main() { const x = 0 }");
         assert!(!result.is_ok());
-        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
-        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'mut' for rebindable bindings or 'const' for permanent bindings"));
+        assert_eq!(result.errors[0].message, "'const' is only for module-level constants");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'let' for local bindings ('mut' if it needs to change)"));
     }
 
     #[test]
     fn rust_syntax_let_mut() {
         let result = parse("func main() { let mut counter = 0 }");
         assert!(!result.is_ok());
-        assert_eq!(result.errors[0].message, "'let' is not a keyword in Rask");
+        assert_eq!(result.errors[0].message, "'let mut' is not Rask");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("'mut x = ...' declares a rebindable binding — drop the 'let'"));
     }
 
     #[test]
@@ -461,7 +462,7 @@ mod tests {
     #[test]
     fn try_else_multiline() {
         let result = parse(
-            "func foo() -> i32 or string {\n    const x = try bar()\n        else |e| \"fallback\"\n    return x\n}"
+            "func foo() -> i32 or string {\n    let x = try bar()\n        else |e| \"fallback\"\n    return x\n}"
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
@@ -469,20 +470,20 @@ mod tests {
     #[test]
     fn try_else_same_line() {
         let result = parse(
-            "func foo() -> i32 or string {\n    const x = try bar() else |e| \"fallback\"\n    return x\n}"
+            "func foo() -> i32 or string {\n    let x = try bar() else |e| \"fallback\"\n    return x\n}"
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
     #[test]
     fn dep_as_variable_name() {
-        let result = parse("func main() {\n    const dep = 42\n}");
+        let result = parse("func main() {\n    let dep = 42\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
     #[test]
     fn dep_in_for_loop() {
-        let result = parse("func main() {\n    const deps = Vec.new()\n    for dep in deps {\n        dep\n    }\n}");
+        let result = parse("func main() {\n    let deps = Vec.new()\n    for dep in deps {\n        dep\n    }\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
@@ -505,9 +506,9 @@ mod tests {
     #[test]
     fn newline_unary_minus_on_next_line() {
         // `a` then `-b` on next line = two separate statements
-        let stmts = parse_body("const x = a\n-b");
+        let stmts = parse_body("let x = a\n-b");
         assert_eq!(stmts.len(), 2, "should be two statements");
-        assert!(matches!(stmts[0].kind, StmtKind::Const { .. }));
+        assert!(matches!(stmts[0].kind, StmtKind::Let { .. }));
         if let StmtKind::Expr(ref e) = stmts[1].kind {
             assert!(matches!(e.kind, ExprKind::Unary { op: UnaryOp::Neg, .. }));
         } else {
@@ -518,12 +519,12 @@ mod tests {
     #[test]
     fn newline_binary_op_at_end_of_line() {
         // Operator at end of line continues expression
-        let stmts = parse_body("const x = 1 +\n2");
+        let stmts = parse_body("let x = 1 +\n2");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Add, .. }));
         } else {
-            panic!("expected const with binary add");
+            panic!("expected let with binary add");
         }
     }
 
@@ -531,8 +532,8 @@ mod tests {
     fn newline_binary_op_at_start_of_next_line() {
         // Operator at start of next line does NOT continue — `+ 2` is a new statement
         // `+` is not a valid prefix operator, so this errors
-        let stmts = parse_body("const x = 1\n2 + 3");
-        // First statement: const x = 1, second: 2 + 3
+        let stmts = parse_body("let x = 1\n2 + 3");
+        // First statement: let x = 1, second: 2 + 3
         assert_eq!(stmts.len(), 2);
     }
 
@@ -596,15 +597,15 @@ mod tests {
     fn newline_in_grouping_parens_does_not_continue() {
         // Grouping parens (expr) do NOT skip newlines — unlike call parens f(args)
         // (1\n+ 2) fails: after parsing `1`, newline terminates, then expects `)`
-        parse_body_err("const x = (1\n+ 2)");
+        parse_body_err("let x = (1\n+ 2)");
     }
 
     #[test]
     fn newline_in_call_parens_continues() {
         // Call parens DO skip newlines (parse_args calls skip_newlines)
-        let stmts = parse_body("const x = foo(\n1,\n2\n)");
+        let stmts = parse_body("let x = foo(\n1,\n2\n)");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Call { .. }));
         } else {
             panic!("expected call");
@@ -614,66 +615,66 @@ mod tests {
     #[test]
     fn newline_infix_at_start_of_line_continues() {
         // `&&` at start of next line continues the expression
-        let stmts = parse_body("const ok = a > b\n&& b > c");
+        let stmts = parse_body("let ok = a > b\n&& b > c");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::And, .. }));
         } else {
-            panic!("expected const with logical and");
+            panic!("expected let with logical and");
         }
     }
 
     #[test]
     fn newline_logical_op_at_end_of_line_continues() {
         // Operator at end of line continues
-        let stmts = parse_body("const ok = a > b &&\nb > c");
+        let stmts = parse_body("let ok = a > b &&\nb > c");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::And, .. }));
         } else {
-            panic!("expected const with logical and");
+            panic!("expected let with logical and");
         }
     }
 
     #[test]
     fn newline_ambiguous_prefix_ops_do_not_continue() {
         // `+` and `-` at start of next line are new statements (prefix ambiguity)
-        let stmts = parse_body("const x = a\n-b");
+        let stmts = parse_body("let x = a\n-b");
         assert_eq!(stmts.len(), 2);
 
         // Plain identifiers on next line are new statements
-        let stmts = parse_body("const ok = a > b\nb > c");
+        let stmts = parse_body("let ok = a > b\nb > c");
         assert_eq!(stmts.len(), 2);
     }
 
     #[test]
     fn newline_multiple_infix_continuations() {
         // Multiple lines of infix continuation
-        let stmts = parse_body("const ok = a == 1\n&& b == 2\n&& c == 3");
+        let stmts = parse_body("let ok = a == 1\n&& b == 2\n&& c == 3");
         assert_eq!(stmts.len(), 1);
     }
 
     #[test]
     fn newline_comparison_continuation() {
         // `==` at start of next line continues
-        let stmts = parse_body("const ok = a\n== b");
+        let stmts = parse_body("let ok = a\n== b");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Eq, .. }));
         } else {
-            panic!("expected const with equality");
+            panic!("expected let with equality");
         }
     }
 
     #[test]
     fn newline_pipe_continuation() {
         // `||` at start of next line continues
-        let stmts = parse_body("const ok = a\n|| b");
+        let stmts = parse_body("let ok = a\n|| b");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Or, .. }));
         } else {
-            panic!("expected const with logical or");
+            panic!("expected let with logical or");
         }
     }
 
@@ -751,16 +752,16 @@ mod tests {
 
     #[test]
     fn generic_struct_literal() {
-        let stmts = parse_body("const p = Point<f64> { x: 1.0, y: 2.0 }");
+        let stmts = parse_body("let p = Point<f64> { x: 1.0, y: 2.0 }");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::StructLit { ref name, .. } = init.kind {
                 assert_eq!(name, "Point<f64>");
             } else {
                 panic!("expected struct literal, got {:?}", init.kind);
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
@@ -778,9 +779,9 @@ mod tests {
     #[test]
     fn type_name_in_comparison_not_generic() {
         // Size < limit — no `.` or `{` after `>`, so it's comparison
-        let stmts = parse_body("const ok = Size < limit");
+        let stmts = parse_body("let ok = Size < limit");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
         } else {
             panic!("expected comparison");
@@ -800,9 +801,9 @@ mod tests {
 
     #[test]
     fn right_shift_not_generic() {
-        let stmts = parse_body("const x = a >> b");
+        let stmts = parse_body("let x = a >> b");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Shr, .. }));
         } else {
             panic!("expected right shift");
@@ -916,53 +917,53 @@ mod tests {
 
     #[test]
     fn if_as_expression() {
-        let stmts = parse_body("const x = if true { 1 } else { 2 }");
+        let stmts = parse_body("let x = if true { 1 } else { 2 }");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::If { .. }));
         } else {
-            panic!("expected const with if expression");
+            panic!("expected let with if expression");
         }
     }
 
     #[test]
     fn match_as_expression() {
-        let stmts = parse_body("const x = match y {\n    1 => \"a\",\n    _ => \"b\"\n}");
+        let stmts = parse_body("let x = match y {\n    1 => \"a\",\n    _ => \"b\"\n}");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Match { .. }));
         } else {
-            panic!("expected const with match expression");
+            panic!("expected let with match expression");
         }
     }
 
     #[test]
     fn nested_if_expression() {
-        let stmts = parse_body("const x = if a { if b { 1 } else { 2 } } else { 3 }");
+        let stmts = parse_body("let x = if a { if b { 1 } else { 2 } } else { 3 }");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::If { ref then_branch, .. } = init.kind {
                 assert!(matches!(then_branch.kind, ExprKind::Block(_)));
             } else {
                 panic!("expected if expression");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn block_as_expression() {
-        let stmts = parse_body("const x = {\n    const y = 1\n    y + 1\n}");
+        let stmts = parse_body("let x = {\n    let y = 1\n    y + 1\n}");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Block(ref block_stmts) = init.kind {
                 assert_eq!(block_stmts.len(), 2);
             } else {
                 panic!("expected block expression");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
@@ -1005,24 +1006,24 @@ mod tests {
 
     #[test]
     fn empty_closure() {
-        let stmts = parse_body("const f = || { 42 }");
+        let stmts = parse_body("let f = || { 42 }");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Closure { ref params, .. } = init.kind {
                 assert!(params.is_empty());
             } else {
                 panic!("expected closure");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn bitwise_or_not_confused_with_closure() {
-        let stmts = parse_body("const x = a | b");
+        let stmts = parse_body("let x = a | b");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::BitOr, .. }));
         } else {
             panic!("expected bitwise or");
@@ -1035,25 +1036,25 @@ mod tests {
 
     #[test]
     fn range_in_array_index() {
-        let stmts = parse_body("const x = arr[1..3]");
+        let stmts = parse_body("let x = arr[1..3]");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Index { ref index, .. } = init.kind {
                 assert!(matches!(index.kind, ExprKind::Range { .. }));
             } else {
                 panic!("expected index expression");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn try_with_method_chain() {
         // try binds at PREFIX_BP (23), `.` at 25, so `.bar()` chains inside try
-        let stmts = parse_body("const x = try foo().bar()");
+        let stmts = parse_body("let x = try foo().bar()");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Try { ref expr, .. } = init.kind {
                 // The inner expression should be the method chain foo().bar()
                 assert!(matches!(expr.kind, ExprKind::MethodCall { .. }));
@@ -1061,15 +1062,15 @@ mod tests {
                 panic!("expected try expression, got {:?}", init.kind);
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn optional_chaining_multiple() {
-        let stmts = parse_body("const x = a?.b?.c");
+        let stmts = parse_body("let x = a?.b?.c");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             // The outer should be ?.c on something
             if let ExprKind::OptionalField { ref object, field: ref f, .. } = init.kind {
                 assert_eq!(f, "c");
@@ -1078,15 +1079,15 @@ mod tests {
                 panic!("expected optional field chain");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn null_coalescing_chain() {
-        let stmts = parse_body("const x = a ?? b ?? c");
+        let stmts = parse_body("let x = a ?? b ?? c");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::NullCoalesce { .. }));
         } else {
             panic!("expected null coalescing");
@@ -1096,32 +1097,32 @@ mod tests {
     #[test]
     fn cast_binds_tighter_than_add() {
         // `as` has bp=21, `+` has (19,20), so (a as i32) + b
-        let stmts = parse_body("const x = a as i32 + b");
+        let stmts = parse_body("let x = a as i32 + b");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Binary { op: BinOp::Add, ref left, .. } = init.kind {
                 assert!(matches!(left.kind, ExprKind::Cast { .. }));
             } else {
                 panic!("expected add with cast on left");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
     #[test]
     fn negation_of_method_call() {
         // PREFIX_BP (23) < postfix (25), so `-` applies to result of foo.bar()
-        let stmts = parse_body("const x = -foo.bar()");
+        let stmts = parse_body("let x = -foo.bar()");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Unary { op: UnaryOp::Neg, ref operand, .. } = init.kind {
                 assert!(matches!(operand.kind, ExprKind::MethodCall { .. }));
             } else {
                 panic!("expected negation of method call");
             }
         } else {
-            panic!("expected const");
+            panic!("expected let");
         }
     }
 
@@ -1220,9 +1221,9 @@ mod tests {
     #[test]
     fn comparison_with_parens_disambiguated() {
         // (a < b) > (c) — parenthesized comparison, not generic
-        let stmts = parse_body("const x = (a < b) > (c)");
+        let stmts = parse_body("let x = (a < b) > (c)");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Gt, .. }));
         } else {
             panic!("expected comparison");
@@ -1256,7 +1257,7 @@ mod tests {
 
     #[test]
     fn multiline_closure_in_arg() {
-        let stmts = parse_body("foo(|x| {\n    const y = x + 1\n    y\n})");
+        let stmts = parse_body("foo(|x| {\n    let y = x + 1\n    y\n})");
         assert_eq!(stmts.len(), 1);
         if let StmtKind::Expr(ref e) = stmts[0].kind {
             if let ExprKind::Call { ref args, .. } = e.kind {
@@ -1273,7 +1274,7 @@ mod tests {
     #[test]
     fn question_mark_on_next_line_chains() {
         // `?` is in postfix-across-newline check
-        let stmts = parse_body("const x = try foo()\nconst y = bar()");
+        let stmts = parse_body("let x = try foo()\nlet y = bar()");
         assert_eq!(stmts.len(), 2);
     }
 
@@ -1291,9 +1292,9 @@ mod tests {
     // mem.closures/CP2: typed mutable-borrow parameter `|mutate x: T|`
     #[test]
     fn closure_mutate_param_with_type() {
-        let stmts = parse_body("const f = |mutate x: Item| { x.level += 1 }");
+        let stmts = parse_body("let f = |mutate x: Item| { x.level += 1 }");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Closure { ref params, .. } = init.kind {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
@@ -1303,14 +1304,14 @@ mod tests {
                 panic!("expected closure, got {:?}", init.kind);
             }
         } else {
-            panic!("expected const binding");
+            panic!("expected let binding");
         }
     }
 
     // mem.closures/CP3: `|mutate x|` without type must be rejected as a param form.
     #[test]
     fn closure_mutate_param_without_type_errors() {
-        let result = parse_body_err("const f = |mutate x| { x }");
+        let result = parse_body_err("let f = |mutate x| { x }");
         assert!(result.errors.iter().any(|e| e.message.contains("'mutate' requires an explicit type")),
             "expected error about mutate requiring explicit type, got {:?}", result.errors);
     }
@@ -1318,9 +1319,9 @@ mod tests {
     // Existing untyped closure params still parse as read-only borrows (CP1).
     #[test]
     fn closure_untyped_param_still_works() {
-        let stmts = parse_body("const f = |x| x * 2");
+        let stmts = parse_body("let f = |x| x * 2");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
             if let ExprKind::Closure { ref params, .. } = init.kind {
                 assert_eq!(params.len(), 1);
                 assert!(!params[0].is_mutate);
@@ -1330,7 +1331,7 @@ mod tests {
                 panic!("expected closure");
             }
         } else {
-            panic!("expected const binding");
+            panic!("expected let binding");
         }
     }
 
@@ -1459,7 +1460,7 @@ mod tests {
     // `duck` and `scoped` stay usable as ordinary identifiers.
     #[test]
     fn duck_scoped_still_identifiers() {
-        let stmts = parse_body("const duck = 3\nconst scoped = duck + 1");
+        let stmts = parse_body("let duck = 3\nlet scoped = duck + 1");
         assert_eq!(stmts.len(), 2);
     }
 

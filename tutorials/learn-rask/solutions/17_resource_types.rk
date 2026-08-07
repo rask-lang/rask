@@ -61,12 +61,12 @@ func process_flights(flights: Vec<string>) -> i32 or BookingError {
 }
 
 test "booking commit" {
-    const result = book_flight(1, "Besse")
+    let result = book_flight(1, "Besse")
     assert result?
 }
 
 test "booking failure" {
-    const result = book_flight(2, "FAIL")
+    let result = book_flight(2, "FAIL")
     assert result is BookingError
 }
 
@@ -78,7 +78,7 @@ test "booking pattern" {
 }
 
 test "two bookings" {
-    const status = two_bookings()
+    let status = two_bookings()
     assert status.first_committed == true
     assert status.second_committed == false
 }

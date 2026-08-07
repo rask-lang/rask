@@ -11,8 +11,8 @@ struct Item { weight: i32 }
 func vec_string_index() {
     mut v = Vec.new()
     v.push(10)
-    const s = "x"
-    const bad = v[s]
+    let s = "x"
+    let bad = v[s]
     println("{bad}")
 }
 
@@ -21,16 +21,16 @@ func vec_string_index() {
 func vec_float_index() {
     mut v = Vec.new()
     v.push(10)
-    const bad = v[1.5]
+    let bad = v[1.5]
     println("{bad}")
 }
 
 // --- string indexed by a string ---
 // ERROR: cannot index `string` with `string` [E0819]
 func string_string_index() {
-    const s = "hello"
-    const k = "x"
-    const bad = s[k]
+    let s = "hello"
+    let k = "x"
+    let bad = s[k]
     println("{bad}")
 }
 
@@ -39,18 +39,18 @@ func string_string_index() {
 func map_wrong_key() {
     mut m = Map.new()
     m.insert("a", 1)
-    const bad = m[5]
+    let bad = m[5]
     println("{bad}")
 }
 
 // --- Pool<Entity> indexed by a Handle<Item> (wrong pool, statically known) ---
 // ERROR: cannot index `Pool` with `Handle` [E0819]
 func pool_cross_handle() {
-    const ents: Pool<Entity> = Pool.new()
+    let ents: Pool<Entity> = Pool.new()
     mut items: Pool<Item> = Pool.new()
-    const ih = items.try_insert(Item { weight: 5 })
+    let ih = items.try_insert(Item { weight: 5 })
     if ih? {
-        const bad = ents[ih]
+        let bad = ents[ih]
         println("{bad.health}")
     }
 }
@@ -58,8 +58,8 @@ func pool_cross_handle() {
 // --- Pool<Entity> indexed by an integer ---
 // ERROR: cannot index `Pool` with `i32` [E0819]
 func pool_int_index() {
-    const ents: Pool<Entity> = Pool.new()
-    const bad = ents[0]
+    let ents: Pool<Entity> = Pool.new()
+    let bad = ents[0]
     println("{bad.health}")
 }
 
@@ -68,6 +68,6 @@ func pool_int_index() {
 func map_range_slice() {
     mut m = Map.new()
     m.insert("a", 1)
-    const bad = m[0..2]
+    let bad = m[0..2]
     println("{bad}")
 }

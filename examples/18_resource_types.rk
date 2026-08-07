@@ -56,7 +56,7 @@ extend Connection {
 func successful_payment() {
     print("\n=== Successful Payment ===\n")
 
-    const tx = Transaction {
+    let tx = Transaction {
         id: 1,
         amount: 100,
         committed: false,
@@ -76,7 +76,7 @@ func successful_payment() {
 func failed_payment() {
     print("\n=== Failed Payment ===\n")
 
-    const tx = Transaction {
+    let tx = Transaction {
         id: 2,
         amount: 200,
         committed: false,
@@ -94,7 +94,7 @@ func failed_payment() {
 func network_operation() {
     print("\n=== Network Operation ===\n")
 
-    const conn = Connection {
+    let conn = Connection {
         host: "example.com",
         port: 8080,
     }
@@ -110,7 +110,7 @@ func network_operation() {
 func manual_close() {
     print("\n=== Manual Close ===\n")
 
-    const conn = Connection {
+    let conn = Connection {
         host: "api.example.com",
         port: 443,
     }
@@ -134,7 +134,7 @@ func demonstrate_file_resources() -> void or IoError {
         fs.remove("test.txt")  // Clean up the file after use
     }
     // Use the file
-    const content = try file.read_text()
+    let content = try file.read_text()
     print("File content: ")
     print(content)
     print("\n")
@@ -156,7 +156,7 @@ func main() {
     print("\n=== Files as Resources ===\n")
 
     // Demonstrate file resources (returns Result)
-    const result = demonstrate_file_resources()
+    let result = demonstrate_file_resources()
     if result is IoError as e {
         print("Error: ")
         print(e.message())

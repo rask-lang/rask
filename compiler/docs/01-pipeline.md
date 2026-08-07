@@ -104,7 +104,7 @@ a `span: Span`. The three levels:
 
 - **Declarations** (`decl.rs`): Top-level items—functions, structs, enums,
   traits, imports, extend blocks, tests, benchmarks, package declarations.
-- **Statements** (`stmt.rs`): Things inside function bodies—let/const bindings,
+- **Statements** (`stmt.rs`): Things inside function bodies—let/let bindings,
   assignments, loops, returns, ensure blocks.
 - **Expressions** (`expr.rs`): Things that produce values—literals, identifiers,
   binary/unary ops, calls, method calls, if/match, closures, struct literals,
@@ -209,7 +209,7 @@ it's marked `Moved`. Using it after that is an error. When a `@resource`
 binding reaches end of scope without being consumed, that's an error too.
 
 **Two access models—the key design choice:**
-- **Block-scoped** (fixed sources): `const ref = point.x` — view lasts until
+- **Block-scoped** (fixed sources): `let ref = point.x` — view lasts until
   end of block.
 - **Inline** (growable sources): `items[0]` — access for the expression only.
   Multi-statement access uses `with items[0] as v { ... }`.

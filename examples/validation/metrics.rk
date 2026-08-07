@@ -23,7 +23,7 @@ extend Metrics {
         self.total_requests += 1
         if status >= 400 { self.total_errors += 1 }
 
-        const prior = self.status_counts.get(status) ?? 0
+        let prior = self.status_counts.get(status) ?? 0
         self.status_counts.insert(status, prior + 1)
         self.latencies_ms.push(latency_ms)
     }
@@ -44,9 +44,9 @@ extend Metrics {
         mut sorted = self.latencies_ms.clone()
         sorted.sort()
 
-        const errors = self.total_errors
-        const total = self.total_requests
-        const rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+        let errors = self.total_errors
+        let total = self.total_requests
+        let rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
 
         return MetricsSummary {
             total_requests: total,
@@ -81,7 +81,7 @@ func percentile(sorted: Vec<f64>, pct: usize) -> f64 {
 const metrics = Mutex.new(Metrics.new())
 
 // Free function so the router doesn't repeat the lock. Inline `.lock()`
-// because `with metrics as m` on a module-level const doesn't unwrap in the
+// because `with metrics as m` on a module-level let doesn't unwrap in the
 // current checker (FINDINGS).
 func record_request(status: u16, latency_ms: f64) {
     metrics.lock().record(status, latency_ms)

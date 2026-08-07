@@ -53,8 +53,8 @@ what you mean with `truncate to`, `saturate to`, or `convert to T?` (CV5–CV7).
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Use explicit operations below. Int→float goes via `as` (CV1) — it rounds but never wraps or corrupts |
 
 ```rask
-const wide: i32 = narrow_val as i32   // CV1: OK, lossless
-const x: i8 = big_val as i8           // CV2: ERROR, narrowing
+let wide: i32 = narrow_val as i32   // CV1: OK, lossless
+let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 ```
 
 **Lossy conversions — explicit operations:**
@@ -86,9 +86,9 @@ const x: i8 = big_val as i8           // CV2: ERROR, narrowing
 | **CH5: No direct cast from u32** | `n as char` is a compile error — use `char.from_u32(n)` |
 
 ```rask
-const c = 'a'                              // CH2: compile-time validated
-const n: u32 = c as u32                    // CH4: lossless
-const maybe = char.from_u32(0x1F600)       // CH3: runtime validation
+let c = 'a'                              // CH2: compile-time validated
+let n: u32 = c as u32                    // CH4: lossless
+let maybe = char.from_u32(0x1F600)       // CH3: runtime validation
 ```
 
 **Methods:**
@@ -162,7 +162,7 @@ struct NetworkHeader {
     addr: u32be
 }
 
-const header = try NetworkHeader.parse(bytes)
+let header = try NetworkHeader.parse(bytes)
 mut port: u16 = header.port   // Native u16
 ```
 
@@ -194,38 +194,38 @@ mut port: u16 = header.port   // Native u16
 ```
 ERROR [type.primitives/CV2]: cannot narrow i32 to i8 with `as`
    |
-5  |  const x: i8 = big_val as i8
+5  |  let x: i8 = big_val as i8
    |                 ^^^^^^^^^^^^^ narrowing conversion not allowed
 
 WHY: `as` only permits lossless widening. Narrowing may lose data.
 
 FIX: Use an explicit conversion:
 
-  const x: i8 = big_val truncate to i8    // wraps
-  const x: i8 = big_val saturate to i8    // clamps
-  const x = big_val convert to i8?        // i8?
+  let x: i8 = big_val truncate to i8    // wraps
+  let x: i8 = big_val saturate to i8    // clamps
+  let x = big_val convert to i8?        // i8?
 ```
 
 **Direct u32-to-char cast [CH5]:**
 ```
 ERROR [type.primitives/CH5]: cannot cast u32 to char with `as`
    |
-3  |  const c = n as char
+3  |  let c = n as char
    |            ^^^^^^^^^ not all u32 values are valid Unicode scalars
 
 WHY: char must be a valid Unicode scalar value. Use runtime validation.
 
-FIX: const c = char.from_u32(n)   // returns char?
+FIX: let c = char.from_u32(n)   // returns char?
 ```
 
 **Implicit int↔bool [BL3]:**
 ```
 ERROR [type.primitives/BL3]: no implicit conversion between bool and integer
    |
-4  |  const flag: bool = 1
+4  |  let flag: bool = 1
    |                      ^ expected bool, found i32
 
-FIX: const flag: bool = n != 0
+FIX: let flag: bool = n != 0
 ```
 
 ---
@@ -244,8 +244,8 @@ Writing the `?` on the target says the same thing in the marker the language alr
 
 <!-- test: skip -->
 ```rask
-const x = big_val convert to i8?          // i8? — none if it doesn't fit
-const n = (x convert to i64?) ?? return MyError.OutOfRange
+let x = big_val convert to i8?          // i8? — none if it doesn't fit
+let n = (x convert to i64?) ?? return MyError.OutOfRange
 ```
 
 The old spelling put two unrelated `try`s in that second line. `truncate to` and `saturate to` are total, so a `?` on *their* target is a type error — the `?` is what marks a conversion as partial.

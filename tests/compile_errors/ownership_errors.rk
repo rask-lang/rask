@@ -6,9 +6,9 @@
 // --- use after move (O3) ---
 // ERROR: 'v' used after being moved
 func test_use_after_move() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     v.push(1)
-    const v2 = v
+    let v2 = v
     v.push(2)       // ERROR: v was moved to v2
 }
 
@@ -19,7 +19,7 @@ struct LargeData { values: Vec<i32> }
 func consume(take data: LargeData) {}
 
 func test_use_after_take() {
-    const data = LargeData { values: Vec.new() }
+    let data = LargeData { values: Vec.new() }
     consume(data)
     println("{data.values.len()}")   // ERROR: data was taken
 }
@@ -27,9 +27,9 @@ func test_use_after_take() {
 // --- use after move in one branch (O3 edge case) ---
 // ERROR: 'v' may have been moved
 func test_conditional_move(cond: bool) {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     if cond {
-        const v2 = v     // moved in this branch
+        let v2 = v     // moved in this branch
     }
     v.push(1)            // ERROR: v may have been moved
 }
@@ -37,9 +37,9 @@ func test_conditional_move(cond: bool) {
 // --- double move (O3) ---
 // ERROR: 'v' used after being moved
 func test_double_move() {
-    const v = Vec<i32>.new()
-    const a = v
-    const b = v          // ERROR: v already moved to a
+    let v = Vec<i32>.new()
+    let a = v
+    let b = v          // ERROR: v already moved to a
 }
 
 // --- @unique prevents copy on small types (U1) ---
@@ -69,14 +69,14 @@ func test_unique_transitive() {
 struct FileHandle { fd: i32 }
 
 func test_discard_resource() {
-    const f = FileHandle { fd: 3 }
+    let f = FileHandle { fd: 3 }
     discard f            // ERROR: @resource must be consumed, not discarded
 }
 
 // --- @resource must be consumed (R1) ---
 // ERROR: resource 'f' not consumed before scope exit
 func test_resource_leak() {
-    const f = FileHandle { fd: 3 }
+    let f = FileHandle { fd: 3 }
     // f goes out of scope without being consumed
 }
 
@@ -85,7 +85,7 @@ func test_resource_leak() {
 func close_file(take f: FileHandle) {}
 
 func test_double_consume() {
-    const f = FileHandle { fd: 3 }
+    let f = FileHandle { fd: 3 }
     close_file(f)
     close_file(f)        // ERROR: f already consumed
 }
@@ -95,7 +95,7 @@ func test_double_consume() {
 func take_vec(take v: Vec<i32>) {}
 
 func test_vec_no_copy() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     take_vec(v)
     v.push(1)            // ERROR: v was taken
 }

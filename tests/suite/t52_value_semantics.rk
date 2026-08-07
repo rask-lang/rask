@@ -59,8 +59,8 @@ test "mem.value/VS1 — large struct clone is independent" {
 // --- 16-byte tuple is Copy: both bindings usable (VS1, VS6) ---
 
 test "mem.value/VS6 — 16-byte tuple copies, both readable" {
-    const t = (100i64, 200i64)
-    const u = t
+    let t = (100i64, 200i64)
+    let u = t
     assert t.0 == 100
     assert u.1 == 200
 }
@@ -68,8 +68,8 @@ test "mem.value/VS6 — 16-byte tuple copies, both readable" {
 // --- >16-byte struct moves; the new binding owns the value (mem.ownership/O2) ---
 
 test "mem.ownership/O2 — large struct moves to new binding" {
-    const a = Big { a: 5, b: 6, c: 7, d: 8 }
-    const b = a
+    let a = Big { a: 5, b: 6, c: 7, d: 8 }
+    let b = a
     assert b.a == 5
     assert b.d == 8
 }
@@ -77,7 +77,7 @@ test "mem.ownership/O2 — large struct moves to new binding" {
 // --- Clone before mutation keeps the source intact across a mutating helper ---
 
 test "mem.value/VS1 — clone survives independent mutation of the copy" {
-    const original = Big { a: 10, b: 20, c: 30, d: 40 }
+    let original = Big { a: 10, b: 20, c: 30, d: 40 }
     mut working = original.clone()
     working.a = 111
     working.d = 444
@@ -101,7 +101,7 @@ func bump_local(p: Point) -> i32 {
 }
 
 test "mem.value/VS1 — implicit mut-binding copy is independent" {
-    const a = Point { x: 1, y: 2 }
+    let a = Point { x: 1, y: 2 }
     mut b = a
     b.x = 99
     assert a.x == 1
@@ -110,7 +110,7 @@ test "mem.value/VS1 — implicit mut-binding copy is independent" {
 
 test "mem.value/VS1 — assignment copies, source untouched" {
     mut c = Point { x: 5, y: 6 }
-    const d = Point { x: 7, y: 8 }
+    let d = Point { x: 7, y: 8 }
     c = d
     c.x = 100
     assert d.x == 7
@@ -118,15 +118,15 @@ test "mem.value/VS1 — assignment copies, source untouched" {
 
 test "mem.value/VS1 — struct literal captures a copy of each field source" {
     mut p = Point { x: 3, y: 4 }
-    const ln = Line { a: p, b: p }
+    let ln = Line { a: p, b: p }
     p.x = 99                // mutate the source after construction
     assert ln.a.x == 3      // the literal captured a copy, not a reference
     assert ln.b.x == 3
 }
 
 test "mem.value/VS1 — by-value param is a copy of the argument" {
-    const src = Point { x: 7, y: 8 }
-    const got = bump_local(src)
+    let src = Point { x: 7, y: 8 }
+    let got = bump_local(src)
     assert got == 99
     assert src.x == 7
 }

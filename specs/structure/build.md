@@ -222,7 +222,7 @@ profile "embedded" {
 ```rask
 func build(ctx: BuildContext) -> void or Error {
     try ctx.declare_dependency("schema.json")
-    const schema = try fs.read_text("schema.json")
+    let schema = try fs.read_text("schema.json")
     try ctx.write_source("types.rk", generate_types(schema))
 }
 ```
@@ -279,7 +279,7 @@ struct BuildContext {
 ```rask
 func build(ctx: BuildContext) -> void or Error {
     try ctx.step("codegen", inputs: ["schema.json"], || {
-        const schema = try fs.read_text("schema.json")
+        let schema = try fs.read_text("schema.json")
         try ctx.write_source("types.rk", generate_types(schema))
     })
 
@@ -729,7 +729,7 @@ func build(ctx: BuildContext) -> void or Error {
 ```rask
 @test
 func roundtrip_codegen() -> bool {
-    const output = generate_types('{"name": "string"}')
+    let output = generate_types('{"name": "string"}')
     assert output.contains("name: string")
     return true
 }

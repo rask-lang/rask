@@ -110,18 +110,18 @@ extend Opcode {
 // Pack fields into a 32-bit value
 
 func encode_abc(op: Opcode, a: i64, b: i64, c: i64) -> u32 {
-    const o = op as i64
+    let o = op as i64
     return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | (b & 0xFF) << 8 | c & 0xFF) as u32
 }
 
 func encode_abx(op: Opcode, a: i64, bx: i64) -> u32 {
-    const o = op as i64
+    let o = op as i64
     return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | bx & 0xFFFF) as u32
 }
 
 func encode_asbx(op: Opcode, a: i64, sbx: i64) -> u32 {
-    const o = op as i64
-    const biased = sbx + 32768 & 0xFFFF
+    let o = op as i64
+    let biased = sbx + 32768 & 0xFFFF
     return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | biased) as u32
 }
 
@@ -159,17 +159,17 @@ func decode_sbx(instr: u32) -> i64 {
 // Prints a human-readable representation of a single instruction
 
 func disassemble_instr(instr: u32, offset: i64) -> string {
-    const op = decode_opcode(instr) ?? return "{offset}: UNKNOWN"
-    const a = decode_a(instr)
-    const name = op.name()
+    let op = decode_opcode(instr) ?? return "{offset}: UNKNOWN"
+    let a = decode_a(instr)
+    let name = op.name()
 
     match op {
         Opcode.LOAD_TRUE | Opcode.LOAD_FALSE | Opcode.LOAD_NONE | Opcode.RETURN => {
             return "{offset}: {name} r{a}"
         }
         Opcode.LOAD_INT => {
-            const bx = decode_bx(instr)
-            const val = if bx >= 32768 {
+            let bx = decode_bx(instr)
+            let val = if bx >= 32768 {
                 bx - 65536
             } else {
                 bx
@@ -177,16 +177,16 @@ func disassemble_instr(instr: u32, offset: i64) -> string {
             return "{offset}: {name} r{a} {val}"
         }
         Opcode.LOAD_CONST | Opcode.FUNC_REF => {
-            const bx = decode_bx(instr)
+            let bx = decode_bx(instr)
             return "{offset}: {name} r{a} #{bx}"
         }
         Opcode.JMP | Opcode.JMP_IF | Opcode.JMP_IF_NOT | Opcode.YIELD | Opcode.TRY => {
-            const sbx = decode_sbx(instr)
+            let sbx = decode_sbx(instr)
             return "{offset}: {name} r{a} {sbx}"
         }
         _ => {
-            const b = decode_b(instr)
-            const c = decode_c(instr)
+            let b = decode_b(instr)
+            let c = decode_c(instr)
             return "{offset}: {name} r{a} r{b} r{c}"
         }
     }

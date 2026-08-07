@@ -19,7 +19,7 @@ extend Tx {
 // --- Consumed in an if-without-else, then paths merge (C4) ---
 // ERROR: consumption of 'tx' depends on which path ran
 func maybe_consume_if(fast: bool) {
-    const tx = Tx { id: 1 }
+    let tx = Tx { id: 1 }
     ensure tx.rollback()
 
     if fast {
@@ -32,7 +32,7 @@ func maybe_consume_if(fast: bool) {
 // --- Consumed in one match arm only, arms merge (C4) ---
 // ERROR: consumption of 'tx' depends on which path ran
 func maybe_consume_match(n: i32) {
-    const tx = Tx { id: 2 }
+    let tx = Tx { id: 2 }
     ensure tx.rollback()
 
     match n {
@@ -44,7 +44,7 @@ func maybe_consume_match(n: i32) {
 // --- Consumed inside a nested block, then merge (C4) ---
 // ERROR: consumption of 'tx' depends on which path ran
 func maybe_consume_nested(fast: bool) {
-    const tx = Tx { id: 3 }
+    let tx = Tx { id: 3 }
     ensure tx.rollback()
 
     if fast {
@@ -52,7 +52,7 @@ func maybe_consume_nested(fast: bool) {
             tx.commit()
         }
     }
-    const done = 1
+    let done = 1
 }
 
 func main() {}

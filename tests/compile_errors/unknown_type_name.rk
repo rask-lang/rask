@@ -19,6 +19,6 @@ func fetch() -> Recod {
 }
 
 func main() {
-    const x = load(Config { port: 8080 })
+    let x = load(Config { port: 8080 })
     println("{x}")
 }

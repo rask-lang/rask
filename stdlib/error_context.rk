@@ -18,7 +18,7 @@ extend ContextError {
 /// Wrap any error with a context message, stringifying the source.
 ///
 /// Intended for use with `try...else`:
-///     const text = try fs.read_text(path) else |e| context("reading {path}", e)
+///     let text = try fs.read_text(path) else |e| context("reading {path}", e)
 public func context<E: ErrorMessage>(msg: string, err: E) -> ContextError {
     return ContextError { context: msg, source: err.message() }
 }

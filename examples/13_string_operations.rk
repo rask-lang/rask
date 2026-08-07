@@ -3,7 +3,7 @@
 
 func main() {
     // Basic string creation
-    const greeting = "Hello, Rask!"
+    let greeting = "Hello, Rask!"
     print("Original: ")
     print(greeting)
     print("\n\n")
@@ -14,8 +14,8 @@ func main() {
     print("\n\n")
 
     // Case conversion
-    const lower = greeting.to_lowercase()
-    const upper = greeting.to_uppercase()
+    let lower = greeting.to_lowercase()
+    let upper = greeting.to_uppercase()
 
     print("Lowercase: ")
     print(lower)
@@ -26,28 +26,28 @@ func main() {
     print("\n\n")
 
     // Trimming whitespace
-    const messy = "   spaces everywhere   "
+    let messy = "   spaces everywhere   "
     print("Original: '")
     print(messy)
     print("'\n")
 
-    const trimmed = messy.trim().to_string()
+    let trimmed = messy.trim().to_string()
     print("Trimmed: '")
     print(trimmed)
     print("'\n")
 
-    const trim_start = messy.trim_start().to_string()
+    let trim_start = messy.trim_start().to_string()
     print("Trim start: '")
     print(trim_start)
     print("'\n")
 
-    const trim_end = messy.trim_end().to_string()
+    let trim_end = messy.trim_end().to_string()
     print("Trim end: '")
     print(trim_end)
     print("'\n\n")
 
     // Checking content
-    const text = "The quick brown fox"
+    let text = "The quick brown fox"
 
     if text.contains("quick") {
         print("Contains 'quick'\n")
@@ -63,8 +63,8 @@ func main() {
     print("\n")
 
     // Splitting strings
-    const sentence = "one two three four five"
-    const words = sentence.split_whitespace().collect()
+    let sentence = "one two three four five"
+    let words = sentence.split_whitespace().collect()
 
     print("Words: ")
     for word in words.iter() {
@@ -75,8 +75,8 @@ func main() {
     print("\n\n")
 
     // Split by delimiter
-    const csv = "apple,banana,orange,grape"
-    const fruits = csv.split(",").collect()
+    let csv = "apple,banana,orange,grape"
+    let fruits = csv.split(",").collect()
 
     print("Fruits: ")
     for fruit in fruits.iter() {
@@ -86,9 +86,9 @@ func main() {
     print("\n\n")
 
     // String slicing
-    const full = "Hello, World!"
-    const slice1 = full[0..5].to_string()    // "Hello"
-    const slice2 = full[7..].to_string()     // "World!"
+    let full = "Hello, World!"
+    let slice1 = full[0..5].to_string()    // "Hello"
+    let slice2 = full[7..].to_string()     // "World!"
 
     print("Slice [0..5]: ")
     print(slice1)
@@ -99,23 +99,23 @@ func main() {
     print("\n\n")
 
     // String interpolation
-    const name = "Alice"
-    const age = 30
-    const formatted = "Name: {name}, Age: {age}"
+    let name = "Alice"
+    let age = 30
+    let formatted = "Name: {name}, Age: {age}"
 
     print(formatted)
     print("\n\n")
 
     // Multiple interpolated values
-    const x = 10
-    const y = 20
-    const msg = "Point ({x}, {y})"
+    let x = 10
+    let y = 20
+    let msg = "Point ({x}, {y})"
     print(msg)
     print("\n\n")
 
     // Parsing strings to numbers
-    const num_str = "42"
-    const parsed = num_str.parse<i32>()
+    let num_str = "42"
+    let parsed = num_str.parse<i32>()
 
     if parsed? {
         print("Parsed number: ")
@@ -128,8 +128,8 @@ func main() {
     }
 
     // Parsing with error handling
-    const bad_str = "not a number"
-    const bad_parsed = bad_str.parse<i32>()
+    let bad_str = "not a number"
+    let bad_parsed = bad_str.parse<i32>()
 
     if bad_parsed? {
         print("This shouldn't happen\n")
@@ -142,16 +142,16 @@ func main() {
     print("\n")
 
     // String concatenation
-    const first = "Hello"
-    const second = "World"
-    const combined = "{first} {second}"
+    let first = "Hello"
+    let second = "World"
+    let combined = "{first} {second}"
 
     print("Combined: ")
     print(combined)
     print("\n\n")
 
     // Working with individual characters
-    const alpha = "abc"
+    let alpha = "abc"
     print("Iterating chars: ")
     for c in alpha.chars() {
         print(c)
@@ -160,8 +160,8 @@ func main() {
     print("\n\n")
 
     // String replacement
-    const original = "foo bar foo"
-    const replaced = original.replace("foo", "baz")
+    let original = "foo bar foo"
+    let replaced = original.replace("foo", "baz")
 
     print("Original: ")
     print(original)
@@ -172,8 +172,8 @@ func main() {
     print("\n\n")
 
     // Repeating strings
-    const pattern = "ab"
-    const repeated = pattern.repeat(3)
+    let pattern = "ab"
+    let repeated = pattern.repeat(3)
 
     print("Repeated: ")
     print(repeated)

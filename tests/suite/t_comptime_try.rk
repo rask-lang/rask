@@ -22,12 +22,12 @@ comptime func parse_fail() -> i64 or Bad {
 }
 
 func run_ok() -> i64 or Bad {
-    const v = try comptime parse_ok()
+    let v = try comptime parse_ok()
     return v
 }
 
 func run_fail() -> i64 or Bad {
-    const v = try comptime parse_fail()
+    let v = try comptime parse_fail()
     return v
 }
 

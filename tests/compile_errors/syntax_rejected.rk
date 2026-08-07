@@ -15,17 +15,17 @@ fn bad_func(a: i32) -> i32 { return a }
 // --- Rust-ism: `::` path separator ---
 // ERROR: unexpected '::', use '.' for path access
 func test_double_colon() {
-    const x = Result::Ok(42)
+    let x = Result::Ok(42)
 }
 
-// --- Rust-ism: `let` ---
-// ERROR: 'let' is not a keyword — use 'mut' or 'const'
-func test_let() {
-    let x = 0
+// --- `const` in a function body ---
+// ERROR: 'const' is only for module-level constants — use 'let'
+func test_const_in_body() {
+    const x = 0
 }
 
 // --- Rust-ism: `let mut` ---
-// ERROR: 'let' is not a keyword — use 'mut' directly
+// ERROR: 'let mut' is not Rask — use 'mut' directly
 func test_let_mut() {
     let mut x = 0
 }
@@ -39,13 +39,13 @@ impl Point {
 // --- Rust-ism: turbofish `::<T>` ---
 // ERROR: unexpected '::<', use 'Type<T>' without '::'
 func test_turbofish() {
-    const v = Vec::<i32>.new()
+    let v = Vec::<i32>.new()
 }
 
 // --- Rust-ism: `?` for error propagation ---
 // ERROR: unexpected '?', use 'try' for error propagation
 func test_question_mark() -> i32 or string {
-    const x = might_fail()?
+    let x = might_fail()?
     return x
 }
 
@@ -59,23 +59,23 @@ func test_ref(x: &i32) -> i32 {
 // Match arms should use commas as separators (per SYNTAX.md examples).
 // Newlines also work as terminators, but missing both is ambiguous.
 
-// --- const reassignment (SYNTAX.md) ---
-// ERROR: cannot reassign 'const' binding
-func test_const_reassign() {
-    const x = 42
+// --- let reassignment (SYNTAX.md) ---
+// ERROR: cannot reassign 'let' binding
+func test_let_reassign() {
+    let x = 42
     x = 43
 }
 
 // --- missing return in non-unit function ---
 // ERROR: function 'bad_return' must return i32
 func bad_return() -> i32 {
-    const x = 42
+    let x = 42
 }
 
 // --- comparison chaining (P2) ---
 // ERROR: comparison operators cannot be chained
 func test_chained_comparison() {
-    const x = 1 < 2 < 3
+    let x = 1 < 2 < 3
 }
 
 struct Point { x: i32, y: i32 }

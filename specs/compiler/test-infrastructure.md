@@ -370,7 +370,7 @@ Every error type must have a test verifying the message format.
 ```rust
 #[test]
 fn error_message_format() {
-    let source = "func f() { const x: i32 = \"hello\" }";
+    let source = "func f() { let x: i32 = \"hello\" }";
     let result = type_check(source);
 
     assert!(result.is_err());
@@ -553,8 +553,8 @@ When spec tests fail:
 ERROR: Spec test failed in specs/memory/borrowing.md:42
 
 Source:
-  const x = vec![1, 2, 3]
-  const y = x
+  let x = vec![1, 2, 3]
+  let y = x
   x.push(4)  // ERROR expected
 
 Expected: compile-fail

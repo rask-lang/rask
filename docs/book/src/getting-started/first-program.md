@@ -30,15 +30,15 @@ Let's try variables:
 
 ```rask
 func main() {
-    const name = "Rask"
-    const year = 2026
+    let name = "Rask"
+    let year = 2026
     println(format("Hello from {} in {}!", name, year))
 }
 ```
 
-- `const` creates a permanent binding — the name can't be reassigned, but the value is still mutable
+- `let` creates a permanent binding — the name can't be reassigned, but the value is still mutable
 - `let` creates a rebindable name (for values you'll reassign)
-- Types are inferred, but you can write them explicitly: `const year: i64 = 2025`
+- Types are inferred, but you can write them explicitly: `let year: i64 = 2025`
 
 ## Functions
 
@@ -60,7 +60,7 @@ func add(a: i32, b: i32) -> i32 {
 }
 
 func main() {
-    const result = add(2, 3)
+    let result = add(2, 3)
     println(format("2 + 3 = {}", result))
 }
 ```

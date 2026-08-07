@@ -22,7 +22,7 @@ struct Reversed {
 func main() {}
 
 test "fields come out in declaration order, not alphabetical" {
-    const out = json.encode(Person { name: "ann", age: 3 })
+    let out = json.encode(Person { name: "ann", age: 3 })
     if out.find("name")? as name_at {
         if out.find("age")? as age_at {
             assert name_at < age_at
@@ -35,7 +35,7 @@ test "fields come out in declaration order, not alphabetical" {
 }
 
 test "declaration order wins even when it is reverse-alphabetical" {
-    const out = json.encode(Reversed { zeta: 1, alpha: 2 })
+    let out = json.encode(Reversed { zeta: 1, alpha: 2 })
     if out.find("zeta")? as zeta_at {
         if out.find("alpha")? as alpha_at {
             assert zeta_at < alpha_at

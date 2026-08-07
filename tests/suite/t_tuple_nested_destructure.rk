@@ -11,38 +11,38 @@ func pairs() -> ((i64, i64), string) {
 }
 
 test "nested tuple pattern" {
-    const t = ((1, 2), 3)
-    const ((a, b), c) = t
+    let t = ((1, 2), 3)
+    let ((a, b), c) = t
     assert a == 1
     assert b == 2
     assert c == 3
 }
 
 test "nested on the right" {
-    const (m, (n, o)) = (1, (2, 3))
+    let (m, (n, o)) = (1, (2, 3))
     assert m == 1
     assert n == 2
     assert o == 3
 }
 
 test "wildcard doesn't shift the elements after it" {
-    const (p, _, r) = (7, 8, 9)
+    let (p, _, r) = (7, 8, 9)
     assert p == 7
     assert r == 9
 }
 
 test "string element of a tuple" {
-    const t = (5, "yo")
+    let t = (5, "yo")
     assert t.0 == 5
     assert t.1 == "yo"
-    const (n, s) = (7, "a fairly long string here")
+    let (n, s) = (7, "a fairly long string here")
     assert n == 7
     assert s == "a fairly long string here"
     assert s.len() == 25
 }
 
 test "nested pattern against a returned tuple" {
-    const ((x, y), s) = pairs()
+    let ((x, y), s) = pairs()
     assert x == 10
     assert y == 20
     assert s == "a fairly long string here"

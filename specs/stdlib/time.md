@@ -71,9 +71,9 @@ time.sleep(duration: Duration) -> void or SysError
 ```rask
 import time
 
-const start = time.Instant.now()
+let start = time.Instant.now()
 expensive_operation()
-const elapsed = start.elapsed()
+let elapsed = start.elapsed()
 
 time.sleep(time.Duration.millis(16))
 ```
@@ -127,15 +127,15 @@ enum TimeError {
 ```rask
 import time
 
-const now = time.SystemTime.now()
-const timestamp = now.unix_seconds()      // 1709251200
-const millis = now.unix_millis()          // 1709251200000
+let now = time.SystemTime.now()
+let timestamp = now.unix_seconds()      // 1709251200
+let millis = now.unix_millis()          // 1709251200000
 
 // Reconstruct from stored timestamp
-const restored = time.SystemTime.from_unix_seconds(timestamp)
+let restored = time.SystemTime.from_unix_seconds(timestamp)
 
 // Duration since epoch
-const since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
+let since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
 ```
 
 ## Arithmetic and Comparison
@@ -157,25 +157,25 @@ Arithmetic is native integer ops on nanosecond values. No overflow checking (wra
 ```rask
 import time
 
-const start = time.Instant.now()
+let start = time.Instant.now()
 time.sleep(time.Duration.millis(10))
-const end = time.Instant.now()
+let end = time.Instant.now()
 
-const elapsed = end - start           // Duration
-const later = start + elapsed         // Instant
-const d2 = elapsed + elapsed          // Duration
-const before = end > start            // true
+let elapsed = end - start           // Duration
+let later = start + elapsed         // Instant
+let d2 = elapsed + elapsed          // Duration
+let before = end > start            // true
 
 // Duration scaling
-const frame = time.Duration.millis(16)
-const half = frame / 2                // 8ms
-const triple = frame * 3              // 48ms
-const five = 5 * frame                // 80ms
-const ratio = triple / frame          // 3
+let frame = time.Duration.millis(16)
+let half = frame / 2                // 8ms
+let triple = frame * 3              // 48ms
+let five = 5 * frame                // 80ms
+let ratio = triple / frame          // 3
 
 // SystemTime arithmetic
-const now = time.SystemTime.now()
-const tomorrow = now + time.Duration.seconds(86400)
+let now = time.SystemTime.now()
+let tomorrow = now + time.Duration.seconds(86400)
 ```
 
 ## Edge Cases

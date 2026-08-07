@@ -32,7 +32,7 @@ In C++, `auto result = greeting + " " + name` creates two temporary strings and 
 Rask doesn't do this. Large values move, not copy. If you want a copy, you write `.clone()`. Operators don't allocate behind your back. When something is expensive, you can see it in the code:
 
 ```rask
-const items = user.inventory.clone()            // explicit: this copies
+let items = user.inventory.clone()            // explicit: this copies
 process(own user)                               // explicit: ownership transferred
 ```
 
@@ -82,8 +82,8 @@ fn save_user(db: &mut Database, name: &str) -> Result<UserId, Error> {
 ```rask
 // Rask
 func save_user(mutate db: Database, name: string) -> UserId or Error {
-    const id = try db.next_id()
-    const user = User.new(id, name)
+    let id = try db.next_id()
+    let user = User.new(id, name)
     try db.insert(user)
     return id
 }
@@ -105,10 +105,10 @@ Forget to close a file? Compile error. I/O handles must be consumed exactly once
 
 ```rask
 func process(path: string) -> Stats or Error {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()
 
-    const data = try file.read_to_string()
+    let data = try file.read_to_string()
     return parse_stats(data)
     // file.close() runs here, guaranteed
 }

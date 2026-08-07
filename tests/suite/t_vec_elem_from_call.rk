@@ -3,7 +3,7 @@
 // or the loop variable is typed i64 and Vec_get's scalar deref reads the
 // element's first 8 bytes as a pointer (#478).
 //
-// Annotated bindings always worked; `const rows = build()` did not.
+// Annotated bindings always worked; `let rows = build()` did not.
 
 struct Inner { public n: u64 }
 
@@ -27,7 +27,7 @@ extend Holder {
 }
 
 test "codegen — iterate a Vec of aggregates returned from a function" {
-    const rows = build()
+    let rows = build()
     assert rows.len() == 2
     mut total = 0
     for r in rows {
@@ -37,7 +37,7 @@ test "codegen — iterate a Vec of aggregates returned from a function" {
 }
 
 test "codegen — nested aggregate field survives the same round trip" {
-    const rows = build()
+    let rows = build()
     mut ids = 0
     for r in rows {
         ids += r.inner.n truncate to i64
@@ -46,8 +46,8 @@ test "codegen — nested aggregate field survives the same round trip" {
 }
 
 test "codegen — same through a method return" {
-    const h = Holder.new()
-    const rows = h.take()
+    let h = Holder.new()
+    let rows = h.take()
     assert rows.len() == 2
     mut total = 0
     for r in rows {

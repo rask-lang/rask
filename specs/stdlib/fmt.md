@@ -36,8 +36,8 @@
 
 <!-- test: parse -->
 ```rask
-const hex = format("0x{:08X}", 0xDEAD)
-const table = format("{:<10} {:>8}", "Name", "Score")
+let hex = format("0x{:08X}", 0xDEAD)
+let table = format("{:<10} {:>8}", "Name", "Score")
 ```
 
 ## Displayable Trait
@@ -96,7 +96,7 @@ extend AppError {
 ```rask
 struct Point { x: f64, y: f64 }
 
-const p = Point { x: 1.0, y: 2.0 }
+let p = Point { x: 1.0, y: 2.0 }
 println(format("{:debug}", p))    // Point { x: 1.0, y: 2.0 }
 ```
 
@@ -110,10 +110,10 @@ println(format("{:debug}", p))    // Point { x: 1.0, y: 2.0 }
 
 <!-- test: skip -->
 ```rask
-const name = "world"
+let name = "world"
 println("Hello, {name}!")              // Hello, world!
 
-const point = Point { x: 1.0, y: 2.0 }
+let point = Point { x: 1.0, y: 2.0 }
 println("Position: {point.x}, {point.y}")
 ```
 
@@ -230,7 +230,7 @@ mut b = StringBuilder.with_capacity(1024)
 for item in items {
     b.push("{item.name}: {item.value}\n")
 }
-const report = b.build()
+let report = b.build()
 ```
 
 ### Integration

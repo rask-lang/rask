@@ -18,11 +18,11 @@ func take_vec(take v: Vec<i32>) {}
 // --- Use after move in one if/else branch (O3) ---
 // ERROR: 'v' may have been moved
 func move_one_branch_ifelse(cond: bool) {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     if cond {
-        const moved = v
+        let moved = v
     } else {
-        const x = 1
+        let x = 1
     }
     v.len()            // ERROR: v moved on the then-branch
 }
@@ -30,9 +30,9 @@ func move_one_branch_ifelse(cond: bool) {
 // --- Use after move in an if-without-else (O3, #294) ---
 // ERROR: 'v' may have been moved
 func move_one_branch_ifnoelse(cond: bool) {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     if cond {
-        const moved = v
+        let moved = v
     }
     v.len()            // ERROR: v moved when cond was true
 }
@@ -40,18 +40,18 @@ func move_one_branch_ifnoelse(cond: bool) {
 // --- Linear resource consumed in one if/else branch only (L1) ---
 // ERROR: resource 'c' must be consumed before scope exit
 func resource_one_branch_ifelse(cond: bool) {
-    const c = Conn { fd: 3 }
+    let c = Conn { fd: 3 }
     if cond {
         c.close()
     } else {
-        const x = 1
+        let x = 1
     }
 }                      // ERROR: else branch leaks c
 
 // --- Linear resource consumed in an if-without-else (L1, #294) ---
 // ERROR: resource 'c' must be consumed before scope exit
 func resource_one_branch_ifnoelse(cond: bool) {
-    const c = Conn { fd: 3 }
+    let c = Conn { fd: 3 }
     if cond {
         c.close()
     }
@@ -60,7 +60,7 @@ func resource_one_branch_ifnoelse(cond: bool) {
 // --- Move inside a loop body: use-after-move on the next iteration (O3) ---
 // ERROR: 'v' may have been moved
 func move_in_loop() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     loop {
         take_vec(own v)   // ERROR: v already moved on the previous iteration
     }

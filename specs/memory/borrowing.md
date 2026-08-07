@@ -41,7 +41,7 @@ func process(items: Vec<Item>) {
     // items: borrowed for entire function
     // items[0].field: inline access, temporary borrow for the expression
 
-    const first = items[0].name   // Copy out if Copy, temporary borrow if not
+    let first = items[0].name   // Copy out if Copy, temporary borrow if not
     items.push(new_item)          // OK: no view held
 }
 ```
@@ -60,9 +60,9 @@ Views into fixed sources (struct fields, arrays) persist until the block ends.
 
 <!-- test: skip -->
 ```rask
-const point = get_point()
-const x = point.x               // View, valid until block ends
-const y = point.y               // Another view
+let point = get_point()
+let x = point.x               // View, valid until block ends
+let y = point.y               // Another view
 validate(x)                    // OK: x still valid
 process(x, y)                  // OK: both valid
 ```
@@ -70,11 +70,11 @@ process(x, y)                  // OK: both valid
 **Duration extension (S4):**
 <!-- test: skip -->
 ```rask
-const x = get_point().x         // OK: temporary extended
+let x = get_point().x         // OK: temporary extended
 
 // Equivalent to:
-const _temp = get_point()
-const x = _temp.x
+let _temp = get_point()
+let x = _temp.x
 // _temp lives as long as x
 ```
 
@@ -82,8 +82,8 @@ Every temporary in the chain that the borrow transitively depends on is extended
 
 <!-- test: compile-fail -->
 ```rask
-const x = {
-    const p = get_point()
+let x = {
+    let p = get_point()
     p.x  // ERROR: p dies at block end
 }
 // x would outlive p
@@ -92,21 +92,21 @@ const x = {
 **String slices are temporary (S2):**
 <!-- test: compile-fail -->
 ```rask
-const s = "hello world"
-const slice = s[0..5]    // ERROR: string slices can't be stored
+let s = "hello world"
+let slice = s[0..5]    // ERROR: string slices can't be stored
 ```
 
 String slices are temporary views into the string's buffer — storing one directly would create a dangling reference if the source string is freed. Convert to a storable form: `.view()` (zero-copy, refcounted), `.to_string()` (independent copy), or `Span` indices:
 <!-- test: skip -->
 ```rask
-const s = "hello world"
-const v = s[0..5].view()           // zero-copy view, keeps s's buffer alive
+let s = "hello world"
+let v = s[0..5].view()           // zero-copy view, keeps s's buffer alive
 process(v)
 
-const owned = s[0..5].to_string()  // copy to independent string
+let owned = s[0..5].to_string()  // copy to independent string
 process(owned)
 
-const span = Span(0, 5)            // or store indices
+let span = Span(0, 5)            // or store indices
 process(s[span])                   // resolve inline
 ```
 
@@ -119,7 +119,7 @@ Single-expression access to collection elements works inline. The compiler creat
 | **E1: Expression duration** | Inline access valid only within the expression |
 | **E2: Chain calls OK** | `pool[h].field.method()` is one expression |
 | **E3: Lvalue in-place** | `collection[key].field = value` is in-place mutation, not copy-modify-discard |
-| **E4: Rvalue copies or errors** | `const x = collection[key]` copies if Copy, compile error if not |
+| **E4: Rvalue copies or errors** | `let x = collection[key]` copies if Copy, compile error if not |
 | **E5: Sync inline access** | `shared.read().chain`, `shared.write().chain`, and `mutex.lock().chain` follow E1-E4 rules. Lock held for expression duration, released at expression end. Standalone `.read()`/`.write()`/`.lock()` without chaining is a compile error |
 
 <!-- test: skip -->
@@ -129,7 +129,7 @@ if pool[h].health <= 0 {     // New inline access
     pool.remove(h)           // No active borrow - OK
 }
 
-const hp = pool[h].health    // Copy out i32 (E4, Copy type)
+let hp = pool[h].health    // Copy out i32 (E4, Copy type)
 process(pool[h].name)        // Temporary borrow for call duration (E1)
 pool[h].pos.normalize()      // Method chain (E2)
 ```
@@ -137,8 +137,8 @@ pool[h].pos.normalize()      // Method chain (E2)
 **Sync primitive inline access (E5):**
 <!-- test: skip -->
 ```rask
-const timeout = config.read().timeout           // Copy out (E4)
-const name = config.read().user.name             // Copy out (string is Copy)
+let timeout = config.read().timeout           // Copy out (E4)
+let name = config.read().user.name             // Copy out (string is Copy)
 config.write().timeout = 60.seconds             // In-place mutation (E3)
 queue.lock().push(item)                         // Mutex inline access
 
@@ -149,7 +149,7 @@ with config.write() as c {
 }
 ```
 
-For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone()` or `with` for multi-statement access.
+For non-Copy types, `let x = collection[key]` is a compile error. Use `.clone()` or `with` for multi-statement access.
 
 An inline sync write is at most one store: if the right-hand side panics, the lock releases with nothing written (`ctrl.panic/U4`), so a single inline assignment can't leave a multi-field invariant half-done. A method call in the chain can still panic mid-mutation — that's `ctrl.panic/LK3`, same as anywhere.
 
@@ -167,7 +167,7 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | **W2d: Pool clear forbidden** | `pool.clear()` is always a compile error inside `with` — invalidates everything |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
-| **W5: Mutable binding** | `with` bindings are always mutable. Read-only access is enforced by the source (e.g., `shared.read()` prevents mutation). Compiler warns when binding is never mutated |
+| **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), frozen pool contexts reject writes (mem.pools/PF5), and plain reads use inline access |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
 | **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
 
@@ -200,7 +200,7 @@ with pool[h1] as e1, pool[h2] as e2 {
 }
 
 // Expression context — produces a value
-const name = with pool[h] as entity { entity.name }
+let name = with pool[h] as entity { entity.name }
 
 // One-liner shorthand
 with pool[h] as e: e.health -= 10
@@ -237,7 +237,7 @@ with pool[h] as entity {
     pool[other_h].last_attacker = h         // OK: inline write to other element
 
     // Pool-specific: insert and remove(other) are allowed
-    const ally = pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
+    let ally = pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
     entity.allies.push(ally)                // entity still valid after insert
     pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
 }
@@ -281,7 +281,7 @@ for mutate entity in pool {
 }
 
 // Handle collection (for structural mutation like remove)
-const handles = pool.handles().collect()
+let handles = pool.handles().collect()
 for h in handles {
     with pool[h] as e { e.update() }
 }
@@ -289,16 +289,16 @@ for h in handles {
 
 ### Unified `with` across container types
 
-One syntax for all container types that hold values behind indirection. Bindings are always mutable — read-only access is enforced by the source.
+One syntax for all container types that hold values behind indirection. Bindings are mutable; read-only access is a property of the source.
 
 | Container | Access | Read-only access |
 |-----------|--------|------------------|
-| Pool/Vec/Map | `with pool[h] as e { ... }` | — (just don't mutate) |
-| Cell | `with cell as v { ... }` | — (just don't mutate) |
-| Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` (mutation is compile error) |
-| Mutex | `with mutex as v { ... }` | — (always exclusive) |
+| Pool/Vec/Map | `with pool[h] as e { ... }` | frozen pool context (PF5), or inline reads |
+| Cell | `with cell as v { ... }` | — (exclusive by design) |
+| Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
+| Mutex | `with mutex as v { ... }` | — (lock is exclusive) |
 
-Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. For all other types, `with` gives mutable access. The compiler warns if a binding is never mutated (consider whether you need the `with` block at all, or use `.read()` for Shared).
+Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 
 See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.
 
@@ -389,7 +389,7 @@ Error messages use value-based framing. No "statement-scoped" or "view released 
 ```
 ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
    |
-5  |  const entity = pool[h]
+5  |  let entity = pool[h]
    |               ^^^^^^^ Entity is not Copy
 6  |  entity.update()
    |  ^^^^^^ cannot use — element was not copied out
@@ -404,14 +404,14 @@ FIX: Use with for multi-statement access:
   }
 
   // Or clone if you need an independent copy:
-  const entity = pool[h].clone()
+  let entity = pool[h].clone()
 ```
 
 **Storing view from string [B2]:**
 ```
 ERROR [mem.borrowing/B2]: cannot store string slice
    |
-3  |  const slice = line[0..5]
+3  |  let slice = line[0..5]
    |                ^^^^^^^^^^ string slices can't be stored
 
 WHY: String slices are temporary views without their own refcount.
@@ -419,15 +419,15 @@ WHY: String slices are temporary views without their own refcount.
 
 FIX 1: Store a zero-copy view (keeps line's buffer alive):
 
-  const view = line[0..5].view()
+  let view = line[0..5].view()
 
 FIX 2: Copy to an independent string:
 
-  const copy = line[0..5].to_string()
+  let copy = line[0..5].to_string()
 
 FIX 3: Store indices:
 
-  const span = Span(0, 5)
+  let span = Span(0, 5)
   process(line[span])
 ```
 
@@ -464,7 +464,7 @@ WHY: Removing the bound element frees its memory. The binding would dangle.
 
 FIX: Move the removal outside the with block:
 
-  const should_remove = with pool[h] as e { e.health -= 10; e.health <= 0 }
+  let should_remove = with pool[h] as e { e.health -= 10; e.health <= 0 }
   if should_remove { pool.remove(h) }
 ```
 
@@ -481,7 +481,7 @@ FIX: Move the removal outside the with block:
 | Borrow of clone | — | Borrows the new copy, not original |
 | Inline access in method chain | E2 | Access spans entire chain |
 | `collection[key].field = value` | E3 | In-place lvalue mutation |
-| `const x = collection[key]` (non-Copy) | E4 | Compile error |
+| `let x = collection[key]` (non-Copy) | E4 | Compile error |
 | `shared.read().field` | E5 | Expression-scoped read lock, same as E1-E4 |
 | `shared.write().field = value` | E5 | Expression-scoped write lock, in-place mutation |
 | `mutex.lock().field` | E5 | Expression-scoped exclusive lock |
@@ -509,7 +509,7 @@ FIX: Move the removal outside the with block:
 | Types | Struct fields, arrays | Pool, Vec, Map, string |
 | View duration | Until block ends (block-scoped) | Expression only (inline access) |
 | **Parameter borrows** | Block-scoped (call duration) | Block-scoped (call duration) |
-| Can store in `const`? | Yes | Copy types only |
+| Can store in `let`? | Yes | Copy types only |
 | Multi-statement use? | Direct | `with...as` or copy out |
 | The test | Can't grow or shrink | Can grow or shrink |
 
@@ -517,7 +517,7 @@ FIX: Move the removal outside the with block:
 |--------|---------------------------------|
 | Inline access | `.read()/.write()/.lock()` + field chain (E5) |
 | View duration | Expression only (lock released at expression end) |
-| Can store in `const`? | Copy types only |
+| Can store in `let`? | Copy types only |
 | Multi-statement use? | `with...as` |
 
 ## Examples
@@ -528,9 +528,9 @@ FIX: Move the removal outside the with block:
 type alias Header = (StringView, StringView)
 
 func parse_header(line: string) -> Header? {
-    const colon = try line.find(':')
-    const key = line[0..colon].trim().view()      // Zero-copy view (std.strings/V1)
-    const value = line[colon+1..].trim().view()   // Shares line's buffer
+    let colon = try line.find(':')
+    let key = line[0..colon].trim().view()      // Zero-copy view (std.strings/V1)
+    let value = line[colon+1..].trim().view()   // Shares line's buffer
     return (key, value)
 }
 ```
@@ -581,7 +581,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 **W2a–W2d (pool exception):** Pool handles survive reallocation (PL9) — that's the entire point of handles. I decided to exploit this inside `with` blocks rather than apply the same restriction as Vec/Map. After `pool.insert()` or `pool.remove(other)`, the compiler re-resolves the binding by re-validating the handle (~1ns generation check). If a `remove(other_h)` aliased the bound handle at runtime, the re-resolution panics "stale handle" — same aliasing semantics as W3. The cost is per-type rules in the compiler, but pools already have their own rules (context clauses, generation coalescing, frozen modifiers). One more isn't conceptual overhead — it's the handle abstraction doing what it was designed for.
 
-**W5 (always mutable):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access often suffices. Making bindings always mutable eliminates the `const` keyword from `with` entirely, removing a concept that caused confusion: for `Shared<T>`, `const` previously changed the lock type (shared vs exclusive), while for everything else it only controlled binding mutability. With explicit `.read()`/`.write()` on Shared, there's no need for `const` on `with` bindings. The compiler warns when a `with` binding is never mutated.
+**W5 (mutable binding):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access usually suffices, `.read()` takes a shared lock, and frozen pool contexts make whole pools read-only. I tried flipping this to read-only-by-default with `as mut` opting in (consistency with `let`/`mut`), and it put ceremony on nearly every real with-block in the codebase — the same keyword-length inversion `const`/`mut` had, just one level up. So mutability stays on the source, not the binding: `.read()`/`.write()` picks the lock, frozen picks the pool mode, and a bare binding mutates. The one enforced exception: a `.read()` binding rejects mutation at the mutation site (E0360) and never writes back — under the old unenforced design that write leaked through the read lock.
 
 **E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
@@ -596,7 +596,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 <!-- test: skip -->
 ```rask
 // Pattern 1: Copy out the value (Copy types)
-const health = pool[h].health    // Value copied
+let health = pool[h].health    // Value copied
 if health <= 0 { ... }
 
 // Pattern 2: with for multi-statement access
@@ -634,8 +634,8 @@ func tokenize(input: string) -> Vec<Token> {
 
 <!-- test: skip -->
 ```rask
-const source = try read_file(path)
-const tokens = tokenize(source)
+let source = try read_file(path)
+let tokens = tokenize(source)
 for tok in tokens {
     process(source[tok.span])  // inline access, no copy
 }
@@ -658,7 +658,7 @@ The IDE makes access patterns visible through ghost annotations.
 <!-- test: skip -->
 ```rask
 // Inline access (collection)
-const health = pool[h].health  // [inline access]
+let health = pool[h].health  // [inline access]
 if health <= 0 {             // health is a Copy value
     pool.remove(h)           // OK - no conflict
 }
@@ -667,8 +667,8 @@ if health <= 0 {             // health is a Copy value
 <!-- test: skip -->
 ```rask
 // Block-scoped view (struct field)
-const pos = entity.position    // [view: until line 8]
-const vel = entity.velocity    // [view: until line 8]
+let pos = entity.position    // [view: until line 8]
+let vel = entity.velocity    // [view: until line 8]
 normalize(pos)               // [uses view from line 3]
 apply(pos, vel)              // [uses views from lines 3-4]
 }                            // line 8: views released

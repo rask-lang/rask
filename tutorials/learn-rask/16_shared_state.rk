@@ -38,14 +38,14 @@ func example_shared() -> () or Error {
     using Multitasking {
         mut counter = Shared.new(0)
 
-        const h1 = spawn(|| {
+        let h1 = spawn(|| {
             for i in 0..1000 {
                 counter.write(|c| {
                     c = c + 1
                 })
             }
         })
-        const h2 = spawn(|| {
+        let h2 = spawn(|| {
             for i in 0..1000 {
                 counter.write(|c| {
                     c = c + 1
@@ -56,7 +56,7 @@ func example_shared() -> () or Error {
         try h1.join()
         try h2.join()
 
-        const final_count = counter.read(|c| c)
+        let final_count = counter.read(|c| c)
         println("counter: {final_count}")
         // always 2000, never wrong
     }
@@ -114,7 +114,7 @@ func shared_config_update() -> i32 {
 // --- Tests ---
 
 test "flight tracker" {
-    const count = flight_tracker()
+    let count = flight_tracker()
     // 3 tasks, each should add some aircraft
     assert count > 0
     assert count >= 3

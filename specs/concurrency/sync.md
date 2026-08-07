@@ -27,7 +27,7 @@ Cross-task shared state when channels aren't enough.
 
 | Rule | Description |
 |------|-------------|
-| **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Mutation through binding is a compile error |
+| **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Mutation through a read binding is a compile error (E0360) and never writes back |
 | **R2: Write** | `with shared.write() as v { ... }` — exclusive write lock; blocks until readers finish |
 | **R2a: Unused write warning** | Compiler warns when `.write()` used but binding never mutated — suggests `.read()` |
 | **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `none` if contended |
@@ -42,12 +42,12 @@ mut config = Shared.new(AppConfig {
 })
 
 // Inline access (single expression)
-const timeout = config.read().timeout
+let timeout = config.read().timeout
 config.write().timeout = 60.seconds
-const name = config.read().user.name
+let name = config.read().user.name
 
 // Multi-statement access (with block)
-const timeout = with config.read() as c { c.timeout }
+let timeout = with config.read() as c { c.timeout }
 with config.write() as c {
     c.timeout = 60.seconds
     c.max_retries = 5
@@ -87,11 +87,11 @@ Bare `with shared as v` is a compile error — the lock type must be explicit.
 
 <!-- test: skip -->
 ```rask
-const queue = Mutex.new(Vec.new())
+let queue = Mutex.new(Vec.new())
 
 // Inline access (single expression)
 queue.lock().push(item)
-const len = queue.lock().len()
+let len = queue.lock().len()
 
 // Multi-statement access (with block)
 with queue as q {
@@ -179,7 +179,7 @@ ERROR [conc.sync/DL4]: multiple lock acquisitions in one expression
 WHY: Multiple locks in one expression risk deadlock. Copy values out first.
 
 FIX:
-  const x = shared_a.read().x
+  let x = shared_a.read().x
   process(x, shared_b.read().y)
 ```
 
@@ -237,7 +237,7 @@ Panic is the only way another task can see a half-done update. Suspension keeps 
 with mutex as v { v.push(item) }
 
 // Non-blocking: closure
-const got_it = mutex.try_lock(|v| v.push(item))
+let got_it = mutex.try_lock(|v| v.push(item))
 ```
 
 ## Edge Cases
@@ -272,7 +272,7 @@ const got_it = mutex.try_lock(|v| v.push(item))
 
 **SY1 (Shared naming):** `Shared<T>` describes intent, not mechanism. `RwLock<T>` is implementation jargon.
 
-**R1/R2 (explicit .read()/.write()):** With implicit lock selection via `const`, the same keyword means different things for Shared (changes lock type) vs Mutex (changes only binding mutability). Explicit `.read()`/`.write()` makes the lock type visible and removes the semantic inconsistency.
+**R1/R2 (explicit .read()/.write()):** With implicit lock selection via `let`, the same keyword means different things for Shared (changes lock type) vs Mutex (changes only binding mutability). Explicit `.read()`/`.write()` makes the lock type visible and removes the semantic inconsistency.
 
 **try_* stay as closures:** Non-blocking access is uncommon. The inconsistency is justified — `with` is inherently blocking (it's a scope, not a conditional). Could add `with try mutex as v { ... } else { ... }` later if the pattern is common enough.
 
@@ -305,15 +305,15 @@ For patterns that genuinely need multiple locks:
 ```rask
 // Lock ordering — copy out, then lock separately
 func transfer(from: Mutex<Account>, to: Mutex<Account>, amount: u64) {
-    const from_balance = from.lock().balance
+    let from_balance = from.lock().balance
     from.lock().balance -= amount
     to.lock().balance += amount
 }
 
 // Copy out, modify, copy back
 func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
-    const a_val = a.lock().clone()
-    const b_val = b.lock().clone()
+    let a_val = a.lock().clone()
+    let b_val = b.lock().clone()
     with a as v { v = b_val }
     with b as v { v = a_val }
 }

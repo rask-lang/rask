@@ -51,7 +51,7 @@ The same thing in Rask:
 
 ```rask
 func process_entries(entries: Vec<Entry>, filter: string) -> Vec<string> {
-    const result = Vec.new()
+    let result = Vec.new()
     for entry in entries {
         if entry.tag == filter: result.push(entry.name)
     }
@@ -108,8 +108,8 @@ The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-
 **Option isn't an enum.** Rust's `Option<T>` is literally `enum { Some(T), None }` — you `match` or `if let`. In Rask, `T?` is a builtin status type with an operator-only surface. `match` on `T?` is a compile error.
 
 ```rask
-const name = user?.profile?.display_name ?? "Anonymous"
-const u = user ?? return default()
+let name = user?.profile?.display_name ?? "Anonymous"
+let u = user ?? return default()
 if user? as u { greet(u) }
 ```
 
@@ -134,7 +134,7 @@ No `thiserror` macro, no hand-written match.
 **`catch e =>` — transform and leave in one step:**
 
 ```rask
-const data = fs.read(path) catch e => return context("reading {path}", e)
+let data = fs.read(path) catch e => return context("reading {path}", e)
 ```
 
 Rust needs `fs::read(path).map_err(|e| ...)?`. And the discard is never silent: dropping an error is spelled `catch _ =>`, which is one grep.
@@ -210,10 +210,10 @@ Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move on ass
 
 ```rask
 // Strings (16 bytes, Copy) — implicit
-const name = user.name
+let name = user.name
 
 // User struct (>16 bytes) — explicit
-const user_copy = user.clone()
+let user_copy = user.clone()
 db.insert(id, user_copy)
 ```
 
@@ -274,8 +274,8 @@ The Rask version is always the simple case. In Rust, you get the simple version 
 `string` is immutable, refcounted, and Copy (16 bytes). It copies like an integer — no `.clone()`, no GC, no COW hidden costs. The compiler elides atomic refcount operations in ~70-80% of cases.
 
 ```rask
-const name = user.name        // just copies — 16 bytes, like copying two pointers
-const greeting = "hello {name}"
+let name = user.name        // just copies — 16 bytes, like copying two pointers
+let greeting = "hello {name}"
 ```
 
 Go gives you this with garbage collection. Rask gives you this with deterministic cleanup and near-zero overhead.
@@ -287,8 +287,8 @@ Arena-scoped memory, fixed-buffer allocation for embedded, request-scoped scratc
 ```rask
 func handle_request(req: Request) -> Response {
     using Arena.scoped(256.kilobytes()) {
-        const params = parse_query(req.url)
-        const body = try parse_json(req.body)
+        let params = parse_query(req.url)
+        let body = try parse_json(req.body)
         return Response.json(process(params, body))
     }
     // arena freed — all scratch memory gone
@@ -301,7 +301,7 @@ Values are freed when their owner goes out of scope. I/O resources use `ensure` 
 
 ```rask
 func process(path: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()           // runs on every exit path
     // ...work with file...
 }
@@ -313,7 +313,7 @@ I/O operations pause green tasks transparently. No `.await` at call sites.
 
 ```rask
 func fetch_data(url: string) -> string or HttpError {
-    const resp = try http.get(url)   // pauses the task, not the thread
+    let resp = try http.get(url)   // pauses the task, not the thread
     return resp.body()
 }
 ```
@@ -326,8 +326,8 @@ The catch: functions that spawn tasks need `using Multitasking` in their signatu
 
 ```rask
 func load_config(path: string) -> Config or _ {
-    const text = fs.read(path) catch e => return context("reading {path}", e)
-    const config = parse(text) catch e => return context("parsing {path}", e)
+    let text = fs.read(path) catch e => return context("reading {path}", e)
+    let config = parse(text) catch e => return context("parsing {path}", e)
     return config
 }
 ```
@@ -338,7 +338,7 @@ Files, sockets, and connections are linear types — the compiler rejects code t
 
 ```rask
 func broken(path: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     // compile error: `file` must be consumed (closed, passed, or ensured)
 }
 ```
@@ -356,14 +356,14 @@ Importing users from a CSV file. Same task, same structure, different languages.
 **Rask:**
 ```rask
 func import_users(path: string, mutate db: Database) -> i64 or ImportError {
-    const file = fs.open(path)
+    let file = fs.open(path)
         catch e => return ImportError.FileError(path, e)
     ensure file.close()
 
     let imported = 0
     for line in file.lines() {
-        const text = line catch e => return ImportError.ReadError(e)
-        const parts = text.split(",")
+        let text = line catch e => return ImportError.ReadError(e)
+        let parts = text.split(",")
         if parts.len() != 2 {
             return ImportError.BadFormat("expected name,email on line {imported + 1}")
         }

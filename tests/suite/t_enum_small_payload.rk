@@ -51,23 +51,23 @@ extend ApiError {
 }
 
 test "a fieldless enum payload survives the match" {
-    const e = ApiError.Auth(AuthError.Missing)
+    let e = ApiError.Auth(AuthError.Missing)
     assert_eq(e.message(), "authorization required")
     assert_eq(ApiError.Auth(AuthError.Invalid).message(), "invalid credentials")
 }
 
 test "an 8-byte struct payload survives the match" {
-    const e = ApiError.Coords(Pair { a: 3, b: 4 })
+    let e = ApiError.Coords(Pair { a: 3, b: 4 })
     assert_eq(e.message(), "at 3,4")
 }
 
 test "a payload wider than a word still works" {
-    const e = ApiError.Big(Wide { a: 1, b: 2, c: 3 })
+    let e = ApiError.Big(Wide { a: 1, b: 2, c: 3 })
     assert_eq(e.message(), "big 1/2/3")
 }
 
 test "a named-field variant reads its small enum field" {
-    const e = ApiError.Named { code: 401, kind: AuthError.Invalid }
+    let e = ApiError.Named { code: 401, kind: AuthError.Invalid }
     assert_eq(e.message(), "401: invalid credentials")
 }
 
@@ -76,7 +76,7 @@ test "a string payload still comes back whole" {
 }
 
 test "if-let binds a small enum payload" {
-    const e = ApiError.Auth(AuthError.Missing)
+    let e = ApiError.Auth(AuthError.Missing)
     mut got = "none"
     if e is ApiError.Auth(inner) {
         got = inner.message()

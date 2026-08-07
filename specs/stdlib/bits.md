@@ -16,7 +16,7 @@ Methods on all integer types.
 
 <!-- test: skip -->
 ```rask
-const x: u32 = 0b1100_0000_0000_0000_0000_0000_0000_0011
+let x: u32 = 0b1100_0000_0000_0000_0000_0000_0000_0011
 
 x.count_ones()      // 4
 x.leading_zeros()   // 0
@@ -33,9 +33,9 @@ x.reverse_bits()    // bit-reversed value
 
 <!-- test: skip -->
 ```rask
-const port: u16 = 8080
-const be_bytes = port.to_be_bytes()   // [0x1F, 0x90]
-const p1 = u16.from_be_bytes([0x1F, 0x90])  // 8080
+let port: u16 = 8080
+let be_bytes = port.to_be_bytes()   // [0x1F, 0x90]
+let p1 = u16.from_be_bytes([0x1F, 0x90])  // 8080
 ```
 
 Network byte order is big-endian — use `x.to_be()` / `u16.from_be(x)` directly for network code. No separate `hton`/`ntoh` aliases.
@@ -52,12 +52,12 @@ Network byte order is big-endian — use `x.to_be()` / `u16.from_be(x)` directly
 <!-- test: skip -->
 ```rask
 // Variadic unpack
-const (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
+let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 
 // Incremental read
-const (magic, rest) = try data.read_u32be()
-const (length, rest) = try rest.read_u16be()
-const (payload, rest) = try rest.take(length as usize)
+let (magic, rest) = try data.read_u32be()
+let (length, rest) = try rest.read_u16be()
+let (payload, rest) = try rest.take(length as usize)
 ```
 
 Type specifiers for `unpack`: `u8`, `i8`, `u16be`, `u16le`, `i16be`, `i16le`, `u32be`, `u32le`, `i32be`, `i32le`, `u64be`, `u64le`, `i64be`, `i64le`, `f32be`, `f32le`, `f64be`, `f64le`.
@@ -73,17 +73,17 @@ Type specifiers for `unpack`: `u8`, `i8`, `u16be`, `u16le`, `i16be`, `i16le`, `u
 <!-- test: skip -->
 ```rask
 // pack
-const header = pack(u32be(0xCAFEBABE), u8(1), u16be(payload.len()))
+let header = pack(u32be(0xCAFEBABE), u8(1), u16be(payload.len()))
 
 // Builder
-const data = BinaryBuilder.new()
+let data = BinaryBuilder.new()
     .write_u32be(0xCAFEBABE)
     .write_u8(1)
     .write_bytes(payload)
     .build()
 
 // Zero-alloc buffer write
-const buffer: [u8; 64] = [0; 64]
+let buffer: [u8; 64] = [0; 64]
 mut cursor = 0
 cursor += buffer[cursor..].write_u32be(0xCAFEBABE)
 cursor += buffer[cursor..].write_u8(1)
@@ -108,7 +108,7 @@ enum ParseError {
 ```
 ERROR [std.bits/P1]: unexpected end of data
    |
-5  |  const (magic, ver, rest) = try data.unpack(u32be, u8)
+5  |  let (magic, ver, rest) = try data.unpack(u32be, u8)
    |                                 ^^^^ expected 5 bytes, got 3
 
 WHY: unpack validates all lengths upfront before parsing.
@@ -119,7 +119,7 @@ FIX: Check data length before unpacking.
 ```
 ERROR [std.bits/P3]: unexpected end of data
    |
-3  |  const (val, rest) = try data.read_u32be()
+3  |  let (val, rest) = try data.read_u32be()
    |                            ^^^^ need 4 bytes, have 2
 
 WHY: Read methods require enough bytes for the target type.

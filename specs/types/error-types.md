@@ -125,16 +125,16 @@ Why return-only for errors? Construction in assignment/field positions makes the
 <!-- test: skip -->
 ```rask
 // Single-call propagation
-const data = try read_file(path)
+let data = try read_file(path)
 
 // Extract, then use — ER16a places the `try`; no parens needed
-const size = try read_file(path).len()
+let size = try read_file(path).len()
 
 // Force
-const config = load_config()!
+let config = load_config()!
 
 // A block with a handler — covers the whole block (ER18)
-const content = try {
+let content = try {
     try fs.read_text(path)
 } catch e => return context("reading {path}", e)
 ```
@@ -169,21 +169,21 @@ The split between the two fallbacks is the point, not an accident. A fallback is
 <!-- test: skip -->
 ```rask
 // Absence: terse — the miss carried nothing
-const port = config.port ?? 8080
-const item = queue.pop() ?? break
+let port = config.port ?? 8080
+let item = queue.pop() ?? break
 
 // Failure: the error is always named or visibly dropped
-const theme = load_theme() catch _ => Theme.default()    // dropped, and it says so
+let theme = load_theme() catch _ => Theme.default()    // dropped, and it says so
 return dispatch(req) catch e => error_response(e)        // the fold at a boundary
 
 // Leave, transforming the error first
-const text = fs.read_text(path) catch e => return context("reading {path}", e)
+let text = fs.read_text(path) catch e => return context("reading {path}", e)
 
 // Propagate unchanged — the most common line in the language
-const data = try read_file(path)
+let data = try read_file(path)
 
 // Braces when the body needs more than one expression
-const text = fs.read_text(path) catch e => {
+let text = fs.read_text(path) catch e => {
     log("failed to read {path}: {e.message()}")
     return context("reading {path}", e)
 }
@@ -199,7 +199,7 @@ Because the right side sets the result type, a chain of fallbacks reads flat and
 
 <!-- test: skip -->
 ```rask
-const name = user?.display_name ?? user?.email ?? "anon"
+let name = user?.display_name ?? user?.email ?? "anon"
 //           \_____ T? ______/     \___ T? ___/    \ T /
 //           \________ T? ______________/
 //           \_______________ string _______________/
@@ -211,7 +211,7 @@ Each step whose right side is still a `T?` stays wrapped and keeps going; the fi
 
 <!-- test: skip -->
 ```rask
-const cfg = load_from_disk() catch _ => load_from_env() catch _ => load_from_net()
+let cfg = load_from_disk() catch _ => load_from_env() catch _ => load_from_net()
 //          T or DiskError            T or EnvError             T or NetError
 //          result: T or NetError — the earlier errors are dropped, visibly
 ```
@@ -237,9 +237,9 @@ The body is not restricted to a return. It's an ordinary expression of the enclo
 <!-- test: skip -->
 ```rask
 save(d) catch e => log(e.message())                     // run code, carry on (void)
-const t = load() catch _ => Theme.default()             // value
-const c = fetch() catch _ => try load_cached()          // fall back to another fallible source
-const text = fs.read_text(path) catch e => {            // block: arbitrary statements
+let t = load() catch _ => Theme.default()             // value
+let c = fetch() catch _ => try load_cached()          // fall back to another fallible source
+let text = fs.read_text(path) catch e => {            // block: arbitrary statements
     metrics.incr("read_failures")
     log("falling back to defaults: {e.message()}")
     default_text()                                      // block's value carries on
@@ -250,7 +250,7 @@ The one place a `catch` body is restricted is `ensure expr catch e => …` — c
 
 <!-- test: skip -->
 ```rask
-const text = fs.read_text(path) catch e => return context("reading {path}", e)
+let text = fs.read_text(path) catch e => return context("reading {path}", e)
 //                                         ^^ leaves `load_config`
 ```
 
@@ -279,10 +279,10 @@ Two more operators are shared for the same reason — the operation doesn't care
 
 <!-- test: skip -->
 ```rask
-const size = try read_file(path).len()        // ER16a places the `try`; no parens needed
+let size = try read_file(path).len()        // ER16a places the `try`; no parens needed
 
-const text = try read_file(path)              // or bind it, when the line gets long
-const size = text.len()
+let text = try read_file(path)              // or bind it, when the line gets long
+let size = text.len()
 ```
 
 Optional chaining is a different animal and stays: `user?.profile?.name` asks one question — is the whole path there? — and lands in `??`, `?`, or `!` immediately, rather than carrying a wrapper onward.
@@ -294,11 +294,11 @@ Optional chaining is a different animal and stays: `user?.profile?.name` asks on
 <!-- test: skip -->
 ```rask
 // sst_point_lookup returns KeyValue? or SstError
-const index = try read_sstable_index(meta.path)              // -> Vec<BlockIndex> or SstError
-const target = find_block_for_key(index, key) ?? return none        // -> i32? ; absence named
+let index = try read_sstable_index(meta.path)              // -> Vec<BlockIndex> or SstError
+let target = find_block_for_key(index, key) ?? return none        // -> i32? ; absence named
 
 // consuming a flat shape: try peels the error, ?? handles the absence
-const kv = try sst_point_lookup(sst, key) ?? continue        // (try …) ?? … — ER16b
+let kv = try sst_point_lookup(sst, key) ?? continue        // (try …) ?? … — ER16b
 ```
 
 The composite reads as one idiom — **error up, absence here** — and with the fallbacks split, the line says it outright: `try` is the error leaving, the `?` is the absence being handled. Its meaning isn't a new rule either. `T? or E` is `(T?) or E`, and operators act on the outer layer (`type.optionals/OPT30`, the same principle that makes `T??` work): `try` binds first and peels the outer bad branch — the error — leaving a `T?` for `??`. The phrase is also self-identifying: on a plain result or plain optional it doesn't type-check (`try` already produced the payload), so `try … ??` on one operand always means the callee is flat.
@@ -323,14 +323,14 @@ These rules exist on results because `T or E` is an ordinary union and `is` narr
 | Rule | Description |
 |------|-------------|
 | **ER23: Type pattern narrow** | `if r is ErrType as e { … }` narrows and binds when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way |
-| **ER21: else branch narrows** | On a const scrutinee, the `else` of an `is` test narrows to the complement: `if r is Config { … } else { … }` gives the error side in the `else` |
+| **ER21: else branch narrows** | On a let scrutinee, the `else` of an `is` test narrows to the complement: `if r is Config { … } else { … }` gives the error side in the `else` |
 | **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch |
 | **ER24: Early-exit narrow** | If a branch diverges, the fall-through is narrowed to the opposite variant |
 | **ER25: Compound does not narrow** | `r is A && s is B` is a legal bool but does not narrow either side |
 
 <!-- test: skip -->
 ```rask
-const r = divide(a, b)
+let r = divide(a, b)
 
 if r is f64 as v {
     use(v)                        // v: f64
@@ -386,7 +386,7 @@ Dropping the error to get a `T?` is `r catch _ => none` — the discard is ackno
 
 <!-- test: skip -->
 ```rask
-const maybe_v = compute() catch _ => none      // "I don't care why it failed" — said out loud
+let maybe_v = compute() catch _ => none      // "I don't care why it failed" — said out loud
 ```
 
 ER43 applies as it does to any discarded error: if `E` carries a must-consume payload, `catch _ =>` is rejected and you bind it with `catch e => …` and consume it, or `match`.
@@ -409,8 +409,8 @@ There is no fold *method* either. A fold ends the error's journey, and journey-e
 ```rask
 // Library: precise union
 func load() -> Config or (IoError | ParseError) {
-    const content = try read_file(path)   // IoError ⊆ union
-    const config = try parse(content)     // ParseError ⊆ union
+    let content = try read_file(path)   // IoError ⊆ union
+    let config = try parse(content)     // ParseError ⊆ union
     return config
 }
 
@@ -422,7 +422,7 @@ enum ApiError {
 }
 
 func view(id: TaskId) -> TaskView or ApiError {
-    const task = try store.view_task(id)  // → ApiError.Store(e)
+    let task = try store.view_task(id)  // → ApiError.Store(e)
     return task
 }
 ```
@@ -463,7 +463,7 @@ enum ConfigError {
 // sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
 
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path)     // ConfigError.NotFound captures origin
+    let text = try fs.read_text(path)     // ConfigError.NotFound captures origin
     return try Config.parse(text)            // ConfigError.Parse captures origin
 }
 
@@ -473,7 +473,7 @@ if load_config(path) is ConfigError as e {
 
 // any Error — origin always available
 func start_app() -> App or any Error {
-    const config = try load_config(path)     // IoError auto-boxes, gets origin
+    let config = try load_config(path)     // IoError auto-boxes, gets origin
     return App.new(config)
 }
 ```
@@ -531,21 +531,21 @@ Three annotation levels:
 ```rask
 // 1. Fully omitted — both success and error inferred
 func load_config(path: string) {
-    const text = try read_file(path)       // IoError
-    const config = try parse(text)          // ParseError
+    let text = try read_file(path)       // IoError
+    let config = try parse(text)          // ParseError
     return config
 }
 // Inferred: -> Config or (IoError | ParseError)
 
 // 2. Partial: `or _` — success explicit, error inferred
 func load_config(path: string) -> Config or _ {
-    const text = try read_file(path)
+    let text = try read_file(path)
     return try parse(text)
 }
 
 // 3. Public — must be explicit
 public func load_config(path: string) -> Config or (IoError | ParseError) {
-    const text = try read_file(path)
+    let text = try read_file(path)
     return try parse(text)
 }
 ```
@@ -677,7 +677,7 @@ FIX: Newtype one side:
 ```
 ERROR [type.errors/ER3a]: `T` may not be `CacheError` here
     |
-12  |  const r = cached(|| CacheError.Miss)
+12  |  let r = cached(|| CacheError.Miss)
     |            ^^^^^^ T = CacheError
     |
  4  |  func cached<T>(f: || -> T or CacheError) -> T or CacheError
@@ -711,7 +711,7 @@ FIX: Newtype it and implement message():
 ```
 ERROR [type.errors/ER11]: cannot assign value of type `i32` to `i32 or MyError`
    |
-3  |  const r: i32 or MyError = 5
+3  |  let r: i32 or MyError = 5
    |                            ^ auto-wrap only fires at `return`
 
 WHY: Construction at assignment hides the branch choice. Only `return`
@@ -726,33 +726,33 @@ FIX: Construct via a function that returns T or E, or use
 ```
 ERROR [type.errors/ER14]: `catch` needs a binder — `e =>` or `_ =>`
    |
-7  |  const ms = raw.parse() catch ApiError.BadRequest("bad duration")
+7  |  let ms = raw.parse() catch ApiError.BadRequest("bad duration")
    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no binder
 
 WHY: `catch` handles an error, and the error is a value someone might need.
      Name it, or drop it out loud — silence isn't an option.
 
-FIX: const ms = raw.parse() catch _ => return ApiError.BadRequest("bad duration")
-     const ms = raw.parse() catch e => return wrap(e)
+FIX: let ms = raw.parse() catch _ => return ApiError.BadRequest("bad duration")
+     let ms = raw.parse() catch e => return wrap(e)
 ```
 
 **`catch` on an optional [ER14]:**
 ```
 ERROR [type.errors/ER14]: nothing to catch — `config.port` is an optional
    |
-4  |  const port = config.port catch e => default_port(e)
+4  |  let port = config.port catch e => default_port(e)
    |                           ^^^^^ `i32?` — the other branch is `none`, not an error
 
 WHY: `catch` handles failures. Absence has no payload and isn't a failure.
 
-FIX: const port = config.port ?? default_port()
+FIX: let port = config.port ?? default_port()
 ```
 
 **`try` where what leaves doesn't fit [ER47]:**
 ```
 ERROR [type.errors/ER47]: `try` propagates `none`, but this function returns `Config or IoError`
    |
-4  |  const x = try maybe_value
+4  |  let x = try maybe_value
    |            ^^^ maybe_value: T? — the bad branch is `none`, and there is no
    |                optional branch in the return type to carry it
 
@@ -760,22 +760,22 @@ WHY: bare `try` hands the bad branch to the caller unchanged. `none` fits a `T?`
      return; an error fits an error branch. Neither converts silently.
 
 FIX: name what should leave instead:
-     const x = maybe_value ?? return IoError.NotFound
+     let x = maybe_value ?? return IoError.NotFound
 ```
 
 **Bare `try` on a flat `T? or E` [ER47]:**
 ```
 ERROR [type.errors/ER47]: `try` is ambiguous here — two branches could leave
    |
-4  |  const kv = try sst_point_lookup(sst, key)
+4  |  let kv = try sst_point_lookup(sst, key)
    |             ^^^ returns `KeyValue? or SstError` — both `none` and the error
    |                 are "the bad branch"
 
 WHY: bare `try` propagates the bad branch, and this operand has two of them.
      The composite means: error up, absence here.
 
-FIX: const kv = try sst_point_lookup(sst, key) ?? return none
-     const kv = try sst_point_lookup(sst, key) ?? continue
+FIX: let kv = try sst_point_lookup(sst, key) ?? return none
+     let kv = try sst_point_lookup(sst, key) ?? continue
      (`try` binds tighter — no parens. It peels the error; `??` says what
       absence does.)
 ```
@@ -794,7 +794,7 @@ WHY: `?` is the absence marker throughout the language. Errors are handled by
 
 FIX: if r is f64 as v { use(v) }          (test the success side)
      if r is DivError as e { … }           (test the error side)
-     const v = r catch _ => fallback       (supply a value, dropping the error)
+     let v = r catch _ => fallback       (supply a value, dropping the error)
 ```
 
 **Match on Option:**
@@ -907,8 +907,8 @@ The case that drove the errors-only restriction: `sst_point_lookup` in the LSM e
 
 <!-- test: skip -->
 ```rask
-const index = try read_sstable_index(meta.path)            // -> Vec<BlockIndex> or SstError
-const target_block = try find_block_for_key(index, key)    // -> i32?
+let index = try read_sstable_index(meta.path)            // -> Vec<BlockIndex> or SstError
+let target_block = try find_block_for_key(index, key)    // -> i32?
 ```
 
 Identical syntax, opposite control flow — the first leaves through the error branch, the second through the success branch — and nothing on either line says which. The analysis was right that this is unacceptable. It was wrong about where the ambiguity lives. Rust's `?` covers both shapes without this problem because `Result<Option<T>, E>` **nests** — inside any one function, `?` has exactly one reading, given by the enclosing return type. Rask's flat sugar (`T?` = `T or none`) is what creates the two-readings case, and it creates it only where the flat shape actually occurs: the *enclosing* `T? or E` return, measured at **2 of 316** return types in the tree. Everywhere else the enclosing signature admits exactly one bad branch, and bare `try` has exactly one possible meaning — same one-hop lookup as Rust's `?`.
@@ -941,7 +941,7 @@ Zero sites in the tree pay for this — the house style extracts first anyway, a
 
 <!-- test: skip -->
 ```rask
-const host = get(raw, "host") ?? return ConfigError.Missing("host")
+let host = get(raw, "host") ?? return ConfigError.Missing("host")
 return Config { host: host, port: 8080 }
 ```
 
@@ -973,7 +973,7 @@ The cost was checked before committing: 83 binding sites in the tree, **zero** o
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ContextError {
-    const text = fs.read_text(path) catch e => return context("reading {path}", e)
+    let text = fs.read_text(path) catch e => return context("reading {path}", e)
     return Config.parse(text) catch e => return context("parsing {path}", e)
 }
 ```
@@ -983,7 +983,7 @@ func load_config(path: string) -> Config or ContextError {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
-    const text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
+    let text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
     return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
 }
 ```
@@ -998,7 +998,7 @@ enum ConfigError {
 }
 
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path)   // → ConfigError.Io(e)
+    let text = try fs.read_text(path)   // → ConfigError.Io(e)
     return try Config.parse(text)         // → ConfigError.Parse(e)
 }
 ```

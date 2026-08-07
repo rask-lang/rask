@@ -77,7 +77,7 @@ struct Vm {
 
 extend Vm {
     func new(chunk: Chunk, fuel: i64) -> Vm {
-        const regs = Vec.new()
+        let regs = Vec.new()
         mut i = 0
         while i < 256 {
             regs.push(Value.None)
@@ -95,7 +95,7 @@ extend Vm {
 
     func get_reg(self, idx: i64) -> Value {
         // --- Register access (relative to current frame) ---
-        const base = if self.call_stack.len() > 0 {
+        let base = if self.call_stack.len() > 0 {
             self.call_stack.last().base_reg
         } else {
             0
@@ -104,7 +104,7 @@ extend Vm {
     }
 
     func set_reg(self, idx: i64, val: Value) {
-        const base = if self.call_stack.len() > 0 {
+        let base = if self.call_stack.len() > 0 {
             self.call_stack.last().base_reg
         } else {
             0
@@ -127,7 +127,7 @@ extend Vm {
         //   7. Everything else
         //
         mut pc = 0
-        const code = self.chunk.main.code
+        let code = self.chunk.main.code
 
         loop {
             if self.fuel <= 0 {
@@ -139,23 +139,23 @@ extend Vm {
                 return Value.None
             }
 
-            const instr = code.get(pc) ?? return VmError.ScriptError("pc out of bounds: {pc}")
+            let instr = code.get(pc) ?? return VmError.ScriptError("pc out of bounds: {pc}")
             pc = pc + 1
-            const op = decode_opcode(instr) ?? return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
+            let op = decode_opcode(instr) ?? return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
 
             match op {
                 Opcode.LOAD_TRUE => {
-                    const a = decode_a(instr)
+                    let a = decode_a(instr)
                     self.set_reg(a, Value.Bool(true))
                 }
                 Opcode.LOAD_FALSE => {
-                    const a = decode_a(instr)
+                    let a = decode_a(instr)
                     self.set_reg(a, Value.Bool(false))
                 }
                 Opcode.LOAD_INT => {
-                    const a = decode_a(instr)
-                    const bx = decode_bx(instr)
-                    const val = if bx >= 32768 {
+                    let a = decode_a(instr)
+                    let bx = decode_bx(instr)
+                    let val = if bx >= 32768 {
                         bx - 65536
                     } else {
                         bx
@@ -163,17 +163,17 @@ extend Vm {
                     self.set_reg(a, Value.Int(val))
                 }
                 Opcode.LOAD_CONST => {
-                    const a = decode_a(instr)
-                    const bx = decode_bx(instr)
-                    const val = self.chunk.main.constants.get(bx) ?? continue
+                    let a = decode_a(instr)
+                    let bx = decode_bx(instr)
+                    let val = self.chunk.main.constants.get(bx) ?? continue
                     self.set_reg(a, val)
                 }
                 Opcode.LOAD_NONE => {
-                    const a = decode_a(instr)
+                    let a = decode_a(instr)
                     self.set_reg(a, Value.None)
                 }
                 Opcode.RETURN => {
-                    const a = decode_a(instr)
+                    let a = decode_a(instr)
                     if a == 255 {
                         return Value.None
                     }

@@ -57,7 +57,7 @@ struct Config {
 
 extend Config {
     func from_env() -> Config or ConfigError {
-        const dir = os.env("TIERED_DIR") ?? return ConfigError.NoEnv
+        let dir = os.env("TIERED_DIR") ?? return ConfigError.NoEnv
         return Config { dir: dir, memtable_cap: 4 }
     }
 
@@ -144,7 +144,7 @@ extend SsTable {
         for row in self.rows {
             // Absence-to-error conversion: a '='-less row has no payload to
             // bind, so the exit names the error itself (the old ok_or shape).
-            const eq = row.find("=") ?? return StoreError.Corrupt(self.path, row)
+            let eq = row.find("=") ?? return StoreError.Corrupt(self.path, row)
             if row[..eq] == key { return row[eq + 1..].to_string() }
         }
         return none
@@ -201,8 +201,8 @@ extend Tiered {
     // none behind — OPT32/#586), write it, promote it. `take` binds the
     // place, `??` the result: (take self.pending) ?? return.
     func tick(mutate self) -> void or StoreError {
-        const staged = take self.pending ?? return       // idle — nothing staged
-        const n = staged.rows.len()
+        let staged = take self.pending ?? return       // idle — nothing staged
+        let n = staged.rows.len()
 
         // The used binder, diverging flavor: wrap the disk error with the
         // context only this frame has (how many rows were lost).
@@ -226,11 +226,11 @@ extend Tiered {
     // Bare `try t.lookup(key)` is the ER47 compile error here: both `none`
     // and StoreError could leave, and the line wouldn't say which.
     func get(self, key: string) -> string? or StoreError {
-        const hot = self.active.get(key) ?? self.pending_get(key)
+        let hot = self.active.get(key) ?? self.pending_get(key)
         if hot? as v { return v }
 
         for t in self.tables {
-            const v = try t.lookup(key) ?? continue
+            let v = try t.lookup(key) ?? continue
             return v
         }
         return none
@@ -240,7 +240,7 @@ extend Tiered {
         if self.pending? as t {
             // A staged table is trusted — it was built by seal(), so a
             // corrupt row is a bug, not an error: force with context.
-            const kv = t.lookup(key)
+            let kv = t.lookup(key)
             return kv! "staged table corrupt"
         }
         return none
@@ -261,15 +261,15 @@ func report(store: Tiered, key: string) {
 }
 
 func main() {
-    const cfg = load_config()
+    let cfg = load_config()
     mut store = Tiered.new(cfg)
 
     // Enough writes to seal + flush once (cap is 4).
-    const _ = store.put("alpha", "1")
-    const _ = store.put("beta", "2")
-    const _ = store.put("gamma", "3")
-    const _ = store.put("delta", "4")
-    const _ = store.put("epsilon", "5")          // lands in the fresh memtable
+    let _ = store.put("alpha", "1")
+    let _ = store.put("beta", "2")
+    let _ = store.put("gamma", "3")
+    let _ = store.put("delta", "4")
+    let _ = store.put("epsilon", "5")          // lands in the fresh memtable
 
     report(store, "epsilon")                     // memtable tier
     report(store, "alpha")                       // table tier, through the composite

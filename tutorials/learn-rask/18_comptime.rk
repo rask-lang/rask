@@ -8,7 +8,7 @@
 // they're ready instantly when the program starts. Zero startup cost.
 //
 //   const PRIMES = comptime {
-//       const v = Vec.new()
+//       let v = Vec.new()
 //       for n in 2..100 {
 //           if is_prime(n) { v.push(n) }
 //       }
@@ -121,22 +121,22 @@ test "factorial table" {
 
 test "standard atmosphere" {
     // Sea level: 288.15 K
-    const t0 = std_temperature(0)
+    let t0 = std_temperature(0)
     assert t0 > 288.0
     assert t0 < 289.0
 
     // 5000m: 288.15 - 5*6.5 = 255.65 K
-    const t5 = std_temperature(5000)
+    let t5 = std_temperature(5000)
     assert t5 > 255.0
     assert t5 < 256.0
 
     // 11000m: 288.15 - 11*6.5 = 216.65 K (tropopause)
-    const t11 = std_temperature(11000)
+    let t11 = std_temperature(11000)
     assert t11 > 216.0
     assert t11 < 217.0
 
     // 15000m: same as 11000m (constant above tropopause)
-    const t15 = std_temperature(15000)
+    let t15 = std_temperature(15000)
     assert t15 > 216.0
     assert t15 < 217.0
 }

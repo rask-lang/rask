@@ -18,7 +18,7 @@ enum Shape {
 }
 
 test "a unit variant in a condition is not a struct literal" {
-    const m = Mode.On
+    let m = Mode.On
     mut hit = ""
     if m == Mode.On {
         hit = "on"
@@ -29,7 +29,7 @@ test "a unit variant in a condition is not a struct literal" {
 }
 
 test "the inline form parses too" {
-    const m = Mode.Off
+    let m = Mode.Off
     mut n = 0
     if m == Mode.Off { n = 1 }
     assert n == 1
@@ -44,7 +44,7 @@ test "a while condition works the same way" {
 }
 
 test "a parenthesized struct literal is still a literal" {
-    const c = Shape.Circle { r: 4 }
+    let c = Shape.Circle { r: 4 }
     mut same = false
     if (c == Shape.Circle { r: 4 }) {
         same = true
@@ -53,7 +53,7 @@ test "a parenthesized struct literal is still a literal" {
 }
 
 test "struct-variant literals outside conditions are untouched" {
-    const c = Shape.Circle { r: 3 }
+    let c = Shape.Circle { r: 3 }
     mut area = 0
     match c {
         Shape.Circle { r } => area = r * r
@@ -63,7 +63,7 @@ test "struct-variant literals outside conditions are untouched" {
 }
 
 test "a chain of comparisons against variants parses" {
-    const s = Shape.Dot
+    let s = Shape.Dot
     mut kind = ""
     if s == Shape.Dot {
         kind = "dot"

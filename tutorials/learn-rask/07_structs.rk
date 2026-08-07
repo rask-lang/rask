@@ -24,7 +24,7 @@
 // Python can't do this without modifying the original class.
 //
 // Creating an instance:
-//   const v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+//   let v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
 //
 // Methods:
 //   func magnitude(self) -> f64          // reads self (like Python's self)
@@ -144,67 +144,67 @@ extend Projectile {
 // --- Tests ---
 
 test "vec3 zero" {
-    const v = Vec3.zero()
+    let v = Vec3.zero()
     assert v.x == 0.0
     assert v.y == 0.0
     assert v.z == 0.0
 }
 
 test "vec3 add" {
-    const a = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-    const b = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
-    const c = a.add(b)
+    let a = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    let b = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    let c = a.add(b)
     assert c.x == 5.0
     assert c.y == 7.0
     assert c.z == 9.0
 }
 
 test "vec3 scale" {
-    const v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-    const s = v.scale(2.0)
+    let v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    let s = v.scale(2.0)
     assert s.x == 2.0
     assert s.y == 4.0
     assert s.z == 6.0
 }
 
 test "vec3 dot product" {
-    const a = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
-    const b = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    let a = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    let b = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     assert a.dot(b) == 0.0
 
-    const c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-    const d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    let c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    let d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
     assert c.dot(d) == 32.0
 }
 
 test "vec3 magnitude" {
     // Classic 3-4-5 triangle
-    const v = Vec3 { x: 3.0, y: 4.0, z: 0.0 }
-    const m = v.magnitude()
+    let v = Vec3 { x: 3.0, y: 4.0, z: 0.0 }
+    let m = v.magnitude()
     assert m > 4.99
     assert m < 5.01
 }
 
 test "vec3 cross product" {
     // i × j = k (right-hand rule)
-    const i = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
-    const j = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
-    const k = i.cross(j)
+    let i = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    let j = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    let k = i.cross(j)
     assert k.x == 0.0
     assert k.y == 0.0
     assert k.z == 1.0
 }
 
 test "projectile launch" {
-    const p = Projectile.launch(Vec3 { x: 10.0, y: 0.0, z: 20.0 })
+    let p = Projectile.launch(Vec3 { x: 10.0, y: 0.0, z: 20.0 })
     assert p.position.x == 0.0
     assert p.velocity.z == 20.0
 }
 
 test "projectile step" {
     // Launch straight up at 20 m/s
-    const p = Projectile.launch(Vec3 { x: 0.0, y: 0.0, z: 20.0 })
-    const p2 = p.step(0.1)
+    let p = Projectile.launch(Vec3 { x: 0.0, y: 0.0, z: 20.0 })
+    let p2 = p.step(0.1)
     // After 0.1s: vz ≈ 20 - 0.981 = 19.019, z ≈ 1.9019
     assert p2.position.z > 1.8
     assert p2.position.z < 2.0

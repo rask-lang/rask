@@ -76,7 +76,7 @@ params are writable.
 
 ## How inference works
 
-Consider `const x = 42`. The type checker:
+Consider `let x = 42`. The type checker:
 
 1. Creates a fresh type variable `?T0` for `x`.
 2. Checks the right side: `42` has type `i32`.
@@ -118,7 +118,7 @@ enum TypeConstraint {
 ```
 
 `Equal` is the most common. It's generated when:
-- A binding has an annotation: `const x: i32 = expr` → `Equal(i32, typeof(expr))`
+- A binding has an annotation: `let x: i32 = expr` → `Equal(i32, typeof(expr))`
 - A function is called: each argument type must equal the parameter type
 - A return statement: the expression type must match the function's return type
 
@@ -198,9 +198,9 @@ Every expression returns its type. Examples:
 
 ### Statements (`check_stmt.rs`)
 
-- **`const x = expr`**: Infer type from `expr`, store in scope
-- **`const x: T = expr`**: Check `expr` type matches `T`
-- **`let x = expr`**: Same as const but mutable
+- **`let x = expr`**: Infer type from `expr`, store in scope
+- **`let x: T = expr`**: Check `expr` type matches `T`
+- **`mut x = expr`**: Same as let but mutable
 - **Assignment `x = expr`**: Check `x` is mutable and types match
 - **Return**: Check return type matches function signature
 
@@ -234,7 +234,7 @@ the ESAD (Expression-Scoped Alias Detection) system:
   borrows to catch `items[0] + items.push(1)` (reading and mutating the same
   collection in one expression).
 - **Phase 2 (`persistent_borrows`)**: Across statements within a scope, tracks
-  `const ref = items` borrows that persist across statements.
+  `let ref = items` borrows that persist across statements.
 
 This catches aliasing problems earlier than the ownership checker, with
 better error messages because we still have expression-level context.

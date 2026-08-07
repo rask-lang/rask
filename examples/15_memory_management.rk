@@ -32,17 +32,17 @@ func main() {
     print("Creating linked list with handles:\n")
 
     // Insert nodes into the pool — insert returns a Handle (panics on failure)
-    const first = node_pool.insert(Node {
+    let first = node_pool.insert(Node {
         value: 1,
         next: none,
     })
 
-    const second = node_pool.insert(Node {
+    let second = node_pool.insert(Node {
         value: 2,
         next: none,
     })
 
-    const third = node_pool.insert(Node {
+    let third = node_pool.insert(Node {
         value: 3,
         next: none,
     })
@@ -57,7 +57,7 @@ func main() {
 
     loop {
         if current? as handle {
-            const node = node_pool.get(handle)!
+            let node = node_pool.get(handle)!
             print(node.value)
             print(" -> ")
             current = node.next
@@ -72,21 +72,21 @@ func main() {
 
     print("Creating game entities:\n")
 
-    const player = entities.insert(Entity {
+    let player = entities.insert(Entity {
         id: 1,
         name: "Player",
         health: 100,
         target: none,
     })
 
-    const enemy1 = entities.insert(Entity {
+    let enemy1 = entities.insert(Entity {
         id: 2,
         name: "Goblin",
         health: 50,
         target: player,  // Enemy targets player
     })
 
-    const enemy2 = entities.insert(Entity {
+    let enemy2 = entities.insert(Entity {
         id: 3,
         name: "Orc",
         health: 80,
@@ -99,40 +99,40 @@ func main() {
     // Display entity relationships
     print("\nEntity relationships:\n")
 
-    const player_ent = entities.get(player)!
+    let player_ent = entities.get(player)!
     print(player_ent.name)
     print(" (HP: ")
     print(player_ent.health)
     print(")")
 
     if player_ent.target? as target_handle {
-        const target = entities.get(target_handle)!
+        let target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e1 = entities.get(enemy1)!
+    let e1 = entities.get(enemy1)!
     print(e1.name)
     print(" (HP: ")
     print(e1.health)
     print(")")
 
     if e1.target? as target_handle {
-        const target = entities.get(target_handle)!
+        let target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e2 = entities.get(enemy2)!
+    let e2 = entities.get(enemy2)!
     print(e2.name)
     print(" (HP: ")
     print(e2.health)
     print(")")
 
     if e2.target? as target_handle {
-        const target = entities.get(target_handle)!
+        let target = entities.get(target_handle)!
         print(" -> targets ")
         print(target.name)
     }

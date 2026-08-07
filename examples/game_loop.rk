@@ -67,7 +67,7 @@ extend GameState {
         mut entities = Pool.new()
 
         // Spawn player at center
-        const player_handle = entities.insert(Entity {
+        let player_handle = entities.insert(Entity {
             position: Position { x: 400.0f32, y: 300.0f32 },
             velocity: Velocity { dx: 0.0f32, dy: 0.0f32 },
             health: Health { current: 100, max: 100 },
@@ -124,19 +124,19 @@ func collision_system(mutate state: GameState) {
 
     for i in 0..to_check.len() {
         for j in (i + 1)..to_check.len() {
-            const h1 = to_check[i]
-            const h2 = to_check[j]
+            let h1 = to_check[i]
+            let h2 = to_check[j]
 
             if !state.entities[h1].active || !state.entities[h2].active: continue
 
-            const e1 = state.entities[h1]
-            const e2 = state.entities[h2]
+            let e1 = state.entities[h1]
+            let e2 = state.entities[h2]
 
             // Calculate distance
-            const dx = e1.position.x - e2.position.x
-            const dy = e1.position.y - e2.position.y
-            const dist = (dx * dx + dy * dy).sqrt()
-            const min_dist = e1.collider.radius + e2.collider.radius
+            let dx = e1.position.x - e2.position.x
+            let dy = e1.position.y - e2.position.y
+            let dist = (dx * dx + dy * dy).sqrt()
+            let min_dist = e1.collider.radius + e2.collider.radius
 
             if dist < min_dist {
                 handle_collision(mutate state, h1, h2)
@@ -146,14 +146,14 @@ func collision_system(mutate state: GameState) {
 }
 
 func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) {
-    const type1 = state.entities[h1].entity_type
-    const type2 = state.entities[h2].entity_type
+    let type1 = state.entities[h1].entity_type
+    let type2 = state.entities[h2].entity_type
 
     // Player vs Enemy
     if (type1 == EntityType.Player && type2 == EntityType.Enemy) ||
        (type1 == EntityType.Enemy && type2 == EntityType.Player) {
-        const player_h = if type1 == EntityType.Player: h1 else: h2
-        const enemy_h = if type1 == EntityType.Enemy: h1 else: h2
+        let player_h = if type1 == EntityType.Player: h1 else: h2
+        let enemy_h = if type1 == EntityType.Enemy: h1 else: h2
 
         state.entities[player_h].health.current -= 10
         state.entities[enemy_h].active = false
@@ -166,8 +166,8 @@ func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<En
     // Projectile vs Enemy
     if (type1 == EntityType.Projectile && type2 == EntityType.Enemy) ||
        (type1 == EntityType.Enemy && type2 == EntityType.Projectile) {
-        const enemy_h = if type1 == EntityType.Enemy: h1 else: h2
-        const proj_h = if type1 == EntityType.Projectile: h1 else: h2
+        let enemy_h = if type1 == EntityType.Enemy: h1 else: h2
+        let proj_h = if type1 == EntityType.Projectile: h1 else: h2
 
         state.entities[enemy_h].health.current -= 25
         state.entities[proj_h].active = false
@@ -196,11 +196,14 @@ func cleanup_system(mutate state: GameState) {
 
 // System: Spawn enemies periodically
 func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
-    const spawn_interval = 2.0f32
+    let spawn_interval = 2.0f32
 
     if time_since_last_spawn >= spawn_interval {
-        // Spawn enemy at right edge with random y
-        const y = (random.f32() * 500.0f32) + 50.0f32
+        // Spawn enemy at right edge with random y. random.range returns i64,
+        // which widens to f32 losslessly here — random.f32()/f64() both
+        // return f64 (stdlib convention), and there's no `as` conversion
+        // that narrows f64 to f32.
+        let y = random.range(50, 550) as f32
         state.spawn_enemy(850.0f32, y).ok()
         return 0.0f32  // Reset timer
     } else {
@@ -216,11 +219,11 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 //     func parallel_movement_system(dt: f32, num_threads: usize)
 //         using Pool<Entity>, Multitasking
 //     {
-//         const handles = pool.handles()
-//         const chunk_size = (handles.len() + num_threads - 1) / num_threads
+//         let handles = pool.handles()
+//         let chunk_size = (handles.len() + num_threads - 1) / num_threads
 //         mut tasks = Vec.new()
 //         for chunk in handles.chunks(chunk_size) {
-//             const work = chunk.to_vec()
+//             let work = chunk.to_vec()
 //             tasks.push(spawn(own || {
 //                 for h in work {
 //                     if !pool[h].active: continue
@@ -242,10 +245,10 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 // the aspirational form so the only delta when the gaps land is moving
 // the body into a `spawn(own || { ... })` per chunk.
 func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize) {
-    const _ = num_threads
+    let _ = num_threads
     mut handles = entities.handles()
     for i in 0..handles.len() {
-        const h = handles[i as i64]
+        let h = handles[i as i64]
         if !entities[h].active: continue
         entities[h].position.x += entities[h].velocity.dx * dt
         entities[h].position.y += entities[h].velocity.dy * dt
@@ -256,9 +259,9 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
 func main() -> void or Error {
     mut state = try GameState.new()
 
-    const target_fps = 60.0f32
-    const dt = 1.0f32 / target_fps
-    const NUM_PHYSICS_THREADS: usize = 4u64
+    let target_fps = 60.0f32
+    let dt = 1.0f32 / target_fps
+    let NUM_PHYSICS_THREADS: usize = 4u64
 
     mut last_time = 0.0f32  // Simplified: track elapsed time
     mut accumulator = 0.0f32
@@ -272,7 +275,7 @@ func main() -> void or Error {
         // Simulate game for a few seconds
         while !state.game_over && frame_count < 300 {
         // Simulate frame time (16ms = ~60fps)
-        const frame_time = 0.016f32
+        let frame_time = 0.016f32
         last_time += frame_time
 
         accumulator += frame_time
@@ -283,8 +286,8 @@ func main() -> void or Error {
             if frame_count % 30 == 0 {
                 // Fire projectile
                 if state.player? as player_h {
-                    const px = state.entities[player_h].position.x
-                    const py = state.entities[player_h].position.y
+                    let px = state.entities[player_h].position.x
+                    let py = state.entities[player_h].position.y
                     try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
                 }
             }
@@ -306,7 +309,7 @@ func main() -> void or Error {
 
         // Render (simulated - just print status occasionally)
         if frame_count % 60 == 0 {
-            const entity_count = state.entities.len()
+            let entity_count = state.entities.len()
             mut player_health = 0
             if state.player? as h {
                 player_health = state.entities[h].health.current

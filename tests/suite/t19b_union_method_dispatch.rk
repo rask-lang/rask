@@ -47,8 +47,8 @@ func safe_div(a: i32, b: i32) -> i32 or DivError {
 }
 
 func combined(s: string, b: i32) -> i32 or (ParseError | DivError) {
-    const n = try parse_number(s)
-    const result = try safe_div(n, b)
+    let n = try parse_number(s)
+    let result = try safe_div(n, b)
     return result
 }
 
@@ -70,7 +70,7 @@ test "error union div error" {
 // Every `E` satisfies `ErrorMessage` (ER4), so `e.message()` on a union
 // `e: A | B` resolves by dispatching to whichever variant `e` holds.
 func union_message(s: string, b: i32) -> string {
-    const r = combined(s, b)
+    let r = combined(s, b)
     if r? as v {
         return "ok({v})"
     } else as e {

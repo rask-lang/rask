@@ -5,7 +5,7 @@ func kinetic_energy(mass: f64, velocity: f64) -> f64 {
 }
 
 func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
-    const g = 6.674e-11
+    let g = 6.674e-11
     return g * m1 * m2 / (r * r)
 }
 
@@ -19,7 +19,7 @@ func sqrt(x: f64) -> f64 {
 }
 
 func orbital_velocity(planet_mass: f64, orbit_radius: f64) -> f64 {
-    const g = 6.674e-11
+    let g = 6.674e-11
     return sqrt(g * planet_mass / orbit_radius)
 }
 
@@ -29,22 +29,22 @@ test "kinetic energy" {
 }
 
 test "gravitational force" {
-    const f = gravitational_force(5.972e24, 1.989e30, 1.496e11)
+    let f = gravitational_force(5.972e24, 1.989e30, 1.496e11)
     assert f > 3.5e22
     assert f < 3.6e22
 }
 
 test "sqrt" {
-    const s = sqrt(4.0)
+    let s = sqrt(4.0)
     assert s > 1.999
     assert s < 2.001
-    const s2 = sqrt(2.0)
+    let s2 = sqrt(2.0)
     assert s2 > 1.4141
     assert s2 < 1.4143
 }
 
 test "orbital velocity of ISS" {
-    const v = orbital_velocity(5.972e24, 6779000.0)
+    let v = orbital_velocity(5.972e24, 6779000.0)
     assert v > 7650.0
     assert v < 7670.0
 }

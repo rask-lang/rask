@@ -2846,11 +2846,11 @@ impl<'a> MirLowerer<'a> {
             self.walk_free_vars_stmt(stmt, &local_bound, seen, free);
             match &stmt.kind {
                 rask_ast::stmt::StmtKind::Mut { name, .. }
-                | rask_ast::stmt::StmtKind::Const { name, .. } => {
+                | rask_ast::stmt::StmtKind::Let { name, .. } => {
                     local_bound.insert(name.clone());
                 }
                 rask_ast::stmt::StmtKind::MutTuple { patterns, .. }
-                | rask_ast::stmt::StmtKind::ConstTuple { patterns, .. } => {
+                | rask_ast::stmt::StmtKind::LetTuple { patterns, .. } => {
                     for n in rask_ast::stmt::tuple_pats_flat_names(patterns) { local_bound.insert(n.to_string()); }
                 }
                 _ => {}
@@ -2868,10 +2868,10 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::stmt::{ForBinding, StmtKind};
         match &stmt.kind {
             StmtKind::Expr(e) => self.walk_free_vars(e, bound, seen, free),
-            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
             StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),
@@ -3438,7 +3438,7 @@ mod tests {
     fn const_stmt(name: &str, ty: Option<&str>, init: Expr) -> Stmt {
         Stmt {
             id: NodeId(202),
-            kind: StmtKind::Const {
+            kind: StmtKind::Let {
                 name: name.to_string(),
                 name_span: sp(),
                 ty: ty.map(|s| s.to_string()),

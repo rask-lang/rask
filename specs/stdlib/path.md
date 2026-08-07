@@ -82,7 +82,7 @@ path.as_string(self) -> string      // cheap view — Path IS a string
 ```
 ERROR [std.path/P3]: non-UTF-8 path encountered
    |
-5  |  const p = fs.read_dir(dir)
+5  |  let p = fs.read_dir(dir)
    |            ^^^^^^^^^^^^^^^^ path contains invalid UTF-8
 
 WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system boundary.
@@ -119,8 +119,8 @@ WHY: Rask paths are UTF-8. Non-UTF-8 filenames are lossy-converted at the system
 import path
 
 func output_path(input: Path, ext: string) -> Path {
-    const dir = input.parent() ?? Path.from(".")
-    const name = input.stem() ?? "output"
+    let dir = input.parent() ?? Path.from(".")
+    let name = input.stem() ?? "output"
     return dir / "{name}.{ext}"
 }
 ```
@@ -132,12 +132,12 @@ import path
 import fs
 
 func find_rask_files(dir: Path) -> Vec<Path> or IoError {
-    const entries = try fs.read_dir(dir)
-    const results = Vec.new()
+    let entries = try fs.read_dir(dir)
+    let results = Vec.new()
     for entry in entries {
-        const p = dir / entry.name()
+        let p = dir / entry.name()
         if entry.is_dir() {
-            const sub = try find_rask_files(p)
+            let sub = try find_rask_files(p)
             for f in sub {
                 results.push(f)
             }
@@ -154,12 +154,12 @@ func find_rask_files(dir: Path) -> Vec<Path> or IoError {
 ```rask
 import path
 
-const base = Path.from("/usr/local")
-const bin = base / "bin"             // /usr/local/bin
-const exe = bin / "rask"             // /usr/local/bin/rask
+let base = Path.from("/usr/local")
+let bin = base / "bin"             // /usr/local/bin
+let exe = bin / "rask"             // /usr/local/bin/rask
 
 // Chaining
-const config = Path.from(home) / ".config" / "rask" / "settings.toml"
+let config = Path.from(home) / ".config" / "rask" / "settings.toml"
 ```
 
 ### Integration

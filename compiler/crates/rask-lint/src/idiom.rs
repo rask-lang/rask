@@ -53,11 +53,11 @@ fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnosti
     match &stmt.kind {
         StmtKind::Expr(e) => walk_expr_for_unwrap(e, source, diags),
         StmtKind::Mut { init, .. }
-        | StmtKind::Const { init, .. }
+        | StmtKind::Let { init, .. }
         | StmtKind::Break { value: Some(init), .. } => {
             walk_expr_for_unwrap(init, source, diags);
         }
-        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             walk_expr_for_unwrap(init, source, diags);
         }
         StmtKind::Return(Some(e)) => walk_expr_for_unwrap(e, source, diags),
@@ -265,7 +265,7 @@ fn check_stmt_for_resource(
     diags: &mut Vec<LintDiagnostic>,
 ) {
     match &stmt.kind {
-        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
             check_expr_for_resource(init, resource_types, has_ensure, source, diags);
         }
         StmtKind::Expr(expr) => {
@@ -309,14 +309,14 @@ fn check_expr_for_resource(
 /// up resources in the wrong sequence.
 ///
 /// Good (LIFO gives correct cleanup):
-///   const a = open("a")
+///   let a = open("a")
 ///   ensure a.close()       // registered 1st → runs LAST
-///   const b = open("b")
+///   let b = open("b")
 ///   ensure b.close()       // registered 2nd → runs FIRST
 ///
 /// Bad (LIFO gives reversed cleanup):
-///   const a = open("a")
-///   const b = open("b")
+///   let a = open("a")
+///   let b = open("b")
 ///   ensure b.close()       // registered 1st → runs LAST  (b closed after a!)
 ///   ensure a.close()       // registered 2nd → runs FIRST (a closed before b!)
 pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
@@ -345,7 +345,7 @@ fn check_ensure_ordering_in_block(
 
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Const { name, .. } | StmtKind::Mut { name, .. } => {
+            StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
                 binding_order.push(name.clone());
             }
             StmtKind::Ensure { body, .. } => {
@@ -493,7 +493,7 @@ fn walk_for_large_unsafe(stmts: &[Stmt], source: &str, max: usize, diags: &mut V
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expr(e) => check_expr_for_large_unsafe(e, source, max, diags),
-            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 check_expr_for_large_unsafe(init, source, max, diags);
             }
             StmtKind::While { cond, body, .. } => {

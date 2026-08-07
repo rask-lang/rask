@@ -60,8 +60,8 @@ extend File {
 <!-- test: parse -->
 ```rask
 func process() -> void or Error {
-    const file = try File.open("data.txt")
-    const data = try file.read_text()
+    let file = try File.open("data.txt")
+    let data = try file.read_text()
     try process_data(data)
     try file.close()                          // Consumed
     return
@@ -91,8 +91,8 @@ extend DbConn {
 }
 
 func bad() -> void or Error {
-    const conn = try DbConn.open("data.txt")
-    const data = try conn.read_text()
+    let conn = try DbConn.open("data.txt")
+    let data = try conn.read_text()
     return
     // ERROR: conn not consumed before scope exit
 }
@@ -117,7 +117,7 @@ extend DbConn {
 }
 
 func also_bad() -> void or Error {
-    const conn = try DbConn.open("data.txt")
+    let conn = try DbConn.open("data.txt")
     try conn.close()
     try conn.close()    // ERROR: conn already consumed
     return
@@ -137,13 +137,13 @@ func also_bad() -> void or Error {
 <!-- test: parse -->
 ```rask
 func process() -> void or Error {
-    const file = try File.open("data.txt")
+    let file = try File.open("data.txt")
     ensure file.close()        // Consumption committed
 
-    const header = try file.read_header()
+    let header = try file.read_header()
     try validate(header)       // Can use try freely
 
-    const body = try file.read_body()
+    let body = try file.read_body()
     try transform(body)
 
     return
@@ -156,7 +156,7 @@ func process() -> void or Error {
 <!-- test: parse -->
 ```rask
 func risky() -> void or Error {
-    const file = try File.open("data.txt")
+    let file = try File.open("data.txt")
     ensure file.close()        // May fail
 
     try risky_operation()         // If this fails, ensure still runs
@@ -174,15 +174,15 @@ func risky() -> void or Error {
 <!-- test: parse -->
 ```rask
 func process(path: string) -> Data or Error {
-    const file = try File.open(path)
+    let file = try File.open(path)
     ensure file.close()        // Guarantees consumption on any exit
 
-    const header = try file.read_header()  // Early return? ensure runs
+    let header = try file.read_header()  // Early return? ensure runs
     if !header.valid {
         return InvalidHeader      // ensure runs, file closed
     }
 
-    const data = try file.read_body()      // Early return? ensure runs
+    let data = try file.read_body()      // Early return? ensure runs
     return data                           // Normal exit: ensure runs
 }
 ```
@@ -199,11 +199,11 @@ enum FileError {
 }
 
 func read_config(file: File) -> Config or FileError {
-    const data = if file.read_text() ? as d { d } else as reason {
+    let data = if file.read_text() ? as d { d } else as reason {
         return FileError.ReadFailed { file, reason }
     }
 
-    const config = try parse(data)
+    let config = try parse(data)
     try file.close()
     return config
 }
@@ -227,11 +227,11 @@ func read_config(file: File) -> Config or FileError {
 **Pool pattern for resources:**
 <!-- test: skip -->
 ```rask
-const connections: Pool<Connection> = Pool.new()
-const h = connections.insert(try Connection.open(addr))
+let connections: Pool<Connection> = Pool.new()
+let h = connections.insert(try Connection.open(addr))
 
 // Later: explicit consumption required
-const conn = connections.remove(h)!
+let conn = connections.remove(h)!
 try conn.close()
 ```
 
@@ -258,7 +258,7 @@ for file in files.take_all() {
 ```
 ERROR [mem.linear/L1]: resource not consumed before scope exit
    |
-3  |  const file = try File.open("data.txt")
+3  |  let file = try File.open("data.txt")
    |        ^^^^ File created here
 8  |  }
    |  ^ scope ends without consuming file
@@ -320,11 +320,11 @@ func conditional(file: File, keep_open: bool) -> void or Error {
 <!-- test: parse -->
 ```rask
 func process_file(path: string) -> Data or Error {
-    const file = try File.open(path)
+    let file = try File.open(path)
     ensure file.close()
 
-    const header = try file.read_header()
-    const data = try file.read_body()
+    let header = try file.read_header()
+    let data = try file.read_body()
 
     return data
 }
@@ -334,10 +334,10 @@ func process_file(path: string) -> Data or Error {
 <!-- test: parse -->
 ```rask
 func update_user(db: Database, user_id: u64) -> void or Error {
-    const txn = try db.begin_transaction()
+    let txn = try db.begin_transaction()
     ensure txn.rollback()     // Default: rollback on error
 
-    const user = try txn.query_user(user_id)
+    let user = try txn.query_user(user_id)
     user.last_login = now()
     try txn.update_user(user)
 
@@ -352,7 +352,7 @@ func update_user(db: Database, user_id: u64) -> void or Error {
 ```rask
 func handle_connections(pool: Pool<Connection>) -> void or Error {
     // Check which connections should close
-    const to_close: Vec<Handle<Connection>> = Vec.new()
+    let to_close: Vec<Handle<Connection>> = Vec.new()
     for h in pool.handles().collect<Vec<_>>() {
         if pool[h].should_close() {
             to_close.push(h)
@@ -361,13 +361,13 @@ func handle_connections(pool: Pool<Connection>) -> void or Error {
 
     // Remove and consume outside the access
     for h in to_close {
-        const conn = pool.remove(h)!
+        let conn = pool.remove(h)!
         try conn.close()
     }
 
     // Clean up remaining
     for h in pool.handles().collect<Vec<_>>() {
-        const conn = pool.remove(h)!
+        let conn = pool.remove(h)!
         try conn.close()
     }
 
@@ -439,10 +439,10 @@ read_config(file) catch e => return e.close_and_convert()
 <!-- test: parse -->
 ```rask
 func process_files(paths: Vec<string>) -> void or Error {
-    const files = Vec.new()
+    let files = Vec.new()
 
     for path in paths {
-        const file = try File.open(path)
+        let file = try File.open(path)
         ensure file.close()  // Each file gets its own ensure
         files.push(file)
     }

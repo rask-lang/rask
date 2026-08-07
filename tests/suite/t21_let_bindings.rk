@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// mut rebinding, const vs mut, shadowing.
+// mut rebinding, let vs mut, shadowing.
 //
 // Spec: SYNTAX.md (bindings section)
 //
-// `mut` is the rebindable binding keyword, `const` is permanent.
+// `mut` is the rebindable binding keyword, `let` is permanent.
 //
-// Note: `const` controls the binding, not the value. `const v = Vec.new()`
-// allows `v.push(1)` but not `v = other_vec`. This is like JS `const`.
+// Note: `let` is deep — `let v = Vec.new()` forbids `v = other_vec` AND
+// `v.push(1)`. Anything that needs to change goes through `mut`.
 
-// --- const cannot be reassigned ---
+// --- let cannot be reassigned ---
 
-test "const binding is permanent" {
-    const x = 42
-    // x = 43 would be a compile error (tested in compile_errors/const_reassign.rk)
+test "let binding is permanent" {
+    let x = 42
+    // x = 43 would be a compile error (tested in compile_errors/let_reassign.rk)
     assert x == 42
 }
 
@@ -46,45 +46,45 @@ test "mut multiple reassignments" {
 
 // --- shadowing (SYNTAX.md) ---
 
-test "const shadows const" {
-    const x = 1
-    const x = x + 1
+test "let shadows let" {
+    let x = 1
+    let x = x + 1
     assert x == 2
 }
 
-test "const shadows mut" {
+test "let shadows mut" {
     mut x = 1
     x = 5
-    const x = x * 2
+    let x = x * 2
     assert x == 10
 }
 
 test "shadow changes type" {
-    const x = 42
-    const x = "now a string"
+    let x = 42
+    let x = "now a string"
     assert x == "now a string"
 }
 
 test "shadow in nested block" {
-    const x = 1
+    let x = 1
     {
-        const x = 2
+        let x = 2
         assert x == 2
     }
     // Outer x still 1 — block shadow doesn't leak
     assert x == 1
 }
 
-// --- const allows value mutation (like JS const) ---
+// --- mutating collections requires mut (let is deep) ---
 
-test "const vec allows push" {
+test "mut vec allows push" {
     mut v = Vec.new()
     v.push(1)
     v.push(2)
     assert v.len() == 2
 }
 
-test "const map allows insert" {
+test "mut map allows insert" {
     mut m = Map.new()
     m.insert("a", 1)
     assert m["a"] == 1

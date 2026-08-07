@@ -67,7 +67,7 @@ Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is eq
 **Note:** Key-value pairs for `Map.from()` are represented as 2-element arrays `[key, value]` rather than tuple syntax. Native tuple support may be added in the future. Example:
 
 ```rask
-const users = Map.from([
+let users = Map.from([
     ["alice", User.new("Alice")],
     ["bob", User.new("Bob")],
 ])
@@ -107,7 +107,7 @@ const users = Map.from([
 ```rask
 vec[i].field              // Read field (inline access)
 vec[i].field = value      // Mutate field (in-place)
-const x = vec[i]          // Copy out (T: Copy only)
+let x = vec[i]          // Copy out (T: Copy only)
 
 // Multi-statement access (mutable by default)
 with vec[i] as v {
@@ -119,7 +119,7 @@ with vec[i] as v {
 with vec[i] as v: v.count += 1
 
 // Expression context — produces a value
-const name = with vec[i] as v { v.name.clone() }
+let name = with vec[i] as v { v.name.clone() }
 ```
 
 ## Map Key Constraints
@@ -246,7 +246,7 @@ items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 
 <!-- test: parse -->
 ```rask
-const scores = Map.from([["alice", 10], ["bob", 20]])
+let scores = Map.from([["alice", 10], ["bob", 20]])
 scores.contains_key("alice")      // true
 for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
@@ -268,7 +268,7 @@ vec.shrink_to(n)         // Shrink to at least n capacity
 
 <!-- test: parse -->
 ```rask
-const idx = vec.push_with(|slot| {
+let idx = vec.push_with(|slot| {
     slot.field1 = compute_expensive()
     slot.field2 = [0; 1000]
 })
@@ -330,8 +330,8 @@ At compile time, collections use a compiler-managed allocator and must be frozen
 
 <!-- test: parse -->
 ```rask
-const PRIMES: [u32; _] = comptime {
-    const v = Vec<u32>.new()
+let PRIMES: [u32; _] = comptime {
+    let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
@@ -360,7 +360,7 @@ Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
 ```
 ERROR [std.collections/C4]: linear resource type in Vec
    |
-3  |  const files: Vec<File> = Vec.new()
+3  |  let files: Vec<File> = Vec.new()
    |               ^^^^^^^^^ File is a linear resource
 
 WHY: Collection drop calls T.drop() for each element, but linear resource
@@ -368,7 +368,7 @@ WHY: Collection drop calls T.drop() for each element, but linear resource
 
 FIX: Use Pool<File> with explicit consumption:
 
-  const pool: Pool<File> = Pool.new()
+  let pool: Pool<File> = Pool.new()
 ```
 
 ```

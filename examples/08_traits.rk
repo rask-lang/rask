@@ -44,7 +44,7 @@ extend Person with Describable {
 
 // Generic function that works with any Describable type
 func print_description<T: Describable>(item: T) {
-    const desc = item.describe()
+    let desc = item.describe()
     print(desc)
     print("\n")
 }
@@ -61,9 +61,9 @@ func describe_all<T: Describable, U: Describable>(first: T, second: U) {
 }
 
 func main() {
-    const point = Point { x: 10, y: 20 }
-    const circle = Circle { radius: 5.5 }
-    const person = Person { name: "Alice", age: 30 }
+    let point = Point { x: 10, y: 20 }
+    let circle = Circle { radius: 5.5 }
+    let person = Person { name: "Alice", age: 30 }
 
     // Call describe directly
     print("Direct calls:\n")

@@ -24,19 +24,19 @@ func lookup(found: bool) -> i32? {
 }
 
 test "is_err on the error side" {
-    const r = load(true)
+    let r = load(true)
     assert r.is_err()
     assert r.is_ok() == false
 }
 
 test "is_ok on the value side" {
-    const r = load(false)
+    let r = load(false)
     assert r.is_ok()
     assert r.is_err() == false
 }
 
 test "predicates on a string payload" {
-    const r = load(true)
+    let r = load(true)
     if r.is_err() {
         assert true
     } else {

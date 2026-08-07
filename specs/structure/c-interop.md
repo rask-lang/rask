@@ -95,7 +95,7 @@ func call_c_string_api(name: string) {
     unsafe {
         c.printf("Hello %s\n".as_c_str(), name.as_c_str())
         c.write(fd, name.ptr, name.len)
-        const rask_name = string.from_c(c.get_name())
+        let rask_name = string.from_c(c.get_name())
     }
 }
 ```

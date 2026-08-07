@@ -135,8 +135,8 @@ struct SavedContext {
 **Example:**
 ```rask
 spawn(|| {
-    const file = try File.open("data.txt")
-    const data = try file.read_bytes()
+    let file = try File.open("data.txt")
+    let data = try file.read_bytes()
     process(data)
 })
 ```
@@ -279,15 +279,15 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
     // Read process-global runtime slot. Runtime panic if no block is active
     // (CC3 fallback: most missing-scope cases are caught at compile time by
     // CC1/CC2, this panic covers the cases static analysis cannot prove).
-    const runtime = RUNTIME_SLOT.read() else {
+    let runtime = RUNTIME_SLOT.read() else {
         panic!("spawn() called with no active 'using Multitasking' scope")
     }
 
     // Acquire a stack region (pooled; mmap a fresh 1 MiB if pool is empty).
-    const stack = runtime.stack_pool.acquire()
+    let stack = runtime.stack_pool.acquire()
 
     // Allocate Task on heap
-    const task = Arc::new(Task {
+    let task = Arc::new(Task {
         state: AtomicU8::new(Ready),
         result: Mutex::new(None),
         waker: Mutex::new(None),
@@ -304,7 +304,7 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
         local_queue.push(task.clone())
     } else {
         // Queue full: push half to global, push new task to local
-        const half = local_queue.drain(512)
+        let half = local_queue.drain(512)
         global_queue.push_batch(half)
         local_queue.push(task.clone())
     }
@@ -436,7 +436,7 @@ func File::open(path: string) -> File or Error {
 
 ### Async I/O Flow (IO3)
 
-**Example:** `const file = try File.open("data.txt")` in `using Multitasking` block
+**Example:** `let file = try File.open("data.txt")` in `using Multitasking` block
 
 **Flow:**
 1. `File.open` reads the process-global runtime slot
@@ -879,14 +879,14 @@ If a value of linear type enters a scope, it must be consumed before exiting tha
 
 **Simple case (easy):**
 ```rask
-const h = spawn(|| { work() })
+let h = spawn(|| { work() })
 // ERROR: handle not consumed
 // help: call h.join(), h.detach(), or h.cancel()
 ```
 
 **Branching (requires flow analysis):**
 ```rask
-const h = spawn(|| { work() })
+let h = spawn(|| { work() })
 if condition {
     h.join()  // Consumed here
 } else {
@@ -898,7 +898,7 @@ if condition {
 **Early return (error):**
 ```rask
 func process() {
-    const h = spawn(|| { work() })
+    let h = spawn(|| { work() })
     if error {
         return  // ERROR: handle not consumed on this path
     }
@@ -909,7 +909,7 @@ func process() {
 **Loop (error):**
 ```rask
 for item in items {
-    const h = spawn(|| { process(item) })
+    let h = spawn(|| { process(item) })
     // ERROR: handle goes out of scope without consuming
 }
 
@@ -946,7 +946,7 @@ for item in items {
 error[E0509]: linear value `h` not consumed
   --> src/main.rk:15:11
    |
-15 |     const h = spawn(|| { work() })
+15 |     let h = spawn(|| { work() })
    |           ^ handle must be consumed (join/detach/cancel)
 16 |     if error_occurred {
 17 |         return
@@ -1085,7 +1085,7 @@ using Multitasking {
     }).detach()
 
     // Timeout
-    const result = timeout(Duration.seconds(10), || {
+    let result = timeout(Duration.seconds(10), || {
         try fetch_from_slow_api()
     })
     match result {
@@ -1094,7 +1094,7 @@ using Multitasking {
     }
 
     // Interval
-    const ticker = Timer.interval(Duration.milliseconds(100))
+    let ticker = Timer.interval(Duration.milliseconds(100))
     spawn(|| {
         loop {
             try ticker.receive()
@@ -1103,8 +1103,8 @@ using Multitasking {
     }).detach()
 
     // Select integration
-    const rx = channel.receiver
-    const timer = Timer.after(Duration.seconds(30))
+    let rx = channel.receiver
+    let timer = Timer.after(Duration.seconds(30))
     result = select {
         rx -> msg: handle_message(msg),
         timer -> _: handle_timeout(),
@@ -1459,15 +1459,15 @@ func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
     // Read from process-global ThreadPool slot (analogous to RUNTIME_SLOT).
     // Compile-time check (CC1/CC2 analog) catches most missing-scope cases;
     // this panic is the CC3 runtime fallback.
-    const pool = THREADPOOL_SLOT.read() else {
+    let pool = THREADPOOL_SLOT.read() else {
         panic!("ThreadPool.spawn() called with no active 'using ThreadPool' scope")
     }
 
     // Package closure as Box<FnOnce>
-    const result_slot = Arc::new(Mutex::new(None));
-    const result_clone = result_slot.clone();
+    let result_slot = Arc::new(Mutex::new(None));
+    let result_clone = result_slot.clone();
 
-    const job = Box::new(move || {
+    let job = Box::new(move || {
         let result = closure();
         *result_clone.lock().unwrap() = Some(result);
     });
@@ -1751,20 +1751,20 @@ Rask's borrowing rules prevent references from outliving lexical scope. This mea
 
 ```rask
 // Illegal: can't capture reference in task
-const vec = Vec.new()
+let vec = Vec.new()
 spawn(|| {
     vec.push(1)  // Error: vec reference can't escape to task
 })
 
 // Legal: capture value (move semantics)
-const vec = Vec.new()
+let vec = Vec.new()
 spawn(own || {  // 'own' captures by move
     vec.push(1)  // OK: task owns vec
 })
 
 // Legal: capture handle (copyable)
-const pool = Pool.new()
-const h = pool.add(Entity { hp: 100 })
+let pool = Pool.new()
+let h = pool.add(Entity { hp: 100 })
 spawn(|| {
     pool[h].hp -= 10  // OK: handle is Copy, pool context available
 })
@@ -1780,11 +1780,11 @@ Resource types (File, TcpConnection, etc.) use `ensure` blocks for cleanup. Thes
 
 ```rask
 spawn(|| {
-    const file = try File.open("data.txt")
+    let file = try File.open("data.txt")
     ensure { file.close() }  // Registers cleanup hook
 
     // If task cancelled here, ensure still runs
-    const data = try file.read_bytes()
+    let data = try file.read_bytes()
     process(data)
 })
 ```
@@ -1805,7 +1805,7 @@ Pool handles are copyable opaque IDs (pool_id, index, generation). They can safe
 
 ```rask
 using Pool<Entity>, Multitasking {
-    const h = pool.add(Entity { hp: 100 })
+    let h = pool.add(Entity { hp: 100 })
 
     spawn(|| {
         pool[h].hp -= 10  // OK: handle is Copy, pool context threaded
@@ -1826,7 +1826,7 @@ using Pool<Entity>, Multitasking {
 **No async at comptime (control.comptime/CT33):**
 
 ```rask
-const data = comptime {
+let data = comptime {
     spawn(|| { fetch() })  // Compile error: spawn not allowed at comptime
 }
 ```
@@ -1893,7 +1893,7 @@ using Multitasking {
 ### Cancel Already-Complete Task (E4)
 
 ```rask
-const h = spawn(|| { quick_work() })
+let h = spawn(|| { quick_work() })
 h.join()  // Task completes
 h.cancel()  // Error: handle already consumed
 ```
@@ -1902,7 +1902,7 @@ h.cancel()  // Error: handle already consumed
 
 **Alternative:**
 ```rask
-const h = spawn(|| { quick_work() })
+let h = spawn(|| { quick_work() })
 h.cancel()  // Sets flag, waits for completion
 ```
 
@@ -1927,8 +1927,8 @@ using Multitasking {
 
 ```rask
 using Multitasking {
-    const h1 = spawn(|| { h2.join() })
-    const h2 = spawn(|| { h1.join() })
+    let h1 = spawn(|| { h2.join() })
+    let h2 = spawn(|| { h1.join() })
     h1.join()  // Deadlock: circular dependency
 }
 ```
@@ -2045,8 +2045,8 @@ public func async.stats() -> RuntimeStats {
 
 ```rask
 using Multitasking {
-    const file = try File.open("data.txt")  // ⟨pauses⟩ ghost annotation
-    const data = try file.read_bytes()        // ⟨pauses⟩
+    let file = try File.open("data.txt")  // ⟨pauses⟩ ghost annotation
+    let data = try file.read_bytes()        // ⟨pauses⟩
     process(data)                           // (no annotation - CPU work)
 }
 ```

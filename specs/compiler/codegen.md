@@ -113,7 +113,7 @@ Each Rask construct has a defined lowering to MIR blocks.
 <!-- test: skip -->
 ```rask
 // try lowering example
-const value = try fallible_call()
+let value = try fallible_call()
 // → call, branch on tag, Ok path continues, Err path runs ensure chain + returns error
 ```
 
@@ -148,7 +148,7 @@ Strings are 16-byte values (`std.strings/S8`), passed by pointer to C runtime fu
 | **STR1: Out-param** | String-producing C functions take `RaskStr *out` as first parameter. Codegen allocates a 16-byte stack slot and passes its address. Result is read from the slot after the call |
 | **STR2: In-place mutation** | `push_str`, `push_char`, `push_byte` use signature `fn(out, self, arg)` — three parameters. `out` receives the mutated string, `self` points to the original, `arg` is the value to append. Codegen prepends the out-param (same slot as self for in-place semantics) |
 | **STR3: Read-only** | Non-mutating string functions (`len`, `eq`, `contains`, etc.) take `const RaskStr *` parameters — pointer to 16-byte value, no out-param |
-| **STR4: Literal init** | String constants lower to `rask_string_from(out, cstr)` where `cstr` is a `const char*` from the data section |
+| **STR4: Literal init** | String constants lower to `rask_string_from(out, cstr)` where `cstr` is a `let char*` from the data section |
 
 ```
 // STR2 example: s.push_str("world")

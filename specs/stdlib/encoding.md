@@ -103,12 +103,12 @@ E13b is the mass-assignment rail: an attacker who puts `"password_hash": "…"` 
 <!-- test: skip -->
 ```rask
 func send_json<T: Encode>(endpoint: string, value: T) -> void or HttpError {
-    const body = json.encode(value)
+    let body = json.encode(value)
     return http.post(endpoint, body)
 }
 
 func load_config<T: Decode>(path: string) -> T or ConfigError {
-    const text = try fs.read_text(path)
+    let text = try fs.read_text(path)
     return try toml.decode<T>(text)
 }
 ```
@@ -136,7 +136,7 @@ extend DateTime {
     }
 
     public func from_json(value: JsonValue) -> DateTime or JsonError {
-        const s = value.as_string() ?? return JsonError.TypeError("expected string for DateTime")
+        let s = value.as_string() ?? return JsonError.TypeError("expected string for DateTime")
         return try DateTime.parse_iso8601(s)
     }
 }
@@ -298,7 +298,7 @@ func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     } else if T == string {
         return parser.read_string()
     } else if reflect.is_integer<T>() {
-        const n = try parser.read_number()
+        let n = try parser.read_number()
         return n as T
     } else if reflect.is_optional<T>() {
         if parser.peek_null() {
@@ -322,7 +322,7 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     try parser.begin_object()
     mut fields = Map<string, JsonValue>.new()
     while !parser.is_object_end() {
-        const key = try parser.read_key()
+        let key = try parser.read_key()
         fields.insert(key, try parser.read_value())
     }
 
@@ -336,7 +336,7 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
                         field.default_value
                     }
                 } else {
-                    const raw = fields.get(field.serial_name)
+                    let raw = fields.get(field.serial_name)
                         ?? return JsonError.MissingField(field.serial_name)
                     try decode_from_value(raw)
                 },
@@ -387,7 +387,7 @@ FIX: Remove @no_encode, or implement a custom encoding method.
 ```
 ERROR [ctrl.comptime/CT53]: runtime string in comptime field access
    |
-5  |  const v = point.(name)
+5  |  let v = point.(name)
    |                   ^^^^ `name` is not comptime-known
 
 WHY: Comptime field access resolves at compile time. The field name must be
@@ -395,15 +395,15 @@ WHY: Comptime field access resolves at compile time. The field name must be
 
 FIX: Use a comptime-known string:
 
-  const v = point.("x")              // string literal
-  const v = point.(field.name)       // inside comptime for
+  let v = point.("x")              // string literal
+  let v = point.(field.name)       // inside comptime for
 ```
 
 **Unknown field [CT54]:**
 ```
 ERROR [ctrl.comptime/CT54]: no field "z" on type `Point`
    |
-5  |  const v = point.("z")
+5  |  let v = point.("z")
    |                    ^^^ Point has fields: x, y
 ```
 
@@ -540,12 +540,12 @@ struct Config {
 
 func main() -> void or Error {
     // Encode
-    const config = Config { host: "localhost", port: 3000, cached_at: 0 }
-    const text = json.encode(config)
+    let config = Config { host: "localhost", port: 3000, cached_at: 0 }
+    let text = json.encode(config)
     // → {"server_host": "localhost", "port": 3000}
 
     // Decode (port defaults to 8080 if missing)
-    const loaded = try json.decode<Config>("{\"server_host\": \"example.com\"}")
+    let loaded = try json.decode<Config>("{\"server_host\": \"example.com\"}")
     // → Config { host: "example.com", port: 8080, cached_at: 0 }
 }
 ```
@@ -570,10 +570,10 @@ struct UserResponse {
 
 func handle_create_user(req: http.Request) -> http.Response {
     if req.body.is_empty() { return http.Response.bad_request("missing body") }
-    const input = json.decode<CreateUserRequest>(req.body)
+    let input = json.decode<CreateUserRequest>(req.body)
         catch _ => return http.Response.bad_request("invalid JSON")
-    const user = create_user(input.name, input.email, input.age)
-    const response = UserResponse { id: user.id, name: user.name, email: user.email }
+    let user = create_user(input.name, input.email, input.age)
+    let response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))
 }
 ```

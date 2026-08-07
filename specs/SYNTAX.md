@@ -15,9 +15,9 @@ No semicolons required. Use `;` only for multiple statements on one line.
 Of course, if you want you can have them, it works both ways.
 
 ```rask
-const x = 1
-const y = 2
-const z = 3; const w = 4  // Multiple on one line
+let x = 1
+let y = 2
+let z = 3; let w = 4  // Multiple on one line
 ```
 
 **Rationale:** Python devs expect newlines to matter. Rust devs won't care — semicolons are just noise most of the time.
@@ -29,7 +29,7 @@ Single-expression blocks use `:`. Multi-statement blocks use `{ }`.
 ```rask
 // Inline (single expression after colon)
 if x > 0: return x
-const sign = if x > 0: "+" else: "-"
+let sign = if x > 0: "+" else: "-"
 
 // Multi-line (braces and return required)
 if x > 0 {
@@ -46,8 +46,8 @@ if x > 0 {
 Types inferred within function bodies. Public signatures require explicit types; private functions can omit them entirely.
 
 ```rask
-const x = 42            // i32 inferred (within body)
-const y: u64 = 42       // Explicit when needed
+let x = 42            // i32 inferred (within body)
+let y: u64 = 42       // Explicit when needed
 
 // Public: full signature required
 public func add(a: i32, b: i32) -> i32 {
@@ -68,7 +68,7 @@ Try to use readable keywords, not symbols or abbreviations.
 
 | Concept | Rask | Rust | Go |
 |---------|------|------|-----|
-| Variable binding | `const` / `mut` | `let` / `let mut` | `:=` or `var` |
+| Variable binding | `let` / `mut` | `let` / `let mut` | `:=` or `var` |
 | Function | `func` | `fn` | `func` |
 | Return | `return` | `return` | `return` |
 | Match | `match` | `match` | `switch` |
@@ -79,8 +79,8 @@ Try to use readable keywords, not symbols or abbreviations.
 Everything that can be an expression is one. Blocks in expression context produce values implicitly; function bodies require explicit `return`.
 
 ```rask
-const result = {
-    const temp = compute()
+let result = {
+    let temp = compute()
     transform(temp)  // Last expression is the value (expression context)
 }
 
@@ -139,8 +139,8 @@ false
 ### Variable Bindings
 
 ```rask
-const x = 42                  // Permanent binding — x always refers to this value
-const name = "Alice"
+let x = 42                  // Permanent binding — x always refers to this value
+let name = "Alice"
 mut counter = 0               // Rebindable — can reassign counter later
 counter = 1                   // Reassignment
 
@@ -149,35 +149,49 @@ mut x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 
 | Syntax | Meaning |
 |--------|---------|
-| `const x = v` | Permanent binding — `x` cannot be reassigned |
+| `let x = v` | Permanent binding — `x` cannot be reassigned |
 | `mut x = v` | Rebindable — `x` can be reassigned |
 | `x = v` | Reassignment (variable must exist) |
 
-**`const` is deep.** `const v = Vec.new()` forbids:
+**`let` is deep.** `let v = Vec.new()` forbids:
 - Rebinding: `v = other`
 - Index/field assign: `v[0] = x`, `v.field = x`
 - Mutating method calls: `v.push(1)`, `v.sort()`
 - Passing as a `mutate` parameter: `f(v)` where `f(mutate x)`
 
-Use `mut` when the value needs to change. Moving/consuming is still fine on a `const` binding (`take self` methods, passing as `take` parameter) — transfer of ownership is not mutation.
+Use `mut` when the value needs to change. Moving/consuming is still fine on a `let` binding (`take self` methods, passing as `take` parameter) — transfer of ownership is not mutation.
 
-In practice, most collections bind with `mut` since building usually involves mutation. `const` is for values that are complete at creation: function returns, literals, frozen comptime data, or an already-built value that won't be modified further.
+In practice, most collections bind with `mut` since building usually involves mutation. `let` is for values that are complete at creation: function returns, literals, frozen comptime data, or an already-built value that won't be modified further.
 
 ```rask
-const xs = [1, 2, 3]            // fine — complete at creation
-const sum = xs.sum()            // fine — non-mutating method
+let xs = [1, 2, 3]            // fine — complete at creation
+let sum = xs.sum()            // fine — non-mutating method
 mut v = Vec.new()               // needs mut to push
 v.push(1)
 
-const v2 = Vec.new()
-v2.push(1)                      // ERROR: cannot mutate `v2` — declared `const`
+let v2 = Vec.new()
+v2.push(1)                      // ERROR: cannot mutate `v2` — declared `let`
 ```
 
-**Why `const`/`mut`:** `const` for constant bindings, `mut` for mutable ones — both describe semantics, not grammar. Rust users writing `let x = 5` get a clear parse error pointing to `mut` or `const`.
+**Why `let`/`mut`:** the immutable binding is the default and the most common statement in the language, so it gets no extra weight — `let` and `mut` are both three letters, and mutation is the marked case you opt into, never the cheaper one to type. (This was `const`/`mut` for a while: five letters for the good default, three for the exception. Zig has the same inversion with `const`/`var` and gets the same complaint — the keyword lengths punish the binding you want people to reach for.) `let mut x = 5` from Rust muscle memory gets a pointed error: drop the `let`.
+
+`const` still exists, but only at module level, for package-level constants. Inside a function it's a parse error that points to `let`.
 
 ---
 
 ## Declarations
+
+### Module Constants
+
+`const` lives at module level only — it declares package-level constants. Locals use `let`/`mut`.
+
+```rask
+const MAX_RETRIES = 3
+const PRIMES = comptime { sieve(100) }        // frozen comptime data
+const db = Shared.new(Database.new())         // module global — sync boxes for mutable state
+```
+
+Module `const` follows the same rules as `let` (permanent, deep). Mutable package state goes through `Atomic`/`Mutex`/`Shared` — see [structure/modules.md](structure/modules.md) PS1–PS4.
 
 ### Functions
 
@@ -280,8 +294,8 @@ struct Point {
 
 extend Point {
     func distance(self, other: Point) -> f64 {
-        const dx = self.x - other.x
-        const dy = self.y - other.y
+        let dx = self.x - other.x
+        let dy = self.y - other.y
         return sqrt((dx*dx + dy*dy) as f64)
     }
 
@@ -303,14 +317,14 @@ struct User {
 }
 
 // Construction
-const user = User {
+let user = User {
     name: "Alice"
     email: "alice@example.com"
     password_hash: hash(pwd)
 }
 
 // Update syntax
-const updated = User { email: "new@example.com", ..user }
+let updated = User { email: "new@example.com", ..user }
 ```
 
 **Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` trait or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
@@ -322,8 +336,8 @@ struct Config {
     verbose: bool = false
 }
 
-const c = Config { host: "localhost" }        // port=8080, verbose=false
-const c2 = Config { host: "x", port: 443 }
+let c = Config { host: "localhost" }        // port=8080, verbose=false
+let c2 = Config { host: "x", port: 443 }
 ```
 
 **Unique structs** (can't be copied, can be dropped):
@@ -441,7 +455,7 @@ extend LogSource with Reader, Displayable, ErrorMessage {
 
 **Runtime polymorphism:** Use `any Trait` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.traits/TR5`):
 ```rask
-const widgets: []any Widget = [
+let widgets: []any Widget = [
     button as any Widget,
     textbox as any Widget,
     slider as any Widget,
@@ -509,7 +523,7 @@ func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
 
 // Named context (auto-resolution + structural operations)
 func spawn(count: i32) using enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
-    const handles = Vec.new()
+    let handles = Vec.new()
     for i in 0..count {
         handles.push(enemies.insert(Enemy.new()))
     }
@@ -558,7 +572,7 @@ public func complex<K, V>(map: Map<K, V>, key: K) -> V or NotFound
     using values: Pool<V>
     where K: HashKey, V: Clone
 {
-    const v_handle = try map.get(key)
+    let v_handle = try map.get(key)
     return v_handle.clone()
 }
 ```
@@ -602,8 +616,8 @@ The ambiguous case `f(a<b, c>(d))` parses as a generic call `a<b, c>(d)`. To exp
 type UserId = u64 with (Equal, Hashable)
 type Email = string with (Equal, Debug)
 
-const id = UserId(42)           // explicit construction
-const raw: u64 = id.value       // explicit extraction
+let id = UserId(42)           // explicit construction
+let raw: u64 = id.value       // explicit extraction
 find_user(42)                   // ❌ compile error
 find_user(UserId(42))           // ✓
 ```
@@ -615,7 +629,7 @@ type alias Matrix = Vec<Vec<f64>>
 type alias Pair<T> = (T, T)
 type alias Handler = func(i32) -> string
 
-const coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
+let coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
 ```
 
 Visibility: `public type Name = ...` exports the type. See [type-aliases.md](types/type-aliases.md).
@@ -625,11 +639,11 @@ Visibility: `public type Name = ...` exports the type. See [type-aliases.md](typ
 Anonymous product types. Use when naming fields adds nothing.
 
 ```rask
-const pair: (i32, string) = (42, "hello")
-const nested: ((i32, i32), string) = ((1, 2), "point")
+let pair: (i32, string) = (42, "hello")
+let nested: ((i32, i32), string) = ((1, 2), "point")
 
 // Destructuring
-const (x, y) = pair
+let (x, y) = pair
 for (key, value) in map { ... }
 ```
 
@@ -657,7 +671,7 @@ else if x < 0: "negative"
 else: "zero"
 
 // As expression
-const sign = if x > 0: "+" else if x < 0: "-" else: "0"
+let sign = if x > 0: "+" else if x < 0: "-" else: "0"
 
 // Complex conditions (parentheses required for multi-line)
 if (x > 0 && y < 10): handle()
@@ -680,7 +694,7 @@ match status {
 }
 
 // As expression
-const message = match status {
+let message = match status {
     Pending => "waiting",
     Active => "running",
     _ => "other",
@@ -753,21 +767,19 @@ if state is Connected(sock) && sock.is_ready() {
 Bind, then check. The binding keeps its name, so nothing needs renaming after the guard:
 
 ```rask
-const opt = load()
-if opt == none { return }
-use(opt)                                       // opt: T here
+let opt = load() ?? return                     // guard: absent diverts, opt: T after
 
-const conn = connect()
+let conn = connect()
 if conn is ConnectError as e { return e }
-use(conn)                                      // conn: Connection here
+use(conn)                                      // conn: Connection here (ER24 narrow)
 ```
 
 One-liners cover the common cases — `try` propagates, `??` fills in for absence, `catch` handles failure:
 
 ```rask
-const data = try read_file(path)                              // propagate the error
-const ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
-const port = config.port ?? 8080                              // a value instead
+let data = try read_file(path)                              // propagate the error
+let ms = raw.parse() ?? return BadRequest("not a number")   // absence → leave
+let port = config.port ?? 8080                              // a value instead
 ```
 
 `try` works on optionals and results alike. The fallback is one word per shape: `??` for absence, `catch e =>` for failure — either right side is a value to carry on with, or an exit written where it happens (`type.optionals/OPT11`, `type.errors/ER14`).
@@ -777,8 +789,8 @@ const port = config.port ?? 8080                              // a value instead
 **Infinite loop with value:**
 ```rask
 // Loop that produces a value via 'break'
-const input = loop {
-    const x = read_input()
+let input = loop {
+    let x = read_input()
     if x.is_valid(): break x    // Exit loop with value
     println("Invalid, try again")
 }
@@ -787,7 +799,7 @@ const input = loop {
 **Infinite loop without value:**
 ```rask
 loop {
-    const conn = server.accept()
+    let conn = server.accept()
     spawn { handle(conn) }.detach()
 }
 ```
@@ -795,7 +807,7 @@ loop {
 **While:**
 ```rask
 while queue.len() > 0 {
-    const task = queue.pop()
+    let task = queue.pop()
     process(task)
 }
 
@@ -830,7 +842,7 @@ outer: for row in rows {
 }
 
 // Break with value from labeled loop
-const result = search: loop {
+let result = search: loop {
     for item in items {
         if item.matches(): break search item
     }
@@ -869,15 +881,15 @@ Pool access, `ensure` cleanup, and `@resource` types are shown in the sections a
 
 ```rask
 // Optional shorthand — bare value auto-wraps
-const x: i32? = 42
-const name = user?.profile?.name    // `none` if any step is `none`
-const port = config.port ?? 8080
-const must_exist = optional!
+let x: i32? = 42
+let name = user?.profile?.name    // `none` if any step is `none`
+let port = config.port ?? 8080
+let must_exist = optional!
 
 // Error union
 func load_config() -> Config or (IoError | ParseError) {
-    const content = try read_file("config.json")
-    const config = try parse_json(content)
+    let content = try read_file("config.json")
+    let config = try parse_json(content)
     return config                                   // Bare T — auto-wraps to success branch
 }
 ```
@@ -895,13 +907,13 @@ func load_config() -> Config or (IoError | ParseError) {
 | `r catch e => return f(e)` | **yes — and the line says so** | exits with something built from the error |
 
 ```rask
-const port = config.port ?? 8080                                 // nothing leaves
+let port = config.port ?? 8080                                 // nothing leaves
 return dispatch(req) catch e => error_response(e)                 // handled at a boundary
 
-const data = try read_file(path)                                 // propagates — leaves
-const ms   = raw.parse() ?? return BadRequest("bad ms")
-const dto  = json.decode(body) catch _ => return BadRequest("bad JSON")
-const text = fs.read_text(p) catch e => return context("reading {p}", e)
+let data = try read_file(path)                                 // propagates — leaves
+let ms   = raw.parse() ?? return BadRequest("bad ms")
+let dto  = json.decode(body) catch _ => return BadRequest("bad JSON")
+let text = fs.read_text(p) catch e => return context("reading {p}", e)
 ```
 
 The `?`-family stays absence-only: nothing with a `?` applies to a result, `?.` included — project with `try r.field`, where `try` attaches to the fallible step.
@@ -931,14 +943,14 @@ Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinish
 
 ```rask
 // Spawn and join
-const handle = spawn { compute() }
-const result = try handle.join()
+let handle = spawn { compute() }
+let result = try handle.join()
 spawn { background_work() }.detach()
 
 // Channels
-const (tx, rx) = Channel<Message>.buffered(100)
+let (tx, rx) = Channel<Message>.buffered(100)
 try tx.send(msg)
-const msg = try rx.receive()
+let msg = try rx.receive()
 
 // Select
 select {
@@ -948,8 +960,8 @@ select {
 }
 
 // Shared state
-const config = Shared.new(AppConfig {})
-const timeout = with config.read() as c { c.timeout }
+let config = Shared.new(AppConfig {})
+let timeout = with config.read() as c { c.timeout }
 with config.write() as c { c.timeout = 60.seconds }
 ```
 
@@ -1079,9 +1091,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 **Rask:**
 ```rask
 func handler(w: ResponseWriter, r: Request) -> void or HttpError {
-    const body = try r.body.read_bytes()
-    const req = try json.decode<Request>(body)
-    const result = try process(req)
+    let body = try r.body.read_bytes()
+    let req = try json.decode<Request>(body)
+    let result = try process(req)
     return w.write_json(result)
 }
 ```
@@ -1103,9 +1115,9 @@ def process_file(path):
 **Rask:**
 ```rask
 func process_file(path: string) -> Data or IoError {
-    const file = try File.open(path)
+    let file = try File.open(path)
     ensure file.close()
-    const content = try file.read_text()
+    let content = try file.read_text()
     return transform(content)
 }
 ```
@@ -1122,8 +1134,8 @@ names = [u.name for u in active_users]
 
 **Rask:**
 ```rask
-const active_users = users.filter(|u| u.active).collect()
-const names = active_users.map(|u| u.name).collect()
+let active_users = users.filter(|u| u.active).collect()
+let names = active_users.map(|u| u.name).collect()
 ```
 
 ---
@@ -1143,7 +1155,7 @@ func main() {
 
 <!-- test: run | positive -->
 ```rask
-const x = 5
+let x = 5
 if x > 0 {
     println("positive")
 } else {
@@ -1160,7 +1172,7 @@ for i in 0..3 {
 
 <!-- test: run | two -->
 ```rask
-const n = 2
+let n = 2
 match n {
     1 => println("one"),
     2 => println("two"),
@@ -1192,7 +1204,7 @@ println("{sum}")
 | Multi-line blocks | `{ }` | Multiple statements |
 | Types | `: Type` | Inference reduces annotations |
 | Functions | `func name(params) -> Type` | Familiar |
-| Permanent binding | `const x = ...` | Cannot reassign (value still mutable) |
+| Permanent binding | `let x = ...` | Cannot reassign (value still mutable) |
 | Rebindable | `mut x = ...` | Can reassign |
 | Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
@@ -1202,7 +1214,7 @@ println("{sum}")
 | Other branch | `x ?? v` (absent) / `r catch e => f(e)` (failed) | Right side is a value or a written-out exit; `catch` always binds — `e =>` or `_ =>` |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `const v = x is P else { }` | Enum patterns only; binds to outer scope |
+| Guard extraction | `let v = x is P else { }` | Enum patterns only; binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

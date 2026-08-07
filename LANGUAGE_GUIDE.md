@@ -7,7 +7,7 @@ Rask is a compiled systems language: value semantics, single ownership, no GC, n
 ## Syntax core
 
 ```rask
-const x = 42                 // permanent binding (not "let")
+let x = 42                 // permanent binding (not "let")
 mut counter = 0              // rebindable binding
 counter = counter + 1
 
@@ -15,8 +15,8 @@ func add(a: i32, b: i32) -> i32 {
     return a + b             // functions need explicit return
 }
 
-const sign = if x > 0: "+" else: "-"    // inline block: `: expr`
-const label = match x {
+let sign = if x > 0: "+" else: "-"    // inline block: `: expr`
+let label = match x {
     0 => "zero",
     n if n > 0 => "positive",           // guard arms use => like all arms
     _ => "negative",
@@ -35,9 +35,9 @@ const label = match x {
 Everything is a value with exactly one owner (`mem.ownership`). Assignment copies types ≤16 bytes whose fields are all Copy; larger types **move**, and the source binding becomes invalid. The threshold is fixed.
 
 ```rask
-const names = Vec.from(["a", "b"])
-const other = names            // moves — names is now invalid
-const backup = other.clone()   // explicit copy; allocation is visible
+let names = Vec.from(["a", "b"])
+let other = names            // moves — names is now invalid
+let backup = other.clone()   // explicit copy; allocation is visible
 
 func show(v: Vec<i32>) { }         // borrow (default): read-only, caller keeps it
 func grow(mutate v: Vec<i32>) { }  // exclusive mutable access, caller keeps it
@@ -57,11 +57,11 @@ No references can be stored in structs, returned, or sent cross-task — this is
 - **Growable** (Vec, Map, Pool, string): access is per-expression, or a `with` block for multiple statements.
 
 ```rask
-const hp = pool[h].health          // Copy types: copy out
+let hp = pool[h].health          // Copy types: copy out
 pool[h].health -= damage           // in-place expression access
-const e = vec[i]                   // ERROR if element isn't Copy — use with or .clone()
+let e = vec[i]                   // ERROR if element isn't Copy — use with or .clone()
 
-with pool[h] as entity {           // multi-statement access; binding is mutable
+with pool[h] as entity {           // multi-statement access; writes back at block exit
     entity.health -= damage
     if entity.health <= 0 { entity.status = Status.Dead }
     try log_hit(entity.id)         // return/try/break/continue work — real block, not a closure
@@ -80,7 +80,7 @@ Graphs, trees, entity systems — anything that needs stored identity — use `P
 
 ```rask
 mut entities = Pool.new()
-const h = entities.insert(Entity { health: 100 })  // panics on alloc failure (no try)
+let h = entities.insert(Entity { health: 100 })  // panics on alloc failure (no try)
 entities[h].health -= 10                           // validated: stale handle = panic
 entities.get(h)                                    // T? — non-panicking (Copy types)
 entities.remove(h)
@@ -109,7 +109,7 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`):
 
 ```rask
-const active = users.iter().filter(|u| u.active).map(|u| u.name).collect()
+let active = users.iter().filter(|u| u.active).map(|u| u.name).collect()
 
 for x in vec { }              // borrowed elements
 for mutate x in vec { }       // in-place mutation
@@ -132,7 +132,7 @@ struct User {
     private hash: u64                        // extend blocks only
     retries: i32 = 3                         // declared field default
 }
-const u = User { name: "bo", email: "e", hash: h() }   // retries filled from default
+let u = User { name: "bo", email: "e", hash: h() }   // retries filled from default
 // All fields defaulted → `Config {}` is the empty construction. There is NO Default trait.
 
 extend Point {                               // methods live in extend blocks
@@ -167,7 +167,7 @@ func find(id: i32) -> User? {
 }
 
 func read_config(path: string) -> Config or (IoError | ParseError) {
-    const text = try fs.read_text(path)     // try: extract or propagate (prefix, not `?` suffix)
+    let text = try fs.read_text(path)     // try: extract or propagate (prefix, not `?` suffix)
     return try parse(text)                   // error unions compose with |
 }
 ```
@@ -186,7 +186,7 @@ Operator surface — three words, three jobs: `try` means something **leaves**, 
 | `try f() ?? <expr>` | the flat-shape composite (`T? or E` callee): error up, absence here |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
-| `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
+| `let v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
 **Every exit is written where it happens.** Bare `try` leaves to the caller — one keyword, one meaning. Everything else that leaves does so with a visible `return`/`break`/`continue`/`panic` on the fallback's right side. And a *discarded error* is always visible too: `catch _ =>` is the loud, greppable spelling of "an error dies here" — the fallbacks are split per shape precisely because dropping a `none` loses nothing while dropping an `E` loses information.
 
@@ -227,13 +227,13 @@ duck trait Sketchy { func poke(self) }       // opt-in shape-matching — protot
 
 ```rask
 func process(path: string) -> Data or Error {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()                 // runs on every exit: return, try, panic. LIFO order.
-    const text = try file.read_text()
+    let text = try file.read_text()
     return parse(text)
 }
 
-const tx = try db.begin()
+let tx = try db.begin()
 ensure tx.rollback()                    // safety net
 try tx.insert(a)
 tx.commit()                             // consuming tx cancels the ensure
@@ -248,9 +248,9 @@ Uncolored: no `async`/`await`; I/O pauses the task automatically. Runtimes are o
 ```rask
 func main() -> void or Error {
     using Multitasking {                          // green-task runtime; block drains on exit
-        const listener = try TcpListener.bind("0.0.0.0:8080")
+        let listener = try TcpListener.bind("0.0.0.0:8080")
         loop {
-            const conn = try listener.accept()
+            let conn = try listener.accept()
             spawn(|| { handle(conn) }).detach()   // handles MUST be joined or detached
         }
     }
@@ -299,8 +299,8 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 
 1. **`type X = Y` creates a distinct nominal type.** For a transparent alias write `type alias X = Y` — the opposite of Rust/TypeScript.
 2. **No `Ok`/`Err`/`Some`/`None`.** Return bare values or the error value; test with `r?`, match on types (`IoError as e`), never `is Ok`.
-3. **Bindings are `const`/`mut`** — not `let`/`let mut`. `mut`, not `let`, is the rebindable one.
-4. **`try` is a prefix keyword**, not a `?` suffix: `const x = try f()`. The `?` suffix means something else (success test / optional chain).
+3. **Bindings are `let`/`mut`** — never `let mut`. `mut`, not `let`, is the rebindable one; `const` exists only at module level.
+4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means something else (success test / optional chain).
 5. **Methods live in `extend Point { }` blocks**, not in the struct body; trait conformance is `extend Point with Trait { }` — and it's required (nominal), methods matching by shape is not enough.
 6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Trait`, even when the target type is known.
 7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store `Handle<T>`, indices, or `Span`s instead of references; use `with` for multi-statement element access.

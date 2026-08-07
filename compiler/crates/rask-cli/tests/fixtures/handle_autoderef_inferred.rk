@@ -8,6 +8,6 @@ func report(h: Handle<Player>) {
 
 func main() {
     mut players = Pool.new()
-    const p = players.insert(Player { health: 42 })
+    let p = players.insert(Player { health: 42 })
     report(p)
 }

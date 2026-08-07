@@ -29,8 +29,8 @@ enum Step {
 }
 
 test "struct ordering is lexicographic by field" {
-    const a = Ver { major: 1, minor: 9 }
-    const b = Ver { major: 2, minor: 0 }
+    let a = Ver { major: 1, minor: 9 }
+    let b = Ver { major: 2, minor: 0 }
     assert a < b
     assert (b < a) == false
     assert b > a
@@ -39,15 +39,15 @@ test "struct ordering is lexicographic by field" {
 }
 
 test "the second field decides when the first ties" {
-    const a = Ver { major: 2, minor: 1 }
-    const b = Ver { major: 2, minor: 7 }
+    let a = Ver { major: 2, minor: 1 }
+    let b = Ver { major: 2, minor: 7 }
     assert a < b
     assert (a > b) == false
 }
 
 test "equal structs compare equal both ways" {
-    const a = Ver { major: 3, minor: 3 }
-    const b = Ver { major: 3, minor: 3 }
+    let a = Ver { major: 3, minor: 3 }
+    let b = Ver { major: 3, minor: 3 }
     assert a <= b
     assert a >= b
     assert (a < b) == false
@@ -55,7 +55,7 @@ test "equal structs compare equal both ways" {
 }
 
 test "comparing a value with itself terminates" {
-    const a = Ver { major: 4, minor: 2 }
+    let a = Ver { major: 4, minor: 2 }
     assert a <= a
     assert a >= a
     assert (a < a) == false
@@ -63,15 +63,15 @@ test "comparing a value with itself terminates" {
 }
 
 test "a string field orders lexicographically" {
-    const a = Named { name: "alice", rank: 9 }
-    const b = Named { name: "bob", rank: 1 }
+    let a = Named { name: "alice", rank: 9 }
+    let b = Named { name: "bob", rank: 1 }
     assert a < b
     assert (b < a) == false
 }
 
 test "a nested struct field orders by its own fields" {
-    const a = Nested { head: Ver { major: 1, minor: 0 }, tail: 99 }
-    const b = Nested { head: Ver { major: 1, minor: 1 }, tail: 0 }
+    let a = Nested { head: Ver { major: 1, minor: 0 }, tail: 99 }
+    let b = Nested { head: Ver { major: 1, minor: 1 }, tail: 0 }
     assert a < b
 }
 

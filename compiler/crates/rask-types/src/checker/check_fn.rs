@@ -377,7 +377,7 @@ impl TypeChecker {
     pub(super) fn check_no_alloc_stmt(&mut self, fn_name: &str, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.check_no_alloc_expr(fn_name, e),
-            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.check_no_alloc_expr(fn_name, init);
             }
             StmtKind::Assign { value, .. } => self.check_no_alloc_expr(fn_name, value),
@@ -533,10 +533,10 @@ impl TypeChecker {
                 Self::expr_targets_self(target) || Self::expr_writes_self(value, conservative)
             }
             StmtKind::Expr(e) => Self::expr_writes_self(e, conservative),
-            StmtKind::Const { init, .. } | StmtKind::Mut { init, .. } => {
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
                 Self::expr_writes_self(init, conservative)
             }
-            StmtKind::ConstTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
+            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
                 Self::expr_writes_self(init, conservative)
             }
             StmtKind::Return(Some(e)) => Self::expr_writes_self(e, conservative),

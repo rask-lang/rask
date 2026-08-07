@@ -30,7 +30,7 @@ test "break label exits the outer loop" {
 }
 
 test "break label carries a value out of a loop expression" {
-    const found = search: loop {
+    let found = search: loop {
         for i in 0..10 {
             if i == 7: break search i
         }
@@ -52,8 +52,8 @@ test "an unlabeled break still stops at the nearest loop" {
 }
 
 test "break value is still a value, not a label" {
-    const n = 42
-    const got = loop {
+    let n = 42
+    let got = loop {
         break n
     }
     assert got == 42
@@ -90,7 +90,7 @@ test "a labeled while is a real label" {
 
 test "labeled continue on a loop expression" {
     mut ticks = 0
-    const done = spin: loop {
+    let done = spin: loop {
         ticks += 1
         for _ in 0..3 {
             if ticks < 3: continue spin

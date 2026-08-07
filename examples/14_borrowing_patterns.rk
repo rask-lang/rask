@@ -25,10 +25,10 @@ func get_age(user: User) -> i32 {
 func main() {
     // Inline access with collections
     // Collections are accessed only for the expression
-    const numbers = Vec.from([1, 2, 3, 4, 5])
+    let numbers = Vec.from([1, 2, 3, 4, 5])
 
     // Access during .iter() call, ends after expression
-    const sum = numbers.iter().fold(0, |acc, x| acc + x)
+    let sum = numbers.iter().fold(0, |acc, x| acc + x)
 
     // Can use numbers again immediately
     print("Sum: ")
@@ -40,8 +40,8 @@ func main() {
     print("\n\n")
 
     // Multiple borrows in sequence
-    const first = numbers.iter().find(|x| x > 0)
-    const last = numbers.iter().find(|x| x == 5)
+    let first = numbers.iter().find(|x| x > 0)
+    let last = numbers.iter().find(|x| x == 5)
 
     if first? {
         print("First: ")
@@ -52,10 +52,10 @@ func main() {
     }
 
     // Block-scoped views with structs
-    const user = User { name: "Alice", age: 30 }
+    let user = User { name: "Alice", age: 30 }
 
     {
-        const borrowed = user.clone()
+        let borrowed = user.clone()
         print_user(borrowed)
         print("Age: ")
         print(borrowed.age)
@@ -68,11 +68,11 @@ func main() {
     print("\n\n")
 
     // Multiple immutable borrows are allowed
-    const user2 = User { name: "Bob", age: 25 }
+    let user2 = User { name: "Bob", age: 25 }
 
     {
-        const ref1 = user2.clone()
-        const ref2 = user2.clone()  // OK - independent copies
+        let ref1 = user2.clone()
+        let ref2 = user2.clone()  // OK - independent copies
 
         print_user(ref1)
         print_user(ref2)
@@ -81,17 +81,17 @@ func main() {
     print("\n")
 
     // Passing borrowed values to functions
-    const alice = User { name: "Alice", age: 35 }
+    let alice = User { name: "Alice", age: 35 }
 
     print_user(alice)
 
-    const age = get_age(alice)
+    let age = get_age(alice)
     print("Retrieved age: ")
     print(age)
     print("\n\n")
 
     // Iterating with borrows
-    const users = Vec.from([
+    let users = Vec.from([
         User { name: "Charlie", age: 40 },
         User { name: "Diana", age: 28 },
         User { name: "Eve", age: 32 },
@@ -110,8 +110,8 @@ func main() {
     print("\n\n")
 
     // Borrow for comparison
-    const vec1 = Vec.from([1, 2, 3])
-    const vec2 = Vec.from([1, 2, 3])
+    let vec1 = Vec.from([1, 2, 3])
+    let vec2 = Vec.from([1, 2, 3])
 
     // Compare vec lengths as a simple equality check
     if vec1.len() == vec2.len() {
@@ -129,8 +129,8 @@ func main() {
 
     // When you need ownership instead of borrowing
     // Use .clone() to create a copy
-    const original = Vec.from([10, 20, 30])
-    const copy = original.clone()
+    let original = Vec.from([10, 20, 30])
+    let copy = original.clone()
 
     // Both are independent now
     print("Original: ")
@@ -148,9 +148,9 @@ func main() {
     print("\n\n")
 
     // Pattern: inline access in expression, use immediately
-    const data = Vec.from([5, 2, 8, 1, 9])
+    let data = Vec.from([5, 2, 8, 1, 9])
 
-    const max_of = data.iter()
+    let max_of = data.iter()
         .fold(0, |acc, x| {
             if x > acc {
                 return x

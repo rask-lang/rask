@@ -91,7 +91,7 @@ impl TypeChecker {
                 self.check_sync_access_in_binding(init);
                 self.clear_expression_borrows();
             }
-            StmtKind::Const { name, name_span, ty, init } => {
+            StmtKind::Let { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in const annotation.
@@ -171,8 +171,14 @@ impl TypeChecker {
                     }
                     if !through_handle {
                         match self.lookup_binding_kind(&root) {
-                            Some(super::BindingKind::Const) => {
+                            Some(super::BindingKind::Let) => {
                                 self.errors.push(TypeError::MutateConst {
+                                    name: root.clone(),
+                                    span: stmt.span,
+                                });
+                            }
+                            Some(super::BindingKind::WithRead) => {
+                                self.errors.push(TypeError::MutateWithBinding {
                                     name: root.clone(),
                                     span: stmt.span,
                                 });
@@ -312,8 +318,8 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            StmtKind::MutTuple { patterns, init } | StmtKind::ConstTuple { patterns, init } => {
-                let is_const = matches!(&stmt.kind, StmtKind::ConstTuple { .. });
+            StmtKind::MutTuple { patterns, init } | StmtKind::LetTuple { patterns, init } => {
+                let is_const = matches!(&stmt.kind, StmtKind::LetTuple { .. });
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
             }

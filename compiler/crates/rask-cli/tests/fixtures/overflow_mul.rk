@@ -1,6 +1,6 @@
 // OV1: multiplication overflow panics.
 func main() {
-    const x: i32 = 100000
-    const y: i32 = 100000
+    let x: i32 = 100000
+    let y: i32 = 100000
     println((x * y).to_string())
 }

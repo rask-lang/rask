@@ -9,8 +9,8 @@ test "std.fmt/F2 — positional placeholders, auto and explicit" {
 }
 
 test "std.fmt/F3 — named placeholders capture from scope" {
-    const name = "world"
-    const count = 3
+    let name = "world"
+    let count = 3
     assert format("hi {name}, {count} times") == "hi world, 3 times"
 }
 
@@ -36,7 +36,7 @@ test "std.fmt/S3 — integer bases" {
 test "std.fmt/S1 — float precision" {
     assert format("{:.3}", 3.14159) == "3.142"
     assert format("{:.0}", 2.7) == "3"
-    const pi = 3.14159
+    let pi = 3.14159
     assert "{pi:.2}" == "3.14"
 }
 
@@ -57,8 +57,8 @@ test "std.fmt/G4 — debug rendering" {
 }
 
 test "std.fmt/S1 — interpolation carries the same specs" {
-    const n = 255
-    const s = "hi"
+    let n = 255
+    let s = "hi"
     assert "{n:x}" == "ff"
     assert "{n:X}" == "FF"
     assert "{s:>4}|" == "  hi|"
@@ -66,7 +66,7 @@ test "std.fmt/S1 — interpolation carries the same specs" {
 }
 
 test "std.fmt/S1 — spec on an expression, not just a name" {
-    const a = 2.0
-    const b = 3.0
+    let a = 2.0
+    let b = 3.0
     assert format("{:.1}", a + b) == "5.0"
 }

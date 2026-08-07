@@ -16,7 +16,7 @@ struct Entity {
 
 test "mem.pools/PL3 — insert then index-read fields" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 100, level: 1 })
+    let h = pool.insert(Entity { health: 100, level: 1 })
     assert pool[h].health == 100
     assert pool[h].level == 1
 }
@@ -41,7 +41,7 @@ test "mem.pools/PL — is_empty" {
 
 test "mem.pools/PL4 — direct field write persists" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 100, level: 1 })
+    let h = pool.insert(Entity { health: 100, level: 1 })
     pool[h].health = 50
     assert pool[h].health == 50
 }
@@ -50,7 +50,7 @@ test "mem.pools/PL4 — direct field write persists" {
 
 test "mem.pools/PL6 — remove reduces len" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 5, level: 1 })
+    let h = pool.insert(Entity { health: 5, level: 1 })
     assert pool.len() == 1
     pool.remove(h)
     assert pool.len() == 0
@@ -60,7 +60,7 @@ test "mem.pools/PL6 — remove reduces len" {
 
 test "mem.pools/PL4 — contains before and after remove" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 5, level: 1 })
+    let h = pool.insert(Entity { health: 5, level: 1 })
     assert pool.contains(h) == true
     pool.remove(h)
     assert pool.contains(h) == false
@@ -84,8 +84,8 @@ test "mem.pools/PL7 — iterate handles and sum a field" {
 
 test "mem.pools/PL5 — get on valid handle yields value" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 42, level: 3 })
-    const got = pool.get(h)
+    let h = pool.insert(Entity { health: 42, level: 3 })
+    let got = pool.get(h)
     if got? as e {
         assert e.health == 42
     }
@@ -93,9 +93,9 @@ test "mem.pools/PL5 — get on valid handle yields value" {
 
 test "mem.pools/PL5 — get on stale handle is none" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { health: 42, level: 3 })
+    let h = pool.insert(Entity { health: 42, level: 3 })
     pool.remove(h)
-    const got = pool.get(h)
+    let got = pool.get(h)
     assert got == none
 }
 

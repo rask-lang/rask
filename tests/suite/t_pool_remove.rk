@@ -14,14 +14,14 @@ struct Node {
 
 test "remove answers a present optional" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 5, tag: "first" })
-    const r = p.remove(a)
+    let a = p.insert(Node { v: 5, tag: "first" })
+    let r = p.remove(a)
     assert r?
 }
 
 test "a struct element comes back whole" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 5, tag: "first" })
+    let a = p.insert(Node { v: 5, tag: "first" })
     mut got = 0
     mut label = ""
     if p.remove(a)? as n {
@@ -34,7 +34,7 @@ test "a struct element comes back whole" {
 
 test "a scalar element comes back too" {
     mut q: Pool<i64> = Pool.new()
-    const h = q.insert(42)
+    let h = q.insert(42)
     mut got = 0
     if q.remove(h)? as x {
         got = x
@@ -44,7 +44,7 @@ test "a scalar element comes back too" {
 
 test "removing twice answers none the second time" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 1, tag: "x" })
+    let a = p.insert(Node { v: 1, tag: "x" })
     assert p.remove(a)?
     assert (p.remove(a)? == false)
 }
@@ -56,10 +56,10 @@ test "removing twice answers none the second time" {
 // element is copied out now, while it's still live.
 test "an earlier removal survives a later one" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 5, tag: "first" })
-    const b = p.insert(Node { v: 9, tag: "second" })
-    const ra = p.remove(a)
-    const rb = p.remove(b)
+    let a = p.insert(Node { v: 5, tag: "first" })
+    let b = p.insert(Node { v: 9, tag: "second" })
+    let ra = p.remove(a)
+    let rb = p.remove(b)
     mut first = 0
     mut second = 0
     if ra? as n {
@@ -74,9 +74,9 @@ test "an earlier removal survives a later one" {
 
 test "a reused slot doesn't rewrite what was removed" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 5, tag: "first" })
-    const taken = p.remove(a)
-    const b = p.insert(Node { v: 77, tag: "reused" })
+    let a = p.insert(Node { v: 5, tag: "first" })
+    let taken = p.remove(a)
+    let b = p.insert(Node { v: 77, tag: "reused" })
     assert p[b].v == 77
     if taken? as n {
         assert n.v == 5
@@ -86,9 +86,9 @@ test "a reused slot doesn't rewrite what was removed" {
 
 test "the other entries survive" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 5, tag: "first" })
-    const b = p.insert(Node { v: 9, tag: "second" })
-    const _ = p.remove(a)
+    let a = p.insert(Node { v: 5, tag: "first" })
+    let b = p.insert(Node { v: 9, tag: "second" })
+    let _ = p.remove(a)
     assert p[b].v == 9
     assert p[b].tag == "second"
     assert p.len() == 1

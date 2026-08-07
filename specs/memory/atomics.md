@@ -41,10 +41,10 @@ struct Slot {
     gen: u32,
 }   // 8 bytes, Copy, no padding — fits an atomic word
 
-const current = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+let current = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
 
-const old = current.load(Acquire)
-const next = Slot { index: old.index + 1, gen: old.gen }
+let old = current.load(Acquire)
+let next = Slot { index: old.index + 1, gen: old.gen }
 match current.compare_exchange(old, next, AcqRel, Relaxed) {
     Slot as _      => {},          // swapped as one unit
     CasFailed as _ => retry(),
@@ -116,9 +116,9 @@ Add a field to `Slot` and it either still fits (nothing to update) or the `Atomi
 
 <!-- test: skip -->
 ```rask
-const counter = Atomic<u64>.new(0)
-const flag = Atomic<bool>.new(false)
-const slot = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+let counter = Atomic<u64>.new(0)
+let flag = Atomic<bool>.new(false)
+let slot = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
 ```
 
 ### Load, Store, Swap
@@ -133,9 +133,9 @@ const slot = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
 
 <!-- test: skip -->
 ```rask
-const value = counter.load(Relaxed)
+let value = counter.load(Relaxed)
 counter.store(100, Release)
-const old = counter.swap(new_value, AcqRel)
+let old = counter.swap(new_value, AcqRel)
 ```
 
 ### Compare-and-Exchange
@@ -151,7 +151,7 @@ const old = counter.swap(new_value, AcqRel)
 <!-- test: skip -->
 ```rask
 loop {
-    const current = counter.load(Relaxed)
+    let current = counter.load(Relaxed)
     if current >= threshold {
         break
     }
@@ -187,9 +187,9 @@ Dereferencing the loaded pointer requires `unsafe` (AT1 applies to the atomic op
 
 <!-- test: skip -->
 ```rask
-const ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
+let ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
 unsafe {
-    const value = *ptr  // Unsafe: dereferencing raw pointer
+    let value = *ptr  // Unsafe: dereferencing raw pointer
 }
 ```
 
@@ -219,18 +219,18 @@ unsafe {
 <!-- test: skip -->
 ```rask
 // Atomic "latest value" slot — multiple writers, readers see most recent
-const latest: Atomic<Handle<Reading>?> = Atomic.none()
+let latest: Atomic<Handle<Reading>?> = Atomic.none()
 
 func publish(mutate pool: Pool<Reading>, value: Reading) {
-    const h = pool.insert(value)
-    const prev = latest.swap(h, Release)
+    let h = pool.insert(value)
+    let prev = latest.swap(h, Release)
     if prev? as old_h {
         pool.remove(old_h)
     }
 }
 
 func read_latest(pool: Pool<Reading>) -> Reading? {
-    const h = try latest.load(Acquire)
+    let h = try latest.load(Acquire)
     return pool.get(h)   // none if writer just swapped and removed
 }
 ```
@@ -247,7 +247,7 @@ func read_latest(pool: Pool<Reading>) -> Reading? {
 <!-- test: skip -->
 ```rask
 mut counter = Atomic<u64>.new(0)
-const final_value = counter.into_value()
+let final_value = counter.into_value()
 ```
 
 ## Memory Fences
@@ -357,7 +357,7 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 ```
 ERROR [mem.atomics/AH1]: Handle<Entity> is 12 bytes — needs a 16-byte atomic word
    |
-5  |  const head: Atomic<Handle<Entity>?> = Atomic.none()
+5  |  let head: Atomic<Handle<Entity>?> = Atomic.none()
    |              ^^^^^^^^^^^^^^^^^^^^^^^ does not fit an 8-byte atomic word
 
 WHY: Default Handle is 12 bytes (PoolId=u32, Index=u32, Gen=u32).
@@ -365,7 +365,7 @@ WHY: Default Handle is 12 bytes (PoolId=u32, Index=u32, Gen=u32).
 
 FIX 1: Use compact pool configuration:
 
-  const pool = Pool<Entity, PoolId=u16, Index=u16, Gen=u32>.new()
+  let pool = Pool<Entity, PoolId=u16, Index=u16, Gen=u32>.new()
   // Handle is now 8 bytes — fits an 8-byte atomic word
 
 FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
@@ -375,7 +375,7 @@ FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
 ```
 ERROR [mem.atomics/GA2]: Tagged has padding — cannot be an atomic payload
    |
-4  |  const state: Atomic<Tagged> = Atomic.new(initial)
+4  |  let state: Atomic<Tagged> = Atomic.new(initial)
    |                      ^^^^^^
    |
 1  |  struct Tagged {
@@ -406,8 +406,8 @@ ERROR [mem.atomics/GA3]: no fetch_add on Atomic<Slot>
 FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
   loop {
-      const old = current.load(Relaxed)
-      const next = Slot { index: old.index + delta, gen: old.gen }
+      let old = current.load(Relaxed)
+      let next = Slot { index: old.index + delta, gen: old.gen }
       if current.compare_exchange_weak(old, next, AcqRel, Relaxed)? { break }
   }
 ```
@@ -532,7 +532,7 @@ func request_shutdown() {
 ```rask
 func increment_if_below(counter: Atomic<u64>, max: u64) -> bool {
     loop {
-        const current = counter.load(Relaxed)
+        let current = counter.load(Relaxed)
         if current >= max {
             return false
         }
@@ -623,9 +623,9 @@ extend LockFreeStack<T> {
     }
 
     func push(mutate self, value: T) {
-        const node = self.pool.insert(Node { data: value, next: none })
+        let node = self.pool.insert(Node { data: value, next: none })
         loop {
-            const current = self.head.load(Acquire)
+            let current = self.head.load(Acquire)
             self.pool[node].next = current
             match self.head.compare_exchange_weak(current, node, Release, Relaxed) {
                 Handle as _ => break,

@@ -2252,7 +2252,6 @@ impl Interpreter {
                 struct WithInfo {
                     source: WithSource,
                     name: String,
-                    mutable: bool,
                 }
 
                 let mut infos: Vec<WithInfo> = Vec::new();
@@ -2301,7 +2300,6 @@ impl Interpreter {
                     infos.push(WithInfo {
                         source,
                         name: binding.name.clone(),
-                        mutable: binding.mutable,
                     });
                 }
 
@@ -2387,11 +2385,12 @@ impl Interpreter {
                     }
                 }
 
-                // Writeback for mutable index bindings (U2: mutations made before
-                // the panic are flushed, not rolled back).
+                // Writeback (U2: mutations made before the panic are flushed,
+                // not rolled back). Read locks never write back — the checker
+                // rejects mutation through them (conc.sync/R1).
                 let mut writeback_err: Option<RuntimeDiagnostic> = None;
                 for info in &infos {
-                    if info.mutable {
+                    if !matches!(info.source, WithSource::SharedRead(_)) {
                         if let Some(updated) = self.env.get(&info.name).cloned() {
                             match &info.source {
                                 WithSource::Index { collection, key } => {

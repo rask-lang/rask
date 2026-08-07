@@ -191,11 +191,11 @@ v.shuffle([0, 0, 0, 0])   // Broadcast: [1, 1, 1, 1]
 <!-- test: skip -->
 ```rask
 func process(data: []f32, scale: f32) {
-    const N = Vec[f32, native].lanes
-    const main_end = (data.len() / N) * N
+    let N = Vec[f32, native].lanes
+    let main_end = (data.len() / N) * N
 
     for i in (0..main_end).step_by(N) {
-        const v = Vec[f32, native].load(data[i..])
+        let v = Vec[f32, native].load(data[i..])
         (v * scale).store(data[i..])
     }
 
@@ -211,9 +211,9 @@ func process(data: []f32, scale: f32) {
 <!-- test: skip -->
 ```rask
 func sum_array(data: []f32) -> f32 {
-    const N = Vec[f32, native].lanes
+    let N = Vec[f32, native].lanes
     mut acc: Vec[f32, native] = [0.0; N]
-    const main_end = (data.len() / N) * N
+    let main_end = (data.len() / N) * N
 
     for i in (0..main_end).step_by(N) {
         acc = acc + Vec[f32, native].load(data[i..])

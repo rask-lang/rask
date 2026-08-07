@@ -63,20 +63,20 @@ tree.in_order()(|node| {
 
 <!-- test: skip -->
 ```rask
-const s = users.iter().filter(|u| u.active)
+let s = users.iter().filter(|u| u.active)
 // nothing has run yet
 
 for u in s { print(u.name) }     // runs the chain
-const count = s.count()          // runs the chain AGAIN
+let count = s.count()          // runs the chain AGAIN
 ```
 
 To consume twice without re-running, materialize with `.collect()`:
 
 <!-- test: skip -->
 ```rask
-const active = users.iter().filter(|u| u.active).collect()
+let active = users.iter().filter(|u| u.active).collect()
 for u in active { print(u.name) }
-const count = active.len()
+let count = active.len()
 ```
 
 ## Authoring Sequences
@@ -236,9 +236,9 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 
 <!-- test: skip -->
 ```rask
-const total = orders.iter().map(|o| o.amount).sum()
-const admin = users.iter().find(|u| u.is_admin)
-const active = users.iter().filter(|u| u.active).collect()
+let total = orders.iter().map(|o| o.amount).sum()
+let admin = users.iter().find(|u| u.is_admin)
+let active = users.iter().filter(|u| u.active).collect()
 ```
 
 ## Lockstep Iteration
@@ -260,7 +260,7 @@ func zip_indexable(a: Vec<i32>, b: Vec<i32>) {
 
 func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
     // Non-indexable (rare — explicit buffer shows the cost)
-    const a_items = tree_a.in_order().collect()
+    let a_items = tree_a.in_order().collect()
     mut idx = 0
     tree_b.in_order()(|b_node| {
         if idx >= a_items.len(): return false
@@ -370,7 +370,7 @@ WHY: Sequence for-loops desugar to a closure body. `break value`
 
 FIX: Use find() or capture via a local:
 
-  const result = seq.find(|x| matches(x))
+  let result = seq.find(|x| matches(x))
 
   // or
   mut found: T? = none

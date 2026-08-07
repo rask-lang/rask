@@ -22,8 +22,8 @@ Three words, three jobs, one glance: `try` means something **leaves**, a `?` mea
 
 <!-- test: skip -->
 ```rask
-const user: User? = load()       // present value, widens to User or none
-const missing: User? = none      // absent sentinel
+let user: User? = load()       // present value, widens to User or none
+let missing: User? = none      // absent sentinel
 ```
 
 `T??` is `(T or none) or none`. It's legal and the two layers stay distinct — see [Nesting](#nesting) below.
@@ -64,7 +64,7 @@ OPT12 (the `try x else <diverge>` absence-exit construct) is deleted — `try`'s
 
 <!-- test: skip -->
 ```rask
-const name = user?.display_name
+let name = user?.display_name
     ?? user?.email
     ?? "anon"
 ```
@@ -73,14 +73,14 @@ As soon as a right side is bare `T`, the chain collapses to `T` and a further `?
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme ?? "default"             // a value — carries on
-const home = env("HOME")! "HOME must be set"            // assert — `!` is shorter than ?? panic
+let theme = config.theme ?? "default"             // a value — carries on
+let home = env("HOME")! "HOME must be set"            // assert — `!` is shorter than ?? panic
 
 // absence leaving, propagated or named — the exit is written where it happens
-const prof = try load_user(id)                          // to the caller, as none
-const user = load_user(id) ?? return ApiError.NoUser
-const item = queue.pop() ?? break
-const name = entry.as_string() ?? continue
+let prof = try load_user(id)                          // to the caller, as none
+let user = load_user(id) ?? return ApiError.NoUser
+let item = queue.pop() ?? break
+let name = entry.as_string() ?? continue
 ```
 
 There is no `?? e =>` form — `none` carries no payload to bind. Naming (or explicitly dropping) the payload is `catch e =>` / `catch _ =>`, on the failure shape (`type.errors/ER14`).
@@ -89,7 +89,7 @@ There is no `?? e =>` form — `none` carries no payload to bind. Naming (or exp
 
 | Rule | Description |
 |------|-------------|
-| **OPT32: `take <place>`** | `take slot` on a mutable place of type `T?` moves the payload out and leaves `none` behind. The expression yields `T?` — present if the slot was, absent if it already was. The place must be mutable (`mut` binding, or a field path with mutable access); `take` on a `const` place is a compile error |
+| **OPT32: `take <place>`** | `take slot` on a mutable place of type `T?` moves the payload out and leaves `none` behind. The expression yields `T?` — present if the slot was, absent if it already was. The place must be mutable (`mut` binding, or a field path with mutable access); `take` on a `let` place is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -98,7 +98,7 @@ struct Connection {
 }
 
 // move the request out, leave the slot empty — one step, no clone
-const req = take conn.pending
+let req = take conn.pending
 if req? as r {
     dispatch(r)
 }
@@ -116,14 +116,14 @@ The `?`-tests don't narrow — they're plain booleans. Getting at the payload is
 
 | Rule | Description |
 |------|-------------|
-| **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block. Works on any scrutinee — `const`, `mut`, field paths, call results — with no restrictions to remember |
-| **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on const scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
+| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember |
+| **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on let scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
 | **OPT21 folds into ER24** | Early-exit narrowing after a diverging `is none` arm isn't optional-specific — it's the general union rule (`type.errors/ER24`). Mechanism, not idiom; the canonical guard is `?? <exit>` |
 | **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |
 
 <!-- test: skip -->
 ```rask
-const user: User? = load()
+let user: User? = load()
 if user? as u {
     greet(u)                 // the binding is the payload
 }
@@ -133,7 +133,7 @@ if user? {
 
 mut cache: Cache? = try_load()
 if cache? as c {
-    c.sweep()                // c: Cache (const) in the block
+    c.sweep()                // c: Cache, immutable, in the block
     // cache still Cache? — may be reassigned below
 }
 ```
@@ -144,7 +144,7 @@ The guard idiom — check absence, leave, use the value flat — is the fallback
 
 <!-- test: skip -->
 ```rask
-const user = load() ?? return
+let user = load() ?? return
 greet(user)
 ```
 
@@ -160,8 +160,8 @@ This isn't a corner case you have to go looking for. Any generic that returns `T
 
 <!-- test: skip -->
 ```rask
-const slots: Vec<Config?> = load_slots()      // a slot may be empty
-const first = slots.first()                    // Config??
+let slots: Vec<Config?> = load_slots()      // a slot may be empty
+let first = slots.first()                    // Config??
 ```
 
 `Vec.first()` returns `T?` because the vec may be empty. With `T = Config?` the result carries both facts, and the caller can tell them apart:
@@ -190,12 +190,12 @@ Collapsing the layers would throw the distinction away — an empty vec and an e
 
 <!-- test: skip -->
 ```rask
-const outer_absent: Config?? = none            // vec was empty        [OPT29]
+let outer_absent: Config?? = none            // vec was empty        [OPT29]
 
-const empty_slot: Config? = none
-const inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
+let empty_slot: Config? = none
+let inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
 
-const present: Config?? = load_config()        // widens through both layers
+let present: Config?? = load_config()        // widens through both layers
 ```
 
 **Spelling.** Write `T??` for two layers — two optional markers, only ever in type position. Nothing else in the language spells two question marks together.
@@ -293,7 +293,7 @@ No optional-specific equality rule.
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
 | `x ?? return MyError` where `MyError` isn't in the function's return type | ER9 | Compile error — normal `return` rules apply |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
-| `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
+| `let x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
 | `none == none` | equality | `true`. Standard equality on a zero-field type |
 
 ## Error Messages
@@ -302,7 +302,7 @@ No optional-specific equality rule.
 ```
 ERROR [type.optionals/OPT3]: `?.` requires a two-variant union with `none`
    |
-5  |  const name = result?.display_name
+5  |  let name = result?.display_name
    |               ^^^^^^^ `result` is `User or DatabaseError or none` — three variants
 
 WHY: The `?`-family operators handle the absent-or-present case. For unions
@@ -312,7 +312,7 @@ FIX: Layer them — error on the inside, optionality on the outside:
 
   func find(id: UserId) -> (User or DatabaseError)? { ... }
 
-  const outer = find(id)
+  let outer = find(id)
   if outer? as r {
       match r {
           User       as u => use(u),
@@ -399,9 +399,9 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 **OPT29 (`none` binds outermost).** Both readings are defensible; picking one and stating it is what matters. Outermost wins because it matches how the layers get built: the outer layer is the one the immediate context added (`first()` may fail to find anything), so `none` at that position means "the thing right here is absent". Reaching an inner absent means you already have an inner-typed value in hand, and widening it is explicit.
 
-**Why `x? as v` and not a let-in-condition.** The bind looks like Rust's `if let Some(v) = x` only functionally — syntactically it's the C# shape (`if (x is string s)`): scrutinee first, test, then name, reading forward. What makes let-Some unintuitive is exactly what this form doesn't do: the name appearing before the value it comes from, the wrapper noise, and a declaration smuggled into a condition. A Swift-style `if const v = x` was the alternative; it buys familiarity with a new grammar position, reads value-last again, and breaks the language's one binding habit — **`as name` comes after whatever just proved a value exists**, uniformly: `if x? as v`, `if r is Timeout as t`, `match { User as u => … }`, `else as e`. One rule, four positions. The honest seam — `as v` sits after a boolean-looking expression but binds the *payload* — is resolved by that same rule: `as` always names what the test proved, and `is E as e` trains the reading. `while queue.pop()? as item` falls out for free. And the no-rename convenience the narrowing cut removed is recoverable per-site with ordinary shadowing: `if x? as x { … }` — no fine print.
+**Why `x? as v` and not a let-in-condition.** The bind looks like Rust's `if let Some(v) = x` only functionally — syntactically it's the C# shape (`if (x is string s)`): scrutinee first, test, then name, reading forward. What makes let-Some unintuitive is exactly what this form doesn't do: the name appearing before the value it comes from, the wrapper noise, and a declaration smuggled into a condition. A Swift-style let-in-condition (`if let v = x`) was the alternative; it buys familiarity with a new grammar position, reads value-last again, and breaks the language's one binding habit — **`as name` comes after whatever just proved a value exists**, uniformly: `if x? as v`, `if r is Timeout as t`, `match { User as u => … }`, `else as e`. One rule, four positions. The honest seam — `as v` sits after a boolean-looking expression but binds the *payload* — is resolved by that same rule: `as` always names what the test proved, and `is E as e` trains the reading. `while queue.pop()? as item` falls out for free. And the no-rename convenience the narrowing cut removed is recoverable per-site with ordinary shadowing: `if x? as x { … }` — no fine print.
 
-**The `?`-tests don't narrow (OPT18/OPT20/OPT23 deleted).** An earlier revision let `if x?` narrow `x` in place on const scrutinees, with an else-narrow and a rule excluding `mut`-rooted field paths. Cut, for the one-way principle: `if x? { use(x) }` and `if x? as v { use(v) }` were two spellings of test-and-use, and only one of them worked everywhere. The restrictions were the tell — "const scrutinees only", "not through a `mut` path", "anonymous expressions don't narrow" were three rules whose whole job was propping up the redundant spelling; the `as v` bind has none of them. What in-place narrowing remains comes from the general union `is` machinery (early-exit after a diverging `is none` arm, `type.errors/ER24`) — mechanism, not idiom; the canonical guard is `?? <exit>`. The cut also thins the checker: no `?`-triggered flow typing at all.
+**The `?`-tests don't narrow (OPT18/OPT20/OPT23 deleted).** An earlier revision let `if x?` narrow `x` in place on let scrutinees, with an else-narrow and a rule excluding `mut`-rooted field paths. Cut, for the one-way principle: `if x? { use(x) }` and `if x? as v { use(v) }` were two spellings of test-and-use, and only one of them worked everywhere. The restrictions were the tell — "let scrutinees only", "not through a `mut` path", "anonymous expressions don't narrow" were three rules whose whole job was propping up the redundant spelling; the `as v` bind has none of them. What in-place narrowing remains comes from the general union `is` machinery (early-exit after a diverging `is none` arm, `type.errors/ER24`) — mechanism, not idiom; the canonical guard is `?? <exit>`. The cut also thins the checker: no `?`-triggered flow typing at all.
 
 ### Patterns & Guidance
 
@@ -409,7 +409,7 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme ?? "default"
+let theme = config.theme ?? "default"
 ```
 
 **Early exit on absence.** The guard is the fallback operator with the exit (or the default) written out — one line, and the binding is the payload from then on:
@@ -417,7 +417,7 @@ const theme = config.theme ?? "default"
 <!-- test: skip -->
 ```rask
 func greet(id: UserId) -> string {
-    const user = load_user(id) ?? return "Hello, guest"
+    let user = load_user(id) ?? return "Hello, guest"
     return "Hello, {user.name}"
 }
 ```
@@ -427,7 +427,7 @@ When absence should leave rather than produce a value, same shape:
 <!-- test: skip -->
 ```rask
 func greet(id: UserId) -> string or ApiError {
-    const user = load_user(id) ?? return ApiError.NotFound(id)
+    let user = load_user(id) ?? return ApiError.NotFound(id)
     return "Hello, {user.name}"
 }
 ```
@@ -437,12 +437,12 @@ And when it should leave *as absence*, in a function that returns an optional it
 <!-- test: skip -->
 ```rask
 func lookup(id: UserId) -> Profile? {
-    const user = try find_user(id)        // absent → this function returns none
+    let user = try find_user(id)        // absent → this function returns none
     return try user.profile               // same again
 }
 ```
 
-**Binding from a `mut` scrutinee.** The bind works the same on `mut` — the const `c` is a stable name for the payload while the slot stays reassignable:
+**Binding from a `mut` scrutinee.** The bind works the same on `mut` — the let `c` is a stable name for the payload while the slot stays reassignable:
 
 <!-- test: skip -->
 ```rask

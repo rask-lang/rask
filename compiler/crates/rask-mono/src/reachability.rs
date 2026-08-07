@@ -601,7 +601,7 @@ impl<'a> Monomorphizer<'a> {
     fn visit_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.visit_expr(e),
-            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.visit_expr(init);
             }
             StmtKind::Assign { target, value } => {
@@ -654,7 +654,7 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_stmt(s);
                 }
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.visit_expr(init);
             }
             StmtKind::Break { value: Some(e), .. } => self.visit_expr(e),

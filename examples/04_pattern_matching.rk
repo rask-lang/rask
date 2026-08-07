@@ -2,8 +2,8 @@
 
 func main() {
     // Match expression
-    const x = 2
-    const name = match x {
+    let x = 2
+    let name = match x {
         1 => "one",
         2 => "two",
         3 => "three",
@@ -17,7 +17,7 @@ func main() {
     print("\n")
 
     // Pattern matching with Option
-    const maybe: i32? = 42
+    let maybe: i32? = 42
 
     if maybe? {
         print("Got value: ")
@@ -25,7 +25,7 @@ func main() {
         print("\n")
     }
 
-    const nothing: i32? = none
+    let nothing: i32? = none
 
     if nothing == none {
         print("Got nothing\n")

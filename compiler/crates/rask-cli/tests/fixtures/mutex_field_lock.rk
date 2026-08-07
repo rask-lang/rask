@@ -18,6 +18,6 @@ extend Counter {
 }
 
 func main() {
-    const c = Counter { value: Mutex.new(42) }
+    let c = Counter { value: Mutex.new(42) }
     println(c.snapshot().to_string())
 }

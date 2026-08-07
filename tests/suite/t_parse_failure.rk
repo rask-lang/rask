@@ -26,7 +26,7 @@ test "type.primitives — parse rejects non-numbers" {
 // "0" and garbage both used to come back as Ok(0), so this is the case that
 // made the bug invisible: a failure that happens to look like a valid value.
 test "type.primitives — a rejected parse is not Ok(0)" {
-    const bad = "notanumber".parse() ?? -1
+    let bad = "notanumber".parse() ?? -1
     assert bad != 0
     assert bad == -1
 }

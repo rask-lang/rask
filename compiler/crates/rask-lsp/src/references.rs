@@ -108,7 +108,7 @@ fn symbol_at(position: Position, cached: &CompilationResult) -> Option<rask_reso
         .find(|(s, _, n)| s.start <= offset && offset <= s.end && n == &name)?;
 
     // Match by defining-span being identical to the ident span — that covers
-    // let/const bindings and parameters, whose symbol.span is the name itself.
+    // let/mut bindings and parameters, whose symbol.span is the name itself.
     cached.typed.symbols.iter().enumerate().find_map(|(idx, sym)| {
         if sym.name == name
             && sym.span.start == ident_span.start

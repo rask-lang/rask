@@ -15,6 +15,6 @@ func damage(h: Handle<Player>) using players: Pool<Player> {
 func main() {
     mut team_a = Pool<Player>.new()
     mut team_b = Pool<Player>.new()
-    const h = team_a.insert(Player { health: 100 })
+    let h = team_a.insert(Player { health: 100 })
     damage(h)    // ERROR: which pool — team_a or team_b?
 }

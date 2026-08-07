@@ -65,23 +65,23 @@ Build values with struct literals and `from_*` constructors.
 
 ```rask
 // Struct literal — the default for known fields
-const point = Point { x: 10, y: 20 }
+let point = Point { x: 10, y: 20 }
 
 // from_* — construction from a different source type
-const path = Path.from("/usr/bin")
-const config = Config.from_file("config.toml")
+let path = Path.from("/usr/bin")
+let config = Config.from_file("config.toml")
 
 // .new() — zero-argument or minimal constructor
-const buf = Buffer.new()
-const map = Map.new()
+let buf = Buffer.new()
+let map = Map.new()
 
 // .with_* — builder-style for optional configuration
 const pool = Pool.new().with_capacity(64)
-const server = Server.new(8080).with_timeout(Duration.seconds(30))
+let server = Server.new(8080).with_timeout(Duration.seconds(30))
 
 // Collection literals
-const names = Vec.from(["alice", "bob", "carol"])
-const scores = Map.from([("alice", 100), ("bob", 85)])
+let names = Vec.from(["alice", "bob", "carol"])
+let scores = Map.from([("alice", 100), ("bob", 85)])
 ```
 
 **Anti-patterns:**
@@ -98,17 +98,17 @@ Name encodes the cost. A developer — or a tool — knows what happens from the
 
 ```rask
 // as_* — cheap view, no allocation
-const bytes = s.as_bytes()
-const slice = vec.as_slice()
-const str = path.as_string()
+let bytes = s.as_bytes()
+let slice = vec.as_slice()
+let str = path.as_string()
 
 // to_* — allocates a new value, doesn't consume source
-const s = number.to_string()
-const lower = name.to_lowercase()
+let s = number.to_string()
+let lower = name.to_lowercase()
 
 // into_* — consumes source, produces new type
-const owned = view.into_string()
-const vec = list.into_vec()
+let owned = view.into_string()
+let vec = list.into_vec()
 ```
 
 ### Required Naming Patterns (Stdlib)
@@ -163,13 +163,13 @@ The ladder, top to bottom — reach for the first rung that fits:
 ```rask
 // 1. Propagate — pass the error up as-is. The default.
 func load_config(path: string) -> Config or IoError {
-    const text = try fs.read_text(path)
+    let text = try fs.read_text(path)
     return try Config.from_str(text)
 }
 
 // 2. Guard — handle the failure, rebind, stay flat. The happy path never indents.
-const user = db.find(id) catch e => return ApiError.from(e)
-const conn = pool.acquire() catch e => {
+let user = db.find(id) catch e => return ApiError.from(e)
+let conn = pool.acquire() catch e => {
     log("pool exhausted: {e.message()}")
     return ServiceError.Busy
 }
@@ -188,9 +188,9 @@ match r {
 **Guards check the failure, not the success — and the guard is `catch`.** Test-the-success-then-work is the pyramid anti-pattern: the happy path indents once per fallible step, and the error arms trail the logic they belong to. The guard keeps it flat, binds the success directly, and a block body covers multi-statement handling without changing shape:
 
 ```rask
-const found = db.find(id) catch e => return ApiError.from(e)
+let found = db.find(id) catch e => return ApiError.from(e)
 
-const conn = pool.acquire() catch e => {
+let conn = pool.acquire() catch e => {
     metrics.incr("pool_exhausted")
     return ServiceError.Busy
 }
@@ -207,25 +207,25 @@ Use `catch e =>` to add context when propagating errors. Stdlib provides `Contex
 ```rask
 // Application code — human-readable context chains
 func load_config(path: string) -> Config or ContextError {
-    const text = fs.read_text(path) catch e => return context("reading {path}", e)
+    let text = fs.read_text(path) catch e => return context("reading {path}", e)
     return Config.parse(text) catch e => return context("parsing {path}", e)
 }
 // Output: "reading /app.toml: file not found"
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    const text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
+    let text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
     return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
 }
 
 // Block form — when you need side effects before leaving
-const text = fs.read_text(path) catch e => {
+let text = fs.read_text(path) catch e => {
     log("failed to read {path}: {e.message()}")
     return context("reading {path}", e)
 }
 
 // The original error carries nothing worth keeping — `_` drops it, visibly
-const dto = json.decode(req.body) catch _ => return ApiError.BadRequest("invalid JSON")
+let dto = json.decode(req.body) catch _ => return ApiError.BadRequest("invalid JSON")
 ```
 
 ### The terminal fold
@@ -258,12 +258,12 @@ See [types/error-types.md](types/error-types.md).
 
 ```rask
 // File access pattern
-const file = try fs.open(path)
+let file = try fs.open(path)
 ensure file.close()
-const data = try file.read_text()
+let data = try file.read_text()
 
 // Transaction pattern — explicit close + ensure fallback
-const tx = try db.begin()
+let tx = try db.begin()
 ensure tx.rollback()
 
 try tx.execute("INSERT INTO users VALUES (?, ?)", [name, email])
@@ -293,11 +293,11 @@ if opt? as v {
 if opt? { hits += 1 }
 
 // Fallback — provide a default
-const name = opt ?? "anonymous"
+let name = opt ?? "anonymous"
 
 // Guard — absence exits (or supplies a default), the binding is the payload after
-const v = opt ?? return MyError.NotFound
-const user = load(id) ?? return "guest"
+let v = opt ?? return MyError.NotFound
+let user = load(id) ?? return "guest"
 
 // Full handling — both branches matter, use if/else (not match)
 if opt? as v {
@@ -324,13 +324,13 @@ Read from collections with `get` (safe), index (panics), or iterate.
 
 ```rask
 // Safe access — returns `T?`
-const item = vec.get(i)
+let item = vec.get(i)
 
 // Indexed access — panics on out of bounds
-const first = vec[0]
+let first = vec[0]
 
 // Slicing — sub-range
-const middle = vec[1..3]
+let middle = vec[1..3]
 
 // Iteration — the default for processing all elements
 for item in collection {
@@ -338,13 +338,13 @@ for item in collection {
 }
 
 // Search
-const found = users.find(|u| u.name == target)
+let found = users.find(|u| u.name == target)
 
 // Transform
-const names = users.map(|u| u.name).collect()
+let names = users.map(|u| u.name).collect()
 
 // Filter + transform
-const active = users
+let active = users
     .filter(|u| u.is_active())
     .map(|u| u.name)
     .collect()
@@ -364,27 +364,27 @@ Strings are UTF-8. Use `format()` for building, methods for inspecting.
 
 ```rask
 // Interpolation — the default for building strings
-const msg = format("hello, {name}! you have {count} messages")
+let msg = format("hello, {name}! you have {count} messages")
 
 // StringBuilder — for loops or many concatenations
 mut sb = StringBuilder.new()
 for item in items {
     sb.push("{item}\n")
 }
-const result = sb.build()
+let result = sb.build()
 
 // Searching
 if line.contains("error"): handle_error(line)
 if path.starts_with("/"): treat_as_absolute(path)
 
 // Splitting — returns iterators, collect() for random access
-const parts = line.split(",").collect()
+let parts = line.split(",").collect()
 for word in text.split_whitespace() {
     process(word)
 }
 
 // Trimming
-const clean = input.trim()
+let clean = input.trim()
 ```
 
 **Anti-patterns:**
@@ -444,7 +444,7 @@ Message passing for communication, `Shared<T>` for shared data.
 const db = Shared.new(Database.new())
 
 with db.read() as d {
-    const user = d.users.get(id)
+    let user = d.users.get(id)
     respond(user)
 }
 
@@ -453,9 +453,9 @@ with db.write() as d {
 }
 
 // Message passing — channels between tasks
-const ch = Channel.buffered(16)
+let ch = Channel.buffered(16)
 spawn(|| { ch.sender.send(compute_result()) }
-const result = try ch.receiver.receive()
+let result = try ch.receiver.receive()
 ```
 
 **Anti-patterns:**
@@ -473,8 +473,8 @@ See [concurrency/sync.md](concurrency/sync.md).
 ```rask
 // Spawn and join
 using Multitasking {
-    const handle = spawn(|| { fetch(url) }
-    const result = try handle.join()
+    let handle = spawn(|| { fetch(url) }
+    let result = try handle.join()
 }
 
 // Fire-and-forget
@@ -484,17 +484,17 @@ using Multitasking {
 
 // Parallel work with channels
 using Multitasking {
-    const ch = Channel.buffered(10)
+    let ch = Channel.buffered(10)
 
     for url in urls {
         spawn(|| {
-            const data = try fetch(url)
+            let data = try fetch(url)
             try ch.sender.send(data)
         }
     }
 
     for _ in 0..urls.len() {
-        const data = try ch.receiver.receive()
+        let data = try ch.receiver.receive()
         process(data)
     }
 }
@@ -514,24 +514,24 @@ Explicit, no hidden effects. Every I/O operation is visible in the function body
 
 ```rask
 // Read entire file
-const text = try fs.read_text(path)
+let text = try fs.read_text(path)
 
 // Write entire file
 try fs.write_text(path, data)
 
 // Line-by-line reading
-const lines = try fs.read_lines(path)
+let lines = try fs.read_lines(path)
 for line in lines {
     process(line)
 }
 
 // Resource file — open, use, close
-const file = try fs.open(path)
+let file = try fs.open(path)
 ensure file.close()
-const data = try file.read_text()
+let data = try file.read_text()
 
 // Buffered I/O
-const reader = BufferedReader.new(file)
+let reader = BufferedReader.new(file)
 while (try reader.read_line())? as line {
     process(line)
 }
@@ -568,7 +568,7 @@ if point is Point { x, y } {
 }
 
 // Guard pattern
-const conn = try_connect()
+let conn = try_connect()
 if conn is ConnectFailed as e { return e }
 use(conn!)   // or narrow via early-exit rule
 ```
@@ -602,7 +602,7 @@ for i in 0..10 {
 }
 
 // Chained adapters
-const result = items
+let result = items
     .filter(|x| x.is_valid())
     .map(|x| x.value)
     .sum()
@@ -622,17 +622,17 @@ Tests are first-class blocks. No test framework needed.
 
 ```rask
 test "user creation" {
-    const user = User.new("alice", "alice@example.com")
+    let user = User.new("alice", "alice@example.com")
     assert_eq(user.name, "alice")
     assert user.is_valid()
 }
 
 test "file cleanup" {
-    const file = try fs.create("/tmp/test.txt")
+    let file = try fs.create("/tmp/test.txt")
     ensure fs.remove_file("/tmp/test.txt")
 
     try file.write_text("hello")
-    const content = try fs.read_text("/tmp/test.txt")
+    let content = try fs.read_text("/tmp/test.txt")
     assert_eq(content, "hello")
 }
 ```

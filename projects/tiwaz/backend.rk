@@ -10,17 +10,17 @@ struct Backend {
 extend BackendPool {
     func next_healthy(self) -> Backend or ProxyError {
         with self.index.lock() as idx {
-            const count = self.backends.len()
+            let count = self.backends.len()
             mut checked = 0
             loop {
                 if checked >= count {
                     return ProxyError.UpstreamUnreachable
                 }
-                const backend = self.backends[idx]
+                let backend = self.backends[idx]
                 idx = (idx + 1) % count
                 checked = checked + 1
                 with status.read() as s {
-                    const healthy = s.get(backend.url)
+                    let healthy = s.get(backend.url)
                     // Treat unknown backends as healthy until a health check runs.
                     if healthy == none || healthy == true {
                         return backend

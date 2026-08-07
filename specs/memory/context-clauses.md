@@ -74,8 +74,8 @@ Order: generics, parameters, return type, `using` clause, `where` clause, body.
 <!-- test: parse -->
 ```rask
 func game_tick() {
-    const players = Pool.new()
-    const h = players.insert(Player.new())
+    let players = Pool.new()
+    let h = players.insert(Player.new())
     damage(h, 10)    // CC4: compiler finds local `players`, passes it
 }
 
@@ -177,12 +177,12 @@ func process_all(handles: Vec<Handle<Player>>) using Pool<Player> {
 }
 
 // CC10: storable closure cannot capture context
-const callback: |Handle<Player>| = |h| {
+let callback: |Handle<Player>| = |h| {
     h.health -= 10    // ERROR: no Pool<Player> context
 }
 
 // OK: pool passed explicitly
-const callback: |Pool<Player>, Handle<Player>| = |pool, h| {
+let callback: |Pool<Player>, Handle<Player>| = |pool, h| {
     pool[h].health -= 10
 }
 ```
@@ -221,8 +221,8 @@ FIX: Add a using clause:
 ```
 ERROR [mem.context/CC8]: ambiguous context — multiple Pool<Player> in scope
    |
-3  |  const pool_a = Pool::<Player>.new()
-4  |  const pool_b = Pool::<Player>.new()
+3  |  let pool_a = Pool::<Player>.new()
+4  |  let pool_b = Pool::<Player>.new()
 6  |  damage(h, 10)
    |  ^^^^^^^^^^^ which pool satisfies Pool<Player>?
 
@@ -237,7 +237,7 @@ FIX: Pass the pool explicitly as a regular parameter:
 ```
 ERROR [mem.context/CC10]: storable closure cannot use context auto-resolution
    |
-1  |  const callback: |Handle<Player>| = |h| {
+1  |  let callback: |Handle<Player>| = |h| {
 2  |      h.health -= 10
    |      ^ no Pool<Player> context available
 
@@ -285,7 +285,7 @@ FIX: Pass the pool as an explicit parameter to the closure.
 ```rask
 // Top-level: has the pool
 func game_loop() {
-    const players = Pool.new()
+    let players = Pool.new()
     for h in players.cursor() {
         update_player(h, 0.016)    // Passes players implicitly
     }

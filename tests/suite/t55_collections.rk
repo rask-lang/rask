@@ -31,7 +31,7 @@ test "std.collections/Vec.remove returns element and shifts" {
     v.push(10)
     v.push(20)
     v.push(30)
-    const r = v.remove(0)
+    let r = v.remove(0)
     assert r == 10
     assert v.len() == 2
     assert v[0] == 20

@@ -14,7 +14,7 @@ test "greet" {
 }
 
 test "flight announcement" {
-    const msg = announce("SK1234", "Stockholm", "B12")
+    let msg = announce("SK1234", "Stockholm", "B12")
     assert msg == "Flight SK1234 to Stockholm now boarding at gate B12"
 }
 

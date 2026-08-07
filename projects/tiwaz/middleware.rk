@@ -3,9 +3,9 @@ import time.Instant
 func logging(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
         println("Received request: {request.method} {request.path()}")
-        const start = Instant.now()
-        const response = next(request)
-        const duration = start.elapsed().as_millis()
+        let start = Instant.now()
+        let response = next(request)
+        let duration = start.elapsed().as_millis()
         println("Request processed in {duration} ms")
         println("Responding with status: {response.status}")
         return response.clone()
@@ -14,7 +14,7 @@ func logging(next: |Request| -> Response) -> |Request| -> Response {
 
 func with_metrics(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
-        const response = next(request)
+        let response = next(request)
         with metrics.write() as m {
             m.request_count = m.request_count + 1
             if response.status >= 400 {

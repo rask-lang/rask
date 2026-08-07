@@ -7,8 +7,8 @@
 type OnlyEq = u64 with (Equal)
 
 func main() {
-    const a = OnlyEq(1)
-    const b = OnlyEq(2)
+    let a = OnlyEq(1)
+    let b = OnlyEq(2)
     // Equal was listed, so this is fine.
     println("eq={a == b}")
 
@@ -16,6 +16,6 @@ func main() {
     println("lt={a < b}")
 
     // ERROR: no method `add` found for type `OnlyEq`
-    const sum = a + b
+    let sum = a + b
     println("sum={sum}")
 }

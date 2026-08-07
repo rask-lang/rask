@@ -36,7 +36,7 @@ extend BuildInfo {
 }
 
 func handle_inspect() -> Response or ApiError {
-    const items = Vec.from([
+    let items = Vec.from([
         config.read().clone() as any Inspectable,
         BuildInfo { version: "0.1.0", commit: "dev" } as any Inspectable,
     ])

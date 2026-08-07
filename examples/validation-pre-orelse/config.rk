@@ -47,8 +47,8 @@ public extend Config with Displayable {
 }
 
 func parse_port(raw: string?) -> u16? {
-    const s = raw ?? return none
-    const n = s.parse<u16>() ?? return none
+    let s = raw ?? return none
+    let n = s.parse<u16>() ?? return none
     return n
 }
 

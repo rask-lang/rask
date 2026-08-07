@@ -140,9 +140,9 @@ Closures are structs containing captured values plus a function pointer.
 ### Storable Closures
 
 ```rask
-const x = 42
-const y = 3.14
-const f = |a: i32| -> i32 { a + x }
+let x = 42
+let y = 3.14
+let f = |a: i32| -> i32 { a + x }
 ```
 
 Generated struct:
@@ -162,9 +162,9 @@ struct Closure_f {
 
 Layout example:
 ```rask
-const name = "Alice"
-const age = 30
-const greet = |msg: string| print("{msg}, {name}, age {age}")
+let name = "Alice"
+let age = 30
+let greet = |msg: string| print("{msg}, {name}, age {age}")
 ```
 
 Generated:
@@ -192,7 +192,7 @@ Same as storable closures, but type system prevents escape. Memory layout identi
 Trait objects are fat pointers: data pointer + vtable pointer.
 
 ```rask
-const w: any Widget = button
+let w: any Widget = button
 ```
 
 Layout:
@@ -293,7 +293,7 @@ Borrowed fat pointers (where `data_ptr` points to stack data for a function call
 Fixed-size arrays store elements inline, no indirection.
 
 ```rask
-const arr: [i32; 4] = [1, 2, 3, 4]
+let arr: [i32; 4] = [1, 2, 3, 4]
 ```
 
 | Rule | Description |
@@ -308,7 +308,7 @@ const arr: [i32; 4] = [1, 2, 3, 4]
 Tuples follow struct layout rules: elements in order, padded for alignment.
 
 ```rask
-const t: (u8, i32, u16) = (1, 2, 3)
+let t: (u8, i32, u16) = (1, 2, 3)
 ```
 
 Layout:
@@ -469,10 +469,10 @@ Total: 1032 bytes
 ### Example 3: Closure Capturing Multiple Values
 
 ```rask
-const x: u8 = 1
-const y: u64 = 2
-const z: u32 = 3
-const f = |a: i32| a + z
+let x: u8 = 1
+let y: u64 = 2
+let z: u32 = 3
+let f = |a: i32| a + z
 ```
 
 Generated:

@@ -8,7 +8,7 @@
 
 func main() {
     // ERROR: `{"x":1,"y":2}` is not a valid interpolation
-    const body = "{\"x\":1,\"y\":2}"
+    let body = "{\"x\":1,\"y\":2}"
     println(body)
 
     // ERROR: `{"x":1}` is not a valid interpolation
@@ -16,6 +16,6 @@ func main() {
     // the spec grammar can't rule it out. The bare string literal in the
     // expression position can — nobody interpolates a literal they already
     // have.
-    const one_pair = "{\"x\":1}"
+    let one_pair = "{\"x\":1}"
     println(one_pair)
 }

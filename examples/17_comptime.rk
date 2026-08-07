@@ -17,8 +17,8 @@ const FIBONACCI = comptime {
     fib.push(1)
 
     for i in 2..15 {
-        const prev1 = fib[i - 1]
-        const prev2 = fib[i - 2]
+        let prev1 = fib[i - 1]
+        let prev2 = fib[i - 2]
         fib.push(prev1 + prev2)
     }
 
@@ -100,7 +100,7 @@ func main() {
     print("\n\n")
 
     // Comptime for conditional compilation
-    const IS_DEBUG = comptime { true }
+    let IS_DEBUG = comptime { true }
 
     if IS_DEBUG {
         print("Debug mode enabled\n")
@@ -109,7 +109,7 @@ func main() {
     print("\n")
 
     // Use comptime values for fast lookup
-    const index = 7
+    let index = 7
     print("Looking up square of ")
     print(index)
     print(": ")
@@ -117,7 +117,7 @@ func main() {
     print(" (no computation at runtime)\n\n")
 
     // Comptime for generating constants
-    const BUFFER_SIZE = comptime {
+    let BUFFER_SIZE = comptime {
         // Could be based on platform, configuration, etc.
         1024
     }

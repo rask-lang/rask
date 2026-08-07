@@ -56,7 +56,6 @@ struct AliasTracker {
     local_to_group: HashMap<LocalId, AliasGroupId>,
     /// Group → member set.
     group_members: HashMap<AliasGroupId, HashSet<LocalId>>,
-    next_id: AliasGroupId,
 }
 
 impl AliasTracker {
@@ -64,15 +63,23 @@ impl AliasTracker {
         Self {
             local_to_group: HashMap::new(),
             group_members: HashMap::new(),
-            next_id: 0,
         }
+    }
+
+    /// Group id for a set of members — the member's own `LocalId`, so it's a
+    /// pure function of the group's content. A counter here (bumped once per
+    /// `join`/`fresh_group` call) meant two dataflow iterations that reached
+    /// the same alias state still disagreed on its *label*, so `solve`'s
+    /// fixed-point check never saw equal states and looped until the counter
+    /// wrapped — every loop header with an aliased handle hung the compiler.
+    fn canonical_gid(members: &HashSet<LocalId>) -> AliasGroupId {
+        members.iter().map(|l| l.0).min().unwrap()
     }
 
     /// Create a fresh alias group for a single local (MA2).
     fn fresh_group(&mut self, local: LocalId) {
         self.remove(local);
-        let gid = self.next_id;
-        self.next_id += 1;
+        let gid = local.0;
         self.local_to_group.insert(local, gid);
         self.group_members.insert(gid, HashSet::from([local]));
     }
@@ -119,7 +126,6 @@ impl AliasTracker {
     /// Only keep aliases that exist in both.
     fn join(&self, other: &Self) -> Self {
         let mut result = Self::new();
-        result.next_id = self.next_id.max(other.next_id);
 
         // For each group in self, check if the same alias relationship
         // exists in other. Only keep relationships present in both.
@@ -134,8 +140,7 @@ impl AliasTracker {
                         .copied()
                         .collect();
                     if common.len() > 1 {
-                        let new_gid = result.next_id;
-                        result.next_id += 1;
+                        let new_gid = Self::canonical_gid(&common);
                         for &member in &common {
                             result.local_to_group.insert(member, new_gid);
                         }

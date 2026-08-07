@@ -49,7 +49,7 @@ public struct Request {
 }
 
 // Same package, outside extend block:
-const r = new_request("GET", "/")             // factory required (buffer is private)
+let r = new_request("GET", "/")             // factory required (buffer is private)
 r.id                                          // OK: package-visible (default)
 r.buffer                                      // ERROR: private
 
@@ -108,8 +108,8 @@ struct Point {
 
 extend Point {
     func distance(self, other: Point) -> f64 {
-        const dx = self.x - other.x
-        const dy = self.y - other.y
+        let dx = self.x - other.x
+        let dy = self.y - other.y
         sqrt((dx*dx + dy*dy) as f64)
     }
 
@@ -136,7 +136,7 @@ extend Config {
     }
 }
 
-const c = Config.new()                          // Called on type
+let c = Config.new()                          // Called on type
 ```
 
 ## Construction Patterns
@@ -149,7 +149,7 @@ public struct Point {
     public y: i32
 }
 
-const p = Point { x: 10, y: 20 }   // OK: all fields public
+let p = Point { x: 10, y: 20 }   // OK: all fields public
 ```
 
 **Factory functions (idiomatic for encapsulation):**
@@ -162,7 +162,7 @@ public struct Connection {
 
 extend Connection {
     public func new(addr: string) -> Connection or Error {
-        const socket = try connect(addr)
+        let socket = try connect(addr)
         return Connection { socket, state: State.Connected }  // OK: inside extend block
     }
 }
@@ -171,7 +171,7 @@ extend Connection {
 **Update syntax (functional update):**
 <!-- test: parse -->
 ```rask
-const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
+let p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 ```
 
 | Syntax | Requirement |
@@ -200,8 +200,8 @@ struct Config {
     verbose: bool = false
 }
 
-const c = Config { host: "localhost" }       // port=8080, verbose=false
-const d = Config { host: "x", ..c }          // spread beats defaults
+let c = Config { host: "localhost" }       // port=8080, verbose=false
+let d = Config { host: "x", ..c }          // spread beats defaults
 ```
 
 ## Generics
@@ -213,7 +213,7 @@ struct Pair<T, U> {
     public second: U
 }
 
-const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
+let p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 ```
 
 <!-- test: skip -->
@@ -354,7 +354,7 @@ struct FileHandle {
 
 extend FileHandle {
     func open(path: string) -> FileHandle or Error {
-        const fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
+        let fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
         if fd < 0 { return Error.io() }
         return FileHandle { fd }
     }

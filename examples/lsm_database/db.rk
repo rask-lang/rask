@@ -48,7 +48,7 @@ extend Db {
         // Recover memtable from WAL
         mut memtable = Memtable.new()
         mut max_seq: i64 = 0
-        const recovered = try recover_wal(config.wal_path)
+        let recovered = try recover_wal(config.wal_path)
             else |e| DbError.Wal(e)
 
         for kv in recovered {
@@ -63,7 +63,7 @@ extend Db {
         }
         mut next_sst_id = 0
 
-        const discovered = discover_sstables(config.dir)
+        let discovered = discover_sstables(config.dir)
         for meta in discovered {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
             if meta.level < MAX_LEVELS {
@@ -86,10 +86,10 @@ extend Db {
     }
 
     func put(mutate self, key: string, value: string) -> void or DbError {
-        const seq = self.next_seq
+        let seq = self.next_seq
         self.next_seq += 1
 
-        const kv = KeyValue.new(key, value, seq)
+        let kv = KeyValue.new(key, value, seq)
 
         try self.wal.append(kv.clone())
             else |e| DbError.Wal(e)
@@ -115,15 +115,15 @@ extend Db {
         // Search levels from newest to oldest
         mut level_idx: usize = 0
         while level_idx < self.levels.len() {
-            const level = self.levels[level_idx].clone()
+            let level = self.levels[level_idx].clone()
             mut sst_idx = level.len()
             while sst_idx > 0 {
                 sst_idx -= 1
-                const meta = level[sst_idx].clone()
+                let meta = level[sst_idx].clone()
 
                 if key < meta.min_key || key > meta.max_key { continue }
 
-                const result = try self.lookup.lookup(meta, key, mutate self.cache)
+                let result = try self.lookup.lookup(meta, key, mutate self.cache)
                     else |e| DbError.Sst(e)
 
                 if result? {
@@ -140,10 +140,10 @@ extend Db {
     }
 
     func delete(mutate self, key: string) -> void or DbError {
-        const seq = self.next_seq
+        let seq = self.next_seq
         self.next_seq += 1
 
-        const kv = KeyValue.tombstone(key, seq)
+        let kv = KeyValue.tombstone(key, seq)
 
         try self.wal.append(kv.clone())
             else |e| DbError.Wal(e)
@@ -162,14 +162,14 @@ extend Db {
 
         mut level_idx: usize = 0
         while level_idx < self.levels.len() {
-            const level = self.levels[level_idx].clone()
+            let level = self.levels[level_idx].clone()
             for meta in level {
                 if meta.max_key < start || meta.min_key > end { continue }
 
-                const entries = try read_all_sstable_entries(meta.path)
+                let entries = try read_all_sstable_entries(meta.path)
                     else |e| DbError.Sst(e)
 
-                const in_range = entries
+                let in_range = entries
                     .filter(|kv| kv.key >= start && kv.key <= end)
                 for kv in in_range {
                     all_entries.push(kv)
@@ -202,14 +202,14 @@ extend Db {
     func flush(mutate self) -> void or DbError {
         if self.memtable.is_empty() { return () }
 
-        const id = self.next_sst_id
+        let id = self.next_sst_id
         self.next_sst_id += 1
 
-        const old_memtable = self.memtable
+        let old_memtable = self.memtable
         self.memtable = Memtable.new()
 
-        const entries = old_memtable.take_sorted()
-        const meta = try write_sstable(id, 0, self.config.dir, entries)
+        let entries = old_memtable.take_sorted()
+        let meta = try write_sstable(id, 0, self.config.dir, entries)
             else |e| DbError.Sst(e)
 
         with self.levels[0] as l0 {
@@ -227,17 +227,17 @@ extend Db {
     }
 
     func compact_level(mutate self, level: i32) -> void or DbError {
-        const level_idx = level truncate to usize
+        let level_idx = level truncate to usize
         if self.levels[level_idx].len() < 2 { return () }
         if level >= MAX_LEVELS - 1 { return () }
 
-        const a = self.levels[level_idx][0].clone()
-        const b = self.levels[level_idx][1].clone()
+        let a = self.levels[level_idx][0].clone()
+        let b = self.levels[level_idx][1].clone()
 
-        const new_id = self.next_sst_id
+        let new_id = self.next_sst_id
         self.next_sst_id += 1
 
-        const merged = try compact_sstables(a.clone(), b.clone(), new_id, level + 1, self.config.dir)
+        let merged = try compact_sstables(a.clone(), b.clone(), new_id, level + 1, self.config.dir)
             else |e| DbError.Compaction(e)
 
         self.cache.invalidate(a.id)
@@ -248,7 +248,7 @@ extend Db {
             ssts.remove_at(0)
         }
 
-        const next_level_idx = (level + 1) truncate to usize
+        let next_level_idx = (level + 1) truncate to usize
         with self.levels[next_level_idx] as ssts {
             ssts.push(merged)
         }
@@ -287,8 +287,8 @@ extend Db {
 
     func close(take self) -> void or DbError {
         if !self.memtable.is_empty() {
-            const id = self.next_sst_id
-            const entries = self.memtable.take_sorted()
+            let id = self.next_sst_id
+            let entries = self.memtable.take_sorted()
             match write_sstable(id, 0, self.config.dir, entries) {
                 SstMeta => {}
                 SstError => {}

@@ -35,7 +35,7 @@ Panic during `comptime` evaluation is not a runtime event — it's a compile err
 <!-- test: parse -->
 ```rask
 func observe() {
-    const h = spawn(|| { risky_work() })
+    let h = spawn(|| { risky_work() })
     match h.join() {
         T as val                => process(val),
         JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point
@@ -83,9 +83,9 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 <!-- test: parse -->
 ```rask
 func work() {
-    const a = try open("a.txt")
+    let a = try open("a.txt")
     ensure a.close()               // E2: still runs
-    const b = try open("b.txt")
+    let b = try open("b.txt")
     ensure b.flush_and_close()     // panics during unwind → contained (E3), reported
 
     process(a, b)                  // panics → unwind starts

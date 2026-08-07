@@ -22,10 +22,10 @@ Block-scoped `ensure` statement schedules an expression to run when the enclosin
 <!-- test: parse -->
 ```rask
 func read_file(){
-    const file = try open("data.txt")
+    let file = try open("data.txt")
     ensure file.close()           // Scheduled, not executed yet
 
-    const data = try file.read()       // If this fails...
+    let data = try file.read()       // If this fails...
     try process(data)                // ...or this...
 }                                 // file.close() runs HERE
 ```
@@ -46,10 +46,10 @@ Multiple `ensure` statements run in reverse order—resources acquired last are 
 <!-- test: parse -->
 ```rask
 func read_two_files(){
-    const a = try open("a.txt")
+    let a = try open("a.txt")
     ensure a.close()              // Runs second (EN2)
 
-    const b = try open("b.txt")
+    let b = try open("b.txt")
     ensure b.close()              // Runs first (EN2)
 
     // use a and b
@@ -62,15 +62,15 @@ func read_two_files(){
 <!-- test: skip -->
 ```rask
 // BAD — lint warns: a.close() will run before b.close()
-const a = open("a")
-const b = open("b")
+let a = open("a")
+let b = open("b")
 ensure b.close()          // registered 1st → runs LAST
 ensure a.close()          // registered 2nd → runs FIRST ✗
 
 // GOOD — interleaved, LIFO is correct
-const a = open("a")
+let a = open("a")
 ensure a.close()          // registered 1st → runs LAST
-const b = open("b")
+let b = open("b")
 ensure b.close()          // registered 2nd → runs FIRST ✓
 ```
 
@@ -81,10 +81,10 @@ ensure b.close()          // registered 2nd → runs FIRST ✓
 <!-- test: parse -->
 ```rask
 func process() -> void or Error {
-    const file = try open("data.txt")   // file is linear
+    let file = try open("data.txt")   // file is linear
     ensure file.close()              // EN3: file WILL be consumed
 
-    const data = try file.read()        // Safe to use try now
+    let data = try file.read()        // Safe to use try now
     try transform(data)
     // implicit unit success at end
 }
@@ -102,7 +102,7 @@ func process() -> void or Error {
 func process(a: File, b: File) -> void or Error {
     ensure a.close()
 
-    const data = try some_op()     // ✅ Safe: a is ensured (L1)
+    let data = try some_op()     // ✅ Safe: a is ensured (L1)
                               // ❌ Error: b may leak on early return (L2)
 }
 ```
@@ -136,13 +136,13 @@ ensure file.close() catch e => { try fallible() }   // ❌ Error: ER3
 <!-- test: skip -->
 ```rask
 func process() -> void or Error {
-    const a = try open("a.txt")
+    let a = try open("a.txt")
     ensure a.close() catch e => log("a close failed: {e}")
 
-    const b = try open("b.txt")
+    let b = try open("b.txt")
     ensure b.close() catch e => log("b close failed: {e}")
 
-    const c = try open("c.txt")
+    let c = try open("c.txt")
     ensure c.close() catch e => log("c close failed: {e}")
 
     try do_work()
@@ -162,7 +162,7 @@ func process() -> void or Error {
 ```rask
 // When cleanup errors actually matter (rare), don't use ensure:
 func write_important(data: Data) -> void or Error {
-    const file = try create("important.txt")
+    let file = try create("important.txt")
     try file.write(data)
     try file.close()                 // Explicit: propagate close error
     return
@@ -176,10 +176,10 @@ func write_important(data: Data) -> void or Error {
 <!-- test: parse -->
 ```rask
 func process() -> void or Error {
-    const config = try load_config()
+    let config = try load_config()
 
     {
-        const file = try open(config.path)
+        let file = try open(config.path)
         ensure file.close()
 
         try process_file(file)
@@ -202,7 +202,7 @@ func process() -> void or Error {
 <!-- test: skip -->
 ```rask
 for path in paths {
-    const file = try open(path)
+    let file = try open(path)
     ensure file.close()         // Runs at end of THIS iteration
 
     try process(file)
@@ -217,10 +217,10 @@ This is the correct behavior — accumulating resources until loop exit would be
 ```rask
 // LIFO within an iteration
 for item in items {
-    const a = try acquire_a(item)
+    let a = try acquire_a(item)
     ensure a.release()
 
-    const b = try acquire_b(item)
+    let b = try acquire_b(item)
     ensure b.release()
 
     try process(a, b)
@@ -242,7 +242,7 @@ If a value is consumed explicitly before scope exit, the ensure is cancelled.
 
 <!-- test: skip -->
 ```rask
-const tx = try db.begin()
+let tx = try db.begin()
 ensure tx.rollback()    // Scheduled
 
 // ... operations ...
@@ -255,7 +255,7 @@ Path-*dependent* cancellation is fine — the transfer example below exits early
 
 <!-- test: skip -->
 ```rask
-const tx = try db.begin()
+let tx = try db.begin()
 ensure tx.rollback()
 
 if fast_path {
@@ -271,16 +271,16 @@ log("done")             // ❌ C4: paths merge — at scope exit, consumption
 <!-- test: parse -->
 ```rask
 func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void or Error {
-    const tx = try db.begin()
+    let tx = try db.begin()
     ensure tx.rollback()      // Rollback if we don't commit
 
-    const from_balance = try tx.get_balance(from)
+    let from_balance = try tx.get_balance(from)
     if from_balance < amount {
         return InsufficientFunds  // ensure runs: rollback
     }
 
     try tx.set_balance(from, from_balance - amount)
-    const to_balance = try tx.get_balance(to)
+    let to_balance = try tx.get_balance(to)
     try tx.set_balance(to, to_balance + amount)
 
     tx.commit()               // Consumes tx, cancels ensure (C1)
@@ -299,8 +299,8 @@ func process_many_files(paths: Vec<string>) -> void or Error {
     ensure files.take_all_with(|f| { f.close(); })
 
     for path in paths {
-        const file = try File.open(path)
-        const h = files.insert(file)
+        let file = try File.open(path)
+        let h = files.insert(file)
         // ... use files[h] ...
     }
 
@@ -318,8 +318,8 @@ func process_many_files_careful(paths: Vec<string>) -> void or Error {
     mut files: Pool<File> = Pool.new()
 
     for path in paths {
-        const file = try File.open(path)
-        const h = files.insert(file)
+        let file = try File.open(path)
+        let h = files.insert(file)
         // ... use files[h] ...
     }
 
@@ -387,9 +387,9 @@ FIX: Use infallible operations in the catch handler:
 ```
 ERROR [ctrl.ensure/L2]: linear resource may leak on error propagation
    |
-3  |  const file = try open("data.txt")
+3  |  let file = try open("data.txt")
    |        ^^^^ linear resource created
-4  |  const data = try file.read()
+4  |  let data = try file.read()
    |               ^^^ try may exit early, leaving file unconsumed
 
 WHY: Linear resources must be consumed on all paths. try can exit early,
@@ -397,9 +397,9 @@ WHY: Linear resources must be consumed on all paths. try can exit early,
 
 FIX: Use ensure to guarantee cleanup:
 
-  const file = try open("data.txt")
+  let file = try open("data.txt")
   ensure file.close()         // Now safe
-  const data = try file.read()
+  let data = try file.read()
 ```
 
 **Maybe-consumed value [C4]:**
@@ -476,13 +476,13 @@ Name choice: "ensure" reads naturally—"ensure this happens before we leave thi
 <!-- test: parse -->
 ```rask
 func copy_file(src: string, dst: string) -> void or Error {
-    const input = try open(src)
+    let input = try open(src)
     ensure input.close()
 
-    const output = try create(dst)
+    let output = try create(dst)
     ensure output.close()
 
-    const data = try input.read_bytes()
+    let data = try input.read_bytes()
     try output.write_bytes(data)
     return
 }
@@ -495,7 +495,7 @@ Both files guaranteed to close on any exit path.
 <!-- test: parse -->
 ```rask
 func modify_database(db: Database) -> void or Error {
-    const tx = try db.begin()
+    let tx = try db.begin()
     ensure tx.rollback()    // Ensures unhappy path
 
     try tx.execute("UPDATE ...")
@@ -515,7 +515,7 @@ func process_many(paths: Vec<string>) -> void or Error {
     ensure resources.take_all_with(|r| { r.cleanup(); })
 
     for path in paths {
-        const r = try Resource.open(path)
+        let r = try Resource.open(path)
         resources.insert(r)
     }
 
@@ -537,9 +537,9 @@ IDE shows ensure execution points as ghost annotations at block end.
 <!-- test: skip -->
 ```rask
 {
-    const a = try open("a.txt")
+    let a = try open("a.txt")
     ensure a.close()
-    const b = try open("b.txt")
+    let b = try open("b.txt")
     ensure b.close()
 
     try do_work()
@@ -559,7 +559,7 @@ Ensure runs on the task that owns the resource. If a resource is sent to another
 <!-- test: skip -->
 ```rask
 func process() {
-    const file = try open("data.txt")
+    let file = try open("data.txt")
     ensure file.close()
 
     channel.send(file)      // Transfers ownership, cancels ensure (C5, C1)

@@ -186,7 +186,7 @@ ERROR [type.gradual/GC2]: inferred return type changed
                     ^^^ f64 literal changed inferred return type
 
    Callers that break:
-     main.rk:45  const result: i32 = compute(items)
+     main.rk:45  let result: i32 = compute(items)
 
    note: `compute` is not public, so this is contained to this package (GC12).
          Writing the return type out pins it: the error would then land on
@@ -219,23 +219,23 @@ Error return types are inferred like any other return type — the compiler coll
 ```rask
 // Fully omitted — both success and error types inferred
 func load_config(path: string) {
-    const text = try read_file(path)     // contributes IoError
-    const config = try parse(text)       // contributes ParseError
+    let text = try read_file(path)     // contributes IoError
+    let config = try parse(text)       // contributes ParseError
     return config
 }
 // Inferred: -> Config or (IoError | ParseError)
 
 // Partial: `or _` — success type explicit, error union inferred
 func load_config(path: string) -> Config or _ {
-    const text = try read_file(path)     // contributes IoError
-    const config = try parse(text)       // contributes ParseError
+    let text = try read_file(path)     // contributes IoError
+    let config = try parse(text)       // contributes ParseError
     return config
 }
 // LSP ghost text: -> Config or (IoError | ParseError)
 
 // Public: must be fully explicit
 public func load_config(path: string) -> Config or (IoError | ParseError) {
-    const text = try read_file(path)
+    let text = try read_file(path)
     return try parse(text)
 }
 ```
@@ -354,7 +354,7 @@ Ghost text displays inferred types, bounds, and return types:
 <!-- test: skip -->
 ```rask
 func process(data, handler) {           // ghost: <T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
-    const result = handler(data)
+    let result = handler(data)
     result.validate()
     return result
 }

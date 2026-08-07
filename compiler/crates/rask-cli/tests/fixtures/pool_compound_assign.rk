@@ -6,7 +6,7 @@ struct Ent { hp: i32 }
 
 func main() {
     mut p = Pool.new()
-    const h = p.insert(Ent { hp: 100 })
+    let h = p.insert(Ent { hp: 100 })
     p[h].hp -= 30
     p[h].hp -= 5
     print(p[h].hp)

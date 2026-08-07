@@ -16,7 +16,7 @@ func bump(m: Mutex<i64>) -> i64 {
 }
 
 test "a call on the left runs once" {
-    const m = Mutex.new(0)
+    let m = Mutex.new(0)
     assert bump(m) == 7
     with m.lock() as n {
         assert n == 1
@@ -24,7 +24,7 @@ test "a call on the left runs once" {
 }
 
 test "a call on the right runs once" {
-    const m = Mutex.new(0)
+    let m = Mutex.new(0)
     assert 7 == bump(m)
     with m.lock() as n {
         assert n == 1
@@ -32,7 +32,7 @@ test "a call on the right runs once" {
 }
 
 test "an inequality runs its sides once" {
-    const m = Mutex.new(0)
+    let m = Mutex.new(0)
     assert bump(m) != 0
     with m.lock() as n {
         assert n == 1
@@ -40,7 +40,7 @@ test "an inequality runs its sides once" {
 }
 
 test "an ordering comparison runs its sides once" {
-    const m = Mutex.new(0)
+    let m = Mutex.new(0)
     assert bump(m) > 3
     with m.lock() as n {
         assert n == 1
@@ -48,8 +48,8 @@ test "an ordering comparison runs its sides once" {
 }
 
 test "calls on both sides run once each" {
-    const a = Mutex.new(0)
-    const b = Mutex.new(0)
+    let a = Mutex.new(0)
+    let b = Mutex.new(0)
     assert bump(a) == bump(b)
     with a.lock() as n {
         assert n == 1
@@ -60,7 +60,7 @@ test "calls on both sides run once each" {
 }
 
 test "string comparison still reports both sides" {
-    const a = "hello"
-    const b = "hello"
+    let a = "hello"
+    let b = "hello"
     assert a == b
 }

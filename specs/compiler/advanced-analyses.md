@@ -39,7 +39,7 @@ Track handle validity states through control flow to catch stale handle access a
 <!-- test: compile-fail -->
 ```rask
 func bad_example() using Pool<Player> {
-    const h = pool.insert(player)  // h: Fresh
+    let h = pool.insert(player)  // h: Fresh
     pool.remove(h)                     // h: Invalid
     pool[h].health -= 10               // ERROR [comp.advanced/TS8]: h is Invalid
 }
@@ -70,8 +70,8 @@ func bad_example() using Pool<Player> {
 <!-- test: compile-fail -->
 ```rask
 func alias_example() using Pool<Player> {
-    const h1 = pool.insert(player)  // h1: Fresh, aliases: {}
-    const h2 = h1                       // h2: Fresh, aliases: {h1}
+    let h1 = pool.insert(player)  // h1: Fresh, aliases: {}
+    let h2 = h1                       // h2: Fresh, aliases: {h1}
     pool.remove(h1)                     // h1: Invalid, h2: Invalid (via alias)
     pool[h2].health -= 10               // ERROR [comp.advanced/TS8]: h2 is Invalid
 }
@@ -118,7 +118,7 @@ Demand-driven value range propagation to eliminate bounds checks and catch overf
 ```rask
 func process(pool: Pool<Entity>) {
     for i in 0..pool.len() {       // i: [0, pool.len())
-        const h = pool.handles()[i] // Bounds check eliminated: i provably < len
+        let h = pool.handles()[i] // Bounds check eliminated: i provably < len
         process_entity(pool[h])
     }
 }
@@ -291,7 +291,7 @@ FIX: Check validity before access:
 ```
 ERROR [comp.advanced/TS8]: stale handle access via alias
    |
-3  |  const h2 = h1
+3  |  let h2 = h1
    |         ^^ h2 is a must-alias of h1
 5  |  pool.remove(h1)
    |  ^^^^^^^^^^^^^^ h1 invalidated here (h2 also becomes Invalid)
@@ -323,7 +323,7 @@ FIX: Remove the frozen annotation if mutation is needed:
 ```
 NOTE [comp.advanced/BE2]: bounds check could not be eliminated
    |
-5  |  const index = compute_index()
+5  |  let index = compute_index()
    |                ^^^^^^^^^^^^^^^ range unknown
 6  |  array[index]
    |  ^^^^^ bounds check retained (conservative)
@@ -399,18 +399,18 @@ The target of 500K LOC/sec is based on Rask's simpler type system, lack of lifet
 **When typestate catches bugs:**
 ```rask
 // Pattern: remove then use
-const h = pool.insert(entity)
+let h = pool.insert(entity)
 pool.remove(h)
 pool[h].health -= 10  // ERROR: caught at compile time
 
 // Pattern: aliased remove
-const h1 = pool.insert(a)
-const h2 = h1
+let h1 = pool.insert(a)
+let h2 = h1
 pool.remove(h1)
 pool[h2].update()  // ERROR: caught via must-alias
 
 // Pattern: conditional invalidation
-const h = get_handle()
+let h = get_handle()
 if should_cleanup {
     pool.remove(h)
 }
@@ -420,8 +420,8 @@ pool[h].render()  // ERROR: h is Invalid in one path
 **When typestate doesn't catch (requires runtime check):**
 ```rask
 // Pattern: cross-function aliasing
-const h1 = pool.insert(a)
-const h2 = get_other_handle()  // Unknown whether h1 == h2
+let h1 = pool.insert(a)
+let h2 = get_other_handle()  // Unknown whether h1 == h2
 pool.remove(h1)
 pool[h2].update()  // OK at compile time, runtime generation check
 

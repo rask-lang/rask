@@ -272,13 +272,14 @@ pub struct TryElse {
     pub body: Box<Expr>,
 }
 
-/// A `with...as` binding: source expression, binding name, and mutability.
-/// Mutable by default; `as const name` for read-only.
+/// A `with...as` binding: source expression and binding name.
+/// Bindings are mutable — `with` exists for multi-statement mutation; reads
+/// use inline access, `.read()` locks, or frozen pools. The checker rejects
+/// mutation when the source is a shared read lock (conc.sync/R1).
 #[derive(Debug, Clone)]
 pub struct WithBinding {
     pub source: Expr,
     pub name: String,
-    pub mutable: bool,
 }
 
 /// A closure parameter.

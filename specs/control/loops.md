@@ -32,7 +32,7 @@ for mutate <binding> in <collection> { ... }
 
 <!-- test: skip -->
 ```rask
-const items = Vec.new()
+let items = Vec.new()
 for item in items {           // item: borrowed T
     item.process()            // Read-only access
     print(item.name)          // Natural iteration
@@ -50,7 +50,7 @@ for i in 0..items.len() {
     items.push(new_item)      // OK: structural mutation allowed in index mode
 }
 
-const entities = Pool.new()
+let entities = Pool.new()
 for mutate entity in entities {
     entity.health -= 10       // Mutate via mutable iteration
     entity.velocity *= 0.9
@@ -107,7 +107,7 @@ for item in vec.take_all() {  // vec now empty
 for mutate item in items {
     item.health -= damage          // LP13: in-place mutation
     item.name = "updated"          // LP13: field replacement
-    const other = items[0].health  // LP15: read other elements
+    let other = items[0].health  // LP15: read other elements
     // items.push(new_item)        // ERROR LP14: structural mutation
 }
 
@@ -159,7 +159,7 @@ for h in pool.handles() {
 
 | Rule | Description |
 |------|-------------|
-| **LP17: Binding is alias** | Loop bindings are inline aliases — each use of `item` desugars to `collection[_pos]` at point of use. Not a regular `const` binding; no copy or move at binding creation. `mem.borrowing/E4` and `std.iteration/A4` do not apply to loop bindings |
+| **LP17: Binding is alias** | Loop bindings are inline aliases — each use of `item` desugars to `collection[_pos]` at point of use. Not a regular `let` binding; no copy or move at binding creation. `mem.borrowing/E4` and `std.iteration/A4` do not apply to loop bindings |
 
 In value mode, `item` is a read-only alias. In mutable mode, `item` is a mutable alias. The binding doesn't exist as a separate variable — it's syntactic shorthand for indexed access into the collection.
 
@@ -174,7 +174,7 @@ for item in vec { body }
 
 // Equivalent to:
 {
-    const _len = vec.len()
+    let _len = vec.len()
     mut _pos = 0
     while _pos < _len {
         // `item` is a read-only alias for vec[_pos]  (LP17)
@@ -193,7 +193,7 @@ for mutate item in vec { body }
 
 // Equivalent to:
 {
-    const _len = vec.len()
+    let _len = vec.len()
     mut _pos = 0
     while _pos < _len {
         // `item` is a mutable alias for vec[_pos]
@@ -213,10 +213,10 @@ for mutate item in pool { body }
 
 // Equivalent to:
 {
-    const _handles = pool._snapshot_handles()  // Handle snapshot
+    let _handles = pool._snapshot_handles()  // Handle snapshot
     mut _idx = 0
     while _idx < _handles.len() {
-        const _h = _handles[_idx]
+        let _h = _handles[_idx]
         // `item` is a mutable alias for pool[_h]
         body
         _idx += 1
@@ -233,7 +233,7 @@ for mutate (k, v) in map { body }
 {
     // Internal key snapshot
     for _k in map._snapshot_keys() {
-        const k = _k                    // Copy of key (immutable)
+        let k = _k                    // Copy of key (immutable)
         // `v` is a mutable alias for map[_k]
         body
     }
@@ -247,10 +247,10 @@ for i in 0..vec.len() { body }
 
 // Equivalent to:
 {
-    const _len = vec.len()
+    let _len = vec.len()
     mut _pos = 0
     while _pos < _len {
-        const i = _pos
+        let i = _pos
         body
         _pos += 1
     }
@@ -344,7 +344,7 @@ tree.in_order_mut()(|mutate node: Node<T>| {
 | Read all elements | Value iteration | `for item in vec { process(item) }` |
 | Mutate elements in place | Mutable iteration | `for mutate item in vec { item.field = x }` |
 | Structural mutation (insert/remove) | Index iteration | `for i in 0..vec.len() { vec.remove_unordered(i) }` |
-| Clone values | Value iteration + clone | `for item in vec { const v = item.clone(); use(v) }` |
+| Clone values | Value iteration + clone | `for item in vec { let v = item.clone(); use(v) }` |
 | Take ownership (consume) | `take_all()` | `for item in vec.take_all() { own(item) }` |
 | Iterate Pool by handle | `.handles()` | `for h in pool.handles() { pool[h].update() }` |
 
@@ -401,7 +401,7 @@ for h in pool.handles() {
 <!-- test: parse -->
 ```rask
 // Safe: collect handles first
-const to_remove = Vec.new()
+let to_remove = Vec.new()
 for entity in pool {
     if entity.dead {
         to_remove.push(/* need handle */)  // Note: value mode doesn't provide handle
@@ -409,7 +409,7 @@ for entity in pool {
 }
 
 // Better: use handle mode
-const to_remove = pool.handles().filter(|h| pool[h].dead).collect()
+let to_remove = pool.handles().filter(|h| pool[h].dead).collect()
 for h in to_remove {
     pool.remove(h)
 }

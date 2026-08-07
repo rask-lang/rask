@@ -51,9 +51,9 @@ func main() {
 // Async + CPU work
 func main() {
     using Multitasking, ThreadPool {
-        const h = spawn(|| {
-            const data = try fetch(url)                                       // I/O - pauses
-            const result = try ThreadPool.spawn(|| { analyze(data) }).join()  // CPU on threads
+        let h = spawn(|| {
+            let data = try fetch(url)                                       // I/O - pauses
+            let result = try ThreadPool.spawn(|| { analyze(data) }).join()  // CPU on threads
             try save(result)                                                // I/O - pauses
         })
         try h.join()
@@ -63,14 +63,14 @@ func main() {
 // Sync mode - CPU parallelism only
 func main() {
     using ThreadPool {
-        const handles = files.map({ |f| ThreadPool.spawn(|| { process(f) }) })
+        let handles = files.map({ |f| ThreadPool.spawn(|| { process(f) }) })
         for h in handles { try h.join() }
     }
 }
 
 // Spawn and wait for result
-const h = spawn(|| { compute() })
-const result = try h.join()
+let h = spawn(|| { compute() })
+let result = try h.join()
 
 // Fire-and-forget (explicit)
 spawn(|| { background_work() }).detach()
@@ -82,14 +82,14 @@ mut (a, b) = join_all(
 )
 
 // Dynamic spawning
-const group = TaskGroup.new()
+let group = TaskGroup.new()
 for url in urls {
     group.spawn(|| { fetch(url) })
 }
-const results = try group.join_all()
+let results = try group.join_all()
 
 // Raw OS thread (works anywhere)
-const h = Thread.spawn(|| { needs_thread_affinity() })
+let h = Thread.spawn(|| { needs_thread_affinity() })
 try h.join()
 ```
 

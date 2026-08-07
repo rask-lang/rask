@@ -106,7 +106,7 @@ impl HiddenParamPass<'_> {
     /// take the type the checker recorded for the initializer.
     fn collect_locals_from_stmt(&self, stmt: &Stmt, locals: &mut Vec<(String, Type)>) {
         match &stmt.kind {
-            StmtKind::Mut { name, ty, init, .. } | StmtKind::Const { name, ty, init, .. } => {
+            StmtKind::Mut { name, ty, init, .. } | StmtKind::Let { name, ty, init, .. } => {
                 let ty = match ty {
                     Some(ann) => self.parse_ty(ann),
                     None => self.node_ty(init.id),

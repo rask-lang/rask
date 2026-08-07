@@ -4,7 +4,7 @@
 struct Point { x: i32, y: i32 }
 
 func swap_fields(mutate x: i32, mutate y: i32) {
-    const tmp = x
+    let tmp = x
     x = y
     y = tmp
 }

@@ -19,7 +19,7 @@ test "Vec.first and Vec.last answer with an element" {
 
     mut empty = Vec.new()
     empty.push(1)
-    const only = empty.first() ?? -1
+    let only = empty.first() ?? -1
     assert only == 1
 }
 

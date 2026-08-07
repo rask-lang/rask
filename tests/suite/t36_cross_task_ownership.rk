@@ -6,7 +6,7 @@
 // error suite proves that touching the value after the send is rejected; here
 // the legal round-trip delivers it.
 test "send delivers a value to the receiver" {
-    const (tx, rx) = Channel<i64>.buffered(4)
+    let (tx, rx) = Channel<i64>.buffered(4)
     tx.send(30)
     mut total = 0
     if rx.receive() is i64 as v {
@@ -18,8 +18,8 @@ test "send delivers a value to the receiver" {
 // Clone-then-send: cloning a sender yields an independent handle to the same
 // channel; the original stays usable after the clone sends.
 test "clone-then-send keeps the original sender usable" {
-    const (tx, rx) = Channel<i64>.buffered(4)
-    const tx2 = tx.clone()
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let tx2 = tx.clone()
     tx2.send(1)
     tx.send(2)
     mut sum = 0
@@ -40,7 +40,7 @@ test "clone-then-send keeps the original sender usable" {
 // them. The task returns its result over a channel (another owned transfer).
 test "own closure moves its captures into the task" {
     using Multitasking {
-        const (tx, rx) = Channel<i64>.buffered(1)
+        let (tx, rx) = Channel<i64>.buffered(1)
         mut data = Vec.new<i64>()
         data.push(7)
         data.push(8)

@@ -17,7 +17,7 @@ These examples parse and run with the current interpreter:
 | # | Example | Topic | Status |
 |---|---------|-------|--------|
 | - | `hello_world.rk` | Hello World | ✅ Runnable |
-| 01 | `01_variables.rk` | Variables (`const`, `mut`) | ✅ Runnable |
+| 01 | `01_variables.rk` | Variables (`let`, `mut`) | ✅ Runnable |
 | 02 | `02_functions.rk` | Functions and returns | ✅ Runnable |
 | 03 | `03_collections.rk` | Vec and Map | ✅ Runnable |
 | 04 | `04_pattern_matching.rk` | Match expressions | ✅ Runnable |

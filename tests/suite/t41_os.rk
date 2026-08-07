@@ -18,7 +18,7 @@ test "os.pid returns the running process id (was getpid)" {
 }
 
 test "os.env_vars lists the environment (was vars)" {
-    const vars = os.env_vars()
+    let vars = os.env_vars()
     // Every process has at least PATH in a normal shell; just assert the list
     // is well-formed and non-negative in length (the accessor exists + returns).
     assert vars.len() >= 0
@@ -26,6 +26,6 @@ test "os.env_vars lists the environment (was vars)" {
 
 test "os.env reads a single variable as an optional" {
     // Unlikely-to-exist var reads as absent; the point is the Option shape.
-    const missing = os.env("RASK_DEFINITELY_NOT_SET_12345")
+    let missing = os.env("RASK_DEFINITELY_NOT_SET_12345")
     assert missing == none
 }

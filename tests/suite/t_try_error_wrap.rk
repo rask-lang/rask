@@ -91,7 +91,7 @@ func lookup(key: string) -> string or StoreError {
 
 // Free-function source: StoreError → ApiError.Store
 func fetch(key: string) -> string or ApiError {
-    const v = try lookup(key)
+    let v = try lookup(key)
     return "got {v}"
 }
 
@@ -104,13 +104,13 @@ func accept(dto: Dto) -> string or ApiError {
 
 // Second hop from the layer above: ApiError → TopError.Api
 func serve(key: string) -> string or TopError {
-    const v = try fetch(key)
+    let v = try fetch(key)
     return "served {v}"
 }
 
 // An explicit handler still wins where it's written.
 func explicit(key: string) -> string or ApiError {
-    const v = try lookup(key) else |e| ApiError.BadRequest(e.message())
+    let v = try lookup(key) else |e| ApiError.BadRequest(e.message())
     return "got {v}"
 }
 
@@ -123,7 +123,7 @@ func passthrough(key: string) -> string or StoreError {
 // carried onto the copies — otherwise native lowers the raw StoreError into an
 // ApiError slot and the caller's match reads a tag that isn't there.
 func tagged<T>(tag: T, key: string) -> string or ApiError {
-    const v = try lookup(key)
+    let v = try lookup(key)
     return "{tag}:{v}"
 }
 

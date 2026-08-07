@@ -20,27 +20,27 @@ func find(hit: bool) -> i64? {
 }
 
 test "is_err and is_ok on a result" {
-    const bad = load(true)
+    let bad = load(true)
     assert bad.is_err()
     assert bad.is_ok() == false
 
-    const good = load(false)
+    let good = load(false)
     assert good.is_ok()
     assert good.is_err() == false
 }
 
 test "is_some and is_none on an optional" {
-    const present = find(true)
+    let present = find(true)
     assert present.is_some()
     assert present.is_none() == false
 
-    const absent = find(false)
+    let absent = find(false)
     assert absent.is_none()
     assert absent.is_some() == false
 }
 
 test "predicates compose in conditions" {
-    const r = load(true)
+    let r = load(true)
     mut seen = 0
     if r.is_err() { seen = seen + 1 }
     if r.is_ok() { seen = seen + 10 }

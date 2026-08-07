@@ -13,13 +13,13 @@ import time
 import http
 
 test "a plain import registers the module's structs" {
-    const d = Duration.from_millis(3)
+    let d = Duration.from_millis(3)
     assert_eq(d.as_millis(), 3)
 }
 
 test "qualified and unqualified spellings name the same type" {
-    const via_module = http.Response.ok("x")
-    const via_bare = Response.ok("x")
+    let via_module = http.Response.ok("x")
+    let via_bare = Response.ok("x")
     assert_eq(via_module.status, via_bare.status)
     assert_eq(via_module.status, 200)
 }
@@ -27,6 +27,6 @@ test "qualified and unqualified spellings name the same type" {
 test "a module's namespace struct still carries its functions" {
     // `struct http { }` exists to hang qualified calls off, and isn't itself
     // an exported type — `http.Response` resolves through it either way.
-    const r = http.Response.ok("y")
+    let r = http.Response.ok("y")
     assert_eq(r.status, 200)
 }

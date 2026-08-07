@@ -1672,7 +1672,7 @@ impl Resolver {
                     self.errors.push(e);
                 }
             }
-            StmtKind::Const { name, name_span, ty, init } => {
+            StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
                 if !self.stdlib_mode && self.is_builtin_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
@@ -1703,7 +1703,7 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::ConstTuple { patterns, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.resolve_expr(init);
                 for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(
@@ -2314,7 +2314,7 @@ impl Resolver {
                 for binding in bindings {
                     let sym_id = self.symbols.insert(
                         binding.name.clone(),
-                        SymbolKind::Variable { mutable: binding.mutable },
+                        SymbolKind::Variable { mutable: true },
                         None,
                         expr.span,
                         false,

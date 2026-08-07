@@ -11,6 +11,6 @@ extend Point {
 }
 
 func main() {
-    const p = Point { x: 10, y: 32 }
+    let p = Point { x: 10, y: 32 }
     println(p.sum().to_string())
 }

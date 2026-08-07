@@ -11,11 +11,11 @@
 //   @resource
 //   struct File { ... }
 //
-//   const file = try File.open("data.txt")
+//   let file = try File.open("data.txt")
 //   // if you stop here → compile error! File not consumed.
 //
 // The `ensure` keyword schedules cleanup that runs when the scope exits:
-//   const file = try File.open("data.txt")
+//   let file = try File.open("data.txt")
 //   ensure file.close()       // runs when this block ends
 //   // ... use file ...
 //   // file.close() happens here automatically, even if we returned early
@@ -34,10 +34,10 @@
 // This example shows the pattern. The actual file I/O isn't
 // implemented in the tutorial compiler, but the concept is key.
 func example_resource() -> () or string {
-    const file = try fs.open("test.txt")
+    let file = try fs.open("test.txt")
     ensure file.close()
 
-    const text = try file.read_text()
+    let text = try file.read_text()
     println("read {text.len()} characters")
     return ()
 }
@@ -99,9 +99,9 @@ func book_flight(id: i32, passenger: string) -> i32 or string {
 // This matters: if resource B depends on resource A, you want to
 // clean up B first.
 //
-//   const a = open_resource_a()
+//   let a = open_resource_a()
 //   ensure a.close()            // runs second
-//   const b = open_resource_b()
+//   let b = open_resource_b()
 //   ensure b.close()            // runs first
 //
 // This is like a stack: last in, first out. Same as Python's
@@ -140,12 +140,12 @@ func process_flights(flights: Vec<string>) -> i32 or string {
 // --- Tests ---
 
 test "booking commit" {
-    const result = book_flight(1, "Besse")
+    let result = book_flight(1, "Besse")
     assert result?
 }
 
 test "booking failure" {
-    const result = book_flight(2, "FAIL")
+    let result = book_flight(2, "FAIL")
     assert result is string
 }
 
@@ -157,7 +157,7 @@ test "booking pattern" {
 }
 
 test "two bookings" {
-    const status = two_bookings()
+    let status = two_bookings()
     assert status.first_committed == true
     assert status.second_committed == false
 }

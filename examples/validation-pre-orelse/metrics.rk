@@ -23,7 +23,7 @@ extend Metrics {
         self.total_requests += 1
         if status >= 400 { self.total_errors += 1 }
 
-        const prior = self.status_counts.get(status) ?? 0
+        let prior = self.status_counts.get(status) ?? 0
         self.status_counts.insert(status, prior + 1)
         self.latencies_ms.push(latency_ms)
     }
@@ -44,9 +44,9 @@ extend Metrics {
         mut sorted = self.latencies_ms.clone()
         sorted.sort()
 
-        const errors = self.total_errors
-        const total = self.total_requests
-        const rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+        let errors = self.total_errors
+        let total = self.total_requests
+        let rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
 
         return MetricsSummary {
             total_requests: total,

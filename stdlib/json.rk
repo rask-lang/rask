@@ -104,14 +104,14 @@ extend JsonParser {
         if self.pos >= self.len {
             return 0
         }
-        const b = self.input.byte_at(self.pos) ?? 0
+        let b = self.input.byte_at(self.pos) ?? 0
         self.pos = self.pos + 1
         return b
     }
 
     func skip_ws(mutate self) {
         while self.pos < self.len {
-            const b = self.input.byte_at(self.pos) ?? 0
+            let b = self.input.byte_at(self.pos) ?? 0
             if b != 32 && b != 9 && b != 10 && b != 13 {
                 return
             }
@@ -124,7 +124,7 @@ extend JsonParser {
         if self.pos >= self.len {
             return JsonError.ParseError("unexpected end of input")
         }
-        const b = self.advance()
+        let b = self.advance()
         if b != expected {
             return JsonError.ParseError("expected '{expected}', got '{b}'")
         }
@@ -137,7 +137,7 @@ extend JsonParser {
             return JsonError.ParseError("unexpected end of input")
         }
 
-        const b = self.peek()
+        let b = self.peek()
 
         if b == 123 {
             return self.parse_object()
@@ -180,17 +180,17 @@ extend JsonParser {
             if self.peek() != 34 {
                 return JsonError.ParseError("expected string key in object")
             }
-            const key = try self.parse_raw_string()
+            let key = try self.parse_raw_string()
             self.skip_ws()
             if self.advance() != 58 {
                 return JsonError.ParseError("expected ':' after object key")
             }
-            const value = try self.parse_value()
+            let value = try self.parse_value()
             // Last value wins for duplicate keys (J5)
             map.insert(key, value)
 
             self.skip_ws()
-            const next = self.advance()
+            let next = self.advance()
             if next == 44 {
                 continue
             }
@@ -214,11 +214,11 @@ extend JsonParser {
         }
 
         loop {
-            const value = try self.parse_value()
+            let value = try self.parse_value()
             arr.push(value)
 
             self.skip_ws()
-            const next = self.advance()
+            let next = self.advance()
             if next == 44 {
                 continue
             }
@@ -238,7 +238,7 @@ extend JsonParser {
         mut b = StringBuilder.new()
 
         while self.pos < self.len {
-            const byte = self.advance()
+            let byte = self.advance()
             if byte == 34 {
                 return b.build()
             }
@@ -246,7 +246,7 @@ extend JsonParser {
                 if self.pos >= self.len {
                     return JsonError.ParseError("unterminated escape sequence")
                 }
-                const esc = self.advance()
+                let esc = self.advance()
                 if esc == 34 {
                     b.push_char('"')
                 } else if esc == 92 {
@@ -264,7 +264,7 @@ extend JsonParser {
                 } else if esc == 102 {
                     b.push_char('\u{c}')
                 } else if esc == 117 {
-                    const cp = try self.parse_unicode_escape()
+                    let cp = try self.parse_unicode_escape()
                     b.push_char(cp)
                 } else {
                     return JsonError.ParseError("invalid escape character")
@@ -284,8 +284,8 @@ extend JsonParser {
         mut cp: u32 = 0
         mut i = 0
         while i < 4 {
-            const b = self.advance()
-            const digit = hex_digit(b)
+            let b = self.advance()
+            let digit = hex_digit(b)
             if digit < 0 {
                 return JsonError.ParseError("invalid hex digit in unicode escape")
             }
@@ -299,7 +299,7 @@ extend JsonParser {
     }
 
     func parse_string_value(mutate self) -> JsonValue or JsonError {
-        const s = try self.parse_raw_string()
+        let s = try self.parse_raw_string()
         return JsonValue.String(s)
     }
 
@@ -337,7 +337,7 @@ extend JsonParser {
     }
 
     func parse_number(mutate self) -> JsonValue or JsonError {
-        const start = self.pos
+        let start = self.pos
 
         if self.peek() == 45 {
             self.pos = self.pos + 1
@@ -382,8 +382,8 @@ extend JsonParser {
             }
         }
 
-        const num_str = self.input[start..self.pos].to_string()
-        const n = try {
+        let num_str = self.input[start..self.pos].to_string()
+        let n = try {
             try num_str.parse<f64>()
         } else |_e| {
             return JsonError.ParseError("invalid number: {num_str}")
@@ -413,7 +413,7 @@ extend json {
     /// Parse a JSON string into a JsonValue tree. RFC 8259 compliant.
     public func parse(input: string) -> JsonValue or JsonError {
         mut parser = JsonParser.new(input)
-        const value = try parser.parse_value()
+        let value = try parser.parse_value()
         parser.skip_ws()
         if parser.pos < parser.len {
             return JsonError.ParseError("trailing content after JSON value")
@@ -507,7 +507,7 @@ func escape_string(s: string) -> string {
     b.push_char('"')
     mut i: usize = 0
     while i < s.len() {
-        const byte = s.byte_at(i) ?? 0
+        let byte = s.byte_at(i) ?? 0
         if byte == 34 {
             b.push("\\\"")
         } else if byte == 92 {
@@ -543,7 +543,7 @@ func hex_char(n: u8) -> char {
 }
 
 func format_number(n: f64) -> string {
-    const i = n float to int i64 (saturating)
+    let i = n float to int i64 (saturating)
     if i as f64 == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
         return "{i}"
     }
