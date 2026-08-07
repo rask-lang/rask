@@ -31,6 +31,7 @@ In C++, `auto result = greeting + " " + name` creates two temporary strings and 
 
 Rask doesn't do this. Large values move, not copy. If you want a copy, you write `.clone()`. Operators don't allocate behind your back. When something is expensive, you can see it in the code:
 
+<!-- test: parse -->
 ```rask
 let items = user.inventory.clone()            // explicit: this copies
 process(own user)                               // explicit: ownership transferred
@@ -50,6 +51,7 @@ This is where a strict "everything must be visible" rule would break down. Some 
 
 [I wrote about this in the first post](/2026/02/07/welcome-to-rask-blog/)—references can't be stored, so graph structures use handles into pools. Each handle access costs ~1-2ns for a generation check. That's real overhead.
 
+<!-- test: parse -->
 ```rask
 func damage(h: Handle<Entity>) using Pool<Entity> {
     h.health -= 10                             // generation check here
@@ -79,6 +81,7 @@ fn save_user(db: &mut Database, name: &str) -> Result<UserId, Error> {
 }
 ```
 
+<!-- test: parse -->
 ```rask
 // Rask
 func save_user(mutate db: Database, name: string) -> UserId or Error {
@@ -103,6 +106,7 @@ That's pragmatism. I'd rather take a proven solution than invent a worse one for
 
 Forget to close a file? Compile error. I/O handles must be consumed exactly once:
 
+<!-- test: parse -->
 ```rask
 func process(path: string) -> Stats or Error {
     let file = try fs.open(path)

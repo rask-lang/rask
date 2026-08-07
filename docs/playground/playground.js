@@ -31,12 +31,12 @@ const raskLanguage = StreamLanguage.define({
         }
 
         // Keywords
-        if (stream.match(/^(func|const|let|if|else|match|loop|while|for|in|return|struct|enum|trait|extend|impl|public|private|try|ensure|with|break|continue|spawn|async|await)\b/)) {
+        if (stream.match(/^(func|let|mut|const|if|else|match|loop|while|for|in|is|as|return|struct|enum|trait|extend|union|public|private|try|catch|ensure|with|using|comptime|take|read|mutate|own|where|unsafe|break|continue|spawn|import|export|type|test|assert)\b/)) {
             return "keyword";
         }
 
         // Types
-        if (stream.match(/^(i32|i64|f32|f64|bool|string|char|Vec|Map|Option|Result|Some|None|Ok|Err)\b/)) {
+        if (stream.match(/^(i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64|bool|string|char|void|none|Vec|Map|Set|Pool|Handle|Cell|Shared|Mutex|Owned|Atomic|StringView)\b/)) {
             return "type";
         }
 
@@ -46,7 +46,7 @@ const raskLanguage = StreamLanguage.define({
         }
 
         // Operators
-        if (stream.match(/^[+\-*\/%=<>!&|^]/)) {
+        if (stream.match(/^[+\-*\/%=<>!&|^?]/)) {
             return "operator";
         }
 

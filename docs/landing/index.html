@@ -67,7 +67,7 @@
                     </div>
                     <pre><code><span class="cmt">// References are temporary</span>
 <span class="kw">func</span> <span class="fn">process</span>(data: Data) {
-    <span class="kw">const</span> name = data.user.name  <span class="cmt">// temporary borrow</span>
+    <span class="kw">let</span> name = data.user.name  <span class="cmt">// temporary borrow</span>
     <span class="cmt">// name is gone at end of block</span>
 }</code></pre>
                 </div>
@@ -85,7 +85,7 @@
 <span class="kw">struct</span> <span class="ty">Entity</span> {
     target: <span class="ty">Handle</span>&lt;<span class="ty">Entity</span>&gt;?
 }
-<span class="kw">const</span> entities = <span class="ty">Pool</span>&lt;<span class="ty">Entity</span>&gt;.<span class="fn">new</span>()
+<span class="kw">mut</span> entities = <span class="ty">Pool</span>&lt;<span class="ty">Entity</span>&gt;.<span class="fn">new</span>()
 entities[enemy].target = player_handle</code></pre>
                 </div>
             </div>
@@ -99,7 +99,7 @@ entities[enemy].target = player_handle</code></pre>
                         <span class="filename">resources.rk</span>
                     </div>
                     <pre><code><span class="kw">func</span> <span class="fn">backup</span>(src: <span class="ty">string</span>, dst: <span class="ty">string</span>) -> () <span class="kw">or</span> <span class="ty">Error</span> {
-    <span class="kw">const</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(src)
+    <span class="kw">let</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(src)
     <span class="kw">ensure</span> file.<span class="fn">close</span>()  <span class="cmt">// runs on all exits</span>
     <span class="kw">try</span> <span class="fn">write</span>(file)
 }</code></pre>
@@ -115,7 +115,7 @@ entities[enemy].target = player_handle</code></pre>
                         <span class="filename">concurrency.rk</span>
                     </div>
                     <pre><code><span class="kw">func</span> <span class="fn">fetch_user</span>(id: <span class="ty">u64</span>) -> <span class="ty">User</span> <span class="kw">or</span> <span class="ty">Error</span> {
-    <span class="kw">const</span> resp = <span class="kw">try</span> <span class="fn">http_get</span>(url)  <span class="cmt">// pauses task</span>
+    <span class="kw">let</span> resp = <span class="kw">try</span> <span class="fn">http_get</span>(url)  <span class="cmt">// pauses task</span>
     <span class="kw">return</span> <span class="fn">parse</span>(resp)
 }</code></pre>
                 </div>
