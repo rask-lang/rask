@@ -171,6 +171,10 @@ impl TypeChecker {
                 ty_name,
                 span,
             } => self.resolve_type_pattern(scrutinee, narrow_ty, ty_name, span),
+
+            TypeConstraint::Coalesce { node, value, default, result, span } => {
+                self.resolve_coalesce(node, value, default, result, span)
+            }
         }
     }
 
@@ -189,21 +193,19 @@ impl TypeChecker {
             &self.types,
         );
         match &resolved {
-            Type::Result { ok, err } => {
-                let ok_applied = super::check_pattern::normalize_type(
-                    &self.ctx.apply(ok),
+            Type::Result { err, .. } => {
+                // Every branch the scrutinee could hold — a flat `T? or E`
+                // offers `T`, `none` and `E` (OPT30).
+                let branches = super::check_pattern::two_branch_leaves(
+                    &mut self.ctx,
                     &self.types,
+                    &resolved,
                 );
                 let err_applied = super::check_pattern::normalize_type(
                     &self.ctx.apply(err),
                     &self.types,
                 );
-                let matches_ok = ok_applied == narrow_applied;
-                let matches_err = match &err_applied {
-                    Type::Union(variants) => variants.contains(&narrow_applied),
-                    other => other == &narrow_applied,
-                };
-                if !matches_ok && !matches_err {
+                if !branches.contains(&narrow_applied) {
                     if matches!(&err_applied, Type::Union(_)) {
                         Err(TypeError::TypePatternNotInUnion {
                             ty_name,
@@ -237,6 +239,63 @@ impl TypeChecker {
                 span,
             }),
         }
+    }
+
+    /// ER14a: settle `value ?? default` once the right side's shape is known.
+    ///
+    /// Three cases, in order: a divergence collapses to the payload; a still-
+    /// wrapped right side with the same success type keeps the shape and the
+    /// chain carries on; a bare success value collapses. Only the second one
+    /// needs the left side, and only to tell a chain from a layer collapse
+    /// (`T??` fed a `T?`, OPT30) — unresolved, the chain reading wins.
+    fn resolve_coalesce(
+        &mut self,
+        node: rask_ast::NodeId,
+        value: Type,
+        default: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let def = self.ctx.apply(&default);
+        if matches!(def, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
+            return Ok(false);
+        }
+
+        // What the left side's success branch has to be, and what the whole
+        // expression produces.
+        let (want_ok, produces) = match &def {
+            Type::Never => {
+                let payload = self.ctx.fresh_var();
+                (payload.clone(), payload)
+            }
+            Type::Result { ok: def_ok, .. } => {
+                let val = self.ctx.apply(&value);
+                let collapses = match &val {
+                    Type::Result { ok, .. } => {
+                        let val_ok = super::check_pattern::normalize_type(&self.ctx.apply(ok), &self.types);
+                        let def_norm = super::check_pattern::normalize_type(&def, &self.types);
+                        !matches!(val_ok, Type::Var(_)) && val_ok == def_norm
+                    }
+                    _ => false,
+                };
+                if collapses {
+                    (def.clone(), def.clone())
+                } else {
+                    self.coalesce_keeps_shape.insert(node);
+                    ((**def_ok).clone(), def.clone())
+                }
+            }
+            other => (other.clone(), other.clone()),
+        };
+
+        // The error side stays free so both shapes fit: `T?` binds it to
+        // `none`, and an operand whose shape isn't pinned yet still unifies.
+        let free_err = self.ctx.fresh_var();
+        let shape = Type::Result { ok: Box::new(want_ok), err: Box::new(free_err) };
+        self.unify(&value, &shape, span)?;
+        self.unify(&result, &produces, span)?;
+        Ok(true)
     }
 
     /// Resolve a return-value / coercion constraint with deferred auto-wrap.

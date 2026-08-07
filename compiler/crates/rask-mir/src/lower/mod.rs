@@ -227,6 +227,9 @@ pub struct MirContext<'a> {
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
+    /// ER14a: `??` sites whose right side is still wrapped, so the present
+    /// path hands back the left operand instead of its payload.
+    pub coalesce_keeps_shape: &'a std::collections::HashSet<NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -297,6 +300,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_ERROR_WRAPS: std::sync::LazyLock<HashMap<NodeId, rask_types::ErrorWrap>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
@@ -321,6 +326,7 @@ impl<'a> MirContext<'a> {
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
+            coalesce_keeps_shape: &EMPTY_COALESCE_SHAPE,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,

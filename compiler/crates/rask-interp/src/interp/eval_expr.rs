@@ -1946,26 +1946,24 @@ impl Interpreter {
 
             ExprKind::NullCoalesce { value, default } => {
                 let val = self.eval_expr(value)?;
+                // ER14a: when the right side is still wrapped the chain carries
+                // the layer onward, so a present left operand goes back
+                // untouched. Only a collapsing `??` hands back the payload.
+                let keeps_shape = self.coalesce_keeps_shape.contains(&expr.id);
                 match &val {
-                    // T? (Option.Some) — legacy or direct optional
                     Value::Enum { name, variant, fields, .. }
-                        if name == "Option" && variant == "Some" =>
+                        if matches!(name.as_str(), "Option" | "Result")
+                            && matches!(variant.as_str(), "Some" | "Ok") =>
                     {
-                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                        if keeps_shape {
+                            Ok(val.clone())
+                        } else {
+                            Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                        }
                     }
                     Value::Enum { name, variant, .. }
-                        if name == "Option" && variant == "None" =>
-                    {
-                        self.eval_expr(default)
-                    }
-                    // T or none (Result.Ok / Result.Err with none payload)
-                    Value::Enum { name, variant, fields, .. }
-                        if name == "Result" && variant == "Ok" =>
-                    {
-                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
-                    }
-                    Value::Enum { name, variant, .. }
-                        if name == "Result" && variant == "Err" =>
+                        if matches!(name.as_str(), "Option" | "Result")
+                            && matches!(variant.as_str(), "None" | "Err") =>
                     {
                         self.eval_expr(default)
                     }

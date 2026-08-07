@@ -2111,20 +2111,37 @@ impl<'a> MirLowerer<'a> {
                 }));
 
                 self.builder.switch_to_block(some_block);
+                // ER14a: a still-wrapped right side means the chain carries the
+                // layer onward, so a present left operand goes back untouched.
+                // Only a collapsing `??` reads the payload out.
+                let keeps_shape = self.ctx.coalesce_keeps_shape.contains(&expr.id);
                 // The checker often leaves this node's type an unresolved var,
                 // and reading the payload as an opaque pointer hands back the
                 // slot's address instead of the value. The lowered receiver
                 // knows its own ok type — take that when the checker has
                 // nothing better.
-                let payload_ty = Self::better_payload_ty(
-                    self.extract_payload_type(value),
-                    match &val_ty {
-                        MirType::Result { ok, .. } => Some((**ok).clone()),
-                        MirType::Option(inner) => Some((**inner).clone()),
-                        _ => None,
-                    },
-                ).unwrap_or(MirType::I64);
-                let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
+                let payload_ty = if keeps_shape {
+                    val_ty.clone()
+                } else {
+                    Self::better_payload_ty(
+                        self.extract_payload_type(value),
+                        match &val_ty {
+                            MirType::Result { ok, .. } => Some((**ok).clone()),
+                            MirType::Option(inner) => Some((**inner).clone()),
+                            _ => None,
+                        },
+                    ).unwrap_or(MirType::I64)
+                };
+                let result_local = if keeps_shape {
+                    let slot = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: slot,
+                        rvalue: MirRValue::Use(val),
+                    }));
+                    slot
+                } else {
+                    self.emit_option_payload(val, payload_ty.clone(), is_niche)
+                };
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
                 self.builder.switch_to_block(none_block);

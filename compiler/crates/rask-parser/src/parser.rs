@@ -292,7 +292,7 @@ impl Parser {
                 TokenKind::AmpAmp | TokenKind::PipePipe
                 | TokenKind::EqEq | TokenKind::BangEq
                 | TokenKind::LtEq | TokenKind::GtEq
-                | TokenKind::QuestionQuestion
+                | TokenKind::QuestionQuestion | TokenKind::Catch
                 | TokenKind::Pipe | TokenKind::Caret | TokenKind::Amp
                 | TokenKind::LtLt | TokenKind::GtGt
                 | TokenKind::Slash | TokenKind::Percent
@@ -3632,6 +3632,27 @@ impl Parser {
             TokenKind::Assert => self.parse_assert_expr(),
 
             TokenKind::Check => self.parse_check_expr(),
+
+            // A range with no start — `s[..5]`, `buf[..]`. The open-end form
+            // falls out of the infix table; this one has nothing to its left.
+            TokenKind::DotDot | TokenKind::DotDotEq => {
+                let inclusive = self.check(&TokenKind::DotDotEq);
+                self.advance();
+                let end = if self.is_expr_start() {
+                    Some(Box::new(self.parse_expr_bp(4)?))
+                } else {
+                    None
+                };
+                let end_span = end
+                    .as_ref()
+                    .map(|e| e.span.end)
+                    .unwrap_or(self.tokens[self.pos - 1].span.end);
+                Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Range { start: None, end, inclusive },
+                    span: self.span(start, end_span),
+                })
+            }
 
             // OPT32: `take <place>` moves the payload out of a mutable
             // optional slot and leaves `none`. Binds like the other prefixes,

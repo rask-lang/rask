@@ -280,6 +280,7 @@ pub fn compile_to_object(
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
+    let all_coalesce_keeps_shape = mono.all_coalesce_keeps_shape(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -298,6 +299,7 @@ pub fn compile_to_object(
         call_rewrites: &mono.call_rewrites,
         call_targets: &all_call_targets,
         error_wraps: &all_error_wraps,
+        coalesce_keeps_shape: &all_coalesce_keeps_shape,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -544,6 +546,7 @@ pub fn compile_tests_to_object(
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
+    let all_coalesce_keeps_shape = mono.all_coalesce_keeps_shape(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -562,6 +565,7 @@ pub fn compile_tests_to_object(
         call_rewrites: &mono.call_rewrites,
         call_targets: &all_call_targets,
         error_wraps: &all_error_wraps,
+        coalesce_keeps_shape: &all_coalesce_keeps_shape,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -749,6 +753,7 @@ pub fn compile_benchmarks_to_object(
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
+    let all_coalesce_keeps_shape = mono.all_coalesce_keeps_shape(typed);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -767,6 +772,7 @@ pub fn compile_benchmarks_to_object(
         call_rewrites: &mono.call_rewrites,
         call_targets: &all_call_targets,
         error_wraps: &all_error_wraps,
+        coalesce_keeps_shape: &all_coalesce_keeps_shape,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),

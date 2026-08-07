@@ -18,7 +18,7 @@ use rask_ast::{
 };
 use rask_ast::{NodeId, Span};
 use rask_types::{Callee, Type, TypeId, TypedProgram};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphization work item
 struct WorkItem {
@@ -94,6 +94,8 @@ pub struct Monomorphizer<'a> {
     /// ER31a error wraps for the copies, same idea. The wrapping variant names a
     /// concrete enum, so it carries over unchanged.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
+    /// ER14a: instantiated `??` nodes whose right side is still wrapped.
+    pub instantiated_coalesce_keeps_shape: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
     /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
     /// call; substituting this instantiation's arguments turns that into the
@@ -244,6 +246,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_node_types: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
+            instantiated_coalesce_keeps_shape: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
@@ -333,6 +336,11 @@ impl<'a> Monomorphizer<'a> {
             // over as-is — no substitution to do.
             if let Some(wrap) = typed.error_wraps.get(&old_id) {
                 self.instantiated_error_wraps.insert(new_id, wrap.clone());
+            }
+            // ER14a: whether a `??` keeps its shape is a property of the two
+            // operand types, which substitution preserves.
+            if typed.coalesce_keeps_shape.contains(&old_id) {
+                self.instantiated_coalesce_keeps_shape.insert(new_id);
             }
         }
     }

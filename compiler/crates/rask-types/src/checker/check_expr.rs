@@ -1390,43 +1390,18 @@ impl TypeChecker {
                 }
 
                 let def_ty = self.infer_expr(default);
-                let resolved_def = self.ctx.apply(&def_ty);
-                // The left side's success type has to match whatever the right
-                // side supplies. The error side stays a free var so an operand
-                // whose shape isn't pinned yet still fits.
-                let constrain_ok = |checker: &mut Self, want: &Type| {
-                    let free_err = checker.ctx.fresh_var();
-                    checker.ctx.add_constraint(TypeConstraint::Equal(
-                        val_ty.clone(),
-                        Type::Result {
-                            ok: Box::new(want.clone()),
-                            err: Box::new(free_err),
-                        },
-                        expr.span,
-                    ));
-                };
-
-                // ER14a, three cases in order.
-                if matches!(resolved_def, Type::Never) {
-                    // A divergence — `?? return e`, `?? break`. The chain ends.
-                    let inner = self.ctx.fresh_var();
-                    constrain_ok(self, &inner);
-                    return inner;
-                }
-                if let (Type::Result { ok: val_ok, .. }, Type::Result { ok: def_ok, .. }) =
-                    (&resolved_val, &resolved_def)
-                {
-                    // Still wrapped with the same success type — keep the shape
-                    // so `b ?? a ?? 7` chains flat. Different success types mean
-                    // a layer collapse instead (OPT30).
-                    if self.same_shape(val_ok, def_ok) {
-                        constrain_ok(self, def_ok);
-                        return resolved_def;
-                    }
-                }
-                // A bare success value. The chain collapses to `T`.
-                constrain_ok(self, &def_ty);
-                def_ty
+                // Which of ER14a's three cases applies turns on the right
+                // side's shape, and a method-call return type often isn't
+                // known yet. Hand the whole decision to the solver.
+                let result = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::Coalesce {
+                    node: expr.id,
+                    value: val_ty,
+                    default: def_ty,
+                    result: result.clone(),
+                    span: expr.span,
+                });
+                result
             }
 
             ExprKind::OptionalField { object, field } => {
@@ -2707,20 +2682,16 @@ impl TypeChecker {
 
         // ER30: exhaustiveness check for `T or E` result matches.
         // Collect required coverage: ok type + all error leaf types.
-        if let Type::Result { ok, err } = &resolved {
-            let ok_ty = self.ctx.apply(ok);
-            let err_ty = self.ctx.apply(err);
-            // Collect all required type names (display strings) that must be covered.
-            let mut required: Vec<String> = vec![self.fmt_ty(&ok_ty)];
-            match &err_ty {
-                Type::Union(variants) => {
-                    for v in variants {
-                        required.push(self.fmt_ty(v));
-                    }
-                }
-                Type::None => {} // void or E: only ok needed
-                other => required.push(self.fmt_ty(other)),
-            }
+        if matches!(resolved, Type::Result { .. }) {
+            // Every branch the value could actually be. A flat `T? or E` has
+            // three (`T`, `none`, `E`) — the layers are matched apart, not
+            // collapsed (OPT30).
+            let leaves = super::check_pattern::two_branch_leaves(
+                &mut self.ctx,
+                &self.types,
+                &resolved,
+            );
+            let required: Vec<String> = leaves.iter().map(|t| self.fmt_ty(t)).collect();
 
             let mut has_wildcard = false;
             let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
