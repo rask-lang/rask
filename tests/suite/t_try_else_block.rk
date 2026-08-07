@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ER18 block form: `try { … } else |e| …`. A `try` inside the block belongs to
+// ER18 block form: `{ … } catch e => return …`. A `try` inside the block belongs to
 // the handler, not the caller. Native used to lower the block's own value as if
 // it were a Result and tag-test it (#480).
 
@@ -21,7 +21,7 @@ func low(fail: bool) -> i64 or LowError {
 func doubled(fail: bool) -> i64 or LowError {
     let v = try {
         try low(fail)
-    } else |_e| {
+    } catch _e => {
         return LowError { detail: "handled" }
     }
     return v * 2
@@ -44,7 +44,7 @@ test "a try inside the block runs the handler" {
 func parsed(s: string) -> f64 or LowError {
     let v = try {
         try s.parse<f64>()
-    } else |_e| {
+    } catch _e => {
         return LowError { detail: "not a number" }
     }
     return v + 1.0

@@ -410,25 +410,37 @@ impl TypeChecker {
                 then_branch,
                 else_branch,
                 expr: value,
+                else_binding,
             } => {
                 let value_ty = self.infer_expr(value);
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
-                    if name.is_empty() {
-                        // OPT10: `if opt is Some` with no explicit binding —
-                        // rebind the original variable to the inner type.
-                        if let ExprKind::Ident(var_name) = &value.kind {
-                            self.define_local(var_name.clone(), ty);
-                        }
-                    } else {
-                        self.define_local(name, ty);
+                    if !name.is_empty() {
+                        self.define_local_const(name, ty);
                     }
                 }
                 let then_ty = self.infer_expr(then_branch);
                 self.pop_scope();
                 if let Some(else_branch) = else_branch {
+                    // ER22: `else as e` binds the branch the test ruled out —
+                    // the complement of what the pattern named.
+                    let complement = else_binding
+                        .as_ref()
+                        .and_then(|name| self.complement_branch(pattern, &value_ty).map(|t| (name.clone(), t)));
+                    if let Some((name, ty)) = complement {
+                        self.push_scope();
+                        self.define_local_const(name, ty);
+                    } else if let Some(name) = else_binding {
+                        self.errors.push(TypeError::ElseBindingNotResult {
+                            name: name.clone(),
+                            span: expr.span,
+                        });
+                    }
                     let else_ty = self.infer_expr(else_branch);
+                    if else_binding.is_some() {
+                        self.pop_scope();
+                    }
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         then_ty.clone(),
                         else_ty,
@@ -2819,6 +2831,33 @@ impl TypeChecker {
     /// Detect `opt is Some` (no bindings) in an if-condition and extract
     /// the variable name and its narrowed inner type (OPT10 type narrowing).
     /// Also handles `opt is Some` within `&&` chains.
+    /// ER22: what an `else as e` binds after `if r is T as v`. The scrutinee
+    /// has two branches; the pattern named one, so the else gets the other.
+    /// `None` when the scrutinee isn't two-branch, or the pattern didn't name
+    /// a branch of it.
+    fn complement_branch(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee_ty: &Type,
+    ) -> Option<Type> {
+        let Pattern::TypePat { ty_name, .. } = pattern else { return None };
+        let resolved = self.ctx.apply(scrutinee_ty);
+        if !matches!(resolved, Type::Result { .. }) {
+            return None;
+        }
+        let named = super::check_pattern::normalize_type(
+            &super::parse_type::parse_type_string(ty_name, &self.types).ok()?,
+            &self.types,
+        );
+        let leaves = super::check_pattern::two_branch_leaves(&mut self.ctx, &self.types, &resolved);
+        let rest: Vec<Type> = leaves.into_iter().filter(|t| *t != named).collect();
+        match rest.len() {
+            0 => None,
+            1 => Some(rest.into_iter().next().unwrap()),
+            _ => Some(Type::Union(rest)),
+        }
+    }
+
     /// OPT19/ER23: the `as v` bind on a presence test — `if x? as v`. Returns
     /// the name, the type `v` gets, and (when the scrutinee can fail) the type
     /// an `else as e` would bind.

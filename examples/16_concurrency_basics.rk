@@ -32,7 +32,7 @@ func main() -> void {
     print("Main thread continues...\n")
 
     // Wait for thread to complete with .join()
-    handle.join().ok()
+    let _ = handle.join()
     print("Thread joined\n\n")
 
     // Spawn multiple threads
@@ -43,9 +43,9 @@ func main() -> void {
     let h3 = Thread.spawn(|| { worker(3, 15) })
 
     // Wait for all threads
-    h1.join().ok()
-    h2.join().ok()
-    h3.join().ok()
+    let _ = h1.join()
+    let _ = h2.join()
+    let _ = h3.join()
 
     print("\nAll workers done\n\n")
 
@@ -67,9 +67,9 @@ func main() -> void {
 
     // Spawn producer thread - `own` moves the Sender into the closure
     let producer = Thread.spawn(own || {
-        tx.send("Message 1").ok()
-        tx.send("Message 2").ok()
-        tx.send("Message 3").ok()
+        let _ = tx.send("Message 1")
+        let _ = tx.send("Message 2")
+        let _ = tx.send("Message 3")
         print("Producer sent 3 messages\n")
     })
 
@@ -84,8 +84,8 @@ func main() -> void {
         }
     })
 
-    producer.join().ok()
-    consumer.join().ok()
+    let _ = producer.join()
+    let _ = consumer.join()
     print("\n")
 
     // Unbuffered channel - synchronous
@@ -95,7 +95,7 @@ func main() -> void {
 
     let sender_thread = Thread.spawn(own || {
         print("Sending 100...\n")
-        sync_tx.send(100).ok()  // Blocks until received
+        let _ = sync_tx.send(100)  // Blocks until received
         print("Send complete\n")
     })
 
@@ -108,8 +108,8 @@ func main() -> void {
         }
     })
 
-    sender_thread.join().ok()
-    receiver_thread.join().ok()
+    let _ = sender_thread.join()
+    let _ = receiver_thread.join()
     print("\n")
 
     // Try receive - non-blocking
@@ -118,7 +118,7 @@ func main() -> void {
     let (test_tx, test_rx) = Channel<i32>.buffered(2)
 
     // Send one message
-    test_tx.send(999).ok()
+    let _ = test_tx.send(999)
 
     // Try to receive
     if test_rx.try_receive() is i32 as got {
@@ -158,7 +158,7 @@ func main() -> void {
         print("\nWaiting for all pool tasks...\n")
 
         for h in handles {
-            h.join().ok()
+            let _ = h.join()
         }
     }
 

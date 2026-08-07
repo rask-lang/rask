@@ -17,7 +17,7 @@ func use_after_send() -> void or Fail {
     let (tx, rx) = Channel<Vec<i32>>.buffered(4)
     mut data = Vec.new<i32>()
     data.push(1)
-    try tx.send(data) else |_| Fail.Msg("send failed")
+    tx.send(data) catch _ => return Fail.Msg("send failed")
     print(data.len())   // ERROR: `data` was sent — ownership transferred [T1]
     return ()
 }

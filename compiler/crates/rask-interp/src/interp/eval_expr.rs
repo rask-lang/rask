@@ -1611,6 +1611,7 @@ impl Interpreter {
                 pattern,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
                 let value = self.eval_expr(expr)?;
 
@@ -1623,21 +1624,21 @@ impl Interpreter {
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
-                    self.eval_expr(else_br)
-                } else {
-                    // ER24: early-exit narrowing. `if x is ErrType { <diverges> }`
-                    // with no `else` — the pattern didn't match, so `x` holds the
-                    // success side. Rebind it (in the current scope, so the
-                    // narrowing reaches the statements after this whole `if`) to
-                    // the unwrapped payload.
-                    if let (ExprKind::Ident(name), Value::Enum { variant, fields, .. }) =
-                        (&expr.kind, &value)
-                    {
-                        if matches!(variant.as_str(), "Ok" | "Some") {
-                            let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                            self.env.define(name.clone(), payload);
-                        }
+                    // ER22: `else as e` binds the branch the test ruled out.
+                    self.env.push_scope();
+                    if let Some(name) = else_binding {
+                        let payload = match &value {
+                            Value::Enum { fields, .. } => {
+                                fields.first().cloned().unwrap_or(Value::Unit)
+                            }
+                            other => other.clone(),
+                        };
+                        self.env.define(name.clone(), payload);
                     }
+                    let result = self.eval_expr(else_br);
+                    self.env.pop_scope();
+                    result
+                } else {
                     Ok(Value::Unit)
                 }
             }

@@ -95,6 +95,9 @@ pub enum ExprKind {
         pattern: Pattern,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
+        /// ER22: `else as e` binds the complement branch. A binding, not a
+        /// narrow — the scrutinee keeps its own type throughout.
+        else_binding: Option<String>,
     },
     /// Guard pattern (const v = expr is Pattern else { diverge })
     GuardPattern {

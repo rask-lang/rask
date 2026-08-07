@@ -54,7 +54,7 @@ test "?? { return } unwraps present" {
     assert use_block() == 84
 }
 
-// --- ER18: try expr else |e| return (diverging handler) ---
+// --- ER18: expr catch e => return (diverging handler) ---
 
 enum FetchError { NotFound }
 extend FetchError {
@@ -68,11 +68,11 @@ extend FetchError {
 func inner() -> i32 or FetchError { return 10 }
 
 func try_else_return() -> i32 {
-    mut v = try inner() else |e| return -1
+    mut v = inner() catch e => return -1
     return v
 }
 
-test "try expr else |e| return unwraps present" {
+test "expr catch e => return unwraps present" {
     assert try_else_return() == 10
 }
 
@@ -115,20 +115,20 @@ test "early-exit narrows c to ok after is ErrType diverges" {
     assert cfg_port() == 8080
 }
 
-// --- ER24 via if x == none { return } ---
+// --- ER24 via if x is none { return } ---
 
 func opt_source() -> i32? { return 7 }
 
 func narrow_via_none() -> i32 {
     let x = opt_source()
-    if x == none {
+    if x is none {
         return -1
     }
     // Early-exit narrow: x is i32 here
     return x + 100
 }
 
-test "early-exit narrows x after x == none diverges" {
+test "early-exit narrows x after x is none diverges" {
     assert narrow_via_none() == 107
 }
 

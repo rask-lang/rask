@@ -12,10 +12,10 @@ func returns_none() -> i32? {
 
 test "none literal" {
     let x: i32? = none
-    assert x == none
+    assert x is none
 
     let y = returns_none()
-    assert y == none
+    assert y is none
 }
 
 // --- force unwrap x! (OPT14) ---
@@ -76,14 +76,14 @@ test "optional chaining present path" {
 test "optional chaining absent short-circuits" {
     let user = get_user(false)
     let name = user?.profile?.name
-    assert name == none
+    assert name is none
 }
 
 test "optional chaining on none field" {
     let p: Profile? = none
     let user: User? = User { profile: p }
     let name = user?.profile?.name
-    assert name == none
+    assert name is none
 }
 
 // --- auto-wrap T to T? (OPT5) ---
@@ -122,7 +122,7 @@ test "try on Option extracts" {
 
 test "try on Option propagates none" {
     let result = try_propagates_none()
-    assert result == none
+    assert result is none
 }
 
 // --- Option methods from spec ---
@@ -136,7 +136,7 @@ test "map on present" {
 test "map on absent" {
     let x: i32? = none
     let y = x.map(|v| v * 2)
-    assert y == none
+    assert y is none
 }
 
 test "filter keeps matching" {
@@ -148,7 +148,7 @@ test "filter keeps matching" {
 test "filter rejects non-matching" {
     let x: i32? = 3
     let y = x.filter(|v| v > 5)
-    assert y == none
+    assert y is none
 }
 
 // --- is-patterns and narrowing (OPT19-OPT20) ---

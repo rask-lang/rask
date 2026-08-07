@@ -78,7 +78,7 @@ test "Vec.get — none for out of bounds" {
     v.push(42)
 
     let out = v.get(5)
-    assert out == none
+    assert out is none
 }
 
 test "Vec.get — force-extract matches expected value" {
@@ -129,13 +129,13 @@ extend Validator {
 }
 
 func use_validator(v: Validator, x: i32) -> i32 or OuterError {
-    let result = try v.check(x) else |e| OuterError.Wrapped(e)
+    let result = v.check(x) catch e => return OuterError.Wrapped(e)
     return result
 }
 
 func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
-    let result = try v.check(x)
-        else |e| OuterError.Wrapped(e)
+    let result = v.check(x)
+        catch e => return OuterError.Wrapped(e)
     return result
 }
 
@@ -205,7 +205,7 @@ extend StrictParser with Parser {
 }
 
 func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
-    let val = try p.parse(input) else |e| ProcessError.Parse(e)
+    let val = p.parse(input) catch e => return ProcessError.Parse(e)
     return val * 2
 }
 
@@ -362,8 +362,8 @@ func step2(x: i32) -> i32 or StepError {
 }
 
 func chained(x: i32) -> i32 or ChainError {
-    let a = try step1(x) else |e| ChainError.Step1(e.message())
-    let b = try step2(a) else |e| ChainError.Step2(e.message())
+    let a = step1(x) catch e => return ChainError.Step1(e.message())
+    let b = step2(a) catch e => return ChainError.Step2(e.message())
     return b
 }
 

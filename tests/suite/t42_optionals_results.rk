@@ -16,13 +16,13 @@ struct User { name: string }
 test "optional binding widening + no auto-unwrap (OPT5/OPT6)" {
     let absent: i64? = none        // none widens
     let present: i64? = 5          // bare i64 widens at binding
-    assert absent == none
+    assert absent is none
     assert present! == 5
 }
 
 test "optional return widening (OPT6)" {
     assert maybe(true)! == 9
-    assert maybe(false) == none
+    assert maybe(false) is none
 }
 
 test "optional operators ? ! ?? == none (OPT9/OPT13/OPT11/OPT15)" {
@@ -33,8 +33,8 @@ test "optional operators ? ! ?? == none (OPT9/OPT13/OPT11/OPT15)" {
     assert present! == 5
     assert (absent ?? 7) == 7
     assert (present ?? 7) == 5
-    assert absent == none
-    assert present != none
+    assert absent is none
+    assert present?
 }
 
 test "optional chain ?. short-circuits (OPT10)" {

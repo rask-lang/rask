@@ -35,9 +35,9 @@ test "try convert yields none when out of range" {
     let ok = try 100 convert to u8
     assert ok! == 100
     let overflow = try 300 convert to u8
-    assert overflow == none
+    assert overflow is none
     let negative = try -1 convert to u8
-    assert negative == none
+    assert negative is none
 }
 
 // --- CV8: float to int T (truncate toward zero) ---
@@ -64,7 +64,7 @@ test "try float to int yields none out of range" {
     assert ok! == 3
     let huge: f64 = 1.0e30
     let bad = try huge float to int i32
-    assert bad == none
+    assert bad is none
 }
 
 // --- int → float via `as` (lossless widening, spec examples) ---
@@ -83,9 +83,9 @@ test "char from_u32 validates code points" {
         assert false, "65 is a valid scalar"
     }
     let surrogate = char.from_u32(0xD800)
-    assert surrogate == none
+    assert surrogate is none
     let too_big = char.from_u32(0x110000)
-    assert too_big == none
+    assert too_big is none
     let emoji = char.from_u32(0x1F600)
     assert emoji?
 }

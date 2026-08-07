@@ -795,7 +795,7 @@ extend Block with Renderable {
 
 func render_markdown(input: string) -> string or RenderError {
     let refs = parse_references(input)
-    let blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
+    let blocks = parse_blocks(input) catch e => return RenderError.Parse(e)
 
     mut out = string.new()
     render_children(blocks, mutate out, refs)

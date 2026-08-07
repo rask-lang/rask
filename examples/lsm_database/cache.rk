@@ -168,8 +168,8 @@ test "block cache put and get" {
     assert result.len() == 2
     assert result[0].key == "k1"
 
-    assert cache.get(1, 99) == none
-    assert cache.get(99, 0) == none
+    assert cache.get(1, 99) is none
+    assert cache.get(99, 0) is none
 }
 
 test "block cache eviction" {
@@ -197,7 +197,7 @@ test "block cache invalidate" {
 
     cache.invalidate(1)
 
-    assert cache.get(1, 0) == none
-    assert cache.get(1, 1) == none
+    assert cache.get(1, 0) is none
+    assert cache.get(1, 1) is none
     assert cache.get(2, 0)?
 }

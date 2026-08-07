@@ -204,7 +204,7 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
         // return f64 (stdlib convention), and there's no `as` conversion
         // that narrows f64 to f32.
         let y = random.range(50, 550) as f32
-        state.spawn_enemy(850.0f32, y).ok()
+        let _ = state.spawn_enemy(850.0f32, y)
         return 0.0f32  // Reset timer
     } else {
         return time_since_last_spawn
@@ -232,7 +232,7 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 //                 }
 //             }))
 //         }
-//         for t in tasks { t.join().ok() }
+//         for t in tasks { let _ = t.join() }
 //     }
 //
 // This doesn't typecheck yet — three compiler gaps block it:

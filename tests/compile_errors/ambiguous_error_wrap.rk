@@ -45,7 +45,7 @@ func ambiguous(key: string) -> string or ApiError {
 
 // THE FIX: name the variant at the call.
 func explicit(key: string) -> string or ApiError {
-    return try lookup(key) else |e| ApiError.Store(e)
+    return lookup(key) catch e => return ApiError.Store(e)
 }
 
 func main() {

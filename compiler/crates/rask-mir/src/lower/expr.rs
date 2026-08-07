@@ -1859,8 +1859,7 @@ impl<'a> MirLowerer<'a> {
                 expr,
                 pattern,
                 then_branch,
-                else_branch,
-            } => {
+                else_branch, else_binding } => {
                 let (val, val_ty) = self.lower_expr(expr)?;
                 let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
@@ -1907,7 +1906,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     self.extract_payload_type(expr).unwrap_or(MirType::I64)
                 };
-                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche, &val_ty);
+                self.bind_pattern_payload_niche(pattern, val.clone(), bind_ty, is_niche, &val_ty);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 if self.builder.current_block_unterminated() {
@@ -1921,7 +1920,44 @@ impl<'a> MirLowerer<'a> {
                 // Else block: evaluate else branch or default to zero-value
                 self.builder.switch_to_block(else_block);
                 if let Some(else_expr) = else_branch {
+                    // ER22: `else as e` binds the branch the test ruled out —
+                    // the other side of the same two-branch value.
+                    let mut shadowed = None;
+                    if let Some(name) = else_binding {
+                        let other_ty = match &val_ty {
+                            MirType::Result { ok, err } => {
+                                let err_side = match pattern {
+                                    rask_ast::expr::Pattern::TypePat { ty_name, .. } => {
+                                        self.pattern_is_err_side(ty_name, &val_ty)
+                                    }
+                                    _ => false,
+                                };
+                                if err_side { (**ok).clone() } else { (**err).clone() }
+                            }
+                            _ => MirType::I64,
+                        };
+                        let local = self.builder.alloc_local(name.clone(), other_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Field {
+                                base: val.clone(),
+                                field_index: 0,
+                                byte_offset: self.payload_byte_offset(&other_ty),
+                                access: FieldAccess::Word,
+                            },
+                        }));
+                        if let Some(prefix) = self.mir_type_name(&other_ty) {
+                            self.meta_mut(name).type_prefix = Some(prefix);
+                        }
+                        shadowed = Some((name.clone(), self.locals.insert(name.clone(), (local, other_ty))));
+                    }
                     let (else_val, _) = self.lower_expr(else_expr)?;
+                    if let Some((name, prev)) = shadowed {
+                        match prev {
+                            Some(p) => { self.locals.insert(name, p); }
+                            None => { self.locals.remove(&name); }
+                        }
+                    }
                     if self.builder.current_block_unterminated() {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: result_local,

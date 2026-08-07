@@ -1162,7 +1162,7 @@ impl ComptimeInterpreter {
             }
 
             // If-let pattern match: if expr is Pattern { then } else { else }
-            ExprKind::IfLet { expr, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
                 let value = self.eval_expr(expr)?;
                 if self.pattern_matches(pattern, &value)? {
                     self.env.push_scope();

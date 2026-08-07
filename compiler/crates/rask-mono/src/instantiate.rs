@@ -447,12 +447,12 @@ impl TypeSubstitutor {
                     expr,
                     pattern,
                     then_branch,
-                    else_branch,
-                } => ExprKind::IfLet {
+                    else_branch, else_binding } => ExprKind::IfLet {
                     expr: Box::new(self.clone_expr(expr)),
                     pattern: self.clone_pattern(pattern),
                     then_branch: Box::new(self.clone_expr(then_branch)),
                     else_branch: else_branch.as_ref().map(|e| Box::new(self.clone_expr(e))),
+                    else_binding: else_binding.clone(),
                 },
                 ExprKind::GuardPattern {
                     expr,

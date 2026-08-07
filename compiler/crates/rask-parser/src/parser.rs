@@ -4302,30 +4302,40 @@ impl Parser {
                 Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
             };
 
-            let else_branch = if self.check(&TokenKind::Else) ||
+            let (else_branch, else_binding) = if self.check(&TokenKind::Else) ||
                 (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
                 if self.check(&TokenKind::Newline) {
                     self.skip_newlines();
                 }
                 self.expect(&TokenKind::Else)?;
-                if self.check(&TokenKind::If) {
-                    Some(Box::new(self.parse_if_expr()?))
+                // ER22: `else as e { … }` binds the branch the test ruled out.
+                let binding = if self.check(&TokenKind::As)
+                    && matches!(self.peek(1), TokenKind::Ident(_))
+                {
+                    self.advance();
+                    Some(self.expect_ident()?)
+                } else {
+                    None
+                };
+                let body = if self.check(&TokenKind::If) {
+                    Box::new(self.parse_if_expr()?)
                 } else if self.match_token(&TokenKind::Colon) {
-                    Some(Box::new(self.parse_inline_block(start)?))
+                    Box::new(self.parse_inline_block(start)?)
                 } else {
                     self.skip_newlines();
                     let stmts = self.parse_block_body()?;
                     let end = self.tokens[self.pos - 1].span.end;
-                    Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }))
-                }
+                    Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
+                };
+                (Some(body), binding)
             } else {
-                None
+                (None, None)
             };
 
             let end = self.tokens[self.pos - 1].span.end;
             return Ok(Expr {
                 id: self.next_id(),
-                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch },
+                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch, else_binding },
                 span: self.span(start, end),
             });
         }

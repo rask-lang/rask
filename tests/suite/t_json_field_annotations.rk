@@ -36,7 +36,7 @@ struct Skipped {
 
 // E18
 test "std.encoding — @rename decides the key a field decodes from" {
-    let u = try json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") catch e => {
         assert false
         return
     }
@@ -45,7 +45,7 @@ test "std.encoding — @rename decides the key a field decodes from" {
 }
 
 test "std.encoding — @rename decides the key a field encodes to" {
-    let u = try json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") catch e => {
         assert false
         return
     }
@@ -55,7 +55,7 @@ test "std.encoding — @rename decides the key a field encodes to" {
 }
 
 test "std.encoding — the field's own name no longer works once renamed" {
-    let u = try json.decode<ApiUser>("{{\"name\":\"alice\",\"age\":30}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"name\":\"alice\",\"age\":30}}") catch e => {
         assert e.message().contains("user_name")
         return
     }
@@ -64,7 +64,7 @@ test "std.encoding — the field's own name no longer works once renamed" {
 
 // E20
 test "std.encoding — @default fills in for a missing key" {
-    let u = try json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"user_name\":\"alice\",\"age\":30}}") catch e => {
         assert false
         return
     }
@@ -72,7 +72,7 @@ test "std.encoding — @default fills in for a missing key" {
 }
 
 test "std.encoding — a present key beats the @default" {
-    let u = try json.decode<ApiUser>("{{\"user_name\":\"a\",\"age\":1,\"role\":\"admin\"}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"user_name\":\"a\",\"age\":1,\"role\":\"admin\"}}") catch e => {
         assert false
         return
     }
@@ -81,7 +81,7 @@ test "std.encoding — a present key beats the @default" {
 
 // E19
 test "std.encoding — @skip keeps a field out of the encoded object" {
-    let u = try json.decode<ApiUser>("{{\"user_name\":\"a\",\"age\":1}}") else |e| {
+    let u = json.decode<ApiUser>("{{\"user_name\":\"a\",\"age\":1}}") catch e => {
         assert false
         return
     }
@@ -91,7 +91,7 @@ test "std.encoding — @skip keeps a field out of the encoded object" {
 // A skipped field still has to hold something usable — zeroed bytes are not an
 // empty string, and a null pointer is not an empty Vec.
 test "std.encoding — a skipped field decodes to its type's empty value" {
-    let s = try json.decode<Skipped>("{{\"id\":5}}") else |e| {
+    let s = json.decode<Skipped>("{{\"id\":5}}") catch e => {
         assert false
         return
     }
@@ -99,7 +99,7 @@ test "std.encoding — a skipped field decodes to its type's empty value" {
     assert s.note == ""
     assert s.note.len() == 0
     assert s.tags.len() == 0
-    assert s.seen == none
+    assert s.seen is none
 }
 
 // E19 again, from the type-system side: a field that can't be serialized would
@@ -125,7 +125,7 @@ struct HasOpaque {
 }
 
 test "std.encoding — a @skip field doesn't block Encode/Decode" {
-    let h = try json.decode<HasOpaque>("{{\"n\":3}}") else |e| {
+    let h = json.decode<HasOpaque>("{{\"n\":3}}") catch e => {
         assert false
         return
     }

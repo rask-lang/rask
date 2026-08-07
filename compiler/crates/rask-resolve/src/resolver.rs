@@ -2166,14 +2166,29 @@ impl Resolver {
                     }
                 }
             }
-            ExprKind::IfLet { expr, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
                 self.resolve_expr(expr);
                 self.scopes.push(ScopeKind::Block);
                 self.resolve_pattern(pattern);
                 self.resolve_expr(then_branch);
                 self.scopes.pop();
                 if let Some(else_br) = else_branch {
+                    // ER22: `else as e` scopes its binding to the else branch.
+                    self.scopes.push(ScopeKind::Block);
+                    if let Some(name) = else_binding {
+                        let sym_id = self.symbols.insert(
+                            name.clone(),
+                            SymbolKind::Variable { mutable: false },
+                            None,
+                            Span::new(0, 0),
+                            false,
+                        );
+                        if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                            self.errors.push(e);
+                        }
+                    }
                     self.resolve_expr(else_br);
+                    self.scopes.pop();
                 }
             }
             ExprKind::Match { scrutinee, arms } => {

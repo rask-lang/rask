@@ -49,7 +49,7 @@ func profile_json() -> string {
 }
 
 test "std.json — scalar fields decode at their declared width" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -61,7 +61,7 @@ test "std.json — scalar fields decode at their declared width" {
 }
 
 test "std.json — a nested struct field decodes into its own fields" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -70,7 +70,7 @@ test "std.json — a nested struct field decodes into its own fields" {
 }
 
 test "std.json — a Vec field decodes element by element" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -82,7 +82,7 @@ test "std.json — a Vec field decodes element by element" {
 }
 
 test "std.json — a Vec of structs keeps each element's fields" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -95,19 +95,19 @@ test "std.json — a Vec of structs keeps each element's fields" {
 
 // J9: present is Some, explicit null is none, missing is none.
 test "std.json — optional fields follow presence, null, and absence" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
     let email = p.email ?? "missing"
     assert email == "a@b.c"
-    assert p.backup == none
-    assert p.limit == none
+    assert p.backup is none
+    assert p.limit is none
 }
 
 // J10
 test "std.json — a key with no matching field is ignored" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -115,7 +115,7 @@ test "std.json — a key with no matching field is ignored" {
 }
 
 test "std.json — decoding then encoding round-trips the whole struct" {
-    let p = try json.decode<Profile>(profile_json()) else |e| {
+    let p = json.decode<Profile>(profile_json()) catch e => {
         assert false
         return
     }
@@ -131,7 +131,7 @@ test "std.json — decoding then encoding round-trips the whole struct" {
 }
 
 test "std.json — a Map<string, V> field decodes to a real map" {
-    let c = try json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") else |e| {
+    let c = json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") catch e => {
         assert false
         return
     }
@@ -142,7 +142,7 @@ test "std.json — a Map<string, V> field decodes to a real map" {
 
 // A Map has no defined iteration order, so only the pieces are checked.
 test "std.json — a decoded Map encodes back to an object" {
-    let c = try json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") else |e| {
+    let c = json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") catch e => {
         assert false
         return
     }
@@ -153,25 +153,25 @@ test "std.json — a decoded Map encodes back to an object" {
 }
 
 test "std.json — the target can be a bare scalar" {
-    let n = try json.decode<i64>("42") else |e| {
+    let n = json.decode<i64>("42") catch e => {
         assert false
         return
     }
     assert n == 42
 
-    let s = try json.decode<string>("\"hi\"") else |e| {
+    let s = json.decode<string>("\"hi\"") catch e => {
         assert false
         return
     }
     assert s == "hi"
 
-    let f = try json.decode<f64>("0.5") else |e| {
+    let f = json.decode<f64>("0.5") catch e => {
         assert false
         return
     }
     assert f == 0.5
 
-    let b = try json.decode<bool>("true") else |e| {
+    let b = json.decode<bool>("true") catch e => {
         assert false
         return
     }
@@ -179,7 +179,7 @@ test "std.json — the target can be a bare scalar" {
 }
 
 test "std.json — the target can be a list at the top level" {
-    let pts = try json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") else |e| {
+    let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") catch e => {
         assert false
         return
     }
@@ -190,7 +190,7 @@ test "std.json — the target can be a list at the top level" {
 
 // The untyped path (std.json/J4) — same verb, JsonValue as the target.
 test "std.json — decoding to JsonValue gives the untyped tree" {
-    let v = try json.decode<JsonValue>("{{\"k\":[1,2]}}") else |e| {
+    let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => {
         assert false
         return
     }
@@ -198,7 +198,7 @@ test "std.json — decoding to JsonValue gives the untyped tree" {
 }
 
 test "std.json — escapes and unicode survive a decode" {
-    let s = try json.decode<string>("\"a\\nb\\t\\\"c\\\"\\u0041\"") else |e| {
+    let s = json.decode<string>("\"a\\nb\\t\\\"c\\\"\\u0041\"") catch e => {
         assert false
         return
     }
@@ -210,7 +210,7 @@ test "std.json — escapes and unicode survive a decode" {
 
 // J5
 test "std.json — a repeated key takes its last value" {
-    let p = try json.decode<Point>("{{\"x\":1,\"y\":2,\"x\":9}}") else |e| {
+    let p = json.decode<Point>("{{\"x\":1,\"y\":2,\"x\":9}}") catch e => {
         assert false
         return
     }

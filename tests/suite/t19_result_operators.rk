@@ -104,7 +104,7 @@ extend ContextError {
 }
 
 func load_value(s: string) -> i32 or ContextError {
-    let n = try parse_number(s) else |e| ContextError { source: e.message() }
+    let n = parse_number(s) catch e => return ContextError { source: e.message() }
     return n
 }
 
@@ -131,13 +131,13 @@ test "map on error" {
 }
 
 test "ok() lifts to Option (present)" {
-    let opt = safe_div(10, 2).ok()
+    let opt = safe_div(10, 2) catch _ => none
     assert opt! == 5
 }
 
 test "ok() lifts to Option (absent)" {
-    let opt = safe_div(10, 0).ok()
-    assert opt == none
+    let opt = safe_div(10, 0) catch _ => none
+    assert opt is none
 }
 
 // Error union composition (`i32 or (A | B)`) and shared-method dispatch on

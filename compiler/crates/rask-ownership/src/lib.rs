@@ -1155,7 +1155,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding } => {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();

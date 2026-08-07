@@ -85,5 +85,5 @@ test "Option and Result keep their built-in behaviour" {
         assert false
     }
     let missing: i64? = none
-    assert missing == none
+    assert missing is none
 }

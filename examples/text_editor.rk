@@ -195,16 +195,16 @@ func parse_command(input: string) -> EditorCommand? {
 
     match parts[0] {
         "i" | "insert" if parts.len() >= 3 => {
-            let after = try parts[1].parse<i32>().ok()
+            let after = parts[1].parse<i32>() catch _ => return none
             let text = parts[2..].join(" ")
             return EditorCommand.Insert(after: after, text: text)
         }
         "d" | "delete" if parts.len() >= 2 => {
-            let line = try parts[1].parse<i32>().ok()
+            let line = parts[1].parse<i32>() catch _ => return none
             return EditorCommand.Delete(line: line)
         }
         "e" | "edit" if parts.len() >= 3 => {
-            let line = try parts[1].parse<i32>().ok()
+            let line = parts[1].parse<i32>() catch _ => return none
             let text = parts[2..].join(" ")
             return EditorCommand.Edit(line: line, text: text)
         }

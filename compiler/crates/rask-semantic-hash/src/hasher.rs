@@ -662,7 +662,7 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            ExprKind::IfLet { expr, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
                 self.feed_tag(56);
                 self.hash_expr(expr);
                 self.hash_pattern(pattern);

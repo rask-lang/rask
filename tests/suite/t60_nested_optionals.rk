@@ -7,7 +7,7 @@
 
 test "bare none binds the outer layer" {
     let outer: i64?? = none
-    assert outer == none
+    assert outer is none
 }
 
 test "an inner optional widens into the outer present branch" {

@@ -102,9 +102,9 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Check not same file (using canonical paths)
-    let src_canonical = try fs.canonicalize(opts.source)
-        else |e| CopyError.ReadError(e)
-    let dst_canonical = fs.canonicalize(opts.dest).ok()
+    let src_canonical = fs.canonicalize(opts.source)
+        catch e => return CopyError.ReadError(e)
+    let dst_canonical = fs.canonicalize(opts.dest) catch _ => none
 
     if dst_canonical? {
         if src_canonical == dst_canonical {
@@ -113,8 +113,8 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Copy the file
-    let bytes = try fs.copy(opts.source, opts.dest)
-        else |e| CopyError.WriteError(e)
+    let bytes = fs.copy(opts.source, opts.dest)
+        catch e => return CopyError.WriteError(e)
 
     return bytes
 }

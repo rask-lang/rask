@@ -1526,7 +1526,7 @@ impl<'a> Printer<'a> {
             ExprKind::If { cond, then_branch, else_branch, else_binding } => {
                 self.format_if_expr(cond, then_branch, else_branch, else_binding.as_deref());
             }
-            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding } => {
                 self.emit("if ");
                 self.format_expr(scrutinee);
                 self.emit(" is ");

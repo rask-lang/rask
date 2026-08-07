@@ -2775,7 +2775,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding } => {
                 self.walk_free_vars(inner, bound, seen, free);
                 let mut then_bound = bound.clone();
                 collect_pattern_names(pattern, &mut then_bound);
