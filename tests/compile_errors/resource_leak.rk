@@ -9,10 +9,10 @@ import fs
 
 func process_data() -> () or Error {
     // Open a file - this returns a @resource type
-    const file = try fs.open("data.txt")
+    let file = try fs.open("data.txt")
 
     // Read some data
-    const data = try file.read_all()
+    let data = try file.read_all()
 
     // Process data...
     process(data)
@@ -35,8 +35,8 @@ func process_data() -> () or Error {
 
 // Option 1: Explicit close
 func process_data_v1() -> () or Error {
-    const file = try fs.open("data.txt")
-    const data = try file.read_all()
+    let file = try fs.open("data.txt")
+    let data = try file.read_all()
     process(data)
     try file.close()  // Consumes the resource
     // implicit unit success (ER10)
@@ -44,10 +44,10 @@ func process_data_v1() -> () or Error {
 
 // Option 2: Use 'ensure' for automatic cleanup
 func process_data_v2() -> () or Error {
-    const file = try fs.open("data.txt")
+    let file = try fs.open("data.txt")
     ensure file.close()  // Runs at scope exit, even on early return
 
-    const data = try file.read_all()
+    let data = try file.read_all()
     process(data)
 
     if data.is_empty() {
@@ -60,7 +60,7 @@ func process_data_v2() -> () or Error {
 // Option 3: Scoped resource pattern
 func process_data_v3() -> () or Error {
     (try fs.open("data.txt")).use(|file| {
-        const data = try file.read_all()
+        let data = try file.read_all()
         process(data)
         // implicit unit success (ER10)
     })
@@ -68,7 +68,7 @@ func process_data_v3() -> () or Error {
 
 // Another error case: resource in a branch that doesn't consume
 func conditional_leak(flag: bool) -> () or Error {
-    const file = try fs.open("data.txt")
+    let file = try fs.open("data.txt")
 
     if flag {
         try file.close()
@@ -80,10 +80,10 @@ func conditional_leak(flag: bool) -> () or Error {
 
 // THE FIX: All branches must consume
 func conditional_fixed(flag: bool) -> () or Error {
-    const file = try fs.open("data.txt")
+    let file = try fs.open("data.txt")
 
     if flag {
-        const data = try file.read_all()
+        let data = try file.read_all()
         process(data)
         try file.close()
     } else {

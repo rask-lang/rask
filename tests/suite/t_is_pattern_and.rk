@@ -33,8 +33,8 @@ test "a binding reaches the rest of the condition" {
 }
 
 test "two patterns bind in one condition" {
-    const a = Msg.Num(4)
-    const b = Msg.Num(9)
+    let a = Msg.Num(4)
+    let b = Msg.Num(9)
     mut sum = 0
     if a is Msg.Num(x) && b is Msg.Num(y) && x < y {
         sum = x + y
@@ -43,8 +43,8 @@ test "two patterns bind in one condition" {
 }
 
 test "a failed second pattern leaves the branch untaken" {
-    const a = Msg.Num(4)
-    const b = Msg.Text("no")
+    let a = Msg.Num(4)
+    let b = Msg.Text("no")
     mut hit = false
     if a is Msg.Num(x) && b is Msg.Num(y) && x < y {
         hit = true
@@ -53,8 +53,8 @@ test "a failed second pattern leaves the branch untaken" {
 }
 
 test "a binding survives a chain that starts with a plain test" {
-    const flag = true
-    const m = Msg.Text("abc")
+    let flag = true
+    let m = Msg.Text("abc")
     mut n = 0
     if flag && m is Msg.Text(s) {
         n = s.len()

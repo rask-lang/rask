@@ -1185,8 +1185,8 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::Const { name, name_span: _, ty, init } => {
-                self.emit("const ");
+            StmtKind::Let { name, name_span: _, ty, init } => {
+                self.emit("let ");
                 self.emit(name);
                 if let Some(ref ty) = ty {
                     self.emit(": ");
@@ -1196,8 +1196,8 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::ConstTuple { patterns, init } => {
-                self.emit("const ");
+            StmtKind::LetTuple { patterns, init } => {
+                self.emit("let ");
                 self.format_tuple_pat_list(patterns);
                 self.emit(" = ");
                 self.format_expr(init);
@@ -1746,7 +1746,7 @@ impl<'a> Printer<'a> {
                     if binding.mutable {
                         self.emit(" as ");
                     } else {
-                        self.emit(" as const ");
+                        self.emit(" as let ");
                     }
                     self.emit(&binding.name);
                 }

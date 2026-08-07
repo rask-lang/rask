@@ -3,7 +3,7 @@
 // back (conc.async/H2).
 //
 // The stub said `spawn(f: func()) -> TaskHandle<void>`, so every task was
-// typed as returning nothing and `const v: i64 = try h.join()` was a type
+// typed as returning nothing and `let v: i64 = try h.join()` was a type
 // error. Underneath, the runtime called the closure through a void signature
 // and dropped whatever it returned, so join answered 0 either way.
 
@@ -13,39 +13,39 @@ func double(n: i64) -> i64 {
 
 func joined_value() -> i64 or JoinError {
     using Multitasking {
-        const h = spawn(|| { return 42 })
+        let h = spawn(|| { return 42 })
         return try h.join()
     }
 }
 
 func joined_annotated() -> i64 or JoinError {
     using Multitasking {
-        const h = spawn(|| { return double(21) })
-        const v: i64 = try h.join()
+        let h = spawn(|| { return double(21) })
+        let v: i64 = try h.join()
         return v
     }
 }
 
 func joined_pair() -> i64 or JoinError {
     using Multitasking {
-        const a = spawn(|| { return 10 })
-        const b = spawn(|| { return 32 })
-        const x = try a.join()
-        const y = try b.join()
+        let a = spawn(|| { return 10 })
+        let b = spawn(|| { return 32 })
+        let x = try a.join()
+        let y = try b.join()
         return x + y
     }
 }
 
 func joined_own() -> i64 or JoinError {
     using Multitasking {
-        const h = spawn(own || { return 7 })
+        let h = spawn(own || { return 7 })
         return try h.join()
     }
 }
 
 func detached() -> bool {
     using Multitasking {
-        const h = spawn(|| { return })
+        let h = spawn(|| { return })
         h.detach()
     }
     return true

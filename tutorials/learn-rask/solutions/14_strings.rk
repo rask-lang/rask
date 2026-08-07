@@ -3,8 +3,8 @@
 struct Wind { direction: i32, speed: i32 }
 
 func parse_wind(metar: string) -> Wind {
-    const dir_str = metar[0..3]
-    const spd_str = metar[3..5]
+    let dir_str = metar[0..3]
+    let spd_str = metar[3..5]
     return Wind {
         direction: dir_str.parse_int()!,
         speed: spd_str.parse_int()!,
@@ -22,7 +22,7 @@ func format_flight_plan(departure: string, arrival: string, waypoints: Vec<strin
 
 func word_count(text: string) -> i32 {
     if text.len() == 0 { return 0 }
-    const words = text.split_whitespace()
+    let words = text.split_whitespace()
     return words.len()
 }
 
@@ -40,7 +40,7 @@ func callsign_prefix(callsign: string) -> string {
 
 func parse_csv(input: string) -> Vec<Vec<string>> {
     mut rows = Vec.new()
-    const lines = input.split("\n")
+    let lines = input.split("\n")
     for line in lines {
         rows.push(line.split(","))
     }
@@ -48,21 +48,21 @@ func parse_csv(input: string) -> Vec<Vec<string>> {
 }
 
 test "parse wind" {
-    const w = parse_wind("27015KT")
+    let w = parse_wind("27015KT")
     assert w.direction == 270
     assert w.speed == 15
-    const w2 = parse_wind("09008KT")
+    let w2 = parse_wind("09008KT")
     assert w2.direction == 90
     assert w2.speed == 8
 }
 
 test "format flight plan" {
-    const plan = format_flight_plan("ENGM", "EGLL", Vec.from(["CEDAR", "MAPLE", "BIRCH"]))
+    let plan = format_flight_plan("ENGM", "EGLL", Vec.from(["CEDAR", "MAPLE", "BIRCH"]))
     assert plan == "ENGM → CEDAR → MAPLE → BIRCH → EGLL"
 }
 
 test "format flight plan no waypoints" {
-    const plan = format_flight_plan("ENGM", "ESSA", Vec.new())
+    let plan = format_flight_plan("ENGM", "ESSA", Vec.new())
     assert plan == "ENGM → ESSA"
 }
 

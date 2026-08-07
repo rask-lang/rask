@@ -34,13 +34,13 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
 | **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64` |
-| **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
+| **L7: Must fit** | Any literal | `let b: u8 = 300` | Compile error |
 
-L6 only moves the *default*. Context still wins: `const x: i64 = 5` is an `i64`.
+L6 only moves the *default*. Context still wins: `let x: i64 = 5` is an `i64`.
 A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
-nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
+nothing wraps silently here — `let b: u8 = 300` is an error, not `44`. Say
 what you mean with `truncate to`, `saturate to`, or `try convert to` (CV5–CV7).
 
 ## Type Conversions
@@ -53,8 +53,8 @@ what you mean with `truncate to`, `saturate to`, or `try convert to` (CV5–CV7)
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Use explicit operations below. Int→float goes via `as` (CV1) — it rounds but never wraps or corrupts |
 
 ```rask
-const wide: i32 = narrow_val as i32   // CV1: OK, lossless
-const x: i8 = big_val as i8           // CV2: ERROR, narrowing
+let wide: i32 = narrow_val as i32   // CV1: OK, lossless
+let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 ```
 
 **Lossy conversions — explicit operations:**
@@ -86,9 +86,9 @@ const x: i8 = big_val as i8           // CV2: ERROR, narrowing
 | **CH5: No direct cast from u32** | `n as char` is a compile error — use `char.from_u32(n)` |
 
 ```rask
-const c = 'a'                              // CH2: compile-time validated
-const n: u32 = c as u32                    // CH4: lossless
-const maybe = char.from_u32(0x1F600)       // CH3: runtime validation
+let c = 'a'                              // CH2: compile-time validated
+let n: u32 = c as u32                    // CH4: lossless
+let maybe = char.from_u32(0x1F600)       // CH3: runtime validation
 ```
 
 **Methods:**
@@ -162,7 +162,7 @@ struct NetworkHeader {
     addr: u32be
 }
 
-const header = try NetworkHeader.parse(bytes)
+let header = try NetworkHeader.parse(bytes)
 mut port: u16 = header.port   // Native u16
 ```
 
@@ -171,8 +171,8 @@ mut port: u16 = header.port   // Native u16
 | Rule | Description |
 |------|-------------|
 | **NT1: Common constants** | All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX` |
-| **NT2: Integer trait** | `trait Integer: Numeric { const MIN, MAX, BITS; }` |
-| **NT3: Float trait** | `trait Float: Numeric { const INFINITY, NAN, EPSILON; func is_nan(); }` |
+| **NT2: Integer trait** | `trait Integer: Numeric { let MIN, MAX, BITS; }` |
+| **NT3: Float trait** | `trait Float: Numeric { let INFINITY, NAN, EPSILON; func is_nan(); }` |
 
 ## Edge Cases
 
@@ -194,38 +194,38 @@ mut port: u16 = header.port   // Native u16
 ```
 ERROR [type.primitives/CV2]: cannot narrow i32 to i8 with `as`
    |
-5  |  const x: i8 = big_val as i8
+5  |  let x: i8 = big_val as i8
    |                 ^^^^^^^^^^^^^ narrowing conversion not allowed
 
 WHY: `as` only permits lossless widening. Narrowing may lose data.
 
 FIX: Use an explicit conversion:
 
-  const x: i8 = big_val truncate to i8    // wraps
-  const x: i8 = big_val saturate to i8    // clamps
-  const x = try big_val convert to i8     // i8?
+  let x: i8 = big_val truncate to i8    // wraps
+  let x: i8 = big_val saturate to i8    // clamps
+  let x = try big_val convert to i8     // i8?
 ```
 
 **Direct u32-to-char cast [CH5]:**
 ```
 ERROR [type.primitives/CH5]: cannot cast u32 to char with `as`
    |
-3  |  const c = n as char
+3  |  let c = n as char
    |            ^^^^^^^^^ not all u32 values are valid Unicode scalars
 
 WHY: char must be a valid Unicode scalar value. Use runtime validation.
 
-FIX: const c = char.from_u32(n)   // returns char?
+FIX: let c = char.from_u32(n)   // returns char?
 ```
 
 **Implicit int↔bool [BL3]:**
 ```
 ERROR [type.primitives/BL3]: no implicit conversion between bool and integer
    |
-4  |  const flag: bool = 1
+4  |  let flag: bool = 1
    |                      ^ expected bool, found i32
 
-FIX: const flag: bool = n != 0
+FIX: let flag: bool = n != 0
 ```
 
 ---

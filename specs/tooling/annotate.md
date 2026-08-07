@@ -34,7 +34,7 @@ src/round.rk
    7 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
    8 |     mut player = Player.new(seed)
    9 |     apply_damage(mutate player, 10)
-  10 |     const report = try http.post(STATS_URL, player.encode())
+  10 |     let report = try http.post(STATS_URL, player.encode())
      |                                              « ⟨pauses⟩
   11 |     spawn(own || { archive(report) }).detach()
      |                                              « [moves: report (Response)]
@@ -86,7 +86,7 @@ src/config.rk @@ -12,4 +12,5 @@
  -12 | func load_defaults() -> Config {
  +12 | func load_defaults() -> Config or Error {   « [pure] → [io]
  -13 |     return Config.builtin()
- +13 |     const data = try fs.read_text(DEFAULTS)  « ⟨pauses⟩
+ +13 |     let data = try fs.read_text(DEFAULTS)  « ⟨pauses⟩
  +14 |     return try Config.parse(data)
   15 | }
 

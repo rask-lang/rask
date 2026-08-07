@@ -25,7 +25,7 @@ func main() -> void {
 
     // Spawn a thread with Thread.spawn(|| {})
     // Returns a ThreadHandle
-    const handle = Thread.spawn(|| {
+    let handle = Thread.spawn(|| {
         print("Hello from thread!\n")
     })
 
@@ -38,9 +38,9 @@ func main() -> void {
     // Spawn multiple threads
     print("=== Multiple Threads ===\n\n")
 
-    const h1 = Thread.spawn(|| { worker(1, 10) })
-    const h2 = Thread.spawn(|| { worker(2, 20) })
-    const h3 = Thread.spawn(|| { worker(3, 15) })
+    let h1 = Thread.spawn(|| { worker(1, 10) })
+    let h2 = Thread.spawn(|| { worker(2, 20) })
+    let h3 = Thread.spawn(|| { worker(3, 15) })
 
     // Wait for all threads
     h1.join().ok()
@@ -52,7 +52,7 @@ func main() -> void {
     // Detaching threads - fire and forget
     print("=== Detached Threads ===\n\n")
 
-    const detached = Thread.spawn(|| {
+    let detached = Thread.spawn(|| {
         print("I'm a detached thread!\n")
     })
 
@@ -63,10 +63,10 @@ func main() -> void {
     print("=== Channels ===\n\n")
 
     // buffered/unbuffered return a (Sender, Receiver) tuple
-    const (tx, rx) = Channel<string>.buffered(5)
+    let (tx, rx) = Channel<string>.buffered(5)
 
     // Spawn producer thread - `own` moves the Sender into the closure
-    const producer = Thread.spawn(own || {
+    let producer = Thread.spawn(own || {
         tx.send("Message 1").ok()
         tx.send("Message 2").ok()
         tx.send("Message 3").ok()
@@ -74,7 +74,7 @@ func main() -> void {
     })
 
     // Spawn consumer thread - `own` moves the Receiver into the closure
-    const consumer = Thread.spawn(own || {
+    let consumer = Thread.spawn(own || {
         for _ in 0..3 {
             if rx.receive() is string as msg {
                 print("Received: ")
@@ -91,15 +91,15 @@ func main() -> void {
     // Unbuffered channel - synchronous
     print("=== Unbuffered Channel ===\n\n")
 
-    const (sync_tx, sync_rx) = Channel<i32>.unbuffered()
+    let (sync_tx, sync_rx) = Channel<i32>.unbuffered()
 
-    const sender_thread = Thread.spawn(own || {
+    let sender_thread = Thread.spawn(own || {
         print("Sending 100...\n")
         sync_tx.send(100).ok()  // Blocks until received
         print("Send complete\n")
     })
 
-    const receiver_thread = Thread.spawn(own || {
+    let receiver_thread = Thread.spawn(own || {
         print("Waiting to receive...\n")
         if sync_rx.receive() is i32 as value {  // Blocks until sent
             print("Received: ")
@@ -115,7 +115,7 @@ func main() -> void {
     // Try receive - non-blocking
     print("=== Non-blocking Receive ===\n\n")
 
-    const (test_tx, test_rx) = Channel<i32>.buffered(2)
+    let (test_tx, test_rx) = Channel<i32>.buffered(2)
 
     // Send one message
     test_tx.send(999).ok()
@@ -147,7 +147,7 @@ func main() -> void {
         mut handles = Vec.new()
 
         for i in 0..8 {
-            const h = ThreadPool.spawn(own || {
+            let h = ThreadPool.spawn(own || {
                 print("Pool task ")
                 print(i)
                 print(" running\n")

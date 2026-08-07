@@ -24,9 +24,9 @@ One `Random` type plus module-level convenience functions. Explicit generator fo
 
 <!-- test: skip -->
 ```rask
-const rng = Random.from_seed(42)
-const a = rng.range(0, 100)       // deterministic for seed 42
-const b = rng.f64()               // [0.0, 1.0)
+let rng = Random.from_seed(42)
+let a = rng.range(0, 100)       // deterministic for seed 42
+let b = rng.f64()               // [0.0, 1.0)
 rng.shuffle(items)
 ```
 
@@ -41,8 +41,8 @@ rng.shuffle(items)
 ```rask
 import random
 
-const roll = random.range(1, 7)   // dice roll [1, 6]
-const coin = random.bool()
+let roll = random.range(1, 7)   // dice roll [1, 6]
+let coin = random.bool()
 ```
 
 ## Error Messages
@@ -50,7 +50,7 @@ const coin = random.bool()
 ```
 ERROR [std.random/M2]: empty range in random.range()
    |
-5  |  const x = rng.range(5, 5)
+5  |  let x = rng.range(5, 5)
    |                      ^^^^ lo must be less than hi
 
 WHY: Half-open range [lo, hi) is empty when lo >= hi.
@@ -84,8 +84,8 @@ FIX: Use rng.range(5, 6) for a single value.
 <!-- test: parse -->
 ```rask
 test "shuffle is deterministic with seed" {
-    const rng = Random.from_seed(12345)
-    const items = Vec.from([1, 2, 3, 4, 5])
+    let rng = Random.from_seed(12345)
+    let items = Vec.from([1, 2, 3, 4, 5])
     rng.shuffle(items)
     assert items[0] == 3
 }

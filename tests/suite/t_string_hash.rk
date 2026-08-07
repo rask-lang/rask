@@ -4,8 +4,8 @@
 
 test "equal strings hash equal" {
     assert_eq("hei".hash(), "hei".hash())
-    const a = "bo@example.io"
-    const b = "bo@example.io"
+    let a = "bo@example.io"
+    let b = "bo@example.io"
     assert_eq(a.hash(), b.hash())
 }
 
@@ -19,8 +19,8 @@ test "the empty string hashes" {
 }
 
 test "a heap string past the small-string limit" {
-    const long = "en ganske lang streng som ikke passer i sso-bufferen"
-    const same = "en ganske lang streng som ikke passer i sso-bufferen"
+    let long = "en ganske lang streng som ikke passer i sso-bufferen"
+    let same = "en ganske lang streng som ikke passer i sso-bufferen"
     assert_eq(long.hash(), same.hash())
 }
 
@@ -41,8 +41,8 @@ extend EmailAddress with Hashable {
 }
 
 test "a custom Hashable can delegate to string.hash()" {
-    const a = EmailAddress { raw: "Bo@Example.IO" }
-    const b = EmailAddress { raw: "bo@example.io" }
+    let a = EmailAddress { raw: "Bo@Example.IO" }
+    let b = EmailAddress { raw: "bo@example.io" }
     assert a == b
     assert_eq(a.hash(), b.hash())
 }

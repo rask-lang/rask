@@ -27,7 +27,7 @@ func rows() -> Vec<Ranked> {
 }
 
 test "stdlib.collections — take past the end yields what there is" {
-    const page = rows()
+    let page = rows()
         .iter()
         .skip(0)
         .take(50)
@@ -42,7 +42,7 @@ test "stdlib.collections — take past the end yields what there is" {
 }
 
 test "stdlib.collections — skip and take page a slice out of the middle" {
-    const page = rows()
+    let page = rows()
         .iter()
         .skip(1)
         .take(1)
@@ -55,7 +55,7 @@ test "stdlib.collections — skip and take page a slice out of the middle" {
 }
 
 test "stdlib.collections — skipping past the end yields nothing" {
-    const page = rows()
+    let page = rows()
         .iter()
         .skip(9)
         .take(50)
@@ -69,7 +69,7 @@ test "stdlib.collections — skipping past the end yields nothing" {
 // the wrong stride. Indexed rather than iterated: a `for` loop over a Vec of
 // aggregates reads garbage inside a `test` block on native (#495).
 test "stdlib.collections — a collected Vec of structs reads at the right stride" {
-    const page = rows()
+    let page = rows()
         .iter()
         .take(3)
         .map(|r| r.view.clone())

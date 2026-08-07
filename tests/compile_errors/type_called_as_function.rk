@@ -8,7 +8,7 @@ struct TaskId { public value: u64 }
 enum Color { Red, Green }
 
 func main() {
-    const a = TaskId(1)     // ERROR: `TaskId` is a struct
-    const c = Color(0)      // ERROR: `Color` is an enum
+    let a = TaskId(1)     // ERROR: `TaskId` is a struct
+    let c = Color(0)      // ERROR: `Color` is an enum
     println("{a.value} {c}")
 }

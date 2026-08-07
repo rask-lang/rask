@@ -12,8 +12,8 @@ func area(s: Shape) -> i32 {
 }
 
 func main() {
-    const c = Shape.Circle(5)
-    const r = Shape.Rectangle(4, 6)
+    let c = Shape.Circle(5)
+    let r = Shape.Rectangle(4, 6)
     println(area(c).to_string())
     println(area(r).to_string())
 }

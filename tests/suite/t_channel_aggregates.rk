@@ -21,24 +21,24 @@ enum Kind {
 
 func struct_roundtrip() -> string or ReceiveError {
     using Multitasking {
-        const ch = Channel<Msg>.buffered(4)
-        const tx = ch.0
-        const rx = ch.1
+        let ch = Channel<Msg>.buffered(4)
+        let tx = ch.0
+        let rx = ch.1
         tx.send(Msg { id: 1, text: "first" })
         tx.send(Msg { id: 2, text: "second" })
-        const a = try rx.receive()
-        const b = try rx.receive()
+        let a = try rx.receive()
+        let b = try rx.receive()
         return "{a.id}/{a.text} {b.id}/{b.text}"
     }
 }
 
 func enum_payload_roundtrip() -> i64 or ReceiveError {
     using Multitasking {
-        const ch = Channel<Kind>.buffered(2)
-        const tx = ch.0
-        const rx = ch.1
+        let ch = Channel<Kind>.buffered(2)
+        let tx = ch.0
+        let rx = ch.1
         tx.send(Kind.Pong(7))
-        const k = try rx.receive()
+        let k = try rx.receive()
         if k is Kind.Pong(n) {
             return n
         }
@@ -48,16 +48,16 @@ func enum_payload_roundtrip() -> i64 or ReceiveError {
 
 func fieldless_enum_roundtrip() -> bool or ReceiveError {
     using Multitasking {
-        const ch = Channel<Kind>.buffered(2)
+        let ch = Channel<Kind>.buffered(2)
         ch.0.send(Kind.Quit)
-        const k = try ch.1.receive()
+        let k = try ch.1.receive()
         return k is Kind.Quit
     }
 }
 
 func scalar_roundtrip() -> i64 or ReceiveError {
     using Multitasking {
-        const ch = Channel<i64>.buffered(2)
+        let ch = Channel<i64>.buffered(2)
         ch.0.send(99)
         return try ch.1.receive()
     }

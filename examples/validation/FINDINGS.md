@@ -101,7 +101,7 @@ even though JsonError ∈ the union. **Workaround:** no union-returning helper;
 handlers decode + validate inline with explicit `else |e|` maps.
 
 ### B6 — `with <module-level const sync-box> as v` doesn't unwrap — [#448] (follow-up to #268)
-`const store = Mutex.new(...)` then `with store as s { s.method() }` →
+`let store = Mutex.new(...)` then `with store as s { s.method() }` →
 `no method … for Mutex<Store>`. A **local** `const` unwraps fine; module-level
 doesn't. **Workaround:** inline `store.lock().op()` / `config.read().field`
 everywhere. (This one also bites at codegen — §D.)
@@ -138,7 +138,7 @@ borrow and cannot escape`. With a literal (`ms >= 250.0`) it's fine.
 - **C5 `Channel.buffered` returns a tuple `(Sender, Receiver)`** ([#359]), not an object
   with `.sender`/`.receiver` — canonical-patterns' `ch.sender.send(...)` is wrong;
   async.md's `mut (tx, rx) = …` is right. Also: module-level tuple-destructure
-  (`const (tx, rx) = …` at file scope) is rejected as a "top-level statement",
+  (`let (tx, rx) = …` at file scope) is rejected as a "top-level statement",
   so the channel is created inside `main`.
 
 ---

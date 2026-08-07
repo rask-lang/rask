@@ -273,8 +273,8 @@ struct Point {
 }
 
 // No extend block needed — Point is Equal because i32 is Equal
-const a = Point { x: 1, y: 2 }
-const b = Point { x: 1, y: 2 }
+let a = Point { x: 1, y: 2 }
+let b = Point { x: 1, y: 2 }
 // a == b → true (field-wise comparison)
 ```
 
@@ -342,8 +342,8 @@ struct Version {
 
 // No extend block needed — Version is Comparable because u32 is Comparable
 // Compares major first, then minor, then patch (lexicographic)
-const a = Version { major: 1, minor: 2, patch: 0 }
-const b = Version { major: 1, minor: 3, patch: 0 }
+let a = Version { major: 1, minor: 2, patch: 0 }
+let b = Version { major: 1, minor: 3, patch: 0 }
 // a < b → true (minor field differs)
 // a.compare(b) → Ordering.Less
 ```
@@ -490,7 +490,7 @@ public struct HashMap<K: HashKey, V> {
 }
 
 public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
-    const idx = key.hash() % map.buckets.len()
+    let idx = key.hash() % map.buckets.len()
     map.buckets[idx].add(key.clone(), val)  // Cloneable is compiler-verified deep copy
 }
 ```

@@ -53,7 +53,7 @@ test "check gathers all failures" {
 }
 
 test "assert with message" {
-    const x = 42
+    let x = 42
     assert x == 42, "x should be 42"
 }
 

@@ -68,8 +68,8 @@ Inside a spawn closure, `reader.read(buf)` through `any Reader` becomes a yield 
 <!-- test: skip -->
 ```rask
 spawn(|| {
-    const reader: any Reader = get_reader()
-    const n = try reader.read(buf)  // yield point — concrete type unknown
+    let reader: any Reader = get_reader()
+    let n = try reader.read(buf)  // yield point — concrete type unknown
     process(buf[..n])
 })
 ```
@@ -109,9 +109,9 @@ The spawn closure body is compiled exactly like any other function. It runs on t
 <!-- test: skip -->
 ```rask
 spawn(|| {
-    const data = try File.read("input.txt")   // parks fiber if reactor says EAGAIN
+    let data = try File.read("input.txt")   // parks fiber if reactor says EAGAIN
 
-    const items = data.lines().filter(|line| line.starts_with("#"))
+    let items = data.lines().filter(|line| line.starts_with("#"))
 
     for item in items {
         try File.write("out.txt", item)        // parks fiber on backpressure
@@ -169,7 +169,7 @@ The effects system (`comp.effects/INF5`) already tags extern functions as conser
 ```
 WARNING [conc.phase-b/FFI3]: extern call in async context may block worker thread
    |
-5  |  const result = sqlite_query(db, sql)
+5  |  let result = sqlite_query(db, sql)
    |                 ^^^^^^^^^^^^ extern function — blocks OS thread
    |
 WHY: Foreign functions can't park green tasks. Blocking I/O in FFI
@@ -177,7 +177,7 @@ WHY: Foreign functions can't park green tasks. Blocking I/O in FFI
 
 FIX: Wrap in ThreadPool.spawn for blocking FFI:
 
-  const result = try ThreadPool.spawn(|| { sqlite_query(db, sql) }).join()
+  let result = try ThreadPool.spawn(|| { sqlite_query(db, sql) }).join()
 ```
 
 Suppress with `@allow(ffi_in_async)` for fast FFI (crypto primitives, math libraries):
@@ -185,7 +185,7 @@ Suppress with `@allow(ffi_in_async)` for fast FFI (crypto primitives, math libra
 <!-- test: skip -->
 ```rask
 @allow(ffi_in_async)
-const hash = crypto_sha256(data)  // extern, returns in µs
+let hash = crypto_sha256(data)  // extern, returns in µs
 ```
 
 ### Runtime worker compensation (FFI4)
@@ -213,7 +213,7 @@ Go's runtime does exactly this for cgo calls. Cost: ~100µs for the temporary th
 using Multitasking, ThreadPool {
     spawn(|| {
         // Good: long-blocking FFI on thread pool
-        const rows = try ThreadPool.spawn(|| {
+        let rows = try ThreadPool.spawn(|| {
             sqlite_query(db, "SELECT * FROM users")
         }).join()
 
@@ -221,7 +221,7 @@ using Multitasking, ThreadPool {
 
         // Acceptable: fast FFI inline (suppress warning)
         @allow(ffi_in_async)
-        const checksum = crc32(data)
+        let checksum = crc32(data)
     }).detach()
 }
 ```
@@ -246,14 +246,14 @@ using Multitasking, ThreadPool {
 ```
 WARNING [conc.phase-b/FFI3]: extern call in async context may block worker thread
    |
-5  |  const result = ffi_compute(data)
+5  |  let result = ffi_compute(data)
    |                 ^^^^^^^^^^^ extern function — blocks OS thread
    |
 WHY: Foreign functions can't park green tasks.
 
 FIX: Wrap in ThreadPool.spawn for blocking FFI:
 
-  const result = try ThreadPool.spawn(|| { ffi_compute(data) }).join()
+  let result = try ThreadPool.spawn(|| { ffi_compute(data) }).join()
 ```
 
 ---

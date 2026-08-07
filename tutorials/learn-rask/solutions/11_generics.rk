@@ -60,7 +60,7 @@ test "clamp_value" {
 }
 
 test "min max" {
-    const result = min_max(Vec.from([3, 1, 4, 1, 5, 9, 2, 6]))
+    let result = min_max(Vec.from([3, 1, 4, 1, 5, 9, 2, 6]))
     assert result.first == 1
     assert result.second == 9
 }

@@ -26,6 +26,6 @@ func use_generic(s: any Store) {
 }
 
 func main() {
-    const b = Bin { count: 3 }
+    let b = Bin { count: 3 }
     use_generic(b as any Store)
 }

@@ -33,7 +33,7 @@ func process(data: Data) -> Report {
     Report.from(data)
 }
 
-const d = Data.new()
+let d = Data.new()
 process(d)      // d borrowed (read-only)
 print(d.name)   // OK: d still valid
 ```
@@ -73,7 +73,7 @@ func consume(take data: Data) {
     storage.store(data)
 }
 
-const d = Data.new()
+let d = Data.new()
 consume(d)      // d taken
 print(d.name)   // ERROR: d was taken
 ```
@@ -102,7 +102,7 @@ extend File {
     }
 }
 
-const file = try File.open("data.txt")
+let file = try File.open("data.txt")
 try file.read(buf)    // mutably borrows file
 try file.read(buf)    // OK: can borrow again
 try file.close()      // takes file
@@ -164,7 +164,7 @@ func finish(take file: File) {     // Take
     try file.close()             // OK: consuming
 }   // file consumed
 
-const f = try File.open(path)
+let f = try File.open(path)
 process(f)     // borrows f (read-only)
 finish(f)      // takes f, f now invalid
 ```
@@ -233,7 +233,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Disjoint field borrows | — | Passing `mutate value.field` borrows only that field (`mem.borrowing/F1`) |
 | Method receiver | PM4 | Exempt — `x.method()` never marks the receiver, even for `mutate self` |
 | `mutate` marker on a borrow argument | PM4 | Compile error — marker without a `mutate` parameter is a lie the compiler rejects |
-| `mutate` marker on a `const` binding | PM2 | Compile error — `const` is deep; bind with `mut` first |
+| `mutate` marker on a `let` binding | PM2 | Compile error — `let` is deep; bind with `mut` first |
 
 ---
 
@@ -245,7 +245,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 
 **PM2 (mutate):** `mutate` marks intent: "I will change this parameter." This includes field-level modification AND full reassignment — there's no half-mutable state. A `mutate` parameter gives you unrestricted write access to the value; the constraint is that the caller keeps ownership after the call.
 
-Note the interaction with `const` bindings: `const` is deep — you cannot pass a `const` binding as a `mutate` argument, call a `mutate self` method on it, or assign through an index/field. Rebinding and all forms of mutation through the binding name are rejected. If you need to pass a value to a `mutate` parameter, bind it with `mut`. Moving a const-bound value to a `take` parameter is allowed — ownership transfer is not mutation.
+Note the interaction with `let` bindings: `let` is deep — you cannot pass a `let` binding as a `mutate` argument, call a `mutate self` method on it, or assign through an index/field. Rebinding and all forms of mutation through the binding name are rejected. If you need to pass a value to a `mutate` parameter, bind it with `mut`. Moving a const-bound value to a `take` parameter is allowed — ownership transfer is not mutation.
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 

@@ -62,7 +62,7 @@ Same vocabulary as the `Reader`/`Writer` methods — `fs.read_text(path)` is `op
 
 <!-- test: parse -->
 ```rask
-const content = try fs.read_text("config.txt")
+let content = try fs.read_text("config.txt")
 try fs.write_text("output.txt", "hello world")
 ```
 
@@ -80,9 +80,9 @@ try fs.write_text("output.txt", "hello world")
 
 <!-- test: skip -->
 ```rask
-const file = try fs.open("data.txt")
+let file = try fs.open("data.txt")
 ensure file.close()
-const data = try file.read_text()
+let data = try file.read_text()
 process(data)
 ```
 
@@ -102,7 +102,7 @@ struct OpenOptions {
     truncate: bool
 }
 
-const file = try fs.open_with("log.txt",
+let file = try fs.open_with("log.txt",
     OpenOptions.new().write(true).append(true).create(true))
 ensure file.close()
 ```
@@ -148,7 +148,7 @@ struct DirEntry {
 ```
 ERROR [std.fs/F1]: file handle not consumed
    |
-3  |  const file = try fs.open("data.txt")
+3  |  let file = try fs.open("data.txt")
    |        ^^^^ `File` is a @resource that must be closed
 
 WHY: File is a linear resource. Every code path must call close() or use ensure.
@@ -159,7 +159,7 @@ FIX: Add `ensure file.close()` after opening.
 ```
 ERROR [std.fs/F4]: file not found
    |
-5  |  const file = try fs.open("missing.txt")
+5  |  let file = try fs.open("missing.txt")
    |                   ^^^^^^^^^^^^^^^^^^^^^^^^ IoError.NotFound
 
 WHY: The path does not exist on the filesystem.
@@ -195,7 +195,7 @@ WHY: The path does not exist on the filesystem.
 
 <!-- test: skip -->
 ```rask
-const file = try fs.create("data.tmp")
+let file = try fs.create("data.tmp")
 ensure file.close()
 try file.write_bytes(serialize(data))
 file.close()

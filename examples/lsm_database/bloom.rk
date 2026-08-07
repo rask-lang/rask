@@ -23,7 +23,7 @@ extend BloomFilter {
 
     func insert(mutate self, key: string) {
         for i in 0..BLOOM_HASH_COUNT {
-            const idx = bloom_hash(key, i) % BLOOM_BITS
+            let idx = bloom_hash(key, i) % BLOOM_BITS
             self.bits[idx] = true
         }
         self.count += 1
@@ -31,7 +31,7 @@ extend BloomFilter {
 
     func may_contain(self, key: string) -> bool {
         for i in 0..BLOOM_HASH_COUNT {
-            const idx = bloom_hash(key, i) % BLOOM_BITS
+            let idx = bloom_hash(key, i) % BLOOM_BITS
             if !self.bits[idx] { return false }
         }
         return true
@@ -42,7 +42,7 @@ extend BloomFilter {
         for b in self.bits {
             if b { set_bits += 1 }
         }
-        const ratio = (set_bits as f64) / (BLOOM_BITS as f64)
+        let ratio = (set_bits as f64) / (BLOOM_BITS as f64)
         return ratio * ratio * ratio
     }
 }
@@ -68,7 +68,7 @@ func encode_bloom(filter: BloomFilter) -> string {
 }
 
 func decode_bloom(data: string) -> BloomFilter or SstError {
-    const parts = data.split(",").collect()
+    let parts = data.split(",").collect()
     if parts.len() != BLOOM_BITS {
         return SstError.BloomFilterCorrupt(
             "expected {BLOOM_BITS} bits, got {parts.len()}"
@@ -77,7 +77,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
     mut bit_vec = Vec.new()
     mut count = 0
     for p in parts {
-        const val = p.trim() == "1"
+        let val = p.trim() == "1"
         bit_vec.push(val)
         if val { count += 1 }
     }
@@ -101,8 +101,8 @@ test "bloom filter encode/decode roundtrip" {
     bloom.insert("key2")
     bloom.insert("key3")
 
-    const encoded = encode_bloom(bloom)
-    const decoded = decode_bloom(encoded)!
+    let encoded = encode_bloom(bloom)
+    let decoded = decode_bloom(encoded)!
     assert decoded.may_contain("key1")
     assert decoded.may_contain("key2")
     assert decoded.may_contain("key3")

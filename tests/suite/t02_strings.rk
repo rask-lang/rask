@@ -8,9 +8,9 @@ test "string equality" {
 }
 
 test "string concatenation" {
-    const a = "hello"
-    const b = " world"
-    const result = "{a}{b}"
+    let a = "hello"
+    let b = " world"
+    let result = "{a}{b}"
     assert result == "hello world"
 }
 
@@ -21,23 +21,23 @@ test "string length" {
 }
 
 test "string copy semantics" {
-    const original = "hello"
-    const copy1 = original
-    const copy2 = original
+    let original = "hello"
+    let copy1 = original
+    let copy2 = original
     assert original == "hello"
     assert copy1 == "hello"
     assert copy2 == "hello"
 }
 
 test "string interpolation" {
-    const name = "world"
+    let name = "world"
     assert "hello, {name}" == "hello, world"
 
-    const x = 42
+    let x = 42
     assert "{x}" == "42"
 
-    const a = 10
-    const b = 20
+    let a = 10
+    let b = 20
     assert "{a} + {b}" == "10 + 20"
 }
 
@@ -56,8 +56,8 @@ func take_string(s: string) -> string {
 }
 
 test "string passed to function stays valid" {
-    const s = "hello"
-    const result = take_string(s)
+    let s = "hello"
+    let result = take_string(s)
     assert s == "hello"
     assert result == "hello"
 }

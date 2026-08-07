@@ -14,12 +14,12 @@ Pool+Handle solves the general case: collections of values with stable identity,
 <!-- test: skip -->
 ```rask
 // Pool+Handle for one value is ceremony
-const pool = Pool.new()
-const h = pool.insert(AppState{...})
+let pool = Pool.new()
+let h = pool.insert(AppState{...})
 button.on_click(|event| pool[h].count += 1)
 
 // Cell: direct
-const state = Cell.new(AppState{...})
+let state = Cell.new(AppState{...})
 button.on_click(|event, state| {
     with state as s { s.count += 1 }
 })
@@ -50,10 +50,10 @@ Access is through `with`:
 
 <!-- test: skip -->
 ```rask
-const counter = Cell.new(0)
+let counter = Cell.new(0)
 
 // Convenience methods (CE6)
-const current = counter.get()            // Copy out (Copy types only)
+let current = counter.get()            // Copy out (Copy types only)
 counter.set(42)                          // Replace inner value
 
 // with access (CE4) — still needed for multi-statement or non-Copy
@@ -61,13 +61,13 @@ with counter as c { c += 1 }
 with counter as c: c += 1               // one-liner shorthand
 
 // Expression context
-const doubled = with counter as c { c * 2 }
+let doubled = with counter as c { c * 2 }
 
 // Replace (returns old value)
-const old = counter.replace(0)
+let old = counter.replace(0)
 
 // Consume
-const final_value = counter.into_inner()
+let final_value = counter.into_inner()
 ```
 
 ## Shared Across Closures

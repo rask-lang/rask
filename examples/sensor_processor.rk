@@ -27,9 +27,9 @@ func build_crc8_table() -> Vec<i64> {
 
 func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
     mut crc: i64 = 0
-    const n = data.len()
+    let n = data.len()
     for i in 0..n {
-        const byte = data.get(i)!
+        let byte = data.get(i)!
         crc = table.get((crc ^ byte) & 255)!
     }
     return crc
@@ -37,14 +37,14 @@ func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
 
 // Read from simulated hardware register
 func read_hardware_sensor(sensor_id: i64, tick: i64) -> f64 {
-    const base = match sensor_id {
+    let base = match sensor_id {
         0 => 2200,
         1 => 10130,
         2 => 4500,
         _ => 0,
     }
 
-    const noise = ((tick * 7 + sensor_id * 13) % 100) - 50
+    let noise = ((tick * 7 + sensor_id * 13) % 100) - 50
     return (base + noise) as f64 / 100.0
 }
 
@@ -124,14 +124,14 @@ func interrupt_handler(
     start_time: time.Instant,
     sample_rate_hz: i64
 ) {
-    const period_ns = 1000000000 / sample_rate_hz
+    let period_ns = 1000000000 / sample_rate_hz
     mut sequence: i64 = 0
 
     while sequence < sample_rate_hz * 2 {
-        const now_ns = time.Instant.now().duration_since(start_time).as_nanos() saturate to i64
+        let now_ns = time.Instant.now().duration_since(start_time).as_nanos() saturate to i64
 
         for sensor_id in 0..3 {
-            const value = read_hardware_sensor(sensor_id, sequence)
+            let value = read_hardware_sensor(sensor_id, sequence)
             tx.send(Reading {
                 sensor_id: sensor_id,
                 value: value,
@@ -193,7 +193,7 @@ extend ProcessorState {
             hum_sum += self.humidity_history.get(i)!
         }
 
-        const n = self.history_count as f64
+        let n = self.history_count as f64
         self.temp_avg = temp_sum / n
         self.pressure_avg = pres_sum / n
         self.humidity_avg = hum_sum / n
@@ -208,10 +208,10 @@ func main() {
     println("=== Real-Time Sensor Processor ===")
     println("")
 
-    const SAMPLE_RATE_HZ = 1000
-    const PROCESS_RATE_HZ = 100
-    const HARD_DEADLINE_US = 5000
-    const DURATION_SECS = 2
+    let SAMPLE_RATE_HZ = 1000
+    let PROCESS_RATE_HZ = 100
+    let HARD_DEADLINE_US = 5000
+    let DURATION_SECS = 2
 
     println("Sample rate: {SAMPLE_RATE_HZ} Hz (interrupt)")
     println("Process rate: {PROCESS_RATE_HZ} Hz (main loop)")
@@ -219,11 +219,11 @@ func main() {
     println("")
 
     // Build lookup tables
-    const crc_table = build_crc8_table()
+    let crc_table = build_crc8_table()
 
     // ISR → main channel. Sender is moved into the spawned thread,
     // Receiver stays here for draining.
-    const (tx, rx) = Channel<Reading>.buffered(1024)
+    let (tx, rx) = Channel<Reading>.buffered(1024)
 
     mut temp_hist = Vec.new()
     mut pres_hist = Vec.new()
@@ -259,9 +259,9 @@ func main() {
         deadline_misses: 0,
     }
 
-    const start_time = time.Instant.now()
-    const process_period_ns = 1000000000 / PROCESS_RATE_HZ
-    const deadline_ns = HARD_DEADLINE_US * 1000
+    let start_time = time.Instant.now()
+    let process_period_ns = 1000000000 / PROCESS_RATE_HZ
+    let deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on separate thread. `own` moves the Sender
     // (and Copy captures start_time / SAMPLE_RATE_HZ) into the closure.
@@ -275,7 +275,7 @@ func main() {
     mut cycle: i64 = 0
 
     while (time.Instant.now().duration_since(start_time).as_seconds() saturate to i64) < DURATION_SECS {
-        const cycle_start = time.Instant.now()
+        let cycle_start = time.Instant.now()
 
         // Drain available samples without blocking — try_receive returns once
         // the channel is empty, so the cycle stays bounded.
@@ -289,7 +289,7 @@ func main() {
         }
 
         // Measure cycle time
-        const cycle_ns = cycle_start.elapsed().as_nanos() saturate to i64
+        let cycle_ns = cycle_start.elapsed().as_nanos() saturate to i64
         timing.record(cycle_ns, deadline_ns)
 
         cycle += 1
@@ -307,9 +307,9 @@ func main() {
     println("Samples processed: {state.samples_processed}")
     println("Processing cycles: {cycle}")
     println("")
-    const min_us = timing.min_ns / 1000
-    const max_us = timing.max_ns / 1000
-    const mean_us = timing.mean_ns() / 1000
+    let min_us = timing.min_ns / 1000
+    let max_us = timing.max_ns / 1000
+    let mean_us = timing.mean_ns() / 1000
     println("Timing Statistics:")
     println("  Min cycle:  {min_us} µs")
     println("  Max cycle:  {max_us} µs")

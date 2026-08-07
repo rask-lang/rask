@@ -124,7 +124,7 @@ code generation steps (protobuf + schema + C compilation), it's wasteful.
 func build(ctx: BuildContext) -> void or Error {
     // Step 1: only re-runs when schema.json changes
     try ctx.step("codegen", inputs: ["schema.json"], || {
-        const schema = try fs.read_text("schema.json")
+        let schema = try fs.read_text("schema.json")
         try ctx.write_source("types.rk", generate_types(schema))
     })
 
@@ -530,7 +530,7 @@ consistency with the rest of the API. `exec` is a method, not a manual struct co
 
 ```rask
 // Current (verbose)
-const result = try ctx.run(Command {
+let result = try ctx.run(Command {
     program: "protoc",
     args: ["--rask_out=.rk-gen/", "api.proto"],
 })

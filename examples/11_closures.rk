@@ -34,8 +34,8 @@ func filter_vec(vec: Vec<i32>, predicate: |i32| -> bool) -> Vec<i32> {
 
 func main() {
     // Simple closure - inline function
-    const double = |x: i32| -> i32 { return x * 2 }
-    const squared = |x: i32| -> i32 { return x * x }
+    let double = |x: i32| -> i32 { return x * 2 }
+    let squared = |x: i32| -> i32 { return x * x }
 
     print("Double 5: ")
     print(double(5))
@@ -46,19 +46,19 @@ func main() {
     print("\n\n")
 
     // Pass closure to function
-    const result1 = apply(double, 10)
+    let result1 = apply(double, 10)
     print("Apply double to 10: ")
     print(result1)
     print("\n")
 
-    const result2 = apply(squared, 7)
+    let result2 = apply(squared, 7)
     print("Apply squared to 7: ")
     print(result2)
     print("\n\n")
 
     // Multi-parameter closures
-    const add = |a: i32, b: i32| -> i32 { return a + b }
-    const multiply = |a: i32, b: i32| -> i32 { return a * b }
+    let add = |a: i32, b: i32| -> i32 { return a + b }
+    let multiply = |a: i32, b: i32| -> i32 { return a * b }
 
     print("5 + 3 = ")
     print(apply_binary(add, 5, 3))
@@ -69,8 +69,8 @@ func main() {
     print("\n\n")
 
     // Capturing variables from outer scope
-    const multiplier = 10
-    const scale = |x: i32| -> i32 { return x * multiplier }
+    let multiplier = 10
+    let scale = |x: i32| -> i32 { return x * multiplier }
 
     print("Scale 5 by ")
     print(multiplier)
@@ -79,8 +79,8 @@ func main() {
     print("\n\n")
 
     // Closure factory - returns a closure
-    const add_5 = make_adder(5)
-    const add_100 = make_adder(100)
+    let add_5 = make_adder(5)
+    let add_100 = make_adder(100)
 
     print("Add 5 to 10: ")
     print(add_5(10))
@@ -91,17 +91,17 @@ func main() {
     print("\n\n")
 
     // Apply function twice
-    const increment = |x: i32| -> i32 { return x + 1 }
-    const twice = apply_twice(increment, 5)
+    let increment = |x: i32| -> i32 { return x + 1 }
+    let twice = apply_twice(increment, 5)
     print("Increment 5 twice: ")
     print(twice)
     print("\n\n")
 
     // Filter with predicate
-    const numbers = Vec.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    let numbers = Vec.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
-    const is_even = |n: i32| -> bool { return n % 2 == 0 }
-    const evens = filter_vec(numbers, is_even)
+    let is_even = |n: i32| -> bool { return n % 2 == 0 }
+    let evens = filter_vec(numbers, is_even)
 
     print("Even numbers: ")
     for n in evens.iter() {
@@ -110,8 +110,8 @@ func main() {
     }
     print("\n")
 
-    const is_greater_than_5 = |n: i32| -> bool { return n > 5 }
-    const large = filter_vec(numbers, is_greater_than_5)
+    let is_greater_than_5 = |n: i32| -> bool { return n > 5 }
+    let large = filter_vec(numbers, is_greater_than_5)
 
     print("Numbers > 5: ")
     for n in large.iter() {
@@ -121,7 +121,7 @@ func main() {
     print("\n")
 
     // Inline closure - no need to name it
-    const odd = filter_vec(numbers, |n: i32| -> bool { return n % 2 == 1 })
+    let odd = filter_vec(numbers, |n: i32| -> bool { return n % 2 == 1 })
     print("Odd numbers: ")
     for n in odd.iter() {
         print(n)

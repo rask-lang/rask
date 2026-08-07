@@ -42,7 +42,7 @@ Source → Lexer → Parser → AST
 |------|-------------|
 | **SIG1: Pool context → parameter** | `func f() using Pool<T>` becomes `func f(__ctx_pool_T: &Pool<T>)` |
 | **SIG2: Named pool → parameter** | `func f() using players: Pool<T>` becomes `func f(__ctx_players: &Pool<T>)` with local alias |
-| **SIG3: Frozen pool → const ref** | `func f() using frozen Pool<T>` becomes `func f(__ctx_pool_T: &Pool<T>)` (read-only enforced by type checker) |
+| **SIG3: Frozen pool → let ref** | `func f() using frozen Pool<T>` becomes `func f(__ctx_pool_T: &Pool<T>)` (read-only enforced by type checker) |
 | **SIG5: Multiple pool contexts** | Each `using Pool<T>` clause becomes one hidden parameter |
 | **SIG6: Hidden param naming** | `__ctx_` prefix marks hidden params |
 
@@ -71,7 +71,7 @@ func award_bonus(h: Handle<Player>, amount: i32) using players: Pool<Player> {
 
 // After: hidden parameter with local alias
 func award_bonus(h: Handle<Player>, amount: i32, __ctx_players: &Pool<Player>) {
-    const players = __ctx_players  // Local alias for named context
+    let players = __ctx_players  // Local alias for named context
     __ctx_players[h].score += amount
     players.mark_dirty(h)
 }
@@ -133,15 +133,15 @@ resolve_context(call_site, required_type) -> ContextSource:
 ```rask
 // Before:
 func game_tick() {
-    const players = Pool.new()
-    const h = players.insert(Player.new())
+    let players = Pool.new()
+    let h = players.insert(Player.new())
     damage(h, 10)    // How does damage() get the pool?
 }
 
 // After:
 func game_tick() {
-    const players = Pool.new()
-    const h = players.insert(Player.new())
+    let players = Pool.new()
+    let h = players.insert(Player.new())
     damage(h, 10, &players)    // Resolved: local variable `players`
 }
 ```
@@ -345,8 +345,8 @@ func process_all_Player(handles: Vec<Handle<Player>>, __ctx_pool_Player: &Pool<P
 ```
 ERROR [comp.hidden-params/CALL5]: ambiguous context
    |
-10 |  const pool_a = Pool::<Player>.new()
-11 |  const pool_b = Pool::<Player>.new()
+10 |  let pool_a = Pool::<Player>.new()
+11 |  let pool_b = Pool::<Player>.new()
 13 |  damage(h, 10)
    |  ^^^^^^^^^^^ multiple Pool<Player> in scope
    |
@@ -371,7 +371,7 @@ FIX: Add using clause:
 ```
 ERROR [comp.hidden-params/CL3]: storable closure cannot capture context
    |
-5  |  const callback: |Handle<Player>| = |h| {
+5  |  let callback: |Handle<Player>| = |h| {
 6  |      h.health -= 10
    |      ^ no Pool<Player> context
    |

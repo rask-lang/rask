@@ -19,7 +19,7 @@ func low(fail: bool) -> i64 or LowError {
 }
 
 func doubled(fail: bool) -> i64 or LowError {
-    const v = try {
+    let v = try {
         try low(fail)
     } else |_e| {
         return LowError { detail: "handled" }
@@ -42,7 +42,7 @@ test "a try inside the block runs the handler" {
 }
 
 func parsed(s: string) -> f64 or LowError {
-    const v = try {
+    let v = try {
         try s.parse<f64>()
     } else |_e| {
         return LowError { detail: "not a number" }

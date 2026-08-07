@@ -10,11 +10,11 @@ func main() -> () or Error {
         mut server = try HttpServer.listen("0.0.0.0:8080")
         ensure server.close()
         println("listening on 8080")
-        const all_routes = routes()
+        let all_routes = routes()
         spawn(|| { health_checker(backend_pool.backends) }).detach()
         loop {
             println("waiting for request")
-            const (request, responder) = try server.accept()
+            let (request, responder) = try server.accept()
             println("got request")
             spawn(|| {
                 ensure responder.respond(Response.internal_error("unhandled"))
@@ -22,30 +22,30 @@ func main() -> () or Error {
 
                 if request.path() == "/metrics" {
                     with metrics.read() as m {
-                        const body = json.stringify([["request_count", m.request_count], ["error_count", m.error_count], ["bytes_sent", m.bytes_sent], ["bytes_received", m.bytes_received]])
+                        let body = json.stringify([["request_count", m.request_count], ["error_count", m.error_count], ["bytes_sent", m.bytes_sent], ["bytes_received", m.bytes_received]])
                         responder.respond(Response.json(body))
                     }
                     return
                 }
 
-                const matched_route = match_route(request.path(), all_routes)
+                let matched_route = match_route(request.path(), all_routes)
                 if matched_route? as route {
-                    const route_and_forward = |request: Request| -> Response {
-                        const healthy = route.pool.next_healthy()
+                    let route_and_forward = |request: Request| -> Response {
+                        let healthy = route.pool.next_healthy()
                         if healthy is ProxyError {
                             return Response.internal_error("no healthy backends")
                         }
                         // ER24: early-exit narrow — `healthy` is the success type here
-                        const result = forward(request, healthy.url, route.path)
+                        let result = forward(request, healthy.url, route.path)
                         if result? {
                             return result
                         }
                         println("error forwarding request")
                         return Response.internal_error("upstream error")
                     }
-                    const with_middleware = with_metrics(logging(route_and_forward))
-                    const response = with_middleware(request)
-                    const _ = responder.respond(response)
+                    let with_middleware = with_metrics(logging(route_and_forward))
+                    let response = with_middleware(request)
+                    let _ = responder.respond(response)
                 } else {
                     responder.respond(Response.not_found())
                     return

@@ -31,7 +31,7 @@ Everything here applies to `StringView` (`std.strings/V1`) the same way — a vi
 <!-- test: skip -->
 ```rask
 func process(user: User) {
-    const name = user.name       // copy: normally inc refcount
+    let name = user.name       // copy: normally inc refcount
     send(name)
     // user.name never used again → inc + dec cancel out
     // result: plain 16-byte memcpy, zero atomic ops
@@ -45,8 +45,8 @@ Without elision: `atomic_inc` on copy, `atomic_dec` when `user.name` drops at fu
 <!-- test: skip -->
 ```rask
 func format_greeting(first: string, last: string) -> string {
-    const full = "{first} {last}"    // new string from interpolation
-    const upper = full.to_uppercase() // new string, full is last-used here
+    let full = "{first} {last}"    // new string from interpolation
+    let upper = full.to_uppercase() // new string, full is last-used here
     return upper
 }
 ```
@@ -60,8 +60,8 @@ func format_greeting(first: string, last: string) -> string {
 <!-- test: skip -->
 ```rask
 func log_level() -> string {
-    const prefix = "INFO"     // literal → sentinel refcount
-    const msg = prefix        // copy of literal → still sentinel
+    let prefix = "INFO"     // literal → sentinel refcount
+    let msg = prefix        // copy of literal → still sentinel
     return msg                // returns literal — no atomic ops anywhere
 }
 ```

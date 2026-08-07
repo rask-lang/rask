@@ -8,7 +8,7 @@
 enum Color { Red, Green, Blue }
 
 func test_nonexhaustive() {
-    const c = Color.Red
+    let c = Color.Red
     match c {
         Red => println("red"),
         Green => println("green"),
@@ -22,7 +22,7 @@ func test_nonexhaustive() {
 struct File { fd: i32 }
 
 func test_wildcard_linear() {
-    const result: File or GuardError = File { fd: 1 }
+    let result: File or GuardError = File { fd: 1 }
     match result {
         File => {},        // ERROR: _ discards linear File
         GuardError as e => {},
@@ -32,7 +32,7 @@ func test_wildcard_linear() {
 // --- guard pattern else doesn't diverge (CF13) ---
 // ERROR: else block must diverge
 func test_guard_no_diverge() {
-    const opt: i32? = 42
+    let opt: i32? = 42
     mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
     // else must use return, break, panic, etc.
 }
@@ -42,7 +42,7 @@ func test_guard_no_diverge() {
 enum Token { Number(i32), Ident(string), Plus, Minus }
 
 func test_or_pattern_mismatch() {
-    const t = Token.Plus
+    let t = Token.Plus
     match t {
         Number(n) | Ident(n) => println("{n}"),  // ERROR: n is i32 in one, string in other
         _ => {},
@@ -52,7 +52,7 @@ func test_or_pattern_mismatch() {
 // --- match expression missing else/wildcard ---
 // ERROR: match expression requires exhaustive arms
 func test_match_expr_missing_arm() -> string {
-    const x = 5
+    let x = 5
     return match x {
         1 => "one",
         2 => "two",
@@ -65,7 +65,7 @@ func test_match_expr_missing_arm() -> string {
 func close(take f: File) {}
 
 func test_partial_consume() {
-    const result: File or GuardError = File { fd: 1 }
+    let result: File or GuardError = File { fd: 1 }
     match result {
         File as file => close(file),   // consumed here
         GuardError as e => {},         // but what if there was a File?
@@ -76,7 +76,7 @@ func test_partial_consume() {
 
 // A real partial consume error:
 func test_conditional_consume(cond: bool) {
-    const f = File { fd: 1 }
+    let f = File { fd: 1 }
     if cond {
         close(f)           // consumed here
     }

@@ -78,10 +78,10 @@ comptime func deep_recursion(n: u64) -> u64 {
 // Another error: comptime with I/O
 comptime func try_io() -> string {
     // COMPILE ERROR: I/O not allowed at comptime
-    // const data = fs.read("file.txt")
+    // let data = fs.read("file.txt")
 
     // Only @embed_file works:
-    const data = @embed_file("data.txt")  // OK: resolved at compile time
+    let data = @embed_file("data.txt")  // OK: resolved at compile time
     return data
 }
 

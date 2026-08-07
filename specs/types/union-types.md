@@ -47,8 +47,8 @@ func foo(input: A | B) -> C           // Compile error
 <!-- test: skip -->
 ```rask
 func load() -> Config or (IoError | ParseError) {
-    const content = try read_file(path)   // IoError ⊆ union: OK
-    const config = try parse(content)     // ParseError ⊆ union: OK
+    let content = try read_file(path)   // IoError ⊆ union: OK
+    let config = try parse(content)     // ParseError ⊆ union: OK
     return config
 }
 ```
@@ -97,7 +97,7 @@ func transform<T, E>(result: T or E) -> U or (E | TransformError)
 ```
 ERROR [type.unions/U1]: union types only allowed in error position
    |
-3  |  const x: int | string = ...
+3  |  let x: int | string = ...
    |           ^^^^^^^^^^^^ use an explicit enum for data modeling
 
 WHY: General union types add subtyping complexity. Use enums instead.
@@ -108,7 +108,7 @@ FIX: enum IntOrString { Int(i32), String(string) }
 ```
 ERROR [type.unions/S1]: error type not subset of return union
    |
-5  |  const config = try load()
+5  |  let config = try load()
    |                 ^^^ load() can return ParseError
 6  |  // but this function returns IoError only
 
@@ -166,14 +166,14 @@ func read_file(path: string) -> string or IoError
 
 // Mid-level: composes errors from lower layers
 func parse_config(path: string) -> Config or (IoError | ParseError) {
-    const content = try read_file(path)
+    let content = try read_file(path)
     return try parse(content)
 }
 
 // High-level: composes further
 func load_app() -> App or (IoError | ParseError | ValidationError) {
-    const config = try parse_config("app.toml")
-    const valid = try validate(config)
+    let config = try parse_config("app.toml")
+    let valid = try validate(config)
     return App.new(valid)
 }
 ```

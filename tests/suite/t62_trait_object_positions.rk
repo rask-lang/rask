@@ -34,14 +34,14 @@ func make(kind: string) -> any Handler {
 }
 
 test "TR5 — an annotated binding boxes its value" {
-    const h: any Handler = Echo { msg: "one" }
+    let h: any Handler = Echo { msg: "one" }
     assert h.handle() == "echo: one"
-    const f: any Handler = Fail { reason: "two" }
+    let f: any Handler = Fail { reason: "two" }
     assert f.handle() == "fail: two"
 }
 
 test "TR5 — a struct field boxes its value" {
-    const r = Router { inner: Fail { reason: "three" } }
+    let r = Router { inner: Fail { reason: "three" } }
     assert r.inner.handle() == "fail: three"
     // And reading it back out and passing it on keeps both halves.
     assert run(r.inner) == "fail: three"
@@ -58,14 +58,14 @@ test "TR5 — a call argument boxes its value" {
 }
 
 test "TR5 — an explicit `as any` is not boxed twice" {
-    const h = Echo { msg: "six" } as any Handler
+    let h = Echo { msg: "six" } as any Handler
     assert h.handle() == "echo: six"
     assert run(Echo { msg: "seven" } as any Handler) == "echo: seven"
 }
 
 test "two concrete types behind one trait object keep their own methods" {
-    const a: any Handler = Echo { msg: "a" }
-    const b: any Handler = Fail { reason: "b" }
+    let a: any Handler = Echo { msg: "a" }
+    let b: any Handler = Fail { reason: "b" }
     assert a.handle() == "echo: a"
     assert b.handle() == "fail: b"
 }

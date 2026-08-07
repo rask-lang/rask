@@ -44,8 +44,8 @@ extend Global: Allocator {
 
 <!-- test: skip -->
 ```rask
-const v = Vec.new()               // Vec<i32, Global> — no allocator pointer
-const v2 = Vec.new(arena)         // Vec<i32, Arena> — stores &Arena
+let v = Vec.new()               // Vec<i32, Global> — no allocator pointer
+let v2 = Vec.new(arena)         // Vec<i32, Arena> — stores &Arena
 
 // Vec<T> and Vec<T, Global> are the same type
 func sum(v: Vec<i32>) -> i32 { ... }     // accepts Vec<i32, Global>
@@ -67,7 +67,7 @@ Unnamed (`using Allocator`) is enough when you only need collections to auto-res
 ```rask
 // Unnamed — collections auto-resolve, don't need the allocator directly
 func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
-    const map = Map.new()    // uses the caller's allocator
+    let map = Map.new()    // uses the caller's allocator
     for item in items {
         map.insert(item.name, item)
     }
@@ -76,14 +76,14 @@ func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
 
 // Named — need direct access to pass allocator to Pool
 func init_world() using alloc: Allocator {
-    const entities = Pool.new(alloc)     // pool backed by this allocator
-    const spatial = Map.new()            // also uses alloc via auto-resolution
+    let entities = Pool.new(alloc)     // pool backed by this allocator
+    let spatial = Map.new()            // also uses alloc via auto-resolution
     // ...
 }
 
 // Default: always uses Global, no annotation needed
 func build_index_default(items: Vec<Item>) -> Map<string, Item> {
-    const map = Map.new()    // always Global
+    let map = Map.new()    // always Global
     // ...
 }
 ```
@@ -99,10 +99,10 @@ func build_index_default(items: Vec<Item>) -> Map<string, Item> {
 <!-- test: skip -->
 ```rask
 func process() {
-    const result = Vec.new()            // Global
+    let result = Vec.new()            // Global
 
     using Arena.scoped(1.megabytes()) {
-        const scratch = Vec.new()       // Arena — cannot escape this block
+        let scratch = Vec.new()       // Arena — cannot escape this block
         scratch.push(1)
         scratch.push(2)
 
@@ -133,13 +133,13 @@ Parallel to CC6/CC7 for pool contexts.
 ```rask
 // What you write:
 func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
-    const map = Map.new()
+    let map = Map.new()
     return map
 }
 
 // What the compiler generates (conceptual):
 func build_index(items: Vec<Item>, __ctx_alloc: &Allocator) -> Map<string, Item, __A> {
-    const map = Map.__new_with(__ctx_alloc)
+    let map = Map.__new_with(__ctx_alloc)
     return map
 }
 ```
@@ -163,10 +163,10 @@ Parallel to CC9/CC10.
 <!-- test: skip -->
 ```rask
 func game_frame() {
-    const frame_arena = Arena.scoped(4.megabytes())
+    let frame_arena = Arena.scoped(4.megabytes())
 
     using frame_arena {
-        const particles = Pool.new()       // Pool auto-resolves arena allocator
+        let particles = Pool.new()       // Pool auto-resolves arena allocator
         spawn_particles(particles)
 
         for h in particles.cursor() {
@@ -178,8 +178,8 @@ func game_frame() {
 
 // Named context — need direct access to pass allocator
 func build_world() using alloc: Allocator {
-    const entities = Pool.new(alloc)       // explicit: pool backed by alloc
-    const index = Map.new()                // implicit: auto-resolves alloc
+    let entities = Pool.new(alloc)       // explicit: pool backed by alloc
+    let index = Map.new()                // implicit: auto-resolves alloc
     // ...
 }
 
@@ -199,19 +199,19 @@ func update_particle(h: Handle<Particle>) using Pool<Particle> {
 <!-- test: skip -->
 ```rask
 // Arena — bulk allocation, freed together
-const arena = Arena.new(1.megabytes())
+let arena = Arena.new(1.megabytes())
 using arena {
-    const tokens = Vec.new()
-    const nodes = Vec.new()
+    let tokens = Vec.new()
+    let nodes = Vec.new()
     // ... parse ...
 }
 // all memory freed at once
 
 // FixedBuffer — no malloc, embedded-safe
 mut buf: [u8; 4096] = [0; 4096]
-const alloc = FixedBuffer.new(buf)
+let alloc = FixedBuffer.new(buf)
 using alloc {
-    const data = Vec.new()
+    let data = Vec.new()
     data.push(42)        // allocated from buf, no system call
 }
 ```
@@ -223,7 +223,7 @@ using alloc {
 ERROR [mem.alloc/AL13]: arena-scoped value cannot escape using block
    |
 5  |  using Arena.scoped(1.megabytes()) {
-6  |      const v = Vec.new()
+6  |      let v = Vec.new()
 7  |      return v
    |      ^^^^^^^^ v allocated from arena, cannot leave this scope
    |
@@ -232,9 +232,9 @@ WHY: Arena memory is freed when the using block exits. Returning
 
 FIX: Copy the data into an outer-scoped collection:
 
-  const result = Vec.new()          // Global
+  let result = Vec.new()          // Global
   using Arena.scoped(1.megabytes()) {
-      const v = Vec.new()           // Arena
+      let v = Vec.new()           // Arena
       for x in v { result.push(x) }
   }
 ```
@@ -289,9 +289,9 @@ FIX: Add a using clause:
 ```rask
 func handle_request(req: Request) -> Response {
     using Arena.scoped(256.kilobytes()) {
-        const params = parse_query(req.url)     // arena, if parse_query uses Allocator
-        const body = try parse_json(req.body)
-        const result = process(params, body)
+        let params = parse_query(req.url)     // arena, if parse_query uses Allocator
+        let body = try parse_json(req.body)
+        let result = process(params, body)
 
         // Response is built and returned — its data copied to Global
         return Response.json(result)
@@ -304,10 +304,10 @@ func handle_request(req: Request) -> Response {
 ```rask
 func typecheck(ast: Ast) -> TypedAst {
     using Arena.scoped(16.megabytes()) {
-        const types = Pool.new()       // Pool backed by arena
-        const scopes = Pool.new()      // Pool backed by arena
+        let types = Pool.new()       // Pool backed by arena
+        let scopes = Pool.new()      // Pool backed by arena
 
-        const result = resolve_types(ast, types, scopes)
+        let result = resolve_types(ast, types, scopes)
         return result.freeze()         // copies result to Global
     }
 }
@@ -318,10 +318,10 @@ func typecheck(ast: Ast) -> TypedAst {
 ```rask
 func sensor_loop() {
     mut buf: [u8; 2048] = [0; 2048]
-    const alloc = FixedBuffer.new(buf)
+    let alloc = FixedBuffer.new(buf)
 
     using alloc {
-        const readings = Vec.with_capacity(64)
+        let readings = Vec.with_capacity(64)
         loop {
             readings.clear()               // reuse buffer, no reallocation
             collect_readings(readings)

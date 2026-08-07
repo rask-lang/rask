@@ -24,15 +24,15 @@ func validate_temperature(reading: f64) -> f64 or SensorError {
 
 func parse_altitude(s: string) -> i32 or SensorError {
     if s.len() == 0 { return SensorError.Msg("empty string") }
-    const alt = try s.parse_i32() else |e| SensorError.Msg(e.message())
+    let alt = try s.parse_i32() else |e| SensorError.Msg(e.message())
     if alt < 0 { return SensorError.Msg("negative altitude") }
     return alt
 }
 
 func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or SensorError {
-    const a = try validate_temperature(r1)
-    const b = try validate_temperature(r2)
-    const c = try validate_temperature(r3)
+    let a = try validate_temperature(r1)
+    let b = try validate_temperature(r2)
+    let c = try validate_temperature(r3)
     return (a + b + c) / 3.0
 }
 
@@ -43,7 +43,7 @@ func safe_get(v: Vec<i32>, i: i32) -> i32? {
 }
 
 test "valid temperature" {
-    const r = validate_temperature(20.0)
+    let r = validate_temperature(20.0)
     assert r?
 }
 
@@ -61,7 +61,7 @@ test "temperature at boundary" {
 }
 
 test "parse altitude" {
-    const r = parse_altitude("35000")
+    let r = parse_altitude("35000")
     assert r?
 }
 
@@ -74,7 +74,7 @@ test "parse empty altitude" {
 }
 
 test "average valid readings" {
-    const r = average_readings(20.0, 22.0, 21.0)
+    let r = average_readings(20.0, 22.0, 21.0)
     assert r?
 }
 
@@ -83,13 +83,13 @@ test "average with invalid reading" {
 }
 
 test "safe get in bounds" {
-    const v = Vec.from([10, 20, 30])
+    let v = Vec.from([10, 20, 30])
     assert safe_get(v, 0)! == 10
     assert safe_get(v, 2)! == 30
 }
 
 test "safe get out of bounds" {
-    const v = Vec.from([10, 20, 30])
+    let v = Vec.from([10, 20, 30])
     assert safe_get(v, 5) == none
     assert safe_get(v, -1) == none
 }

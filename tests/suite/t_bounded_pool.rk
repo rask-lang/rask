@@ -18,7 +18,7 @@ test "PL8 — try_insert refuses a full pool" {
     mut p = Pool.with_capacity(2)
     p.insert(Ent { hp: 1 })
     p.insert(Ent { hp: 2 })
-    const r = p.try_insert(Ent { hp: 3 })
+    let r = p.try_insert(Ent { hp: 3 })
     if r? as h {
         assert false, "a full pool accepted a third element"
     } else {
@@ -28,7 +28,7 @@ test "PL8 — try_insert refuses a full pool" {
 
 test "PL8 — try_insert succeeds while there is room" {
     mut p = Pool.with_capacity(2)
-    const r = p.try_insert(Ent { hp: 1 })
+    let r = p.try_insert(Ent { hp: 1 })
     if r? as h {
         assert p[h].hp == 1
     } else {
@@ -38,10 +38,10 @@ test "PL8 — try_insert succeeds while there is room" {
 
 test "a removed element frees its slot" {
     mut p = Pool.with_capacity(2)
-    const a = p.insert(Ent { hp: 1 })
+    let a = p.insert(Ent { hp: 1 })
     p.insert(Ent { hp: 2 })
     p.remove(a)
-    const r = p.try_insert(Ent { hp: 3 })
+    let r = p.try_insert(Ent { hp: 3 })
     if r? as h {
         assert p[h].hp == 3
         assert p.len() == 2
@@ -56,7 +56,7 @@ test "an unbounded pool has no limit" {
         p.insert(Ent { hp: 1 })
     }
     assert p.len() == 8
-    const r = p.try_insert(Ent { hp: 2 })
+    let r = p.try_insert(Ent { hp: 2 })
     if r? as h {
         assert p.len() == 9
     } else {

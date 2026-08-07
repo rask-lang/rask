@@ -17,6 +17,6 @@ func risky() -> i64 or Fail {
 
 func main() -> void or Fail {
     println("starting")
-    const _v = try risky()
+    let _v = try risky()
     println("unreachable")
 }

@@ -433,7 +433,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            StmtKind::Const { name, name_span: _, ty, init } => {
+            StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
                 // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
@@ -461,7 +461,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_bindings.insert(name.clone());
                 }
             }
-            StmtKind::ConstTuple { patterns, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, false);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
@@ -2458,10 +2458,10 @@ impl<'a> OwnershipChecker<'a> {
     ) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.collect_free_vars_inner(e, locals, out, projections),
-            StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
             StmtKind::Assign { target, value } => {

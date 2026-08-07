@@ -33,7 +33,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 
 ```rask
 using Multitasking {
-    const h = spawn(|| { work() })
+    let h = spawn(|| { work() })
     try h.join()
 }
 ```

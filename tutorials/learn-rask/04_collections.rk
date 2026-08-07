@@ -3,10 +3,10 @@
 // Python has lists and dicts. Rask has Vec and Map.
 //
 //   Python list:   nums = [1, 2, 3]       nums.append(4)
-//   Rask Vec:      const nums = Vec.from([1, 2, 3])   nums.push(4)
+//   Rask Vec:      let nums = Vec.from([1, 2, 3])   nums.push(4)
 //
 //   Python dict:   scores = {"alice": 95}
-//   Rask Map:      const scores = Map.new()
+//   Rask Map:      let scores = Map.new()
 //                  scores.insert("alice", 95)
 //
 // Vec methods:  .push(), .pop(), .len(), [i] for indexing
@@ -22,8 +22,8 @@
 //   In Rask, map.get("key") returns an Option (written `T?`) — a value
 //   that is either present, or the sentinel `none` if missing.
 //
-//   const result = scores.get("alice")  // result is a bare value
-//   const result = scores.get("bob")    // result is none
+//   let result = scores.get("alice")  // result is a bare value
+//   let result = scores.get("bob")    // result is none
 //
 //   To use the value inside, narrow with `if x? as v`:
 //     if result? as score {
@@ -40,7 +40,7 @@
 // --- Examples ---
 
 func example_vec() {
-    const numbers = Vec.from([10, 20, 30])
+    let numbers = Vec.from([10, 20, 30])
     println("length: {numbers.len()}")
     println("first: {numbers[0]}")
 
@@ -56,7 +56,7 @@ func example_map() {
     elements.insert("Li", 3)
 
     // .get() returns Option — a bare value or `none`
-    const h = elements.get("H")
+    let h = elements.get("H")
     if h? {
         println("Hydrogen: atomic number {h}")
     }
@@ -127,7 +127,7 @@ func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
 // --- Tests ---
 
 test "particle masses" {
-    const masses = particle_masses()
+    let masses = particle_masses()
     assert masses.len() == 3
     assert masses[0] == 0.511
     assert masses[1] == 105.7
@@ -141,7 +141,7 @@ test "sum vec" {
 }
 
 test "periodic table" {
-    const table = periodic_table()
+    let table = periodic_table()
     assert table.get("H")! == 1
     assert table.get("He")! == 2
     assert table.get("C")! == 6
@@ -154,7 +154,7 @@ test "dot product" {
 }
 
 test "count occurrences" {
-    const counts = count_occurrences(Vec.from([1, 2, 1, 3, 2, 1]))
+    let counts = count_occurrences(Vec.from([1, 2, 1, 3, 2, 1]))
     assert counts.get(1)! == 3
     assert counts.get(2)! == 2
     assert counts.get(3)! == 1

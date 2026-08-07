@@ -1,6 +1,6 @@
 <!-- id: type.error-model-redesign -->
 <!-- status: accepted -->
-<!-- summary: Full error-model redesign. T or E and T? become compiler-generated tagged unions with type-based branch disambiguation. No Ok/Err/Some/None constructors. Disjointness rule (T != E) enforces unambiguous construction. Operator family covers both shapes; match is for multi-branch unions only. Narrowing rides on the const/mut distinction — no flow typing. Accepted and folded into the decided specs, with the optional-unification proposal layered on top (T? is sugar for T or none). -->
+<!-- summary: Full error-model redesign. T or E and T? become compiler-generated tagged unions with type-based branch disambiguation. No Ok/Err/Some/None constructors. Disjointness rule (T != E) enforces unambiguous construction. Operator family covers both shapes; match is for multi-branch unions only. Narrowing rides on the let/mut distinction — no flow typing. Accepted and folded into the decided specs, with the optional-unification proposal layered on top (T? is sugar for T or none). -->
 <!-- depends: types/optionals.md, types/error-types.md, types/union-types.md -->
 
 > **Status: Accepted (2026-04-26).** The chosen design. Normative rules now live in [error-types.md](error-types.md), [optionals.md](optionals.md), [union-types.md](union-types.md), and [primitives.md](primitives.md). One amendment from this proposal: per the [optional-unification proposal](optional-unification-proposal.md), `T?` is sugar for `T or none` rather than a separate "status type" kind, and `match` on `T or none` is a style lint rather than a hard error. This file is retained as the design rationale and the decision record.
@@ -8,13 +8,13 @@
 
 # Rask Error Model Redesign
 
-Rask currently uses `Result<T, E>` and `Option<T>` as standard enums with constructor sugar (`Ok(v)`, `Err(e)`, `Some(v)`, `None`) and operator sugar (`T or E`, `T?`, `??`, `?.`, `!`, `try`). The constructors are Rust-legacy ceremony on top of sugar that already does the work. This proposal removes the constructor wrappers entirely, collapses both shapes onto a single operator family, and lets narrowing ride on the existing `const`/`mut` distinction instead of introducing flow typing.
+Rask currently uses `Result<T, E>` and `Option<T>` as standard enums with constructor sugar (`Ok(v)`, `Err(e)`, `Some(v)`, `None`) and operator sugar (`T or E`, `T?`, `??`, `?.`, `!`, `try`). The constructors are Rust-legacy ceremony on top of sugar that already does the work. This proposal removes the constructor wrappers entirely, collapses both shapes onto a single operator family, and lets narrowing ride on the existing `let`/`mut` distinction instead of introducing flow typing.
 
 ## Problems with the current design
 
 **P1 — Constructor ceremony.** `Some(x)` and `Ok(x)` add a tag that is always the same tag. Auto-wrap (OPT8, ER7) already makes `T` coerce at function boundaries; the wrapper survives only at intermediate construction sites.
 
-**P2 — Five rebind forms for one operation.** `is Some(u)`, `is Some as u`, `const Some(u) = x`, `if const Some(u) = x`, magic rebind. Each says "check present and name the value" with slightly different rules.
+**P2 — Five rebind forms for one operation.** `is Some(u)`, `is Some as u`, `let Some(u) = x`, `if let Some(u) = x`, magic rebind. Each says "check present and name the value" with slightly different rules.
 
 **P3 — Magic rebind is invisible.** `if x is Some { use(x) }` silently rewrites `x`'s type with no syntactic marker.
 
@@ -40,10 +40,10 @@ Rask currently uses `Result<T, E>` and `Option<T>` as standard enums with constr
 ### Option surface
 
 ```rask
-const user: User? = load_user()       // bare value, auto-wraps
-const missing: User? = none           // absence literal
+let user: User? = load_user()       // bare value, auto-wraps
+let missing: User? = none           // absence literal
 
-if user? { greet(user) }              // const → narrows user to User
+if user? { greet(user) }              // let → narrows user to User
 if user? as c { c.sweep() }           // bind for mut, or to rename
 if user == none { return }            // absent guard
 
@@ -58,7 +58,7 @@ try user                              // propagate (current fn must return U?)
 | Construct present | bare value (auto-wrap at return and assignment) |
 | Absent literal | `none` |
 | Present bool expression (anywhere) | `x?` (returns `bool`) |
-| Present check + narrow (const) | `if x? { use(x) }` |
+| Present check + narrow (let) | `if x? { use(x) }` |
 | Present + destructure bind (any) | `if x? as v { use(v) }` |
 | Absent check | `if x == none { … }` |
 | Early-exit narrow | `if x == none { return } … use(x)` (x: T after) |
@@ -78,9 +78,9 @@ func divide(a: f64, b: f64) -> f64 or DivError {
     return a / b                           // type → T branch
 }
 
-const r = divide(a, b)
+let r = divide(a, b)
 
-if r? { use(r) }                           // const → narrows to T
+if r? { use(r) }                           // let → narrows to T
 if r? as v { use(v) }                      // explicit bind (mut or rename)
 if r? { use(r) } else as e { log(e) }      // bind error in else branch
 if r is DivError as e { log(e); return }   // narrow-to-error via type pattern
@@ -93,7 +93,7 @@ r?.field                                   // chain (propagates err)
 
 // match kept for multi-error unions
 match r {
-    f64 => use(r),                    // r: f64 in this arm (const narrow)
+    f64 => use(r),                    // r: f64 in this arm (let narrow)
     IoError => log(r),                // r: IoError in this arm
     ParseError as e => handle(e),     // optional rename with `as`
 }
@@ -134,26 +134,26 @@ Eight methods total. Compiler-provided on the builtin types — no `impl` blocks
 
 Each removed method either duplicated an operator or can be reconstructed trivially. The retained eight are precisely the ones that keep a value in wrapper-land for the next chain step, plus the two explicit conversion paths (`.ok()`, `.to_result(err)`).
 
-### Narrowing rides on `const`
+### Narrowing rides on `let`
 
 All the usual flow-typing complications — mutation, intervening calls, closure capture, field paths — collapse into one structural fact the language already enforces:
 
-**`const` bindings cannot be reassigned. Narrowing works on them for free. `mut` bindings require `if x? as v` to get a stable binding.**
+**`let` bindings cannot be reassigned. Narrowing works on them for free. `mut` bindings require `if x? as v` to get a stable binding.**
 
 | Scrutinee | `if x? { … }` | `if x? as v { … }` | `if x == none { return } …` |
 |-----------|----------------|---------------------|------------------------------|
-| `const x` | narrows `x` in both branches | binds `v`; also narrows `x` | narrows `x` after the guard |
+| `let x` | narrows `x` in both branches | binds `v`; also narrows `x` | narrows `x` after the guard |
 | `mut x` | predicate legal, no narrowing | binds `v`; `x` unchanged | no narrowing |
 
 Same rule for `T or E`.
 
-**Both branches narrow symmetrically.** When the condition is a recognised predicate over a const scrutinee, the then-branch narrows to the positive variant and the else-branch to the negative. For Option, `x?`, `x == none`, `x != none` all narrow equivalently. For Result, `r?`, `r is E` narrow equivalently. Compound predicates (`&&`, `||`) do **not** narrow — use nested `if` or `as v` bind.
+**Both branches narrow symmetrically.** When the condition is a recognised predicate over a let scrutinee, the then-branch narrows to the positive variant and the else-branch to the negative. For Option, `x?`, `x == none`, `x != none` all narrow equivalently. For Result, `r?`, `r is E` narrow equivalently. Compound predicates (`&&`, `||`) do **not** narrow — use nested `if` or `as v` bind.
 
 **`!x?` is forbidden.** Mixing prefix `!` with suffix `?` reads as "not-x-present" — the reading order fights the parse. Use `x == none` for the absent check. The parser rejects `!x?` (with or without parens) with a diagnostic suggesting the replacement. Other negations like `!some_bool_fn()` remain legal; the rule is specifically about `!` applied directly to a `?`-suffixed expression.
 
 **Early-exit narrows the fall-through.** If a branch diverges (`return`, `break`, `continue`, `panic`, `loop { … }`), the code after the `if` is narrowed as if the other branch had run.
 
-**Field paths narrow iff the full path is rooted in a `const` binding.** `player.weapon` narrows if `player` is `const`. If `player` is `mut`, use `if player.weapon? as w` to bind.
+**Field paths narrow iff the full path is rooted in a `let` binding.** `player.weapon` narrows if `player` is `let`. If `player` is `mut`, use `if player.weapon? as w` to bind.
 
 ### Why no `match` on Option
 
@@ -174,7 +174,7 @@ Match on `T or E` is kept because multi-error unions (`T or (A | B | C)`) genuin
 
 | Position | Operator | Example |
 |----------|----------|---------|
-| Declaration (binding with type) | `:` | `const x: i64 = 1`, `func f(x: i64)`, `struct P { x: i64 }` |
+| Declaration (binding with type) | `:` | `let x: i64 = 1`, `func f(x: i64)`, `struct P { x: i64 }` |
 | Cast | `as` | `x as i64` |
 | Narrow with rename | `as` | `if x? as v { … }` |
 | Branch rename | `as` | `if r? { … } else as e { … }` |
@@ -274,9 +274,9 @@ The bound is enforced at type formation: `T or E` where `E` doesn't implement `E
 
 **`??` is strictly extract, never widens.** `x ?? y` requires `y` to be compatible with the inner type of `x` (`T` for `x: T?`, `T` for `x: T or E`). Never produces a wider type. If you have `o: T?` and want `T or E`, use `o.to_result(err)`.
 
-**`x?` as a boolean.** `x?` / `r?` is a bool expression anywhere. Narrowing is the special behaviour gated to condition position over a const scrutinee; the expression itself is always a bool. `x? && y?`, `const b: bool = x?` are legal. `!x?` is not (see above).
+**`x?` as a boolean.** `x?` / `r?` is a bool expression anywhere. Narrowing is the special behaviour gated to condition position over a let scrutinee; the expression itself is always a bool. `x? && y?`, `let b: bool = x?` are legal. `!x?` is not (see above).
 
-**Anonymous expressions don't narrow.** The narrowing rule applies to const bindings. `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` first, then `if v? { use(v) }`, or use `if compute()? as v { use(v) }` to bind at the check site.
+**Anonymous expressions don't narrow.** The narrowing rule applies to let bindings. `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `let v = compute()` first, then `if v? { use(v) }`, or use `if compute()? as v { use(v) }` to bind at the check site.
 
 **Nesting is shape-specific.** `T??` and `(T or E) or E` are forbidden (same-shape nesting is ambiguous). All cross-shape nesting is fine:
 
@@ -288,8 +288,8 @@ The bound is enforced at type formation: `T or E` where `E` doesn't implement `E
 
 **`??` chaining.** Works while the left side remains wrapped:
 ```rask
-const x: T? = a ?? b ?? c              // ok if a, b are T?; c is T or T?
-const r: T or E = a ?? b ?? handle_e   // ok if a, b are T or E
+let x: T? = a ?? b ?? c              // ok if a, b are T?; c is T or T?
+let r: T or E = a ?? b ?? handle_e   // ok if a, b are T or E
 ```
 As soon as an RHS is bare `T`, the chain collapses to `T` and further `??` is a type error.
 
@@ -300,7 +300,7 @@ Both narrow the scrutinee in the arm. Wildcard `_ => …` is available in either
 
 **Exhaustiveness.** `match r` on `T or E` must cover every branch. For a widened error side (`T or (A | B | C)`), each error variant is its own arm, or `_ => …` catches the rest. Compiler diagnoses missing arms with the same error used for user enums.
 
-**Shadowing works normally inside narrowed blocks.** `if x? { const x = upgrade(x); use(x) }` — the outer `x` narrows to `T`, the inner `const x` shadows with a new binding. Standard scoping rules; the narrow doesn't prevent shadowing.
+**Shadowing works normally inside narrowed blocks.** `if x? { let x = upgrade(x); use(x) }` — the outer `x` narrows to `T`, the inner `let x` shadows with a new binding. Standard scoping rules; the narrow doesn't prevent shadowing.
 
 ## Rejected alternatives
 
@@ -310,7 +310,7 @@ Don't reintroduce without strong reason.
 2. **`throw e` / `fail e`.** Exception baggage (`throw`, `raise`, `bail`, `fail` all carry implications of stack unwinding or fatal failure).
 3. **Asymmetric auto-wrap (success only).** Replaced by symmetric type-based wrap once disjointness was added.
 4. **Allowing `T or T`.** Disjointness is the move that eliminates `err`. Newtype workaround is idiomatic and self-documenting.
-5. **Flow typing for mut bindings.** The `const`/`mut` split makes flow typing unnecessary. Mut narrowing requires explicit `as` bind.
+5. **Flow typing for mut bindings.** The `let`/`mut` split makes flow typing unnecessary. Mut narrowing requires explicit `as` bind.
 6. **Type-theoretic union (with disjointness in the union sense).** Terminology error early in the design. `T or E` is a sum type with a runtime tag, not a type-theoretic union. The disjointness rule is for *branch disambiguation at construction*, not for union soundness.
 7. **`is some` / `is ok` keywords.** `some` and `ok` would be destructure-only keywords with no construction counterpart. Inconsistent.
 8. **`x == none` and `is none` both available.** Kept `== none` as the absent form. `is none` not pursued — `is <variant>` is enum-only.
@@ -355,10 +355,10 @@ func read_file(path: string) -> string or IoError { ... }
 
 // Mid-level: composes errors via union widening
 func load_config(path: string) -> Config or (IoError | ParseError) {
-    const text = try read_file(path)    // IoError widens to (IoError | ParseError)
-    const json = try parse_json(text)   // ParseError widens
+    let text = try read_file(path)    // IoError widens to (IoError | ParseError)
+    let json = try parse_json(text)   // ParseError widens
 
-    const user = json.get("user") ?? return ParseError.MissingField("user")
+    let user = json.get("user") ?? return ParseError.MissingField("user")
 
     return Config {
         user: user,
@@ -369,7 +369,7 @@ func load_config(path: string) -> Config or (IoError | ParseError) {
 
 // High-level: consumes, narrows, chains, recovers
 func greet(path: string) -> string {
-    const loaded = load_config(path)
+    let loaded = load_config(path)
 
     if loaded is ParseError as e {
         log("config malformed: {e.message()}")
@@ -387,8 +387,8 @@ func greet(path: string) -> string {
     }
 
     // loaded narrows to Config here (all error arms handled via early-exit)
-    const theme = loaded.theme ?? "default"
-    const name = loaded.email
+    let theme = loaded.theme ?? "default"
+    let name = loaded.email
         .map(|e| e.split("@").first)
         .and_then(|s| s)
         ?? loaded.user
@@ -399,7 +399,7 @@ func greet(path: string) -> string {
 // Alternative greet() showing match-based dispatch instead of if-ladder
 func greet_v2(path: string) -> string {
     match load_config(path) {
-        Config => format_greeting(load_config(path)!),   // narrow + force (const)
+        Config => format_greeting(load_config(path)!),   // narrow + force (let)
         ParseError as e => {
             log("config malformed: {e.message()}")
             "Hello, guest"
@@ -421,7 +421,7 @@ func greet_v2(path: string) -> string {
 - `ErrorMessage.message()` used at `.message()` call sites; compiler-enforced because every `E` satisfies the trait.
 
 **What would not compile:**
-- `const r: Config or IoError = read_file(path)` — assignment position rejects auto-wrap for `T or E`.
+- `let r: Config or IoError = read_file(path)` — assignment position rejects auto-wrap for `T or E`.
 - `try read_file(path)` in a function returning `Config?` — cross-shape, ill-typed.
 - `return 42` in any of these (`42` is `i32`, doesn't match either branch).
 - `Config or i32` as a return type — `i32` doesn't implement `ErrorMessage`.

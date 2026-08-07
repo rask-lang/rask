@@ -128,8 +128,8 @@ extend Vec<T> {
 
 ```rask
 func main() {
-    const f = |x: i32| -> i32 { x + 1 }
-    const g = |y: i32| -> i32 { y * 2 }
+    let f = |x: i32| -> i32 { x + 1 }
+    let g = |y: i32| -> i32 { y * 2 }
 }
 ```
 → `_R4main_L0_H3a2f` (first closure)

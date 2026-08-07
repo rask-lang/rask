@@ -92,7 +92,7 @@ Reading other elements is allowed (MI3):
 ```rask
 for mutate entity in entities {
     entity.health -= damage
-    const max = entities[0].max_health    // OK: inline read of another element
+    let max = entities[0].max_health    // OK: inline read of another element
     if entity.health > max {
         entity.health = max
     }
@@ -265,7 +265,7 @@ FIX: Use index mode or collect first:
   }
 
   // Option 2: Collect first
-  const to_remove = Vec.new()
+  let to_remove = Vec.new()
   for item in pool {
       if item.expired { to_remove.push(h) }
   }
@@ -321,7 +321,7 @@ FIX: Use index mode for structural mutation, or collect changes first:
 ```
 WARNING [std.iteration/K2]: float type used as map key
    |
-3  |  const cache: Map<f64, Stats> = Map.new()
+3  |  let cache: Map<f64, Stats> = Map.new()
    |                   ^^^ f64 keys break map lookups when NaN is present
 
 WHY: NaN != NaN by IEEE 754. A NaN key can be inserted but never
@@ -329,7 +329,7 @@ WHY: NaN != NaN by IEEE 754. A NaN key can be inserted but never
 
 FIX: Use an integer key or newtype wrapper with defined equality:
 
-  const cache: Map<u64, Stats> = Map.new()
+  let cache: Map<u64, Stats> = Map.new()
 ```
 
 ## Edge Cases
@@ -373,14 +373,14 @@ for i in (0..vec.len()).rev() {
 }
 
 // 2. Collect during value iteration, then mutate
-const to_remove = Vec.new()
+let to_remove = Vec.new()
 for (i, item) in vec.enumerate() {
     if item.expired { to_remove.push(i) }
 }
 for i in to_remove.rev() { vec.remove_unordered(i) }
 
 // 3. Filter via take_all
-const vec = vec.take_all().filter(|item| !item.expired).collect()
+let vec = vec.take_all().filter(|item| !item.expired).collect()
 ```
 
 ### See Also

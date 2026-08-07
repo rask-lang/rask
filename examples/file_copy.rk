@@ -55,7 +55,7 @@ func parse_args(take args: Vec<string>) -> CopyOptions or ArgError {
 
     mut i: usize = 1
     while i < args.len() {
-        const arg = args[i]
+        let arg = args[i]
         match arg {
             "-f" | "--force" => opts.force = true,
             "-v" | "--verbose" => opts.verbose = true,
@@ -102,9 +102,9 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Check not same file (using canonical paths)
-    const src_canonical = try fs.canonicalize(opts.source)
+    let src_canonical = try fs.canonicalize(opts.source)
         else |e| CopyError.ReadError(e)
-    const dst_canonical = fs.canonicalize(opts.dest).ok()
+    let dst_canonical = fs.canonicalize(opts.dest).ok()
 
     if dst_canonical? {
         if src_canonical == dst_canonical {
@@ -113,7 +113,7 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Copy the file
-    const bytes = try fs.copy(opts.source, opts.dest)
+    let bytes = try fs.copy(opts.source, opts.dest)
         else |e| CopyError.WriteError(e)
 
     return bytes
@@ -123,19 +123,19 @@ func format_size(bytes: u64) -> string {
     if bytes < 1024 {
         return "{bytes} B"
     } else if bytes < 1048576 {
-        const kb = bytes / 1024
+        let kb = bytes / 1024
         return "{kb} KB"
     } else {
-        const mb = bytes / 1048576
+        let mb = bytes / 1048576
         return "{mb} MB"
     }
 }
 
 func main() {
-    const args = cli.args()
+    let args = cli.args()
 
-    const parsed = parse_args(own args)
-    const opts = if parsed? {
+    let parsed = parse_args(own args)
+    let opts = if parsed? {
         parsed
     } else as e {
         println("rcopy: {e.message()}")
@@ -146,14 +146,14 @@ func main() {
         println("Copying '{opts.source}' to '{opts.dest}'...")
     }
 
-    const result = copy_file(opts)
+    let result = copy_file(opts)
     if result? {
         if opts.verbose {
-            const size = format_size(result)
+            let size = format_size(result)
             println("Copied {size}")
         }
     } else as e {
-        const msg = e.message()
+        let msg = e.message()
         println("rcopy: {msg}")
         std.exit(1)
     }

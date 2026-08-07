@@ -37,7 +37,7 @@ test "conditional move then reassign before use" {
     mut v = Vec<i32>.new()
     v.push(1)
     if true {
-        const moved = v
+        let moved = v
         assert moved.len() == 1
     }
     v = Vec<i32>.new()
@@ -52,7 +52,7 @@ test "reassign in loop body is not use-after-move" {
     mut v = Vec<i32>.new()
     mut count = 0
     for i in 0..3 {
-        const taken = v
+        let taken = v
         assert taken.is_empty() == (count == 0)
         v = Vec<i32>.new()
         v.push(i)
@@ -67,7 +67,7 @@ test "reassign in loop body is not use-after-move" {
 
 test "resource consumed in both branches" {
     mut result = 0
-    const g = Guard { id: 7 }
+    let g = Guard { id: 7 }
     if true {
         result = g.release()
     } else {

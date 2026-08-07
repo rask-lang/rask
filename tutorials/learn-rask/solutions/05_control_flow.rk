@@ -87,7 +87,7 @@ test "runway assignment" {
 }
 
 test "next train" {
-    const sched = Vec.from([360, 420, 480, 540, 600])
+    let sched = Vec.from([360, 420, 480, 540, 600])
     assert next_train(sched, 450) == 480
     assert next_train(sched, 360) == 360
     assert next_train(sched, 600) == 600

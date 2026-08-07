@@ -25,7 +25,7 @@ extend Label {
 }
 
 test "methods on a newtype over an integer" {
-    const u = UserId(5)
+    let u = UserId(5)
     assert u.value == 5
     assert u.next().value == 6
     assert u.is_admin() == false
@@ -33,13 +33,13 @@ test "methods on a newtype over an integer" {
 }
 
 test "methods on a newtype over a string" {
-    const l = Label("hey")
+    let l = Label("hey")
     assert l.shout() == "HEY"
     assert l.value.len() == 3
 }
 
 test "the underlying value's own methods still reach through" {
-    const u = UserId(5)
+    let u = UserId(5)
     assert u.value.to_string() == "5"
 }
 

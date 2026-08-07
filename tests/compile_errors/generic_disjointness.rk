@@ -31,11 +31,11 @@ extend Cache<T> {
 }
 
 func main() {
-    const fine = cached(42)                 // T = i32: no error here
+    let fine = cached(42)                 // T = i32: no error here
 
-    const direct = cached(CacheError.Miss)  // E0358: T = CacheError
-    const forwarded = wrap(CacheError.Miss) // E0358: T = CacheError
+    let direct = cached(CacheError.Miss)  // E0358: T = CacheError
+    let forwarded = wrap(CacheError.Miss) // E0358: T = CacheError
 
-    const c = Cache<CacheError> { hit: true }
-    const method = c.get(CacheError.Miss)   // E0358: T = CacheError
+    let c = Cache<CacheError> { hit: true }
+    let method = c.get(CacheError.Miss)   // E0358: T = CacheError
 }

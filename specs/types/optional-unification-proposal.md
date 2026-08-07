@@ -50,10 +50,10 @@ Operators dispatch on the structural shape "two-variant union with one variant `
 ```rask
 func load() -> User? { ... }                    // desugars to User or none
 
-const user = load()                             // user: User or none
+let user = load()                             // user: User or none
 if user? { greet(user) }                        // narrows to User
-const name = user?.display_name ?? "Anonymous"  // chain + fallback
-const first = list.first()!                     // force
+let name = user?.display_name ?? "Anonymous"  // chain + fallback
+let first = list.first()!                     // force
 try user                                         // propagate in a ?-returning fn
 ```
 
@@ -85,7 +85,7 @@ Error-handling on the inside, optionality on the outside. The `?`-family works o
 
 <!-- test: compile-fail -->
 ```rask
-const x: User?? = ...   // ERROR: duplicate variant `none` in union
+let x: User?? = ...   // ERROR: duplicate variant `none` in union
 ```
 
 ### Auto-wrap becomes widening
@@ -102,7 +102,7 @@ No optional-specific auto-wrap rule remains. `return user` in a `User or none`-r
 
 ### Narrowing
 
-OPT19–OPT24 stay, restated over `T or none`. `if x?` narrows a `const x: T or none` to `T` inside the block. The narrowing rules are the same; they just describe a specific union shape instead of a distinct type.
+OPT19–OPT24 stay, restated over `T or none`. `if x?` narrows a `let x: T or none` to `T` inside the block. The narrowing rules are the same; they just describe a specific union shape instead of a distinct type.
 
 ### Inference
 
@@ -110,10 +110,10 @@ OPT19–OPT24 stay, restated over `T or none`. `if x?` narrows a `const x: T or 
 
 <!-- test: skip -->
 ```rask
-const cache: User? = none        // widens at assignment: target is User or none
+let cache: User? = none        // widens at assignment: target is User or none
 return none                       // widens at return: target is return type
 some_fn(none)                     // widens at argument: target is parameter type
-const x = none                    // x has type `none` (legal, just not useful)
+let x = none                    // x has type `none` (legal, just not useful)
 ```
 
 The last line isn't an error. `x` has type `none`. It can later be assigned into a `T or none` slot where it widens.
@@ -168,7 +168,7 @@ Existing `.rk` code continues to compile. Existing documentation continues to de
 | `T??` | OU3 + union rules | Compile error: duplicate variant `none` |
 | `match` on `T?` | OU5 | Legal; style lint suggests operators for two-arm matches with `none` |
 | `T or E or none` with `?.` | OU3 | Compile error: `?.` requires a two-variant union with `none`. Suggest layering |
-| `const x = none` | OU4 | Legal. `x` has type `none`. Widens at later use |
+| `let x = none` | OU4 | Legal. `x` has type `none`. Widens at later use |
 | `none == none` | OU1 | `true`. Same rule as equality on any zero-field type |
 | `none` in generic position | OU4 | Widens to the target union type if the context provides one. Otherwise `x: none` |
 | Linear `T?` with `T: @resource` | Union linearity | Both variants must be handled; present path consumes the resource |
@@ -179,7 +179,7 @@ Existing `.rk` code continues to compile. Existing documentation continues to de
 ```
 ERROR [type.optional-unification/OU3]: `?.` requires a two-variant union with `none`
    |
-5  |  const name = result?.display_name
+5  |  let name = result?.display_name
    |               ^^^^^^^ `result` is `User or DatabaseError or none` — three variants
 
 WHY: The `?`-family operators handle the absent-or-present case. For unions
@@ -189,7 +189,7 @@ FIX: Layer the types. Error on the inside, optionality on the outside:
 
   func find(id: UserId) -> (User or DatabaseError)? { ... }
 
-  const outer = find(id)
+  let outer = find(id)
   if outer? as r {
       match r {
           .Ok(user) => use(user),
@@ -247,7 +247,7 @@ struct User {
     nickname: string?       // sugar for (string or none)
 }
 
-const u = User { name: "Tove", nickname: none }
+let u = User { name: "Tove", nickname: none }
 ```
 
 **Error and optional layered:**
@@ -259,7 +259,7 @@ func find_user(id: UserId) -> (User or DatabaseError)? {
                              // outer `?` wraps the success case
 }
 
-const outer = find_user(id)
+let outer = find_user(id)
 if outer? as result {        // narrow: present
     match result {
         .Ok(user) => greet(user),

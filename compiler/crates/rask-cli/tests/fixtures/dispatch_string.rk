@@ -4,7 +4,7 @@
 // (starts_with, ends_with, to_uppercase) and ambiguous-name (replace) methods.
 
 func main() {
-    const s = "Hello, Rask"
+    let s = "Hello, Rask"
     print(s.len())
     print("\n")
     print(s.starts_with("Hello"))

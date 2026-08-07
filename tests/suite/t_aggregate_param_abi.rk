@@ -49,7 +49,7 @@ func make(id: Id, title: string, priority: Priority) -> Task {
 }
 
 test "codegen — an enum parameter stored into a field keeps its value" {
-    const t = make(Id { value: 7 }, "write it", Priority.High)
+    let t = make(Id { value: 7 }, "write it", Priority.High)
     assert t.id.value == 7
     assert t.title == "write it"
     assert t.priority.label() == "high"
@@ -57,10 +57,10 @@ test "codegen — an enum parameter stored into a field keeps its value" {
 }
 
 test "codegen — every variant survives the round trip" {
-    const a = make(Id { value: 1 }, "a", Priority.Low)
-    const b = make(Id { value: 2 }, "b", Priority.Medium)
-    const c = make(Id { value: 3 }, "c", Priority.High)
-    const d = make(Id { value: 4 }, "d", Priority.Urgent)
+    let a = make(Id { value: 1 }, "a", Priority.Low)
+    let b = make(Id { value: 2 }, "b", Priority.Medium)
+    let c = make(Id { value: 3 }, "c", Priority.High)
+    let d = make(Id { value: 4 }, "d", Priority.Urgent)
     assert a.priority.label() == "low"
     assert b.priority.label() == "medium"
     assert c.priority.label() == "high"
@@ -73,8 +73,8 @@ struct Spec {
 }
 
 test "codegen — cloning a struct copies an enum field by value" {
-    const original = Spec { title: "seed", priority: Priority.Urgent }
-    const copy = original.clone()
+    let original = Spec { title: "seed", priority: Priority.Urgent }
+    let copy = original.clone()
     assert copy.title == "seed"
     assert copy.priority.label() == "urgent"
 
@@ -87,7 +87,7 @@ test "codegen — cloning a struct copies an enum field by value" {
     specs.push(Spec { title: "two", priority: Priority.Low })
     mut ranks = Vec.new()
     for s in specs {
-        const dup = s.clone()
+        let dup = s.clone()
         ranks.push(dup.priority.rank())
     }
     assert ranks.len() == 2

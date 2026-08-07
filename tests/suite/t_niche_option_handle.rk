@@ -13,13 +13,13 @@ struct Node {
 
 func build() -> Pool<Node> {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 1, next: none })
-    const _b = p.insert(Node { v: 2, next: a })
+    let a = p.insert(Node { v: 1, next: none })
+    let _b = p.insert(Node { v: 2, next: a })
     return p
 }
 
 test "a linked node reaches its successor" {
-    const p = build()
+    let p = build()
     mut found = 0
     for h in p.handles() {
         if p[h].next? as n {
@@ -31,14 +31,14 @@ test "a linked node reaches its successor" {
 
 test "an absent handle reads as none" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 1, next: none })
+    let a = p.insert(Node { v: 1, next: none })
     assert p[a].next? == false
 }
 
 test "a present handle reads back" {
     mut p: Pool<Node> = Pool.new()
-    const a = p.insert(Node { v: 7, next: none })
-    const b = p.insert(Node { v: 8, next: a })
+    let a = p.insert(Node { v: 7, next: none })
+    let b = p.insert(Node { v: 8, next: a })
     assert p[b].next?
     assert p[p[b].next!].v == 7
 }

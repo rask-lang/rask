@@ -21,7 +21,7 @@ extend Util {
 }
 
 func main() {
-    const u = Util { }
+    let u = Util { }
     // ERROR[E0333]: `Plain` does not implement `Named`
     println("{u.describe(Plain { n: 1 })}")
 }

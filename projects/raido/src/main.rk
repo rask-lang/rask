@@ -17,7 +17,7 @@ func code_get(code: Vec<u32>, idx: i64) -> u32 {
 
 // Minimal VM loop for testing — uses opcodes and Value from the package
 func vm_run(code: Vec<u32>, fuel: i64) -> Value {
-    const regs = Vec.new()
+    let regs = Vec.new()
     mut i: i64 = 0
     while i < 256 {
         regs.push(Value.None)
@@ -26,7 +26,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
 
     mut pc: i64 = 0
     mut remaining = fuel
-    const code_len = code.len() as i64
+    let code_len = code.len() as i64
 
     while pc < code_len {
         if remaining <= 0 {
@@ -35,19 +35,19 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
         }
         remaining = remaining - 1
 
-        const instr = code_get(code, pc)
+        let instr = code_get(code, pc)
         pc = pc + 1
 
-        const op = decode_opcode(instr) ?? {
+        let op = decode_opcode(instr) ?? {
             print("UNKNOWN OPCODE: {decode_op(instr)}\n")
             return Value.None
         }
-        const a = decode_a(instr)
+        let a = decode_a(instr)
 
         match op {
             Opcode.LOAD_INT => {
-                const bx = decode_bx(instr)
-                const val: i64 = if bx >= 32768 {
+                let bx = decode_bx(instr)
+                let val: i64 = if bx >= 32768 {
                     bx - 65536
                 } else {
                     bx
@@ -55,30 +55,30 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 reg_set(regs, a, Value.Int(val))
             }
             Opcode.ADD => {
-                const b = decode_b(instr)
-                const c = decode_c(instr)
-                const lhs = reg_get(regs, b)
-                const rhs = reg_get(regs, c)
+                let b = decode_b(instr)
+                let c = decode_c(instr)
+                let lhs = reg_get(regs, b)
+                let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
                     (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Int(x + y))
                     _ => print("TypeError: cannot add\n")
                 }
             }
             Opcode.SUB => {
-                const b = decode_b(instr)
-                const c = decode_c(instr)
-                const lhs = reg_get(regs, b)
-                const rhs = reg_get(regs, c)
+                let b = decode_b(instr)
+                let c = decode_c(instr)
+                let lhs = reg_get(regs, b)
+                let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
                     (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Int(x - y))
                     _ => print("TypeError: cannot sub\n")
                 }
             }
             Opcode.LT => {
-                const b = decode_b(instr)
-                const c = decode_c(instr)
-                const lhs = reg_get(regs, b)
-                const rhs = reg_get(regs, c)
+                let b = decode_b(instr)
+                let c = decode_c(instr)
+                let lhs = reg_get(regs, b)
+                let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
                     (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Bool(x < y))
                     _ => reg_set(regs, a, Value.Bool(false))
@@ -88,7 +88,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 pc = pc + decode_sbx(instr)
             }
             Opcode.JMP_IF_NOT => {
-                const val = reg_get(regs, a)
+                let val = reg_get(regs, a)
                 if !val.is_truthy() {
                     pc = pc + decode_sbx(instr)
                 }
@@ -115,8 +115,8 @@ func main() {
 func test_encoding() {
     print("--- Encoding ---\n")
 
-    const instr = encode_abc(Opcode.ADD, 3, 1, 2)
-    const ok = decode_op(instr) == Opcode.ADD as i64 && decode_a(instr) == 3 && decode_b(instr) == 1 && decode_c(instr) == 2
+    let instr = encode_abc(Opcode.ADD, 3, 1, 2)
+    let ok = decode_op(instr) == Opcode.ADD as i64 && decode_a(instr) == 3 && decode_b(instr) == 1 && decode_c(instr) == 2
     if ok {
         print("ABC round-trip: pass\n")
     } else {
@@ -139,13 +139,13 @@ func test_encoding() {
 
 func test_42() {
     print("--- 40 + 2 ---\n")
-    const code: Vec<u32> = Vec.new()
+    let code: Vec<u32> = Vec.new()
     code.push(encode_abx(Opcode.LOAD_INT, 0, 40))
     code.push(encode_abx(Opcode.LOAD_INT, 1, 2))
     code.push(encode_abc(Opcode.ADD, 2, 0, 1))
     code.push(encode_abx(Opcode.RETURN, 2, 0))
 
-    const result = vm_run(code, 100)
+    let result = vm_run(code, 100)
     match result {
         Value.Int(n) => if n == 42 {
             print("Result: 42 pass\n")
@@ -161,7 +161,7 @@ func test_42() {
 
 func test_countdown() {
     print("--- Sum 10 to 1 ---\n")
-    const code: Vec<u32> = Vec.new()
+    let code: Vec<u32> = Vec.new()
     code.push(encode_abx(Opcode.LOAD_INT, 0, 10))
     code.push(encode_abx(Opcode.LOAD_INT, 1, 0))
     code.push(encode_abx(Opcode.LOAD_INT, 2, 1))
@@ -173,7 +173,7 @@ func test_countdown() {
     code.push(encode_asbx(Opcode.JMP, 0, -5))
     code.push(encode_abx(Opcode.RETURN, 1, 0))
 
-    const result = vm_run(code, 1000)
+    let result = vm_run(code, 1000)
     match result {
         Value.Int(n) => if n == 55 {
             print("Result: 55 pass\n")

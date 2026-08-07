@@ -11,11 +11,11 @@ func first(items: Vec<T>) -> T {
 }
 
 func main() {
-    const pair = swap(1, 2)
+    let pair = swap(1, 2)
     println("{pair.0} {pair.1}")
 
     mut names = Vec.new()
     names.push("hello")
-    const head = first(names)
+    let head = first(names)
     println("{head}")
 }

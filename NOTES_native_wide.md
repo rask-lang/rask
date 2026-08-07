@@ -26,7 +26,7 @@ func main() {
     mut xs = Vec.new()
     xs.push(10)
     xs.push(20)
-    const ys = xs.map(|x| x + 1)   // native binary segfaults (exit 139)
+    let ys = xs.map(|x| x + 1)   // native binary segfaults (exit 139)
     print("len={ys.len()}\n")
 }
 ```

@@ -8,6 +8,6 @@ func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
 
 func main() {
     mut players = Pool.new()
-    const p = players.insert(Player { health: 50 })
+    let p = players.insert(Player { health: 50 })
     print(get_health(p))
 }

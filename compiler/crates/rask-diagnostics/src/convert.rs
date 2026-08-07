@@ -344,7 +344,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         ))
                         .with_fix(
                             "supply the missing case — `{value ?? \"none\"}` — or narrow \
-                             first with `if const v = value { … }`",
+                             first with `if value? as v { … }`",
                         );
                 } else {
                     diag = diag.with_fix(format!(
@@ -544,12 +544,12 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             MutateConst { name, span } => {
-                Diagnostic::error(format!("cannot mutate `{}` — declared `const`", name))
+                Diagnostic::error(format!("cannot mutate `{}` — declared `let`", name))
                     .with_code("E0322")
-                    .with_primary(*span, format!("`{}` is const — immutable", name))
-                    .with_help(format!("change `const {}` to `mut {}` to allow mutation", name, name))
-                    .with_fix(format!("replace `const {}` with `mut {}`", name, name))
-                    .with_why("`const` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
+                    .with_primary(*span, format!("`{}` is a let binding — immutable", name))
+                    .with_help(format!("change `let {}` to `mut {}` to allow mutation", name, name))
+                    .with_fix(format!("replace `let {}` with `mut {}`", name, name))
+                    .with_why("`let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
             }
 
             StringSliceStored { source_var, view_var, slice_span, store_span } => {
@@ -558,7 +558,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*slice_span, format!("`{}[i..j]` is a temporary view", source_var))
                     .with_secondary(*store_span, format!("`{}` tries to hold the slice across a statement boundary", view_var))
                     .with_help("use .to_string() to copy the slice, or use string_view indices")
-                    .with_fix(format!("const {} = {}[i..j].to_string()", view_var, source_var))
+                    .with_fix(format!("let {} = {}[i..j].to_string()", view_var, source_var))
                     .with_why("string slices are temporary views into the string's buffer — storing them would create a dangling reference when the source is freed")
             }
 
@@ -1051,7 +1051,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
             LegacyWrapperPattern { name, with_binding, span } => {
                 let fix = match name.as_str() {
-                    "Some" if *with_binding => "use the operator form: `if x? as v { ... }`, or `const v = x ?? return none` in guard position",
+                    "Some" if *with_binding => "use the operator form: `if x? as v { ... }`, or `let v = x ?? return none` in guard position",
                     "Some" => "use the operator form: `if x? { ... }`, `x?`, or `x != none`",
                     "None" => "use `x == none` for the absent check",
                     "Ok" if *with_binding => "use the operator form: `if r? as v { ... }`, or a type pattern: `r is <T> as v else { ... }`",
@@ -1170,7 +1170,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     K::ExpectedHandle(handle) => (
                         format!("cannot index `{}` with `{}`", container, found),
                         format!("a pool is keyed by its handle, not a position — index it with `{}` [mem.pools/PL4]", handle),
-                        Some(format!("const h = pool.insert(value)   // h: {}", handle)),
+                        Some(format!("let h = pool.insert(value)   // h: {}", handle)),
                     ),
                     K::NotSliceable => (
                         format!("cannot slice `{}` with a range", container),

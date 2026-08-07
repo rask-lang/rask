@@ -11,39 +11,39 @@ func returns_none() -> i32? {
 }
 
 test "none literal" {
-    const x: i32? = none
+    let x: i32? = none
     assert x == none
 
-    const y = returns_none()
+    let y = returns_none()
     assert y == none
 }
 
 // --- force unwrap x! (OPT14) ---
 
 test "force unwrap present" {
-    const x: i32? = 42
+    let x: i32? = 42
     assert x! == 42
 }
 
 test "force unwrap" {
-    const inner: i32? = 10
+    let inner: i32? = 10
     assert inner! == 10
 }
 
 // --- value fallback ?? (OPT12) ---
 
 test "fallback with none" {
-    const x: i32? = none
+    let x: i32? = none
     assert (x ?? 99) == 99
 }
 
 test "fallback with present" {
-    const x: i32? = 42
+    let x: i32? = 42
     assert (x ?? 99) == 42
 }
 
 test "fallback short-circuits" {
-    const x: i32? = 1
+    let x: i32? = 1
     assert (x ?? 999) == 1
 }
 
@@ -60,29 +60,29 @@ struct User {
 
 func get_user(has_profile: bool) -> User? {
     if has_profile {
-        const p: Profile? = Profile { name: "Alice", age: 30 }
+        let p: Profile? = Profile { name: "Alice", age: 30 }
         return User { profile: p }
     }
     return none
 }
 
 test "optional chaining present path" {
-    const user = get_user(true)
-    const name = user?.profile?.name
+    let user = get_user(true)
+    let name = user?.profile?.name
     assert name?
     assert name! == "Alice"
 }
 
 test "optional chaining absent short-circuits" {
-    const user = get_user(false)
-    const name = user?.profile?.name
+    let user = get_user(false)
+    let name = user?.profile?.name
     assert name == none
 }
 
 test "optional chaining on none field" {
-    const p: Profile? = none
-    const user: User? = User { profile: p }
-    const name = user?.profile?.name
+    let p: Profile? = none
+    let user: User? = User { profile: p }
+    let name = user?.profile?.name
     assert name == none
 }
 
@@ -93,7 +93,7 @@ func maybe_value() -> i32? {
 }
 
 test "auto-wrap T to T?" {
-    const x = maybe_value()
+    let x = maybe_value()
     assert x?
     assert x! == 42
 }
@@ -105,56 +105,56 @@ func inner_option() -> i32? {
 }
 
 func outer_option() -> i32? {
-    const val = try inner_option()
+    let val = try inner_option()
     return val * 2
 }
 
 func try_propagates_none() -> i32? {
-    const val = try returns_none()
+    let val = try returns_none()
     return val + 1
 }
 
 test "try on Option extracts" {
-    const result = outer_option()
+    let result = outer_option()
     assert result?
     assert result! == 20
 }
 
 test "try on Option propagates none" {
-    const result = try_propagates_none()
+    let result = try_propagates_none()
     assert result == none
 }
 
 // --- Option methods from spec ---
 
 test "map on present" {
-    const x: i32? = 5
-    const y = x.map(|v| v * 2)
+    let x: i32? = 5
+    let y = x.map(|v| v * 2)
     assert y! == 10
 }
 
 test "map on absent" {
-    const x: i32? = none
-    const y = x.map(|v| v * 2)
+    let x: i32? = none
+    let y = x.map(|v| v * 2)
     assert y == none
 }
 
 test "filter keeps matching" {
-    const x: i32? = 10
-    const y = x.filter(|v| v > 5)
+    let x: i32? = 10
+    let y = x.filter(|v| v > 5)
     assert y! == 10
 }
 
 test "filter rejects non-matching" {
-    const x: i32? = 3
-    const y = x.filter(|v| v > 5)
+    let x: i32? = 3
+    let y = x.filter(|v| v > 5)
     assert y == none
 }
 
 // --- is-patterns and narrowing (OPT19-OPT20) ---
 
 test "is Some with implicit narrowing" {
-    const opt: i32? = 42
+    let opt: i32? = 42
     if opt? {
         assert opt == 42
     } else {
@@ -165,8 +165,8 @@ test "is Some with implicit narrowing" {
 // Operator-form replacement for the old `match x { Some(v) => ..., None => ... }`.
 // Match on Option is rejected by the compiler; operator form is idiomatic.
 test "operator-form branch" {
-    const x: i32? = 7
-    const result = if x? { x * 2 } else { 0 }
+    let x: i32? = 7
+    let result = if x? { x * 2 } else { 0 }
     assert result == 14
 }
 

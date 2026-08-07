@@ -56,13 +56,13 @@ These are always available — no import needed. They work on any `Comparable` t
 <!-- test: skip -->
 ```rask
 // Work on any Comparable type — prelude, no import needed
-const smaller = min(a, b)
-const larger = max(a, b)
-const bounded = clamp(score, 0, 100)
+let smaller = min(a, b)
+let larger = max(a, b)
+let bounded = clamp(score, 0, 100)
 
 // Also work on strings (lexicographic), custom types, etc.
-const first_name = min(name_a, name_b)
-const newest = max(version_a, version_b)
+let first_name = min(name_a, name_b)
+let newest = max(version_a, version_b)
 ```
 
 There is no `math.min`/`math.max`/`math.clamp` and no `.min()`/`.max()` methods — the prelude functions are the one way.
@@ -77,10 +77,10 @@ There is no `math.min`/`math.max`/`math.clamp` and no `.min()`/`.max()` methods 
 ```rask
 import math
 
-const angle = math.PI / 4.0
-const result = math.sin(angle)
-const dist = math.hypot(3.0, 4.0)   // 5.0
-const clamped = clamp(150.0, 0.0, 100.0)  // 100.0 (prelude)
+let angle = math.PI / 4.0
+let result = math.sin(angle)
+let dist = math.hypot(3.0, 4.0)   // 5.0
+let clamped = clamp(150.0, 0.0, 100.0)  // 100.0 (prelude)
 ```
 
 ## Value Methods (not in math module)
@@ -107,7 +107,7 @@ const clamped = clamp(150.0, 0.0, 100.0)  // 100.0 (prelude)
 ```
 ERROR [std.math/N1]: no method `sin` on type f64
    |
-5  |  const r = x.sin()
+5  |  let r = x.sin()
    |              ^^^ f64 does not have a sin method
 
 WHY: Trig functions are in the math module, not on f64.

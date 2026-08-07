@@ -127,11 +127,11 @@ func is_blank_line(line: string) -> bool {
 }
 
 func is_hr_line(line: string) -> bool {
-    const trimmed = line.trim().to_string()
+    let trimmed = line.trim().to_string()
     if trimmed.len() < 3 {
         return false
     }
-    const first = trimmed.char_at(0) ?? return false
+    let first = trimmed.char_at(0) ?? return false
     if first != '-' && first != '*' && first != '_' {
         return false
     }
@@ -148,7 +148,7 @@ func is_hr_line(line: string) -> bool {
 }
 
 func ordered_list_start(line: string) -> i32? {
-    const dot_pos = line.find(".") ?? return none
+    let dot_pos = line.find(".") ?? return none
     if dot_pos == 0 {
         return none
     }
@@ -163,13 +163,13 @@ func ordered_list_start(line: string) -> i32? {
         return none
     }
 
-    const num_slice = line[0..dot_pos].to_string()
+    let num_slice = line[0..dot_pos].to_string()
     for ch in num_slice.chars() {
         if !ch.is_digit() {
             return none
         }
     }
-    const n = num_slice.parse_int() is i64 as v else {
+    let n = num_slice.parse_int() is i64 as v else {
         return none
     }
     return n truncate to i32
@@ -202,7 +202,7 @@ extend Scanner {
     }
 
     func peek_at(self, offset: usize) -> char? {
-        const idx = self.pos + offset
+        let idx = self.pos + offset
         if idx >= self.input.len() {
             return none
         }
@@ -210,7 +210,7 @@ extend Scanner {
     }
 
     func advance(self) -> char? {
-        const c = self.peek() ?? return none
+        let c = self.peek() ?? return none
         self.pos = self.pos + c.len_utf8()
         return c
     }
@@ -231,25 +231,25 @@ extend Scanner {
     }
 
     func scan_until(self, target: string) -> string? {
-        const start = self.pos
+        let start = self.pos
         while !self.is_done() {
             if self.matches(target) {
-                const result = self.input[start..self.pos].to_string()
+                let result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len()
                 return result
             }
-            const c = self.peek() ?? break
+            let c = self.peek() ?? break
             self.pos = self.pos + c.len_utf8()
         }
         return none
     }
 
     func scan_until_char(self, target: char) -> string? {
-        const start = self.pos
+        let start = self.pos
         while self.peek()? {
-            const c = self.peek()!
+            let c = self.peek()!
             if c == target {
-                const result = self.input[start..self.pos].to_string()
+                let result = self.input[start..self.pos].to_string()
                 self.pos = self.pos + target.len_utf8()
                 return result
             }
@@ -275,20 +275,20 @@ func parse_references(input: string) -> Map<string, string> {
     mut refs = Map.new()
 
     for line in input.lines() {
-        const trimmed = line.trim().to_string()
+        let trimmed = line.trim().to_string()
 
         // Match pattern: [id]: url
         if !trimmed.starts_with("[") {
             continue
         }
 
-        const close = trimmed.find("]:") ?? continue
-        const id = trimmed[1..close].to_string().to_lowercase()
+        let close = trimmed.find("]:") ?? continue
+        let id = trimmed[1..close].to_string().to_lowercase()
         if id.is_empty() {
             continue
         }
 
-        const url = trimmed[close + 2..].trim().to_string()
+        let url = trimmed[close + 2..].trim().to_string()
         if url.is_empty() {
             continue
         }
@@ -300,11 +300,11 @@ func parse_references(input: string) -> Map<string, string> {
 }
 
 func is_reference_def(line: string) -> bool {
-    const trimmed = line.trim().to_string()
+    let trimmed = line.trim().to_string()
     if !trimmed.starts_with("[") {
         return false
     }
-    const close = trimmed.find("]:") ?? return false
+    let close = trimmed.find("]:") ?? return false
     return true
 }
 
@@ -347,14 +347,14 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if scanner.matches("**") {
             flush_text(mutate result, mutate text_buf)
             scanner.consume("**")
-            const children = try parse_inline_until(mutate scanner, "**")
+            let children = try parse_inline_until(mutate scanner, "**")
             result.push(Inline.Bold(children))
             continue
         }
         if scanner.matches("*") && !scanner.matches("**") {
             flush_text(mutate result, mutate text_buf)
             scanner.consume("*")
-            const children = try parse_inline_until(mutate scanner, "*")
+            let children = try parse_inline_until(mutate scanner, "*")
             result.push(Inline.Italic(children))
             continue
         }
@@ -391,12 +391,12 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if scanner.matches("[") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
-            const link_start = scanner.pos
+            let link_start = scanner.pos
             if scanner.scan_until_char(']')? as text_content {
                 if scanner.matches("(") {
                     scanner.advance()
                     if scanner.scan_until_char(')')? as url {
-                        const link_inlines = try parse_inline(text_content)
+                        let link_inlines = try parse_inline(text_content)
                         result.push(Inline.Link(url, link_inlines))
                     } else {
                         text_buf.push_char('[')
@@ -406,7 +406,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
                 } else if scanner.matches("[") {
                     scanner.advance()
                     if scanner.scan_until_char(']')? as ref_id {
-                        const link_inlines = try parse_inline(text_content)
+                        let link_inlines = try parse_inline(text_content)
                         result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
                     } else {
                         text_buf.push_char('[')
@@ -429,7 +429,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
             result.push(Inline.LineBreak)
             continue
         }
-        const ch = scanner.advance() ?? break
+        let ch = scanner.advance() ?? break
         text_buf.push_char(ch)
     }
 
@@ -446,14 +446,14 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
 // Line-by-line state machine that produces Block AST nodes.
 
 func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
-    const lines = input.lines().collect()
+    let lines = input.lines().collect()
     mut blocks = Vec.new()
     mut i = 0
-    const line_count = lines.len()
+    let line_count = lines.len()
 
     while i < line_count {
-        const line = lines[i]
-        const trimmed = line.trim().to_string()
+        let line = lines[i]
+        let trimmed = line.trim().to_string()
 
         // Skip reference definitions (already extracted)
         if is_reference_def(line) {
@@ -476,12 +476,12 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // ATX heading: # through ######
         if trimmed.starts_with("#") {
-            const level = count_leading(trimmed, '#')
+            let level = count_leading(trimmed, '#')
             if level >= 1 && level <= 6 {
-                const after_hashes = trimmed[level..].to_string()
+                let after_hashes = trimmed[level..].to_string()
                 if after_hashes.is_empty() || after_hashes.starts_with(" ") {
-                    const heading_text = after_hashes.trim().to_string()
-                    const inlines = try parse_inline(heading_text)
+                    let heading_text = after_hashes.trim().to_string()
+                    let inlines = try parse_inline(heading_text)
                     blocks.push(Block.Heading(level, inlines))
                     i = i + 1
                     continue
@@ -491,7 +491,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // Fenced code block: ```
         if trimmed.starts_with("```") {
-            const lang = trimmed[3..].trim().to_string()
+            let lang = trimmed[3..].trim().to_string()
             mut code = string.new()
             mut first_code_line = true
             i = i + 1
@@ -515,7 +515,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         if trimmed.starts_with(">") {
             mut quote_lines = Vec.new()
             while i < line_count {
-                const ql = lines[i].trim().to_string()
+                let ql = lines[i].trim().to_string()
                 if !ql.starts_with(">") && !is_blank_line(lines[i]) {
                     break
                     // Blank line inside blockquote — keep it
@@ -531,8 +531,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
                 i = i + 1
             }
-            const inner = join_lines(quote_lines)
-            const inner_blocks = try parse_blocks(inner)
+            let inner = join_lines(quote_lines)
+            let inner_blocks = try parse_blocks(inner)
             blocks.push(Block.Blockquote(inner_blocks))
             continue
         }
@@ -541,10 +541,10 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             mut items = Vec.new()
             while i < line_count {
-                const il = lines[i]
-                const it = il.trim().to_string()
+                let il = lines[i]
+                let it = il.trim().to_string()
 
-                const is_item = it.starts_with("- ") || it.starts_with("* ")
+                let is_item = it.starts_with("- ") || it.starts_with("* ")
                 if !is_item && !is_blank_line(il) && !il.starts_with("  ") {
                     break
                     // Continuation / nested content — attach to last item
@@ -555,8 +555,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
 
                 if is_item {
-                    const item_text = it[2..].to_string()
-                    const item_inlines = try parse_inline(item_text)
+                    let item_text = it[2..].to_string()
+                    let item_inlines = try parse_inline(item_text)
                     items.push(ListItem {
                         content: item_inlines,
                         children: Vec.new(),
@@ -564,8 +564,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     i = i + 1
                 } else {
                     if !items.is_empty() {
-                        const nested_text = il.trim().to_string()
-                        const nested_inlines = try parse_inline(nested_text)
+                        let nested_text = il.trim().to_string()
+                        let nested_inlines = try parse_inline(nested_text)
                         with items[items.len() - 1] as last_item {
                             last_item.children.push(Block.Paragraph(nested_inlines))
                         }
@@ -581,8 +581,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         if ordered_list_start(trimmed)? as start_num {
             mut items = Vec.new()
             while i < line_count {
-                const il = lines[i]
-                const it = il.trim().to_string()
+                let il = lines[i]
+                let it = il.trim().to_string()
 
                 if is_blank_line(il) {
                     i = i + 1
@@ -591,9 +591,9 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
 
                 if ordered_list_start(it)? {
-                    const dot_pos = it.find(".") ?? continue
-                    const item_text = it[dot_pos + 2..].to_string()
-                    const item_inlines = try parse_inline(item_text)
+                    let dot_pos = it.find(".") ?? continue
+                    let item_text = it[dot_pos + 2..].to_string()
+                    let item_inlines = try parse_inline(item_text)
                     items.push(ListItem {
                         content: item_inlines,
                         children: Vec.new(),
@@ -601,7 +601,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     i = i + 1
                 } else if it.starts_with("  ") || it.starts_with("\t") {
                     if !items.is_empty() {
-                        const nested_inlines = try parse_inline(it.trim())
+                        let nested_inlines = try parse_inline(it.trim())
                         with items[items.len() - 1] as last_item {
                             last_item.children.push(Block.Paragraph(nested_inlines))
                         }
@@ -618,8 +618,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         // Paragraph: collect consecutive non-blank, non-special lines
         mut para_lines = Vec.new()
         while i < line_count {
-            const pl = lines[i]
-            const pt = pl.trim().to_string()
+            let pl = lines[i]
+            let pt = pl.trim().to_string()
             if is_blank_line(pl) {
                 break
             }
@@ -649,8 +649,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         }
 
         if !para_lines.is_empty() {
-            const para_text = join_lines(para_lines)
-            const inlines = try parse_inline(para_text)
+            let para_text = join_lines(para_lines)
+            let inlines = try parse_inline(para_text)
             blocks.push(Block.Paragraph(inlines))
         }
     }
@@ -713,7 +713,7 @@ extend Inline with Renderable {
                 builder.push_str("\">")
             }
             RefLink(id, children) => {
-                const url = refs.get(id) ?? ""
+                let url = refs.get(id) ?? ""
                 if !url.is_empty() {
                     builder.push_str("<a href=\"")
                     builder.push_str(html_escape(url))
@@ -794,8 +794,8 @@ extend Block with Renderable {
 // ─── Orchestrator ───────────────────────────────────────────────────
 
 func render_markdown(input: string) -> string or RenderError {
-    const refs = parse_references(input)
-    const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
+    let refs = parse_references(input)
+    let blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
     mut out = string.new()
     render_children(blocks, mutate out, refs)
@@ -803,7 +803,7 @@ func render_markdown(input: string) -> string or RenderError {
 }
 
 func render_full_page(input: string) -> string or RenderError {
-    const body = try render_markdown(input)
+    let body = try render_markdown(input)
 
     mut out = string.new()
     out.push_str("""
@@ -836,7 +836,7 @@ func print_usage() {
 }
 
 func main() {
-    const args = cli.args()
+    let args = cli.args()
     mut input_path = ""
     mut output_path = ""
     mut use_stdout = false
@@ -844,7 +844,7 @@ func main() {
     mut i = 1
 
     while i < args.len() {
-        const arg = args[i]
+        let arg = args[i]
         match arg {
             "--stdout" => use_stdout = true
             "--fragment" => fragment = true
@@ -876,21 +876,21 @@ func main() {
         std.exit(1)
     }
 
-    const read_result = fs.read_text(input_path)
-    const content = if read_result? {
+    let read_result = fs.read_text(input_path)
+    let content = if read_result? {
         read_result
     } else as e {
         println("Error: cannot read {input_path}: {e.message()}")
         std.exit(1)
     }
 
-    const result = if fragment {
+    let result = if fragment {
         render_markdown(content)
     } else {
         render_full_page(content)
     }
 
-    const html = if result? {
+    let html = if result? {
         result
     } else as e {
         println("Error: {e.message()}")
@@ -908,7 +908,7 @@ func main() {
             }
         }
 
-        const write_result = fs.write_text(output_path, html)
+        let write_result = fs.write_text(output_path, html)
         if write_result? {
             println("Written: {output_path}")
         } else as e {
@@ -929,10 +929,10 @@ test "html escaping" {
 }
 
 test "headings" {
-    const result = render_markdown("# Hello")!
+    let result = render_markdown("# Hello")!
     assert result.contains("<h1>Hello</h1>")
 
-    const result2 = render_markdown("""
+    let result2 = render_markdown("""
 ## Sub
 ### Third
 """)!
@@ -941,10 +941,10 @@ test "headings" {
 }
 
 test "paragraphs" {
-    const result = render_markdown("Hello world")!
+    let result = render_markdown("Hello world")!
     assert result.contains("<p>Hello world</p>")
 
-    const result2 = render_markdown("""
+    let result2 = render_markdown("""
 Line one
 Line two
 """)!
@@ -952,66 +952,66 @@ Line two
 }
 
 test "bold and italic" {
-    const result = render_markdown("**bold** and *italic*")!
+    let result = render_markdown("**bold** and *italic*")!
     assert result.contains("<strong>bold</strong>")
     assert result.contains("<em>italic</em>")
 }
 
 test "nested bold italic" {
-    const result = render_markdown("**bold *and italic***")!
+    let result = render_markdown("**bold *and italic***")!
     assert result.contains("<strong>bold <em>and italic</em></strong>")
 }
 
 test "inline code" {
-    const result = render_markdown("use `println` here")!
+    let result = render_markdown("use `println` here")!
     assert result.contains("<code>println</code>")
 }
 
 test "links" {
-    const result = render_markdown("[click](http://example.com)")!
+    let result = render_markdown("[click](http://example.com)")!
     assert result.contains("<a href=\"http://example.com\">click</a>")
 }
 
 test "images" {
-    const result = render_markdown("![alt text](img.png)")!
+    let result = render_markdown("![alt text](img.png)")!
     assert result.contains("<img src=\"img.png\" alt=\"alt text\">")
 }
 
 test "code blocks" {
-    const input = """
+    let input = """
 ```rust
 fn main() {}
 ```
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<pre><code class=\"language-rust\">")
     assert result.contains("fn main() {}")
 }
 
 test "code block no language" {
-    const input = """
+    let input = """
 ```
 plain code
 ```
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<pre><code>plain code</code></pre>")
 }
 
 test "blockquotes" {
-    const result = render_markdown("> quoted text")!
+    let result = render_markdown("> quoted text")!
     assert result.contains("<blockquote>")
     assert result.contains("<p>quoted text</p>")
     assert result.contains("</blockquote>")
 }
 
 test "unordered lists" {
-    const input = """
+    let input = """
 - one
 - two
 - three
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<ul>")
     assert result.contains("<li>one</li>")
     assert result.contains("<li>two</li>")
@@ -1020,12 +1020,12 @@ test "unordered lists" {
 }
 
 test "ordered lists" {
-    const input = """
+    let input = """
 1. first
 2. second
 3. third
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<ol>")
     assert result.contains("<li>first</li>")
     assert result.contains("<li>second</li>")
@@ -1039,23 +1039,23 @@ test "horizontal rules" {
 }
 
 test "reference links" {
-    const input = """
+    let input = """
 See [the site][ex] for details.
 
 [ex]: http://example.com
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<a href=\"http://example.com\">the site</a>")
 }
 
 test "escaped characters" {
-    const result = render_markdown("not \\*italic\\*")!
+    let result = render_markdown("not \\*italic\\*")!
     assert result.contains("not *italic*")
     assert !result.contains("<em>")
 }
 
 test "mixed content" {
-    const input = """
+    let input = """
 # Title
 
 A **bold** paragraph.
@@ -1067,7 +1067,7 @@ A **bold** paragraph.
 
 > quote
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("<h1>Title</h1>")
     assert result.contains("<strong>bold</strong>")
     assert result.contains("<ul>")
@@ -1076,27 +1076,27 @@ A **bold** paragraph.
 }
 
 test "html escape in code blocks" {
-    const input = """
+    let input = """
 ```
 <div class="x">&</div>
 ```
 """
-    const result = render_markdown(input)!
+    let result = render_markdown(input)!
     assert result.contains("&lt;div class=&quot;x&quot;&gt;&amp;&lt;/div&gt;")
 }
 
 test "link with formatted text" {
-    const result = render_markdown("[**bold link**](url)")!
+    let result = render_markdown("[**bold link**](url)")!
     assert result.contains("<a href=\"url\"><strong>bold link</strong></a>")
 }
 
 test "empty document" {
-    const result = render_markdown("")!
+    let result = render_markdown("")!
     assert result == ""
 }
 
 test "full page output" {
-    const result = render_full_page("# Hello")!
+    let result = render_full_page("# Hello")!
     assert result.contains("<!DOCTYPE html>")
     assert result.contains("<h1>Hello</h1>")
     assert result.contains("</body>")

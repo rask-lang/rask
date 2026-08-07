@@ -14,7 +14,7 @@ When a `.clone()` call is the last use of a value, the compiler replaces the clo
 Rask's "no storable references" design means more `.clone()` calls than Rust. With strings now Copy (immutable, refcounted), the remaining clones concentrate on collections (`Vec`, `Map`). But many clones are unnecessary:
 
 ```rask
-const items = config.items.clone()
+let items = config.items.clone()
 do_something(items)
 // config.items is never used again — the clone was pointless
 ```
@@ -38,7 +38,7 @@ The compiler can see that `config.items` has no subsequent uses. The clone alloc
 <!-- test: skip -->
 ```rask
 func process(config: Config) {
-    const items = config.items.clone()   // [clone elided → move]
+    let items = config.items.clone()   // [clone elided → move]
     send(items)
     // config.items never used again → clone becomes move
 }
@@ -49,7 +49,7 @@ func process(config: Config) {
 <!-- test: skip -->
 ```rask
 func example(data: Data) {
-    const copy = data.items.clone()
+    let copy = data.items.clone()
     if condition {
         use(copy)
         // data.items NOT used here
@@ -66,7 +66,7 @@ func example(data: Data) {
 <!-- test: skip -->
 ```rask
 func example(data: Data) {
-    const copy = data.items.clone()
+    let copy = data.items.clone()
     use(copy)
     log(data.items)   // data.items used again → clone NOT elided
 }
@@ -77,7 +77,7 @@ func example(data: Data) {
 <!-- test: skip -->
 ```rask
 func example(data: Data, flag: bool) {
-    const copy = data.items.clone()
+    let copy = data.items.clone()
     use(copy)
     if flag {
         log(data.items)   // used in this branch → clone NOT elided

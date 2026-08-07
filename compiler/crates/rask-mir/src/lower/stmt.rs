@@ -182,7 +182,7 @@ impl<'a> MirLowerer<'a> {
                 self.lower_binding(name, ty.as_deref(), init)
             }
 
-            StmtKind::Const { name, ty, init, .. } => {
+            StmtKind::Let { name, ty, init, .. } => {
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some(meta) = self.ctx.comptime_globals.get(name) {
                     if meta.type_prefix == "Vec" {
@@ -417,7 +417,7 @@ impl<'a> MirLowerer<'a> {
                             return Ok(());
                         }
                         // #411: `v[i].field = val` on a Vec. Reading `v[i]` copies
-                        // the element (value semantics for `const p = v[i]`), so a
+                        // the element (value semantics for `let p = v[i]`), so a
                         // store into that copy is lost. Do a read-modify-writeback:
                         // copy the element out, set the field, and `Vec_set` it back
                         // — the same path the `with vec[i] as item` binding uses.
@@ -563,7 +563,7 @@ impl<'a> MirLowerer<'a> {
 
             // Tuple destructuring
             StmtKind::MutTuple { patterns, init }
-            | StmtKind::ConstTuple { patterns, init } => {
+            | StmtKind::LetTuple { patterns, init } => {
                 // Flattening the pattern to a name list loses the shape: a
                 // nested `((a, b), c)` then read a, b and c off the *outer*
                 // tuple at flat positions 0, 1, 2, and a wildcard shifted
@@ -1007,7 +1007,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         // Track element type for Pool<T>.new() constructors:
-        // const pool = Pool<Node>.new() → collection_elem_types["pool"] = Struct(Node)
+        // let pool = Pool<Node>.new() → collection_elem_types["pool"] = Struct(Node)
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
                 let base_name = obj_name.split('<').next().unwrap_or(obj_name);
@@ -1046,7 +1046,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Aliasing a variable (`const players = __ctx_players`) carries its type
+        // Aliasing a variable (`let players = __ctx_players`) carries its type
         // metadata forward, so pool/collection indexing on the alias still
         // resolves. Used by the hidden-param pass's SIG2 named-context alias,
         // and correct for any `const b = a` where `a` is a tracked container.

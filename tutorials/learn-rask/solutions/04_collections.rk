@@ -36,7 +36,7 @@ func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
 func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
     mut counts = Map.new()
     for item in items {
-        const existing = counts.get(item)
+        let existing = counts.get(item)
         if existing? as c {
             counts.insert(item, c + 1)
         } else {
@@ -47,7 +47,7 @@ func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
 }
 
 test "particle masses" {
-    const masses = particle_masses()
+    let masses = particle_masses()
     assert masses.len() == 3
     assert masses[0] == 0.511
     assert masses[1] == 105.7

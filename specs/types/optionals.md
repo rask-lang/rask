@@ -1,6 +1,6 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on const. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
+<!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family operators (?, ?., ??, !, try, == none) apply to any two-variant union where one variant is none. No Some/None constructors. Narrowing rides on let. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
 <!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
@@ -20,8 +20,8 @@ Optionals aren't a separate kind of type. They're a particular union shape with 
 
 <!-- test: skip -->
 ```rask
-const user: User? = load()       // present value, widens to User or none
-const missing: User? = none      // absent sentinel
+let user: User? = load()       // present value, widens to User or none
+let missing: User? = none      // absent sentinel
 ```
 
 `T??` is `(T or none) or none`. It's legal and the two layers stay distinct — see [Nesting](#nesting) below.
@@ -62,7 +62,7 @@ cache = get_current_user()               // User widens at assignment
 
 <!-- test: skip -->
 ```rask
-const name = user?.display_name
+let name = user?.display_name
     ?? user?.email
     ?? "anon"
 ```
@@ -71,39 +71,39 @@ As soon as an RHS is bare `T`, the chain collapses to `T` and further `??` is a 
 
 ## Conditions and Narrowing
 
-Narrowing rides on `const` — the same rule for any union with a recognised predicate. See [error-types.md](error-types.md) for the shared semantics; the rules below apply identically to `T or none`.
+Narrowing rides on `let` — the same rule for any union with a recognised predicate. See [error-types.md](error-types.md) for the shared semantics; the rules below apply identically to `T or none`.
 
 | Rule | Description |
 |------|-------------|
-| **OPT18: `if x?` narrows** | On a const scrutinee, `if x?` narrows `x` to `T` inside the block |
-| **OPT19: `if x? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees, and for renaming |
-| **OPT20: Both branches narrow** | On a const scrutinee, the `else` branch narrows `x` to `none` |
+| **OPT18: `if x?` narrows** | On a let scrutinee, `if x?` narrows `x` to `T` inside the block |
+| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block; works for `mut` scrutinees, and for renaming |
+| **OPT20: Both branches narrow** | On a let scrutinee, the `else` branch narrows `x` to `none` |
 | **OPT21: Early-exit narrow** | If a branch of `if x == none { … }` diverges, `x` is `T` in the fall-through |
 | **OPT22: No compound narrowing** | `x? && y?` is a legal bool expression but does not narrow either side — use nested `if` or `as v` bind |
-| **OPT23: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `const` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
+| **OPT23: No field-path narrow through mut** | `player.weapon` narrows iff the full path is rooted in a `let` binding. With `mut` anywhere in the path, use `if player.weapon? as w` |
 
 <!-- test: skip -->
 ```rask
-const user: User? = load()
+let user: User? = load()
 if user? {
     greet(user)              // user: User here
 }
 
 mut cache: Cache? = try_load()
 if cache? as c {
-    c.sweep()                // c: Cache (const) in the block
+    c.sweep()                // c: Cache (let) in the block
     // cache still Cache? — may be reassigned below
 }
 
 // Early-exit guard
-const user: User? = load()
+let user: User? = load()
 if user == none {
     return
 }
 greet(user)                   // user: User after the guard
 ```
 
-**Anonymous expressions don't narrow.** `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `const v = compute()` then `if v?`, or `if compute()? as v` to bind at the check site.
+**Anonymous expressions don't narrow.** `if compute()? { use(compute()) }` calls `compute()` twice and does not narrow either call. Use `let v = compute()` then `if v?`, or `if compute()? as v` to bind at the check site.
 
 ## Nesting
 
@@ -113,8 +113,8 @@ This isn't a corner case you have to go looking for. Any generic that returns `T
 
 <!-- test: skip -->
 ```rask
-const slots: Vec<Config?> = load_slots()      // a slot may be empty
-const first = slots.first()                    // Config??
+let slots: Vec<Config?> = load_slots()      // a slot may be empty
+let first = slots.first()                    // Config??
 ```
 
 `Vec.first()` returns `T?` because the vec may be empty. With `T = Config?` the result carries both facts, and the caller can tell them apart:
@@ -143,12 +143,12 @@ Collapsing the layers would throw the distinction away — an empty vec and an e
 
 <!-- test: skip -->
 ```rask
-const outer_absent: Config?? = none            // vec was empty        [OPT29]
+let outer_absent: Config?? = none            // vec was empty        [OPT29]
 
-const empty_slot: Config? = none
-const inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
+let empty_slot: Config? = none
+let inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
 
-const present: Config?? = load_config()        // widens through both layers
+let present: Config?? = load_config()        // widens through both layers
 ```
 
 **Spelling.** Write `T??` for two layers. Rask reads `??` in type position as two optional markers — there's no coalescing operator inside a type, so nothing is ambiguous.
@@ -170,11 +170,11 @@ Four compiler-provided methods on `T or none`. Each preserves the wrapper for ch
 
 <!-- test: skip -->
 ```rask
-const valid_email = lookup_user(id)
+let valid_email = lookup_user(id)
     .filter(|u| u.is_active)
     .map(|u| u.email)
 
-const profile = load_user(id).and_then(|u| load_profile(u.id))
+let profile = load_user(id).and_then(|u| load_profile(u.id))
 ```
 
 ## Linear Resources
@@ -246,12 +246,12 @@ No optional-specific equality rule.
 | `Vec<T?>.first()` | OPT28 | `T??` — outer says "vec empty", inner says "slot empty" |
 | `?.` on `T or E or none` | OPT3 | Compile error suggesting layering: `(T or E)?` or `T or (E?)` |
 | `x` is `mut` in `if x?` | OPT18 | No narrow; use `if x? as v` |
-| Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `const v = compute()` or `if compute()? as v` |
+| Anonymous expression in condition | OPT18 | `if compute()?` does not narrow — no name to refine. Use `let v = compute()` or `if compute()? as v` |
 | `!x?` syntax | OPT16 | Parse error suggesting `x == none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |
 | `try x` outside a `T?`-returning function | OPT14 | Compile error — propagation target mismatch |
 | `match` on `T?` with two arms | OPT27 | Legal; style lint suggests operators |
-| `const x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
+| `let x = none` | OPT8 | Legal. `x: none`. Widens at later use site |
 | `none == none` | equality | `true`. Standard equality on a zero-field type |
 
 ## Error Messages
@@ -260,7 +260,7 @@ No optional-specific equality rule.
 ```
 ERROR [type.optionals/OPT3]: `?.` requires a two-variant union with `none`
    |
-5  |  const name = result?.display_name
+5  |  let name = result?.display_name
    |               ^^^^^^^ `result` is `User or DatabaseError or none` — three variants
 
 WHY: The `?`-family operators handle the absent-or-present case. For unions
@@ -270,7 +270,7 @@ FIX: Layer them — error on the inside, optionality on the outside:
 
   func find(id: UserId) -> (User or DatabaseError)? { ... }
 
-  const outer = find(id)
+  let outer = find(id)
   if outer? as r {
       match r {
           User       as u => use(u),
@@ -335,7 +335,7 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 **OPT29 (`none` binds outermost).** Both readings are defensible; picking one and stating it is what matters. Outermost wins because it matches how the layers get built: the outer layer is the one the immediate context added (`first()` may fail to find anything), so `none` at that position means "the thing right here is absent". Reaching an inner absent means you already have an inner-typed value in hand, and widening it is explicit.
 
-**Narrowing rides on `const`.** The usual flow-typing complications (mutation, intervening calls, closure capture, field paths) collapse into one structural fact the language already enforces: const bindings cannot be reassigned. Narrowing on a const scrutinee is trivially stable; `mut` requires an explicit `as v` bind. No flow analysis beyond "is this const?"
+**Narrowing rides on `let`.** The usual flow-typing complications (mutation, intervening calls, closure capture, field paths) collapse into one structural fact the language already enforces: let bindings cannot be reassigned. Narrowing on a let scrutinee is trivially stable; `mut` requires an explicit `as v` bind. No flow analysis beyond "is this let?"
 
 ### Patterns & Guidance
 
@@ -343,7 +343,7 @@ The reason nesting works here and not for `T or E` is that branch selection stay
 
 <!-- test: skip -->
 ```rask
-const theme = config.theme ?? "default"
+let theme = config.theme ?? "default"
 ```
 
 **Guard-style early exit.** Common for top-of-function absent checks:
@@ -356,7 +356,7 @@ func greet(user: User?) -> string {
 }
 ```
 
-**Mutation inside a narrow.** `mut` needs explicit bind; the const `v` inside the block is safely narrowed:
+**Mutation inside a narrow.** `mut` needs explicit bind; the let `v` inside the block is safely narrowed:
 
 <!-- test: skip -->
 ```rask

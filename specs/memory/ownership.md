@@ -21,11 +21,11 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 
 <!-- test: parse -->
 ```rask
-const a = Vec.new()
-const b = a              // a moved to b
+let a = Vec.new()
+let b = a              // a moved to b
 a.push(1)              // ERROR: a is invalid after move
 
-const c = b.clone()      // Explicit clone - visible allocation
+let c = b.clone()      // Explicit clone - visible allocation
 c.push(1)              // OK: c is independent copy
 b.push(2)              // OK: b still valid
 ```
@@ -45,12 +45,12 @@ Rule T2.1 clarification: `Shared<T>` and `Mutex<T>` don't violate T2 because the
 
 <!-- test: skip -->
 ```rask
-const data = load_data()
+let data = load_data()
 channel.send(data)        // Ownership transferred
 data.process()            // ERROR: data was sent
 
 // Receiving:
-const received = channel.receive()   // Ownership acquired
+let received = channel.receive()   // Ownership acquired
 received.process()              // OK: we own it now
 ```
 
@@ -66,14 +66,14 @@ received.process()              // OK: we own it now
 
 <!-- test: skip -->
 ```rask
-const data = load_data()
+let data = load_data()
 process(data.clone())
 discard data   // Explicit: data freed here, not at end of scope
 ```
 
 | Scenario | Example |
 |----------|---------|
-| Resource not needed | `const _ = acquire(); discard _` — prefer `ensure` instead |
+| Resource not needed | `let _ = acquire(); discard _` — prefer `ensure` instead |
 | Clarity in long functions | Drop early to signal intent |
 | Consuming move-only types | When no consuming function exists |
 

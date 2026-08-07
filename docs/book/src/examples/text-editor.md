@@ -35,14 +35,14 @@ struct Editor {
 func undo(editor: Editor) {
     if editor.position > 0 {
         editor.position -= 1
-        const cmd = editor.history[editor.position]
+        let cmd = editor.history[editor.position]
         reverse_command(editor, cmd)
     }
 }
 
 func redo(editor: Editor) {
     if editor.position < editor.history.len() {
-        const cmd = editor.history[editor.position]
+        let cmd = editor.history[editor.position]
         apply_command(editor, cmd)
         editor.position += 1
     }
@@ -53,17 +53,17 @@ func redo(editor: Editor) {
 
 ```rask
 func save(editor: Editor, path: string) -> () or IoError {
-    const file = try fs.create(path)
+    let file = try fs.create(path)
     ensure file.close()
 
     try file.write(editor.content)
 }
 
 func load(path: string) -> Editor or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()
 
-    const content = try file.read_to_string()
+    let content = try file.read_to_string()
     return Editor { content, history: Vec.new(), position: 0 }
 }
 ```

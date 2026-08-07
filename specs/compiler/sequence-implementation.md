@@ -52,7 +52,7 @@ Each stage is independently shippable and testable.
   ```
 - **File**: `compiler/crates/rask-stdlib/src/stubs.rs` — forwards `DeclKind::TypeAlias` from stdlib stubs (previously filtered out)
 - **Known gap**: `SequenceMut<T>` is commented out. The type-parser path for function types (`parse_fn_type`) doesn't accept named parameters (`yield: |T|`) or `mutate` in closure-type parameter position. Stage 3 or a separate small stage should extend `compiler/crates/rask-types/src/checker/parse_type.rs` (`parse_fn_type` around line 247) to accept both, then restore the `SequenceMut` and named-`yield` forms.
-- **Follow-up**: verify the alias resolves at use sites. `const s: Sequence<i32> = |x| { x > 0 }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-types/src/checker/declarations.rs`.
+- **Follow-up**: verify the alias resolves at use sites. `let s: Sequence<i32> = |x| { x > 0 }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-types/src/checker/declarations.rs`.
 
 ### Stage 3 — MIR: for-loop lowering over `Sequence<T>`
 
@@ -118,7 +118,7 @@ Each stage is independently shippable and testable.
       public func stream(take self) -> Sequence<T> {
           return |yield| {
               loop {
-                  const r = self.receive()
+                  let r = self.receive()
                   if r? as msg { if not yield(msg): break } else { break }
               }
           }

@@ -15,7 +15,7 @@ func bad_heal(p: Player) {
 // --- taking a borrowed parameter (PM3) ---
 // ERROR: cannot take ownership of borrowed parameter
 func bad_store(p: Player) {
-    const stored = p     // ERROR: p is borrowed, cannot move out
+    let stored = p     // ERROR: p is borrowed, cannot move out
 }
 
 // --- moving fields from borrowed self ---
@@ -31,8 +31,8 @@ extend Named {
 // --- storing a string slice (B3) ---
 // ERROR: cannot store block-scoped borrow
 func test_store_slice() -> string {
-    const s = "hello world"
-    const slice = s[0..5]
+    let s = "hello world"
+    let slice = s[0..5]
     return slice             // ERROR: slice is block-scoped, cannot return
 }
 
@@ -41,7 +41,7 @@ func test_store_slice() -> string {
 struct Holder { data: Vec<i32> }
 
 func test_borrow_escape() {
-    const h = Holder { data: Vec.new() }
+    let h = Holder { data: Vec.new() }
     mut escaped = h.data     // ERROR: h.data is a block-scoped borrow (non-Copy)
     // escaped would outlive h
 }
@@ -49,7 +49,7 @@ func test_borrow_escape() {
 // --- structural mutation inside with (W2) ---
 // ERROR: cannot structurally mutate collection inside 'with' block
 func test_push_in_with() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     v.push(1)
     v.push(2)
     with v[0] as item {
@@ -59,7 +59,7 @@ func test_push_in_with() {
 
 // ERROR: cannot remove from collection inside 'with' block
 func test_remove_in_with() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     v.push(1)
     v.push(2)
     with v[0] as item {
@@ -90,15 +90,15 @@ func test_overlapping_borrow() {
 struct BigThing { data: Vec<i32> }
 
 func test_copy_out_non_copy() {
-    const items = Vec<BigThing>.new()
+    let items = Vec<BigThing>.new()
     items.push(BigThing { data: Vec.new() })
-    const x = items[0]      // ERROR: BigThing is not Copy, use with or .get_clone()
+    let x = items[0]      // ERROR: BigThing is not Copy, use with or .get_clone()
 }
 
 // --- return from ensure (CF27 edge case) ---
 // ERROR: cannot return from ensure block
 func test_return_in_ensure() {
-    const v = Vec<i32>.new()
+    let v = Vec<i32>.new()
     ensure v.clear()
     return                   // This is fine — ensure runs on return
 }

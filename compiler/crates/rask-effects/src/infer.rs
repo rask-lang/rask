@@ -237,10 +237,10 @@ fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<St
 fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::Expr(e) => classify_expr(e, effects, callees),
-        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
             classify_expr(init, effects, callees);
         }
-        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             classify_expr(init, effects, callees);
         }
         StmtKind::Assign { target, value } => {
@@ -491,8 +491,8 @@ fn rt_scan_stmts(stmts: &[Stmt], depth: u32, unguarded: &mut HashSet<String>) ->
 fn rt_scan_stmt(stmt: &Stmt, depth: u32, unguarded: &mut HashSet<String>) -> bool {
     match &stmt.kind {
         StmtKind::Expr(e) => rt_scan_expr(e, depth, unguarded),
-        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => rt_scan_expr(init, depth, unguarded),
-        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => rt_scan_expr(init, depth, unguarded),
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, depth, unguarded),
+        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => rt_scan_expr(init, depth, unguarded),
         StmtKind::Assign { target, value } => {
             rt_scan_expr(target, depth, unguarded) | rt_scan_expr(value, depth, unguarded)
         }

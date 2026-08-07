@@ -28,7 +28,7 @@ won't allow, read the error, and understand why. Those are the most important on
 
 | Python | Rask | What changed |
 |--------|------|-------|
-| `x = 42` | `const x = 42` | Immutable by default |
+| `x = 42` | `let x = 42` | Immutable by default |
 | `x = 0; x = 1` | `mut x = 0; x = 1` | `mut` = rebindable |
 | `def f(a, b):` | `func f(a: i32, b: i32) -> i32 {` | You declare types |
 | `return x` | `return x` | Same, but always required |

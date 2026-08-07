@@ -13,7 +13,7 @@ extern "C" func free(ptr: *u8)
 
 // Wrapper for C strlen — expression form for single operations
 func c_string_length(s: string) -> i32 {
-    const ptr = s.as_ptr()
+    let ptr = s.as_ptr()
     return unsafe strlen(ptr)
 }
 
@@ -21,8 +21,8 @@ func c_string_length(s: string) -> i32 {
 // Parameters are read-only by default in Rask
 func copy_bytes(src: Vec<u8>, dest: Vec<u8>, count: i32) {
     unsafe {
-        const src_ptr = src.as_ptr()
-        const dest_ptr = dest.as_mut_ptr()
+        let src_ptr = src.as_ptr()
+        let dest_ptr = dest.as_mut_ptr()
         memcpy(dest_ptr, src_ptr, count)
     }
 }
@@ -33,7 +33,7 @@ func manual_allocation_example() {
 
     unsafe {
         // Allocate 16 bytes
-        const ptr = malloc(16)
+        let ptr = malloc(16)
 
         if ptr == null {
             print("Allocation failed\n")
@@ -46,15 +46,15 @@ func manual_allocation_example() {
 
         // Write some data
         for i in 0..16 {
-            const offset_ptr = ptr.offset(i)
+            let offset_ptr = ptr.offset(i)
             *offset_ptr = i as u8
         }
 
         // Read it back
         print("Data: ")
         for i in 0..16 {
-            const offset_ptr = ptr.offset(i)
-            const value = *offset_ptr
+            let offset_ptr = ptr.offset(i)
+            let value = *offset_ptr
             print(value)
             print(" ")
         }
@@ -73,8 +73,8 @@ func main() {
     // Call C function through safe wrapper
     print("=== C FFI Example ===\n")
 
-    const test_str = "Hello, C!"
-    const len = c_string_length(test_str)
+    let test_str = "Hello, C!"
+    let len = c_string_length(test_str)
 
     print("String: ")
     print(test_str)
@@ -93,27 +93,27 @@ func main() {
 
     print("\n=== Raw Pointers ===\n")
 
-    const numbers = Vec.from([10, 20, 30, 40, 50])
+    let numbers = Vec.from([10, 20, 30, 40, 50])
 
     unsafe {
-        const ptr = numbers.as_ptr()
+        let ptr = numbers.as_ptr()
 
         print("First element via pointer: ")
-        const first = *ptr
+        let first = *ptr
         print(first)
         print("\n")
 
         print("Second element via offset: ")
-        const second_ptr = ptr.offset(1)
-        const second = *second_ptr
+        let second_ptr = ptr.offset(1)
+        let second = *second_ptr
         print(second)
         print("\n")
     }
 
     // Expression form — no braces needed for single operations
     print("\n=== Expression-Form Unsafe ===\n")
-    const nums = Vec.from([42])
-    const value = unsafe *nums.as_ptr()
+    let nums = Vec.from([42])
+    let value = unsafe *nums.as_ptr()
     print("Read via expression-form unsafe: ")
     print(value)
     print("\n")

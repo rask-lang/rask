@@ -33,7 +33,7 @@ test "optional call-argument widening then predicate" {
 
 // --- native: bind the T of a result with if r? as v (ER19/ER20) ---
 test "if r? as v binds the result success value" {
-    const r = ok_value()
+    let r = ok_value()
     mut got = 0
     if r? as v { got = v }
     assert got == 42
@@ -41,7 +41,7 @@ test "if r? as v binds the result success value" {
 
 func present_bare(x: i64?) -> bool { return x? }
 func present_bare_absent() -> bool {
-    const x: i64? = none
+    let x: i64? = none
     return x?
 }
 

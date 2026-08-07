@@ -5,15 +5,15 @@
 // --- Copy types: primitives always copy (VS2) ---
 
 test "i32 copies on assignment" {
-    const a = 42
-    const b = a
+    let a = 42
+    let b = a
     assert a == 42
     assert b == 42
 }
 
 test "bool copies on assignment" {
-    const a = true
-    const b = a
+    let a = true
+    let b = a
     assert a == true
     assert b == true
 }
@@ -23,15 +23,15 @@ test "bool copies on assignment" {
 // --- Strings are Copy (refcounted, immutable) (VS3) ---
 
 test "string copies on assignment" {
-    const s1 = "hello"
-    const s2 = s1
+    let s1 = "hello"
+    let s2 = s1
     assert s1 == "hello"
     assert s2 == "hello"
 }
 
 test "string survives function pass" {
-    const s = "test"
-    const upper = identity_string(s)
+    let s = "test"
+    let upper = identity_string(s)
     assert s == "test"
     assert upper == "test"
 }
@@ -44,8 +44,8 @@ struct Point {
 }
 
 test "small struct copies on assignment" {
-    const p1 = Point { x: 10, y: 20 }
-    const p2 = p1
+    let p1 = Point { x: 10, y: 20 }
+    let p2 = p1
     assert p1.x == 10
     assert p1.y == 20
     assert p2.x == 10
@@ -53,8 +53,8 @@ test "small struct copies on assignment" {
 }
 
 test "small struct survives function pass" {
-    const p = Point { x: 5, y: 7 }
-    const sum = point_sum(p)
+    let p = Point { x: 5, y: 7 }
+    let sum = point_sum(p)
     assert p.x == 5
     assert sum == 12
 }
@@ -84,7 +84,7 @@ test "vec clone is independent" {
 // --- Copy semantics across control flow ---
 
 test "copy survives if/else branches" {
-    const x = 42
+    let x = 42
     mut result = 0
     if true {
         result = x
@@ -94,7 +94,7 @@ test "copy survives if/else branches" {
 }
 
 test "copy in loop iterations" {
-    const base = 10
+    let base = 10
     mut sum = 0
     for i in 0..5 {
         sum = sum + base

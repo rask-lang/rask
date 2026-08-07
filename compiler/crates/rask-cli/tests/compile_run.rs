@@ -971,8 +971,8 @@ fn error_wrong_arg_count() {
 }
 
 #[test]
-fn error_const_reassign() {
-    assert!(compile_error("const_reassign.rk"), "should reject const reassignment");
+fn error_let_reassign() {
+    assert!(compile_error("let_reassign.rk"), "should reject let reassignment");
 }
 
 #[test]
@@ -1115,7 +1115,7 @@ fn error_branch_merge_fixture() {
 #[test]
 fn error_move_in_one_branch() {
     let output = check_output(
-        "func main() {\n    const v = Vec<i32>.new()\n    if true {\n        const moved = v\n    } else {\n        const x = 1\n    }\n    v.len()\n}"
+        "func main() {\n    let v = Vec<i32>.new()\n    if true {\n        let moved = v\n    } else {\n        let x = 1\n    }\n    v.len()\n}"
     );
     assert!(output.contains("E0813"),
         "move in one if/else branch then use should be E0813 (O3): {}", output);
@@ -1125,7 +1125,7 @@ fn error_move_in_one_branch() {
 fn error_move_in_if_without_else() {
     // #294: the implicit empty else must merge like a real branch.
     let output = check_output(
-        "func main() {\n    const v = Vec<i32>.new()\n    if true {\n        const moved = v\n    }\n    v.len()\n}"
+        "func main() {\n    let v = Vec<i32>.new()\n    if true {\n        let moved = v\n    }\n    v.len()\n}"
     );
     assert!(output.contains("E0813"),
         "move in an if-without-else then use should be E0813 (O3): {}", output);
@@ -1134,7 +1134,7 @@ fn error_move_in_if_without_else() {
 #[test]
 fn error_linear_consumed_one_branch_ifelse() {
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    const c = Conn { fd: 3 }\n    if true {\n        c.close()\n    } else {\n        const x = 1\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    } else {\n        let x = 1\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in only one if/else branch should be E0805 (L1): {}", output);
@@ -1145,7 +1145,7 @@ fn error_linear_consumed_if_without_else() {
     // #294: consuming a linear resource in an if-without-else leaks on the
     // false path.
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    const c = Conn { fd: 3 }\n    if true {\n        c.close()\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in an if-without-else should be E0805 (L1): {}", output);
@@ -1154,7 +1154,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_move_in_loop_body() {
     let output = check_output(
-        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    const v = Vec<i32>.new()\n    loop {\n        take_vec(own v)\n    }\n}"
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    loop {\n        take_vec(own v)\n    }\n}"
     );
     assert!(output.contains("E0813"),
         "moving a value inside a loop body is a next-iteration use-after-move (O3): {}", output);
@@ -1163,14 +1163,14 @@ fn error_move_in_loop_body() {
 #[test]
 fn ok_move_in_both_branches() {
     assert!(check_succeeds(
-        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    const v = Vec<i32>.new()\n    if true {\n        take_vec(own v)\n    } else {\n        take_vec(own v)\n    }\n}"
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    if true {\n        take_vec(own v)\n    } else {\n        take_vec(own v)\n    }\n}"
     ), "moving on both branches is a definite move — should type-check");
 }
 
 #[test]
 fn ok_conditional_move_then_reassign() {
     assert!(check_succeeds(
-        "func main() {\n    mut v = Vec<i32>.new()\n    if true {\n        const moved = v\n    }\n    v = Vec<i32>.new()\n    v.push(1)\n}"
+        "func main() {\n    mut v = Vec<i32>.new()\n    if true {\n        let moved = v\n    }\n    v = Vec<i32>.new()\n    v.push(1)\n}"
     ), "reassigning after a conditional move should type-check");
 }
 
@@ -1198,7 +1198,7 @@ fn check_output(source: &str) -> String {
 
 #[test]
 fn error_message_includes_line_number() {
-    let output = check_output("func main() {\n    const x: i32 = \"hello\"\n}");
+    let output = check_output("func main() {\n    let x: i32 = \"hello\"\n}");
     assert!(output.contains("E0308"), "should include error code");
     assert!(output.contains(":2:"), "should include line number");
 }
@@ -1218,7 +1218,7 @@ fn error_message_shows_undefined_symbol() {
 
 #[test]
 fn error_message_includes_fix_hint() {
-    let output = check_output("func main() {\n    const x: i32 = \"hello\"\n}");
+    let output = check_output("func main() {\n    let x: i32 = \"hello\"\n}");
     assert!(output.contains("fix:"), "should include fix suggestion: {}", output);
 }
 
@@ -1228,7 +1228,7 @@ fn error_message_includes_fix_hint() {
 fn fmt_normalizes_spacing() {
     let rask = rask_binary();
     let tmp = std::env::temp_dir().join(format!("rask_fmttest_{}.rk", std::process::id()));
-    std::fs::write(&tmp, "func    main(   ) {\nconst x=42\n}").unwrap();
+    std::fs::write(&tmp, "func    main(   ) {\nlet x=42\n}").unwrap();
 
     let _ = Command::new(&rask)
         .arg("fmt")
@@ -1241,7 +1241,7 @@ fn fmt_normalizes_spacing() {
     let _ = std::fs::remove_file(&tmp);
 
     assert!(formatted.contains("func main()"), "should normalize func spacing: {}", formatted);
-    assert!(formatted.contains("const x = 42"), "should add spaces: {}", formatted);
+    assert!(formatted.contains("let x = 42"), "should add spaces: {}", formatted);
 }
 
 // ─── rask lint integration ──────────────────────────────────
@@ -1363,7 +1363,7 @@ fn discover_vec_pop() {
 #[test]
 fn discover_string_len_contains() {
     assert!(check_succeeds(
-        "func main() {\n    const s = \"hello\"\n    println(s.len().to_string())\n    s.contains(\"ell\")\n}"
+        "func main() {\n    let s = \"hello\"\n    println(s.len().to_string())\n    s.contains(\"ell\")\n}"
     ), "string.len/contains should pass type check");
 }
 
@@ -1371,7 +1371,7 @@ fn discover_string_len_contains() {
 fn discover_string_trim() {
     // string.trim() returns a slice — can't store it (S2), but can use inline
     assert!(check_succeeds(
-        "func main() {\n    const s = \"  hello  \"\n    println(s.trim())\n}"
+        "func main() {\n    let s = \"  hello  \"\n    println(s.trim())\n}"
     ), "string.trim should pass type check");
 }
 
@@ -1399,7 +1399,7 @@ fn discover_println_print() {
 #[test]
 fn discover_to_string() {
     assert!(check_succeeds(
-        "func main() {\n    const s = 42.to_string()\n    println(s)\n}"
+        "func main() {\n    let s = 42.to_string()\n    println(s)\n}"
     ), "i32.to_string should pass type check");
 }
 
@@ -1949,7 +1949,7 @@ fn test_dir_runs_files_independently() {
     std::fs::write(dir.join("a.rk"), r#"
 struct Point { x: i32, y: i32 }
 test "a uses its own Point" {
-    const p = Point { x: 1, y: 2 }
+    let p = Point { x: 1, y: 2 }
     assert p.x == 1
 }
 "#).unwrap();
@@ -1957,7 +1957,7 @@ test "a uses its own Point" {
     std::fs::write(dir.join("b.rk"), r#"
 struct Point { x: i32, y: i32, z: i32 }
 test "b uses its own Point" {
-    const p = Point { x: 1, y: 2, z: 3 }
+    let p = Point { x: 1, y: 2, z: 3 }
     assert p.z == 3
 }
 "#).unwrap();
@@ -2023,18 +2023,18 @@ func scaled(n: i32, by: i32 = 3) -> i32 {
 }
 
 func main() {
-    const c = Config {}
+    let c = Config {}
     println("{c.port}")
 }
 
 test "all fields defaulted" {
-    const c = Config {}
+    let c = Config {}
     assert c.port == 8080
     assert c.host == "localhost"
 }
 
 test "explicit value wins over the default" {
-    const c = Config { port: 9090 }
+    let c = Config { port: 9090 }
     assert c.port == 9090
     assert c.host == "localhost"
 }
@@ -2116,7 +2116,7 @@ fn assert_eq_failure_reports_got_and_expected() {
 func main() { println("x") }
 
 test "strings differ" {
-    const a = "hei"
+    let a = "hei"
     assert_eq(a, "hallo")
 }
 "#).unwrap();
@@ -2136,7 +2136,7 @@ test "strings differ" {
 //
 // A module-level `const` without a type annotation was typed in the same pass
 // as function bodies, so a body in an earlier-sorting file was checked while the
-// const was still an inference variable. `store.lock()` then had no receiver
+// let was still an inference variable. `store.lock()` then had no receiver
 // type to dispatch on, and the type of whatever the guard's method returned was
 // lost: reading a newtype's `.value` segfaulted (#566) and inspecting the error
 // side of a `T or E` trapped (#569). Both need the const's file to sort *after*
@@ -2193,12 +2193,12 @@ type UserId = u64 with (Equal, Hashable, Comparable, Debug)
         // `main.rk` sorts before `store.rk`, so the body is reached first.
         ("main.rk", r#"
 func run() -> string or StoreError {
-    const id = try store.lock().make()
+    let id = try store.lock().make()
     return "value={id.value}"
 }
 
 func main() {
-    const s = try run() else |_e| { println("recovered"); return }
+    let s = try run() else |_e| { println("recovered"); return }
     println(s)
 }
 "#),
@@ -2256,13 +2256,13 @@ func store_code(e: StoreError) -> string {
 struct View { public id: u64 }
 
 func handle(id: u64) -> View or ApiError {
-    const v = try store.lock().view(id)
+    let v = try store.lock().view(id)
     return v
 }
 
 func main() {
     // Error side: a deep read of the wrapped payload used to trap.
-    const bad = try handle(999) else |e| {
+    let bad = try handle(999) else |e| {
         println("code={code(e)}")
         println("message={e.message()}")
         ok_side()
@@ -2272,7 +2272,7 @@ func main() {
 }
 
 func ok_side() {
-    const v = try handle(3) else |_e| { println("unexpected error"); return }
+    let v = try handle(3) else |_e| { println("unexpected error"); return }
     println("ok={v.id}")
 }
 "#),
@@ -2341,10 +2341,10 @@ import time
 import json
 
 func main() {
-    const r = http.Response.ok("body")
+    let r = http.Response.ok("body")
     println("status={r.status}")
 
-    const d = time.Duration.from_millis(5)
+    let d = time.Duration.from_millis(5)
     println("ms={d.as_millis()}")
 
     println("json={json.encode(true)}")
@@ -2367,8 +2367,8 @@ fn interp_qualified_and_bare_module_types_agree() {
 import http
 
 func main() {
-    const viaModule = http.Response.ok("x")
-    const viaBare = Response.ok("x")
+    let viaModule = http.Response.ok("x")
+    let viaBare = Response.ok("x")
     println("same={viaModule.status == viaBare.status}")
 }
 "#);
@@ -2383,7 +2383,7 @@ fn interp_single_member_import_covers_every_exported_type() {
 import http.Response
 
 func main() {
-    const r = Response.ok("x")
+    let r = Response.ok("x")
     println("status={r.status}")
 }
 "#);

@@ -12,7 +12,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 
 | Operation | Small types (≤16 bytes, Copy) | Large types |
 |-----------|-------------------------------|-------------|
-| Assignment `const y = x` | Copies | Moves (x invalid after) |
+| Assignment `let y = x` | Copies | Moves (x invalid after) |
 | Parameter passing | Copies | Borrows by default, moves with `take` |
 | Return | Copies | Moves |
 
@@ -70,10 +70,10 @@ enum Token {
 @unique
 struct UserId { id: u64 }
 
-const user1 = UserId{id: 42}
-const user2 = user1              // Moves, user1 invalid
-const user3 = user2.clone()      // OK: explicit clone
-const user4 = user3              // Moves, user3 invalid
+let user1 = UserId{id: 42}
+let user2 = user1              // Moves, user1 invalid
+let user3 = user2.clone()      // OK: explicit clone
+let user4 = user3              // Moves, user3 invalid
 ```
 
 | Use Case | Rationale |
@@ -156,14 +156,14 @@ struct Pair<T> {
 }
 
 // Pair<T> is Copy if T is Copy and Pair<T> ≤16 bytes
-const p1 = Pair{first: 1, second: 2}      // Pair<i32> is Copy (8 bytes)
-const p2 = p1                              // Implicit copy
+let p1 = Pair{first: 1, second: 2}      // Pair<i32> is Copy (8 bytes)
+let p2 = p1                              // Implicit copy
 
-const p3 = Pair{first: 1i64, second: 2i64} // Pair<i64> is Copy (16 bytes)
-const p4 = p3                              // Implicit copy
+let p3 = Pair{first: 1i64, second: 2i64} // Pair<i64> is Copy (16 bytes)
+let p4 = p3                              // Implicit copy
 
-const p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
-const p6 = p5                              // ERROR: move, not copy
+let p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
+let p6 = p5                              // ERROR: move, not copy
 ```
 
 ## Error Messages
@@ -173,7 +173,7 @@ Move errors name *why* the type moves — the checker tracks the reason (size ov
 ```
 ERROR [E0800]: use of moved value: `x`
    |
- 9 |     const y = x
+ 9 |     let y = x
    |     ----------- value moved here
 10 |     println("{x.a}")
    |               ^ value used here after move
@@ -221,7 +221,7 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 
 ### Rationale
 
-**VS1–VS5 (implicit copy):** Without implicit copy, even `const y = x` for integers would invalidate `x`. The 16-byte threshold covers common types while keeping large copies visible. Everything moves or requires `.clone()` above that line — Rask never silently copies anything with meaningful cost.
+**VS1–VS5 (implicit copy):** Without implicit copy, even `let y = x` for integers would invalidate `x`. The 16-byte threshold covers common types while keeping large copies visible. Everything moves or requires `.clone()` above that line — Rask never silently copies anything with meaningful cost.
 
 **VS6 (fixed threshold):** The threshold is a design judgment, not a hardware law. Below 16 bytes, copies are cheap enough that making them visible would add noise. Above it, copies involve real memory traffic, so you must be explicit. Configurable thresholds would mean the same source code has different semantics per build, violating local analysis.
 

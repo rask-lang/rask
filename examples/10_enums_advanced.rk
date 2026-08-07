@@ -70,7 +70,7 @@ func handle_message(msg: Message) {
 
 func main() {
     // Create different message variants
-    const messages = Vec.from([
+    let messages = Vec.from([
         Message.Text("Hello, Rask!"),
         Message.Move { x: 10, y: 20 },
         Message.Color { r: 255, g: 128, b: 0 },
@@ -85,9 +85,9 @@ func main() {
     print("\n")
 
     // Create different shapes
-    const circle = Shape.Circle { radius: 5.0 }
-    const rectangle = Shape.Rectangle { width: 4.0, height: 6.0 }
-    const triangle = Shape.Triangle { base: 3.0, height: 4.0 }
+    let circle = Shape.Circle { radius: 5.0 }
+    let rectangle = Shape.Rectangle { width: 4.0, height: 6.0 }
+    let triangle = Shape.Triangle { base: 3.0, height: 4.0 }
 
     // Calculate and display areas
     print("Shape areas:\n")
@@ -108,7 +108,7 @@ func main() {
     print("\n\n")
 
     // Pattern matching to extract values
-    const my_shape = Shape.Rectangle { width: 10.0, height: 5.0 }
+    let my_shape = Shape.Rectangle { width: 10.0, height: 5.0 }
 
     match my_shape {
         Shape.Circle { radius } => {

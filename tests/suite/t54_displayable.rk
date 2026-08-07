@@ -25,30 +25,30 @@ extend AppError {
 }
 
 test "std.fmt/D3 — a struct that opts in renders through its own to_string" {
-    const p = Point { x: 1, y: 2 }
+    let p = Point { x: 1, y: 2 }
     assert "{p}" == "(1, 2)"
     assert format("{}", p) == "(1, 2)"
     assert p.to_string() == "(1, 2)"
 }
 
 test "std.fmt/D5 — an error type renders through message()" {
-    const timeout = AppError.Timeout
+    let timeout = AppError.Timeout
     assert "{timeout}" == "timed out"
-    const missing = AppError.NotFound(path: "/etc/hosts")
+    let missing = AppError.NotFound(path: "/etc/hosts")
     assert "{missing}" == "not found: /etc/hosts"
 }
 
 test "std.fmt/S2 — a spec applies to an opted-in type too" {
-    const p = Point { x: 1, y: 2 }
+    let p = Point { x: 1, y: 2 }
     assert "{p:>10}|" == "    (1, 2)|"
     assert "{p:<10}|" == "(1, 2)    |"
-    const timeout = AppError.Timeout
+    let timeout = AppError.Timeout
     assert format("{:>12}", timeout) == "   timed out"
 }
 
 test "std.fmt/D4 — an optional renders once its missing case is supplied" {
-    const some: i64? = 5
+    let some: i64? = 5
     assert "{some ?? 0}" == "5"
-    const nothing: i64? = none
+    let nothing: i64? = none
     assert "{nothing ?? 0}" == "0"
 }

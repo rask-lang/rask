@@ -38,16 +38,16 @@ The whole design rests on one split: building the plan is free and can't fail; r
 ```rask
 // A library function takes the device; it doesn't open one (placement is the app's call)
 func normalize(data: []f32, dev: Device) -> Vec[f32] or GpuError {
-    const xs    = data.to(dev)            // upload → resident on dev  (explicit transfer)
-    const total = xs.sum()                // stage a reduce  (pending f32, not run)
-    const ys    = xs.map(|x| x / total)   // stage a map     (Wide[f32], not run)
-    const h     = ys.submit()             // START here — enqueue on dev's queue, async handle
+    let xs    = data.to(dev)            // upload → resident on dev  (explicit transfer)
+    let total = xs.sum()                // stage a reduce  (pending f32, not run)
+    let ys    = xs.map(|x| x / total)   // stage a map     (Wide[f32], not run)
+    let h     = ys.submit()             // START here — enqueue on dev's queue, async handle
     return try h.await()                  // WAIT here — block on completion, copy home
 }
 
 // The app holds the device resource and picks placement
 with Device.gpu(0) as dev {
-    const out = try normalize(pixels, dev)
+    let out = try normalize(pixels, dev)
 }
 ```
 
@@ -96,16 +96,16 @@ Cost is visible through *which operator you reached for*. `map` is uniform and c
 <!-- test: skip -->
 ```rask
 with Device.gpu(0) as dev {
-    const xs = data.to(dev); const ys = other.to(dev)   // resident on dev
+    let xs = data.to(dev); let ys = other.to(dev)   // resident on dev
 
     // dot product — two primitives, fused, one submit; .read() = submit().await()
-    const dot = try xs.zip_with(ys, |a, b| a * b).sum().read()
+    let dot = try xs.zip_with(ys, |a, b| a * b).sum().read()
 
     // histogram — scatter with an explicit conflict rule (lanes colliding on a bin add)
-    const hist = try keys.to(dev).scatter_with(bins.to(dev), |old, _| old + 1).read()
+    let hist = try keys.to(dev).scatter_with(bins.to(dev), |old, _| old + 1).read()
 
     // running total — a scan
-    const totals = try amounts.to(dev).scan(+, 0.0).read()
+    let totals = try amounts.to(dev).scan(+, 0.0).read()
 }
 ```
 

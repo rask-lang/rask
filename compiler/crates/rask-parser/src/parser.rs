@@ -443,17 +443,7 @@ impl Parser {
                         let err = ParseError {
                             span: self.current().span,
                             message: "rebindable 'mut' bindings are not allowed at the top level".to_string(),
-                            hint: Some("use 'const' for permanent bindings, or move into a function".to_string()),
-                            why: None,
-                        };
-                        if !self.record_error(err) { break; }
-                        self.synchronize();
-                    // Reject Rust-style 'let' at top level with guidance
-                    } else if matches!(self.current_kind(), TokenKind::Let) {
-                        let err = ParseError {
-                            span: self.current().span,
-                            message: "'let' is not a keyword in Rask".to_string(),
-                            hint: Some("use 'const' for permanent bindings at the top level, or 'mut' inside a function for rebindable".to_string()),
+                            hint: Some("use 'const' for module-level constants, or move into a function".to_string()),
                             why: None,
                         };
                         if !self.record_error(err) { break; }
@@ -507,7 +497,7 @@ impl Parser {
                 if let DeclKind::Const(c) = &d.kind {
                     const_stmts.push(Stmt {
                         id: d.id,
-                        kind: StmtKind::Const {
+                        kind: StmtKind::Let {
                             name: c.name.clone(),
                             name_span: d.span,
                             ty: c.ty.clone(),
@@ -2564,17 +2554,17 @@ impl Parser {
 
         let kind = match self.current_kind() {
             TokenKind::Mut => self.parse_mut_stmt()?,
-            TokenKind::Let => {
+            TokenKind::Let => self.parse_let_stmt()?,
+            TokenKind::Const => {
                 let err = ParseError {
                     span: self.current().span,
-                    message: "'let' is not a keyword in Rask".to_string(),
-                    hint: Some("use 'mut' for rebindable bindings or 'const' for permanent bindings".to_string()),
+                    message: "'const' is only for module-level constants".to_string(),
+                    hint: Some("use 'let' for local bindings ('mut' if it needs to change)".to_string()),
                     why: None,
                 };
-                self.advance(); // consume 'let' so recovery doesn't loop
+                self.advance(); // consume 'const' so recovery doesn't loop
                 return Err(err);
             }
-            TokenKind::Const => self.parse_const_stmt()?,
             TokenKind::Return => self.parse_return_stmt()?,
             TokenKind::Break => self.parse_break_stmt()?,
             TokenKind::Continue => self.parse_continue_stmt()?,
@@ -2728,8 +2718,20 @@ impl Parser {
         Ok(StmtKind::Mut { name, name_span, ty, init })
     }
 
-    fn parse_const_stmt(&mut self) -> Result<StmtKind, ParseError> {
-        self.expect(&TokenKind::Const)?;
+    fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
+        self.expect(&TokenKind::Let)?;
+
+        // Catch Rust muscle memory: `let mut x = ...`
+        if self.check(&TokenKind::Mut) {
+            let err = ParseError {
+                span: self.current().span,
+                message: "'let mut' is not Rask".to_string(),
+                hint: Some("'mut x = ...' declares a rebindable binding — drop the 'let'".to_string()),
+                why: None,
+            };
+            self.advance(); // consume 'mut' so recovery doesn't loop
+            return Err(err);
+        }
 
         if self.match_token(&TokenKind::LParen) {
             let mut patterns = Vec::new();
@@ -2741,7 +2743,7 @@ impl Parser {
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
             self.expect_terminator()?;
-            return Ok(StmtKind::ConstTuple { patterns, init });
+            return Ok(StmtKind::LetTuple { patterns, init });
         }
 
         let name_span = self.current().span;
@@ -2750,7 +2752,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let mut init = self.parse_expr()?;
 
-        // Check for guard pattern: const v = expr is Pattern else { ... }
+        // Check for guard pattern: let v = expr is Pattern else { ... }
         if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
             let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
             let guard_start = expr.span.start;
@@ -2778,7 +2780,7 @@ impl Parser {
         }
 
         self.expect_terminator()?;
-        Ok(StmtKind::Const { name, name_span, ty, init })
+        Ok(StmtKind::Let { name, name_span, ty, init })
     }
 
     fn parse_discard_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -4005,7 +4007,7 @@ impl Parser {
             }
 
             // Presence predicate (postfix ?) — evaluates to bool (OPT10/ER12).
-            // OPT20/ER20: `expr? as v` binds the payload as a fresh const in
+            // OPT20/ER20: `expr? as v` binds the payload as a fresh let in
             // the then-branch. Consuming `as <ident>` here avoids the `as` cast
             // infix operator swallowing `v` as a type name. To cast a bool from
             // `?`, wrap in parens: `(x?) as i32`.
@@ -4433,8 +4435,8 @@ impl Parser {
         // Parse first binding (ident already consumed)
         let first_expr = self.build_with_as_expr(start, first_ident)?;
         self.expect(&TokenKind::As)?;
-        // `as const name` = read-only, `as name` = mutable (default)
-        let first_mutable = !self.match_token(&TokenKind::Const);
+        // `as let name` = read-only, `as name` = mutable (default)
+        let first_mutable = !self.match_token(&TokenKind::Let);
         let first_name = self.expect_ident()?;
         bindings.push(WithBinding {
             source: first_expr,
@@ -4447,7 +4449,7 @@ impl Parser {
             // Use bp=22 to stop before consuming 'as' (which has bp=21)
             let expr = self.parse_expr_bp(22)?;
             self.expect(&TokenKind::As)?;
-            let mutable = !self.match_token(&TokenKind::Const);
+            let mutable = !self.match_token(&TokenKind::Let);
             let name = self.expect_ident()?;
             bindings.push(WithBinding {
                 source: expr,

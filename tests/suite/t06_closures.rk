@@ -10,29 +10,29 @@ func apply_twice(f: |i32| -> i32, x: i32) -> i32 {
 }
 
 test "basic closure" {
-    const double = |x: i32| -> i32 { return x * 2 }
+    let double = |x: i32| -> i32 { return x * 2 }
     assert double(5) == 10
     assert double(0) == 0
     assert double(-3) == -6
 }
 
 test "closure capture" {
-    const offset = 10
-    const add_offset = |x: i32| -> i32 { return x + offset }
+    let offset = 10
+    let add_offset = |x: i32| -> i32 { return x + offset }
     assert add_offset(5) == 15
     assert add_offset(0) == 10
 }
 
 test "closure passed to function" {
-    const inc = |x: i32| -> i32 { return x + 1 }
+    let inc = |x: i32| -> i32 { return x + 1 }
     assert apply(inc, 5) == 6
     assert apply_twice(inc, 5) == 7
 }
 
 test "closure with multiple captures" {
-    const a = 3
-    const b = 7
-    const sum = |_: i32| -> i32 { return a + b }
+    let a = 3
+    let b = 7
+    let sum = |_: i32| -> i32 { return a + b }
     assert sum(0) == 10
 }
 

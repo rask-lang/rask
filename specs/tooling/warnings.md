@@ -34,8 +34,8 @@ On by default. Suppress with `@allow(warning_name)`.
 <!-- test: skip -->
 ```rask
 func process(data: Vec<u8>) -> i32 {
-    const count = data.len()       // W3: unused variable
-    const _unused = setup()        // OK: _ prefix suppresses
+    let count = data.len()       // W3: unused variable
+    let _unused = setup()        // OK: _ prefix suppresses
     return 42
 }
 ```
@@ -59,7 +59,7 @@ Off by default. Enable with `@warn(warning_name)` on items or project-wide in `b
 @warn(implicit_copy)
 func hot_loop(points: Vec<Point>) {
     for p in points {
-        const q = p          // W6: implicit copy of Point (12 bytes)
+        let q = p          // W6: implicit copy of Point (12 bytes)
         process(q)
     }
 }
@@ -79,7 +79,7 @@ Three levels. More specific wins.
 ```rask
 @allow(unused_variable)
 func scratch() {
-    const x = expensive_setup()
+    let x = expensive_setup()
 }
 
 @deny(unused_result)
@@ -133,10 +133,10 @@ package "my-server" "1.0.0" {
 ```
 WARNING [tool.warnings/W3]: unused variable `count`
    |
-2  |     const count = data.len()
+2  |     let count = data.len()
    |           ^^^^^ this value is never read
 
-FIX: prefix with `_` if intentional: `const _count = data.len()`
+FIX: prefix with `_` if intentional: `let _count = data.len()`
 ```
 
 ```
@@ -177,7 +177,7 @@ WARNING [tool.warnings/W4]: unreachable code
 ```
 WARNING [tool.warnings/W5]: use of deprecated item `connect`
    |
-7  |     const conn = try connect("localhost")
+7  |     let conn = try connect("localhost")
    |                      ^^^^^^^ deprecated
 
 NOTE: use connect_with_options instead

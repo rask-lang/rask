@@ -11,7 +11,7 @@ extend DivError {
 
 func main() {
     // Handling T or E with narrowing
-    const result = divide(10, 2)
+    let result = divide(10, 2)
 
     if result? {
         print("10 / 2 = ")
@@ -24,7 +24,7 @@ func main() {
     }
 
     // Division by zero
-    const bad = divide(10, 0)
+    let bad = divide(10, 0)
 
     if bad? {
         print("Result: ")
@@ -37,7 +37,7 @@ func main() {
     }
 
     // Using narrowing
-    const safe = safe_calc()
+    let safe = safe_calc()
     print("Safe calc result: ")
     print(safe)
     print("\n")
@@ -51,7 +51,7 @@ func divide(a: i32, b: i32) -> i32 or DivError {
 }
 
 func safe_calc() -> i32 {
-    const x = divide(20, 4)
+    let x = divide(20, 4)
     if x? {
         return x * 2
     }

@@ -7,10 +7,10 @@ import async.Channel
 func main() {}
 
 test "conc.select/A1 — fires the ready receive arm" {
-    const (tx1, rx1) = Channel<i64>.buffered(4)
-    const (tx2, rx2) = Channel<i64>.buffered(4)
+    let (tx1, rx1) = Channel<i64>.buffered(4)
+    let (tx2, rx2) = Channel<i64>.buffered(4)
     tx1.send(7).ok()          // only rx1 is ready
-    const got = select {
+    let got = select {
         rx1 -> v: v,
         rx2 -> v: v + 1000,
     }
@@ -18,8 +18,8 @@ test "conc.select/A1 — fires the ready receive arm" {
 }
 
 test "conc.select/A3 — default arm when nothing is ready" {
-    const (tx, rx) = Channel<i64>.buffered(4)
-    const got = select {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let got = select {
         rx -> v: v,
         _: -1,
     }

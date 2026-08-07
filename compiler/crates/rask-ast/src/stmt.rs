@@ -76,15 +76,15 @@ pub enum StmtKind {
         patterns: Vec<TuplePat>,
         init: Expr,
     },
-    /// Const binding (immutable)
-    Const {
+    /// Let binding (immutable)
+    Let {
         name: String,
         name_span: Span,
         ty: Option<String>,
         init: Expr,
     },
-    /// Const tuple destructuring
-    ConstTuple {
+    /// Let tuple destructuring
+    LetTuple {
         patterns: Vec<TuplePat>,
         init: Expr,
     },

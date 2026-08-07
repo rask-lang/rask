@@ -389,7 +389,7 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::Const { name, ty, init, .. } => {
+            StmtKind::Let { name, ty, init, .. } => {
                 self.feed_tag(23);
                 self.feed_var(name);
                 if let Some(t) = ty {
@@ -400,7 +400,7 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::ConstTuple { patterns, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 self.feed_tag(24);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
                 self.feed_u32(names.len() as u32);
@@ -1102,7 +1102,7 @@ mod tests {
     fn const_stmt(name: &str, init: Expr) -> Stmt {
         Stmt {
             id: NodeId(0),
-            kind: StmtKind::Const { name: name.into(), name_span: sp(), ty: None, init },
+            kind: StmtKind::Let { name: name.into(), name_span: sp(), ty: None, init },
             span: sp(),
         }
     }

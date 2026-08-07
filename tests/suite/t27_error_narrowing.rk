@@ -21,9 +21,9 @@ test "?? return unwraps present" {
 
 func accum() -> i32 {
     mut xs: Vec<i32?> = Vec.new()
-    const a: i32? = 1
-    const absent: i32? = none
-    const c: i32? = 3
+    let a: i32? = 1
+    let absent: i32? = none
+    let c: i32? = 3
     xs.push(a)
     xs.push(absent)
     xs.push(c)
@@ -103,7 +103,7 @@ extend CfgError {
 func load_cfg() -> Cfg or CfgError { return Cfg { port: 8080 } }
 
 func cfg_port() -> i32 {
-    const c = load_cfg()
+    let c = load_cfg()
     if c is CfgError {
         return -1
     }
@@ -120,7 +120,7 @@ test "early-exit narrows c to ok after is ErrType diverges" {
 func opt_source() -> i32? { return 7 }
 
 func narrow_via_none() -> i32 {
-    const x = opt_source()
+    let x = opt_source()
     if x == none {
         return -1
     }
@@ -159,7 +159,7 @@ test "generic type pattern in is ... else guard" {
 func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
     mut counts = Map.new()
     for item in items {
-        const existing = counts.get(item)
+        let existing = counts.get(item)
         if existing? {
             counts.insert(item, existing + 1)
         } else {
@@ -174,7 +174,7 @@ test "Map.new() inferred V narrows on if x?" {
     v.push(1)
     v.push(2)
     v.push(1)
-    const c = count_occurrences(v)
+    let c = count_occurrences(v)
     assert c[1] == 2
     assert c[2] == 1
 }
@@ -190,7 +190,7 @@ test "Map.new() inferred V narrows on if x?" {
 enum Shape256 { Rectangle(i32, i32), Circle(i32) }
 
 test "is constructor pattern && guard" {
-    const wide = Shape256.Rectangle(10, 5)
+    let wide = Shape256.Rectangle(10, 5)
     if wide is Rectangle(w, h) && w > h {
         assert w == 10
         assert h == 5
@@ -198,14 +198,14 @@ test "is constructor pattern && guard" {
         assert false, "expected wide rectangle"
     }
 
-    const tall = Shape256.Rectangle(3, 5)
+    let tall = Shape256.Rectangle(3, 5)
     if tall is Rectangle(w, h) && w > h {
         assert false, "guard should fail"
     } else {
         assert true
     }
 
-    const round = Shape256.Circle(5)
+    let round = Shape256.Circle(5)
     if round is Rectangle(w, h) && w > h {
         assert false, "tag should not match"
     } else {

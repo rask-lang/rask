@@ -8,7 +8,7 @@ import thread.Thread
 // S3/H2: a thread computes a value; the result comes back over a channel while
 // join() confirms the thread finished (Thread.spawn's handle is void).
 test "conc.async/S3 — thread returns a computed value via channel" {
-    const (tx, rx) = Channel<i64>.buffered(1)
+    let (tx, rx) = Channel<i64>.buffered(1)
     Thread.spawn(own || {
         mut acc = 0
         mut i = 1
@@ -29,13 +29,13 @@ test "conc.async/S3 — thread returns a computed value via channel" {
 // S4: every spawned thread yields a must-use handle; join each before draining.
 // Cloned senders (t36) give each thread an independent handle to one channel.
 test "conc.async/S4 — spawn multiple threads and join each" {
-    const (tx, rx) = Channel<i64>.buffered(4)
-    const txa = tx.clone()
-    const txb = tx.clone()
-    const txc = tx.clone()
-    const h1 = Thread.spawn(own || { txa.send(100).ok(); return })
-    const h2 = Thread.spawn(own || { txb.send(200).ok(); return })
-    const h3 = Thread.spawn(own || { txc.send(300).ok(); return })
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let txa = tx.clone()
+    let txb = tx.clone()
+    let txc = tx.clone()
+    let h1 = Thread.spawn(own || { txa.send(100).ok(); return })
+    let h2 = Thread.spawn(own || { txb.send(200).ok(); return })
+    let h3 = Thread.spawn(own || { txc.send(300).ok(); return })
     h1.join()
     h2.join()
     h3.join()
@@ -56,7 +56,7 @@ test "conc.async/S4 — spawn multiple threads and join each" {
 // mem.ownership/T2: `own` moves captures into the thread, which then owns them.
 // A moved Vec is summed inside the thread; the result returns over a channel.
 test "mem.ownership/T2 — own moves a Vec into the thread" {
-    const (tx, rx) = Channel<i64>.buffered(1)
+    let (tx, rx) = Channel<i64>.buffered(1)
     mut data = Vec.new<i64>()
     data.push(7)
     data.push(8)
@@ -79,8 +79,8 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
 // H2: join() waits for the thread's side effect to be observable. The thread
 // pushes into a channel the main thread only reads after join returns.
 test "conc.async/H2 — join happens-before the reader" {
-    const (tx, rx) = Channel<i64>.buffered(1)
-    const h = Thread.spawn(own || {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    let h = Thread.spawn(own || {
         tx.send(42).ok()
         return
     })

@@ -57,7 +57,7 @@ SSO strings are pure value copies — no heap, no refcount. Heap strings share b
 
 | Rule | Description |
 |------|-------------|
-| **O1: Copy on assign** | `const s2 = s1` copies 16 bytes. For heap strings, atomic refcount increment. For SSO strings, plain memcpy (no refcount). Both remain valid |
+| **O1: Copy on assign** | `let s2 = s1` copies 16 bytes. For heap strings, atomic refcount increment. For SSO strings, plain memcpy (no refcount). Both remain valid |
 | **O2: Borrow inferred** | `func foo(s: string)` borrows for call duration. No refcount change |
 | **O3: Explicit take** | `func foo(take s: string)` transfers ownership, decrements caller's count |
 
@@ -75,7 +75,7 @@ Slicing follows the same inline access rules as Vec and other growable sources u
 | Method receiver | `s[0..5].len()` | Yes |
 | Chained expression | `s[0..5].to_uppercase()` | Yes |
 | Storable conversion | `s[0..5].view()`, `s[0..5].to_string()` | Yes |
-| Variable assignment | `const x = s[0..5]` | Compile error |
+| Variable assignment | `let x = s[0..5]` | Compile error |
 | Struct field | `Foo { field: s[0..5] }` | Compile error |
 | Return value | `return s[0..5]` | Compile error |
 
@@ -112,7 +112,7 @@ struct Header {
 }
 
 func parse_header(line: string) -> Header? {
-    const colon = try line.index_of(":")
+    let colon = try line.index_of(":")
     return Header {
         name: line[0..colon].trim().view(),
         value: line[colon+1..].trim().view(),
@@ -230,9 +230,9 @@ No `+` operator and no `concat` function. Interpolation is the one way to combin
 
 <!-- test: skip -->
 ```rask
-const names = ["Alice", "Bob", "Charlie"]
-const result = names.join(", ")    // "Alice, Bob, Charlie"
-const csv = headers.join(",")      // CSV header row
+let names = ["Alice", "Bob", "Charlie"]
+let result = names.join(", ")    // "Alice, Bob, Charlie"
+let csv = headers.join(",")      // CSV header row
 ```
 
 ## Searching
@@ -321,8 +321,8 @@ enum ParseError {
 <!-- test: skip -->
 ```rask
 unsafe {
-    const c_path = try path.to_cstring()
-    const fd = c_open(cstring.as_ptr(c_path), O_RDONLY)
+    let c_path = try path.to_cstring()
+    let fd = c_open(cstring.as_ptr(c_path), O_RDONLY)
 }
 ```
 
@@ -331,7 +331,7 @@ unsafe {
 ```
 ERROR [std.strings/S2]: cannot store string slice
    |
-3  |  const x = s[0..5]
+3  |  let x = s[0..5]
    |            ^^^^^^^ string slices can't be stored
 
 WHY: String slices are temporary views into a heap buffer.
@@ -339,21 +339,21 @@ WHY: String slices are temporary views into a heap buffer.
 
 FIX 1: Store a zero-copy view (keeps s's buffer alive):
 
-  const x = s[0..5].view()
+  let x = s[0..5].view()
 
 FIX 2: Copy to an independent string:
 
-  const x = s[0..5].to_string()  // allocate copy
+  let x = s[0..5].to_string()  // allocate copy
 
 FIX 3: Store indices instead:
 
-  const v = Span(0, 5)    // store indices, resolve later
+  let v = Span(0, 5)    // store indices, resolve later
 ```
 
 ```
 ERROR [std.strings/S5]: slice not on character boundary
    |
-5  |  const x = text[0..2]
+5  |  let x = text[0..2]
    |                 ^^^^ byte index 2 is not a char boundary
 
 WHY: Slicing uses byte indices. Index must land on a UTF-8 character boundary.
@@ -375,7 +375,7 @@ FIX:
   mut b = StringBuilder.new()
   b.push(s)
   b.push("x")
-  const result = b.build()
+  let result = b.build()
 ```
 
 ## Edge Cases
@@ -484,7 +484,7 @@ mut b = StringBuilder.new()
 b.push("User: ")
 b.push(name)
 b.push_char('\n')
-const msg = b.build()
+let msg = b.build()
 ```
 
 **Accumulator pattern** — create a new builder per iteration:
@@ -540,15 +540,15 @@ builder.push(value.to_string())
 
 <!-- test: skip -->
 ```rask
-const s1 = "hello"
-const s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
+let s1 = "hello"
+let s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
 
 process(s2[0..3])  // passes "hel" as temporary slice
 
-const kept = s2[0..3].view()  // storable zero-copy view (V1)
+let kept = s2[0..3].view()  // storable zero-copy view (V1)
 process(kept)
 
-const span = Span(0, 3)
+let span = Span(0, 3)
 process(s2[span])  // same as s2[0..3], user ensures s2 is still valid
 ```
 
@@ -586,7 +586,7 @@ for part in line.split(",") {
 
 <!-- test: skip -->
 ```rask
-const text = "日本語"
+let text = "日本語"
 for (i, c) in text.char_indices() {
     process(text[i..i+c.len_utf8()])
 }

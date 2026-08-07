@@ -45,23 +45,23 @@ extend Level {
 }
 
 test "a user lt body wins over the derived order" {
-    const a = Tag { id: 5 }
-    const b = Tag { id: 3 }
+    let a = Tag { id: 5 }
+    let b = Tag { id: 3 }
     assert a < b
     assert (b < a) == false
 }
 
 test "a user gt body wins too" {
-    const a = Tag { id: 5 }
-    const b = Tag { id: 3 }
+    let a = Tag { id: 5 }
+    let b = Tag { id: 3 }
     assert (a > b) == false
     assert b > a
 }
 
 test "a user eq body wins, and ne follows it" {
-    const a = Tag { id: 5 }
-    const b = Tag { id: 7 }
-    const c = Tag { id: 4 }
+    let a = Tag { id: 5 }
+    let b = Tag { id: 7 }
+    let c = Tag { id: 4 }
     assert a == b
     assert (a == c) == false
     assert a != c
@@ -77,9 +77,9 @@ test "a method call on a variant literal keeps its receiver" {
 }
 
 test "a struct without an eq body still compares field by field" {
-    const p = Pair { a: 1, b: 2 }
-    const q = Pair { a: 1, b: 2 }
-    const r = Pair { a: 1, b: 3 }
+    let p = Pair { a: 1, b: 2 }
+    let q = Pair { a: 1, b: 2 }
+    let r = Pair { a: 1, b: 3 }
     assert p == q
     assert p != r
 }

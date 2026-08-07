@@ -30,10 +30,10 @@ The current shape (now folded into `conc.data-parallel` and `conc.wide-backend`)
 <!-- test: skip -->
 ```rask
 with Device.gpu(0) as dev {           // device is a RESOURCE — many allowed, non-exclusive
-    const xs   = img.to(dev)          // explicit upload → resident buffer on dev
-    const plan = xs.map(shade).sum()  // stage — host-side description, nothing runs yet
-    const h    = plan.submit()        // enqueue on dev's queue (target = where data lives) — async handle
-    const out  = try h.await()        // fence-wait + copy home — this is the blocking point
+    let xs   = img.to(dev)          // explicit upload → resident buffer on dev
+    let plan = xs.map(shade).sum()  // stage — host-side description, nothing runs yet
+    let h    = plan.submit()        // enqueue on dev's queue (target = where data lives) — async handle
+    let out  = try h.await()        // fence-wait + copy home — this is the blocking point
 }                                     // block exit: queue drained, device freed (drain-on-exit)
 ```
 

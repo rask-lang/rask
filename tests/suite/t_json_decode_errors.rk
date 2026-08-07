@@ -16,14 +16,14 @@ struct User {
 
 /// The error text, or "OK" when the decode succeeded.
 func failure(body: string) -> string {
-    const u = try json.decode<User>(body) else |e| {
+    let u = try json.decode<User>(body) else |e| {
         return e.message()
     }
     return "OK"
 }
 
 test "std.json — a missing required field reports which one" {
-    const msg = failure("{{\"name\":\"a\"}}")
+    let msg = failure("{{\"name\":\"a\"}}")
     assert msg.starts_with("missing field:")
     assert msg.contains("\"age\"")
 }
@@ -37,20 +37,20 @@ test "std.json — an explicit null for an optional field is not an error" {
 }
 
 test "std.json — a field of the wrong type reports the field and both types" {
-    const msg = failure("{{\"name\":\"a\",\"age\":\"x\"}}")
+    let msg = failure("{{\"name\":\"a\",\"age\":\"x\"}}")
     assert msg.starts_with("type error:")
     assert msg.contains("age")
     assert msg.contains("found a string")
 }
 
 test "std.json — a non-object where a struct is expected is a type error" {
-    const msg = failure("[1,2]")
+    let msg = failure("[1,2]")
     assert msg.starts_with("type error:")
     assert msg.contains("found an array")
 }
 
 test "std.json — truncated input is a parse error" {
-    const msg = failure("{{\"name\":")
+    let msg = failure("{{\"name\":")
     assert msg.starts_with("parse error:")
 }
 
@@ -59,7 +59,7 @@ test "std.json — empty input is a parse error" {
 }
 
 test "std.json — content after the value is a parse error" {
-    const msg = failure("{{\"name\":\"a\",\"age\":1}} junk")
+    let msg = failure("{{\"name\":\"a\",\"age\":1}} junk")
     assert msg.starts_with("parse error:")
     assert msg.contains("trailing")
 }

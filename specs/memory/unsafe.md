@@ -14,15 +14,15 @@ Explicit `unsafe` blocks quarantine operations that bypass safety checks. Debug 
 |------|-------------|
 | **U1: Explicit scope** | Unsafe operations are ONLY valid inside `unsafe {}` blocks |
 | **U2: Local scope** | Unsafe does not propagate; calling a safe function from unsafe is safe |
-| **U3: Expression result** | Unsafe block/expression can return a value: `const x = unsafe ptr.read()` |
+| **U3: Expression result** | Unsafe block/expression can return a value: `let x = unsafe ptr.read()` |
 | **U4: Minimal scope** | Unsafe blocks SHOULD be as small as possible |
 
 <!-- test: skip -->
 ```rask
-const x = 42
+let x = 42
 mut ptr: *i32 = &x as *i32
 
-const value = unsafe { *ptr }
+let value = unsafe { *ptr }
 ```
 
 ## Operations Requiring Unsafe
@@ -65,15 +65,15 @@ const value = unsafe { *ptr }
 <!-- test: skip -->
 ```rask
 // Creating raw pointers (safe)
-const x = 42
+let x = 42
 mut ptr: *i32 = &x as *i32
 mut null_ptr: *i32 = null
 
 // Using raw pointers (unsafe)
 unsafe {
-    const value = *ptr
+    let value = *ptr
     *ptr = 100
-    const next = ptr.add(1)
+    let next = ptr.add(1)
 }
 ```
 
@@ -270,9 +270,9 @@ union IntOrFloat {
     f: f32,
 }
 
-const u = IntOrFloat { i: 42 }
+let u = IntOrFloat { i: 42 }
 unsafe {
-    const f = u.f    // Reinterprets bits as f32
+    let f = u.f    // Reinterprets bits as f32
 }
 ```
 
@@ -310,7 +310,7 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 ```rask
 // Skips even debug checks — for when you've already validated
 unsafe {
-    const x = ptr.read_unchecked()
+    let x = ptr.read_unchecked()
 }
 
 // Keeps checks even in release — for safety-critical code
@@ -356,15 +356,15 @@ See `struct.c-interop` for full C interop details.
 ```
 ERROR [mem.unsafe/U1]: unsafe operation outside unsafe block
    |
-5  |  const x = *ptr
+5  |  let x = *ptr
    |            ^^^^ raw pointer dereference requires unsafe
 
 WHY: Unsafe operations must be explicitly scoped so safety boundaries are visible.
 
 FIX: Wrap in unsafe:
 
-  const x = unsafe *ptr
-  const x = unsafe { *ptr }  // block form also works
+  let x = unsafe *ptr
+  let x = unsafe { *ptr }  // block form also works
 ```
 
 **Calling unsafe function without block [U1]:**
@@ -437,7 +437,7 @@ public struct SafeBuffer {
 extend SafeBuffer {
     public func new(size: usize) -> SafeBuffer or AllocError {
         unsafe {
-            const ptr = try alloc(size)
+            let ptr = try alloc(size)
             return SafeBuffer { ptr, len: size }
         }
     }
@@ -489,7 +489,7 @@ extend<T> FastBuffer<T> {
 <!-- test: parse -->
 ```rask
 // C allocates, Rask frees
-const ptr = unsafe { c.malloc(size) }
+let ptr = unsafe { c.malloc(size) }
 unsafe { c.free(ptr) }
 
 // Safe CString wrapper
@@ -501,8 +501,8 @@ public struct CString {
 extend CString {
     public func new(s: string) -> CString {
         unsafe {
-            const len = s.len() + 1
-            const ptr = alloc(len)
+            let len = s.len() + 1
+            let ptr = alloc(len)
             copy(s.as_ptr(), ptr, s.len())
             *ptr.add(s.len()) = 0
             return CString { ptr, len }
@@ -578,13 +578,13 @@ IDE SHOULD highlight unsafe blocks distinctly. Lints SHOULD warn about large uns
 extern "C" func get_ptr() -> *i32
 
 func example() {
-    const ptr = unsafe get_ptr()
+    let ptr = unsafe get_ptr()
 
     // Block form
-    const a = unsafe { *ptr }
+    let a = unsafe { *ptr }
 
     // Expression form (equivalent)
-    const b = unsafe *ptr
+    let b = unsafe *ptr
 }
 ```
 

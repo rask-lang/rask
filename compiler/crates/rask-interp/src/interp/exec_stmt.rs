@@ -24,7 +24,7 @@ impl Interpreter {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
-            StmtKind::Const { name, init, ty, .. } => {
+            StmtKind::Let { name, init, ty, .. } => {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
@@ -65,7 +65,7 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::ConstTuple { patterns, init } => {
+            StmtKind::LetTuple { patterns, init } => {
                 let value = self.eval_owned(init)?;
                 self.destructure_tuple_pats(patterns, value)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;

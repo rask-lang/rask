@@ -55,11 +55,11 @@ The common pattern: acquire a linear value, commit to consumption, then use `try
 <!-- test: parse -->
 ```rask
 func process(path: string) -> Data or Error {
-    const file = try File.open(path)
+    let file = try File.open(path)
     ensure file.close()                    // L4: consumption committed
 
-    const header = try file.read_header()  // try is safe after ensure
-    const body = try file.read_body()
+    let header = try file.read_header()  // try is safe after ensure
+    let body = try file.read_body()
     return body
 }
 ```
@@ -75,7 +75,7 @@ If the value is consumed explicitly before scope exit, any registered `ensure` i
 <!-- test: parse -->
 ```rask
 func transfer(db: Database) -> void or Error {
-    const tx = try db.begin()
+    let tx = try db.begin()
     ensure tx.rollback()     // Default: rollback on any exit
 
     try tx.execute("UPDATE ...")

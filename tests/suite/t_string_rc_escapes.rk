@@ -26,20 +26,20 @@ func encoded(n: i64) -> string or Fail {
 }
 
 test "interpolated field of a returned struct" {
-    const b = route("/nope")
+    let b = route("/nope")
     assert b.error == "no route for /nope"
     assert b.error.len() == 18
     assert b.code == "not_found"
 }
 
 test "interpolated field built in place" {
-    const path = "/nope"
-    const b = Body { error: "no route for {path}", code: "not_found" }
+    let path = "/nope"
+    let b = Body { error: "no route for {path}", code: "not_found" }
     assert b.error == "no route for /nope"
 }
 
 test "the field survives an intervening allocation" {
-    const b = route("/nope")
+    let b = route("/nope")
     mut junk = ""
     for i in 0..8 {
         junk = "filler string number {i} padded out"
@@ -49,7 +49,7 @@ test "the field survives an intervening allocation" {
 }
 
 test "string returned as a Result ok payload" {
-    const r = encoded(1)
+    let r = encoded(1)
     if r? as body {
         assert body == "a fairly long string here 1"
         assert body.len() == 27

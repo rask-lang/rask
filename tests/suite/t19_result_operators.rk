@@ -30,7 +30,7 @@ func safe_div(a: i32, b: i32) -> i32 or DivError {
 }
 
 test "force unwrap present" {
-    const result = safe_div(10, 2)
+    let result = safe_div(10, 2)
     assert result! == 5
 }
 
@@ -41,7 +41,7 @@ func double(x: i32) -> i32 or DivError {
 }
 
 test "auto-wrap at return" {
-    const result = double(21)
+    let result = double(21)
     assert result?
     assert result! == 42
 }
@@ -53,24 +53,24 @@ func do_nothing() -> void or DivError {
 }
 
 test "implicit unit success" {
-    const result = do_nothing()
+    let result = do_nothing()
     assert result?
 }
 
 // --- try propagation (ER16) ---
 
 func compute(a: i32, b: i32) -> i32 or DivError {
-    const x = try safe_div(a, b)
+    let x = try safe_div(a, b)
     return x + 1
 }
 
 test "try extracts present" {
-    const result = compute(10, 2)
+    let result = compute(10, 2)
     assert result! == 6
 }
 
 test "try propagates error" {
-    const result = compute(10, 0)
+    let result = compute(10, 0)
     assert result is DivError
 }
 
@@ -82,7 +82,7 @@ func parse_number(s: string) -> i32 or ParseError {
 }
 
 func parse_and_double(s: string) -> i32 or ParseError {
-    const n = try parse_number(s)
+    let n = try parse_number(s)
     return n * 2
 }
 
@@ -104,39 +104,39 @@ extend ContextError {
 }
 
 func load_value(s: string) -> i32 or ContextError {
-    const n = try parse_number(s) else |e| ContextError { source: e.message() }
+    let n = try parse_number(s) else |e| ContextError { source: e.message() }
     return n
 }
 
 test "try else transforms error" {
-    const result = load_value("bad")
+    let result = load_value("bad")
     assert result is ContextError
 }
 
 test "try else passes through" {
-    const result = load_value("42")
+    let result = load_value("42")
     assert result! == 42
 }
 
 // --- Result methods from spec ---
 
 test "map on present" {
-    const result = safe_div(10, 2).map(|v| v * 3)
+    let result = safe_div(10, 2).map(|v| v * 3)
     assert result! == 15
 }
 
 test "map on error" {
-    const result = safe_div(10, 0).map(|v| v * 3)
+    let result = safe_div(10, 0).map(|v| v * 3)
     assert result is DivError
 }
 
 test "ok() lifts to Option (present)" {
-    const opt = safe_div(10, 2).ok()
+    let opt = safe_div(10, 2).ok()
     assert opt! == 5
 }
 
 test "ok() lifts to Option (absent)" {
-    const opt = safe_div(10, 0).ok()
+    let opt = safe_div(10, 0).ok()
     assert opt == none
 }
 
@@ -148,8 +148,8 @@ test "ok() lifts to Option (absent)" {
 // --- match on Result ---
 
 test "match on Result" {
-    const result = safe_div(10, 2)
-    const value = match result {
+    let result = safe_div(10, 2)
+    let value = match result {
         i32 as v => v
         DivError => -1
     }

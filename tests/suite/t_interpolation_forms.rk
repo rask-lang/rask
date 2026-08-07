@@ -8,8 +8,8 @@ struct Pt { public x: i64, public y: i64 }
 func sum(p: Pt) -> i64 { return p.x + p.y }
 
 test "interpolation forms that must keep working" {
-    const n = 7
-    const s = "hi"
+    let n = 7
+    let s = "hi"
     assert "{n}" == "7"
     assert "{n:debug}" == "7"
     assert "{s}" == "hi"

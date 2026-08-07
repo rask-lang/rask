@@ -37,45 +37,45 @@ struct Nested {
 }
 
 test "struct construction and field access" {
-    const p = Point { x: 10, y: 20 }
+    let p = Point { x: 10, y: 20 }
     assert p.x == 10
     assert p.y == 20
 }
 
 test "struct method" {
-    const p = Point.new(3, 4)
+    let p = Point.new(3, 4)
     assert p.manhattan() == 7
 }
 
 test "struct method returning struct" {
-    const a = Point.new(1, 2)
-    const b = Point.new(3, 4)
-    const c = a.add(b)
+    let a = Point.new(1, 2)
+    let b = Point.new(3, 4)
+    let c = a.add(b)
     assert c.x == 4
     assert c.y == 6
 }
 
 test "struct with string field" {
-    const n = Named { name: "foo", value: 42 }
+    let n = Named { name: "foo", value: 42 }
     assert n.name == "foo"
     assert n.value == 42
 }
 
 test "struct method using string field" {
-    const n = Named { name: "x", value: 10 }
+    let n = Named { name: "x", value: 10 }
     assert n.describe() == "x=10"
 }
 
 test "multiple structs with string fields" {
-    const a = Named { name: "alice", value: 1 }
-    const b = Named { name: "bob", value: 2 }
+    let a = Named { name: "alice", value: 1 }
+    let b = Named { name: "bob", value: 2 }
     assert a.name == "alice"
     assert b.name == "bob"
     assert a.name != b.name
 }
 
 test "nested struct" {
-    const n = Nested {
+    let n = Nested {
         inner: Point { x: 5, y: 10 },
         label: "test",
     }
@@ -85,8 +85,8 @@ test "nested struct" {
 }
 
 test "struct update syntax" {
-    const p = Point { x: 1, y: 2 }
-    const q = Point { x: 10, ..p }
+    let p = Point { x: 1, y: 2 }
+    let q = Point { x: 10, ..p }
     assert q.x == 10
     assert q.y == 2
 }

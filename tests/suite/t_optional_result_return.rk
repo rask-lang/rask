@@ -39,7 +39,7 @@ func failing() -> Row? or Fault {
 }
 
 func lookup(which: i64) -> string or Fault {
-    const row = try if which == 0 { absent() } else { present(which) }
+    let row = try if which == 0 { absent() } else { present(which) }
     if row? as r {
         return "row {r.id}"
     }
@@ -55,11 +55,11 @@ test "a bare value fills the present side" {
 }
 
 test "the error branch still works" {
-    const r = failing()
+    let r = failing()
     assert (r? == false)
 }
 
 test "a value survives the round trip" {
-    const p = present(3)
+    let p = present(3)
     assert p?
 }

@@ -10,6 +10,6 @@ struct T {
 }
 
 func main() {
-    const t = T { x: 1 }
+    let t = T { x: 1 }
     println("{t.x}")
 }

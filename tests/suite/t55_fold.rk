@@ -10,39 +10,39 @@
 func main() {}
 
 test "fold with an explicit return in the body" {
-    const v = Vec.from([1, 2, 3, 4])
-    const total: i64 = v.fold(0, |acc, x| { return acc + x })
+    let v = Vec.from([1, 2, 3, 4])
+    let total: i64 = v.fold(0, |acc, x| { return acc + x })
     assert total == 10
 }
 
 test "fold through an explicit iter() is the same" {
-    const v = Vec.from([1, 2, 3, 4])
-    const total: i64 = v.iter().fold(0, |acc, x| { return acc + x })
+    let v = Vec.from([1, 2, 3, 4])
+    let total: i64 = v.iter().fold(0, |acc, x| { return acc + x })
     assert total == 10
 }
 
 test "fold with a non-zero init" {
-    const v = Vec.from([1, 2, 3])
-    const total: i64 = v.fold(100, |acc, x| { return acc + x })
+    let v = Vec.from([1, 2, 3])
+    let total: i64 = v.fold(100, |acc, x| { return acc + x })
     assert total == 106
 }
 
 test "fold over an empty vec keeps the init" {
-    const v: Vec<i64> = Vec.new()
-    const total: i64 = v.fold(7, |acc, x| { return acc + x })
+    let v: Vec<i64> = Vec.new()
+    let total: i64 = v.fold(7, |acc, x| { return acc + x })
     assert total == 7
 }
 
 test "fold is not commutative — order is preserved" {
-    const v = Vec.from([1, 2, 3])
+    let v = Vec.from([1, 2, 3])
     // Each step doubles what came before, so order shows up in the result.
-    const packed: i64 = v.fold(0, |acc, x| { return acc * 10 + x })
+    let packed: i64 = v.fold(0, |acc, x| { return acc * 10 + x })
     assert packed == 123
 }
 
 test "fold composes with map and filter" {
-    const v = Vec.from([1, 2, 3, 4, 5, 6])
-    const total: i64 = v.iter()
+    let v = Vec.from([1, 2, 3, 4, 5, 6])
+    let total: i64 = v.iter()
         .filter(|x| { return x % 2 == 0 })
         .map(|x| { return x * 10 })
         .fold(0, |acc, x| { return acc + x })

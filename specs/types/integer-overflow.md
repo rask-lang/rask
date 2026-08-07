@@ -28,7 +28,7 @@ Default: panic on overflow, consistent in debug and release. Use `Wrapping<T>` o
 <!-- test: skip -->
 ```rask
 mut x: u8 = 255
-const y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
+let y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
 ```
 
 ## Wrapping and Saturating Types
@@ -46,11 +46,11 @@ const y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
 import num.{Wrapping, Saturating}
 
 // Wrapping: for hashing, checksums, cyclic counters
-const h = Wrapping(5381u32)
-const result = h * Wrapping(33) + Wrapping(65)  // wraps on overflow
+let h = Wrapping(5381u32)
+let result = h * Wrapping(33) + Wrapping(65)  // wraps on overflow
 
 // Saturating: for audio, DSP, color
-const s = Saturating(255u8) + Saturating(1)     // Saturating(255)
+let s = Saturating(255u8) + Saturating(1)     // Saturating(255)
 ```
 
 ## One-Off Methods
@@ -130,7 +130,7 @@ const Z: u8 = (200u8).wrapping_add(100)        // OK via method
 <!-- test: skip -->
 ```rask
 unsafe {
-    const result = a.unchecked_add(b)
+    let result = a.unchecked_add(b)
 }
 ```
 
@@ -146,9 +146,9 @@ WHY: Default arithmetic panics on overflow in all builds.
 
 FIX: Use Wrapping<T> for intentional wrapping, or widen the type:
   import num.Wrapping
-  const y = Wrapping(x) + Wrapping(1)
+  let y = Wrapping(x) + Wrapping(1)
   // or
-  const y = (x as u16) + 1
+  let y = (x as u16) + 1
 ```
 
 ```

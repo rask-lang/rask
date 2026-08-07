@@ -122,7 +122,7 @@ test "clamp value" {
 }
 
 test "min max" {
-    const result = min_max(Vec.from([3, 1, 4, 1, 5, 9, 2, 6]))
+    let result = min_max(Vec.from([3, 1, 4, 1, 5, 9, 2, 6]))
     assert result.first == 1
     assert result.second == 9
 }
@@ -143,7 +143,7 @@ test "contains" {
 }
 
 func main() {
-    const p = Pair { first: "altitude", second: 35000 }
+    let p = Pair { first: "altitude", second: 35000 }
     println("{p.first}: {p.second}")
     println("Run 'rask test 11_generics.rk' to check your puzzles")
 }

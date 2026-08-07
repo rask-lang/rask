@@ -51,8 +51,8 @@ func describe(s: any Shape) -> string {
 }
 
 func main() {
-    const sq = Square { side: 4 }
-    const ci = Circle { radius: 5 }
+    let sq = Square { side: 4 }
+    let ci = Circle { radius: 5 }
     println(describe(sq as any Shape))
     println(describe(ci as any Shape))
 }

@@ -124,16 +124,16 @@ Why return-only for errors? Construction in assignment/field positions makes the
 <!-- test: skip -->
 ```rask
 // Single-call propagation
-const data = try read_file(path)
+let data = try read_file(path)
 
 // Chain with propagation
-const size = try read_file(path)?.len()
+let size = try read_file(path)?.len()
 
 // Force
-const config = load_config()!
+let config = load_config()!
 
 // Error-context block (replaces r ?? |e| f(e))
-const content = try {
+let content = try {
     try fs.read_text(path)
 } else |e| context("reading {path}", e)
 ```
@@ -156,7 +156,7 @@ Example:
 
 <!-- test: skip -->
 ```rask
-const text = try fs.read_text(path) else |e| context("reading {path}", e)
+let text = try fs.read_text(path) else |e| context("reading {path}", e)
 ```
 
 `try`, `map_err`, and `try … else`:
@@ -166,13 +166,13 @@ const text = try fs.read_text(path) else |e| context("reading {path}", e)
 
 ## Conditions and Narrowing
 
-Narrowing rides on `const` — the same rule as Option. See [optionals.md](optionals.md) for the full semantics; the rules below apply identically to `T or E`.
+Narrowing rides on `let` — the same rule as Option. See [optionals.md](optionals.md) for the full semantics; the rules below apply identically to `T or E`.
 
 | Rule | Description |
 |------|-------------|
-| **ER19: `if r?` narrows** | On a const scrutinee, `if r?` narrows `r` to `T` inside the block |
-| **ER20: `if r? as v` binds** | Binds a const `v: T` in the block; works for `mut` scrutinees and for renaming |
-| **ER21: else branch narrows** | On a const scrutinee, the `else` branch narrows `r` to `E` |
+| **ER19: `if r?` narrows** | On a let scrutinee, `if r?` narrows `r` to `T` inside the block |
+| **ER20: `if r? as v` binds** | Binds a let `v: T` in the block; works for `mut` scrutinees and for renaming |
+| **ER21: else branch narrows** | On a let scrutinee, the `else` branch narrows `r` to `E` |
 | **ER22: Bind error in else** | `if r? { … } else as e { … }` binds the error value in the else branch |
 | **ER23: Type pattern narrow** | `if r is ErrType as e { … }` narrows and binds when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }` |
 | **ER24: Early-exit narrow** | If a branch diverges, the fall-through is narrowed to the opposite variant |
@@ -181,7 +181,7 @@ Narrowing rides on `const` — the same rule as Option. See [optionals.md](optio
 
 <!-- test: skip -->
 ```rask
-const r = divide(a, b)
+let r = divide(a, b)
 
 if r? {
     use(r)                        // r: f64
@@ -244,9 +244,9 @@ Four compiler-provided methods on `T or E`. Each preserves the wrapper for chain
 
 <!-- test: skip -->
 ```rask
-const translated = parse(input).map_err(|e| AppError.Parse(e))
-const profile = load_user(id).and_then(|u| load_profile(u.id))
-const maybe_v = compute().ok()
+let translated = parse(input).map_err(|e| AppError.Parse(e))
+let profile = load_user(id).and_then(|u| load_profile(u.id))
+let maybe_v = compute().ok()
 ```
 
 Methods removed from the old spec: `.unwrap_or`, `.unwrap_or_else`, `.is_ok`, `.is_err`, `.to_option`, `.to_error`, `.on_err`. Operators and the four surviving methods cover every case; see the [redesign proposal](error-model-redesign-proposal.md) for the full migration map.
@@ -263,8 +263,8 @@ Methods removed from the old spec: `.unwrap_or`, `.unwrap_or_else`, `.is_ok`, `.
 ```rask
 // Library: precise union
 func load() -> Config or (IoError | ParseError) {
-    const content = try read_file(path)   // IoError ⊆ union
-    const config = try parse(content)     // ParseError ⊆ union
+    let content = try read_file(path)   // IoError ⊆ union
+    let config = try parse(content)     // ParseError ⊆ union
     return config
 }
 
@@ -276,7 +276,7 @@ enum ApiError {
 }
 
 func view(id: TaskId) -> TaskView or ApiError {
-    const task = try store.view_task(id)  // → ApiError.Store(e)
+    let task = try store.view_task(id)  // → ApiError.Store(e)
     return task
 }
 ```
@@ -317,7 +317,7 @@ enum ConfigError {
 // sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
 
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path)     // ConfigError.NotFound captures origin
+    let text = try fs.read_text(path)     // ConfigError.NotFound captures origin
     return try Config.parse(text)            // ConfigError.Parse captures origin
 }
 
@@ -327,7 +327,7 @@ if load_config(path) is ConfigError as e {
 
 // any Error — origin always available
 func start_app() -> App or any Error {
-    const config = try load_config(path)     // IoError auto-boxes, gets origin
+    let config = try load_config(path)     // IoError auto-boxes, gets origin
     return App.new(config)
 }
 ```
@@ -385,21 +385,21 @@ Three annotation levels:
 ```rask
 // 1. Fully omitted — both success and error inferred
 func load_config(path: string) {
-    const text = try read_file(path)       // IoError
-    const config = try parse(text)          // ParseError
+    let text = try read_file(path)       // IoError
+    let config = try parse(text)          // ParseError
     return config
 }
 // Inferred: -> Config or (IoError | ParseError)
 
 // 2. Partial: `or _` — success explicit, error inferred
 func load_config(path: string) -> Config or _ {
-    const text = try read_file(path)
+    let text = try read_file(path)
     return try parse(text)
 }
 
 // 3. Public — must be explicit
 public func load_config(path: string) -> Config or (IoError | ParseError) {
-    const text = try read_file(path)
+    let text = try read_file(path)
     return try parse(text)
 }
 ```
@@ -459,8 +459,8 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 |------|------|----------|
 | Return bare `T` from `T or E` function | ER9 | Wraps to T branch |
 | Return bare `E` from `T or E` function | ER9 | Wraps to E branch |
-| `const x: T or E = 5` (assignment, E ≠ none) | ER11 | Type error — auto-wrap is return-only |
-| `const x: T? = bare_t` (assignment) | ER11/optionals | Legal — `T or none` widens at any position |
+| `let x: T or E = 5` (assignment, E ≠ none) | ER11 | Type error — auto-wrap is return-only |
+| `let x: T? = bare_t` (assignment) | ER11/optionals | Legal — `T or none` widens at any position |
 | `T or T` | ER3 | Compile error; newtype one side |
 | `f<T>() -> T or E` called with `T = E` | ER3a | Compile error at the call site, naming the parameter |
 | Generic caller forwards its own `T` into `T or E` | ER3a | Obligation propagates to the caller's own call sites |
@@ -517,7 +517,7 @@ FIX: Newtype one side:
 ```
 ERROR [type.errors/ER3a]: `T` may not be `CacheError` here
     |
-12  |  const r = cached(|| CacheError.Miss)
+12  |  let r = cached(|| CacheError.Miss)
     |            ^^^^^^ T = CacheError
     |
  4  |  func cached<T>(f: || -> T or CacheError) -> T or CacheError
@@ -551,7 +551,7 @@ FIX: Newtype it and implement message():
 ```
 ERROR [type.errors/ER11]: cannot assign value of type `i32` to `i32 or MyError`
    |
-3  |  const r: i32 or MyError = 5
+3  |  let r: i32 or MyError = 5
    |                            ^ auto-wrap only fires at `return`
 
 WHY: Construction at assignment hides the branch choice. Only `return`
@@ -566,7 +566,7 @@ FIX: Construct via a function that returns T or E, or use
 ```
 ERROR [type.errors/CROSS_SHAPE]: cannot `try` Option in Result-returning function
    |
-4  |  const x = try maybe_value
+4  |  let x = try maybe_value
    |            ^^^ maybe_value: T?  (= T or none)
    |
    |  current function returns T or E  — `none` is not in E
@@ -576,7 +576,7 @@ WHY: `try` widens the inner error union into the function's error union.
      as one would fabricate errors out of absence.
 
 FIX: Convert explicitly:
-     const x = try maybe_value.to_result(MyError.NotFound)
+     let x = try maybe_value.to_result(MyError.NotFound)
 ```
 
 The reverse case — `try r` (a `T or E`) in a `T?`-returning function — fails the same subset check (`E ⊄ none`) and gets a parallel diagnostic suggesting `r.ok()`.
@@ -650,7 +650,7 @@ The honest cost: `func cached<T>(…) -> T or CacheError` is not total over `T`,
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ContextError {
-    const text = try fs.read_text(path) else |e| context("reading {path}", e)
+    let text = try fs.read_text(path) else |e| context("reading {path}", e)
     return try Config.parse(text) else |e| context("parsing {path}", e)
 }
 ```
@@ -660,7 +660,7 @@ func load_config(path: string) -> Config or ContextError {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
+    let text = try fs.read_text(path) else |e| ConfigError.Io { path, source: e }
     return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
 }
 ```
@@ -675,7 +675,7 @@ enum ConfigError {
 }
 
 func load_config(path: string) -> Config or ConfigError {
-    const text = try fs.read_text(path)   // → ConfigError.Io(e)
+    let text = try fs.read_text(path)   // → ConfigError.Io(e)
     return try Config.parse(text)         // → ConfigError.Parse(e)
 }
 ```

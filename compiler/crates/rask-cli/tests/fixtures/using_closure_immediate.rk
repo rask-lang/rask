@@ -18,6 +18,6 @@ func run(h: Handle<Player>) using players: Pool<Player> {
 
 func main() {
     mut players = Pool<Player>.new()
-    const h = players.insert(Player { health: 100 })
+    let h = players.insert(Player { health: 100 })
     run(h)
 }

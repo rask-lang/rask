@@ -61,7 +61,7 @@ test "each element keeps its own type — explicit `as any` push" {
 }
 
 test "Vec.from with casts, and indexed reads" {
-    const shapes = Vec.from([
+    let shapes = Vec.from([
         Circle { r: 1 } as any Shape,
         Square { s: 4 } as any Shape,
     ])

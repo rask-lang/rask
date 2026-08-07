@@ -104,8 +104,8 @@ trait Seeker {
 
 <!-- test: skip -->
 ```rask
-const reader = BufferedReader.new(file)              // default 8KB
-const reader = BufferedReader.with_capacity(4096, file)
+let reader = BufferedReader.new(file)              // default 8KB
+let reader = BufferedReader.with_capacity(4096, file)
 
 reader.read_line() -> string or IoError         // strips trailing newline
 reader.lines() -> Sequence<string or IoError>   // lazy line sequence
@@ -113,12 +113,12 @@ reader.lines() -> Sequence<string or IoError>   // lazy line sequence
 
 <!-- test: skip -->
 ```rask
-const file = try fs.open("data.txt")
+let file = try fs.open("data.txt")
 ensure file.close()
-const reader = BufferedReader.new(file)
+let reader = BufferedReader.new(file)
 
 for line in reader.lines() {
-    const text = try line
+    let text = try line
     println(text)
 }
 ```
@@ -141,7 +141,7 @@ for line in reader.lines() {
 ```rask
 import io
 
-const stdout = io.stdout()
+let stdout = io.stdout()
 ensure stdout.close()
 try stdout.write_text("Hello, world!\n")
 try stdout.flush()
@@ -155,10 +155,10 @@ try stdout.flush()
 
 <!-- test: skip -->
 ```rask
-const buf = Buffer.new()
+let buf = Buffer.new()
 try buf.write_text("hello ")
 try buf.write_text("world")
-const result = string.from_utf8(buf.as_bytes())  // "hello world"
+let result = string.from_utf8(buf.as_bytes())  // "hello world"
 ```
 
 | Method | Returns | Description |
@@ -199,7 +199,7 @@ No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 ```
 ERROR [std.io/S1]: standard stream not consumed
    |
-3  |  const stdout = io.stdout()
+3  |  let stdout = io.stdout()
    |        ^^^^^^ `Stdout` is a @resource that must be closed
 
 WHY: Standard streams are linear resources to prevent accidental close or leak.
@@ -210,7 +210,7 @@ FIX: Add `ensure stdout.close()` after acquiring the handle.
 ```
 ERROR [std.io/R3]: invalid UTF-8
    |
-5  |  const text = try file.read_text()
+5  |  let text = try file.read_text()
    |                   ^^^^^^^^^^^^^^^^ stream contains invalid UTF-8
 
 WHY: read_text() requires valid UTF-8. Use read_bytes() for raw bytes.

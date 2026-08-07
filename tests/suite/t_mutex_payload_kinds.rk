@@ -31,7 +31,7 @@ extend Store {
 }
 
 test "struct payload" {
-    const m = Mutex.new(Counter { n: 0 })
+    let m = Mutex.new(Counter { n: 0 })
     with m.lock() as c {
         c.bump()
         c.bump()
@@ -40,7 +40,7 @@ test "struct payload" {
 }
 
 test "map payload" {
-    const mm: Mutex<Map<string, i64>> = Mutex.new(Map.new())
+    let mm: Mutex<Map<string, i64>> = Mutex.new(Map.new())
     with mm.lock() as m {
         m.insert("a", 1)
         m.insert("b", 2)
@@ -49,7 +49,7 @@ test "map payload" {
 }
 
 test "vec payload" {
-    const mv: Mutex<Vec<i64>> = Mutex.new(Vec.new())
+    let mv: Mutex<Vec<i64>> = Mutex.new(Vec.new())
     with mv.lock() as v {
         v.push(3)
         v.push(4)
@@ -58,14 +58,14 @@ test "vec payload" {
 }
 
 test "scalar payload" {
-    const mi: Mutex<i64> = Mutex.new(5)
+    let mi: Mutex<i64> = Mutex.new(5)
     with mi.lock() as n {
         assert n == 5
     }
 }
 
 test "a mutex in a struct field" {
-    const s = Store { entries: Mutex.new(Map.new()) }
+    let s = Store { entries: Mutex.new(Map.new()) }
     s.put("a", 1)
     s.put("b", 2)
     assert s.size() == 2

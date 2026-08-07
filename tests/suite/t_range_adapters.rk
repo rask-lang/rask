@@ -72,7 +72,7 @@ test "an empty range reverses to nothing" {
 }
 
 test "rev over a computed bound" {
-    const v = Vec.from([10, 20, 30])
+    let v = Vec.from([10, 20, 30])
     mut out = Vec.new()
     for i in (0..v.len()).rev() { out.push(v[i]) }
     assert collect(out) == "30,20,10"

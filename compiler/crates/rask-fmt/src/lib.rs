@@ -40,15 +40,15 @@ mod tests {
 
     #[test]
     fn formats_messy_spacing() {
-        let input = "func    main(   ) {\nconst x=42\n}";
+        let input = "func    main(   ) {\nlet x=42\n}";
         let output = format_source(input);
         assert!(output.contains("func main()"), "should normalize spacing: {}", output);
-        assert!(output.contains("const x = 42"), "should add spaces around =: {}", output);
+        assert!(output.contains("let x = 42"), "should add spaces around =: {}", output);
     }
 
     #[test]
     fn idempotent_on_clean_code() {
-        let clean = "func main() {\n    const x = 42\n    println(x.to_string())\n}\n";
+        let clean = "func main() {\n    let x = 42\n    println(x.to_string())\n}\n";
         let once = format_source(clean);
         let twice = format_source(&once);
         assert_eq!(once, twice, "formatting should be idempotent");
