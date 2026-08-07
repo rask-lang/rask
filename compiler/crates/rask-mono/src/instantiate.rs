@@ -577,7 +577,6 @@ impl TypeSubstitutor {
                         .map(|b| WithBinding {
                             source: self.clone_expr(&b.source),
                             name: b.name.clone(),
-                            mutable: b.mutable,
                         })
                         .collect(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),

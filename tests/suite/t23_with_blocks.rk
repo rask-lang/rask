@@ -20,7 +20,7 @@ test "with mutates vec element" {
     v.push(20)
     v.push(30)
 
-    with v[1] as mut item {
+    with v[1] as item {
         item = 99
     }
     assert v[1] == 99
@@ -32,9 +32,9 @@ test "with mutates multiple elements sequentially" {
     v.push(2)
     v.push(3)
 
-    with v[0] as mut item { item = item * 10 }
-    with v[1] as mut item { item = item * 10 }
-    with v[2] as mut item { item = item * 10 }
+    with v[0] as item { item = item * 10 }
+    with v[1] as item { item = item * 10 }
+    with v[2] as item { item = item * 10 }
 
     assert v[0] == 10
     assert v[1] == 20
@@ -47,7 +47,7 @@ test "with mutates map value" {
     mut m = Map.new()
     m.insert("score", 0)
 
-    with m["score"] as mut val {
+    with m["score"] as val {
         val = val + 10
     }
     assert m["score"] == 10
@@ -110,7 +110,7 @@ test "read other elements during with" {
     v.push(20)
     v.push(30)
 
-    with v[1] as mut item {
+    with v[1] as item {
         // Can still read the vec (LP3: collection accessible)
         assert v.len() == 3
         item = item + v[0]
@@ -124,7 +124,7 @@ test "read other elements during with" {
 test "with one-liner" {
     mut v = Vec.new()
     v.push(5)
-    with v[0] as mut item: item = item * 3
+    with v[0] as item: item = item * 3
     assert v[0] == 15
 }
 
@@ -140,10 +140,10 @@ test "with on vec of structs" {
     players.push(Player { name: "Alice", score: 0 })
     players.push(Player { name: "Bob", score: 0 })
 
-    with players[0] as mut p {
+    with players[0] as p {
         p.score = 100
     }
-    with players[1] as mut p {
+    with players[1] as p {
         p.score = 50
     }
 

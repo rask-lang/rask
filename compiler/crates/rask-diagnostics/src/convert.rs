@@ -552,22 +552,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
             }
 
-            MutBindingOnReadLock { name, span } => {
-                Diagnostic::error(format!("`as mut {}` on a shared read lock", name))
-                    .with_code("E0361")
-                    .with_primary(*span, "`.read()` allows concurrent readers — no mutable binding".to_string())
-                    .with_help("use `.write()` for exclusive access, or drop `mut` to read".to_string())
-                    .with_fix(format!("with shared.write() as mut {} {{ … }}", name))
-                    .with_why("a read lock permits other readers at the same time (conc.sync/R1) — writing back through it would race them")
-            }
-
             MutateWithBinding { name, span } => {
-                Diagnostic::error(format!("cannot mutate `{}` — with-binding is read-only", name))
+                Diagnostic::error(format!("cannot mutate `{}` — bound from a shared read lock", name))
                     .with_code("E0360")
-                    .with_primary(*span, format!("`{}` was bound with `as {}` — read access only", name, name))
-                    .with_help(format!("bind with `as mut {}` to mutate and write back", name))
-                    .with_fix(format!("with … as mut {} {{ … }}", name))
-                    .with_why("with-bindings are read-only by default; only `as mut` bindings write the modified value back to the source when the block exits")
+                    .with_primary(*span, format!("`{}` comes from `.read()` — concurrent readers may hold the lock", name))
+                    .with_help("use `.write()` for exclusive access if you need to mutate".to_string())
+                    .with_fix(format!("with shared.write() as {} {{ … }}", name))
+                    .with_why("a shared read lock permits other readers at the same time (conc.sync/R1) — writing back through it would race them")
             }
 
             StringSliceStored { source_var, view_var, slice_span, store_span } => {

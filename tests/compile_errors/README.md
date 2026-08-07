@@ -66,7 +66,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 |------|--------------|
 | [stdlib_renames.rk](stdlib_renames.rk) | task-2b rename sweep (#302): old stdlib names are hard errors, not aliases — `recv`/`try_recv`, `as_secs`/`as_secs_f64`, `os.getpid`/`os.vars`, `fs.read_file`/`write_file`/`append_file`, removed `File.lines()` (E0313) |
 | [let_reassign.rk](let_reassign.rk) | Reassigning a let binding |
-| [with_binding_readonly.rk](with_binding_readonly.rk) | Mutating a read-only with-binding (E0360, W5); `as mut` on a shared read lock (E0361, R1) |
+| [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
 | [resource_leak.rk](resource_leak.rk) | Resource type not consumed |

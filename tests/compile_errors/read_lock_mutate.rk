@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A shared read lock never hands out mutable access (conc.sync/R1).
+// Mutation through a `.read()` binding is E0360 — use `.write()`.
+
+struct Config {
+    timeout: i64
+}
+
+// ERROR: E0360 — cannot mutate, bound from a shared read lock
+func mutate_through_read_lock() {
+    let config = Shared.new(Config { timeout: 5 })
+    with config.read() as c {
+        c.timeout = 10
+    }
+}
+
+func main() {
+    mutate_through_read_lock()
+}

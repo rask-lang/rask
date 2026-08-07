@@ -9,7 +9,7 @@
 // assert actually failed.
 
 func bump(m: Mutex<i64>) -> i64 {
-    with m.lock() as mut n {
+    with m.lock() as n {
         n = n + 1
     }
     return 7

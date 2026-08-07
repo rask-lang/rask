@@ -1743,11 +1743,7 @@ impl<'a> Printer<'a> {
                         self.emit(", ");
                     }
                     self.format_expr(&binding.source);
-                    if binding.mutable {
-                        self.emit(" as mut ");
-                    } else {
-                        self.emit(" as ");
-                    }
+                    self.emit(" as ");
                     self.emit(&binding.name);
                 }
                 self.emit(" {");

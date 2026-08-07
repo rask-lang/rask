@@ -939,7 +939,7 @@ select {
 // Shared state
 let config = Shared.new(AppConfig {})
 let timeout = with config.read() as c { c.timeout }
-with config.write() as mut c { c.timeout = 60.seconds }
+with config.write() as c { c.timeout = 60.seconds }
 ```
 
 See [concurrency/](concurrency/).

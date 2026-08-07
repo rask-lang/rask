@@ -980,7 +980,6 @@ impl Hasher {
     fn hash_with_binding(&mut self, wb: &WithBinding) {
         self.hash_expr(&wb.source);
         self.feed_var(&wb.name);
-        self.feed_bool(wb.mutable);
     }
 
     fn hash_closure_param(&mut self, cp: &ClosureParam) {

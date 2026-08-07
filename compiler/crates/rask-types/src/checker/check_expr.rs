@@ -1300,26 +1300,19 @@ impl TypeChecker {
                         }
                         _ => source_ty.clone(),
                     };
-                    // conc.sync/R1: a shared read lock never hands out a
-                    // mutable binding — `as mut` on `.read()` would write
-                    // back through a lock that permits concurrent readers.
-                    if binding.mutable {
-                        if let ExprKind::MethodCall { object, method, .. } = &binding.source.kind {
-                            if method == "read" && self.expr_is_shared(object) {
-                                self.errors.push(TypeError::MutBindingOnReadLock {
-                                    name: binding.name.clone(),
-                                    span: binding.source.span,
-                                });
-                            }
-                        }
-                    }
-                    // Read-only by default: mutation through the binding needs
-                    // `as mut v` — otherwise nothing is written back and the
-                    // "mutation" would be a silent no-op.
-                    if binding.mutable {
-                        self.define_local(binding.name.clone(), elem_ty);
-                    } else {
+                    // Bindings are mutable, with one exception: conc.sync/R1 —
+                    // a shared read lock permits concurrent readers, so its
+                    // binding is read-only and never writes back. Mutation
+                    // through it is rejected at the mutation site.
+                    let is_read_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { object, method, .. }
+                            if method == "read" && self.expr_is_shared(object)
+                    );
+                    if is_read_lock {
                         self.define_local_with_read(binding.name.clone(), elem_ty);
+                    } else {
+                        self.define_local(binding.name.clone(), elem_ty);
                     }
                 }
                 for stmt in body {

@@ -53,7 +53,7 @@ test "a struct payload still works" {
 
 test "a word-sized payload still gets loaded and written back" {
     let m = Mutex.new(41)
-    with m.lock() as mut n {
+    with m.lock() as n {
         n = n + 1
     }
     with m.lock() as n {

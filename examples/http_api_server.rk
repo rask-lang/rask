@@ -115,7 +115,7 @@ func create_user(body: string) -> Response {
         }))
     }
 
-    let user = with db.write() as mut d {
+    let user = with db.write() as d {
         let id = d.next_id
         d.next_id += 1
         let user = User { id: id, name: req.name, email: req.email }

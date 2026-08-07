@@ -4425,23 +4425,21 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse the optional `mut` in `with expr as [mut] name`.
-    /// Bindings are read-only by default; `mut` opts into mutation + write-back.
-    fn parse_with_binding_mut(&mut self) -> Result<bool, ParseError> {
-        if self.match_token(&TokenKind::Mut) {
-            return Ok(true);
-        }
-        if matches!(self.current_kind(), TokenKind::Let | TokenKind::Const) {
+    /// Reject a stray keyword after `as` in a with-binding. Bindings are
+    /// always mutable — read-only access comes from the source (`.read()`,
+    /// frozen pools) — so there is nothing to annotate here.
+    fn reject_with_binding_keyword(&mut self) -> Result<(), ParseError> {
+        if matches!(self.current_kind(), TokenKind::Mut | TokenKind::Let | TokenKind::Const) {
             let err = ParseError {
                 span: self.current().span,
-                message: "with-bindings are read-only by default".to_string(),
-                hint: Some("write `as name` for read access, `as mut name` to mutate".to_string()),
+                message: "with-bindings take a bare name".to_string(),
+                hint: Some("bindings are mutable; read-only access comes from the source (`.read()`, frozen pools) — write `as name`".to_string()),
                 why: None,
             };
             self.advance();
             return Err(err);
         }
-        Ok(false)
+        Ok(())
     }
 
     fn parse_with_binding(&mut self) -> Result<Expr, ParseError> {
@@ -4454,13 +4452,11 @@ impl Parser {
         // Parse first binding (ident already consumed)
         let first_expr = self.build_with_as_expr(start, first_ident)?;
         self.expect(&TokenKind::As)?;
-        // `as name` = read-only (default), `as mut name` = mutable
-        let first_mutable = self.parse_with_binding_mut()?;
+        self.reject_with_binding_keyword()?;
         let first_name = self.expect_ident()?;
         bindings.push(WithBinding {
             source: first_expr,
             name: first_name,
-            mutable: first_mutable,
         });
 
         // Parse additional comma-separated bindings
@@ -4468,12 +4464,11 @@ impl Parser {
             // Use bp=22 to stop before consuming 'as' (which has bp=21)
             let expr = self.parse_expr_bp(22)?;
             self.expect(&TokenKind::As)?;
-            let mutable = self.parse_with_binding_mut()?;
+            self.reject_with_binding_keyword()?;
             let name = self.expect_ident()?;
             bindings.push(WithBinding {
                 source: expr,
                 name,
-                mutable,
             });
         }
 

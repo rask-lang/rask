@@ -39,7 +39,7 @@ extend BlockCache {
         let handle = handle.clone()
 
         self.access_counter += 1
-        with self.blocks[handle] as mut block {
+        with self.blocks[handle] as block {
             block.access_count = self.access_counter
             return block.entries.clone()
         }

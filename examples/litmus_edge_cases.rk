@@ -280,7 +280,7 @@ test "Pool — modify non-string field after reading string" {
     mut pool = Pool.new()
     let h = pool.insert(Entity { name: "Hero", health: 100 })
     let name = pool[h].name
-    with pool[h] as mut e {
+    with pool[h] as e {
         e.health = 50
     }
     assert name == "Hero"

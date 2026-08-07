@@ -61,12 +61,12 @@ let hp = pool[h].health          // Copy types: copy out
 pool[h].health -= damage           // in-place expression access
 let e = vec[i]                   // ERROR if element isn't Copy — use with or .clone()
 
-with pool[h] as mut entity {           // multi-statement access; `mut` opts into write-back
+with pool[h] as entity {           // multi-statement access; writes back at block exit
     entity.health -= damage
     if entity.health <= 0 { entity.status = Status.Dead }
     try log_hit(entity.id)         // return/try/break/continue work — real block, not a closure
 }
-with pool[h] as mut e: e.health -= 10  // one-liner form
+with pool[h] as e: e.health -= 10  // one-liner form
 ```
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). Pool allows `insert` and `remove(other)`; removing the bound handle is a compile error (W2a–W2d).
@@ -253,7 +253,7 @@ func main() -> void or Error {
 - `h.join()` → `T or JoinError`; `h.cancel()` requests cooperative cancellation (tasks poll `cancelled()`; I/O returns `Cancelled`); dropping a handle unconsumed is a compile error.
 - Channels transfer ownership: `mut (tx, rx) = Channel<Msg>.buffered(100)`; `try tx.send(m)`, `rx.receive()` (not `recv`), non-blocking `try_send`/`try_receive`.
 - `select { rx1 -> v: handle(v), tx <- msg: sent(), _: fallback() }` — random among ready arms; `select_priority` for ordered; `Timer.after(d)` for timeouts.
-- Shared state crosses tasks only through sync boxes — there is no shared mutable memory otherwise: `Shared<T>` (readers XOR writer: `config.read().timeout` inline, `with config.write() as mut c { }`), `Mutex<T>` (`queue.lock().push(x)` inline, `with mutex as mut q { }`), `Atomic*` for counters/flags. Locks release at expression/block end; they cannot leak out.
+- Shared state crosses tasks only through sync boxes — there is no shared mutable memory otherwise: `Shared<T>` (readers XOR writer: `config.read().timeout` inline, `with config.write() as c { }`), `Mutex<T>` (`queue.lock().push(x)` inline, `with mutex as q { }`), `Atomic*` for counters/flags. Locks release at expression/block end; they cannot leak out.
 - Closures capture by value at field granularity; a closure capturing borrowed data can't leave its scope.
 
 ## Comptime

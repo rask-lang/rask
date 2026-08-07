@@ -110,13 +110,13 @@ vec[i].field = value      // Mutate field (in-place)
 let x = vec[i]          // Copy out (T: Copy only)
 
 // Multi-statement access (mutable by default)
-with vec[i] as mut v {
+with vec[i] as v {
     v.count += 1
     v.last_updated = now()
 }
 
 // One-liner shorthand
-with vec[i] as mut v: v.count += 1
+with vec[i] as v: v.count += 1
 
 // Expression context — produces a value
 let name = with vec[i] as v { v.name.clone() }

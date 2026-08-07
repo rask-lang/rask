@@ -126,13 +126,8 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
-    #[error("cannot mutate `{name}` — with-binding is read-only")]
+    #[error("cannot mutate `{name}` — bound from a shared read lock")]
     MutateWithBinding {
-        name: String,
-        span: Span,
-    },
-    #[error("`as mut {name}` on a shared read lock")]
-    MutBindingOnReadLock {
         name: String,
         span: Span,
     },

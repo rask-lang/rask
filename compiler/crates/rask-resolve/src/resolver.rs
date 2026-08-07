@@ -2314,7 +2314,7 @@ impl Resolver {
                 for binding in bindings {
                     let sym_id = self.symbols.insert(
                         binding.name.clone(),
-                        SymbolKind::Variable { mutable: binding.mutable },
+                        SymbolKind::Variable { mutable: true },
                         None,
                         expr.span,
                         false,

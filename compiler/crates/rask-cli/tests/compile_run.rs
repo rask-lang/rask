@@ -975,14 +975,14 @@ fn error_let_reassign() {
     assert!(compile_error("let_reassign.rk"), "should reject let reassignment");
 }
 
-// with-bindings are read-only by default (mem.borrowing/W5); a shared read
-// lock never hands out a mut binding (conc.sync/R1).
+// A shared read lock never hands out mutable access (conc.sync/R1) —
+// mutation through a `.read()` binding used to type-check and write back
+// through the read lock, racing concurrent readers.
 #[test]
-fn error_with_binding_readonly() {
-    let (failed, out) = compile_error_output("with_binding_readonly.rk");
-    assert!(failed, "read-only with-binding mutation must be rejected: {}", out);
-    assert!(out.contains("E0360"), "should flag the readonly-binding mutation: {}", out);
-    assert!(out.contains("E0361"), "should flag `as mut` on a read lock: {}", out);
+fn error_read_lock_mutate() {
+    let (failed, out) = compile_error_output("read_lock_mutate.rk");
+    assert!(failed, "mutation through a read-lock binding must be rejected: {}", out);
+    assert!(out.contains("E0360"), "should flag the read-lock mutation: {}", out);
 }
 
 #[test]

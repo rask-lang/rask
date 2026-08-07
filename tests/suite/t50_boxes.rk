@@ -23,7 +23,7 @@ test "mem.cell/Cell get + set via interior mutability" {
 
 test "conc.sync/Mutex with .lock() mutates the guarded value" {
     mut m = Mutex.new(0)
-    with m.lock() as mut v { v += 5 }
-    with m.lock() as mut v { v += 3 }
+    with m.lock() as v { v += 5 }
+    with m.lock() as v { v += 3 }
     with m.lock() as v { assert v == 8 }
 }

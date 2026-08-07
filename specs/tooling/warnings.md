@@ -151,7 +151,7 @@ FIX: use `try` to propagate, or handle the error explicitly
 ```
 WARNING [tool.warnings/W9]: multi-field update under a lock without staged()
    |
-3  |  with accounts as mut a {
+3  |  with accounts as a {
 4  |      a.checking -= amount
    |      ^^^^^^^^^^ first field written
 5  |      a.savings += amount
@@ -159,7 +159,7 @@ WARNING [tool.warnings/W9]: multi-field update under a lock without staged()
 
 FIX: stage the update — commits as one move on clean exit, discards on panic:
 
-    with accounts.staged() as mut a {
+    with accounts.staged() as a {
         a.checking -= amount
         a.savings += amount
     }

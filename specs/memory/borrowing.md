@@ -143,7 +143,7 @@ config.write().timeout = 60.seconds             // In-place mutation (E3)
 queue.lock().push(item)                         // Mutex inline access
 
 // Multi-statement still needs with
-with config.write() as mut c {
+with config.write() as c {
     c.timeout = 60.seconds
     c.max_retries = 5
 }
@@ -167,18 +167,18 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | **W2d: Pool clear forbidden** | `pool.clear()` is always a compile error inside `with` — invalidates everything |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
-| **W5: Read-only by default** | `as v` gives read access — mutating through it is a compile error (E0360). `as mut v` opts in: mutation allowed, and the modified value writes back to the source at block exit. Same default as `let`/`mut` — mutation is the marked case |
+| **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), frozen pool contexts reject writes (mem.pools/PF5), and plain reads use inline access |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
 | **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
 
 ### Syntax
 
 ```
-with <source>[<key>] as [mut] <binding> { <body> }
-with <source>[<key>] as [mut] <binding>: <expr>
+with <source>[<key>] as <binding> { <body> }
+with <source>[<key>] as <binding>: <expr>
 
-// Multiple elements — mutability is per binding
-with <source>[<key1>] as [mut] <binding1>, <source>[<key2>] as [mut] <binding2> { <body> }
+// Multiple elements
+with <source>[<key1>] as <binding1>, <source>[<key2>] as <binding2> { <body> }
 ```
 
 ### Examples
@@ -186,7 +186,7 @@ with <source>[<key1>] as [mut] <binding1>, <source>[<key2>] as [mut] <binding2> 
 <!-- test: skip -->
 ```rask
 // Multi-statement access
-with pool[h] as mut entity {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
@@ -195,7 +195,7 @@ with pool[h] as mut entity {
 }
 
 // Multiple elements from same collection
-with pool[h1] as mut e1, pool[h2] as e2 {
+with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack    // Runtime panic if h1 == h2
 }
 
@@ -203,11 +203,11 @@ with pool[h1] as mut e1, pool[h2] as e2 {
 let name = with pool[h] as entity { entity.name }
 
 // One-liner shorthand
-with pool[h] as mut e: e.health -= 10
+with pool[h] as e: e.health -= 10
 
 // return/try/break work naturally
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
-    with pool[h] as mut entity {
+    with pool[h] as entity {
         entity.strength += 10
         entity.defense += 5
         entity.buff_expiry = now() + Duration.seconds(30)
@@ -222,7 +222,7 @@ For Vec and Map: structural mutations are forbidden inside the `with` block — 
 
 <!-- test: compile-fail -->
 ```rask
-with vec[i] as mut item {
+with vec[i] as item {
     item.count += 1
     vec.push(new_item)       // ERROR: structural mutation inside with block
 }
@@ -232,7 +232,7 @@ with vec[i] as mut item {
 
 <!-- test: skip -->
 ```rask
-with pool[h] as mut entity {
+with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: inline read of other element
     pool[other_h].last_attacker = h         // OK: inline write to other element
 
@@ -247,7 +247,7 @@ Removing the bound handle or clearing the pool remain compile errors:
 
 <!-- test: compile-fail -->
 ```rask
-with pool[h] as mut entity {
+with pool[h] as entity {
     entity.health -= 10
     pool.remove(h)           // ERROR: removing the bound element (W2c)
 }
@@ -265,7 +265,7 @@ If `remove(other_h)` happens to alias the bound handle at runtime, the re-resolu
 For multi-statement access to multiple elements, the comma syntax is still preferred:
 <!-- test: skip -->
 ```rask
-with pool[h1] as mut e1, pool[h2] as e2 {
+with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack    // Runtime panic if h1 == h2
 }
 ```
@@ -289,16 +289,16 @@ for h in handles {
 
 ### Unified `with` across container types
 
-One syntax for all container types that hold values behind indirection. Bindings are read-only by default; `as mut` opts into mutation and write-back.
+One syntax for all container types that hold values behind indirection. Bindings are mutable; read-only access is a property of the source.
 
-| Container | Read access | Mutable access |
-|-----------|-------------|----------------|
-| Pool/Vec/Map | `with pool[h] as e { ... }` | `with pool[h] as mut e { ... }` |
-| Cell | `with cell as v { ... }` | `with cell as mut v { ... }` |
-| Shared | `with shared.read() as v { ... }` | `with shared.write() as mut v { ... }` |
-| Mutex | `with mutex as v { ... }` | `with mutex as mut v { ... }` (lock is exclusive either way) |
+| Container | Access | Read-only access |
+|-----------|--------|------------------|
+| Pool/Vec/Map | `with pool[h] as e { ... }` | frozen pool context (PF5), or inline reads |
+| Cell | `with cell as v { ... }` | — (exclusive by design) |
+| Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
+| Mutex | `with mutex as v { ... }` | — (lock is exclusive) |
 
-Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. Everywhere, mutation through the binding requires `as mut`; without it, writes are rejected (E0360) rather than silently discarded at write-back.
+Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 
 See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.
 
@@ -435,7 +435,7 @@ FIX 3: Store indices:
 ```
 ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can reallocate
    |
-5  |  with vec[i] as mut item {
+5  |  with vec[i] as item {
    |  ---- element borrowed here
 6  |      item.count += 1
 7  |      vec.push(new_item)
@@ -446,7 +446,7 @@ WHY: Vec/Map can reallocate, invalidating the borrowed element.
 
 FIX: Move the structural mutation outside the with block:
 
-  with vec[i] as mut item { item.count += 1 }
+  with vec[i] as item { item.count += 1 }
   vec.push(new_item)
 ```
 
@@ -454,7 +454,7 @@ FIX: Move the structural mutation outside the with block:
 ```
 ERROR [mem.borrowing/W2c]: cannot remove `h` inside with block — it's the bound element
    |
-5  |  with pool[h] as mut entity {
+5  |  with pool[h] as entity {
    |  ---- element borrowed here
 6  |      entity.health -= 10
 7  |      pool.remove(h)
@@ -464,7 +464,7 @@ WHY: Removing the bound element frees its memory. The binding would dangle.
 
 FIX: Move the removal outside the with block:
 
-  let should_remove = with pool[h] as mut e { e.health -= 10; e.health <= 0 }
+  let should_remove = with pool[h] as e { e.health -= 10; e.health <= 0 }
   if should_remove { pool.remove(h) }
 ```
 
@@ -556,7 +556,7 @@ func update_combat(pool: Pool<Entity>) {
 <!-- test: parse -->
 ```rask
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
-    with pool[h] as mut entity {
+    with pool[h] as entity {
         entity.strength += 10
         entity.defense += 5
         entity.buff_expiry = now() + Duration.seconds(30)
@@ -581,7 +581,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 **W2a–W2d (pool exception):** Pool handles survive reallocation (PL9) — that's the entire point of handles. I decided to exploit this inside `with` blocks rather than apply the same restriction as Vec/Map. After `pool.insert()` or `pool.remove(other)`, the compiler re-resolves the binding by re-validating the handle (~1ns generation check). If a `remove(other_h)` aliased the bound handle at runtime, the re-resolution panics "stale handle" — same aliasing semantics as W3. The cost is per-type rules in the compiler, but pools already have their own rules (context clauses, generation coalescing, frozen modifiers). One more isn't conceptual overhead — it's the handle abstraction doing what it was designed for.
 
-**W5 (read-only by default):** This flipped. Bindings used to be always-mutable with a warning for never-mutated bindings; now `as v` is read access and `as mut v` opts into mutation. Two reasons. First, consistency: `let`/`mut` makes immutability the unmarked case everywhere else in the language, and with-bindings shouldn't be the one exception. Second, a soundness footgun: write-back only happens for mutable bindings, so under the old design a "read-only" binding that someone mutated anyway would silently discard the change at block exit. Now that's a compile error (E0360) pointing at `as mut`. The lock-type confusion that killed the old `as let` form doesn't come back, because mutability and lock type are separate axes: `.read()`/`.write()` picks the lock, `mut` marks the binding.
+**W5 (mutable binding):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access usually suffices, `.read()` takes a shared lock, and frozen pool contexts make whole pools read-only. I tried flipping this to read-only-by-default with `as mut` opting in (consistency with `let`/`mut`), and it put ceremony on nearly every real with-block in the codebase — the same keyword-length inversion `const`/`mut` had, just one level up. So mutability stays on the source, not the binding: `.read()`/`.write()` picks the lock, frozen picks the pool mode, and a bare binding mutates. The one enforced exception: a `.read()` binding rejects mutation at the mutation site (E0360) and never writes back — under the old unenforced design that write leaked through the read lock.
 
 **E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
@@ -600,13 +600,13 @@ let health = pool[h].health    // Value copied
 if health <= 0 { ... }
 
 // Pattern 2: with for multi-statement access
-with pool[h] as mut entity {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
 }
 
 // Pattern 3: One-liner shorthand
-with pool[h] as mut e: e.health -= damage
+with pool[h] as e: e.health -= damage
 ```
 
 **The pattern for parsers (zero-copy views):**
