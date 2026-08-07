@@ -1,6 +1,6 @@
 # Rust corpus census
 
-Taken 2026-08-06, while settling the `try`/`orelse` operator family (#565/#573/#574). Three
+Taken 2026-08-06, while settling the operator family (#565/#573/#574). The "Rask spelling" column tracks the *final* surface (`try`/`??`/`catch`), updated after the fallback split — counts are the original snapshot. Three
 corpora, grep-level occurrence counts (`grep -rhoE`), normalized per 10k lines. The question:
 which error/optional-handling forms does real code actually use, and does Rask's operator family
 cover the ones that matter?
@@ -19,15 +19,15 @@ cover the ones that matter?
 | `if/while let Some` | 116 | 27 | 32 | `if x? as v` |
 | `.unwrap()`/`.expect()` | 82 | 75 | 210* | `x!` / `x! "msg"` |
 | Some/None/Ok/Err match arms | 76 | 63 | 54 | `match` / `is` |
-| `.unwrap_or` family (3 methods) | 56 | 6.5 | 7.4 | `orelse v` |
+| `.unwrap_or` family (3 methods) | 56 | 6.5 | 7.4 | `x ?? v` / `r catch _ => v` |
 | `is_some/none/ok/err` | 27 | 22 | 61 | `x?`, `x is none`, `r is E` |
 | `.as_ref/as_mut/as_deref` | 25 | 35 | 18 | — deleted by construction |
 | `.cloned()/.copied()` | 23 | 0.7 | 2.5 | — deleted by construction |
-| `.map_err` | 20 | 1.5 | 9 | `orelse e => return f(e)` |
-| `.ok_or/_else` | 19 | 0.7 | 0.7 | `orelse return e` |
+| `.map_err` | 20 | 1.5 | 9 | `catch e => return f(e)` |
+| `.ok_or/_else` | 19 | 0.7 | 0.7 | `x ?? return e` |
 | `.and_then` | 18 | 1.8 | 2.5 | — cut; `match` serves |
 | `Option::take()` | 2.6 | 11 | 1.8 | — hole; `take <place>` proposed |
-| `let … else` (diverging) | 4.6 | 0.8 | 13 | `orelse return` |
+| `let … else` (diverging) | 4.6 | 0.8 | 13 | `?? return` / `catch _ => return` |
 | `.transpose()` | 0.1 | 1.0 | 0 | — meaningless on flat `T? or E` |
 
 *ripgrep unwrap is test-block-inflated; tokio src-only lands at 75 ≈ rask's 82.
@@ -43,13 +43,13 @@ cover the ones that matter?
    bail-or-panic ~75; test-and-bind 27–116. The four short forms (`try`, `!`, `if x? as v`,
    `match`) cover ~90%+ of all handling traffic in every corpus, regardless of author or domain.
 3. **The eager/lazy method pairs exist because Rust method args are eager.** `ok_or` 37 vs
-   `ok_or_else` 244 in the compiler; `unwrap_or` 642 vs `_else` 116. `orelse`'s right side is
-   lazy by construction, so four method names collapse into one operator — removing the reason
-   the names multiplied, not just renaming them.
+   `ok_or_else` 244 in the compiler; `unwrap_or` 642 vs `_else` 116. The fallbacks' right sides
+   are lazy by construction, so four method names collapse into one form per shape — removing
+   the reason the names multiplied, not just renaming them.
 4. **Borrow ceremony costs 18–35/10k everywhere.** `as_ref`/`as_mut`/`cloned` — highest in tokio
    (pin projections, `Option<&mut>`). Rask's inferred binding modes delete the category.
 5. **`let-else` is where expert style is heading** — highest in the most modern idiomatic corpus
-   (ripgrep, 13/10k). `x orelse return e` is that pattern as one operator.
+   (ripgrep, 13/10k). `x ?? return e` / `r catch e => return f(e)` is that pattern as one operator.
 6. **`Option::take()` is a real hole.** The move-out-and-leave-none idiom runs at 11/10k in tokio
    (wakers, futures, buffers in `mut` slots) — a mutation, so `match` can't serve it, and Rask
    has no spelling. Tracked separately (`take <place>` proposal).

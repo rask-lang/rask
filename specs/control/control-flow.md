@@ -139,7 +139,7 @@ The guard needs the `is` clause — it's pattern matching on a user enum. Option
 
 ```rask
 const item = queue.pop()
-if item == none: break
+if item is none: break
 process(item)                  // item: Task here
 ```
 

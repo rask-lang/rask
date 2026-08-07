@@ -331,16 +331,3 @@ re-migrated: the flagship's 28 absence sites wear `??`, its 6 decode guards wear
 `catch _ => return …` — the discard the old `|e|` form hid is now the loudest thing on the line.
 This closes the "swallowed errors are unmarked" debt at the grammar level; the fmt continuation
 rule now covers `catch` bodies too.
-
-**Addendum 2 — round three: the merged word failed the designer's reading test.** Reading the
-migrated flagship at length surfaced the constant unpaid question at every fallback site: *was
-that an error just now, and did it survive?* `orelse` couldn't answer it without a signature
-lookup — elegant, low-info. Resolution (now spec): fallbacks split by what they destroy. `??` is
-back for absence (a miss carries nothing; terse is right), and keeps the diverging right side.
-Failures get `catch e =>` / `catch _ =>` — binder **mandatory**, no bare-value form, so a
-swallowed error is always written down (`catch _ =>` is one grep). `try` unchanged; the composite
-is `try f() ?? continue` and now glosses itself: error up, absence here. Both corpora
-re-migrated: the flagship's 28 absence sites wear `??`, its 6 decode guards wear
-`catch _ => return …` — the discard the old `|e|` form hid is now the loudest thing on the line.
-This closes the "swallowed errors are unmarked" debt at the grammar level; the fmt continuation
-rule now covers `catch` bodies too.

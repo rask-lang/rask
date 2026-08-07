@@ -336,8 +336,8 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
                         field.default_value
                     }
                 } else {
-                    const raw = try fields.get(field.serial_name)
-                        or JsonError.MissingField(field.serial_name)
+                    const raw = fields.get(field.serial_name)
+                        ?? return JsonError.MissingField(field.serial_name)
                     try decode_from_value(raw)
                 },
             }
@@ -422,9 +422,12 @@ FIX: Declare a default:
 
   private started: Instant = Instant.epoch()
 
-  or a decode-only one:
+  or a decode-only override (comptime expression, E21):
 
-  @default(Instant.now()) private started: Instant
+  @default(Instant.epoch()) private started: Instant
+
+  A decode-TIME value (e.g. "now") can't come from @default — it's evaluated
+  at compile time. Make the field `Instant?` and fill it after decode.
 ```
 
 **`@skip` [migration]:**
@@ -568,7 +571,7 @@ struct UserResponse {
 func handle_create_user(req: http.Request) -> http.Response {
     if req.body.is_empty() { return http.Response.bad_request("missing body") }
     const input = json.decode<CreateUserRequest>(req.body)
-    if input is JsonError: return http.Response.bad_request("invalid JSON")
+        catch _ => return http.Response.bad_request("invalid JSON")
     const user = create_user(input.name, input.email, input.age)
     const response = UserResponse { id: user.id, name: user.name, email: user.email }
     return http.Response.ok(json.encode(response))

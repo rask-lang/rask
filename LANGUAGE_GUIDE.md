@@ -172,29 +172,27 @@ func read_config(path: string) -> Config or (IoError | ParseError) {
 }
 ```
 
-Operator surface — one operator per shape; a `?` in the line means absence:
+Operator surface — three words, three jobs: `try` means something **leaves**, a `?` means something is **missing**, `catch` means something **failed**:
 
 | Form | Meaning |
 |---|---|
-| `x?` | `bool` — present test on an optional; narrows a `const` scrutinee inside the block |
-| `x? as v` | test and bind `v` |
+| `x?` | `bool` — present test on an optional. A plain boolean; touching the payload is the bind below |
+| `x? as v` | test and bind `v` — works on any scrutinee, no restrictions |
 | `x?.field` | optional chain — projects when present, `none` otherwise. Optionals only |
-| `x ?? v` | **optionals:** that, or this instead. Must be a `T` |
-| `r or v` | **results:** that, or this instead. Must be a `T` |
-| `r or \|e\| f(e)` | that, or this value built from the error — results only |
-| `try x` | **leaves:** propagate the other branch (error widened, or `none` in a `T?` fn) |
-| `try x else return v` | **leaves:** exit the function with `v` |
-| `try x else break` / `else continue` | **leaves:** exit the loop — the clause takes any divergence |
-| `try x else \|e\| return f(e)` | **leaves:** exit with something built from the error |
+| `x ?? <expr>` | **absence fallback:** the payload, or the right side — a value, or any written-out exit (`?? return E`, `?? break`) |
+| `r catch e => <expr>` | **failure fallback:** the payload, or the body with the error bound — a value, or a written-out exit |
+| `r catch _ => <expr>` | same, dropping the error *visibly*. There is no bare-value `catch` — an error never dies silently |
+| `try x` | **leaves:** propagate the bad branch to the caller (error widened, or `none` in a `T?` fn) |
+| `try f() ?? <expr>` | the flat-shape composite (`T? or E` callee): error up, absence here |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
 | `const v = x is Pattern else { return }` | pattern guard, enum patterns only |
 
-**`try` on the line means control can leave it — and nothing else does.** Bare `try` leaves to the caller; the `else` clause redirects it and takes any divergence (`return`, `break`, `continue`, `panic`), the same latitude the pattern guard has. `or` and `??` supply the value being bound, so control flow on their right is a compile error pointing at `try … else`. The `else` clause must diverge, so the exit is written out rather than implied by a bare value. Scan the left margin and you have every exit point in the function.
+**Every exit is written where it happens.** Bare `try` leaves to the caller — one keyword, one meaning. Everything else that leaves does so with a visible `return`/`break`/`continue`/`panic` on the fallback's right side. And a *discarded error* is always visible too: `catch _ =>` is the loud, greppable spelling of "an error dies here" — the fallbacks are split per shape precisely because dropping a `none` loses nothing while dropping an `E` loses information.
 
 The error-conversion rules — widening into a union, wrapping into a boundary enum, boxing into `any Error` — are attached to `try`, so bare `try r` does work no other form does. `try` also places itself in a postfix chain: `try read_file(p).len()` needs no parens (`type.errors/ER16a`).
 
-**One operator per shape, and the line shows which.** `??` and the rest of the `?`-family are absence; `or` and `try` are failure. Nothing with a `?` applies to a result — no `r?` test, no `if r?` narrowing, no `r?.field` chain; use `is`, and project with `try r.field` (`try` attaches to the fallible step). `!` and `match` work on both.
+**The line shows which shape.** Nothing with a `?` applies to a result — no `r?` test, no `r ?? v`, no `r?.field` chain; failures use `catch`, tests use `is`, and projection is `try r.field` (`try` attaches to the fallible step). `catch` never appears on an optional — absence has nothing to catch. `try`, `!` and `match` work on both.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
 - Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.

@@ -141,6 +141,8 @@ const content = try {
 
 ER13, ER19, ER20 and ER26 are retired — the `?.` chain on results, the `if r?` predicate and its `as v` bind, and the `!r?` parse error, all of which assumed `?` worked on results. Narrowing a result is `is` (ER23). ER21 and ER22 survive: the `else`-narrows and `else as e` rules were never about `?`, so they re-home onto the `is` test unchanged. ER44 folds into ER14 (the binder *is* the form now, so there's nothing separate to say). ER45 and ER46 (the `try … else` clause and its transform form) are deleted — the fallbacks' diverging right sides do both jobs; ER48 (fallbacks never transfer control) is deleted with them.
 
+**ID history.** Two IDs in this file were repurposed with *reversed* meanings during the redesign, before the never-repurpose convention existed (`CONVENTIONS.md`): **ER12** once meant "`r?` is a boolean ok-test" and now means "no `?` on a result"; **ER14** once meant the bare-value fallback and now means `catch`. Citations of these IDs in issues, commits, or diagnostics from before #596 refer to the old meanings. No other ID in this file is reused, and none will be again.
+
 ## Three Words, Three Jobs
 
 **`try` means something leaves. A `?` means something is missing. `catch` means something failed.** That's the whole glance-test, and each word carries one more fact: `try` preserves the bad branch (it arrives at the caller intact), `??` substitutes for a miss that carried no information, and `catch` stands wherever an *error* — a payload, a cost — is being handled or deliberately dropped.
@@ -214,7 +216,7 @@ const cfg = load_from_disk() catch _ => load_from_env() catch _ => load_from_net
 //          result: T or NetError — the earlier errors are dropped, visibly
 ```
 
-The `catch` body extends rightward (it's an expression), so the chain nests the natural way without parens. The same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped with `_ =>` — bind it and consume it, or `match`.
+The `catch` body extends rightward (greedy, like a match-arm body), so the chain nests the natural way without parens; left of `catch`, the operand chain groups left at the same precedence level as `??` — the full ruling, including mixed `??`/`catch` lines, is in [operators.md](operators.md). The same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped with `_ =>` — bind it and consume it, or `match`.
 
 **In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and the fold is the one that reads best: the success type is `void`, so a void-returning handler needs no ceremony.
 
@@ -301,7 +303,7 @@ const kv = try sst_point_lookup(sst, key) ?? continue        // (try …) ?? …
 
 The composite reads as one idiom — **error up, absence here** — and with the fallbacks split, the line says it outright: `try` is the error leaving, the `?` is the absence being handled. Its meaning isn't a new rule either. `T? or E` is `(T?) or E`, and operators act on the outer layer (`type.optionals/OPT30`, the same principle that makes `T??` work): `try` binds first and peels the outer bad branch — the error — leaving a `T?` for `??`. The phrase is also self-identifying: on a plain result or plain optional it doesn't type-check (`try` already produced the payload), so `try … ??` on one operand always means the callee is flat.
 
-In an **infallible** function the flat shape has nowhere to propagate and three live branches, so neither operator consumes it — `match` with three arms is the right tool there, and the three outcomes genuinely differ:
+In an **infallible** function the flat shape has nowhere to propagate and three live branches, so no single fallback consumes it — `match` with three arms is the right tool when the outcomes genuinely differ. (Asserting is still one word: `x!` acts on the outer layer per OPT30, so `t.lookup(key)! "corrupt"` panics on the error and yields the `T?` — tiered_store's trusted-table read does exactly that.) The three-way match:
 
 <!-- test: skip -->
 ```rask

@@ -85,8 +85,8 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
-- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try … else |e| return` chains transformation with leaving; `try` marks every line control can leave. See below
-- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`). Match on `T?` is a style lint. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
+- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `catch e => return wrap(e)` chains transformation with leaving; every exit is written where it happens. See below
+- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `is none`). Match on `T?` is a style lint. Payload access is the `x? as v` bind — no flow narrowing to remember. Kotlin/TypeScript nullable ergonomics, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
 
@@ -109,13 +109,13 @@ The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-
 
 ```rask
 const name = user?.profile?.display_name ?? "Anonymous"
-if user == none { return default() }
+const u = user ?? return default()
 if user? as u { greet(u) }
 ```
 
 This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Option`.
 
-**Narrowing is flow typing, not pattern matching.** `if x? { use(x) }` narrows `x` to `T` inside the block because `const` bindings can't be reassigned. No destructuring pattern. The compiler uses a fact it already knows (constness) to refine types in branches.
+**Binding, not flow typing.** `x?` is a plain boolean; getting at the payload is always the `as v` bind (`if x? as v { use(v) }`) or an operator. There is no in-place narrowing to remember and no destructuring pattern — one binding habit, `as name` after whatever proved a value exists, shared with `is` tests and match arms.
 
 **Errors are bounded.** Every `E` in `T or E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
 
@@ -131,13 +131,13 @@ enum FetchError {
 
 No `thiserror` macro, no hand-written match.
 
-**`try … else |e| return` form.** Transform and leave in one step:
+**`catch e =>` — transform and leave in one step:**
 
 ```rask
-const data = try fs.read(path) else |e| return context("reading {path}", e)
+const data = fs.read(path) catch e => return context("reading {path}", e)
 ```
 
-Rust needs `fs::read(path).map_err(|e| ...)?`.
+Rust needs `fs::read(path).map_err(|e| ...)?`. And the discard is never silent: dropping an error is spelled `catch _ =>`, which is one grep.
 
 **Linear resources in errors.** If an error variant carries a linear resource (file handle, socket), both branches of `T or E` must consume it. Rust's `Drop` runs automatically but can't return errors during cleanup — Rask's explicit consumption lets you `try file.close()` in the error arm and propagate if it fails.
 
@@ -322,12 +322,12 @@ The catch: functions that spawn tasks need `using Multitasking` in their signatu
 
 ### Error context without boilerplate
 
-`try...else` chains error context inline. `@message` generates Display-like methods from annotations. Private functions can use `or _` to let the compiler infer the error union.
+`catch e =>` chains error context inline. `@message` generates Display-like methods from annotations. Private functions can use `or _` to let the compiler infer the error union.
 
 ```rask
 func load_config(path: string) -> Config or _ {
-    const text = try fs.read(path) else |e| return context("reading {path}", e)
-    const config = try parse(text) else |e| return context("parsing {path}", e)
+    const text = fs.read(path) catch e => return context("reading {path}", e)
+    const config = parse(text) catch e => return context("parsing {path}", e)
     return config
 }
 ```
@@ -356,13 +356,13 @@ Importing users from a CSV file. Same task, same structure, different languages.
 **Rask:**
 ```rask
 func import_users(path: string, mutate db: Database) -> i64 or ImportError {
-    const file = try fs.open(path)
-        or |e| ImportError.FileError(path, e)
+    const file = fs.open(path)
+        catch e => return ImportError.FileError(path, e)
     ensure file.close()
 
     let imported = 0
     for line in file.lines() {
-        const text = try line else |e| return ImportError.ReadError(e)
+        const text = line catch e => return ImportError.ReadError(e)
         const parts = text.split(",")
         if parts.len() != 2 {
             return ImportError.BadFormat("expected name,email on line {imported + 1}")
@@ -400,7 +400,7 @@ fn import_users(path: &str, db: &mut Database) -> Result<i64, ImportError> {
 
 No single line is revolutionary. The differences are incremental:
 
-- `try … else |e| return …` vs `.map_err(|e| ...)?` — same idea, less nesting
+- `catch e => return …` vs `.map_err(|e| ...)?` — same idea, less nesting
 - `return ImportError.BadFormat(...)` vs `return Err(ImportError::BadFormat(...))` — no wrapper
 - `return imported` vs `Ok(imported)` — no wrapper
 - `parts[0].trim()` vs `parts[0].trim().to_string()` — Copy strings
