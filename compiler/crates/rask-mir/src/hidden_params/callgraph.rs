@@ -148,9 +148,9 @@ fn collect_callees_from_stmt(pass: &HiddenParamPass, stmt: &Stmt, callees: &mut 
     match &stmt.kind {
         StmtKind::Expr(e) => collect_callees_from_expr(pass, e, callees),
         StmtKind::Mut { init, .. }
-        | StmtKind::Const { init, .. }
+        | StmtKind::Let { init, .. }
         | StmtKind::MutTuple { init, .. }
-        | StmtKind::ConstTuple { init, .. } => {
+        | StmtKind::LetTuple { init, .. } => {
             collect_callees_from_expr(pass, init, callees);
         }
         StmtKind::Assign { target, value } => {

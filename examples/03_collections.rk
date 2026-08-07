@@ -3,7 +3,7 @@
 
 func main() {
     // Vec - ordered collection
-    const numbers = Vec.from([1, 2, 3, 4, 5])
+    let numbers = Vec.from([1, 2, 3, 4, 5])
 
     print("Vec length: ")
     print(numbers.len())
@@ -19,7 +19,7 @@ func main() {
     scores.insert("Bob", 87)
     scores.insert("Charlie", 92)
 
-    const alice_score = scores.get("Alice")
+    let alice_score = scores.get("Alice")
     if alice_score? {
         print("Alice's score: ")
         print(alice_score)

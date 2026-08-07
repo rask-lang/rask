@@ -13,8 +13,8 @@ struct User {
 }
 
 func main() {
-    const u = User { name: "alice" }
+    let u = User { name: "alice" }
     // ERROR: `json.to_value` is declared but not implemented yet
-    const value = json.to_value(u)
+    let value = json.to_value(u)
     println("unreachable")
 }

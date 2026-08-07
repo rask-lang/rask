@@ -25,24 +25,24 @@ extend Pair<A, B> {
 }
 
 test "string payload" {
-    const h = Holder { item: "hello" }
+    let h = Holder { item: "hello" }
     assert h.get() == "hello"
     assert h.get().len() == 5
 }
 
 test "integer payload" {
-    const h = Holder { item: 42 }
+    let h = Holder { item: 42 }
     assert h.get() == 42
 }
 
 test "annotated string payload" {
-    const h: Holder<string> = Holder { item: "a fairly long string here" }
+    let h: Holder<string> = Holder { item: "a fairly long string here" }
     assert h.get() == "a fairly long string here"
     assert h.item == "a fairly long string here"
 }
 
 test "two type parameters" {
-    const p = Pair { left: "name", right: 7 }
+    let p = Pair { left: "name", right: 7 }
     assert p.first() == "name"
     assert p.second() == 7
 }

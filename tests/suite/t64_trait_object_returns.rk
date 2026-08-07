@@ -45,10 +45,10 @@ func status_name(s: Status) -> string {
 }
 
 test "an enum comes back through a vtable call" {
-    const h = Echo { n: 5 } as any Handler
+    let h = Echo { n: 5 } as any Handler
     assert status_name(h.code()) == "notfound"
     // And directly in a match, which is where the bad tag showed up.
-    const picked = match h.code() {
+    let picked = match h.code() {
         Status.Ok => 0
         Status.NotFound => 1
         Status.Error => 2
@@ -57,31 +57,31 @@ test "an enum comes back through a vtable call" {
 }
 
 test "a word-sized and an oversized struct both come back" {
-    const h = Echo { n: 5 } as any Handler
-    const p = h.pair()
+    let h = Echo { n: 5 } as any Handler
+    let p = h.pair()
     assert p.a == 5
     assert p.b == 10
-    const b = h.big()
+    let b = h.big()
     assert b.one == 1
     assert b.four == 4
 }
 
 test "a string comes back through a vtable call" {
-    const h = Echo { n: 5 } as any Handler
+    let h = Echo { n: 5 } as any Handler
     assert h.text() == "echo"
     assert h.text().len() == 4
 }
 
 test "scalars and an optional come back through a vtable call" {
-    const h = Echo { n: 7 } as any Handler
+    let h = Echo { n: 7 } as any Handler
     assert h.count() == 7
     assert h.ratio() == 1.5
     assert h.maybe() ?? 0 == 7
 }
 
 test "the same method dispatches the same statically and dynamically" {
-    const e = Echo { n: 3 }
-    const h = e as any Handler
+    let e = Echo { n: 3 }
+    let h = e as any Handler
     assert status_name(e.code()) == status_name(h.code())
     assert e.pair().b == h.pair().b
     assert e.text() == h.text()

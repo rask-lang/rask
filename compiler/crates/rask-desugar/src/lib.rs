@@ -326,9 +326,9 @@ impl Desugarer {
         match &mut stmt.kind {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } => self.desugar_expr(init),
-            StmtKind::Const { init, .. } => self.desugar_expr(init),
+            StmtKind::Let { init, .. } => self.desugar_expr(init),
             StmtKind::MutTuple { init, .. } => self.desugar_expr(init),
-            StmtKind::ConstTuple { init, .. } => self.desugar_expr(init),
+            StmtKind::LetTuple { init, .. } => self.desugar_expr(init),
             StmtKind::Assign { target, value } => {
                 self.desugar_expr(target);
                 self.desugar_expr(value);

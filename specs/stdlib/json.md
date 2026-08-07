@@ -92,8 +92,8 @@ struct User {
     public email: string?
 }
 
-const user = try json.decode<User>(input)
-const output = json.encode(user)
+let user = try json.decode<User>(input)
+let output = json.encode(user)
 ```
 
 With field annotations:
@@ -121,7 +121,7 @@ struct ApiUser {
 ```
 ERROR [std.json/J3]: missing required field
    |
-5  |  const user = try json.decode<User>(body)
+5  |  let user = try json.decode<User>(body)
    |                   ^^^^^^^^^^^^^^^^^^^^^^^ field "email" not found in JSON object
 
 WHY: Required (non-optional) struct fields must be present in the JSON input.

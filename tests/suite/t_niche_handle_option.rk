@@ -21,7 +21,7 @@ struct Index {
 extend Index {
     func new() -> Index {
         mut idx = Index { pool: Pool.new(), by_id: Map.new() }
-        const h = idx.pool.insert(Task { title: "write it", done: false })
+        let h = idx.pool.insert(Task { title: "write it", done: false })
         idx.by_id.insert(1, h)
         return idx
     }
@@ -35,15 +35,15 @@ extend Index {
 }
 
 test "a map lookup that misses answers none instead of crashing" {
-    const idx = Index.new()
+    let idx = Index.new()
     assert_eq(idx.title_of(1), "write it")
     assert_eq(idx.title_of(99), "missing")
 }
 
 test "a handle option compares against none through a binding" {
-    const idx = Index.new()
-    const hit = idx.by_id.get(1)
-    const miss = idx.by_id.get(99)
+    let idx = Index.new()
+    let hit = idx.by_id.get(1)
+    let miss = idx.by_id.get(99)
     assert hit != none
     assert !(hit == none)
     assert miss == none
@@ -51,9 +51,9 @@ test "a handle option compares against none through a binding" {
 }
 
 test "`??` on a missed lookup falls through to the default" {
-    const idx = Index.new()
-    const known = idx.by_id.get(1)!
-    const fallback = idx.by_id.get(99) ?? known
+    let idx = Index.new()
+    let known = idx.by_id.get(1)!
+    let fallback = idx.by_id.get(99) ?? known
     with idx.pool[fallback] as t {
         assert_eq(t.title, "write it")
     }
@@ -61,9 +61,9 @@ test "`??` on a missed lookup falls through to the default" {
 
 test "a handle option built directly still compares the same way" {
     mut pool = Pool<Task>.new()
-    const h = pool.insert(Task { title: "direct", done: true })
-    const direct: Handle<Task>? = h
+    let h = pool.insert(Task { title: "direct", done: true })
+    let direct: Handle<Task>? = h
     assert direct != none
-    const empty: Handle<Task>? = none
+    let empty: Handle<Task>? = none
     assert empty == none
 }

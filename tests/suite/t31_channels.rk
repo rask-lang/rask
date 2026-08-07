@@ -8,7 +8,7 @@
 // separately), which would skew the drained counts.
 
 test "try_receive drains an i64 channel then reports empty" {
-    const (tx, rx) = Channel<i64>.buffered(8)
+    let (tx, rx) = Channel<i64>.buffered(8)
     tx.send(10)
     tx.send(20)
     tx.send(30)
@@ -27,7 +27,7 @@ test "try_receive drains an i64 channel then reports empty" {
 }
 
 test "try_receive drains an f64 channel" {
-    const (tx, rx) = Channel<f64>.buffered(8)
+    let (tx, rx) = Channel<f64>.buffered(8)
     tx.send(1.5)
     tx.send(2.5)
     mut sum = 0.0
@@ -45,7 +45,7 @@ test "try_receive drains an f64 channel" {
 }
 
 test "try_receive on an empty channel reports none-equivalent immediately" {
-    const (tx, rx) = Channel<i64>.buffered(4)
+    let (tx, rx) = Channel<i64>.buffered(4)
     mut n = 0
     while rx.try_receive() is i64 as v {
         n += 1
@@ -60,7 +60,7 @@ test "try_receive on an empty channel reports none-equivalent immediately" {
 // `send(x).ok()` must send x exactly once. Native codegen used to lower the
 // receiver of `.ok()` twice, sending every value twice (#349).
 test "send().ok() sends the value exactly once" {
-    const (tx, rx) = Channel<i64>.buffered(8)
+    let (tx, rx) = Channel<i64>.buffered(8)
     tx.send(1).ok()
     tx.send(2).ok()
     tx.send(3).ok()

@@ -780,7 +780,7 @@ impl TypeChecker {
                             .unwrap_or_else(|| self.ctx.fresh_var());
                         self.push_scope();
                         if let Some(scope) = self.local_types.last_mut() {
-                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
+                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
                         }
                         let handler_ty = self.infer_expr(&ec.body);
                         self.pop_scope();
@@ -818,7 +818,7 @@ impl TypeChecker {
                             // function's error return type
                             self.push_scope();
                             if let Some(scope) = self.local_types.last_mut() {
-                                scope.insert(ec.error_binding.clone(), (*err.clone(), super::BindingKind::Const));
+                                scope.insert(ec.error_binding.clone(), (*err.clone(), super::BindingKind::Let));
                             }
                             let handler_ty = self.infer_expr(&ec.body);
                             self.pop_scope();
@@ -888,7 +888,7 @@ impl TypeChecker {
                                         // unify handler type with function's error return type
                                         self.push_scope();
                                         if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
+                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
                                         }
                                         let handler_ty = self.infer_expr(&ec.body);
                                         self.pop_scope();
@@ -920,7 +920,7 @@ impl TypeChecker {
                                         // try...else with both types unresolved
                                         self.push_scope();
                                         if let Some(scope) = self.local_types.last_mut() {
-                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Const));
+                                            scope.insert(ec.error_binding.clone(), (err_ty, super::BindingKind::Let));
                                         }
                                         let handler_ty = self.infer_expr(&ec.body);
                                         self.pop_scope();
@@ -1300,7 +1300,20 @@ impl TypeChecker {
                         }
                         _ => source_ty.clone(),
                     };
-                    self.define_local(binding.name.clone(), elem_ty);
+                    // Bindings are mutable, with one exception: conc.sync/R1 —
+                    // a shared read lock permits concurrent readers, so its
+                    // binding is read-only and never writes back. Mutation
+                    // through it is rejected at the mutation site.
+                    let is_read_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { object, method, .. }
+                            if method == "read" && self.expr_is_shared(object)
+                    );
+                    if is_read_lock {
+                        self.define_local_with_read(binding.name.clone(), elem_ty);
+                    } else {
+                        self.define_local(binding.name.clone(), elem_ty);
+                    }
                 }
                 for stmt in body {
                     self.check_stmt(stmt);
@@ -1799,8 +1812,14 @@ impl TypeChecker {
             if is_mutate && !is_take {
                 if let ExprKind::Ident(arg_name) = &arg.expr.kind {
                     match self.lookup_binding_kind(arg_name) {
-                        Some(super::BindingKind::Const) => {
+                        Some(super::BindingKind::Let) => {
                             self.errors.push(TypeError::MutateConst {
+                                name: arg_name.clone(),
+                                span: arg.expr.span,
+                            });
+                        }
+                        Some(super::BindingKind::WithRead) => {
+                            self.errors.push(TypeError::MutateWithBinding {
                                 name: arg_name.clone(),
                                 span: arg.expr.span,
                             });
@@ -1975,8 +1994,14 @@ impl TypeChecker {
             // `take self` is allowed — it consumes the value, not mutates it.
             if self.method_mutates_self(var_name, method) {
                 match self.lookup_binding_kind(var_name) {
-                    Some(super::BindingKind::Const) => {
+                    Some(super::BindingKind::Let) => {
                         self.errors.push(TypeError::MutateConst {
+                            name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    Some(super::BindingKind::WithRead) => {
+                        self.errors.push(TypeError::MutateWithBinding {
                             name: var_name.clone(),
                             span: object.span,
                         });
@@ -2955,14 +2980,26 @@ impl TypeChecker {
                     if let Some(inner) = scrutinee_ty.as_option() {
                         let inner = inner.clone();
                         match kind {
-                            super::BindingKind::Const => self.define_local_const(name, inner),
+                            super::BindingKind::Let => self.define_local_const(name, inner),
                             super::BindingKind::Param => self.define_local_param(name, inner),
+                            super::BindingKind::WithRead => self.define_local_with_read(name, inner),
                             super::BindingKind::Mut => self.define_local(name, inner),
                         }
                     }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Is this expression's inferred type `Shared<...>`? (Receiver must have
+    /// been inferred already — with-binding sources are.)
+    fn expr_is_shared(&mut self, e: &Expr) -> bool {
+        let Some(t) = self.node_types.get(&e.id).cloned() else { return false };
+        match self.ctx.apply(&t) {
+            Type::Generic { base, .. } => self.types.type_name(base) == "Shared",
+            Type::UnresolvedGeneric { name, .. } => name == "Shared",
+            _ => false,
         }
     }
 
@@ -2996,8 +3033,9 @@ impl TypeChecker {
         };
         if matches_err {
             match kind {
-                super::BindingKind::Const => self.define_local_const(name, *ok),
+                super::BindingKind::Let => self.define_local_const(name, *ok),
                 super::BindingKind::Param => self.define_local_param(name, *ok),
+                super::BindingKind::WithRead => self.define_local_with_read(name, *ok),
                 super::BindingKind::Mut => self.define_local(name, *ok),
             }
         }

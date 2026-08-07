@@ -28,7 +28,7 @@ extend Method {
     // Uses byte-level matching because stdlib code doesn't go through
     // the desugar pass, so string == does pointer comparison (not content).
     public func from_string(s: string) -> Method? {
-        const len = s.len()
+        let len = s.len()
         if len == 3 && (s.byte_at(0) ?? 0) == 71 && (s.byte_at(1) ?? 0) == 69 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Get    // GET
         }
@@ -136,13 +136,13 @@ extend Request {
 
     // URL path before '?'.
     public func path(self) -> string {
-        const qpos = self.url.find("?") ?? return self.url
+        let qpos = self.url.find("?") ?? return self.url
         return self.url[0..qpos].to_string()
     }
 
     // Single query parameter by name.
     public func query_param(self, name: string) -> string? {
-        const params = self.query_params()
+        let params = self.query_params()
         return params.get(name)
     }
 
@@ -151,18 +151,18 @@ extend Request {
     // hands back, which are views into `self.url`.
     public func query_params(self) -> Map<string, string> {
         mut result = Map<string, string>.new()
-        const qpos = self.url.find("?")
+        let qpos = self.url.find("?")
         if qpos? as qp {
-            const query = self.url[qp + 1..].to_string()
+            let query = self.url[qp + 1..].to_string()
             for pair in query.split("&") {
-                const item = pair.to_string()
+                let item = pair.to_string()
                 if item.is_empty() {
                     continue
                 }
-                const eq = item.find("=")
+                let eq = item.find("=")
                 if eq? as eqpos {
-                    const key = item[0..eqpos].to_string()
-                    const value = item[eqpos + 1..].to_string()
+                    let key = item[0..eqpos].to_string()
+                    let value = item[eqpos + 1..].to_string()
                     result.insert(key, value)
                 } else {
                     result.insert(item, "")
@@ -296,7 +296,7 @@ extend HttpError {
 
 // Parse a raw HTTP/1.1 request string into a Request.
 func parse_http_request(raw: string) -> Request or HttpError {
-    const len = raw.len()
+    let len = raw.len()
     if len == 0 {
         return HttpError.InvalidResponse("empty request")
     }
@@ -309,7 +309,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
         }
         line_end += 1
     }
-    const request_line = raw[0..line_end].to_string()
+    let request_line = raw[0..line_end].to_string()
 
     // Parse request line: "METHOD PATH HTTP/1.1"
     mut first_sp: usize = 0
@@ -325,10 +325,10 @@ func parse_http_request(raw: string) -> Request or HttpError {
     // returns — anything kept in the Request has to be copied out (the checker
     // rejects storing a slice; stdlib code slipped past it and every request
     // arrived with an empty path and body).
-    const method_str = raw[0..first_sp].to_string()
-    const path = raw[first_sp + 1..second_sp].to_string()
+    let method_str = raw[0..first_sp].to_string()
+    let path = raw[first_sp + 1..second_sp].to_string()
 
-    const method = if Method.from_string(method_str)? as m { m } else {
+    let method = if Method.from_string(method_str)? as m { m } else {
         return HttpError.InvalidResponse("unknown HTTP method")
     }
 
@@ -361,15 +361,15 @@ func parse_http_request(raw: string) -> Request or HttpError {
         }
 
         if colon < hline_end {
-            const hname = raw[pos..colon].to_string()
-            const hvalue = raw[colon + 2..hline_end].to_string()
+            let hname = raw[pos..colon].to_string()
+            let hvalue = raw[colon + 2..hline_end].to_string()
             headers.set(hname, hvalue)
         }
 
         pos = hline_end + 2
     }
 
-    const body = if pos < len {
+    let body = if pos < len {
         raw[pos..].to_string()
     } else {
         string.new()
@@ -473,7 +473,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     // Split host+port from path at first /
     mut host_port = rest
     mut path = "/"
-    const slash = rest.find("/")
+    let slash = rest.find("/")
     if slash? as pos {
         host_port = rest[0..pos].to_string()
         path = rest[pos..].to_string()
@@ -482,7 +482,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     // Split host from port at last :
     mut host = host_port
     mut port = "80"
-    const colon = host_port.find(":")
+    let colon = host_port.find(":")
     if colon? as cpos {
         host = host_port[0..cpos].to_string()
         port = host_port[cpos + 1..].to_string()
@@ -536,7 +536,7 @@ func format_http_request(req: Request, host: string) -> string {
 
 // Parse raw HTTP/1.1 response bytes into a Response.
 func parse_http_response(raw: string) -> Response or HttpError {
-    const len = raw.len()
+    let len = raw.len()
     if len == 0 {
         return HttpError.InvalidResponse("empty response")
     }
@@ -551,7 +551,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     // Parse status line: "HTTP/1.1 200 OK"
-    const status_line = raw[0..line_end].to_string()
+    let status_line = raw[0..line_end].to_string()
     mut first_sp: usize = 0
     while first_sp < line_end && (raw.byte_at(first_sp) ?? 0) != 32 {
         first_sp += 1
@@ -561,11 +561,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
         second_sp += 1
     }
 
-    const status_str = raw[first_sp + 1..second_sp].to_string()
-    const status_val = if status_str.parse_int()? as v { v } else {
+    let status_str = raw[first_sp + 1..second_sp].to_string()
+    let status_val = if status_str.parse_int()? as v { v } else {
         return HttpError.InvalidResponse("bad status code: {status_str}")
     }
-    const status = status_val truncate to u16
+    let status = status_val truncate to u16
 
     // Parse headers
     mut headers = Headers.new()
@@ -593,8 +593,8 @@ func parse_http_response(raw: string) -> Response or HttpError {
         }
 
         if colon < hline_end {
-            const hname = raw[pos..colon].to_string()
-            const hvalue = raw[colon + 2..hline_end].to_string()
+            let hname = raw[pos..colon].to_string()
+            let hvalue = raw[colon + 2..hline_end].to_string()
             headers.set(hname, hvalue)
         }
 
@@ -602,7 +602,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     // Body is everything after headers
-    const body = if pos < len {
+    let body = if pos < len {
         raw[pos..].to_string()
     } else {
         string.new()
@@ -618,11 +618,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
 // Connect, send request, read response, close connection.
 // Internal helper — called from extend http {} and extend HttpClient {}.
 func _send_request_impl(method: Method, url: string, body: string, extra_headers: Headers) -> Response or HttpError {
-    const (host, port, path) = try parse_url(url)
-    const addr = "{host}:{port}"
+    let (host, port, path) = try parse_url(url)
+    let addr = "{host}:{port}"
 
     // Connect
-    const conn_fd = unsafe { rask_net_tcp_connect(addr as i64) }
+    let conn_fd = unsafe { rask_net_tcp_connect(addr as i64) }
     if conn_fd < 0 {
         return HttpError.ConnectionFailed("cannot connect to {addr}")
     }
@@ -635,11 +635,11 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     if body.len() > 0 {
         req = req.with_body(body)
     }
-    const raw_req = format_http_request(req, host)
+    let raw_req = format_http_request(req, host)
     write_raw(conn_fd, raw_req)
 
     // Read response (reads until server closes connection)
-    const raw_resp = unsafe { rask_io_read_until_close(conn_fd, 1048576) }
+    let raw_resp = unsafe { rask_io_read_until_close(conn_fd, 1048576) }
 
     // Close connection
     unsafe { rask_io_close_fd(conn_fd) }
@@ -655,8 +655,8 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 // Parse HTTP/1.1 request from a TCP connection.
 // Shadows the dispatch entry for TcpConnection_read_http_request.
 func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
-    const raw = read_raw(conn_fd, 65536)
-    const request = try parse_http_request(raw)
+    let raw = read_raw(conn_fd, 65536)
+    let request = try parse_http_request(raw)
 
     // Build the legacy struct layout: [method_str, path, body, headers_map]
     // This matches what the codegen expects for HttpRequest struct access.
@@ -668,8 +668,8 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
 // Write HTTP/1.1 response to a TCP connection.
 // Shadows the dispatch entry for TcpConnection_write_http_response.
 func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Error {
-    const resp = resp_ptr as Response
-    const raw = format_http_response(resp)
+    let resp = resp_ptr as Response
+    let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
     return 0
 }
@@ -684,21 +684,21 @@ struct HttpServer {
 
 extend HttpServer {
     public func listen(addr: string) -> HttpServer or HttpError {
-        const listener = if net.tcp_listen(addr)? as l { l } else {
+        let listener = if net.tcp_listen(addr)? as l { l } else {
             return HttpError.ConnectionFailed("failed to bind {addr}")
         }
         return HttpServer { listener: listener, addr: addr }
     }
 
     public func accept(self) -> (Request, Responder) or HttpError {
-        const conn = if self.listener.accept()? as c { c } else {
+        let conn = if self.listener.accept()? as c { c } else {
             return HttpError.Io("accept failed")
         }
-        const raw = read_raw(conn as i64, 65536)
-        const request = if parse_http_request(raw)? as r { r } else {
+        let raw = read_raw(conn as i64, 65536)
+        let request = if parse_http_request(raw)? as r { r } else {
             return HttpError.InvalidResponse("malformed request")
         }
-        const responder = Responder { conn_fd: conn as i64, sent: false }
+        let responder = Responder { conn_fd: conn as i64, sent: false }
         return (request, responder)
     }
 
@@ -720,7 +720,7 @@ struct Responder {
 
 extend Responder {
     public func respond(take self, response: Response) -> void or HttpError {
-        const raw = format_http_response(response)
+        let raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
     }
 }
@@ -750,14 +750,14 @@ extend http {
     /// (transitively reaches `spawn`).
     public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> void or HttpError
     {
-        const server = if HttpServer.listen(addr)? as s { s } else {
+        let server = if HttpServer.listen(addr)? as s { s } else {
             return HttpError.Io("listen failed")
         }
         ensure server.close()
         loop {
-            const result = server.accept()
+            let result = server.accept()
             if result? as r {
-                const (req, responder) = r
+                let (req, responder) = r
                 // `own` moves req/responder into the task. Borrowing them
                 // leaves the task reading this iteration's frame, which the
                 // next accept() reuses while the task is still running — the

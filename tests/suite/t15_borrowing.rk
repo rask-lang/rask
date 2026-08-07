@@ -11,20 +11,20 @@ struct Player {
 }
 
 test "struct integer field read" {
-    const p = Player { name: "Alice", score: 100, health: 50 }
+    let p = Player { name: "Alice", score: 100, health: 50 }
     assert p.score == 100
     assert p.health == 50
 }
 
 // BUG: struct string field access returns "" in native codegen
 test "struct string field read" {
-    const p = Player { name: "Alice", score: 100, health: 50 }
+    let p = Player { name: "Alice", score: 100, health: 50 }
     assert p.name == "Alice"
 }
 
 test "struct field used in expression" {
-    const p = Player { name: "Bob", score: 10, health: 20 }
-    const total = p.score + p.health
+    let p = Player { name: "Bob", score: 10, health: 20 }
+    let total = p.score + p.health
     assert total == 30
 }
 
@@ -51,9 +51,9 @@ test "disjoint field mutation" {
 }
 
 test "disjoint field reads" {
-    const p = Player { name: "Eve", score: 42, health: 99 }
-    const s = get_score(p)
-    const h = get_health(p)
+    let p = Player { name: "Eve", score: 42, health: 99 }
+    let s = get_score(p)
+    let h = get_health(p)
     assert s == 42
     assert h == 99
 }
@@ -61,16 +61,16 @@ test "disjoint field reads" {
 // --- Parameter borrows (B3) ---
 
 test "struct borrowed for function call" {
-    const p = Player { name: "Test", score: 7, health: 3 }
-    const sum = add_stats(p)
+    let p = Player { name: "Test", score: 7, health: 3 }
+    let sum = add_stats(p)
     assert sum == 10
     assert p.score == 7
 }
 
 test "multiple reads of same struct" {
-    const p = Player { name: "Multi", score: 5, health: 15 }
-    const a = get_score(p)
-    const b = get_score(p)
+    let p = Player { name: "Multi", score: 5, health: 15 }
+    let a = get_score(p)
+    let b = get_score(p)
     assert a == b
     assert a == 5
 }
@@ -78,9 +78,9 @@ test "multiple reads of same struct" {
 // --- String is borrowed for call duration ---
 
 test "string borrowed across calls" {
-    const s = "hello world"
-    const a = identity_str(s)
-    const b = identity_str(s)
+    let s = "hello world"
+    let a = identity_str(s)
+    let b = identity_str(s)
     assert a == "hello world"
     assert b == "hello world"
     assert s == "hello world"
@@ -100,7 +100,7 @@ struct Point {
 }
 
 test "nested struct field access" {
-    const r = Rect {
+    let r = Rect {
         origin: Point { x: 10, y: 20 },
         width: 100,
         height: 50

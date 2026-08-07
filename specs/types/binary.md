@@ -84,8 +84,8 @@ extend T {
     func parse(data: []u8) -> (T, []u8) or ParseError
     func build(self) -> Vec<u8>
     func build_into(self, buffer: []u8) -> usize or BuildError
-    const SIZE: usize
-    const SIZE_BITS: usize
+    let SIZE: usize
+    let SIZE_BITS: usize
 }
 ```
 
@@ -170,7 +170,7 @@ ERROR [type.binary/V1]: invalid bit count
 
 <!-- test: skip -->
 ```rask
-const header = IpHeader {
+let header = IpHeader {
     version: 4,
     ihl: 5,
     dscp: 0,
@@ -186,7 +186,7 @@ const header = IpHeader {
     dst: 0xC0A80002,     // 192.168.0.2
 }
 
-const bytes = header.build()  // Vec<u8> of 20 bytes
+let bytes = header.build()  // Vec<u8> of 20 bytes
 ```
 
 **Nested binary structs:**

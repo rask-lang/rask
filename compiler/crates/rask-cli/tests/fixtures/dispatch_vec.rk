@@ -16,7 +16,7 @@ func main() {
         print(g)
         print("\n")
     }
-    const popped = v.pop()
+    let popped = v.pop()
     if popped? as p {
         print(p)
         print("\n")

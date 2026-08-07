@@ -30,22 +30,22 @@ func print_description(item: any Describable) -> string {
 }
 
 test "trait method on concrete type" {
-    const d = Dog { name: "Rex" }
+    let d = Dog { name: "Rex" }
     assert d.describe() == "Dog: Rex"
 }
 
 test "trait method on different type" {
-    const c = Cat { name: "Whiskers" }
+    let c = Cat { name: "Whiskers" }
     assert c.describe() == "Cat: Whiskers"
 }
 
 test "trait object dispatch" {
-    const d = Dog { name: "Buddy" }
+    let d = Dog { name: "Buddy" }
     assert print_description(d) == "Dog: Buddy"
 }
 
 test "trait object dispatch different type" {
-    const c = Cat { name: "Luna" }
+    let c = Cat { name: "Luna" }
     assert print_description(c) == "Cat: Luna"
 }
 
@@ -102,14 +102,14 @@ func shape_kind(s: any Shape) -> string {
 }
 
 test "dispatch past an incompatible method" {
-    const sq = Square { side: 6 }
+    let sq = Square { side: 6 }
     assert shape_area(sq as any Shape) == 36
     assert shape_kind(sq as any Shape) == "square"
 }
 
 test "heterogeneous dispatch through any Shape" {
-    const sq = Square { side: 3 }
-    const r = Rect { w: 4, h: 5 }
+    let sq = Square { side: 3 }
+    let r = Rect { w: 4, h: 5 }
     assert shape_area(sq as any Shape) == 9
     assert shape_area(r as any Shape) == 20
     assert shape_kind(r as any Shape) == "rect"

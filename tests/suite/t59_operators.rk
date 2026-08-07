@@ -41,30 +41,30 @@ func largest(a: T, b: T) -> T where T: Comparable {
 }
 
 test "type.operators/ORD1 — `<` on a user type compares minor after major" {
-    const a = Version { major: 1, minor: 2 }
-    const b = Version { major: 1, minor: 5 }
+    let a = Version { major: 1, minor: 2 }
+    let b = Version { major: 1, minor: 5 }
     assert a < b
     assert !(b < a)
 }
 
 test "type.operators/ORD1 — `<` on a user type compares major first" {
-    const a = Version { major: 1, minor: 9 }
-    const c = Version { major: 2, minor: 0 }
+    let a = Version { major: 1, minor: 9 }
+    let c = Version { major: 2, minor: 0 }
     assert a < c
     assert !(c < a)
 }
 
 test "type.operators/ORD1 — `>` on a user type" {
-    const b = Version { major: 1, minor: 5 }
-    const c = Version { major: 2, minor: 0 }
+    let b = Version { major: 1, minor: 5 }
+    let c = Version { major: 2, minor: 0 }
     assert c > b
     assert !(b > c)
 }
 
 test "type.generics — Comparable bound grants `>` over a user type" {
-    const a = Version { major: 1, minor: 2 }
-    const b = Version { major: 1, minor: 5 }
-    const big = largest(a, b)
+    let a = Version { major: 1, minor: 2 }
+    let b = Version { major: 1, minor: 5 }
+    let big = largest(a, b)
     assert big.major == 1
     assert big.minor == 5
 }

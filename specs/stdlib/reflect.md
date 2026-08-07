@@ -52,12 +52,12 @@ These enable comptime type dispatch without string-comparing type names. Primary
 <!-- test: skip -->
 ```rask
 comptime {
-    const size = reflect.size_of<Point>()       // 8
-    const align = reflect.align_of<Point>()     // 4
-    const copy = reflect.is_copy<Point>()       // true (two i32 = 8 bytes)
+    let size = reflect.size_of<Point>()       // 8
+    let align = reflect.align_of<Point>()     // 4
+    let copy = reflect.is_copy<Point>()       // true (two i32 = 8 bytes)
 
-    const yes = reflect.is_struct<Point>()      // true
-    const no = reflect.is_enum<Point>()         // false
+    let yes = reflect.is_struct<Point>()      // true
+    let no = reflect.is_enum<Point>()         // false
 }
 ```
 
@@ -132,20 +132,20 @@ struct VariantInfo {
 ```
 ERROR [std.reflect/R1]: reflect function used outside comptime context
    |
-5  |  const fields = reflect.fields<Point>()
+5  |  let fields = reflect.fields<Point>()
    |                 ^^^^^^^^^^^^^^^^^^^^^^^^ reflect requires comptime
 
 WHY: Reflection resolves at compile time. No runtime introspection.
 
 FIX: Wrap in comptime block:
 
-  const fields = comptime reflect.fields<Point>()
+  let fields = comptime reflect.fields<Point>()
 ```
 
 ```
 ERROR [std.reflect/R2]: cannot discover types not in scope
    |
-3  |  const impls = reflect.implementors<Displayable>()
+3  |  let impls = reflect.implementors<Displayable>()
    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ whole-program query
 
 WHY: Reflection operates on imported types only. Type discovery requires whole-program analysis.

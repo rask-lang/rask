@@ -47,7 +47,7 @@ fn error_count(diagnostics: &[rask_diagnostics::Diagnostic]) -> usize {
 fn check_succeeds_on_valid_program() {
     let path = tmp_rk(r#"
         func main() {
-            const x = 42
+            let x = 42
             println("{x}")
         }
     "#);
@@ -65,7 +65,7 @@ fn check_returns_typed_program_on_success() {
             return a + b
         }
         func main() {
-            const x = add(1, 2)
+            let x = add(1, 2)
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -96,9 +96,9 @@ fn call_targets_records_free_and_method_dispatch() {
         func main() {
             mut c = Counter { n: 0 }
             c.bump()
-            const x = helper()
-            const v = Vec.from([1, 2, 3])
-            const n = v.len()
+            let x = helper()
+            let v = Vec.from([1, 2, 3])
+            let n = v.len()
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -144,8 +144,8 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
             return x
         }
         func main() {
-            const a = identity(7)
-            const b = identity("hi")
+            let a = identity(7)
+            let b = identity("hi")
             println("{a} {b}")
         }
     "#);
@@ -291,7 +291,7 @@ fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
             func message(self) -> string { return "user: {self.detail}" }
         }
         func main() {
-            const e = JsonError { detail: "boom" }
+            let e = JsonError { detail: "boom" }
             println(e.message())
         }
     "#);
@@ -329,7 +329,7 @@ fn resolved_dispatch_does_not_drag_in_every_same_named_method() {
         }
 
         func main() {
-            const error = AlphaError {}
+            let error = AlphaError {}
             println(error.message())
         }
     "#);
@@ -374,7 +374,7 @@ fn lex_and_parse_errors_both_reported() {
     // A bad character followed by a syntactic error — both should appear.
     let path = tmp_rk(r#"
         func main() {
-            const x = @#$   // lex-level garbage
+            let x = @#$   // lex-level garbage
             func nested()   // parse error: no body, `func` at wrong spot
         }
     "#);
@@ -405,7 +405,7 @@ fn type_errors_dont_block_subsequent_stages() {
         func consume(take d: Data) {}
 
         func main() {
-            const d = Data { a: 1, b: 2, c: 3 }
+            let d = Data { a: 1, b: 2, c: 3 }
             consume(own d)
             consume(own d)
         }
@@ -434,7 +434,7 @@ fn type_and_ownership_errors_accumulate() {
             // take d
         }
         func main() {
-            const d = Data { a: 1, b: 2, c: 3 }
+            let d = Data { a: 1, b: 2, c: 3 }
             consume(own d)
             consume(own d)   // use after move
         }
@@ -459,11 +459,11 @@ fn comptime_cfg_elimination_runs() {
     let path = tmp_rk(r#"
         func main() {
             comptime if cfg.os == "linux" {
-                const x: i32 = 1
+                let x: i32 = 1
             } else if cfg.os == "macos" {
-                const x: i32 = 2
+                let x: i32 = 2
             } else {
-                const x: i32 = 3
+                let x: i32 = 3
             }
         }
     "#);
@@ -482,7 +482,7 @@ fn default_args_desugar_runs() {
             return "Hello, {name}"
         }
         func main() {
-            const msg = greet()   // uses default
+            let msg = greet()   // uses default
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -500,7 +500,7 @@ fn default_args_desugar_runs() {
 fn failed_pipeline_returns_none_and_errors() {
     let path = tmp_rk(r#"
         func main() {
-            const x: i32 = "not an int"
+            let x: i32 = "not an int"
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -515,7 +515,7 @@ fn failed_pipeline_returns_none_and_errors() {
 fn successful_pipeline_returns_some() {
     let path = tmp_rk(r#"
         func main() {
-            const x: i32 = 42
+            let x: i32 = 42
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
@@ -673,7 +673,7 @@ fn fd4_missing_field_errors() {
             public port: i32 = 8080
         }
         func main() {
-            const c = Config {}
+            let c = Config {}
             println(c.host)
         }
     "#);
@@ -698,8 +698,8 @@ fn fd4_defaults_and_spread_satisfy_construction() {
             public port: i32 = 8080
         }
         func main() {
-            const a = Config { host: "x" }
-            const b = Config { port: 1, ..a }
+            let a = Config { host: "x" }
+            let b = Config { port: 1, ..a }
             println("{a.port} {b.host}")
         }
     "#);
@@ -752,7 +752,7 @@ fn dt1_package_internal_duck_trait_is_fine() {
             }
         }
         func main() {
-            const w = Widget { id: 7 }
+            let w = Widget { id: 7 }
             println("{w.frobnicate()}")
         }
     "#);
@@ -779,7 +779,7 @@ fn dt1_public_nominal_trait_is_fine() {
             }
         }
         func main() {
-            const w = Widget { id: 7 }
+            let w = Widget { id: 7 }
             println("{w.frobnicate()}")
         }
     "#);

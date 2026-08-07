@@ -16,7 +16,7 @@ extend Game {
 
 func main() {
     mut players = Pool<Player>.new()
-    const h = players.insert(Player { score: 7 })
+    let h = players.insert(Player { score: 7 })
     mut g = Game { players: players }
     g.tick(h)
 }

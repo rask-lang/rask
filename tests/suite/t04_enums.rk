@@ -28,7 +28,7 @@ func area(s: Shape) -> i32 {
 }
 
 test "simple enum match" {
-    const c = Color.Red
+    let c = Color.Red
     mut name = ""
     match c {
         Color.Red => name = "red"
@@ -45,7 +45,7 @@ test "enum with payload" {
 }
 
 test "enum payload extraction" {
-    const v = Shape.Circle(10)
+    let v = Shape.Circle(10)
     match v {
         Shape.Circle(r) => assert r == 10
         _ => assert false, "expected Circle"
@@ -53,7 +53,7 @@ test "enum payload extraction" {
 }
 
 test "enum with string payload" {
-    const v = Value.Text("hello")
+    let v = Value.Text("hello")
     match v {
         Value.Text(s) => assert s == "hello"
         _ => assert false, "expected Text"
@@ -61,7 +61,7 @@ test "enum with string payload" {
 }
 
 test "enum with number payload" {
-    const v = Value.Number(42)
+    let v = Value.Number(42)
     match v {
         Value.Number(n) => assert n == 42
         _ => assert false, "expected Number"
@@ -69,7 +69,7 @@ test "enum with number payload" {
 }
 
 test "enum wildcard match" {
-    const c = Color.Blue
+    let c = Color.Blue
     mut matched_wildcard = false
     match c {
         Color.Red => assert false, "wrong"

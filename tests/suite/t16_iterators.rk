@@ -13,8 +13,8 @@ test "for range basic" {
 }
 
 test "for range with variable bounds" {
-    const start = 2
-    const end = 6
+    let start = 2
+    let end = 6
     mut sum = 0
     for i in start..end {
         sum = sum + i

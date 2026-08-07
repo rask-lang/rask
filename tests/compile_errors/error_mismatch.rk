@@ -33,11 +33,11 @@ func parse_config(content: string) -> Config or ParseError {
 
 // COMPILE ERROR: Incompatible error types
 func load_config(path: string) -> Config or IoError {
-    const content = try read_file(path)  // OK: IoError matches return type
+    let content = try read_file(path)  // OK: IoError matches return type
 
     // ERROR: parse_config returns ParseError, but function returns IoError
     // The `try` operator cannot automatically convert between them
-    const config = try parse_config(content)
+    let config = try parse_config(content)
 
     return config
 }
@@ -56,8 +56,8 @@ enum ConfigError {
 }
 
 func load_config_v1(path: string) -> Config or ConfigError {
-    const content = try read_file(path).map_err(|e| ConfigError.Io(e))
-    const config = try parse_config(content).map_err(|e| ConfigError.Parse(e))
+    let content = try read_file(path).map_err(|e| ConfigError.Io(e))
+    let config = try parse_config(content).map_err(|e| ConfigError.Parse(e))
     return config
 }
 
@@ -74,21 +74,21 @@ extend ConfigError {
 
 // Now `try` can auto-convert (if From is in scope)
 func load_config_v2(path: string) -> Config or ConfigError {
-    const content = try read_file(path)     // IoError -> ConfigError via From
-    const config = try parse_config(content)  // ParseError -> ConfigError via From
+    let content = try read_file(path)     // IoError -> ConfigError via From
+    let config = try parse_config(content)  // ParseError -> ConfigError via From
     return config
 }
 
 // Option 3: Use a generic error type
 func load_config_v3(path: string) -> Config or Error {
-    const content = try read_file(path)     // IoError -> Error (widening)
-    const config = try parse_config(content)  // ParseError -> Error (widening)
+    let content = try read_file(path)     // IoError -> Error (widening)
+    let config = try parse_config(content)  // ParseError -> Error (widening)
     return config
 }
 
 // Another error case: error type can't widen
 func narrow_error() -> i32 or ParseError {
-    const x = try might_fail()  // Returns i32 or IoError
+    let x = try might_fail()  // Returns i32 or IoError
 
     // ERROR: IoError cannot convert to ParseError
     // Widening works (specific -> general), narrowing doesn't

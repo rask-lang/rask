@@ -33,24 +33,24 @@ func max(a: i32, b: i32) -> i32 {
 }
 
 test "generic struct with int" {
-    const b = Box { value: 42 }
+    let b = Box { value: 42 }
     assert b.get() == 42
 }
 
 test "generic struct with string" {
-    const b = Box { value: "hello" }
+    let b = Box { value: "hello" }
     assert b.get() == "hello"
 }
 
 test "two type params" {
-    const p = Pair { first: 1, second: "two" }
+    let p = Pair { first: 1, second: "two" }
     assert p.first == 1
     assert p.second == "two"
 }
 
 test "generic swap" {
-    const p = Pair { first: 1, second: "two" }
-    const s = p.swap()
+    let p = Pair { first: 1, second: "two" }
+    let s = p.swap()
     assert s.first == "two"
     assert s.second == 1
 }

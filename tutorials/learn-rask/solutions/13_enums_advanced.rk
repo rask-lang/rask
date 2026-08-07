@@ -47,23 +47,23 @@ func eval_postfix(tokens: Vec<Token>) -> f64 {
         match token {
             Num(x) => stack.push(x),
             Plus => {
-                const b = stack.pop()!
-                const a = stack.pop()!
+                let b = stack.pop()!
+                let a = stack.pop()!
                 stack.push(a + b)
             }
             Minus => {
-                const b = stack.pop()!
-                const a = stack.pop()!
+                let b = stack.pop()!
+                let a = stack.pop()!
                 stack.push(a - b)
             }
             Times => {
-                const b = stack.pop()!
-                const a = stack.pop()!
+                let b = stack.pop()!
+                let a = stack.pop()!
                 stack.push(a * b)
             }
             Divide => {
-                const b = stack.pop()!
-                const a = stack.pop()!
+                let b = stack.pop()!
+                let a = stack.pop()!
                 stack.push(a / b)
             }
         }
@@ -100,7 +100,7 @@ test "entry time" {
 }
 
 test "flight time" {
-    const log = Vec.from([
+    let log = Vec.from([
         LogEntry.EngineStart(800), LogEntry.Takeoff(815, "27L"),
         LogEntry.WaypointReached(900, "CEDAR", 35000.0),
         LogEntry.WaypointReached(945, "MAPLE", 35000.0),
@@ -110,7 +110,7 @@ test "flight time" {
 }
 
 test "flight time no takeoff" {
-    const log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
+    let log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
     assert flight_time(log) == 0
 }
 

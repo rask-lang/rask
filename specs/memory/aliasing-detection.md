@@ -72,7 +72,7 @@ WHY: insert, remove, and clear can invalidate the borrowed element.
 
 FIX: Separate the check from the mutation:
 
-  const should_remove = pool[h].health <= 0
+  let should_remove = pool[h].health <= 0
   if should_remove {
       pool.remove(h)
   }
@@ -91,7 +91,7 @@ WHY: remove can trigger reallocation, invalidating the borrowed element.
 
 FIX: Move the mutation outside the with block:
 
-  const should_remove = with pool[h] as e { e.health <= 0 }
+  let should_remove = with pool[h] as e { e.health <= 0 }
   if should_remove {
       pool.remove(other_h)
   }

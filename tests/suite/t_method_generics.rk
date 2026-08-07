@@ -38,44 +38,44 @@ extend Holder<T> {
 func main() {}
 
 test "one type param, used at several types" {
-    const u = Util { seed: 1 }
+    let u = Util { seed: 1 }
     assert u.echo(7) == 7
     assert u.echo("hi") == "hi"
     assert u.echo(true)
-    const f = u.echo(2.5)
+    let f = u.echo(2.5)
     assert f > 2.4 && f < 2.6
 }
 
 test "the receiver's own fields are still reachable" {
-    const u = Util { seed: 1 }
+    let u = Util { seed: 1 }
     assert u.uses_field("x") == "x"
     assert u.uses_field(3) == 3
 }
 
 test "two type params" {
-    const u = Util { seed: 0 }
-    const p = u.both(1, "two")
+    let u = Util { seed: 0 }
+    let p = u.both(1, "two")
     assert p.0 == 1
     assert p.1 == "two"
-    const q = u.both("a", 9)
+    let q = u.both("a", 9)
     assert q.0 == "a"
     assert q.1 == 9
 }
 
 test "an aggregate type argument" {
-    const u = Util { seed: 0 }
-    const p = u.echo(Pair2 { a: 1, b: 2 })
+    let u = Util { seed: 0 }
+    let p = u.echo(Pair2 { a: 1, b: 2 })
     assert p.a == 1
     assert p.b == 2
 }
 
 test "a bounded type param dispatches through the bound" {
-    const u = Util { seed: 0 }
+    let u = Util { seed: 0 }
     assert u.describe(Tag { n: 1 }) == "tag"
 }
 
 test "a method param alongside the receiver's own" {
-    const h = Holder { item: 9 }
+    let h = Holder { item: 9 }
     assert h.mine() == 9
     assert h.other("s") == "s"
     assert h.other(4) == 4

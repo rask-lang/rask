@@ -121,7 +121,7 @@ extend Lexer {
     // Consume the current character and advance.
     func advance(self) -> char? {
         if self.pos >= self.source.len(): return none
-        const c = self.source.char_at(self.pos)
+        let c = self.source.char_at(self.pos)
         self.pos = self.pos + 1
         if c? {
             if c == '\n' { self.line = self.line + 1 }
@@ -150,7 +150,7 @@ extend Lexer {
             } else if c == '/' {
                 // Check for comments
                 if self.pos + 1 < self.source.len() {
-                    const next = self.source.char_at(self.pos + 1) ?? break
+                    let next = self.source.char_at(self.pos + 1) ?? break
                     if next == '/' {
                         // Line comment — skip to end of line
                         while self.peek()? as ch {
@@ -215,7 +215,7 @@ extend Lexer {
 
     func next_token(self) -> Token or LexError {
         self.skip_whitespace()
-        const c = self.peek() ?? return Token.Eof
+        let c = self.peek() ?? return Token.Eof
         match c {
             '\n' => {self.advance(); return Token.Newline}
             '0'..='9' => {
@@ -288,7 +288,7 @@ extend Lexer {
 
     func read_number(self) -> Token or LexError {
         let is_num_lit = false
-        const start = self.pos
+        let start = self.pos
         mut frac_start = self.pos
 
         while self.peek()? as c {
@@ -299,7 +299,7 @@ extend Lexer {
                         return LexError.UnexpectedChar('.', self.line)  // second dot in number
                     }
                     self.advance() // consume the dot
-                    const peeked = self.peek()
+                    let peeked = self.peek()
                     if peeked? {
                         if peeked >= '0' && peeked <= '9' {
                             frac_start = self.pos
@@ -316,24 +316,24 @@ extend Lexer {
         }
         if is_num_lit {
             
-            const int_part = self.source.substring(start, frac_start - 1).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer part
-            const frac_part = self.source.substring(frac_start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
-            const frac_digits = self.pos - frac_start
-            const raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
+            let int_part = self.source.substring(start, frac_start - 1).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            let frac_part = self.source.substring(frac_start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
+            let frac_digits = self.pos - frac_start
+            let raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
         } else {
-            const value = self.source.substring(start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer
+            let value = self.source.substring(start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer
             return Token.IntLit(value)
         }
     }
 
     func read_string(self) -> Token or LexError {
         self.advance()  // skip opening quote
-        const start = self.pos
-        const end = loop {
-           const c = self.peek() ?? return LexError.UnterminatedString(self.line)
+        let start = self.pos
+        let end = loop {
+           let c = self.peek() ?? return LexError.UnterminatedString(self.line)
            if c == '"' {
-                const end_pos = self.pos
+                let end_pos = self.pos
                 self.advance() // consume the ending quote
                 break end_pos
            } else if c == '\\' {
@@ -352,12 +352,12 @@ extend Lexer {
                 self.advance() // consume regular character
             }
         }
-        const raw = self.source.substring(start, end)
+        let raw = self.source.substring(start, end)
         return Token.StringLit(raw)
     }
 
     func read_identifier(self) -> Token or LexError {
-        const start = self.pos
+        let start = self.pos
         while self.peek()? as c {
             if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
                 self.advance()
@@ -365,7 +365,7 @@ extend Lexer {
                 break
             }
         }
-        const word = self.source.substring(start, self.pos)
+        let word = self.source.substring(start, self.pos)
         return self.keyword_or_ident(word)
     }
 }

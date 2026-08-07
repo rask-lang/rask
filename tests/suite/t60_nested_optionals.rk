@@ -6,27 +6,27 @@
 // Any generic returning `T?` produces this as soon as T is optional.
 
 test "bare none binds the outer layer" {
-    const outer: i64?? = none
+    let outer: i64?? = none
     assert outer == none
 }
 
 test "an inner optional widens into the outer present branch" {
-    const empty_slot: i64? = none
-    const inner: i64?? = empty_slot
+    let empty_slot: i64? = none
+    let inner: i64?? = empty_slot
     assert inner?
     assert inner_present(inner) == false
 }
 
 test "a bare value widens through both layers" {
-    const both: i64?? = 7
+    let both: i64?? = 7
     assert both?
     assert inner_present(both)
     assert inner_value(both) == 7
 }
 
 test "layers are not the same type" {
-    const one: i64? = 3
-    const two: i64?? = one
+    let one: i64? = 3
+    let two: i64?? = one
     assert depth_one(one) == "one"
     assert depth_two(two) == "two"
 }

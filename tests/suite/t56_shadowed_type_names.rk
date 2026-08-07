@@ -27,17 +27,17 @@ extend IoError {
 }
 
 test "program type shadowing a stdlib enum keeps its own method" {
-    const e = JsonError { detail: "boom" }
+    let e = JsonError { detail: "boom" }
     assert e.message() == "user: boom"
 }
 
 test "shadowing works for more than one stdlib name at once" {
-    const failure = IoError { path: "/tmp/x" }
+    let failure = IoError { path: "/tmp/x" }
     assert failure.message() == "io: /tmp/x"
 }
 
 test "shadowed type still satisfies `T or E`" {
-    const failed = match load(true) {
+    let failed = match load(true) {
         i32 as v => "ok: {v}"
         JsonError as e => e.message()
     }
@@ -54,6 +54,6 @@ func load(fail: bool) -> i32 or JsonError {
 }
 
 func main() {
-    const e = JsonError { detail: "boom" }
+    let e = JsonError { detail: "boom" }
     println(e.message())
 }

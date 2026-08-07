@@ -3,7 +3,7 @@ struct Ent { hp: i32 }
 
 func main() {
     mut p = Pool.with_capacity(1)
-    const a = p.insert(Ent { hp: 1 })
-    const b = p.insert(Ent { hp: 2 })   // panic: at capacity
+    let a = p.insert(Ent { hp: 1 })
+    let b = p.insert(Ent { hp: 2 })   // panic: at capacity
     print(99)
 }

@@ -4,10 +4,10 @@
 // In Rask, every variable has one type, forever.
 //
 // Two kinds of variables:
-//   const x = 42      // can never change (default — use this most of the time)
+//   let x = 42      // can never change (default — use this most of the time)
 //   mut x = 42        // can be reassigned: x = 43
 //
-// Think of `const` as the normal case and `mut` as the exception.
+// Think of `let` as the normal case and `mut` as the exception.
 // In Python everything is mutable. In Rask you opt *in* to mutability.
 //
 // Types you'll use:
@@ -18,8 +18,8 @@
 //   string    — text (note: lowercase!)
 //
 // The compiler usually figures out the type from context:
-//   const x = 42           // compiler knows this is i32
-//   const x: f64 = 42.0    // you can spell it out if you want
+//   let x = 42           // compiler knows this is i32
+//   let x: f64 = 42.0    // you can spell it out if you want
 //
 // Scientific notation works: 6.674e-11 means 6.674 × 10⁻¹¹
 //
@@ -27,8 +27,8 @@
 // --- Examples ---
 
 func example_variables() {
-    const pi = 3.14159
-    const name = "Besse"
+    let pi = 3.14159
+    let name = "Besse"
     println("pi = {pi}")
     println("name = {name}")
 
@@ -39,7 +39,7 @@ func example_variables() {
     println("counter = {counter}")    // 2
 
     // Explicit type annotation
-    const g: f64 = 9.81
+    let g: f64 = 9.81
     println("g = {g} m/s²")
 }
 
@@ -106,7 +106,7 @@ test "speed of light" {
 }
 
 test "schwarzschild radius of the sun" {
-    const r = schwarzschild_radius(1.989e30)
+    let r = schwarzschild_radius(1.989e30)
     assert r > 2952.0
     assert r < 2954.0
 }

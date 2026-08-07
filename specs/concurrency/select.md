@@ -76,7 +76,7 @@ result = select {
 
 <!-- test: skip -->
 ```rask
-const rx = Timer.after(5.seconds)
+let rx = Timer.after(5.seconds)
 rx.receive()  // Blocks for 5 seconds, returns ()
 
 select {

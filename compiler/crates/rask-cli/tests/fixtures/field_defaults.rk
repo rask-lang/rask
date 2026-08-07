@@ -15,19 +15,19 @@ struct Settings {
 
 func main() {
     // FD2: omitted defaulted fields fill in
-    const c = Config { host: "localhost" }
+    let c = Config { host: "localhost" }
     println("{c.host} {c.port} {c.verbose}")
 
     // Explicit values override defaults
-    const d = Config { host: "example.com", port: 3000, verbose: true }
+    let d = Config { host: "example.com", port: 3000, verbose: true }
     println("{d.host} {d.port} {d.verbose}")
 
     // FD3: every field defaulted -> {} constructs all defaults
-    const a = Settings {}
+    let a = Settings {}
     println("{a.width} {a.height} {a.title}")
 
     // FD5: spread covers unlisted fields; explicit wins over spread
-    const b = Settings { width: 800 }
-    const e = Settings { title: "copy", ..b }
+    let b = Settings { width: 800 }
+    let e = Settings { title: "copy", ..b }
     println("{e.width} {e.height} {e.title}")
 }

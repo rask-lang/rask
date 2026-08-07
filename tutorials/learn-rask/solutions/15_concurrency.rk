@@ -11,19 +11,19 @@ func vec_max(v: Vec<f64>) -> f64 {
 
 func parallel_max(readings: Vec<f64>) -> f64 or Error {
     using Multitasking {
-        const mid = readings.len() / 2
-        const first_half = readings[0..mid].to_vec()
-        const second_half = readings[mid..readings.len()].to_vec()
+        let mid = readings.len() / 2
+        let first_half = readings[0..mid].to_vec()
+        let second_half = readings[mid..readings.len()].to_vec()
 
-        const h1 = spawn(|| {
+        let h1 = spawn(|| {
             return vec_max(first_half)
         })
-        const h2 = spawn(|| {
+        let h2 = spawn(|| {
             return vec_max(second_half)
         })
 
-        const m1 = try h1.join()
-        const m2 = try h2.join()
+        let m1 = try h1.join()
+        let m2 = try h2.join()
 
         if m1 > m2 { return m1 }
         return m2
@@ -34,7 +34,7 @@ func channel_sum(n: i32) -> i32 or Error {
     using Multitasking {
         mut (tx, rx) = Channel<i32>.buffered(n)
 
-        const producer = spawn(|| {
+        let producer = spawn(|| {
             for i in 1..(n + 1) {
                 tx.send(i)
             }
@@ -53,24 +53,24 @@ func channel_sum(n: i32) -> i32 or Error {
 
 func estimate_pi(total: i32, num_tasks: i32) -> f64 {
     using Multitasking {
-        const per_task = total / num_tasks
+        let per_task = total / num_tasks
         mut (tx, rx) = Channel<i32>.buffered(num_tasks)
 
         for task_id in 0..num_tasks {
-            const seed = task_id * 1000 + 42
-            const iters = per_task
+            let seed = task_id * 1000 + 42
+            let iters = per_task
             spawn(|| {
                 mut state = seed
                 mut inside = 0
-                const a = 1103515245
-                const c = 12345
-                const m = 2147483648
+                let a = 1103515245
+                let c = 12345
+                let m = 2147483648
 
                 for i in 0..iters {
                     state = (a * state + c) % m
-                    const x = state as f64 / m as f64
+                    let x = state as f64 / m as f64
                     state = (a * state + c) % m
-                    const y = state as f64 / m as f64
+                    let y = state as f64 / m as f64
                     if x * x + y * y <= 1.0 {
                         inside = inside + 1
                     }
@@ -89,7 +89,7 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
 }
 
 test "parallel max" {
-    const readings = Vec.from([
+    let readings = Vec.from([
         31000.0, 33000.0, 35000.0, 34000.0,
         36000.0, 32000.0, 37000.0, 34500.0,
     ])
@@ -102,7 +102,7 @@ test "channel sum" {
 }
 
 test "monte carlo pi" {
-    const pi = estimate_pi(100000, 4)
+    let pi = estimate_pi(100000, 4)
     assert pi > 2.9
     assert pi < 3.5
 }

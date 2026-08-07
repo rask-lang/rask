@@ -27,7 +27,7 @@ struct Holder {
 }
 
 func main() {
-    const h = Holder { r: divide(10, 2), tag: 999 }
+    let h = Holder { r: divide(10, 2), tag: 999 }
     match h.r {
         i32 as v => println("{v}")
         DivError => println("err")

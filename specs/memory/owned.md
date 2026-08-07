@@ -21,8 +21,8 @@ The consume-exactly-once rules live in [`mem.linear`](linear.md) and apply ident
 
 <!-- test: parse -->
 ```rask
-const ptr: Owned<i32> = own 42    // Allocate on heap
-const value = *ptr                // Dereference (borrow)
+let ptr: Owned<i32> = own 42    // Allocate on heap
+let value = *ptr                // Dereference (borrow)
 drop(ptr)                         // Consume (deallocate)
 ```
 
@@ -54,7 +54,7 @@ func process(take ptr: Owned<Data>) {
     // ptr consumed when function takes ownership
 }
 
-const ptr = own Data { value: 42 }
+let ptr = own Data { value: 42 }
 process(own ptr)                  // Consumed by move
 // ptr no longer valid here
 ```
@@ -65,9 +65,9 @@ Dereferencing borrows the inner value without consuming the `Owned<T>`. Borrow r
 
 <!-- test: parse -->
 ```rask
-const ptr = own Point { x: 1, y: 2 }
+let ptr = own Point { x: 1, y: 2 }
 
-const x = (*ptr).x               // Borrow for read
+let x = (*ptr).x               // Borrow for read
 (*ptr).x = 10                    // Borrow for mutate
 
 // Still valid, not consumed
@@ -95,10 +95,10 @@ func build_tree() -> Owned<Tree<i32>> {
 }
 
 func main() {
-    const tree = build_tree()     // Uses default system allocator
+    let tree = build_tree()     // Uses default system allocator
 
     with context.allocator = arena {
-        const tree2 = build_tree()  // Allocated in arena
+        let tree2 = build_tree()  // Allocated in arena
     }
 }
 ```
@@ -136,8 +136,8 @@ enum List<T> {
     Cons(T, Owned<List<T>>)
 }
 
-const tree = Tree.Node(own Tree.Leaf(1), own Tree.Leaf(2))
-const list = List.Cons(1, own List.Cons(2, own List.Nil))
+let tree = Tree.Node(own Tree.Leaf(1), own Tree.Leaf(2))
+let list = List.Cons(1, own List.Cons(2, own List.Nil))
 ```
 
 Self-referential types without indirection are rejected:
@@ -173,8 +173,8 @@ If `T: Cloneable`, then `Owned<T>: Cloneable`. Cloning allocates a new heap valu
 
 <!-- test: parse -->
 ```rask
-const ptr1 = own Point { x: 1, y: 2 }
-const ptr2 = ptr1.clone()            // New allocation, deep copy
+let ptr1 = own Point { x: 1, y: 2 }
+let ptr2 = ptr1.clone()            // New allocation, deep copy
 
 drop(ptr1)
 drop(ptr2)
@@ -192,7 +192,7 @@ When `Owned<T>` is consumed via `drop()` or scope exit (after `ensure`):
 @resource
 struct File { handle: RawHandle }
 
-const file_ptr = own (try File.open("data.txt"))
+let file_ptr = own (try File.open("data.txt"))
 // ... use file ...
 drop(file_ptr)  // Runs File destructor, then frees memory
 ```
@@ -231,7 +231,7 @@ FIX: Remove the second consumption.
 ```
 ERROR [mem.linear/L5]: ptr used after move
    |
-3  |  const other = ptr
+3  |  let other = ptr
    |                ^^^ moved here
 4  |  drop(ptr)
    |       ^^^ ptr is invalid after move

@@ -78,12 +78,12 @@ test "a type name shared with a stdlib variant still matches by payload type" {
 }
 
 test "Option and Result keep their built-in behaviour" {
-    const some: i64? = 7
+    let some: i64? = 7
     if some? as s {
         assert_eq(s, 7)
     } else {
         assert false
     }
-    const missing: i64? = none
+    let missing: i64? = none
     assert missing == none
 }

@@ -45,7 +45,7 @@ func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
 
     mut i: usize = 1
     while i < args.len() {
-        const arg = args[i]
+        let arg = args[i]
         match arg {
             "-i" => opts.ignore_case = true,
             "-n" => opts.line_numbers = true,
@@ -83,8 +83,8 @@ func print_usage() {
 
 func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     if ignore_case {
-        const lower_line = line.to_lowercase()
-        const lower_pattern = pattern.to_lowercase()
+        let lower_line = line.to_lowercase()
+        let lower_pattern = pattern.to_lowercase()
         return lower_line.contains(lower_pattern)
     } else {
         return line.contains(pattern)
@@ -92,7 +92,7 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
 }
 
 func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
-    const content = try fs.read_text(path)
+    let content = try fs.read_text(path)
         else |e| GrepError.FileError(e)
 
     mut match_count: i64 = 0
@@ -100,8 +100,8 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 
     for line in content.lines() {
         line_num = line_num + 1
-        const matches = line_matches(line, opts.pattern, opts.ignore_case)
-        const show = if opts.invert_match: !matches else: matches
+        let matches = line_matches(line, opts.pattern, opts.ignore_case)
+        let show = if opts.invert_match: !matches else: matches
 
         if show {
             match_count = match_count + 1
@@ -124,12 +124,12 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 }
 
 func main() {
-    const args = cli.args()
-    const parsed = parse_args(own args)
+    let args = cli.args()
+    let parsed = parse_args(own args)
     mut opts = if parsed? {
         parsed
     } else as e {
-        const msg = e.message()
+        let msg = e.message()
         println("rgrep: {msg}")
         print_usage()
         std.exit(1)
@@ -140,12 +140,12 @@ func main() {
 
     mut fi: usize = 0
     while fi < opts.files.len() {
-        const file_path = opts.files[fi]
-        const r = grep_file(file_path, opts)
+        let file_path = opts.files[fi]
+        let r = grep_file(file_path, opts)
         if r? {
             total_matches = total_matches + r
         } else as e {
-            const msg = e.message()
+            let msg = e.message()
             println("rgrep: {msg}")
             had_errors = true
         }

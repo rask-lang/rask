@@ -21,7 +21,7 @@
 // real parallel work, not just I/O.
 //
 // Every spawn returns a handle. You MUST either:
-//   - join it:   const result = try h.join()    // wait for the result
+//   - join it:   let result = try h.join()    // wait for the result
 //   - detach it: spawn(|| { fire_and_forget() }).detach()
 //
 // The compiler enforces this — you can't accidentally forget about a task.
@@ -29,9 +29,9 @@
 //
 // Communication between tasks: Channels
 //   Channels are like Python's queue.Queue, but type-safe.
-//   const (tx, rx) = Channel<i32>.buffered(100)
+//   let (tx, rx) = Channel<i32>.buffered(100)
 //   tx.send(42)           // put a value in
-//   const v = rx.receive()   // take a value out (waits if empty)
+//   let v = rx.receive()   // take a value out (waits if empty)
 //
 
 import async.spawn
@@ -41,14 +41,14 @@ import async.spawn
 func example_concurrency() -> () or Error {
     // Spawn two tasks, each returns a value. Join both.
     using Multitasking {
-        const h1 = spawn(|| {
+        let h1 = spawn(|| {
             21
         })
-        const h2 = spawn(|| {
+        let h2 = spawn(|| {
             21
         })
-        const a = try h1.join()
-        const b = try h2.join()
+        let a = try h1.join()
+        let b = try h2.join()
         println("sum: {a + b}")  // 42
     }
 }
@@ -125,7 +125,7 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
 // --- Tests ---
 
 test "parallel max" {
-    const readings = Vec.from([
+    let readings = Vec.from([
         31000.0, 33000.0, 35000.0, 34000.0,
         36000.0, 32000.0, 37000.0, 34500.0,
     ])
@@ -138,7 +138,7 @@ test "channel sum" {
 }
 
 test "monte carlo pi" {
-    const pi = estimate_pi(100000, 4)
+    let pi = estimate_pi(100000, 4)
     // Not precise with a basic RNG, but should be in the ballpark
     assert pi > 2.9
     assert pi < 3.5

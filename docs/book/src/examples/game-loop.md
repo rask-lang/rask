@@ -23,9 +23,9 @@ struct Entity {
     target: Option<Handle<Entity>>,  // Handle, not reference!
 }
 
-const entities = Pool.new()
-const player = try entities.insert(Entity.new())
-const enemy = try entities.insert(Entity.new())
+let entities = Pool.new()
+let player = try entities.insert(Entity.new())
+let enemy = try entities.insert(Entity.new())
 
 // Enemy targets player using handle
 entities[enemy].target = Some(player)

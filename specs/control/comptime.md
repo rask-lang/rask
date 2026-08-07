@@ -34,7 +34,7 @@ func fixed_array<comptime N: usize>() -> [u8; N] {
     return [0u8; N]
 }
 
-const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
+let buf = repeat<16>(0xff)  // OK: 16 is comptime-known
 ```
 
 ## Staging Model
@@ -109,7 +109,7 @@ Being callable at comptime is a property of what a function does, not of its mar
 func is_prime(n: u32) -> bool { ... }      // unmarked, pure
 
 const PRIMES: [u32; _] = comptime {
-    const v = Vec<u32>.new()
+    let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }       // OK: is_prime is comptime-evaluable (CT6)
     }
@@ -121,8 +121,8 @@ comptime func bounds<T: Numeric>() -> (T, T) {
 }                                          // i32's zero/one are comptime-evaluable
 
 func example() {
-    const n = read_config()
-    const buf = repeat<n>(0xff)            // ERROR: n is runtime value (CT8)
+    let n = read_config()
+    let buf = repeat<n>(0xff)            // ERROR: n is runtime value (CT8)
 }
 ```
 
@@ -164,7 +164,7 @@ comptime func factorial(n: u32) -> u32 {
 }
 
 const SQUARES = comptime {
-    const arr = Vec.new()
+    let arr = Vec.new()
     for i in 0..20 {
         arr.push(i * i)
     }
@@ -218,7 +218,7 @@ Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed a
 ```rask
 // Array generation - unknown size
 const PRIMES: [u32; _] = comptime {
-    const v = Vec<u32>.new()
+    let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
@@ -227,14 +227,14 @@ const PRIMES: [u32; _] = comptime {
 
 // Map generation - lookup table
 const KEYWORDS: Map<str, TokenKind> = comptime {
-    const m = Map<str, TokenKind>.new()
+    let m = Map<str, TokenKind>.new()
     m.insert("if", TokenKind.If)
     m.insert("else", TokenKind.Else)
     m.freeze()  // → perfect hash or static map
 }
 
 const BAD = comptime {
-    const v = Vec<u32>.new()
+    let v = Vec<u32>.new()
     v.push(1)
     v  // ERROR: cannot return unfrozen Vec from comptime
 }
@@ -297,7 +297,7 @@ const X = comptime slow()
 comptime func large_computation() -> [u8; 10000] {
     @comptime_quota(20000)  // Allow 20,000 backwards branches
 
-    const table = [0u8; 10000]
+    let table = [0u8; 10000]
     for i in 0..10000 {
         table[i] = compute(i)
     }
@@ -353,7 +353,7 @@ const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
 const Y = try comptime safe_divide(10, 0)  // Compile error: "Division by zero"
 
 comptime func get_value(i: usize) -> u8 {
-    const table = [1u8, 2, 3]
+    let table = [1u8, 2, 3]
     return table[i]  // Panics if i >= 3
 }
 
@@ -404,7 +404,7 @@ Comptime call stack:
   → factorial(0)    at math.rk:5:9
 
 Triggered by:
-  const F = comptime factorial(1000) at main.rk:10:11
+  let F = comptime factorial(1000) at main.rk:10:11
            ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 WHY: Backwards branch quota prevents infinite loops and unbounded recursion.
@@ -421,15 +421,15 @@ FIX: Add @comptime_quota(N) to increase limit, or rewrite using iteration:
 ```
 ERROR [ctrl.comptime/CT8]: Value not known at compile time
    |
-5  |  const n = read_config()
-6  |  const buf = repeat<n>(0xff)
+5  |  let n = read_config()
+6  |  let buf = repeat<n>(0xff)
    |                     ^ runtime value cannot be used as comptime parameter
 
 WHY: Comptime parameters must be compile-time known constants.
 
 FIX: Use a compile-time constant instead:
 
-  const buf = repeat<16>(0xff)  // OK: literal is comptime-known
+  let buf = repeat<16>(0xff)  // OK: literal is comptime-known
 ```
 
 **Comptime panic [CT46]:**
@@ -442,7 +442,7 @@ Comptime call stack:
     ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Triggered by:
-  const X = comptime divide(10, 0) at main.rk:15:11
+  let X = comptime divide(10, 0) at main.rk:15:11
 
 WHY: Comptime panics become compile errors to prevent invalid constants.
 
@@ -459,7 +459,7 @@ Comptime call stack:
       Logger's hash calls file.append() at logger.rk:33:5
 
 Required by:
-  const KEY = comptime cache_key<Logger>() at main.rk:4:11
+  let KEY = comptime cache_key<Logger>() at main.rk:4:11
 
 WHY: Comptime code runs during compilation. It can call any function — marked or
      not — as long as evaluation stays inside the comptime subset (CT7/CT8).
@@ -487,7 +487,7 @@ FIX: Break the cycle — size the buffer from the fields it holds, not from the
 ERROR [ctrl.comptime/CT19]: cannot return unfrozen Vec from comptime
    |
 3  |  const BAD = comptime {
-4  |      const v = Vec<u32>.new()
+4  |      let v = Vec<u32>.new()
 5  |      v.push(1)
 6  |      v  // cannot escape unfrozen
    |      ^ collection must be frozen with .freeze()
@@ -495,10 +495,10 @@ ERROR [ctrl.comptime/CT19]: cannot return unfrozen Vec from comptime
 WHY: Comptime collections use compiler-managed memory and must be
      materialized as const data to be embedded in the binary.
 
-FIX: Call .freeze() to convert to const data:
+FIX: Call .freeze() to convert to let data:
 
-  const GOOD = comptime {
-      const v = Vec<u32>.new()
+  let GOOD = comptime {
+      let v = Vec<u32>.new()
       v.push(1)
       v.freeze()  // → [1u32; 1]
   }
@@ -510,7 +510,7 @@ FIX: Call .freeze() to convert to const data:
 <!-- test: parse -->
 ```rask
 comptime func crc8_table() -> [u8; 256] {
-    const table = [0u8; 256]
+    let table = [0u8; 256]
     for i in 0..256 {
         mut crc = i as u8
         for _ in 0..8 {
@@ -540,8 +540,8 @@ func crc8(data: []u8) -> u8 {
 <!-- test: skip -->
 ```rask
 func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or Error {
-    const buffer = [0u8; MAX_SIZE]
-    const n = try socket.read(buffer[..])
+    let buffer = [0u8; MAX_SIZE]
+    let n = try socket.read(buffer[..])
     if n > MAX_SIZE {
         return Error.new("Packet too large")
     }
@@ -549,8 +549,8 @@ func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or 
 }
 
 // Usage with different sizes
-const small = try read_packet<64>(socket1)
-const large = try read_packet<4096>(socket2)
+let small = try read_packet<64>(socket1)
+let large = try read_packet<4096>(socket2)
 ```
 
 ### Conditional Compilation
@@ -637,7 +637,7 @@ Need to transform/process files (not just embed)?
 Use collections with freeze:
 ```rask
 const PRIMES: [u32; _] = comptime {
-    const v = Vec<u32>.new()
+    let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
@@ -665,7 +665,7 @@ Output during compilation:
 ```rask
 comptime func build_table() -> [u8; 256] {
     @comptime_print("Building lookup table...")
-    const table = [0u8; 256]
+    let table = [0u8; 256]
     for i in 0..256 {
         table[i] = compute(i)
         if i % 64 == 0 {
@@ -728,7 +728,7 @@ IDEs should provide:
 
 - **Hover for comptime values:**
   ```rask
-  const F10 = comptime factorial(10)
+  let F10 = comptime factorial(10)
           ^^^^^^^^^^^^^^^^^^^^^^ // IDE shows: 3628800
   ```
 
@@ -736,7 +736,7 @@ IDEs should provide:
 
 - **Inline results:**
   ```rask
-  const TABLE = comptime build_table()
+  let TABLE = comptime build_table()
                 ^^^^^^^^^^^^^^^^^^^^^^ // Ghost: [0, 2, 4, 6, ...]
   ```
 

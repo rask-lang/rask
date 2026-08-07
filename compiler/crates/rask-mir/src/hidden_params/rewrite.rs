@@ -97,7 +97,7 @@ fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
             };
             let alias_stmt = Stmt {
                 id: pass.fresh_id(),
-                kind: StmtKind::Const {
+                kind: StmtKind::Let {
                     name: alias,
                     name_span: Span::new(0, 0),
                     ty: None,
@@ -123,7 +123,7 @@ fn rewrite_stmts(pass: &mut HiddenParamPass, caller: &str, stmts: &mut [Stmt]) {
 fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(pass, caller, e),
-        StmtKind::Mut { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
             // CC10: a closure bound to a name is storable — it can escape the
             // enclosing pool scope. Rewrite its body under the storable rule so
             // contexts resolve from the closure's own params, not ambient ones.
@@ -133,7 +133,7 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
                 rewrite_expr(pass, caller, init);
             }
         }
-        StmtKind::MutTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             rewrite_expr(pass, caller, init);
         }
         StmtKind::Assign { target, value } => {

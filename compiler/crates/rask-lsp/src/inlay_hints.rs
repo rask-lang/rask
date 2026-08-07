@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Inlay hints — inferred types shown inline after `const x` / `let x`.
+//! Inlay hints — inferred types shown inline after `let x` / `mut x`.
 //!
 //! The editor renders these as ghosted text so you can see the type the
 //! compiler inferred without littering the source with annotations.
@@ -60,7 +60,7 @@ fn visit_stmt(
     hi: usize,
 ) {
     match &stmt.kind {
-        StmtKind::Mut { name_span, ty: None, .. } | StmtKind::Const { name_span, ty: None, .. } => {
+        StmtKind::Mut { name_span, ty: None, .. } | StmtKind::Let { name_span, ty: None, .. } => {
             if name_span.start < lo || name_span.end > hi {
                 return;
             }

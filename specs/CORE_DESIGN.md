@@ -229,7 +229,7 @@ Higher-kinded types, dependent types, algebraic effects — the features that re
 
 Each mechanism has its own spec with full details. This section gives the shape of the language — enough to understand how the pieces fit together.
 
-**Bindings and syntax.** `const x = 0` for immutable, `let x = 0` for mutable. Newlines terminate statements. Functions use `func`, methods live in `extend` blocks. See [SYNTAX.md](SYNTAX.md).
+**Bindings and syntax.** `let x = 0` for immutable, `let x = 0` for mutable. Newlines terminate statements. Functions use `func`, methods live in `extend` blocks. See [SYNTAX.md](SYNTAX.md).
 
 **Ownership.** Every value has exactly one owner. Assignment transfers ownership (move) for non-copy types. After a move, the source binding is invalid. To keep access while passing, explicitly `.clone()`. `discard` explicitly drops a value and invalidates its binding. See [ownership.md](memory/ownership.md).
 

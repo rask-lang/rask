@@ -23,7 +23,7 @@ func present(x: T) -> string where T: Show { return x.show() }
 test "conditional conformance holds when the argument satisfies the condition" {
     mut v = Vec.new<Coin>()
     v.push(Coin { v: 1 })
-    const r = Ring { items: v }
+    let r = Ring { items: v }
     assert present(r) == "ring-of-show"
 }
 

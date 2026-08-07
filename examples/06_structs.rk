@@ -20,7 +20,7 @@ extend Person {
 }
 
 func main() {
-    const alice = Person {
+    let alice = Person {
         name: "Alice",
         age: 25,
     }
@@ -31,7 +31,7 @@ func main() {
         print("Alice is an adult\n")
     }
 
-    const bob = Person {
+    let bob = Person {
         name: "Bob",
         age: 16,
     }

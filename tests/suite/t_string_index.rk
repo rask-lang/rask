@@ -7,13 +7,13 @@
 // counts bytes (S-rules).
 
 test "indexing an ascii string" {
-    const s = "hello"
+    let s = "hello"
     assert s[0] == 'h'
     assert s[4] == 'o'
 }
 
 test "indexing counts characters, not bytes" {
-    const u = "héllo"
+    let u = "héllo"
     assert u[0] == 'h'
     assert u[1] == 'é'
     assert u[2] == 'l'
@@ -22,22 +22,22 @@ test "indexing counts characters, not bytes" {
 }
 
 test "char_at agrees with indexing" {
-    const u = "héllo"
+    let u = "héllo"
     assert (u.char_at(1) ?? 'x') == 'é'
     assert (u.char_at(2) ?? 'x') == 'l'
     assert u.char_at(99)? == false
 }
 
 test "slices are usable in an expression" {
-    const s = "hello"
+    let s = "hello"
     assert s[1..3] == "el"
     assert s[1..3].len() == 2
     assert s[0..5] == "hello"
 }
 
 test "a slice copied out with to_string" {
-    const s = "hello"
-    const owned = s[1..3].to_string()
+    let s = "hello"
+    let owned = s[1..3].to_string()
     assert owned == "el"
     assert owned.len() == 2
 }

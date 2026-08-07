@@ -23,7 +23,7 @@ extend TextBuffer {
 
     // Requires string to be Copy — reading old_text must not borrow self.lines
     func replace(self, index: i32, new_text: string) -> string {
-        const old_text = self.lines[index]
+        let old_text = self.lines[index]
         self.lines[index] = new_text
         return old_text
     }
@@ -33,16 +33,16 @@ test "string is Copy — read then write same container" {
     mut buf = TextBuffer.new()
     buf.add("hello")
     buf.add("world")
-    const old = buf.replace(0, "changed")
+    let old = buf.replace(0, "changed")
     assert old == "hello"
     assert buf.lines[0] == "changed"
     assert buf.lines[1] == "world"
 }
 
 test "string Copy — multiple bindings same source" {
-    const original = "hello world"
-    const copy1 = original
-    const copy2 = original
+    let original = "hello world"
+    let copy1 = original
+    let copy2 = original
     assert original == "hello world"
     assert copy1 == "hello world"
     assert copy2 == "hello world"
@@ -51,9 +51,9 @@ test "string Copy — multiple bindings same source" {
 struct Named { name: string }
 
 test "string Copy — assign from struct field" {
-    const obj = Named { name: "Alice" }
-    const n1 = obj.name
-    const n2 = obj.name
+    let obj = Named { name: "Alice" }
+    let n1 = obj.name
+    let n2 = obj.name
     assert n1 == "Alice"
     assert n2 == "Alice"
 }
@@ -66,10 +66,10 @@ test "Vec.get — present for valid index" {
     v.push(20)
     v.push(30)
 
-    const first = v.get(0)
+    let first = v.get(0)
     assert first?
 
-    const second = v.get(1)!
+    let second = v.get(1)!
     assert second == 20
 }
 
@@ -77,7 +77,7 @@ test "Vec.get — none for out of bounds" {
     mut v = Vec.new()
     v.push(42)
 
-    const out = v.get(5)
+    let out = v.get(5)
     assert out == none
 }
 
@@ -129,37 +129,37 @@ extend Validator {
 }
 
 func use_validator(v: Validator, x: i32) -> i32 or OuterError {
-    const result = try v.check(x) else |e| OuterError.Wrapped(e)
+    let result = try v.check(x) else |e| OuterError.Wrapped(e)
     return result
 }
 
 func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
-    const result = try v.check(x)
+    let result = try v.check(x)
         else |e| OuterError.Wrapped(e)
     return result
 }
 
 test "try-else with method call — success" {
     mut v = Validator { threshold: 5 }
-    const result = use_validator(v, 10)
+    let result = use_validator(v, 10)
     assert result?
 }
 
 test "try-else with method call — error transforms" {
     mut v = Validator { threshold: 5 }
-    const result = use_validator(v, 3)
+    let result = use_validator(v, 3)
     assert result is OuterError
 }
 
 test "try-else multiline with method call — success" {
     mut v = Validator { threshold: 5 }
-    const result = use_validator_multiline(v, 10)
+    let result = use_validator_multiline(v, 10)
     assert result?
 }
 
 test "try-else multiline with method call — error transforms" {
     mut v = Validator { threshold: 5 }
-    const result = use_validator_multiline(v, 3)
+    let result = use_validator_multiline(v, 3)
     assert result is OuterError
 }
 
@@ -205,20 +205,20 @@ extend StrictParser with Parser {
 }
 
 func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
-    const val = try p.parse(input) else |e| ProcessError.Parse(e)
+    let val = try p.parse(input) else |e| ProcessError.Parse(e)
     return val * 2
 }
 
 test "try-else with trait object — success" {
-    const p = StrictParser {}
-    const result = process_with_parser(p, "42")
+    let p = StrictParser {}
+    let result = process_with_parser(p, "42")
     assert result?
     assert result! == 84
 }
 
 test "try-else with trait object — error transforms" {
-    const p = StrictParser {}
-    const result = process_with_parser(p, "bad")
+    let p = StrictParser {}
+    let result = process_with_parser(p, "bad")
     assert result is ProcessError
 }
 
@@ -230,8 +230,8 @@ test "string Copy — Vec of strings, read multiple" {
     names.push("Bob")
     names.push("Charlie")
     // Read same element multiple times — must not move
-    const a1 = names[0]
-    const a2 = names[0]
+    let a1 = names[0]
+    let a2 = names[0]
     assert a1 == "Alice"
     assert a2 == "Alice"
     assert names.len() == 3
@@ -241,8 +241,8 @@ test "string Copy — Map with string keys and values" {
     mut m = Map.new()
     m.insert("key1", "value1")
     m.insert("key2", "value2")
-    const v1 = m["key1"]
-    const v2 = m["key1"]
+    let v1 = m["key1"]
+    let v2 = m["key1"]
     assert v1 == "value1"
     assert v2 == "value1"
 }
@@ -252,8 +252,8 @@ func take_string(s: string) -> string {
 }
 
 test "string Copy — pass to function and keep original" {
-    const original = "immutable"
-    const copy = take_string(original)
+    let original = "immutable"
+    let copy = take_string(original)
     assert original == "immutable"
     assert copy == "immutable"
 }
@@ -267,10 +267,10 @@ struct Entity {
 
 test "Pool — string fields Copy correctly" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { name: "Hero", health: 100 })
+    let h = pool.insert(Entity { name: "Hero", health: 100 })
     // Read string field — should be Copy, not move
-    const name1 = pool[h].name
-    const name2 = pool[h].name
+    let name1 = pool[h].name
+    let name2 = pool[h].name
     assert name1 == "Hero"
     assert name2 == "Hero"
     assert pool[h].health == 100
@@ -278,8 +278,8 @@ test "Pool — string fields Copy correctly" {
 
 test "Pool — modify non-string field after reading string" {
     mut pool = Pool.new()
-    const h = pool.insert(Entity { name: "Hero", health: 100 })
-    const name = pool[h].name
+    let h = pool.insert(Entity { name: "Hero", health: 100 })
+    let name = pool[h].name
     with pool[h] as e {
         e.health = 50
     }
@@ -310,7 +310,7 @@ test "Vec.get — else branch on absent" {
 test "Vec.get — guard pattern" {
     mut v = Vec.new()
     v.push(42)
-    const val = v.get(0) ?? panic("missing")
+    let val = v.get(0) ?? panic("missing")
     assert val == 42
 }
 
@@ -318,7 +318,7 @@ test "Vec.get — guard pattern" {
 
 test "try-else — error value is correctly transformed" {
     mut v = Validator { threshold: 10 }
-    const result = use_validator(v, 3)
+    let result = use_validator(v, 3)
     match result {
         OuterError.Wrapped(InnerError.BadInput(msg)) => {
             assert msg == "below threshold"
@@ -362,25 +362,25 @@ func step2(x: i32) -> i32 or StepError {
 }
 
 func chained(x: i32) -> i32 or ChainError {
-    const a = try step1(x) else |e| ChainError.Step1(e.message())
-    const b = try step2(a) else |e| ChainError.Step2(e.message())
+    let a = try step1(x) else |e| ChainError.Step1(e.message())
+    let b = try step2(a) else |e| ChainError.Step2(e.message())
     return b
 }
 
 test "chained try-else — all succeed" {
-    const result = chained(5)
+    let result = chained(5)
     assert result?
     assert result! == 12
 }
 
 test "chained try-else — first fails" {
-    const result = chained(-1)
+    let result = chained(-1)
     assert result is ChainError.Step1(_)
 }
 
 test "chained try-else — second fails" {
-    const result = chained(99)
-    const result2 = chained(200)
+    let result = chained(99)
+    let result2 = chained(200)
     assert result?
     assert result2 is ChainError.Step2(_)
 }
@@ -390,30 +390,30 @@ test "chained try-else — second fails" {
 import http
 
 test "Response.ok creates 200 response" {
-    const resp = Response.ok("hello")
+    let resp = Response.ok("hello")
     assert resp.status == 200
     assert resp.body == "hello"
 }
 
 test "Response.not_found creates 404" {
-    const resp = Response.not_found()
+    let resp = Response.not_found()
     assert resp.status == 404
 }
 
 test "Response.json sets content type" {
-    const resp = Response.json("{}")
+    let resp = Response.json("{}")
     assert resp.status == 200
     assert resp.body == "{}"
 }
 
 test "Response.with_status changes status" {
-    const resp = Response.ok("created").with_status(201)
+    let resp = Response.ok("created").with_status(201)
     assert resp.status == 201
     assert resp.body == "created"
 }
 
 test "Response.bad_request creates 400" {
-    const resp = Response.bad_request("invalid")
+    let resp = Response.bad_request("invalid")
     assert resp.status == 400
     assert resp.body == "invalid"
 }
@@ -423,10 +423,10 @@ test "Response.bad_request creates 400" {
 import fs
 
 test "fs write and read round-trip" {
-    const path = "/tmp/rask_test_litmus.txt"
-    const content = "hello from rask\nsecond line\n"
+    let path = "/tmp/rask_test_litmus.txt"
+    let content = "hello from rask\nsecond line\n"
     fs.write_text(path, content)
-    const read_back = fs.read_text(path) is string as data else {
+    let read_back = fs.read_text(path) is string as data else {
         assert false, "failed to read back"
         return
     }
@@ -434,9 +434,9 @@ test "fs write and read round-trip" {
 }
 
 test "fs read_lines returns correct line count" {
-    const path = "/tmp/rask_test_litmus2.txt"
+    let path = "/tmp/rask_test_litmus2.txt"
     fs.write_text(path, "line1\nline2\nline3\n")
-    const r = fs.read_lines(path)
+    let r = fs.read_lines(path)
     if r? {
         assert r.len() == 3
     } else {

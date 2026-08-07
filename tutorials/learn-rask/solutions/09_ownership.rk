@@ -40,10 +40,10 @@ func mean(data: Vec<f64>) -> f64 {
 }
 
 func std_dev(data: Vec<f64>) -> f64 {
-    const m = mean(data)
+    let m = mean(data)
     mut sum_sq = 0.0
     for v in data {
-        const diff = v - m
+        let diff = v - m
         sum_sq = sum_sq + diff * diff
     }
     return sqrt(sum_sq / data.len() as f64)
@@ -82,21 +82,21 @@ test "max altitude" {
 }
 
 test "mean" {
-    const data = Vec.from([2.0, 4.0, 6.0, 8.0, 10.0])
+    let data = Vec.from([2.0, 4.0, 6.0, 8.0, 10.0])
     assert mean(data) == 6.0
     assert data.len() == 5
 }
 
 test "std dev" {
-    const data = Vec.from([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0])
-    const sd = std_dev(data)
+    let data = Vec.from([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0])
+    let sd = std_dev(data)
     assert sd > 1.99
     assert sd < 2.01
 }
 
 test "altitudes above" {
     mut log = Vec.from([0, 5000, 15000, 25000, 35000])
-    const high = altitudes_above(log, 20000)
+    let high = altitudes_above(log, 20000)
     assert high.len() == 2
     assert log.len() == 5
 }

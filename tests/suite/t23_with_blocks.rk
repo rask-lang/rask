@@ -93,7 +93,7 @@ test "with as expression" {
     mut v = Vec.new()
     v.push(42)
 
-    const doubled = with v[0] as item {
+    let doubled = with v[0] as item {
         item * 2
     }
     assert doubled == 84

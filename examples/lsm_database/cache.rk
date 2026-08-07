@@ -34,9 +34,9 @@ extend BlockCache {
     }
 
     func get(mutate self, sst_id: i32, block_id: i32) -> Vec<KeyValue>? {
-        const key = BlockCache.cache_key(sst_id, block_id)
-        const handle = self.by_key.get(key) ?? return none
-        const handle = handle.clone()
+        let key = BlockCache.cache_key(sst_id, block_id)
+        let handle = self.by_key.get(key) ?? return none
+        let handle = handle.clone()
 
         self.access_counter += 1
         with self.blocks[handle] as block {
@@ -46,7 +46,7 @@ extend BlockCache {
     }
 
     func put(mutate self, sst_id: i32, block_id: i32, entries: Vec<KeyValue>) {
-        const key = BlockCache.cache_key(sst_id, block_id)
+        let key = BlockCache.cache_key(sst_id, block_id)
         if self.by_key.contains_key(key) { return }
 
         if self.blocks.len() >= MAX_CACHE_ENTRIES {
@@ -54,7 +54,7 @@ extend BlockCache {
         }
 
         self.access_counter += 1
-        const handle = self.blocks.insert(CacheBlock {
+        let handle = self.blocks.insert(CacheBlock {
             sst_id: sst_id,
             block_id: block_id,
             entries: entries,
@@ -75,7 +75,7 @@ extend BlockCache {
         }
 
         if victim? as h {
-            const key = with self.blocks[h] as block {
+            let key = with self.blocks[h] as block {
                 BlockCache.cache_key(block.sst_id, block.block_id)
             }
             self.blocks.remove(h)
@@ -87,7 +87,7 @@ extend BlockCache {
         mut to_remove = Vec.new()
         for handle in self.blocks {
             if self.blocks[handle].sst_id == sst_id {
-                const key = BlockCache.cache_key(
+                let key = BlockCache.cache_key(
                     self.blocks[handle].sst_id,
                     self.blocks[handle].block_id,
                 )
@@ -128,8 +128,8 @@ func sst_point_lookup(
         return none
     }
 
-    const index = try read_sstable_index(meta.path)
-    const target_block = find_block_for_key(index, key) ?? return none
+    let index = try read_sstable_index(meta.path)
+    let target_block = find_block_for_key(index, key) ?? return none
 
     // Cache hit path
     if cache.get(meta.id, target_block)? as entries {
@@ -142,7 +142,7 @@ func sst_point_lookup(
     }
 
     // Cache miss — read from disk, populate cache
-    const entries = try read_sstable_block(meta.path, target_block)
+    let entries = try read_sstable_block(meta.path, target_block)
     cache.put(meta.id, target_block, entries.clone())
 
     for entry in entries {
@@ -157,14 +157,14 @@ func sst_point_lookup(
 
 test "block cache put and get" {
     mut cache = BlockCache.new()
-    const entries = Vec.from([
+    let entries = Vec.from([
         KeyValue.new("k1", "v1", 1),
         KeyValue.new("k2", "v2", 2),
     ])
 
     cache.put(1, 0, entries.clone())
 
-    const result = cache.get(1, 0) ?? panic("expected present")
+    let result = cache.get(1, 0) ?? panic("expected present")
     assert result.len() == 2
     assert result[0].key == "k1"
 

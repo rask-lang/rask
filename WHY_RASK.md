@@ -51,7 +51,7 @@ The same thing in Rask:
 
 ```rask
 func process_entries(entries: Vec<Entry>, filter: string) -> Vec<string> {
-    const result = Vec.new()
+    let result = Vec.new()
     for entry in entries {
         if entry.tag == filter: result.push(entry.name)
     }
@@ -86,7 +86,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
 - **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `try ... else |e|` chains transformation with propagation. See below
-- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`, `try`). Match on `T?` is a compile error. Flow narrowing on `const` bindings. Kotlin/TypeScript nullable typing, not Rust Option
+- **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `== none`, `try`). Match on `T?` is a compile error. Flow narrowing on `let` bindings. Kotlin/TypeScript nullable typing, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
 
@@ -108,14 +108,14 @@ The disjointness rule (T ≠ E) is the price — enforced via Rask's nominal-vs-
 **Option isn't an enum.** Rust's `Option<T>` is literally `enum { Some(T), None }` — you `match` or `if let`. In Rask, `T?` is a builtin status type with an operator-only surface. `match` on `T?` is a compile error.
 
 ```rask
-const name = user?.profile?.display_name ?? "Anonymous"
+let name = user?.profile?.display_name ?? "Anonymous"
 if user == none { return default() }
 if user? as u { greet(u) }
 ```
 
 This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Option`.
 
-**Narrowing is flow typing, not pattern matching.** `if x? { use(x) }` narrows `x` to `T` inside the block because `const` bindings can't be reassigned. No destructuring pattern. The compiler uses a fact it already knows (constness) to refine types in branches.
+**Narrowing is flow typing, not pattern matching.** `if x? { use(x) }` narrows `x` to `T` inside the block because `let` bindings can't be reassigned. No destructuring pattern. The compiler uses a fact it already knows (the binding is permanent) to refine types in branches.
 
 **Errors are bounded.** Every `E` in `T or E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
 
@@ -134,7 +134,7 @@ No `thiserror` macro, no hand-written match.
 **`try ... else |e|` block form.** Propagate and transform in one step:
 
 ```rask
-const data = try fs.read(path) else |e| context("reading {path}", e)
+let data = try fs.read(path) else |e| context("reading {path}", e)
 ```
 
 Rust needs `fs::read(path).map_err(|e| ...)?`.
@@ -210,10 +210,10 @@ Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move on ass
 
 ```rask
 // Strings (16 bytes, Copy) — implicit
-const name = user.name
+let name = user.name
 
 // User struct (>16 bytes) — explicit
-const user_copy = user.clone()
+let user_copy = user.clone()
 db.insert(id, user_copy)
 ```
 
@@ -274,8 +274,8 @@ The Rask version is always the simple case. In Rust, you get the simple version 
 `string` is immutable, refcounted, and Copy (16 bytes). It copies like an integer — no `.clone()`, no GC, no COW hidden costs. The compiler elides atomic refcount operations in ~70-80% of cases.
 
 ```rask
-const name = user.name        // just copies — 16 bytes, like copying two pointers
-const greeting = "hello {name}"
+let name = user.name        // just copies — 16 bytes, like copying two pointers
+let greeting = "hello {name}"
 ```
 
 Go gives you this with garbage collection. Rask gives you this with deterministic cleanup and near-zero overhead.
@@ -287,8 +287,8 @@ Arena-scoped memory, fixed-buffer allocation for embedded, request-scoped scratc
 ```rask
 func handle_request(req: Request) -> Response {
     using Arena.scoped(256.kilobytes()) {
-        const params = parse_query(req.url)
-        const body = try parse_json(req.body)
+        let params = parse_query(req.url)
+        let body = try parse_json(req.body)
         return Response.json(process(params, body))
     }
     // arena freed — all scratch memory gone
@@ -301,7 +301,7 @@ Values are freed when their owner goes out of scope. I/O resources use `ensure` 
 
 ```rask
 func process(path: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()           // runs on every exit path
     // ...work with file...
 }
@@ -313,7 +313,7 @@ I/O operations pause green tasks transparently. No `.await` at call sites.
 
 ```rask
 func fetch_data(url: string) -> string or HttpError {
-    const resp = try http.get(url)   // pauses the task, not the thread
+    let resp = try http.get(url)   // pauses the task, not the thread
     return resp.body()
 }
 ```
@@ -326,8 +326,8 @@ The catch: functions that spawn tasks need `using Multitasking` in their signatu
 
 ```rask
 func load_config(path: string) -> Config or _ {
-    const text = try fs.read(path) else |e| context("reading {path}", e)
-    const config = try parse(text) else |e| context("parsing {path}", e)
+    let text = try fs.read(path) else |e| context("reading {path}", e)
+    let config = try parse(text) else |e| context("parsing {path}", e)
     return config
 }
 ```
@@ -338,7 +338,7 @@ Files, sockets, and connections are linear types — the compiler rejects code t
 
 ```rask
 func broken(path: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     // compile error: `file` must be consumed (closed, passed, or ensured)
 }
 ```
@@ -356,14 +356,14 @@ Importing users from a CSV file. Same task, same structure, different languages.
 **Rask:**
 ```rask
 func import_users(path: string, mutate db: Database) -> i64 or ImportError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
         else |e| ImportError.FileError(path, e)
     ensure file.close()
 
     let imported = 0
     for line in file.lines() {
-        const text = try line else |e| ImportError.ReadError(e)
-        const parts = text.split(",")
+        let text = try line else |e| ImportError.ReadError(e)
+        let parts = text.split(",")
         if parts.len() != 2 {
             return ImportError.BadFormat("expected name,email on line {imported + 1}")
         }

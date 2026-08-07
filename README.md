@@ -22,7 +22,7 @@ Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremon
 
 ```rask
 func search_file(path: string, pattern: string) -> () or IoError {
-    const file = try fs.open(path)
+    let file = try fs.open(path)
     ensure file.close()
 
     for line in file.lines() {

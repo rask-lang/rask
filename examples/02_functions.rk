@@ -1,12 +1,12 @@
 // Learn: Functions and return values
 
 func main() {
-    const result = add(5, 3)
+    let result = add(5, 3)
     print("5 + 3 = ")
     print(result)
     print("\n")
 
-    const doubled = double(7)
+    let doubled = double(7)
     print("7 x 2 = ")
     print(doubled)
     print("\n")

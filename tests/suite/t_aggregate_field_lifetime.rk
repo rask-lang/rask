@@ -48,12 +48,12 @@ func kind_from(s: string) -> Kind? {
 
 // The enum arrives via an optional unwrap, so it lives in this frame.
 func make_msg(s: string) -> Msg {
-    const k = if kind_from(s)? as m { m } else { return Msg { kind: Kind.A, path: "-" } }
+    let k = if kind_from(s)? as m { m } else { return Msg { kind: Kind.A, path: "-" } }
     return Msg { kind: k, path: "/health" }
 }
 
 func make_outer() -> Outer {
-    const i = Inner { n: 42 }
+    let i = Inner { n: 42 }
     return Outer { inner: i, tag: "/x" }
 }
 
@@ -63,7 +63,7 @@ func churn() -> i64 {
     mut total = 0
     mut i = 0
     while i < 8 {
-        const scratch = Msg { kind: Kind.A, path: "scratch" }
+        let scratch = Msg { kind: Kind.A, path: "scratch" }
         total += scratch.path.len() truncate to i64
         i += 1
     }
@@ -71,15 +71,15 @@ func churn() -> i64 {
 }
 
 test "codegen — enum field survives the builder's frame" {
-    const m = make_msg("c")
-    const burned = churn()
+    let m = make_msg("c")
+    let burned = churn()
     assert burned > 0
     assert label(m.kind) == "C"
     assert m.path == "/health"
 }
 
 test "codegen — enum field matches through a plain call" {
-    const m = make_msg("b")
+    let m = make_msg("b")
     assert m.kind is Kind.B
     assert label(m.kind) == "B"
 }
@@ -87,9 +87,9 @@ test "codegen — enum field matches through a plain call" {
 // A qualified variant pattern has to resolve to that variant's tag, not to 0
 // (#476). Every variant is checked so a wrong-but-constant tag can't pass.
 test "codegen — `is Enum.Variant` picks the right tag" {
-    const a = Kind.A
-    const b = Kind.B
-    const c = Kind.C
+    let a = Kind.A
+    let b = Kind.B
+    let c = Kind.C
     assert a is Kind.A
     assert !(a is Kind.B)
     assert !(a is Kind.C)
@@ -102,8 +102,8 @@ test "codegen — `is Enum.Variant` picks the right tag" {
 }
 
 test "codegen — 8-byte struct field survives the builder's frame" {
-    const o = make_outer()
-    const burned = churn()
+    let o = make_outer()
+    let burned = churn()
     assert burned > 0
     assert o.inner.n == 42
     assert o.tag == "/x"

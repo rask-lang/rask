@@ -66,7 +66,7 @@ extend Prototype {
         // Add a constant and return its index in the constant pool.
         // If the same constant already exists, return the existing index.
         // For now, always add (deduplication is an optimization)
-        const idx = self.constants.len()
+        let idx = self.constants.len()
         self.constants.push(val)
         return idx as i64
     }
@@ -76,7 +76,7 @@ extend Prototype {
         mut out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
         mut i = 0
         while i < self.code.len() {
-            const instr = self.code.get(i) ?? break
+            let instr = self.code.get(i) ?? break
             out = "{out}{disassemble_instr(instr, i)}\n"
             i = i + 1
         }

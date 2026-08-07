@@ -6,8 +6,8 @@
 // dispatch and mangled the closure-taking `Mutex_lock` with no closure to give
 // it, so native failed the Cranelift verifier on argument count (#479).
 //
-// A module-const case is deliberately absent: a test block that references a
-// module-level const registers 0 tests on native (the #390 family), which would
+// A module-let case is deliberately absent: a test block that references a
+// module-level let registers 0 tests on native (the #390 family), which would
 // make this file diverge for an unrelated reason.
 
 struct Counter { public n: i64 }
@@ -39,16 +39,16 @@ extend Holder {
 }
 
 test "mem.boxes — a bare lock() yields the scalar payload" {
-    const h = Holder.new()
+    let h = Holder.new()
     assert h.read_scalar() == 3
 }
 
 test "mem.boxes — a bare lock() on a Vec payload" {
-    const h = Holder.new()
+    let h = Holder.new()
     assert h.vec_len() == 0
 }
 
 test "mem.boxes — the chained form still works" {
-    const h = Holder.new()
+    let h = Holder.new()
     assert h.read_chained() == 7
 }

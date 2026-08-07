@@ -29,7 +29,7 @@ test "std.strings/is_empty" {
 // --- search predicates ---
 
 test "std.strings/contains" {
-    const s = "hello world"
+    let s = "hello world"
     assert s.contains("world") == true
     assert s.contains("lo w") == true
     assert s.contains("xyz") == false
@@ -37,7 +37,7 @@ test "std.strings/contains" {
 }
 
 test "std.strings/starts_with and ends_with" {
-    const s = "hello world"
+    let s = "hello world"
     assert s.starts_with("hello") == true
     assert s.starts_with("world") == false
     assert s.ends_with("world") == true
@@ -49,7 +49,7 @@ test "std.strings/starts_with and ends_with" {
 // method-returned optional both diverge on native — see report.
 
 test "std.strings/rfind last occurrence" {
-    const s = "hello"
+    let s = "hello"
     assert s.rfind("l")! == 3
     assert s.rfind("h")! == 0
     assert s.rfind("o")! == 4
@@ -58,17 +58,17 @@ test "std.strings/rfind last occurrence" {
 // --- indexed access returns char? / u8? ---
 
 test "std.strings/char_at" {
-    const s = "hello"
-    const c = s.char_at(1)!
+    let s = "hello"
+    let c = s.char_at(1)!
     // char == char inside assert miscompiles on native; bind to bool first.
-    const is_e = c == 'e'
+    let is_e = c == 'e'
     assert is_e
-    const is_h = s.char_at(0)! == 'h'
+    let is_h = s.char_at(0)! == 'h'
     assert is_h
 }
 
 test "std.strings/byte_at" {
-    const s = "hello"
+    let s = "hello"
     assert s.byte_at(0)! == 104
     assert s.byte_at(4)! == 111
 }
@@ -102,14 +102,14 @@ test "std.strings/trim_start and trim_end" {
 // --- substring / replace / concat ---
 
 test "std.strings/substring" {
-    const s = "hello world"
+    let s = "hello world"
     assert s.substring(0, 5) == "hello"
     assert s.substring(6, 11) == "world"
     assert s.substring(0, 0) == ""
 }
 
 test "std.strings/replace" {
-    const s = "hello world"
+    let s = "hello world"
     assert s.replace("o", "0") == "hell0 w0rld"
     assert s.replace("world", "rask") == "hello rask"
     assert s.replace("z", "!") == "hello world"

@@ -29,21 +29,21 @@ struct Nested {
 }
 
 func make() -> Summary {
-    const errors: u64 = 1
-    const total: u64 = 4
-    const rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+    let errors: u64 = 1
+    let total: u64 = 4
+    let rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
     return Summary { total: total, errors: errors, rate: rate, p50: 8.5, slow: 0 }
 }
 
 test "stdlib.encoding — a float field keeps its value" {
-    const s = make()
-    const j = json.encode(s)
+    let s = make()
+    let j = json.encode(s)
     assert j.contains("\"rate\":0.25")
     assert j.contains("\"p50\":8.5")
 }
 
 test "stdlib.encoding — integer fields alongside floats" {
-    const j = json.encode(make())
+    let j = json.encode(make())
     assert j.contains("\"total\":4")
     assert j.contains("\"errors\":1")
     assert j.contains("\"slow\":0")
@@ -52,15 +52,15 @@ test "stdlib.encoding — integer fields alongside floats" {
 // The result is a string, so it can be bound and used like one. Typed i64 it
 // printed as a pointer.
 test "stdlib.encoding — encode returns a usable string" {
-    const j = json.encode(make())
+    let j = json.encode(make())
     assert j.len() > 0
     assert j.starts_with("{")
     assert j.ends_with("}")
 }
 
 test "stdlib.encoding — a nested struct keeps its float too" {
-    const n = Nested { name: "n", inner: make(), flag: true }
-    const j = json.encode(n)
+    let n = Nested { name: "n", inner: make(), flag: true }
+    let j = json.encode(n)
     assert j.contains("\"rate\":0.25")
     assert j.contains("\"name\":\"n\"")
 }

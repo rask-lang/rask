@@ -18,14 +18,14 @@ extend Tx {
 
 // No explicit consumption: rollback runs at scope exit.
 func no_consume() {
-    const tx = Tx { id: 1 }
+    let tx = Tx { id: 1 }
     ensure tx.rollback()
     println("no_consume body")
 }
 
 // Unconditional consume in the same scope: rollback cancelled (C1).
 func definite_consume() {
-    const tx = Tx { id: 2 }
+    let tx = Tx { id: 2 }
     ensure tx.rollback()
     println("definite_consume body")
     tx.commit()
@@ -34,7 +34,7 @@ func definite_consume() {
 // Transfer pattern: early return leaves tx unconsumed (rollback runs),
 // fall-through consumes (rollback cancelled). Each exit is definite (C3).
 func transfer(fast: bool) {
-    const tx = Tx { id: 3 }
+    let tx = Tx { id: 3 }
     ensure tx.rollback()
     if fast {
         return              // tx not consumed -> rollback runs
@@ -45,7 +45,7 @@ func transfer(fast: bool) {
 // #295: consume inside a nested block that then returns. Definite consume,
 // so rollback is cancelled — the earlier interpreter double-ran cleanup here.
 func nested_consume() {
-    const tx = Tx { id: 4 }
+    let tx = Tx { id: 4 }
     ensure tx.rollback()
     {
         tx.commit()

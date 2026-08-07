@@ -43,11 +43,11 @@ extend TcpListener {
 ```rask
 import net
 
-const listener = try net.tcp_listen("0.0.0.0:8080")
+let listener = try net.tcp_listen("0.0.0.0:8080")
 ensure listener.close()
 
 loop {
-    const conn = try listener.accept()
+    let conn = try listener.accept()
     spawn {
         ensure conn.close()
         try handle(conn)
@@ -86,10 +86,10 @@ extend TcpConnection {
 ```rask
 import net
 
-const conn = try net.tcp_connect("example.com:80")
+let conn = try net.tcp_connect("example.com:80")
 ensure conn.close()
 try conn.write_text("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-const response = try conn.read_text()
+let response = try conn.read_text()
 ```
 
 ## UDP
@@ -125,11 +125,11 @@ extend UdpSocket {
 ```rask
 import net
 
-const socket = try net.udp_bind("0.0.0.0:9000")
+let socket = try net.udp_bind("0.0.0.0:9000")
 ensure socket.close()
 
 mut buf = [0u8; 1024]
-const (n, sender) = try socket.receive_from(buf)
+let (n, sender) = try socket.receive_from(buf)
 try socket.send_to(buf[0..n], sender)
 ```
 
@@ -147,7 +147,7 @@ net.resolve(host: string) -> Vec<string> or IoError
 
 <!-- test: skip -->
 ```rask
-const addrs = try net.resolve("example.com")
+let addrs = try net.resolve("example.com")
 // ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
 ```
 
@@ -162,7 +162,7 @@ const addrs = try net.resolve("example.com")
 ```rask
 func handle(conn: TcpConnection) -> void or IoError {
     ensure conn.close()
-    const data = try conn.read_bytes()
+    let data = try conn.read_bytes()
     try conn.write_bytes(process(data))
 }
 ```
@@ -172,7 +172,7 @@ func handle(conn: TcpConnection) -> void or IoError {
 ```
 ERROR [std.net/N7]: connection not consumed
    |
-3  |  const conn = try listener.accept()
+3  |  let conn = try listener.accept()
    |        ^^^^ `TcpConnection` is a @resource that must be closed
 
 WHY: Network connections are linear resources to prevent socket leaks.
@@ -183,7 +183,7 @@ FIX: Add `ensure conn.close()` after accepting.
 ```
 ERROR [std.net/N4]: bind failed
    |
-2  |  const listener = try net.tcp_listen("0.0.0.0:8080")
+2  |  let listener = try net.tcp_listen("0.0.0.0:8080")
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ IoError.Other("address in use")
 
 WHY: Another process is already listening on this address.

@@ -11,9 +11,9 @@ func widen(x: u16) -> u64 {
 }
 
 test "printing at the top of each unsigned range" {
-    const a: u8 = 255
-    const b: u16 = 65535
-    const c: u32 = 4294967295
+    let a: u8 = 255
+    let b: u16 = 65535
+    let c: u32 = 4294967295
     assert "{a}" == "255"
     assert "{b}" == "65535"
     assert "{c}" == "4294967295"
@@ -21,27 +21,27 @@ test "printing at the top of each unsigned range" {
 }
 
 test "unsigned struct fields" {
-    const r = Rec { n: 4000000000, m: 200 }
+    let r = Rec { n: 4000000000, m: 200 }
     assert "{r.n}" == "4000000000"
     assert "{r.m}" == "200"
 }
 
 test "as-conversion to a wider unsigned type" {
     assert widen(60000) == 60000
-    const s: u8 = 200
+    let s: u8 = 200
     assert (s as u64) == 200
     assert (s as u32) == 200
 }
 
 test "comparisons past the sign bit" {
-    const a: u8 = 200
-    const c: u32 = 4000000000
+    let a: u8 = 200
+    let c: u32 = 4000000000
     assert a > 100
     assert c > 1000
 }
 
 test "arithmetic accumulating into a wider unsigned" {
-    const v = Vec.from([200, 250])
+    let v = Vec.from([200, 250])
     mut sum: u64 = 0
     for e in v {
         sum = sum + e

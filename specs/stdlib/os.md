@@ -42,8 +42,8 @@ Single `os` module: env vars, args, exit, platform info, subprocess spawning, an
 import os
 
 func main() {
-    const port = os.env_or("PORT", "8080")
-    const args = os.args()
+    let port = os.env_or("PORT", "8080")
+    let args = os.args()
 
     if args.len() < 2 {
         println("Usage: {args[0]} <file>")
@@ -137,13 +137,13 @@ extend Process {
 import os
 
 // Run to completion
-const output = try Command.new("ls").arg("-la").run()
+let output = try Command.new("ls").arg("-la").run()
 if output.success() {
     println(output.stdout)
 }
 
 // Spawn and interact
-const proc = try Command.new("grep")
+let proc = try Command.new("grep")
     .arg("hello")
     .stdin(Stdio.Piped)
     .stdout(Stdio.Piped)
@@ -151,8 +151,8 @@ const proc = try Command.new("grep")
 ensure proc.kill_and_wait()
 
 try proc.write_stdin("hello world\ngoodbye world\n")
-const result = try proc.read_stdout()
-const output = try proc.wait()
+let result = try proc.read_stdout()
+let output = try proc.wait()
 ```
 
 ## Signals
@@ -181,10 +181,10 @@ os.signals(list: Vec<Signal>) -> Receiver<Signal> or IoError
 import os
 
 // Graceful shutdown
-const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
+let signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // Block until signal received
-const sig = try signals.receive()
+let sig = try signals.receive()
 println("Received {sig}, shutting down...")
 cleanup()
 ```
@@ -196,17 +196,17 @@ import os
 // Server with graceful shutdown
 func main() -> void or Error {
     using Multitasking {
-        const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
-        const server = try http.listen("0.0.0.0:8080")
+        let signals = try os.signals([Signal.Interrupt, Signal.Terminate])
+        let server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
-        const shutdown = spawn(|| {
+        let shutdown = spawn(|| {
             signals.receive()
         })
 
-        const serve = spawn(|| {
+        let serve = spawn(|| {
             loop {
-                const (req, responder) = try server.accept()
+                let (req, responder) = try server.accept()
                 spawn(|| {
                     ensure responder.respond(Response.internal_error("error"))
                     responder.respond(handle(req))
@@ -308,7 +308,7 @@ func default_config_dir() -> string {
 <!-- test: skip -->
 ```rask
 // Run a command and check its exit status
-const output = try Command.new("cargo").arg("build").run()
+let output = try Command.new("cargo").arg("build").run()
 if !output.success() {
     println("Build failed: {output.stderr}")
     os.exit(1)
@@ -319,11 +319,11 @@ if !output.success() {
 
 <!-- test: skip -->
 ```rask
-const signals = try os.signals([Signal.Interrupt, Signal.Terminate])
+let signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // In a select or spawn, wait for signal
 spawn(|| {
-    const sig = try signals.receive()
+    let sig = try signals.receive()
     println("Shutting down on {sig}...")
     shutdown_server()
 }).detach()

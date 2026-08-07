@@ -23,14 +23,14 @@ The `own` prefix is the explicit opt-in to move-capture. Without it, closures bo
 | `own \|x\| expr` | Moved (source consumed) | Copied | Yes |
 
 ```rask
-const tags = get_tags()  // Vec<string>
+let tags = get_tags()  // Vec<string>
 
 // Borrows tags — tags still valid after the call
 filter_vec(items, |item| tags.contains(item.tag))
 print(tags.len())  // OK
 
 // Moves tags — tags consumed
-const f = own |entry: Entry| -> bool { return tags.contains(entry.tag) }
+let f = own |entry: Entry| -> bool { return tags.contains(entry.tag) }
 print(tags.len())  // ERROR: tags moved into closure
 ```
 
@@ -63,10 +63,10 @@ Parameters are independent of capture mode. Both closure modes use the same para
 
 ```rask
 // Borrow parameter (default)
-const print_name = |u: User| print(u.name)
+let print_name = |u: User| print(u.name)
 
 // Mutable-borrow parameter (explicit type required)
-const grow = |mutate item: Item| { item.level += 1 }
+let grow = |mutate item: Item| { item.level += 1 }
 ```
 
 **Return semantics:** `return` inside a closure exits the closure, not the enclosing function
@@ -74,9 +74,9 @@ const grow = |mutate item: Item| { item.level += 1 }
 closures require explicit `return`.
 
 ```rask
-const double = |x| x * 2          // implicit return
+let double = |x| x * 2          // implicit return
 
-const parse = |s| {
+let parse = |s| {
     if s == "" { return none }
     return parse_inner(s)
 }
@@ -97,7 +97,7 @@ unusual (mutate implies the closure needs a live reference, which conflicts with
 
 ```rask
 mut count = 0
-const inc = |mutate count| { count += 1 }
+let inc = |mutate count| { count += 1 }
 inc()
 inc()
 // count == 2
@@ -113,7 +113,7 @@ inside the closure stays inside:
 
 ```rask
 mut count = 0
-const inc = || { count += 1 }  // borrows count read-only; mutation not visible
+let inc = || { count += 1 }  // borrows count read-only; mutation not visible
 inc()
 // count is still 0
 ```
@@ -122,8 +122,8 @@ inc()
 
 ```rask
 mut x = 0
-const a = |mutate x| { x += 1 }
-const b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
+let a = |mutate x| { x += 1 }
+let b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
 ```
 
 Use `Cell<T>` or Pool+Handle for shared mutable state across multiple closures.
@@ -138,8 +138,8 @@ All non-`own` closures are scope-limited. They cannot escape the scope where the
 | **SL2: No escape** | Cannot return, store in struct, or send cross-task |
 
 ```rask
-const tags = get_tags()
-const f = || process(tags)   // f inherits tags' scope
+let tags = get_tags()
+let f = || process(tags)   // f inherits tags' scope
 f()                           // OK: called in same scope
 return f                      // ERROR: cannot escape scope
 ```
@@ -148,7 +148,7 @@ return f                      // ERROR: cannot escape scope
 // ERROR: closure outlives the binding it captures
 mut outer_closure
 {
-    const tags = get_tags()
+    let tags = get_tags()
     outer_closure = || process(tags)  // ERROR: outer_closure outlives tags
 }
 ```
@@ -156,8 +156,8 @@ mut outer_closure
 **Fix: use own and move the value in:**
 
 ```rask
-const tags = get_tags()
-const f = own || process(tags)  // tags moved into closure
+let tags = get_tags()
+let f = own || process(tags)  // tags moved into closure
 return f                         // OK: self-contained
 ```
 
@@ -177,11 +177,11 @@ func run_twice<F: Fn()>(f: F) {
 }  // F dropped, never stored — works with scope-limited closures
 
 func store_callback<F: Fn()>(f: F) {
-    const holder = Holder { callback: f }  // ERROR if F is scope-limited
+    let holder = Holder { callback: f }  // ERROR if F is scope-limited
 }
 
-const tags = get_tags()
-const greet = || print(tags)   // scope-limited
+let tags = get_tags()
+let greet = || print(tags)   // scope-limited
 
 run_twice(greet)               // OK: run_twice doesn't store F
 store_callback(greet)          // ERROR: store_callback tries to store F
@@ -206,16 +206,16 @@ spawning scope.
 ```
 ERROR [mem.closures/SL2]: closure cannot escape scope
    |
-3  |  const tags = get_tags()
+3  |  let tags = get_tags()
    |               ^^^^^^^^^^^ borrowed from outer scope (line 3)
-4  |  const f = || process(tags)
+4  |  let f = || process(tags)
    |            ^^^^^^^^^^^^^^^^^ closure captures scoped variable
 5  |  return f
    |  ^^^^^^^^ cannot escape scope where 'tags' lives
 
 FIX: capture by value with own:
 
-  const f = own || process(tags)
+  let f = own || process(tags)
   return f                          // OK: tags moved into closure
 ```
 
@@ -230,7 +230,7 @@ ERROR [mem.closures/SL2]: scope-limited closure passed to function that stores i
 
 FIX: use own closure:
 
-  const greet = own || print(tags.clone())
+  let greet = own || print(tags.clone())
   store_callback(greet)
 ```
 
@@ -238,16 +238,16 @@ FIX: use own closure:
 ```
 ERROR [mem.closures/MC2]: variable already mutably captured
    |
-3  |  const a = |mutate x| { x += 1 }
+3  |  let a = |mutate x| { x += 1 }
    |             ^^^^^^^^^ x mutably captured here
-4  |  const b = |mutate x| { x += 2 }
+4  |  let b = |mutate x| { x += 2 }
    |             ^^^^^^^^^ cannot capture x again
 
 FIX: Use Cell<T> for shared mutable state:
 
-  const x = Cell.new(0)
-  const a = || x.modify(|v| v += 1)
-  const b = || x.modify(|v| v += 2)
+  let x = Cell.new(0)
+  let a = || x.modify(|v| v += 1)
+  let b = || x.modify(|v| v += 2)
 ```
 
 ## Edge cases
@@ -325,7 +325,7 @@ task takes ownership of its captures. Extending `own` to all closures unifies th
 **Cell<T> for shared mutable state:**
 
 ```rask
-const counter = Cell.new(0)
+let counter = Cell.new(0)
 
 button1.on_click(own |event| {
     with counter as c { c += 1 }

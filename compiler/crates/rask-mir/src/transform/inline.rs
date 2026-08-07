@@ -879,7 +879,7 @@ mod tests {
     }
 
     fn make_caller() -> MirFunction {
-        // func main() -> i32 { const y = double(5); return y }
+        // func main() -> i32 { let y = double(5); return y }
         MirFunction {
             name: "main".to_string(),
             params: vec![],

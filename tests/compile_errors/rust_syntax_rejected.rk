@@ -12,15 +12,15 @@ fn add(a: i32, b: i32) -> i32 { return a + b }
 
 // ERROR: `::` path separator — use `.`
 func test_path() {
-    const x = Result::Ok(42)
+    let x = Result::Ok(42)
 }
 
-// ERROR: `let` is not a keyword — use `mut` (rebindable) or `const` (permanent)
-func test_let() {
-    let counter = 0
+// ERROR: `const` is only for module-level constants — use `let` in a body
+func test_const() {
+    const counter = 0
 }
 
-// ERROR: `let mut` — use `mut` directly
+// ERROR: `let mut` is not Rask — use `mut` directly
 func test_let_mut() {
     let mut counter = 0
 }

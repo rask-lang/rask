@@ -17,7 +17,7 @@ extend GrepError {
 }
 
 func grep_file(pattern: string, path: string) -> i32 or GrepError {
-    const lines_result = fs.read_lines(path)
+    let lines_result = fs.read_lines(path)
 
     if lines_result? {
         mut match_count = 0
@@ -38,20 +38,20 @@ func grep_file(pattern: string, path: string) -> i32 or GrepError {
 }
 
 func main() {
-    const args = cli.args()
-    const argc = args.len()
+    let args = cli.args()
+    let argc = args.len()
 
     if argc < 3 {
         println("Usage: rask run simple_grep.rk <pattern> <file>")
         std.exit(1)
     }
 
-    const pattern = args.get(1)!
-    const file_path = args.get(2)!
+    let pattern = args.get(1)!
+    let file_path = args.get(2)!
 
     println("Searching for '{pattern}' in {file_path}...")
 
-    const result = grep_file(pattern, file_path)
+    let result = grep_file(pattern, file_path)
 
     if result? as count {
         println("")

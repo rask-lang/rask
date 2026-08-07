@@ -173,7 +173,7 @@ The candidate analysis, for the record:
 | `implied trait` | Runner-up — dignified literal pairing with *declared*; lost because dignity was the wrong goal: the keyword should mark looseness, not launder it |
 | `matching trait` | Names the action, conjugates well in diagnostics — but teaches nothing by itself |
 | `shape trait` | Names the criterion; same tier as `matching` |
-| `automatching trait` | Fixes the auto-derive collision by fusing, but seven syllables next to `const`/`func`/`mut` |
+| `automatching trait` | Fixes the auto-derive collision by fusing, but seven syllables next to `let`/`func`/`mut` |
 | `auto trait` | Rejected: collides with **auto-derive** inside Rask itself (the core five are auto-derived *nominal* traits — "auto-derived but not auto" is a confusion factory), plus the unrelated Rust meaning |
 | `lazy trait` | Rejected: "lazy" means deferred work everywhere else; nothing is deferred here |
 | `magic trait` | Rejected: too cute, and the one word a transparency-first language can't use |

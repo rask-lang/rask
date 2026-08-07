@@ -33,15 +33,15 @@
 // --- Examples ---
 
 func example_strings() {
-    const callsign = "SAS 937"
+    let callsign = "SAS 937"
     println("callsign: {callsign}")
     println("length: {callsign.len()}")
     println("uppercase: {callsign.to_uppercase()}")
-    const starts = callsign.starts_with("SAS")
+    let starts = callsign.starts_with("SAS")
     println("starts with SAS: {starts}")
 
-    const csv = "ENGM,OSL,Oslo Gardermoen"
-    const parts = csv.split(",")
+    let csv = "ENGM,OSL,Oslo Gardermoen"
+    let parts = csv.split(",")
     println("ICAO: {parts[0]}, IATA: {parts[1]}, Name: {parts[2]}")
 }
 
@@ -120,17 +120,17 @@ func parse_csv(input: string) -> Vec<Vec<string>> {
 // --- Tests ---
 
 test "parse wind" {
-    const w = parse_wind("27015KT")
+    let w = parse_wind("27015KT")
     assert w.direction == 270
     assert w.speed == 15
 
-    const w2 = parse_wind("09008KT")
+    let w2 = parse_wind("09008KT")
     assert w2.direction == 90
     assert w2.speed == 8
 }
 
 test "format flight plan" {
-    const plan = format_flight_plan(
+    let plan = format_flight_plan(
         "ENGM",
         "EGLL",
         Vec.from(["CEDAR", "MAPLE", "BIRCH"]),
@@ -139,7 +139,7 @@ test "format flight plan" {
 }
 
 test "format flight plan no waypoints" {
-    const plan = format_flight_plan("ENGM", "ESSA", Vec.new())
+    let plan = format_flight_plan("ENGM", "ESSA", Vec.new())
     assert plan == "ENGM → ESSA"
 }
 
@@ -156,7 +156,7 @@ test "callsign prefix" {
 }
 
 test "parse csv" {
-    const rows = parse_csv("a,b,c\n1,2,3")
+    let rows = parse_csv("a,b,c\n1,2,3")
     assert rows.len() == 2
     assert rows[0].len() == 3
     assert rows[0][0] == "a"

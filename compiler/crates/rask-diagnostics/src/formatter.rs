@@ -7,7 +7,7 @@
 //! error[E0308]: mismatched types
 //!   --> main.rk:10:25
 //!    |
-//! 10 |     const result: string = calculate()
+//! 10 |     let result: string = calculate()
 //!    |                   ------   ^^^^^^^^^^^ expected `string`, found `i32`
 //!    |                   |
 //!    |                   expected due to this type annotation

@@ -46,7 +46,7 @@ test "a three-deep optional chain reaches the leaf" {
 }
 
 test "an intermediate none short-circuits the chain" {
-    const partial = Top { mid: Mid { deep: none } }
+    let partial = Top { mid: Mid { deep: none } }
     assert partial.mid?.deep?.leaf ?? -1 == -1
 }
 
@@ -59,9 +59,9 @@ test "optional field on a generic struct" {
 }
 
 test "type.aliases/T12 — a nominal newtype renders as the value it wraps" {
-    const h = holder_opt(true)
-    const id = h?.id ?? Id(0)
+    let h = holder_opt(true)
+    let id = h?.id ?? Id(0)
     assert "{id}" == "42"
-    const missing = holder_opt(false)?.id ?? Id(0)
+    let missing = holder_opt(false)?.id ?? Id(0)
     assert "{missing}" == "0"
 }

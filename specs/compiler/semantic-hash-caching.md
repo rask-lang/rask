@@ -191,7 +191,7 @@ public func sort<T: Comparable>(items: Vec<T>) { ... }
 // Package: myapp
 import collections
 func process() {
-    const data = Vec<i32>.new()
+    let data = Vec<i32>.new()
     collections.sort(data)  // monomorphizes sort<i32>
 }
 ```

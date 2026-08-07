@@ -62,7 +62,7 @@ struct GameEntity {
 struct Point3D { public x: f32, public y: f32, public z: f32 }
 
 // Flat — all fields are primitives
-const flat = comptime reflect.is_flat<GameEntity>()   // true
+let flat = comptime reflect.is_flat<GameEntity>()   // true
 
 struct NamedEntity {
     public id: u32
@@ -70,7 +70,7 @@ struct NamedEntity {
 }
 
 // Not flat — contains string
-const not_flat = comptime reflect.is_flat<NamedEntity>()  // false
+let not_flat = comptime reflect.is_flat<NamedEntity>()  // false
 ```
 
 ## No Pointer Fixup Property
@@ -137,11 +137,11 @@ func load_state(bytes: Vec<u8>) -> Pool<Player> or DecodeError {
 <!-- test: skip -->
 ```rask
 func test_handle_roundtrip() -> void or Error {
-    const pool = Pool.new()
-    const h = pool.insert(Player { id: 1, health: 100, score: 0 })
+    let pool = Pool.new()
+    let h = pool.insert(Player { id: 1, health: 100, score: 0 })
 
-    const bytes = try pool.to_bytes()
-    const restored = try Pool.from_bytes(bytes)
+    let bytes = try pool.to_bytes()
+    let restored = try Pool.from_bytes(bytes)
 
     // h is still valid — same index, same generation
     assert(restored[h].id == 1)
@@ -177,7 +177,7 @@ WHY: Memory-mapped pools require flat types (no heap pointers). The mmap file
 
 FIX: Use pool.to_bytes() for types with heap-backed fields:
 
-  const bytes = try pool.to_bytes()
+  let bytes = try pool.to_bytes()
   try fs.write("save.bin", bytes)
 ```
 
@@ -282,7 +282,7 @@ extend UndoStack<T: Encode + Decode> {
     }
 
     func pop(self) -> Pool<T> or DecodeError {
-        const bytes = self.history.pop() ?? return DecodeError.Empty
+        let bytes = self.history.pop() ?? return DecodeError.Empty
         return Pool.from_bytes(bytes)
     }
 }
@@ -295,7 +295,7 @@ Serialize state → recompile → deserialize. Uses field-by-field `Encode`/`Dec
 <!-- test: skip -->
 ```rask
 func hot_reload(pool: Pool<GameState>) -> Pool<GameState> or Error {
-    const bytes = try pool.to_bytes()
+    let bytes = try pool.to_bytes()
     // ... recompile happens here ...
     return try Pool.from_bytes(bytes)
 }
@@ -308,12 +308,12 @@ Send `to_bytes()` over the network. Handles are valid on the receiving end becau
 <!-- test: skip -->
 ```rask
 func migrate_to(pool: Pool<Entity>, target: TcpConnection) -> void or Error {
-    const bytes = try pool.to_bytes()
+    let bytes = try pool.to_bytes()
     try target.write_bytes(bytes)
 }
 
 func receive_migration(stream: TcpConnection) -> Pool<Entity> or Error {
-    const bytes = try stream.read_bytes()
+    let bytes = try stream.read_bytes()
     return try Pool.from_bytes(bytes)
 }
 ```

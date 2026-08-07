@@ -16,6 +16,6 @@ func risky() -> i64 or Fail {
 }
 
 func main() -> void or Fail {
-    const v = try risky()
+    let v = try risky()
     println("v={v}")
 }

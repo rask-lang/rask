@@ -253,19 +253,19 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::Const {
+                StmtKind::Let {
                     name,
                     name_span,
                     ty,
                     init,
-                } => StmtKind::Const {
+                } => StmtKind::Let {
                     name: name.clone(),
                     name_span: name_span.clone(),
                     ty: ty.as_ref().map(|t| self.substitute_type_string(t)),
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::ConstTuple { patterns, init } => StmtKind::ConstTuple {
+                StmtKind::LetTuple { patterns, init } => StmtKind::LetTuple {
                     patterns: patterns.clone(),
                     init: self.clone_expr(init),
                 },
@@ -577,7 +577,6 @@ impl TypeSubstitutor {
                         .map(|b| WithBinding {
                             source: self.clone_expr(&b.source),
                             name: b.name.clone(),
-                            mutable: b.mutable,
                         })
                         .collect(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),

@@ -13,7 +13,7 @@ test "empty vec and empty slot are different answers" {
 
     mut hole: Vec<i64?> = Vec.new()
     hole.push(none)
-    const h = head(hole)
+    let h = head(hole)
     assert h?
     assert inner_present(h) == false
 }

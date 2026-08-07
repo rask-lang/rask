@@ -14,7 +14,7 @@ func json_response(status: u16, body: string) -> Response {
 }
 
 func error_response(e: ApiError) -> Response {
-    const payload = ErrorBody { error: e.message(), code: error_code(e) }
+    let payload = ErrorBody { error: e.message(), code: error_code(e) }
     return json_response(e.status(), json.encode(payload))
 }
 

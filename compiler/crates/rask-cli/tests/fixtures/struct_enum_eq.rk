@@ -8,20 +8,20 @@ struct User { name: string, id: i32 }
 
 func main() {
     // Unit-variant enums: compare by tag.
-    const c = Color.Green
+    let c = Color.Green
     println((c == Color.Green).to_string())   // true
     println((c == Color.Red).to_string())     // false
     println((c != Color.Red).to_string())     // true
 
     // Enum carrying a payload: tag then payload fields.
-    const m = Msg.Move(5)
+    let m = Msg.Move(5)
     println((m == Msg.Move(5)).to_string())   // true
     println((m == Msg.Move(6)).to_string())   // false
     println((m == Msg.Stop).to_string())      // false
     println((m != Msg.Move(6)).to_string())   // true
 
     // Struct with a string field: string compares by content.
-    const u = User { name: "ada", id: 1 }
+    let u = User { name: "ada", id: 1 }
     println((u == User { name: "ada", id: 1 }).to_string())   // true
     println((u == User { name: "bob", id: 1 }).to_string())   // false
     println((u == User { name: "ada", id: 2 }).to_string())   // false

@@ -19,14 +19,14 @@ struct Parser {
 //   func make_parser(s: string) -> Parser {
 //       Parser { input: s[0..5], position: 0 }  // slice is temporary
 //   }
-//   const p = make_parser("hello world")
+//   let p = make_parser("hello world")
 //   p.input  // Use-after-free: the borrow has no owner
 //
 // Rask prevents this by making borrows block-scoped (S3).
 
 // Also an error: storing a slice result without converting to owned
 func bad_parse(line: string) -> string {
-    const key = line[0..5]     // OK: block-scoped slice
+    let key = line[0..5]     // OK: block-scoped slice
     return key                 // ERROR: cannot return a borrow (S3)
 }
 
@@ -40,15 +40,15 @@ struct ParserOwned {
 
 // Option 2: Convert slices to owned before storing/returning
 func good_parse(line: string) -> string {
-    const key = line[0..5].to_string()    // convert to owned string
+    let key = line[0..5].to_string()    // convert to owned string
     return key                             // OK: owned value
 }
 
 // Option 3: Use block-scoped borrows locally, convert at boundaries
 func parse_header(line: string) -> Option<(string, string)> {
-    const colon = try line.find(':')
-    const key = line[0..colon].trim().to_string()        // borrow -> owned
-    const value = line[colon+1..].trim().to_string()     // borrow -> owned
+    let colon = try line.find(':')
+    let key = line[0..colon].trim().to_string()        // borrow -> owned
+    let value = line[colon+1..].trim().to_string()     // borrow -> owned
     return (key, value)
 }
 

@@ -67,13 +67,13 @@ extend Store {
     // ─── Tasks ───────────────────────────────────────────────────────
 
     func create_task(mutate self, title: string, project: ProjectId, priority: Priority) -> TaskId or StoreError {
-        const cap = config.read().store_capacity
+        let cap = config.read().store_capacity
         if self.tasks.len() >= cap { return StoreError.CapacityFull(cap) }
 
-        const id = self.next_task
+        let id = self.next_task
         self.next_task = self.next_task.next()
 
-        const task = Task {
+        let task = Task {
             id: id,
             title: title,
             project: project,
@@ -85,18 +85,18 @@ extend Store {
             created_at: now_millis(),
         }
 
-        const h = self.tasks.insert(task)
+        let h = self.tasks.insert(task)
         self.by_id.insert(id, h)
         return id
     }
 
     func view_task(self, id: TaskId) -> TaskView or StoreError {
-        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
         return to_view(h)
     }
 
     func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
-        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
 
         with self.tasks[h] as t {
             if patch.status? as s { t.status = s }
@@ -115,15 +115,15 @@ extend Store {
     }
 
     func delete_task(mutate self, id: TaskId) -> void or StoreError {
-        const h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
         self.tasks.remove(h)
         self.by_id.remove(id)
         return
     }
 
     func add_dependency(mutate self, task: TaskId, dep: TaskId) -> void or StoreError {
-        const th = self.by_id.get(task) ?? return StoreError.NotFound(task.value)
-        const dh = self.by_id.get(dep) ?? return StoreError.NotFound(dep.value)
+        let th = self.by_id.get(task) ?? return StoreError.NotFound(task.value)
+        let dh = self.by_id.get(dep) ?? return StoreError.NotFound(dep.value)
         with self.tasks[th] as t {
             t.deps.push(dh)
         }
@@ -139,7 +139,7 @@ extend Store {
             ranked.push(Ranked { priority: rank_of(h), id: id_of(h), view: to_view(h) })
         }
 
-        const total = ranked.len()
+        let total = ranked.len()
         // Priority desc, then id asc. Comparators return the compare() result
         // directly — the `Ordering` type can't be named in user code yet, so
         // there's no `== Ordering.Equal` tie check; fall through on equal
@@ -149,7 +149,7 @@ extend Store {
             return a.id.compare(b.id)
         })
 
-        const page = ranked
+        let page = ranked
             .iter()
             .skip(filter.offset)
             .take(filter.limit)
@@ -180,7 +180,7 @@ extend Store {
     }
 
     func check_op(self, op: TxOp) -> void or StoreError {
-        const id = op.target()
+        let id = op.target()
         if self.by_id.get(id)? { return }
         return StoreError.NotFound(id.value)
     }
@@ -188,19 +188,19 @@ extend Store {
     // ─── Users & projects ────────────────────────────────────────────
 
     func create_user(mutate self, name: string, email: EmailAddress) -> UserId or StoreError {
-        const id = self.next_user
+        let id = self.next_user
         self.next_user = self.next_user.next()
         self.users.insert(id, User { id: id, name: name, email: email, active: true })
         return id
     }
 
     func view_user(self, id: UserId) -> UserView or StoreError {
-        const u = self.users.get(id) ?? return StoreError.NotFound(id.value)
+        let u = self.users.get(id) ?? return StoreError.NotFound(id.value)
         return UserView { id: u.id.value, name: u.name, email: u.email.raw, active: u.active }
     }
 
     func create_project(mutate self, name: string, owner: UserId) -> ProjectId or StoreError {
-        const id = self.next_project
+        let id = self.next_project
         self.next_project = self.next_project.next()
         self.projects.insert(id, Project { id: id, name: name, owner: owner, archived: false })
         return id
@@ -259,7 +259,7 @@ func to_view(h: Handle<Task>) -> TaskView using frozen Pool<Task> {
 }
 
 func opt_id(x: UserId?) -> u64? {
-    const v = x ?? return none
+    let v = x ?? return none
     return v.value
 }
 
@@ -267,7 +267,7 @@ func opt_id(x: UserId?) -> u64? {
 // stub yet (only Instant), so this is monotonic-since-boot — fine for
 // ordering created_at. See FINDINGS.
 func now_millis() -> i64 {
-    const d = started.elapsed()
+    let d = started.elapsed()
     return d.as_millis() saturate to i64
 }
 
@@ -320,7 +320,7 @@ extend TaskTx {
                 }
                 AddDep(id, dep_id) => {
                     mut h = index.get(id) ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
-                    const dh = index.get(dep_id) ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                    let dh = index.get(dep_id) ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
                     h.deps.push(dh)
                 }
             }

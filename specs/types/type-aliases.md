@@ -27,8 +27,8 @@ type UserId = u64
 type Email = string
 type Celsius = f64
 
-const id = UserId(42)          // explicit construction
-const raw: u64 = id.value      // explicit extraction
+let id = UserId(42)          // explicit construction
+let raw: u64 = id.value      // explicit extraction
 ```
 
 ## Trait Inheritance
@@ -46,8 +46,8 @@ Nominal types don't automatically inherit traits from the underlying type. Decla
 ```rask
 type UserId = u64 with (Equal, Hashable, Comparable, Debug)
 
-const ids = Map<UserId, User>.new()             // ✓ Hashable inherited
-const bad = UserId(1) + UserId(2)               // ❌ Numeric not inherited
+let ids = Map<UserId, User>.new()             // ✓ Hashable inherited
+let bad = UserId(1) + UserId(2)               // ❌ Numeric not inherited
 ```
 
 <!-- test: skip -->
@@ -87,7 +87,7 @@ type alias Handler = func(i32) -> string
 | Rule | Description |
 |------|-------------|
 | **T14: Match on inner** | `if id is UserId(v)` destructures to underlying value |
-| **T15: Guard pattern** | `const v = id is UserId else { ... }` — same as enums |
+| **T15: Guard pattern** | `let v = id is UserId else { ... }` — same as enums |
 
 ## Edge Cases
 
@@ -120,7 +120,7 @@ FIX: send_email(Email("alice@example.com"))
 ```
 ERROR [type.aliases/T10]: UserId does not implement Numeric
    |
-3  |  const next = id + 1
+3  |  let next = id + 1
    |                  ^ no method 'add' on UserId
    |
 WHY: Nominal types don't inherit traits automatically.
@@ -211,7 +211,7 @@ extend Email {
     }
 }
 
-const email = try Email.parse(input)
+let email = try Email.parse(input)
 ```
 
 #### When to use what

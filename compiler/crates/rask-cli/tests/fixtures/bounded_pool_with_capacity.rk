@@ -4,8 +4,8 @@ struct Ent { hp: i32 }
 
 func main() {
     mut p = Pool.with_capacity(4)
-    const a = p.insert(Ent { hp: 10 })
-    const b = p.insert(Ent { hp: 20 })
+    let a = p.insert(Ent { hp: 10 })
+    let b = p.insert(Ent { hp: 20 })
     print(p.len())
     print(p[a].hp + p[b].hp)
 }

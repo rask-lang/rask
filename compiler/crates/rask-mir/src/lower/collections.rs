@@ -261,7 +261,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
-        // address, so this is a string — typing it I64 made `const j =
+        // address, so this is a string — typing it I64 made `let j =
         // json.encode(v)` print a pointer (#478).
         let result = self.builder.alloc_temp(MirType::String);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -518,7 +518,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(exit_block);
         // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
-        // address, so this is a string — typing it I64 made `const j =
+        // address, so this is a string — typing it I64 made `let j =
         // json.encode(v)` print a pointer (#478).
         let result = self.builder.alloc_temp(MirType::String);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -636,7 +636,7 @@ impl<'a> MirLowerer<'a> {
     ///
     /// The tracked size comes from the `Channel.buffered()` call site, which
     /// only reaches a variable bound directly to it. A receiver pulled out of
-    /// the returned pair (`const rx = ch.1`) has no such record, so fall back
+    /// the returned pair (`let rx = ch.1`) has no such record, so fall back
     /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
     /// into an 8-byte buffer and smashed the stack (#360).
     pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> i64 {

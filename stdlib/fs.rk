@@ -36,44 +36,44 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        const p = unsafe path.as_c_str()
-        const f = unsafe fopen(p, "rb\0".as_ptr())
+        let p = unsafe path.as_c_str()
+        let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.Other("could not open file")
         }
         unsafe fseek(f, 0, 2)
-        const size = unsafe ftell(f)
+        let size = unsafe ftell(f)
         unsafe fseek(f, 0, 0)
         if size <= 0 {
             unsafe fclose(f)
             return ""
         }
-        const buf = unsafe rask_alloc(size + 1)
-        const n = unsafe fread(buf, 1, size truncate to u64, f)
+        let buf = unsafe rask_alloc(size + 1)
+        let n = unsafe fread(buf, 1, size truncate to u64, f)
         unsafe fclose(f)
-        const result = unsafe string.from_raw(buf, n as usize)
+        let result = unsafe string.from_raw(buf, n as usize)
         unsafe rask_free(buf)
         return result
     }
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        const p = unsafe path.as_c_str()
-        const f = unsafe fopen(p, "rb\0".as_ptr())
+        let p = unsafe path.as_c_str()
+        let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.Other("could not open file")
         }
         unsafe fseek(f, 0, 2)
-        const size = unsafe ftell(f)
+        let size = unsafe ftell(f)
         unsafe fseek(f, 0, 0)
         mut bytes: Vec<u8> = Vec.new()
         if size > 0 {
-            const buf = unsafe rask_alloc(size)
-            const n = unsafe fread(buf, 1, size truncate to u64, f)
+            let buf = unsafe rask_alloc(size)
+            let n = unsafe fread(buf, 1, size truncate to u64, f)
             mut i: u64 = 0
             loop {
                 if i >= n { break }
-                const b = unsafe buf.add(i as usize).read()
+                let b = unsafe buf.add(i as usize).read()
                 bytes.push(b as u8)
                 i = i + 1
             }
@@ -85,13 +85,13 @@ extend fs {
 
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
-        const p = unsafe path.as_c_str()
-        const f = unsafe fopen(p, "wb\0".as_ptr())
+        let p = unsafe path.as_c_str()
+        let f = unsafe fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.Other("could not open file")
         }
-        const ptr = unsafe content.as_ptr()
-        const len = content.len() truncate to u64
+        let ptr = unsafe content.as_ptr()
+        let len = content.len() truncate to u64
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
         return
@@ -102,13 +102,13 @@ extend fs {
 
     /// Check if a file or directory exists at the path.
     public func exists(path: string) -> bool {
-        const p = unsafe path.as_c_str()
+        let p = unsafe path.as_c_str()
         return unsafe { access(p, 0) } == 0
     }
 
     /// Read a file and split into lines.
     public func read_lines(path: string) -> Vec<string> or IoError {
-        const content = try fs.read_text(path)
+        let content = try fs.read_text(path)
         mut lines: Vec<string> = Vec.new()
         for line in content.lines() {
             lines.push(line)
@@ -118,33 +118,33 @@ extend fs {
 
     /// Return the canonical, absolute form of a path.
     public func canonicalize(path: string) -> string or IoError {
-        const buf = unsafe rask_alloc(4096)
-        const result = unsafe realpath(path.as_c_str(), buf)
+        let buf = unsafe rask_alloc(4096)
+        let result = unsafe realpath(path.as_c_str(), buf)
         if unsafe result.is_null() {
             unsafe rask_free(buf)
             return IoError.Other("could not resolve path")
         }
-        const len = unsafe strlen(buf)
-        const s = unsafe string.from_raw(buf, len as usize)
+        let len = unsafe strlen(buf)
+        let s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
         return s
     }
 
     /// Copy a file from one path to another. Returns bytes copied.
     public func copy(from: string, to: string) -> u64 or IoError {
-        const src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
+        let src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
         if unsafe src.is_null() {
             return IoError.Other("could not open source file")
         }
-        const dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
+        let dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
             return IoError.Other("could not open destination file")
         }
-        const buf = unsafe rask_alloc(8192)
+        let buf = unsafe rask_alloc(8192)
         mut total: u64 = 0
         loop {
-            const n = unsafe fread(buf, 1, 8192, src)
+            let n = unsafe fread(buf, 1, 8192, src)
             if n == 0 { break }
             unsafe fwrite(buf, 1, n, dst)
             total = total + n
@@ -157,7 +157,7 @@ extend fs {
 
     /// Rename a file or directory.
     public func rename(from: string, to: string) -> void or IoError {
-        const r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
+        let r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
         if r != 0 {
             return IoError.Other("could not rename")
         }
@@ -166,7 +166,7 @@ extend fs {
 
     /// Remove a file.
     public func remove(path: string) -> void or IoError {
-        const r = unsafe rask_libc_remove(path.as_c_str())
+        let r = unsafe rask_libc_remove(path.as_c_str())
         if r != 0 {
             return IoError.Other("could not remove")
         }
@@ -175,7 +175,7 @@ extend fs {
 
     /// Create a directory.
     public func create_dir(path: string) -> void or IoError {
-        const r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
+        let r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
         if r != 0 {
             return IoError.Other("could not create directory")
         }
@@ -187,13 +187,13 @@ extend fs {
 
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
-        const p = unsafe path.as_c_str()
-        const f = unsafe fopen(p, "ab\0".as_ptr())
+        let p = unsafe path.as_c_str()
+        let f = unsafe fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.Other("could not open file for append")
         }
-        const ptr = unsafe content.as_ptr()
-        const len = content.len() truncate to u64
+        let ptr = unsafe content.as_ptr()
+        let len = content.len() truncate to u64
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
         return
@@ -201,17 +201,17 @@ extend fs {
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError {
-        const dir = unsafe opendir(path.as_c_str())
+        let dir = unsafe opendir(path.as_c_str())
         if unsafe dir.is_null() {
             return IoError.Other("could not open directory")
         }
         mut entries: Vec<string> = Vec.new()
         loop {
-            const entry = unsafe readdir(dir)
+            let entry = unsafe readdir(dir)
             if unsafe entry.is_null() { break }
-            const name_ptr = unsafe rask_dirent_name(entry)
-            const name_len = unsafe strlen(name_ptr)
-            const name = unsafe string.from_raw(name_ptr, name_len as usize)
+            let name_ptr = unsafe rask_dirent_name(entry)
+            let name_len = unsafe strlen(name_ptr)
+            let name = unsafe string.from_raw(name_ptr, name_len as usize)
             // Skip . and ..
             if name != "." {
                 if name != ".." {

@@ -18,7 +18,7 @@ extend LookupEnum {
 }
 
 test "user method named get is not shadowed by Map.get" {
-    const e = LookupEnum.Found("hello")
+    let e = LookupEnum.Found("hello")
     assert e.get() == "hello"
 }
 
@@ -32,7 +32,7 @@ extend LookupEnum {
 }
 
 test "user method named len is not shadowed by Vec.len" {
-    const e = LookupEnum.Found("x")
+    let e = LookupEnum.Found("x")
     assert e.len() == 1
 }
 
@@ -100,7 +100,7 @@ func maybe_text(b: bool) -> string? {
 }
 
 test "if x? as v binds Option<string> payload" {
-    const v = maybe_text(true)
+    let v = maybe_text(true)
     if v? as s {
         assert s == "yes"
     } else {
@@ -127,7 +127,7 @@ func div(a: i32, b: i32) -> i32 or DivErr {
 }
 
 test "if r is ErrType as e narrows and binds error payload" {
-    const r = div(10, 0)
+    let r = div(10, 0)
     if r is DivErr as e {
         assert e.message() == "zero divisor"
     } else {

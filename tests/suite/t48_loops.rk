@@ -30,7 +30,7 @@ test "ctrl.flow/CF19 — while false at entry" {
 // loop + break value: loop is an expression (CF15)
 test "ctrl.flow/CF15 — break value from loop expression" {
     mut i = 0
-    const found = loop {
+    let found = loop {
         if i == 7 { break i }
         i += 1
     }
@@ -41,7 +41,7 @@ test "ctrl.flow/CF15 — break value from loop expression" {
 test "ctrl.flow/CF15 — break value computed" {
     mut i = 0
     mut acc = 0
-    const total = loop {
+    let total = loop {
         acc += i
         if i == 4 { break acc }
         i += 1
@@ -121,7 +121,7 @@ test "ctrl.loops — inner continue affects inner only" {
 // loop with break value inside a nested for (unlabeled — value carried out of loop)
 test "ctrl.flow/CF15 — break value from loop wrapping a for" {
     mut i = 0
-    const result = loop {
+    let result = loop {
         mut hit = -1
         for j in 0..5 {
             if j == 3 { hit = j }
@@ -146,7 +146,7 @@ test "ctrl.flow/CF21 — while accumulates sum" {
 // loop that never breaks on first pass: break value picks first valid
 test "ctrl.flow/CF15 — loop retry until valid" {
     mut attempt = 0
-    const value = loop {
+    let value = loop {
         attempt += 1
         if attempt >= 3 { break attempt * 10 }
     }

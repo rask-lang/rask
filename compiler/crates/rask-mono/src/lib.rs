@@ -844,7 +844,7 @@ mod tests {
                 vec![
                     Stmt {
                         id: NodeId(10),
-                        kind: StmtKind::Const {
+                        kind: StmtKind::Let {
                             name: "x".to_string(),
                             name_span: sp(),
                             ty: None,

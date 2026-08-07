@@ -148,11 +148,11 @@ extend Compiler {
         }
     }
 
-    func advance(self) -> () or CompileError {
+    func advance(self) -> void or CompileError {
         // --- Token consumption ---
 
         // Move to the next token. Previous = what was current.
-        const prev = self.current
+        let prev = self.current
         self.previous = prev
         match self.lexer.next_token() {
             Token as tok => self.current = tok
@@ -162,7 +162,7 @@ extend Compiler {
         return ()
     }
 
-    func expect(self, expected: string) -> () or CompileError {
+    func expect(self, expected: string) -> void or CompileError {
         // Consume the current token if it matches. Error if it doesn't.
         // TODO: match self.current against the expected token type
         // For now, just advance
@@ -181,7 +181,7 @@ extend Compiler {
 
     func alloc_reg(self) -> i64 {
         // --- Register management ---
-        const reg = self.next_reg
+        let reg = self.next_reg
         self.next_reg = self.next_reg + 1
         if self.next_reg > self.proto.num_registers {
             self.proto.num_registers = self.next_reg
@@ -210,7 +210,7 @@ extend Compiler {
     func emit_jump(self, op: Opcode, a: i64) -> i64 {
         // Emit a jump instruction with placeholder offset. Returns the index
         // of the instruction so you can patch it later.
-        const idx = self.proto.code.len()
+        let idx = self.proto.code.len()
         self.emit(encode_asbx(op, a, 0))
         // offset 0 = placeholder
         return idx as i64
@@ -218,10 +218,10 @@ extend Compiler {
 
     func patch_jump(self, idx: i64) {
         // Patch a previously-emitted jump to land at the current position.
-        const offset = self.proto.code.len() - idx - 1
-        const instr = self.proto.code.get(idx)!
-        const op = decode_opcode(instr)!
-        const a = decode_a(instr)
+        let offset = self.proto.code.len() - idx - 1
+        let instr = self.proto.code.get(idx)!
+        let op = decode_opcode(instr)!
+        let a = decode_a(instr)
         self.proto.code.set(idx, encode_asbx(op, a as i64, offset as i64) as u32)
     }
 
@@ -229,7 +229,7 @@ extend Compiler {
         // --- Scope management ---
 
         // Add a local variable in the current scope. Returns its register.
-        const reg = self.alloc_reg()
+        let reg = self.alloc_reg()
         self.scope.locals.push(Local {
             name: name,
             reg: reg,
@@ -244,7 +244,7 @@ extend Compiler {
         // Search backwards (innermost scope first)
         mut i = self.scope.locals.len() - 1
         while i >= 0 {
-            const local = self.scope.locals.get(i as i64)
+            let local = self.scope.locals.get(i as i64)
             if local? {
                 if local.name == name {
                     return local.reg
@@ -263,7 +263,7 @@ extend Compiler {
 
     func end_scope(self) {
         while self.scope.locals.len() > 0 {
-            const last = self.scope.locals.last()
+            let last = self.scope.locals.last()
             if last.depth < self.scope.depth {
                 break
             }
@@ -297,7 +297,7 @@ extend Compiler {
         return Chunk.new(self.proto)
     }
 
-    func compile_statement(self) -> () or CompileError {
+    func compile_statement(self) -> void or CompileError {
         // --- Statements ---
         // A statement is one "line" of code:
         //   const x = 42

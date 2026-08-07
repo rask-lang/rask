@@ -41,7 +41,7 @@ I want major costs visible in code. With effects, `process(file)` could do I/O, 
 
 ```rask
 // Current Rask
-const file = try open(path)    // I/O here
+let file = try open(path)    // I/O here
 ensure file.close()            // Cleanup here
 try process(file)              // Error propagation here
 
@@ -69,7 +69,7 @@ I don't want `async`/`await` because it splits the ecosystem. Effects do the sam
 
 ### Errors become invisible
 
-Right now `const value = try some_operation()` tells you it can fail. With effects, handlers catch errors before they reach you. Error flow becomes hidden in handler chains.
+Right now `let value = try some_operation()` tells you it can fail. With effects, handlers catch errors before they reach you. Error flow becomes hidden in handler chains.
 
 ### What I chose instead
 
@@ -101,7 +101,7 @@ Erlang's supervision trees are great—processes automatically restart when they
 // Explicit restart loop
 mut restart_count = 0
 loop {
-    const h = spawn(|| { worker_task() })
+    let h = spawn(|| { worker_task() })
     match h.join() {
         void  => { break }
         Error as e => {
@@ -127,7 +127,7 @@ That's intentionally explicit. Supervision is still there—just as library code
 Supervision works fine as a library:
 
 ```rask
-const sup = Supervisor.new()
+let sup = Supervisor.new()
 sup.spawn_child("worker", || worker_task())
 sup.spawn_child("logger", || logger_task())
 sup.run()  // Monitors and restarts
@@ -148,7 +148,7 @@ Kotlin has `.let`, `.apply`, `.also` with implicit receivers—`it` or `this`. T
 Rask already has the pattern, just with explicit parameters:
 
 ```rask
-const users = with db.read() as d { d.users.values().collect() }
+let users = with db.read() as d { d.users.values().collect() }
 with db.write() as d { d.users.insert(id, user) }
 ```
 
@@ -170,7 +170,7 @@ I chose block-scoped borrowing only:
 
 ```rask
 func process(data: Vec<u8>) {
-    const view = data.slice(0, 10)  // Borrow
+    let view = data.slice(0, 10)  // Borrow
     use(view)
     // Borrow ends
 }
@@ -226,16 +226,16 @@ Rask uses the same return type regardless of context:
 
 ```rask
 func fetch() -> Data or Error {
-    const response = try http_get(url)
+    let response = try http_get(url)
     return parse(response)
 }
 
 // Works in sync context (blocks thread)
-const data = try fetch()
+let data = try fetch()
 
 // Works in async context (pauses task)
 using Multitasking {
-    const data = try fetch()
+    let data = try fetch()
 }
 ```
 
@@ -256,9 +256,9 @@ That's 100% ceremony overhead. In typical async code, `.await` appears on 30-50%
 
 ```rask
 // Rask
-const user = try fetch_user(id)
-const posts = try fetch_posts(user)
-const comments = try fetch_comments(posts)
+let user = try fetch_user(id)
+let posts = try fetch_posts(user)
+let comments = try fetch_comments(posts)
 ```
 
 No `.await` needed. Just call the function.
@@ -269,13 +269,13 @@ One function definition that adapts to context:
 
 ```rask
 func fetch_user(id: u64) -> User or Error {
-    const response = try http_get(format("/users/{id}"))
+    let response = try http_get(format("/users/{id}"))
     return parse_user(response)
 }
 
 // Sync mode - blocks thread
 func main() {
-    const user = try fetch_user(42)
+    let user = try fetch_user(42)
 }
 
 // Async mode - pauses task
@@ -316,16 +316,16 @@ To address the transparency gap, the compiler will track which functions do I/O 
 
 **IDE annotations:**
 ```rask
-const data = try file.read()         // 🔄 I/O operation
-const user = try fetch_user(id)      // 🔄 performs I/O
-const result = parse(data)           // (no marker)
+let data = try file.read()         // 🔄 I/O operation
+let user = try fetch_user(id)      // 🔄 performs I/O
+let result = parse(data)           // (no marker)
 ```
 
 **Compiler warnings:**
 ```rask
 func main() {
     for i in 0..10000 {
-        const data = try http_get(url)
+        let data = try http_get(url)
         // ⚠️ I/O in loop without Multitasking (will block thread 10k times)
     }
 }
@@ -354,8 +354,8 @@ Rask requires handles to be joined or detached:
 ```rask
 spawn(|| { work() }).detach()  // Explicit
 
-const h = spawn(|| { compute() }
-const result = try h.join()
+let h = spawn(|| { compute() }
+let result = try h.join()
 
 spawn(|| { work() }  // Compile error: unused TaskHandle
 ```
@@ -380,7 +380,7 @@ sendEmail(user);
 Rask puts errors in the type system:
 
 ```rask
-const user = try database.get_user(id)     // -> User or DbError
+let user = try database.get_user(id)     // -> User or DbError
 try process_user(user)
 try send_email(user)
 ```
@@ -391,17 +391,15 @@ More `try` keywords, but errors should be visible.
 
 ---
 
-## const/let Semantics
+## `const` for Local Bindings
 
-**vs:** Rust's `let`/`let mut`
+**vs:** Rust's `let`/`let mut`, Zig's `const`/`var`
 
-Rust: `let x = 1` immutable, `let mut x = 1` mutable.
+Rask shipped with `const x = 1` immutable, `mut x = 1` mutable for a while. The argument was semantic: "const" means constant, and `let` reads like "let it vary".
 
-Rask: `const x = 1` immutable, `let x = 1` mutable.
+That lost to a friction argument. The immutable binding is the default and the single most common statement in the language, and `const` is five characters against `mut`'s three — the keyword lengths punish exactly the binding people should reach for. Zig has the same inversion with `const`/`var` and gets the same critique. So: `let x = 1` immutable, `mut x = 1` mutable, both three letters, mutation stays the marked case. I looked at `set`, `def`, and `fix` too — `set` reads as mutation, `def` smells like a Python function, `fix` is obscure. `let` is the least bad, and it's what half the industry already types for an immutable binding.
 
-Why flip it? "Const" means constant. "Let" means let it vary. Semantics match the names.
-
-Rust programmers will find this backwards. I think it's clearer for everyone else.
+`const` survives only at module level, for package-level constants. In a function body it's a parse error pointing to `let`. And `let mut x` gets its own error: drop the `let`.
 
 ---
 

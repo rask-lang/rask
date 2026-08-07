@@ -121,8 +121,13 @@ pub enum TypeError {
         elem: String,
         span: Span,
     },
-    #[error("cannot mutate `{name}` — declared `const`")]
+    #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
+        name: String,
+        span: Span,
+    },
+    #[error("cannot mutate `{name}` — bound from a shared read lock")]
+    MutateWithBinding {
         name: String,
         span: Span,
     },
@@ -509,7 +514,7 @@ pub enum TypeError {
     },
 
     /// An integer literal whose value doesn't fit the type it ended up with.
-    /// Codegen would keep the low bits, so `const b: u8 = 300` printed 300 in
+    /// Codegen would keep the low bits, so `let b: u8 = 300` printed 300 in
     /// the interpreter and 44 natively.
     #[error("integer literal {literal} is out of range for `{ty}`")]
     IntLiteralOutOfRange {

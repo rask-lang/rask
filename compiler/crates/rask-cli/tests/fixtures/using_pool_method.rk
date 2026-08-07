@@ -16,7 +16,7 @@ extend Ledger {
 
 func main() {
     mut accounts = Pool<Account>.new()
-    const a = accounts.insert(Account { balance: 5 })
+    let a = accounts.insert(Account { balance: 5 })
     mut l = Ledger { name: 1 }
     l.settle(a)
 }

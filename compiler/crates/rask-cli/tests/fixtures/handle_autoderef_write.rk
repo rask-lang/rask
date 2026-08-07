@@ -15,7 +15,7 @@ func award(h: Handle<Player>, amount: i32) using Pool<Player> {
 
 func main() {
     mut players = Pool.new()
-    const p = players.insert(Player { health: 100, score: 0 })
+    let p = players.insert(Player { health: 100, score: 0 })
     damage(p, 30)
     award(p, 5)
     print(players[p].health)   // 70

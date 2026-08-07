@@ -33,7 +33,7 @@
 // the current function returns immediately with that error:
 //
 //   func calc() -> f64 or DivError {
-//       const val = try divide(10.0, 3.0)   // unwraps T, or returns E
+//       let val = try divide(10.0, 3.0)   // unwraps T, or returns E
 //       return val * 2.0
 //   }
 //
@@ -52,12 +52,12 @@
 // When should you use `!` (panic) vs `try` (error)?
 //
 // **Panic (`!`)** — the program crashes. Use for bugs:
-//   const config = load_config()!   // if this fails, we can't continue
-//   const x = items[0]!              // we know items is non-empty here
+//   let config = load_config()!   // if this fails, we can't continue
+//   let x = items[0]!              // we know items is non-empty here
 //
 // **Error (`try`)** — the function returns the error. Use for expected failures:
-//   const temp = try validate_temperature(reading)  // sensor might fail
-//   const user = try authenticate(token)             // token might be invalid
+//   let temp = try validate_temperature(reading)  // sensor might fail
+//   let user = try authenticate(token)             // token might be invalid
 //
 // Rule of thumb:
 //   - Can the caller recover? Use `T or E` and `try`
@@ -100,8 +100,8 @@ func example_error_handling() {
 
 // Using try to chain operations
 func calc() -> f64 or SensorError {
-    const a = try safe_divide(100.0, 4.0)    // 25.0
-    const b = try safe_divide(a, 5.0)         // 5.0
+    let a = try safe_divide(100.0, 4.0)    // 25.0
+    let b = try safe_divide(a, 5.0)         // 5.0
     return b
 }
 
@@ -175,7 +175,7 @@ func safe_get(v: Vec<i32>, i: i32) -> i32? {
 // --- Tests ---
 
 test "valid temperature" {
-    const r = validate_temperature(20.0)
+    let r = validate_temperature(20.0)
     assert r?
 }
 
@@ -193,7 +193,7 @@ test "temperature at boundary" {
 }
 
 test "parse altitude" {
-    const r = parse_altitude("35000")
+    let r = parse_altitude("35000")
     assert r?
     if r? {
         assert r == 35000
@@ -211,7 +211,7 @@ test "parse empty altitude" {
 }
 
 test "average valid readings" {
-    const r = average_readings(20.0, 22.0, 21.0)
+    let r = average_readings(20.0, 22.0, 21.0)
     assert r?
     if r? {
         assert r == 21.0
@@ -225,13 +225,13 @@ test "average with invalid reading" {
 }
 
 test "safe get in bounds" {
-    const v = Vec.from([10, 20, 30])
+    let v = Vec.from([10, 20, 30])
     if safe_get(v, 0)? as x { assert x == 10 } else { assert false }
     if safe_get(v, 2)? as x { assert x == 30 } else { assert false }
 }
 
 test "safe get out of bounds" {
-    const v = Vec.from([10, 20, 30])
+    let v = Vec.from([10, 20, 30])
     assert safe_get(v, 5) == none
     assert safe_get(v, -1) == none
 }

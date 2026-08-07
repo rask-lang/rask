@@ -7,9 +7,9 @@
 // --- C1 literal + A1 element-wise add + LA1 lane extract ---
 
 test "type.simd/A1 — f32x4 lane-wise add, extract lanes" {
-    const a: f32x4 = [1.0, 2.0, 3.0, 4.0]   // C1 literal
-    const b: f32x4 = [10.0, 20.0, 30.0, 40.0]
-    const c = a + b                          // A1 element-wise
+    let a: f32x4 = [1.0, 2.0, 3.0, 4.0]   // C1 literal
+    let b: f32x4 = [10.0, 20.0, 30.0, 40.0]
+    let c = a + b                          // A1 element-wise
     assert c[0] == 11.0                      // LA1 lane read
     assert c[3] == 44.0
 }
@@ -17,8 +17,8 @@ test "type.simd/A1 — f32x4 lane-wise add, extract lanes" {
 // --- C3 splat + A3 scalar broadcast ---
 
 test "type.simd/C3 — splat broadcasts a scalar to all lanes, then add scalar" {
-    const v = splat[f32, 4](5.0)             // C3: [5,5,5,5]
-    const r = v + 1.0                         // A3: scalar broadcast -> [6,6,6,6]
+    let v = splat[f32, 4](5.0)             // C3: [5,5,5,5]
+    let r = v + 1.0                         // A3: scalar broadcast -> [6,6,6,6]
     assert r[0] == 6.0
     assert r[1] == 6.0
     assert r[2] == 6.0

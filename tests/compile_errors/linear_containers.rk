@@ -30,7 +30,7 @@ struct Wrapper {
 
 // Route: direct binding annotation
 func vec_annotation() -> void {
-    const files: Vec<File> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File`
+    let files: Vec<File> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File`
     return
 }
 
@@ -58,19 +58,19 @@ struct HasVec {
 
 // Route: transitively-linear element
 func vec_transitive() -> void {
-    const ws: Vec<Wrapper> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Wrapper`
+    let ws: Vec<Wrapper> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Wrapper`
     return
 }
 
 // Route: nested Vec<Vec<File>>
 func vec_nested() -> void {
-    const vv: Vec<Vec<File>> = Vec.new() // ERROR [RC1]: innermost `Vec` cannot hold `File`
+    let vv: Vec<Vec<File>> = Vec.new() // ERROR [RC1]: innermost `Vec` cannot hold `File`
     return
 }
 
 // Route: optional element (RC4 optional is fine on its own, but not inside a Vec)
 func vec_optional() -> void {
-    const opts: Vec<File?> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File?`
+    let opts: Vec<File?> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File?`
     return
 }
 
@@ -81,13 +81,13 @@ type alias FileList = Vec<File>          // ERROR [RC1]: `Vec` cannot hold linea
 
 // Route: Map value is linear
 func map_value() -> void {
-    const m: Map<string, File> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
+    let m: Map<string, File> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
     return
 }
 
 // Route: Map key is linear (a resource key is as unconsumable on drop as a value)
 func map_key() -> void {
-    const m: Map<File, string> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
+    let m: Map<File, string> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
     return
 }
 

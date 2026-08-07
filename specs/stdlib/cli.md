@@ -22,10 +22,10 @@ Two-level API: quick ad-hoc parsing for scripts, builder API for tools needing h
 import cli
 
 func main() {
-    const args = cli.parse()
-    const verbose = args.flag("verbose", "v")
-    const output = args.option_or("output", "o", "out.txt")
-    const files = args.positional()
+    let args = cli.parse()
+    let verbose = args.flag("verbose", "v")
+    let output = args.option_or("output", "o", "out.txt")
+    let files = args.positional()
 
     if files.is_empty() {
         println("Usage: {args.program()} [options] <files...>")
@@ -48,7 +48,7 @@ func main() {
 import cli
 
 func main() -> void or CliError {
-    const args = try cli.Parser.new("mygrep")
+    let args = try cli.Parser.new("mygrep")
         .version("1.0.0")
         .description("Search for patterns in files")
         .flag("ignore-case", "i", "Case-insensitive matching")

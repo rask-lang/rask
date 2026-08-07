@@ -52,10 +52,10 @@ func compact_sstables(
     target_level: i32,
     dir: string,
 ) -> SstMeta or CompactionError {
-    const entries_a = read_all_sstable_entries(a.path) is Vec<KeyValue> as e else {
+    let entries_a = read_all_sstable_entries(a.path) is Vec<KeyValue> as e else {
         return CompactionError.MergeConflict("cannot read SSTable {a.id}")
     }
-    const entries_b = read_all_sstable_entries(b.path) is Vec<KeyValue> as e else {
+    let entries_b = read_all_sstable_entries(b.path) is Vec<KeyValue> as e else {
         return CompactionError.MergeConflict("cannot read SSTable {b.id}")
     }
 
@@ -70,7 +70,7 @@ func compact_sstables(
         return CompactionError.MergeConflict("merge produced empty result")
     }
 
-    const meta = write_sstable(new_id, target_level, dir, merged) is SstMeta as m else {
+    let meta = write_sstable(new_id, target_level, dir, merged) is SstMeta as m else {
         return CompactionError.OutputFailure("failed to write merged SSTable")
     }
 
@@ -109,20 +109,20 @@ func spawn_background_compaction(
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "merge entries deduplicates by seq" {
-    const a = Vec.from([
+    let a = Vec.from([
         KeyValue.new("a", "old_a", 1),
         KeyValue.new("c", "old_c", 2),
     ])
-    const b = Vec.from([
+    let b = Vec.from([
         KeyValue.new("a", "new_a", 3),
         KeyValue.new("b", "b", 4),
     ])
 
-    const merged = merge_entries(a, b)
+    let merged = merge_entries(a, b)
     assert merged.len() == 3
-    const m0 = merged[0]
-    const m1 = merged[1]
-    const m2 = merged[2]
+    let m0 = merged[0]
+    let m1 = merged[1]
+    let m2 = merged[2]
     assert m0.key == "a"
     assert m0.value == "new_a"
     assert m1.key == "b"
@@ -133,9 +133,9 @@ test "merge preserves tombstones" {
     mut a = Vec.new(); a.push(KeyValue.new("x", "alive", 1))
     mut b = Vec.new(); b.push(KeyValue.tombstone("x", 5))
 
-    const merged = merge_entries(a, b)
+    let merged = merge_entries(a, b)
     assert merged.len() == 1
-    const first = merged[0]
+    let first = merged[0]
     assert first.deleted
     assert first.seq == 5
 }

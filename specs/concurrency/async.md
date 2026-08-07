@@ -21,18 +21,18 @@ Spawn functions do not appear in signatures. No function declares `using Multita
 ```rask
 func main() -> void or Error {
     using Multitasking {
-        const listener = try TcpListener.bind("0.0.0.0:8080")
+        let listener = try TcpListener.bind("0.0.0.0:8080")
 
         loop {
-            const conn = try listener.accept()
+            let conn = try listener.accept()
             spawn(|| { handle_connection(conn) }).detach()
         }
     }
 }
 
 func handle_connection(conn: TcpConnection) -> void or Error {
-    const request = try conn.read()
-    const user = try fetch_user(request.id)
+    let request = try conn.read()
+    let user = try fetch_user(request.id)
     try conn.write(user.to_json())
 }
 ```
@@ -49,15 +49,15 @@ func handle_connection(conn: TcpConnection) -> void or Error {
 <!-- test: skip -->
 ```rask
 // Propagate errors
-const h = spawn(|| { compute() })
-const result = try h.join()
+let h = spawn(|| { compute() })
+let result = try h.join()
 
 // Panic on task failure
-const h = spawn(|| { work() })
+let h = spawn(|| { work() })
 h.join()!
 
 // Handle explicitly
-const h = spawn(|| { fallible_work() })
+let h = spawn(|| { fallible_work() })
 match h.join() {
     T as val                   => process(val),
     JoinError.Panicked(msg)    => println("task panicked: {msg}"),
@@ -102,11 +102,11 @@ mut (a, b) = join_all(
     spawn(|| { work2() })
 )
 
-const group = TaskGroup.new()
+let group = TaskGroup.new()
 for url in urls {
     group.spawn(|| { fetch(url) })
 }
-const results = try group.join_all()
+let results = try group.join_all()
 ```
 
 ## Runtime Scope
@@ -160,8 +160,8 @@ Inference is invisible in source: writing or reading a function's body never inv
 
 ```rask
 func process_file(path: string) -> Data or Error {
-    const file = try File.open(path)
-    const contents = try file.read_bytes()
+    let file = try File.open(path)
+    let contents = try file.read_bytes()
     parse(contents)
 }
 ```
@@ -199,8 +199,8 @@ CN4 is what keeps invisible suspension safe around locks: a lock held across a p
 
 <!-- test: skip -->
 ```rask
-const h = spawn(|| {
-    const file = try File.open("data.txt")
+let h = spawn(|| {
+    let file = try File.open("data.txt")
     ensure file.close()
 
     loop {
@@ -226,15 +226,15 @@ try h.cancel()
 ```rask
 mut (tx, rx) = Channel<Message>.buffered(100)
 
-const producer = spawn(|| {
+let producer = spawn(|| {
     for msg in generate_messages() {
         try tx.send(msg)
     })
 }
 
-const consumer = spawn(|| {
+let consumer = spawn(|| {
     loop {
-        const r = rx.receive()
+        let r = rx.receive()
         if r? as msg { process(msg) } else { break }
     }
 })

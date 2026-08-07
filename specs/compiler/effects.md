@@ -29,13 +29,13 @@ Effects don't restrict what you can call. A function without IO effects can call
 ```rask
 // IO effect — calls File.open (source function)
 func load_config(path: string) -> Config or Error {
-    const data = try fs.read_text(path)
+    let data = try fs.read_text(path)
     return try json.decode<Config>(data)
 }
 
 // No IO effect — pure computation
 func parse_header(raw: string) -> Header or ParseError {
-    const parts = raw.split(":").collect()
+    let parts = raw.split(":").collect()
     if parts.len() != 2 { return ParseError.MalformedHeader }
     return Header { key: parts[0].trim(), value: parts[1].trim() }
 }
@@ -131,7 +131,7 @@ func parse(input: string) -> Config or ParseError {
 
 // Not pure — calls File.open (IO effect)
 func load(path: string) -> Config or Error {
-    const data = try fs.read_text(path)
+    let data = try fs.read_text(path)
     return try parse(data)
 }
 ```
@@ -147,7 +147,7 @@ func load(path: string) -> Config or Error {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or Error {    // ghost: [io]
-    const data = try fs.read_text(path)                 // ← IO originates here
+    let data = try fs.read_text(path)                 // ← IO originates here
     return try json.decode<Config>(data)                // (no marker — pure)
 }
 
@@ -157,9 +157,9 @@ func process(input: string) -> Result or Error {        // ghost: [pure]
 
 func run_server() -> void or Error {                      // ghost: [io, async]
     using Multitasking {
-        const listener = try TcpListener.bind("0.0.0.0:8080")
+        let listener = try TcpListener.bind("0.0.0.0:8080")
         loop {
-            const conn = try listener.accept()          // ← IO + Async
+            let conn = try listener.accept()          // ← IO + Async
             spawn(|| { handle(conn) }).detach()         // ← Async
         }
     }
@@ -191,7 +191,7 @@ These use the existing `tool.warnings` infrastructure (`@allow` to suppress).
 WARNING [comp.effects/CW1]: I/O function called in thread pool context
    |
 5  |  ThreadPool.spawn(|| {
-6  |      const data = try File.read("big.csv")
+6  |      let data = try File.read("big.csv")
    |                       ^^^^^^^^^ File.read has IO effect — blocks pool thread
    |
 WHY: ThreadPool is for CPU-bound work. I/O blocks the pool thread instead of
@@ -200,8 +200,8 @@ WHY: ThreadPool is for CPU-bound work. I/O blocks the pool thread instead of
 FIX: Use spawn() for I/O-heavy work:
 
   spawn(|| {
-      const data = try File.read("big.csv")
-      const result = try ThreadPool.spawn(|| { parse(data) }).join()
+      let data = try File.read("big.csv")
+      let result = try ThreadPool.spawn(|| { parse(data) }).join()
   }).detach()
 ```
 
@@ -209,7 +209,7 @@ FIX: Use spawn() for I/O-heavy work:
 WARNING [comp.effects/CW2]: I/O in loop without Multitasking context
    |
 3  |  for url in urls {
-4  |      const data = try http_get(url)
+4  |      let data = try http_get(url)
    |                       ^^^^^^^^ IO effect in loop — blocks thread on each iteration
    |
 WHY: Without `using Multitasking`, each I/O call blocks the thread sequentially.
@@ -218,7 +218,7 @@ FIX: Wrap in using Multitasking to enable concurrent I/O:
 
   using Multitasking {
       for url in urls {
-          const data = try http_get(url)
+          let data = try http_get(url)
       }
   }
 ```

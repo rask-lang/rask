@@ -186,12 +186,12 @@ func simulate(ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
 // --- Tests ---
 
 test "gravity force" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(), velocity: Vec3.zero(),
         mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const g = gravity(ac)
+    let g = gravity(ac)
     assert g.x == 0.0
     assert g.y == 0.0
     assert g.z < -9800.0
@@ -199,72 +199,72 @@ test "gravity force" {
 }
 
 test "thrust force" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(), velocity: Vec3.zero(),
         mass: 1000.0, thrust_n: 50000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const t = thrust(ac)
+    let t = thrust(ac)
     assert t.x == 0.0
     assert t.y == 50000.0
     assert t.z == 0.0
 }
 
 test "drag at rest is zero" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(), velocity: Vec3.zero(),
         mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const d = drag(ac)
+    let d = drag(ac)
     assert d.x == 0.0
     assert d.y == 0.0
     assert d.z == 0.0
 }
 
 test "drag opposes velocity" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 100.0, 0.0),
         mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const d = drag(ac)
+    let d = drag(ac)
     assert d.y < 0.0
 }
 
 test "total force" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 50.0, 0.0),
         mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const f = total_force(ac)
+    let f = total_force(ac)
     assert f.y > 0.0    // net forward (thrust > drag at 50 m/s)
 }
 
 test "euler step" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 100.0, 10.0),
         mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
-    const next = step(ac, 0.1)
+    let next = step(ac, 0.1)
     assert next.position.y > 0.0
     assert next.position.z > 0.0
 }
 
 test "flight phase" {
-    const grounded = Aircraft {
+    let grounded = Aircraft {
         position: Vec3.zero(), velocity: Vec3.zero(),
         mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 0.5,
     }
     assert phase_name(determine_phase(grounded)) == "ground"
 
-    const climbing = Aircraft {
+    let climbing = Aircraft {
         position: Vec3.new(0.0, 0.0, 1000.0),
         velocity: Vec3.new(0.0, 100.0, 5.0),
         mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
@@ -274,13 +274,13 @@ test "flight phase" {
 }
 
 test "simulation runs" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 50.0, 0.0),
         mass: 1000.0, thrust_n: 30000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 1.2,
     }
-    const final_alt = simulate(ac, 0.1, 100)
+    let final_alt = simulate(ac, 0.1, 100)
     assert final_alt > 0.0
 }
 
@@ -301,9 +301,9 @@ func main() {
     println("Aircraft: 2000 kg, 16 m² wing, 25 kN thrust")
     println("")
     for t in 0..50 {
-        const phase = phase_name(determine_phase(ac))
-        const alt = ac.position.z
-        const speed = ac.velocity.magnitude()
+        let phase = phase_name(determine_phase(ac))
+        let alt = ac.position.z
+        let speed = ac.velocity.magnitude()
         if t % 10 == 0 {
             println("t={t}s  alt={alt}m  speed={speed}m/s  phase={phase}")
         }

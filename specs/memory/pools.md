@@ -21,8 +21,8 @@
 | **PL7: Iterate** | `pool.handles()` | `Sequence<Handle<T>>` | Iterate all valid handles |
 
 ```rask
-const pool: Pool<Entity> = Pool.new()
-const h: Handle<Entity> = pool.insert(entity)
+let pool: Pool<Entity> = Pool.new()
+let h: Handle<Entity> = pool.insert(entity)
 pool[h].health -= 10
 pool.remove(h)
 ```
@@ -88,8 +88,8 @@ if pool[h].health <= 0 {     // New inline access
 Aliased handles are safe because each `pool[h]` creates an independent temporary access:
 
 ```rask
-const h1 = pool.insert(entity)
-const h2 = h1  // h2 is a copy - both point to same entity
+let h1 = pool.insert(entity)
+let h2 = h1  // h2 is a copy - both point to same entity
 
 pool[h1].health -= 10    // Access ends after expression
 pool[h2].health -= 10    // New access - OK
@@ -119,7 +119,7 @@ Pool handles survive reallocation (PL9), so `insert` and `remove(other)` are all
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: read other element
-    const ally = pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
+    let ally = pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
     entity.allies.push(ally)                // entity still valid
     pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
 }
@@ -157,13 +157,13 @@ Removing an element whose fields point at other pools usually means removing tho
 <!-- test: skip -->
 ```rask
 // Before: the 4-step destruction dance
-const entity = world.entities.remove(h)!
-const body = world.bodies.remove(entity.body)!
+let entity = world.entities.remove(h)!
+let body = world.bodies.remove(entity.body)!
 body.close(world.physics)
 
 // After: removal and cascade in one call
 world.entities.remove_with(h, |entity| {
-    const body = world.bodies.remove(entity.body)!
+    let body = world.bodies.remove(entity.body)!
     body.close(world.physics)
 })
 ```
@@ -310,8 +310,8 @@ func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount    // Auto-resolves via Pool<Player> context
 }
 
-const players = Pool.new()
-const h = players.insert(Player { health: 100 })
+let players = Pool.new()
+let h = players.insert(Player { health: 100 })
 damage(h, 10)    // Compiler passes players as hidden parameter
 ```
 
@@ -386,8 +386,8 @@ ensure files.take_all_with(|f| { f.close(); })
 | **PL9: Handle stability** | Handles remain valid when pools grow (index-based, not pointer-based) |
 
 ```rask
-const h = pool.insert(x)           // Handle<T> — panics if full
-const h = try pool.try_insert(x)   // Handle<T> or InsertError<T>
+let h = pool.insert(x)           // Handle<T> — panics if full
+let h = try pool.try_insert(x)   // Handle<T> or InsertError<T>
 
 enum InsertError<T> {
     Full(T),   // Bounded pool at capacity
@@ -461,7 +461,7 @@ WHY: insert, remove, and clear can invalidate the borrowed element.
 
 FIX: Separate the check from the mutation:
 
-  const should_remove = pool[h].health <= 0
+  let should_remove = pool[h].health <= 0
   if should_remove {
       pool.remove(h)
   }
@@ -481,7 +481,7 @@ WHY: remove_with borrows the pool for the whole call, and the callback runs
 
 FIX: return the follow-up work out of the callback, apply it after:
 
-  const loot = entities.remove_with(h, |e| spawn_loot(e))
+  let loot = entities.remove_with(h, |e| spawn_loot(e))
   if loot? as l {
       entities.insert(l)
   }
@@ -549,11 +549,11 @@ struct Node {
 }
 
 func build_graph() -> Pool<Node> or Error {
-    const nodes = Pool.new()
+    let nodes = Pool.new()
 
-    const a = nodes.insert(Node { data: "A", edges: Vec.new() })
-    const b = nodes.insert(Node { data: "B", edges: Vec.new() })
-    const c = nodes.insert(Node { data: "C", edges: Vec.new() })
+    let a = nodes.insert(Node { data: "A", edges: Vec.new() })
+    let b = nodes.insert(Node { data: "B", edges: Vec.new() })
+    let c = nodes.insert(Node { data: "C", edges: Vec.new() })
 
     nodes[a].edges.push(b)
     nodes[a].edges.push(c)
@@ -611,9 +611,9 @@ func render_entities() using frozen entities: Pool<Entity> {
 
 **Memory budgeting:**
 ```rask
-const players = Pool.with_capacity(64)     // Max 64 players
-const bullets = Pool.with_capacity(10000)  // Lots of bullets
-const configs = Pool.with_capacity(100)    // Modest config count
+let players = Pool.with_capacity(64)     // Max 64 players
+let bullets = Pool.with_capacity(10000)  // Lots of bullets
+let configs = Pool.with_capacity(100)    // Modest config count
 ```
 
 Pool reuse: clear and reuse instead of drop and recreate.
@@ -627,13 +627,13 @@ with entities[h] as e {
 
 // Pattern 2: Insert/remove other inside with (W2a/W2b)
 with pool[h] as entity {
-    const ally = pool.insert(new_ally)   // OK: re-resolves
+    let ally = pool.insert(new_ally)   // OK: re-resolves
     entity.allies.push(ally)
     pool.remove(expired_h)                   // OK: re-resolves
 }
 
 // Pattern 3: Remove bound handle — restructure outside with
-const should_remove = pool[h].health <= 0
+let should_remove = pool[h].health <= 0
 if should_remove {
     pool.remove(h)    // OK: not inside with block
 }

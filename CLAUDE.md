@@ -157,7 +157,7 @@ Dont be TOO consistent.
 
 **Claude: Use Rask syntax, not Rust.** Full reference: [specs/SYNTAX.md](specs/SYNTAX.md)
 
-Key differences from Rust: `const`/`mut` (not `let`/`let mut` — `let` is not a keyword), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
+Key differences from Rust: `let`/`mut` (never `let mut`; `const` is module-level constants only), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
 
 
 ## Compiler

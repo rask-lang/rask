@@ -10,11 +10,11 @@
 struct Point { x: i64, y: i64 }
 
 func main() {
-    const p = Point { x: 1, y: 2 }
+    let p = Point { x: 1, y: 2 }
     // ERROR: `Point` does not implement `Displayable`
     println("{p}")
 
-    const maybe: i64? = 5
+    let maybe: i64? = 5
     // ERROR: `i64?` does not implement `Displayable`
     println("{maybe}")
 }
