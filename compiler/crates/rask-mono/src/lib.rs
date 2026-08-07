@@ -537,6 +537,7 @@ mod tests {
             call_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),

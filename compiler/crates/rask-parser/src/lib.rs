@@ -460,19 +460,39 @@ mod tests {
     }
 
     #[test]
-    fn try_else_multiline() {
+    fn catch_on_a_continuation_line() {
         let result = parse(
-            "func foo() -> i32 or string {\n    let x = try bar()\n        else |e| \"fallback\"\n    return x\n}"
+            "func foo() -> i32 or string {\n    let x = bar()\n        catch e => \"fallback\"\n    return x\n}"
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
     #[test]
-    fn try_else_same_line() {
+    fn catch_same_line() {
+        let result = parse(
+            "func foo() -> i32 or string {\n    let x = bar() catch e => \"fallback\"\n    return x\n}"
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    /// `try … else` is gone; the error names both replacements (ER45/ER46).
+    #[test]
+    fn try_else_points_at_the_replacements() {
         let result = parse(
             "func foo() -> i32 or string {\n    let x = try bar() else |e| \"fallback\"\n    return x\n}"
         );
-        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        assert!(!result.is_ok());
+        assert!(result.errors.iter().any(|e| e.message.contains("no `else` clause")));
+    }
+
+    /// ER14: the binder is never optional.
+    #[test]
+    fn catch_without_a_binder_is_rejected() {
+        let result = parse(
+            "func foo() -> i32 or string {\n    let x = bar() catch \"fallback\"\n    return x\n}"
+        );
+        assert!(!result.is_ok());
+        assert!(result.errors.iter().any(|e| e.message.contains("needs a binder")));
     }
 
     #[test]

@@ -3453,7 +3453,7 @@ mod tests {
     fn try_expr(inner: Expr) -> Expr {
         Expr {
             id: NodeId(112),
-            kind: ExprKind::Try { expr: Box::new(inner), else_clause: None },
+            kind: ExprKind::Try { expr: Box::new(inner) },
             span: sp(),
         }
     }
@@ -4231,6 +4231,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4251,6 +4252,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4296,6 +4298,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4316,6 +4319,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4367,6 +4371,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4387,6 +4392,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,

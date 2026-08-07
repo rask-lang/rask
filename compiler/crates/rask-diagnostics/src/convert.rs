@@ -456,7 +456,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0355")
                 .with_primary(*span, format!("propagates `{}`", inner_err))
                 .with_fix(format!(
-                    "map it here — `try expr else |e| {}.SomeVariant(e)` — or give `{}` a variant taking a single `{}`, which `try` then fills in on its own",
+                    "name the wrap here — `expr catch e => return {}.SomeVariant(e)` — or give `{}` a variant taking a single `{}`, which `try` then fills in on its own",
                     outer_err, outer_err, inner_err
                 ))
                 .with_why("try propagates errors to the enclosing function — the error types must be compatible [error-types/ER9]")
@@ -475,7 +475,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     inner_err,
                 ))
                 .with_fix(format!(
-                    "name the one you want: `try expr else |e| {}.{}(e)`",
+                    "name the one you want: `expr catch e => return {}.{}(e)`",
                     outer_err,
                     variants.first().map(String::as_str).unwrap_or("Variant"),
                 ))
