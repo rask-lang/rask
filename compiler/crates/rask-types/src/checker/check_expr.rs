@@ -1268,38 +1268,33 @@ impl TypeChecker {
                     // otherwise the wrapper isn't recognized and `v` stays a `Mutex`.
                     self.solve_constraints();
                     let source_ty = self.ctx.apply(&raw_ty);
-                    // conc.sync/MX1: `with mutex as v { ... }` — bind `v` to the
-                    // inner T, not the Mutex wrapper. The lock is held for the
-                    // block's duration; releasing happens when `with` exits.
-                    // Same for Shared<T>: bare `with shared as v` is rejected by
-                    // R4 elsewhere; if it slips through here we still unwrap so
-                    // the body sees the inner type rather than the wrapper.
+                    // `with box as v { ... }` binds `v` to the inner T, never the
+                    // wrapper — conc.sync/MX1 for Mutex, mem.cell/CE4 for Cell.
+                    // Access is held for the block's duration and dropped when
+                    // `with` exits.
+                    //
+                    // Shared<T> is here too: bare `with shared as v` is rejected by
+                    // R4 elsewhere, but if it slips through, the body should still
+                    // see the payload rather than the wrapper.
+                    //
+                    // Pool is deliberately absent — a pool is reached by element
+                    // (`with pool[h] as e`), so the source is already the payload.
+                    let unwraps = |name: &str| matches!(name, "Mutex" | "Shared" | "Cell");
+                    let inner_of = |args: &[GenericArg]| match args.first() {
+                        Some(GenericArg::Type(inner)) => Some((**inner).clone()),
+                        _ => None,
+                    };
                     let elem_ty = match &source_ty {
                         Type::Generic { base, args } if !args.is_empty() => {
                             let base_name = self.types.type_name(*base);
-                            if base_name == "Mutex" || base_name == "Shared" {
-                                if let GenericArg::Type(inner) = &args[0] {
-                                    (**inner).clone()
-                                } else {
-                                    source_ty.clone()
-                                }
-                            } else {
-                                source_ty.clone()
-                            }
+                            unwraps(&base_name).then(|| inner_of(args)).flatten()
                         }
                         Type::UnresolvedGeneric { name, args } if !args.is_empty() => {
-                            if name == "Mutex" || name == "Shared" {
-                                if let GenericArg::Type(inner) = &args[0] {
-                                    (**inner).clone()
-                                } else {
-                                    source_ty.clone()
-                                }
-                            } else {
-                                source_ty.clone()
-                            }
+                            unwraps(name).then(|| inner_of(args)).flatten()
                         }
-                        _ => source_ty.clone(),
-                    };
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| source_ty.clone());
                     // Bindings are mutable, with one exception: conc.sync/R1 —
                     // a shared read lock permits concurrent readers, so its
                     // binding is read-only and never writes back. Mutation

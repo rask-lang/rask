@@ -3865,7 +3865,8 @@ impl<'a> FunctionBuilder<'a> {
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
             if matches!(func.name.as_str(),
-                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire")
+                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire"
+                | "Cell_acquire")
             {
                 let results = builder.inst_results(call_inst);
                 let ptr = if !results.is_empty() {
@@ -5448,7 +5449,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 CallAdapt::None
             }
-            "Cell_set" => {
+            // Both take the new value by pointer, so a scalar spills to a slot
+            // first. `replace` additionally hands back the old value's address —
+            // returning CallAdapt::None here would leave that pointer as the
+            // result and `let old = c.replace(0)` would print an address.
+            "Cell_set" | "Cell_replace" => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
@@ -5456,7 +5461,7 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                CallAdapt::None
+                if func_name == "Cell_replace" { CallAdapt::DerefResult } else { CallAdapt::None }
             }
 
             // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size

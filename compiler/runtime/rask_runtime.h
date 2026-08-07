@@ -861,6 +861,7 @@ RaskVec *rask_os_env_vars(void);
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
+int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);
 void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);

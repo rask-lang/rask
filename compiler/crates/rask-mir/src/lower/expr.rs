@@ -4,9 +4,9 @@
 
 use crate::FieldAccess;
 use super::{
-    binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop,
-    operator_method_to_binop, operator_method_to_unaryop, LoopContext, LoweringError,
-    MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL,
+    binop_result_type, concurrency::BoxWithSyms, is_type_constructor_name, lower_binop,
+    lower_unaryop, operator_method_to_binop, operator_method_to_unaryop, LoopContext,
+    LoweringError, MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL,
 };
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId},
@@ -2479,61 +2479,49 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // Detect Mutex pattern: with mutex.lock() as v { body }
-                // Source is a method call `.lock()` on a Mutex expression.
+                // Mutex and Cell both bind the payload by address, so both take
+                // the acquire/body/write-back path — `with m.lock() as v`,
+                // `with m as v`, and `with c as v` alike. Cell's payload used to
+                // fall through to the alias binding below, which handed the body
+                // the *box* instead of what it holds: `with c as v { v }` on a
+                // `Cell<i64>` printed the pointer (#558). CE4 says the binding is
+                // the value, and the interpreter always agreed.
+                //
+                // `is_sync_box_expr` resolves the box from the receiver's type, so
+                // a field receiver (`with self.state as s`, straight out of
+                // mem.cell) works as well as a bare name. The checks here used to
+                // pattern-match `Ident` and silently miss it — the same name-only
+                // restriction that hid two pool bugs in #567.
                 if bindings.len() == 1 {
                     let binding = &bindings[0];
-                    if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
-                        let is_lock_call = method == "lock" && call_args.is_empty();
-                        if is_lock_call {
-                            let is_mutex = self.ctx.lookup_raw_type(object.id)
-                                .map(|ty| matches!(ty,
-                                    rask_types::Type::UnresolvedGeneric { name, .. }
-                                    | rask_types::Type::UnresolvedNamed(name)
-                                    if name == "Mutex"
-                                ))
-                                .unwrap_or(false)
-                            || if let ExprKind::Ident(var_name) = &object.kind {
-                                self.meta(var_name)
-                                    .and_then(|m| m.type_prefix.as_deref())
-                                    .map(|p| p == "Mutex")
-                                    .unwrap_or(false)
+                    let locked = match &binding.source.kind {
+                        ExprKind::MethodCall { object, method, args: call_args, .. }
+                            if method == "lock" && call_args.is_empty() => Some(object.as_ref()),
+                        _ => None,
+                    };
+                    // `.lock()` only makes sense on a Mutex; a bare receiver can
+                    // be either box.
+                    let target = match locked {
+                        Some(object) => self
+                            .is_sync_box_expr(object, "Mutex")
+                            .then_some((object, &BoxWithSyms::MUTEX)),
+                        None => {
+                            let source = &binding.source;
+                            if self.is_sync_box_expr(source, "Mutex") {
+                                Some((source, &BoxWithSyms::MUTEX))
+                            } else if self.is_sync_box_expr(source, "Cell") {
+                                Some((source, &BoxWithSyms::CELL))
                             } else {
-                                false
-                            };
-                            if is_mutex {
-                                return self.lower_mutex_with_block(object, &binding.name, body);
+                                None
                             }
                         }
-                    }
-                }
-
-                // Detect Mutex pattern: with mutex as v { body }
-                // Source is a plain Ident referring to a Mutex variable.
-                if bindings.len() == 1 {
-                    let binding = &bindings[0];
-                    let is_mutex = if let ExprKind::Ident(var_name) = &binding.source.kind {
-                        let from_type = self.ctx.lookup_raw_type(binding.source.id)
-                            .map(|ty| matches!(ty,
-                                rask_types::Type::UnresolvedGeneric { name, .. }
-                                | rask_types::Type::UnresolvedNamed(name)
-                                if name == "Mutex"
-                            ))
-                            .unwrap_or(false);
-                        let from_prefix = self.meta(var_name)
-                            .and_then(|m| m.type_prefix.as_deref())
-                            .map(|p| p == "Mutex")
-                            .unwrap_or(false);
-                        from_type || from_prefix
-                    } else {
-                        false
                     };
-                    if is_mutex {
-                        return self.lower_mutex_with_block(&binding.source, &binding.name, body);
+                    if let Some((object, syms)) = target {
+                        return self.lower_box_with_block(object, &binding.name, body, syms);
                     }
                 }
 
-                // Default: simple alias binding (Pool, Cell, etc.)
+                // Default: simple alias binding (Pool, Vec/Map element, ...)
                 // W2a/W2b: Track pool bindings for re-resolution after pool mutators
                 let mut pool_binding_keys: Vec<String> = Vec::new();
                 // Vec[i] / Map[k] writeback info: (collection, index/key, item_local, setter_name).
@@ -3844,9 +3832,11 @@ impl<'a> MirLowerer<'a> {
                 })
                 .unwrap_or(MirType::I64);
             Some(MirType::Option(Box::new(elem_ty)))
-        } else if qualified_name == "Cell_get" {
-            // What the cell holds. The stub's return type is a bare word, so a
-            // `Cell<string>` read came back as an i64 and printed as a pointer.
+        } else if matches!(qualified_name.as_str(), "Cell_get" | "Cell_replace" | "Cell_into_inner") {
+            // What the cell holds — all three hand back the payload. The stub's
+            // return type is a bare `T`, which maps to i64, so a `Cell<string>`
+            // read came back as a pointer and a `Cell<i32>` got loaded eight bytes
+            // wide.
             self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
         } else if qualified_name == "Receiver_receive_struct" {
             // Renamed from Receiver_receive above for struct elements. Only the
