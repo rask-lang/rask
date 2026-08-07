@@ -132,23 +132,39 @@ impl TypeChecker {
                         return vec![];
                     }
                 }
-                // ER27: bare `Type` in a Result match is a type pattern.
-                // Recognize when `name` resolves to a type matching the ok or
-                // err branch of the scrutinee.
+                // ER27: a bare `Type` against a two-branch scrutinee is a type
+                // pattern, not a binding. A name that resolves to a real type
+                // has to be one of the branches — otherwise the test can never
+                // be true, and falling through to a binding hid that: `r is
+                // i32` on a `void or DivError` type-checked, then the two
+                // backends disagreed about the answer.
                 let resolved = self.ctx.apply(scrutinee_ty);
-                if let Type::Result { ok, err } = &resolved {
+                if let Type::Result { .. } = &resolved {
                     let candidate = resolve_type_name(name, &self.types);
                     if !matches!(candidate, Type::UnresolvedNamed(_)) {
-                        let ok_applied = self.ctx.apply(ok);
-                        let err_applied = self.ctx.apply(err);
-                        let matches_ok = ok_applied == candidate;
-                        let matches_err = match &err_applied {
-                            Type::Union(variants) => variants.contains(&candidate),
-                            other => other == &candidate,
-                        };
-                        if matches_ok || matches_err {
+                        let candidate = normalize_type(&candidate, &self.types);
+                        let branches =
+                            two_branch_leaves(&mut self.ctx, &self.types, &resolved);
+                        if branches.contains(&candidate) {
                             return vec![];
                         }
+                        // A branch that hasn't resolved yet can't be compared
+                        // against; the deferred check settles it later.
+                        if branches.iter().any(|b| matches!(b, Type::Var(_))) {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: candidate,
+                                ty_name: name.clone(),
+                                span,
+                            });
+                            return vec![];
+                        }
+                        self.errors.push(TypeError::TypePatternNotResult {
+                            ty_name: name.clone(),
+                            found: resolved,
+                            span,
+                        });
+                        return vec![];
                     }
                 }
                 vec![(name.clone(), scrutinee_ty.clone())]

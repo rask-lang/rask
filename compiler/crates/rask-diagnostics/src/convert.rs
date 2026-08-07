@@ -1093,11 +1093,25 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
             }
             TypePatternNotResult { ty_name, found, span } => {
-                Diagnostic::error(format!("type pattern `{}` needs a Result scrutinee", ty_name))
+                // Two shapes of the same mistake: a scrutinee that has no
+                // branches at all, and one whose branches don't include this
+                // type. The second reads badly under the first's wording.
+                if matches!(found, rask_types::Type::Result { .. }) {
+                    Diagnostic::error(format!(
+                        "`{}` is not a branch of `{}` — this test can never be true",
+                        ty_name, found
+                    ))
                     .with_code("E0346")
-                    .with_primary(*span, format!("found `{}`", found))
-                    .with_help("type patterns narrow the error side of `T or E`; the scrutinee must be a Result")
-                    .with_why("`is Type as name` dispatches on the error branch — not applicable to other types [type.errors/ER23]")
+                    .with_primary(*span, "not one of its branches")
+                    .with_fix("name one of the branches, or drop the test")
+                    .with_why("`is` dispatches on the branches the scrutinee actually has [type.errors/ER23]")
+                } else {
+                    Diagnostic::error(format!("`is {}` needs a two-branch scrutinee", ty_name))
+                        .with_code("E0346")
+                        .with_primary(*span, format!("found `{}`", found))
+                        .with_fix("test a `T or E` or a `T?` — a plain value has no branch to pick")
+                        .with_why("`is Type as name` dispatches on one branch of a two-branch value [type.errors/ER23]")
+                }
             }
             TypePatternNotInUnion { ty_name, union, span } => {
                 Diagnostic::error(format!("`{}` is not a component of `{}`", ty_name, union))

@@ -54,7 +54,7 @@ func do_nothing() -> void or DivError {
 
 test "implicit unit success" {
     let result = do_nothing()
-    assert result is i32
+    assert (result is DivError) == false
 }
 
 // --- try propagation (ER16) ---
