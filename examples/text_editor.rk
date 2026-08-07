@@ -112,8 +112,7 @@ extend Document {
 
     // Undo the last edit
     func undo(self) -> bool or Error {
-        let popped = self.undo_stack.pop()
-        let cmd = if popped? { popped } else { return false }
+        let cmd = self.undo_stack.pop() ?? return false
 
         // Apply inverse without recording to undo stack
         try self.apply_command_silent(cmd.inverse())
@@ -123,8 +122,7 @@ extend Document {
 
     // Redo the last undone edit
     func redo(self) -> bool or Error {
-        let popped = self.redo_stack.pop()
-        let cmd = if popped? { popped } else { return false }
+        let cmd = self.redo_stack.pop() ?? return false
 
         // Apply command without recording to undo stack
         try self.apply_command_silent(cmd.clone())
@@ -240,10 +238,7 @@ func main() -> void or Error {
         print("> ")
         let input = try io.read_line()
 
-        let parsed = parse_command(input)
-        let cmd = if parsed? {
-            parsed
-        } else {
+        let cmd = parse_command(input) ?? {
             println("Unknown command. Type 'help' for usage.")
             continue
         }

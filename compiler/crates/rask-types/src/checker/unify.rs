@@ -205,6 +205,27 @@ impl TypeChecker {
                     &self.ctx.apply(err),
                     &self.types,
                 );
+                // Exactly one unresolved branch and no match: the pattern
+                // names it. `"42".parse<i32>() is i32` pins the ok side that
+                // way, instead of failing on a type nothing had fixed yet.
+                let unresolved: Vec<Type> = branches
+                    .iter()
+                    .filter(|b| matches!(b, Type::Var(_)))
+                    .cloned()
+                    .collect();
+                if !branches.contains(&narrow_applied) && unresolved.len() == 1 {
+                    self.unify(&unresolved[0], &narrow_applied, span)?;
+                    return Ok(true);
+                }
+                if !branches.contains(&narrow_applied) && !unresolved.is_empty() {
+                    self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                        scrutinee,
+                        narrow_ty,
+                        ty_name,
+                        span,
+                    });
+                    return Ok(false);
+                }
                 if !branches.contains(&narrow_applied) {
                     if matches!(&err_applied, Type::Union(_)) {
                         Err(TypeError::TypePatternNotInUnion {

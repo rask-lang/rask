@@ -139,13 +139,13 @@ func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
     return result
 }
 
-test "try-else with method call — success" {
+test "catch with method call — success" {
     mut v = Validator { threshold: 5 }
     let result = use_validator(v, 10)
-    assert result?
+    assert result is i32
 }
 
-test "try-else with method call — error transforms" {
+test "catch with method call — error transforms" {
     mut v = Validator { threshold: 5 }
     let result = use_validator(v, 3)
     assert result is OuterError
@@ -154,7 +154,7 @@ test "try-else with method call — error transforms" {
 test "try-else multiline with method call — success" {
     mut v = Validator { threshold: 5 }
     let result = use_validator_multiline(v, 10)
-    assert result?
+    assert result is i32
 }
 
 test "try-else multiline with method call — error transforms" {
@@ -212,7 +212,7 @@ func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
 test "try-else with trait object — success" {
     let p = StrictParser {}
     let result = process_with_parser(p, "42")
-    assert result?
+    assert result is i32
     assert result! == 84
 }
 
@@ -367,21 +367,21 @@ func chained(x: i32) -> i32 or ChainError {
     return b
 }
 
-test "chained try-else — all succeed" {
+test "chained catch — all succeed" {
     let result = chained(5)
-    assert result?
+    assert result is i32
     assert result! == 12
 }
 
-test "chained try-else — first fails" {
+test "chained catch — first fails" {
     let result = chained(-1)
     assert result is ChainError.Step1(_)
 }
 
-test "chained try-else — second fails" {
+test "chained catch — second fails" {
     let result = chained(99)
     let result2 = chained(200)
-    assert result?
+    assert result is i32
     assert result2 is ChainError.Step2(_)
 }
 
@@ -436,12 +436,11 @@ test "fs write and read round-trip" {
 test "fs read_lines returns correct line count" {
     let path = "/tmp/rask_test_litmus2.txt"
     fs.write_text(path, "line1\nline2\nline3\n")
-    let r = fs.read_lines(path)
-    if r? {
-        assert r.len() == 3
-    } else {
+    let lines = fs.read_lines(path) catch _ => {
         assert false, "failed to read lines"
+        return
     }
+    assert lines.len() == 3
 }
 
 // ─── Entry point ────────────────────────────────────────────────

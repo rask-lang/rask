@@ -134,10 +134,7 @@ func format_size(bytes: u64) -> string {
 func main() {
     let args = cli.args()
 
-    let parsed = parse_args(own args)
-    let opts = if parsed? {
-        parsed
-    } else as e {
+    let opts = parse_args(own args) catch e => {
         println("rcopy: {e.message()}")
         std.exit(1)
     }
@@ -146,15 +143,13 @@ func main() {
         println("Copying '{opts.source}' to '{opts.dest}'...")
     }
 
-    let result = copy_file(opts)
-    if result? {
-        if opts.verbose {
-            let size = format_size(result)
-            println("Copied {size}")
-        }
-    } else as e {
+    let copied = copy_file(opts) catch e => {
         let msg = e.message()
         println("rcopy: {msg}")
         std.exit(1)
+    }
+    if opts.verbose {
+        let size = format_size(copied)
+        println("Copied {size}")
     }
 }

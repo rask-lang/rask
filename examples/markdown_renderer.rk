@@ -876,10 +876,7 @@ func main() {
         std.exit(1)
     }
 
-    let read_result = fs.read_text(input_path)
-    let content = if read_result? {
-        read_result
-    } else as e {
+    let content = fs.read_text(input_path) catch e => {
         println("Error: cannot read {input_path}: {e.message()}")
         std.exit(1)
     }
@@ -890,9 +887,7 @@ func main() {
         render_full_page(content)
     }
 
-    let html = if result? {
-        result
-    } else as e {
+    let html = result catch e => {
         println("Error: {e.message()}")
         std.exit(1)
     }
@@ -908,13 +903,11 @@ func main() {
             }
         }
 
-        let write_result = fs.write_text(output_path, html)
-        if write_result? {
-            println("Written: {output_path}")
-        } else as e {
+        fs.write_text(output_path, html) catch e => {
             println("Error: cannot write {output_path}: {e.message()}")
             std.exit(1)
         }
+        println("Written: {output_path}")
     }
 }
 

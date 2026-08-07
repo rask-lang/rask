@@ -272,7 +272,19 @@ impl TypeChecker {
                         // Every branch the scrutinee could hold — a flat
                         // `T? or E` offers `T`, `none` and `E` (OPT30).
                         let branches = two_branch_leaves(&mut self.ctx, &self.types, &resolved);
-                        if !branches.contains(&narrow_ty) {
+                        // A branch that hasn't resolved yet can't be compared
+                        // against. Defer — by then it's either a match or a
+                        // real error, and the message can name the type.
+                        if !branches.contains(&narrow_ty)
+                            && branches.iter().any(|b| matches!(b, Type::Var(_)))
+                        {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: narrow_ty.clone(),
+                                ty_name: ty_name.clone(),
+                                span,
+                            });
+                        } else if !branches.contains(&narrow_ty) {
                             let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
                             // A union error side gets the "not in union"
                             // wording, which names the alternatives.

@@ -92,20 +92,16 @@ func list_users() -> Response {
 }
 
 func get_user(id: i64) -> Response {
-    let user = with db.read() as d {
-        d.users.get(id).map(|u| UserResponse {
-            id: u.id,
-            name: u.name,
-            email: u.email,
-        })
+    let found = with db.read() as d {
+        d.users.get(id)
     }
 
-    if user? {
-        return Response.json(json.encode(user))
-    } else {
-        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404)
+    if found? as u {
+        let view = UserResponse { id: u.id, name: u.name, email: u.email }
+        return Response.json(json.encode(view))
     }
+    return Response.json(json.encode(ErrorResponse { error: "user not found" }))
+        .with_status(404)
 }
 
 func create_user(body: string) -> Response {

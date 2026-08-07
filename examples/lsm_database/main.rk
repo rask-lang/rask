@@ -252,10 +252,7 @@ func main() {
         }
     }
 
-    let run_result = run(cli_args)
-    if run_result? {
-        // success
-    } else as e {
+    run(cli_args) catch e => {
         println("error: {e.message()}")
         std.exit(1)
     }
