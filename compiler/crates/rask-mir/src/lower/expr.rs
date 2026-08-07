@@ -2056,14 +2056,57 @@ impl<'a> MirLowerer<'a> {
             // ER14: `r catch <binder> => <body>`.
             ExprKind::Catch { value, ref clause } => self.lower_catch(expr.id, value, clause),
 
-            // OPT32: read the slot, write `none` back, hand back what was read.
+            // OPT32: hand back what the slot held, and leave `none` in it.
+            //
+            // Rebuilt branch by branch rather than copied whole: a copy of the
+            // option's own storage aliases the slot, and the write-back then
+            // overwrites the value that was just read.
             ExprKind::Take { place } => {
                 let (val, ty) = self.lower_expr(place)?;
-                let taken = self.builder.alloc_temp(ty.clone());
+                let is_niche = self.option_is_niche(place, &ty);
+                let payload_ty = match &ty {
+                    MirType::Option(inner) => (**inner).clone(),
+                    MirType::Result { ok, .. } => (**ok).clone(),
+                    _ => MirType::I64,
+                };
+                let name = format!("__taken_{}", self.closure_counter);
+                self.closure_counter += 1;
+                let taken = self.builder.alloc_local(name, ty.clone());
+
+                let tag = self.emit_option_tag(&val, is_niche);
+                let present_block = self.builder.create_block();
+                let absent_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(tag),
+                    then_block: absent_block,
+                    else_block: present_block,
+                }));
+
+                // Present: assigning the payload into an option-typed local is
+                // the wrap, the same way `let x: T? = value` builds one.
+                self.builder.switch_to_block(present_block);
+                let payload = self.emit_option_payload(val.clone(), payload_ty, is_niche);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: taken,
-                    rvalue: MirRValue::Use(val),
+                    rvalue: MirRValue::Use(MirOperand::Local(payload)),
                 }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+
+                self.builder.switch_to_block(absent_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: taken,
+                    offset: 0,
+                    value: MirOperand::Constant(MirConst::Int(1)),
+                    store_size: None,
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+
+                self.builder.switch_to_block(merge_block);
                 // The `none` carries the place's own node id so it picks up the
                 // slot's option layout (niche or tagged) instead of guessing.
                 let absent = Expr {
