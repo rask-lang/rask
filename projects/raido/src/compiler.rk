@@ -148,7 +148,7 @@ extend Compiler {
         }
     }
 
-    func advance(self) -> () or CompileError {
+    func advance(self) -> void or CompileError {
         // --- Token consumption ---
 
         // Move to the next token. Previous = what was current.
@@ -162,7 +162,7 @@ extend Compiler {
         return ()
     }
 
-    func expect(self, expected: string) -> () or CompileError {
+    func expect(self, expected: string) -> void or CompileError {
         // Consume the current token if it matches. Error if it doesn't.
         // TODO: match self.current against the expected token type
         // For now, just advance
@@ -297,7 +297,7 @@ extend Compiler {
         return Chunk.new(self.proto)
     }
 
-    func compile_statement(self) -> () or CompileError {
+    func compile_statement(self) -> void or CompileError {
         // --- Statements ---
         // A statement is one "line" of code:
         //   const x = 42

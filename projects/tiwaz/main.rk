@@ -5,7 +5,7 @@ import http.HttpServer
 import async.spawn
 import json
 
-func main() -> () or Error {
+func main() -> void or Error {
     using Multitasking {
         mut server = try HttpServer.listen("0.0.0.0:8080")
         ensure server.close()

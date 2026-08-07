@@ -6,7 +6,7 @@ const health_url = "/health"
 
 const health_check_interval = 10 // seconds
 
-func health_checker(backends : Vec<Backend>) -> () {
+func health_checker(backends : Vec<Backend>) -> void {
     loop {
         let result = check_health(backends)
         if result is HttpError as e {
@@ -17,7 +17,7 @@ func health_checker(backends : Vec<Backend>) -> () {
     }
 }
 
-func check_health(backends : Vec<Backend>) -> () or HttpError  {
+func check_health(backends : Vec<Backend>) -> void or HttpError  {
     for backend in backends {
         let url = "http://{backend.url}{health_url}"
         let response = try http.get(url)
