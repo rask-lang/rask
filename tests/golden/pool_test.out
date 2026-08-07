@@ -1,0 +1,21 @@
+Pool length: 3
+Is empty: false
+Entity 1: Alice
+Entity 2: Bob, health=80
+After assignment: h1 health=90
+After compound assign: h2 health=60
+Contains h1: true
+Contains h3: true
+Pool length after remove: 2
+Contains h3 after remove: false
+Got h1: Alice
+Correctly got none for stale handle
+All entities via cursor:
+  Alice: health=90
+  Bob: health=60
+After inserting Diana, pool length: 3
+Pool length after cleanup: 2
+Remaining entities:
+  Alice: health=90
+  Bob: health=60
+Pool test passed!

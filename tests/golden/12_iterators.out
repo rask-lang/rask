@@ -1,0 +1,23 @@
+All numbers: 1 2 3 4 5 6 7 8 9 10 
+
+Doubled: 2 4 6 8 10 12 14 16 18 20 
+Squared: 1 4 9 16 25 36 49 64 81 100 
+
+Even numbers: 2 4 6 8 10 
+Numbers > 5: 6 7 8 9 10 
+
+Even numbers squared: 4 16 36 64 100 
+
+Middle section (skip 3, take 4): 4 5 6 7 
+
+Complex chain result: 12 15 18 21 
+
+Sum of all numbers: 55
+Product of first 5: 120
+
+First number > 7: 8
+Has even numbers: yes
+All positive: yes
+
+Uppercase words: HELLO WORLD RASK LANGUAGE 
+Words longer than 4 chars: hello world language 

@@ -1,0 +1,12 @@
+Processing messages:
+Text message: Hello, Rask!
+Move to position (10, 20)
+Set color to RGB(255, 128, 0)
+Received quit signal
+
+Shape areas:
+Circle with radius 5 - Area: 78.53975
+Rectangle 4x6 - Area: 24
+Triangle (base=3, height=4) - Area: 6
+
+It's a rectangle: 10 x 5
