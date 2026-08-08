@@ -225,7 +225,7 @@ func process_items(items: Vec<Item>) -> Vec<string> {
     return items.map(|item| {
         if item.is_empty() { return "empty" }
         return item.format()
-    }).collect()
+    }).to_vec()
 }
 
 func process(file: File) -> Data or Error {

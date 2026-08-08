@@ -409,7 +409,7 @@ for entity in pool {
 }
 
 // Better: use handle mode
-let to_remove = pool.handles().filter(|h| pool[h].dead).collect()
+let to_remove = pool.handles().filter(|h| pool[h].dead).to_vec()
 for h in to_remove {
     pool.remove(h)
 }
