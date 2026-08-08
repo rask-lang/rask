@@ -81,6 +81,17 @@ pub enum TypeConstraint {
         is_range: bool,
         span: Span,
     },
+    /// `for x in object` — the type the loop binding takes.
+    ///
+    /// Deferred for the same reason as `Index`: `for h in self.entities` waits
+    /// on the field. Kept separate because iterating and indexing don't agree
+    /// for every container — a `Pool<T>` indexes to `T` but iterates to
+    /// `Handle<T>` (mem.pools/PF1, handle mode).
+    IterElem {
+        object: Type,
+        result: Type,
+        span: Span,
+    },
     Coalesce {
         /// The `??` expression itself, so the settled case can be recorded
         /// for the backends — a still-wrapped `??` yields the left operand

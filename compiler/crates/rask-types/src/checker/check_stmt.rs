@@ -38,14 +38,14 @@ impl TypeChecker {
         // on the field, which arrives as a deferred constraint of its own. A bare
         // fresh variable here never gets tied to the element, so the binding's
         // type stayed open however the field resolved, and everything downstream
-        // of it went with it. The Index constraint already computes "element of
-        // container" and re-runs once the container settles, so reuse it (#632).
+        // of it went with it. IterElem defers the same way and re-runs once the
+        // container settles (#632); it isn't the Index relation because a Pool
+        // iterates to `Handle<T>` and indexes to `T` (#653).
         if matches!(resolved, Type::Var(_)) {
             let elem = self.ctx.fresh_var();
-            self.ctx.add_constraint(TypeConstraint::Index {
+            self.ctx.add_constraint(TypeConstraint::IterElem {
                 object: iter_ty.clone(),
                 result: elem.clone(),
-                is_range: false,
                 span,
             });
             return elem;

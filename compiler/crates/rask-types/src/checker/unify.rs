@@ -80,6 +80,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::IterElem { .. }
             ) {
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
@@ -206,6 +207,10 @@ impl TypeChecker {
 
             TypeConstraint::Index { object, result, is_range, span } => {
                 self.resolve_index(object, result, is_range, span)
+            }
+
+            TypeConstraint::IterElem { object, result, span } => {
+                self.resolve_iter_elem(object, result, span)
             }
 
             TypeConstraint::Coalesce { node, value, default, result, span } => {
@@ -360,6 +365,30 @@ impl TypeChecker {
         // A container that resolved to something with no element type to read —
         // an unparameterized generic, say. `check_index_types` already reported
         // whatever was a real error at the index site, so stay quiet here.
+        Ok(false)
+    }
+
+    /// Settle the binding of `for x in object` once the container's shape is
+    /// known. Same deferral as `resolve_index` — a Pool behind a struct field
+    /// only gets its type when that field's own constraint resolves.
+    fn resolve_iter_elem(
+        &mut self,
+        object: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let obj = self.ctx.apply(&object);
+        if let Some(elem) = self.iter_binding_type(&obj) {
+            self.unify(&result, &elem, span)?;
+            return Ok(true);
+        }
+        if matches!(obj, Type::Var(_)) {
+            self.ctx
+                .add_constraint(TypeConstraint::IterElem { object, result, span });
+            return Ok(false);
+        }
+        // Resolved to something with no element type to read — ranges and user
+        // iterators land here, and inference pins those from the loop body.
         Ok(false)
     }
 

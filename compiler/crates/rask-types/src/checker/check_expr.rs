@@ -1562,6 +1562,30 @@ impl TypeChecker {
         }
     }
 
+    /// Type the binding of `for x in obj` takes, once `obj` is known.
+    ///
+    /// Mostly the element type, so it delegates — but a Pool is the exception
+    /// the spec calls out: `for h in pool` is handle mode and yields
+    /// `Handle<T>`, while `pool[h]` yields `T` (mem.pools/PF1). Reusing the
+    /// index relation here bound the loop variable to the element and broke
+    /// every `pool.remove(h)` downstream.
+    pub(super) fn iter_binding_type(&self, obj_ty: &Type) -> Option<Type> {
+        if self.generic_base_name(obj_ty) == Some("Pool") {
+            let args = match obj_ty {
+                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+                _ => return None,
+            };
+            let Some(GenericArg::Type(elem)) = args.first() else {
+                return None;
+            };
+            return Some(Type::UnresolvedGeneric {
+                name: "Handle".to_string(),
+                args: vec![GenericArg::Type(elem.clone())],
+            });
+        }
+        self.index_result_type(obj_ty, false)
+    }
+
     pub(super) fn check_binary(&mut self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Type {
         let left_ty = self.infer_expr(left);
         let right_ty = self.infer_expr(right);
