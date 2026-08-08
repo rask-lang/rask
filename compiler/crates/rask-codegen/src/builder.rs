@@ -2207,10 +2207,23 @@ impl<'a> FunctionBuilder<'a> {
                 // into the destination's own slot here, like every other call
                 // site does.
                 if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
-                    if *size <= 8 {
-                        builder.ins().stack_store(result, *ss, 0);
-                    } else {
-                        Self::copy_aggregate(builder, result, *ss, *size);
+                    match *size {
+                        8 => { builder.ins().stack_store(result, *ss, 0); }
+                        // A slot narrower than a word still gets a whole word
+                        // back, because the callee loaded one. Only the low
+                        // `size` bytes mean anything, and storing all 8 would
+                        // run off the end of a 2-byte slot into whatever sits
+                        // next to it. Park the word in a scratch slot that can
+                        // hold it and copy out just the meaningful bytes.
+                        n if n < 8 => {
+                            let scratch = builder.create_sized_stack_slot(
+                                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0),
+                            );
+                            builder.ins().stack_store(result, scratch, 0);
+                            let scratch_ptr = builder.ins().stack_addr(types::I64, scratch, 0);
+                            Self::copy_aggregate(builder, scratch_ptr, *ss, n);
+                        }
+                        n => { Self::copy_aggregate(builder, result, *ss, n); }
                     }
                     let addr = builder.ins().stack_addr(types::I64, *ss, 0);
                     builder.def_var(*var, addr);

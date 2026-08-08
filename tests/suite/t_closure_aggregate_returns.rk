@@ -26,6 +26,18 @@ struct Mixed {
     public s: string
 }
 
+// Narrower than a word. The callee hands back a whole word regardless, so the
+// call site has to copy out only the bytes this actually has.
+struct Pair8 {
+    public a: u8
+    public b: u8
+}
+
+struct Pair32 {
+    public a: i32
+    public b: i32
+}
+
 enum Colour {
     Red
     Green
@@ -73,6 +85,26 @@ test "a one-word struct survives" {
     assert_eq(f().a, 42)
     let got = f()
     assert_eq(got.a, 42)
+}
+
+test "a struct narrower than a word survives" {
+    let p = Pair8 { a: 1, b: 2 }
+    let f = || { return p }
+    assert_eq(f().a, 1)
+    assert_eq(f().b, 2)
+    let got = f()
+    assert_eq(got.a, 1)
+    assert_eq(got.b, 2)
+}
+
+// Exactly a word, but two fields rather than one.
+test "a two-field word-sized struct survives" {
+    let p = Pair32 { a: 3, b: 4 }
+    let f = || { return p }
+    assert_eq(f().a, 3)
+    assert_eq(f().b, 4)
+    let got = f()
+    assert_eq(got.a + got.b, 7)
 }
 
 test "a struct wider than a word survives" {
