@@ -59,8 +59,43 @@ pub fn run_test_with_config(test: SpecTest, config: &RunConfig) -> TestResult {
             message: "skipped".to_string(),
             native_result: None,
         },
+        Expectation::Pending => run_pending_test(test),
         Expectation::Run(expected) => run_run_test(test, &expected, config),
         Expectation::RunInterpOnly(expected) => run_run_test_interp_only(test, &expected),
+    }
+}
+
+/// Canon syntax the compiler hasn't implemented yet. The block is correct as
+/// written, so it must not be silently skipped — but it can't compile either.
+/// Failing is the expected state; succeeding means the feature landed and the
+/// annotation should be promoted to `compile`/`parse`.
+fn run_pending_test(test: SpecTest) -> TestResult {
+    let lex_result = rask_lexer::Lexer::new(&test.code).tokenize();
+    if !lex_result.is_ok() {
+        return TestResult {
+            test,
+            passed: true,
+            message: "pending — not yet lexable".to_string(),
+            native_result: None,
+        };
+    }
+
+    let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+    if !parse_result.is_ok() {
+        return TestResult {
+            test,
+            passed: true,
+            message: "pending — not yet parseable".to_string(),
+            native_result: None,
+        };
+    }
+
+    TestResult {
+        test,
+        passed: false,
+        message: "marked `pending` but the compiler accepts it now — promote to `test: parse`"
+            .to_string(),
+        native_result: None,
     }
 }
 

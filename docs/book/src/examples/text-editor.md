@@ -15,63 +15,84 @@ A text editor with undo/redo functionality.
 
 ### Command Pattern
 
+<!-- test: parse -->
 ```rask
-enum Command {
-    Insert(usize, string),
-    Delete(usize, usize),
-    Replace(usize, usize, string),
+enum EditCommand {
+    Insert(i32, string),
+    Delete(i32, string),
+    Modify(i32, string, string),
 }
 
-struct Editor {
-    content: string,
-    history: Vec<Command>,
-    position: usize,
+struct Document {
+    lines: Vec<string>
+    history: Vec<EditCommand>
+    position: i32
 }
 ```
 
 ### Undo/Redo
 
-```rask
-func undo(editor: Editor) {
-    if editor.position > 0 {
-        editor.position -= 1
-        let cmd = editor.history[editor.position]
-        reverse_command(editor, cmd)
-    }
-}
+Undo and redo are methods on `Document`, so the receiver carries the mutation — no call-site
+marker needed:
 
-func redo(editor: Editor) {
-    if editor.position < editor.history.len() {
-        let cmd = editor.history[editor.position]
-        apply_command(editor, cmd)
-        editor.position += 1
+<!-- test: parse -->
+```rask
+extend Document {
+    func undo(self) -> bool or Error {
+        if self.position <= 0: return false
+
+        self.position -= 1
+        let cmd = self.history[self.position]
+        try self.apply_command_silent(cmd.inverse())
+        return true
+    }
+
+    func redo(self) -> bool or Error {
+        if self.position >= self.history.len(): return false
+
+        let cmd = self.history[self.position]
+        try self.apply_command_silent(cmd)
+        self.position += 1
+        return true
     }
 }
 ```
 
+Both return `bool or Error` — `true` when something was undone, `false` at the end of the
+history. A bare `return true` auto-wraps into the success branch; there's no `Ok(...)` to write.
+
+If these were free functions instead of methods, the document parameter would need `mutate` in
+the signature *and* at every call site: `func undo(mutate doc: Document)` called as
+`undo(mutate doc)`. Methods are the exception — the receiver is understood to be the thing
+being operated on.
+
 ### File Operations
 
+<!-- test: parse -->
 ```rask
-func save(editor: Editor, path: string) -> () or IoError {
+func save(self, path: string) -> void or fs.IoError {
     let file = try fs.create(path)
     ensure file.close()
 
-    try file.write(editor.content)
+    try file.write(self.lines.join("\n"))
 }
 
-func load(path: string) -> Editor or IoError {
+func from_file(path: string) -> Document or fs.IoError {
     let file = try fs.open(path)
     ensure file.close()
 
     let content = try file.read_to_string()
-    return Editor { content, history: Vec.new(), position: 0 }
+    return Document { lines: content.split("\n"), history: Vec.new(), position: 0 }
 }
 ```
+
+The empty return type is spelled `void`, and `ensure file.close()` satisfies the linearity rule
+on every exit path — including the ones `try` takes.
 
 ## Running It
 
 ```bash
-rask text_editor.rk
+rask run examples/text_editor.rk
 ```
 
 ## What You'll Learn

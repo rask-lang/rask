@@ -111,6 +111,11 @@ Annotations:
 - `<!-- test: run | expected -->` — Run via interpreter + native, verify output matches
 - `<!-- test: run-interp | expected -->` — Interpreter only (escape hatch for unimplemented codegen)
 - `<!-- test: skip -->` — Don't test
+- `<!-- test: pending -->` — Canon syntax the compiler hasn't implemented yet. Expected to fail; if it *passes*, the test fails and tells you to promote the annotation. Use this instead of `skip` when the block is right and the compiler is behind, so the docs can lead the implementation without going quietly stale
+
+The same idea covers whole example programs: `tests/pending_examples.txt` lists examples
+written in settled syntax that doesn't compile yet. They keep their golden output, the run-gate
+treats a failure as expected, and an unexpected pass fails on purpose.
 
 Example from spec:
 

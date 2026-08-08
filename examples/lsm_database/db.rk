@@ -43,7 +43,7 @@ extend Db {
 
         mut wal = Wal.open(config.wal_path)
             catch e => return DbError.Wal(e)
-        ensure wal.close() else |_| {}
+        ensure wal.close()
 
         // Recover memtable from WAL
         mut memtable = Memtable.new()

@@ -65,6 +65,12 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs specs/
 
+    # Same gate for the published docs. specs/ was covered and docs/ wasn't,
+    # which is how the book and landing page drifted a release behind.
+    - name: Docs snippets parse
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: ./compiler/target/release/rask test-specs docs/ README.md
+
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
     # compile+run golden fixtures). Runs last and independently: a failure here
     # no longer skips the gates above.

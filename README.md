@@ -20,8 +20,9 @@ Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremon
 
 ## Quick look
 
+<!-- test: parse -->
 ```rask
-func search_file(path: string, pattern: string) -> () or IoError {
+func search_file(path: string, pattern: string) -> void or IoError {
     let file = try fs.open(path)
     ensure file.close()
 
@@ -89,7 +90,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 - Type system: primitives, structs, enums, generics, traits
 - Control flow: if/match/loops
 - Concurrency: spawn/join, channels, thread pools
-- Error handling: `T or E`, `try`, optionals (`T?`, `??`, `!`)
+- Error handling: `T or E` with `try` to propagate and `catch e =>` to handle; optionals (`T?`, `??`, `!`, `is none`)
 - Native codegen (Cranelift): structs, closures, Vec/Map, threads, channels, file I/O
 - Build system: packages, workspaces, watch mode
 - Tooling: `rask build/check/lint/fmt/test`, LSP

@@ -16,8 +16,9 @@ A command-line tool for searching files with pattern matching.
 
 ### Resource Management
 
+<!-- test: parse -->
 ```rask
-func search_file(path: string, pattern: string) -> () or IoError {
+func search_file(path: string, pattern: string) -> void or IoError {
     let file = try fs.open(path)
     ensure file.close()  // Guaranteed cleanup
 
@@ -31,6 +32,7 @@ The `ensure` keyword guarantees `file.close()` runs even on early returns or err
 
 ### Error Handling
 
+<!-- test: parse -->
 ```rask
 enum GrepError {
     NoPattern,
@@ -39,12 +41,27 @@ enum GrepError {
 }
 
 func parse_args(args: Vec<string>) -> Options or GrepError {
-    // Returns Result type, caller must handle errors
+    // Returns `Options or GrepError` — the caller must handle the error branch
 }
 ```
 
+`T or E` is the error type; there's no `Result<T, E>` and no `Ok`/`Err` constructors. Returning
+a bare `Options` auto-wraps into the success branch. Callers pick one of three words:
+
+<!-- test: parse -->
+```rask
+let opts = try parse_args(args)                            // propagate to my caller
+let opts = parse_args(args) catch e => return usage(e)     // handle it, exit here
+let opts = parse_args(args) catch _ => Options.default()   // handle it, carry on
+```
+
+`catch` always binds — `e =>` to use the error, `_ =>` to drop it — so a discarded error is
+visible in the source. The `??` operator is the same idea for optionals (absence, not failure);
+the two never overlap.
+
 ### String Processing
 
+<!-- test: parse -->
 ```rask
 for line in file.lines() {
     if case_insensitive {
@@ -62,14 +79,14 @@ for line in file.lines() {
 ## Running It
 
 ```bash
-rask grep_clone.rk "pattern" file1.txt file2.txt
-rask grep_clone.rk -i "case-insensitive" *.txt
+rask run examples/grep_clone.rk "pattern" file1.txt file2.txt
+rask run examples/grep_clone.rk -i "case-insensitive" *.txt
 ```
 
 ## What You'll Learn
 
 - How to parse command-line arguments in Rask
-- Error handling patterns with `Result` types
+- Error handling with `T or E`, `try`, and `catch`
 - Resource management with `ensure`
 - String manipulation and iteration
 

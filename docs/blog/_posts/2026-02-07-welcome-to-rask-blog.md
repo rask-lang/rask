@@ -5,6 +5,8 @@ date: 2026-02-07 23:30:00 +0100
 categories: announcement
 ---
 
+*Updated 2026-08-07: the code samples and the error-handling description track current syntax. The rest of the post is left as written.*
+
 Hi! I'm having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!
 
 ## What is Rask?
@@ -32,10 +34,11 @@ Here's a sneak peek at some core features:
 
 - **Linear resources** - Files and sockets must be explicitly closed. The compiler checks this at compile time, so you can't leak handles.
 - **No async/await** - I/O is just I/O. No more refactoring half your codebase because one function needs to wait for network.
-- **Syntax sugar where it matters** - Option and Result show up in 90% of code, so I made them ergonomic with `?` sugar and `try` for propagation.
+- **Syntax sugar where it matters** - Optionals and errors show up in 90% of code, so they're built into the type system rather than bolted on as library types: `T?` for "might be absent", `T or E` for "might fail". `try` propagates, `??` fills in a missing value, `catch` handles a failure.
 
 Here's what it looks like:
 
+<!-- test: parse -->
 ```rask
 func process_config(path: string) -> Config or Error {
     let file = try fs.open(path)
@@ -44,7 +47,7 @@ func process_config(path: string) -> Config or Error {
     let content = try file.read_to_string()
     let lines = content.split('\n')
 
-    let settings = Map.new()
+    mut settings = Map.new()
     for line in lines {
         if line.starts_with('#'): continue
 

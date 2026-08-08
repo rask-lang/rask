@@ -16,8 +16,9 @@ Rask is a systems programming language that sits between Rust and Go:
 
 ## Quick Look
 
+<!-- test: parse -->
 ```rask
-func search_file(path: string, pattern: string) -> () or IoError {
+func search_file(path: string, pattern: string) -> void or IoError {
     let file = try fs.open(path)
     ensure file.close()
 

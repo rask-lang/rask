@@ -11,13 +11,15 @@
             aliases: ['rk'],
             keywords: {
                 keyword:
-                    'func struct enum trait extend match if else for while loop return ' +
-                    'const let try ensure comptime with spawn using import export ' +
-                    'public take mutate own deliver any unsafe break continue is in as',
-                literal: 'true false none',
+                    'func struct enum trait extend union match if else for while loop return ' +
+                    'let mut const try catch ensure comptime with spawn using import export ' +
+                    'public private take read mutate own where unsafe extern break continue ' +
+                    'is in as select type lazy test benchmark assert check package dep',
+                literal: 'true false none null',
                 built_in:
-                    'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char ' +
-                    'Vec Map Pool Option Result Handle println print format panic'
+                    'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +
+                    'Vec Map Set Pool Handle Cell Shared Mutex Owned Atomic StringView ' +
+                    'println print format panic todo unreachable'
             },
             contains: [
                 hljs.COMMENT('//', '$'),

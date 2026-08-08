@@ -34,7 +34,7 @@
 //     if result is none { println("missing") }
 //
 //   This forces you to handle the missing case. No more KeyError crashes.
-//   We'll cover Option in depth in lesson 08. For now, just know it exists.
+//   We'll cover optionals in depth in lesson 08. For now, just know they exist.
 //
 
 // --- Examples ---
