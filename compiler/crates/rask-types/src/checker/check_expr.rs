@@ -1104,6 +1104,22 @@ impl TypeChecker {
                 // ESAD Phase 2: Check for aliasing violations in closure body
                 self.check_closure_aliasing(params, body);
 
+                // Bind each parameter to the same variable the closure's `Fn`
+                // type carries, so a caller that pins it (`map` unifying the
+                // param with the iterator's element type) also pins the body's
+                // view of it. Without this the body saw an unrelated variable:
+                // `views().iter().map(|r| r.id).collect()` could never work out
+                // `r.id`, so the element type of the collected Vec stayed open
+                // and the binding was reported as un-inferrable (#620).
+                self.push_scope();
+                for (p, ty) in params.iter().zip(&param_types) {
+                    if p.is_mutate || p.is_take {
+                        self.define_local(p.name.clone(), ty.clone());
+                    } else {
+                        self.define_local_param(p.name.clone(), ty.clone());
+                    }
+                }
+
                 // Save enclosing return type — `return` inside a closure
                 // returns from the closure, not the enclosing function
                 let outer_return_type = self.current_return_type.take();
@@ -1115,6 +1131,7 @@ impl TypeChecker {
 
                 let inferred_ret = self.infer_expr(body);
 
+                self.pop_scope();
                 self.current_return_type = outer_return_type;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
