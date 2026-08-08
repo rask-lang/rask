@@ -2476,8 +2476,13 @@ impl<'a> FunctionBuilder<'a> {
 
         let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
-        // Check if the left operand has an unsigned MIR type
+        // Signedness lives in the MIR type — a Cranelift integer carries none.
+        // A constant operand has no type to read, so take it from whichever side
+        // does; both operands of an arithmetic operator share a type anyway.
+        // Reading only the left meant `200 / b` on a `u8` divided signed, and
+        // 200 in an i8 is -56, so it answered 0 (#630).
         let is_unsigned = Self::operand_mir_type(left, ctx.locals)
+            .or_else(|| Self::operand_mir_type(right, ctx.locals))
             .map(|t| t.is_unsigned())
             .unwrap_or(false);
 

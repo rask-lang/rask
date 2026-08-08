@@ -29,16 +29,18 @@ t_parse_float.rk # `"3.5".parse()` with the target from the binding always misse
 # `??` taking its type from the default. Fix the inference and delete the line —
 # the annotation the error suggests works meanwhile, but these are compiler
 # bugs, not programs that need annotating.
+#
+# Four came off this list when the literal-receiver operator gap closed (#630):
+# t21_let_bindings, t23_with_blocks, t_inferred_return_type, t_with_mutex_value.
+# `with`-block-as-value and inferred-return-type were never their own bugs — the
+# open type came from an arithmetic operator with a bare literal on the left,
+# somewhere inside the body.
 p06_select.rk              # select-as-value — #620 (both)
 t20_control_expressions.rk # loop/block-as-value — #620 (both)
-t21_let_bindings.rk        # #620 (both)
-t23_with_blocks.rk         # with-block-as-value — #620 (both)
 t25_iterator_adapters.rk   # iterator collect — #620 (both)
 t48_loops.rk               # loop-as-value — #620 (both)
 t66_stdlib_option_returns.rk # #620 (both)
-t_inferred_return_type.rk  # #620 (both)
 t_iter_take_collect.rk     # iterator collect — #620 (both)
 t_loop_labels.rk           # loop-as-value — #620 (both)
 t_parse_failure.rk         # #620 (both)
 t_select.rk                # select-as-value — #620 (both)
-t_with_mutex_value.rk      # with-block-as-value — #620 (both)
