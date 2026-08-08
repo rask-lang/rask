@@ -224,6 +224,10 @@ impl Interpreter {
         self.env
             .define("println".to_string(), Value::Builtin(BuiltinKind::Println));
         self.env
+            .define("eprint".to_string(), Value::Builtin(BuiltinKind::EPrint));
+        self.env
+            .define("eprintln".to_string(), Value::Builtin(BuiltinKind::EPrintln));
+        self.env
             .define("panic".to_string(), Value::Builtin(BuiltinKind::Panic));
         self.env
             .define("format".to_string(), Value::Builtin(BuiltinKind::Format));

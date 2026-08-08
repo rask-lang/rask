@@ -250,6 +250,8 @@ impl PoolData {
 pub enum BuiltinKind {
     Print,
     Println,
+    EPrint,   // eprint(...) — same as print, to stderr
+    EPrintln, // eprintln(...) — same as println, to stderr
     Panic,
     Format,
     AsyncSpawn,     // spawn(|| {}) from async module
