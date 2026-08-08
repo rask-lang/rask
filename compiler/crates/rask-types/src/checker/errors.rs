@@ -126,6 +126,10 @@ pub enum TypeError {
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },
+    /// CV1a/CV2: an integer that doesn't fit the position it's going into.
+    /// Widening is implicit; anything that can lose a value has to name a policy.
+    #[error("`{from}` doesn't fit in `{to}`")]
+    NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
     /// OPT19: `while expr? as v` — parses and checks, but no backend can lower
     /// a loop-carried binding yet (#593). Reported here rather than letting the
     /// resolver blame the binder's name.

@@ -1721,7 +1721,15 @@ impl<'a> FunctionBuilder<'a> {
 
         let val_ty = builder.func.dfg.value_type(val);
         if val_ty != dst_ty {
-            val = Self::convert_value(builder, val, val_ty, dst_ty, None);
+            // The source's MIR type carries the signedness a Cranelift integer
+            // doesn't. Without it every widening sign-extends, so an implicit
+            // `u32` → `i64` (CV1a) would turn 3000000000 into a negative
+            // (#326's family, reached by a new route).
+            let src_mir = match rvalue {
+                MirRValue::Use(op) => Self::operand_mir_type(op, ctx.locals),
+                _ => None,
+            };
+            val = Self::convert_value(builder, val, val_ty, dst_ty, src_mir.as_ref());
         }
 
         // #493: an Option destination deeper than its source gains the layers

@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CV1a: an int→int conversion is implicit exactly when it can't fail.
+//
+// The test is one question — can every value of the source be represented in the
+// target? If yes it needs no `as`, because a cast that can't fail tells the
+// reader nothing. If no, it names a policy (CV5–CV7). Cross-sign used to be
+// refused outright, which made `u32` → `i64` a cast that protected nobody.
+//
+// The values here are chosen to catch a sign-extend: 3000000000 needs bit 31, so
+// widening it wrong gives a negative rather than a slightly-off number.
+
+struct Holder {
+    wide: i64
+    unsigned: u64
+}
+
+func takes_i64(x: i64) -> i64 {
+    return x
+}
+
+func returns_i64_from_u32(x: u32) -> i64 {
+    return x
+}
+
+test "type.primitives — u32 widens to i64 at every position" {
+    let big: u32 = 3000000000
+
+    let assigned: i64 = big
+    assert assigned == 3000000000
+
+    assert takes_i64(big) == 3000000000
+    assert returns_i64_from_u32(big) == 3000000000
+
+    let h = Holder { wide: big, unsigned: big }
+    assert h.wide == 3000000000
+    assert h.unsigned == 3000000000
+}
+
+test "type.primitives — unsigned into signed needs a strictly wider target" {
+    let b: u8 = 200
+    let as16: i16 = b
+    let as64: i64 = b
+    assert as16 == 200
+    assert as64 == 200
+}
+
+test "type.primitives — same-sign widening keeps the sign" {
+    let neg: i32 = -5
+    let wide: i64 = neg
+    assert wide == -5
+
+    let u: u16 = 60000
+    let uwide: u64 = u
+    assert uwide == 60000
+}
+
+// A count flows into a count with no conversion — V9's claim, checked.
+test "stdlib.collections — a count accumulates into a count" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    mut total: u64 = 0
+    total += v.len()
+    assert total == 3
+    let n: usize = v.len()
+    assert n == 3
+}
+
+test "type.primitives — widening still works through a call chain" {
+    let small: u8 = 7
+    let mid: u32 = small
+    let big: i64 = mid
+    assert takes_i64(big) == 7
+}
