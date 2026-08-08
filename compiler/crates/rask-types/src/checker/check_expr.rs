@@ -1496,9 +1496,19 @@ impl TypeChecker {
                 }
                 let mut result_ty: Option<Type> = None;
                 for arm in arms {
+                    // A receive arm binds its value for the body only, so each
+                    // arm gets its own scope. Skipping the binding left `v` as a
+                    // free variable, which spread to the whole select's type and
+                    // came out as "couldn't work out the type of" the binding it
+                    // fed (#620).
+                    self.push_scope();
                     match &arm.kind {
-                        rask_ast::expr::SelectArmKind::Recv { channel, binding: _ } => {
-                            self.infer_expr(channel);
+                        rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
+                            let chan_ty = self.infer_expr(channel);
+                            let elem = self
+                                .channel_element_type(&chan_ty)
+                                .unwrap_or_else(|| self.ctx.fresh_var());
+                            self.define_local(binding.clone(), elem);
                         }
                         rask_ast::expr::SelectArmKind::Send { channel, value } => {
                             self.infer_expr(channel);
@@ -1507,6 +1517,7 @@ impl TypeChecker {
                         rask_ast::expr::SelectArmKind::Default => {}
                     }
                     let body_ty = self.infer_expr(&arm.body);
+                    self.pop_scope();
                     if let Some(ref prev) = result_ty {
                         let _ = self.unify(prev, &body_ty, arm.body.span);
                     } else {

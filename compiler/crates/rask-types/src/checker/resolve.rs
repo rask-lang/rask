@@ -13,6 +13,24 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
 impl TypeChecker {
+    /// The element type `T` a channel end carries — `Receiver<T>`, `Sender<T>`
+    /// or `Channel<T>`. `None` for anything else.
+    pub(super) fn channel_element_type(&self, ty: &Type) -> Option<Type> {
+        let applied = self.ctx.apply(ty);
+        let (name, args) = match &applied {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if !matches!(name.as_str(), "Receiver" | "Sender" | "Channel") {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
     /// The element type `T` of a `Handle<T>`, or `None` for anything else.
     /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
     pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
@@ -1326,6 +1344,16 @@ impl TypeChecker {
 
         match method {
             "add" => return Err(TypeError::StringAddForbidden { span }),
+            // `a == b` desugars to `a.eq(b)` and there's no `eq` in the string
+            // stubs, so this fell through as "no progress" and the result type
+            // stayed open. In a condition the `Equal(cond, bool)` constraint hid
+            // it; bound to a name (`let same = a == b`) there was nothing to pin
+            // it and the binding was reported as un-inferrable (#620). Ordering
+            // is lexicographic and both backends already do it.
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                self.unify(&args[0], &Type::String, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {

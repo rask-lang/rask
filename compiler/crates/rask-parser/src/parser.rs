@@ -36,6 +36,9 @@ pub struct Parser {
     /// their signatures. Real source can't — the call would parse as the
     /// keyword form — so only stub parsing sets this.
     allow_keyword_fn_names: bool,
+    /// Loop labels enclosing the statement being parsed. `break ident` is
+    /// ambiguous on its own — a label or a value — and this is what decides it.
+    loop_labels: Vec<String>,
 }
 
 impl Parser {
@@ -51,7 +54,7 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new() }
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -2814,61 +2817,80 @@ impl Parser {
     }
 
     fn parse_break_stmt(&mut self) -> Result<StmtKind, ParseError> {
+        let kind = self.parse_break_after_keyword()?;
+        self.expect_terminator()?;
+        Ok(kind)
+    }
+
+    /// True where a statement ends: a terminator, or a closing brace / comma
+    /// that belongs to whatever encloses it.
+    fn at_stmt_end(&self) -> bool {
+        self.check(&TokenKind::Newline)
+            || self.check(&TokenKind::Semi)
+            || self.at_end()
+            || self.check(&TokenKind::RBrace)
+            || self.check(&TokenKind::Comma)
+    }
+
+    /// Parse everything after the `break` keyword. Does not consume the
+    /// terminator — the inline-block form (`if c: break x`) can't.
+    ///
+    /// ```text
+    /// break              → no label, no value
+    /// break label        → label, no value
+    /// break expr         → no label, value
+    /// break label expr   → label, value
+    /// ```
+    ///
+    /// `break ident` reads either way, so the enclosing labels decide: a name
+    /// that labels a loop we're inside is a label, anything else is a value.
+    /// Guessing from the next token instead used to make `break total` a jump
+    /// to a nonexistent label, which left the loop's value type with nothing to
+    /// unify against (#620).
+    fn parse_break_after_keyword(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Break)?;
 
-        // break              → no label, no value
-        // break label        → label, no value
-        // break expr         → no label, value
-        // break label expr   → label, value
-        if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
-            self.expect_terminator()?;
+        if self.at_stmt_end() {
             return Ok(StmtKind::Break { label: None, value: None });
         }
 
         if let TokenKind::Ident(name) = self.current_kind().clone() {
-            // Disambiguate: `break label expr` vs `break value_expr`
-            // If the ident is followed by a clear infix operator, it's a value expr.
-            // Note: Minus excluded — `break label -1` is label + negative value.
-            let next_is_infix = matches!(self.peek(1),
-                TokenKind::Plus | TokenKind::Star | TokenKind::Slash |
-                TokenKind::Percent | TokenKind::EqEq | TokenKind::BangEq |
-                TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq |
-                TokenKind::AmpAmp | TokenKind::PipePipe | TokenKind::Dot | TokenKind::LParen |
-                TokenKind::LBracket | TokenKind::DotDot
-            );
-            if next_is_infix {
-                // `break expr` — parse whole thing as value expression
-                let value = self.parse_expr()?;
-                self.expect_terminator()?;
-                return Ok(StmtKind::Break { label: None, value: Some(value) });
+            if self.loop_labels.contains(&name) {
+                self.advance();
+                let value = if self.at_stmt_end() || !self.is_expr_start() {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                return Ok(StmtKind::Break { label: Some(name), value });
             }
-
-            self.advance();
-            if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end()
-                || self.check(&TokenKind::RBrace) || self.check(&TokenKind::Comma)
-            {
-                // `break ident` at end of statement — treat as label
-                self.expect_terminator()?;
-                Ok(StmtKind::Break { label: Some(name), value: None })
-            } else if self.is_expr_start() {
-                // `break ident expr` — ident is label, expr is value
-                let value = self.parse_expr()?;
-                self.expect_terminator()?;
-                Ok(StmtKind::Break { label: Some(name), value: Some(value) })
-            } else {
-                // `break ident <non-expr>` — treat ident as label
-                self.expect_terminator()?;
-                Ok(StmtKind::Break { label: Some(name), value: None })
-            }
-        } else if self.is_expr_start() {
-            // `break expr` — no label, just a value
-            let value = self.parse_expr()?;
-            self.expect_terminator()?;
-            Ok(StmtKind::Break { label: None, value: Some(value) })
-        } else {
-            // `break` followed by non-expr token (e.g., comma in match arms)
-            Ok(StmtKind::Break { label: None, value: None })
         }
+
+        if self.is_expr_start() {
+            let value = self.parse_expr()?;
+            return Ok(StmtKind::Break { label: None, value: Some(value) });
+        }
+        // `break` followed by non-expr token (e.g., comma in match arms)
+        Ok(StmtKind::Break { label: None, value: None })
+    }
+
+    /// Parse a loop body with `label` in scope, so `break ident` inside it can
+    /// tell a label from a value. Nested loops see it too — the label stays up
+    /// for the whole body.
+    fn parse_loop_body(&mut self, label: &Option<String>) -> Result<Vec<Stmt>, ParseError> {
+        if let Some(l) = label {
+            self.loop_labels.push(l.clone());
+        }
+        let body = if self.match_token(&TokenKind::Colon) {
+            self.parse_stmt().map(|s| vec![s])
+        } else {
+            self.skip_newlines();
+            self.parse_block_body()
+        };
+        if label.is_some() {
+            self.loop_labels.pop();
+        }
+        body
     }
 
     fn parse_continue_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -2903,28 +2925,17 @@ impl Parser {
         let cond = self.parse_expr_no_braces()?;
 
         if let ExprKind::IsPattern { expr: scrutinee, pattern } = cond.kind {
-            let body = if self.match_token(&TokenKind::Colon) {
-                vec![self.parse_stmt()?]
-            } else {
-                self.skip_newlines();
-                self.parse_block_body()?
-            };
+            let body = self.parse_loop_body(&label)?;
             return Ok(StmtKind::WhileLet { label, pattern, expr: *scrutinee, body });
         }
 
-        let body = if self.match_token(&TokenKind::Colon) {
-            vec![self.parse_stmt()?]
-        } else {
-            self.skip_newlines();
-            self.parse_block_body()?
-        };
+        let body = self.parse_loop_body(&label)?;
         Ok(StmtKind::While { label, cond, body })
     }
 
     fn parse_loop_stmt(&mut self, label: Option<String>) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Loop)?;
-        self.skip_newlines();
-        let body = self.parse_block_body()?;
+        let body = self.parse_loop_body(&label)?;
         Ok(StmtKind::Loop { label, body })
     }
 
@@ -2947,12 +2958,7 @@ impl Parser {
 
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr_no_braces()?;
-        let body = if self.match_token(&TokenKind::Colon) {
-            vec![self.parse_stmt()?]
-        } else {
-            self.skip_newlines();
-            self.parse_block_body()?
-        };
+        let body = self.parse_loop_body(&label)?;
         Ok(StmtKind::For { label, binding, mutate, iter, body })
     }
 
@@ -3366,8 +3372,7 @@ impl Parser {
                     match self.current_kind() {
                         TokenKind::Loop => {
                             self.advance();
-                            self.skip_newlines();
-                            let body = self.parse_block_body()?;
+                            let body = self.parse_loop_body(&label)?;
                             let end = self.tokens[self.pos - 1].span.end;
                             return Ok(Expr {
                                 id: self.next_id(),
@@ -3583,8 +3588,7 @@ impl Parser {
 
             TokenKind::Loop => {
                 self.advance();
-                self.skip_newlines();
-                let body = self.parse_block_body()?;
+                let body = self.parse_loop_body(&None)?;
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr {
                     id: self.next_id(),
@@ -3961,7 +3965,12 @@ impl Parser {
             None
         };
 
-        let body = self.parse_closure_body()?;
+        // A closure is a function boundary — `break` can't reach a loop outside
+        // it, so a name that labels one is just a variable in here.
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let body = self.parse_closure_body();
+        self.loop_labels = outer_labels;
+        let body = body?;
         let end = body.span.end;
 
         Ok(Expr {
@@ -4401,37 +4410,7 @@ impl Parser {
                 };
                 StmtKind::Return(value)
             }
-            TokenKind::Break => {
-                self.advance();
-                if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
-                    StmtKind::Break { label: None, value: None }
-                } else if let TokenKind::Ident(name) = self.current_kind().clone() {
-                    // Disambiguate label vs value: if followed by infix op, it's a value
-                    let next_is_infix = matches!(self.peek(1),
-                        TokenKind::Plus | TokenKind::Star | TokenKind::Slash |
-                        TokenKind::Percent | TokenKind::EqEq | TokenKind::BangEq |
-                        TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq |
-                        TokenKind::AmpAmp | TokenKind::PipePipe | TokenKind::Dot | TokenKind::LParen |
-                        TokenKind::LBracket | TokenKind::DotDot
-                    );
-                    if next_is_infix {
-                        StmtKind::Break { label: None, value: Some(self.parse_expr()?) }
-                    } else {
-                        self.advance();
-                        if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
-                            StmtKind::Break { label: Some(name), value: None }
-                        } else if self.is_expr_start() {
-                            StmtKind::Break { label: Some(name), value: Some(self.parse_expr()?) }
-                        } else {
-                            StmtKind::Break { label: Some(name), value: None }
-                        }
-                    }
-                } else if self.is_expr_start() {
-                    StmtKind::Break { label: None, value: Some(self.parse_expr()?) }
-                } else {
-                    StmtKind::Break { label: None, value: None }
-                }
-            }
+            TokenKind::Break => self.parse_break_after_keyword()?,
             TokenKind::Continue => {
                 self.advance();
                 let label = if let TokenKind::Ident(name) = self.current_kind().clone() {

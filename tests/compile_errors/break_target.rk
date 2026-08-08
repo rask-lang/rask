@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `break x` is a value break unless `x` labels an enclosing loop (#620).
+//
+// The parser used to guess from the next token, which made `break total` a jump
+// to a label named `total` — the loop's value type then had nothing to unify
+// against, and the binding it fed came out un-inferrable. Now the enclosing
+// labels decide, so a name that is neither a label nor a variable is caught
+// here with the label-or-value question spelled out (E0210).
+
+// --- neither a label nor a variable ---
+// ERROR: `nowhere` is neither a variable to break with nor a label to break to
+func test_break_unknown_name() {
+    mut i = 0
+    loop {
+        i += 1
+        if i == 3 { break nowhere }
+    }
+}
+
+// --- misspelled label, with a real one in scope ---
+// ERROR: `outr` is neither a variable to break with nor a label to break to
+func test_break_misspelled_label() {
+    outer: loop {
+        for i in 0..3 {
+            if i == 2 { break outr }
+        }
+    }
+}
+
+// --- a label from a loop we already left is out of scope ---
+// ERROR: `done` is neither a variable to break with nor a label to break to
+func test_break_label_out_of_scope() {
+    done: for i in 0..3 {
+        print("{i}\n")
+    }
+    loop {
+        break done
+    }
+}

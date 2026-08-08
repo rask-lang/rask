@@ -314,7 +314,21 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let def = self.ctx.apply(&default);
-        if matches!(def, Type::Var(_)) {
+        // An unsuffixed number on the right (`?? -1`) is a variable that nothing
+        // else will ever pin — literal defaulting is the only thing that settles
+        // it, and that runs after the last solve, by which point a deferred
+        // constraint has been dropped. So `v.first() ?? -1` left its binding with
+        // no type at all (#620). Fall through instead: the literal, the operand's
+        // success type and the result all tie to one variable, and defaulting
+        // lands on it. Any other variable can still be pinned by something later,
+        // so those keep deferring.
+        let def_is_bare_literal = match def {
+            Type::Var(id) => {
+                self.ctx.is_integer_literal_var(id) || self.ctx.is_float_literal_var(id)
+            }
+            _ => false,
+        };
+        if matches!(def, Type::Var(_)) && !def_is_bare_literal {
             self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
             return Ok(false);
         }

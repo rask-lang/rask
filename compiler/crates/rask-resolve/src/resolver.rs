@@ -1733,20 +1733,28 @@ impl Resolver {
             StmtKind::Break { label, value } => {
                 if let Some(lbl) = label {
                     if !self.scopes.label_in_scope(lbl) {
-                        // Ambiguity: `break ident` parsed with ident as label,
-                        // but it's not a known label. If we're in a loop, this
-                        // is likely `break value` — suppress the error and let
-                        // the interpreter/type-checker treat the label as a value.
-                        if !self.scopes.in_loop() {
-                            self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
-                        }
-                        // else: silently allow — interpreter handles reinterpretation
+                        self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
                 }
-                if let Some(v) = value {
-                    self.resolve_expr(v);
+                match value {
+                    // `break x` reads either way, and the parser picks the value
+                    // reading when no enclosing loop is labelled `x`. If `x`
+                    // isn't a variable either, say which two things it failed to
+                    // be — "undefined symbol, add an import" sends a misspelled
+                    // label off in the wrong direction entirely.
+                    Some(v) => match &v.kind {
+                        ExprKind::Ident(name) if self.scopes.lookup(name).is_none() => {
+                            self.errors.push(ResolveError::unknown_break_target(
+                                name.clone(),
+                                self.scopes.labels_in_scope(),
+                                v.span,
+                            ));
+                        }
+                        _ => self.resolve_expr(v),
+                    },
+                    None => {}
                 }
             }
             StmtKind::Continue(label) => {
