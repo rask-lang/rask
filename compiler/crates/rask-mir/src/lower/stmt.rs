@@ -154,6 +154,31 @@ impl<'a> MirLowerer<'a> {
             == Some("Vec")
     }
 
+    /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
+    /// field names in outermost-last order.
+    fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {
+        let mut fields = Vec::new();
+        let mut base = expr;
+        while let ExprKind::Field { object, field } = &base.kind {
+            fields.push(field.as_str());
+            base = object;
+        }
+        fields.reverse();
+        (base, fields)
+    }
+
+    /// Summed byte offset of a whole field path within `base_ty`.
+    fn field_path_offset(&self, base_ty: &MirType, fields: &[&str]) -> Option<u32> {
+        let mut offset = 0;
+        let mut ty = base_ty.clone();
+        for field in fields {
+            let (off, fty) = self.field_offset_ty(&ty, field)?;
+            offset += off;
+            ty = fty;
+        }
+        Some(offset)
+    }
+
     /// Byte offset + MIR type of `field` within an aggregate MIR type.
     fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
@@ -416,17 +441,57 @@ impl<'a> MirLowerer<'a> {
                             }));
                             return Ok(());
                         }
-                        // #411: `v[i].field = val` on a Vec. Reading `v[i]` copies
-                        // the element (value semantics for `let p = v[i]`), so a
-                        // store into that copy is lost. Do a read-modify-writeback:
-                        // copy the element out, set the field, and `Vec_set` it back
-                        // — the same path the `with vec[i] as item` binding uses.
-                        if let ExprKind::Index { object: coll, index: idx } = &object.kind {
-                            if self.is_vec_expr(coll) {
-                                if let Some(elem_ty) =
-                                    self.ctx.lookup_raw_type(object.id).map(|t| self.ctx.type_to_mir(t))
-                                {
-                                    if let Some((foff, _)) = self.field_offset_ty(&elem_ty, field) {
+                        // A place rooted at an index, with any number of fields
+                        // after it. #411 fixed the one-field forms; two dropped
+                        // the write again, silently, on native only:
+                        // `pool[h].health.current = 42` read back 100, and
+                        // `v[i].a.x = 88` read back the original. The old code
+                        // matched on `object` being the index, which only ever
+                        // sees the last field, and everything deeper fell through
+                        // to the generic path — which loads the intermediate
+                        // aggregate as a value copy and stores into the copy.
+                        let (index_base, path) = Self::peel_field_path(target);
+                        if let ExprKind::Index { object: coll, index: idx } = &index_base.kind {
+                            // A pool index is an address into the arena, so the
+                            // whole path projects to one store. The generation
+                            // check comes along, which is what a write through a
+                            // stale handle should hit.
+                            if self.index_object_is_pool(coll) {
+                                let (base_op, base_ty) = self.lower_expr(index_base)?;
+                                if let Some(offset) = self.field_path_offset(&base_ty, &path) {
+                                    let base_local = match base_op {
+                                        MirOperand::Local(id) => id,
+                                        _ => {
+                                            let tmp = self.builder.alloc_temp(base_ty);
+                                            self.builder.push_stmt(MirStmt::dummy(
+                                                MirStmtKind::Assign {
+                                                    dst: tmp,
+                                                    rvalue: MirRValue::Use(base_op),
+                                                },
+                                            ));
+                                            tmp
+                                        }
+                                    };
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                        addr: base_local,
+                                        offset,
+                                        value: val_op,
+                                        store_size: None,
+                                    }));
+                                    return Ok(());
+                                }
+                            } else if self.is_vec_expr(coll) {
+                                // Reading `v[i]` copies the element (value
+                                // semantics for `let p = v[i]`), so a store into
+                                // that copy is lost. Read-modify-writeback, the
+                                // same path a `with vec[i] as item` binding uses.
+                                let elem_ty = self
+                                    .ctx
+                                    .lookup_raw_type(index_base.id)
+                                    .map(|t| self.ctx.type_to_mir(t))
+                                    .or_else(|| self.collection_elem_of_expr(coll));
+                                if let Some(elem_ty) = elem_ty {
+                                    if let Some(offset) = self.field_path_offset(&elem_ty, &path) {
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
                                         let tmp = self.builder.alloc_temp(elem_ty);
@@ -437,7 +502,7 @@ impl<'a> MirLowerer<'a> {
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                             addr: tmp,
-                                            offset: foff,
+                                            offset,
                                             value: val_op,
                                             store_size: None,
                                         }));
@@ -1612,7 +1677,16 @@ impl<'a> MirLowerer<'a> {
 
         // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
-        let elem_ty = if is_map {
+        let elem_ty = if is_pool {
+            // `for h in pool` iterates the `Pool_handles` snapshot above, so the
+            // element is a handle — not the pool's own element type, which is
+            // what the lookups below answer when handed the pool expression.
+            // Typed as the element struct, the handle word was read as a struct
+            // address and `pool[h]` in the body panicked "pool access with
+            // invalid handle" on the first iteration. `for h in pool.handles()`
+            // was fine, because there the iterated expression says `Vec<Handle>`.
+            MirType::Handle
+        } else if is_map {
             // A map entry is a (key, value) pair, laid out like a tuple. Typed
             // as a bare i64 the element load came back as just the key, and
             // reading field 1 off it dereferenced that value as a pointer.

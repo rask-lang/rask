@@ -17,8 +17,13 @@
 13_string_operations.rk  # native exit 1
 16_concurrency_basics.rk # native exit 1
 18_resource_types.rk     # native exit 1
-game_loop.rk             # both exit 0, stdout DIVERGES — was a MIR lowering failure,
-                         # now runs on both and disagrees. PLAN Track 3.
+game_loop.rk             # fails `check` on both — `let e = state.entities[h]` (index
+                         # through a field) leaves the element type open, E0361.
+                         # Annotate those six bindings and both backends run all 300
+                         # frames and exit 0, but stdout DIVERGES: interp scores 200 and
+                         # retires entities, native scores 0. The "pool access with
+                         # invalid handle" panic is gone — `for h in pool` was typing the
+                         # handle as the pool's element type. PLAN Track 3.
 sensor_processor.rk      # native exit 1; interp now TIMES OUT (>60s) where it used to
                          # finish — a second bug on top of the #272 layout miscompile
 

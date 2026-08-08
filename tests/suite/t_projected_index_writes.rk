@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Assigning through an index and then two or more fields — `pool[h].health.current
+// = 42`, `v[i].mid.tag -= 1`.
+//
+// #411 fixed the one-field forms and stopped there. The place lowering matched on
+// the assignment target's immediate object being the index, which only ever sees
+// the last field in a chain, so anything deeper fell through to the generic path.
+// That one loads the intermediate aggregate as a value copy and stores into the
+// copy, so the write vanished — silently, native only, and the read afterwards
+// returned the original. The interpreter was right throughout.
+
+struct Health {
+    public current: i64
+    public max: i64
+}
+
+struct Entity {
+    public active: bool
+    public hp: i64
+    public health: Health
+}
+
+struct Inner { public v: i64 }
+struct Mid { public inner: Inner, public tag: i64 }
+struct Outer { public mid: Mid }
+
+test "a pool element's nested field takes the write" {
+    mut pool = Pool<Entity>.new()
+    let h = pool.insert(Entity {
+        active: true,
+        hp: 100,
+        health: Health { current: 100, max: 100 },
+    })
+
+    // One field deep: worked before, still has to.
+    pool[h].hp -= 25
+    assert_eq(pool[h].hp, 75)
+    pool[h].active = false
+    assert pool[h].active == false
+
+    // Two fields deep: this is what dropped.
+    pool[h].health.current = 42
+    assert_eq(pool[h].health.current, 42)
+    pool[h].health.current -= 2
+    assert_eq(pool[h].health.current, 40)
+
+    // The sibling field is untouched — the store hit the right offset, not just
+    // somewhere in the element.
+    assert_eq(pool[h].health.max, 100)
+    assert_eq(pool[h].hp, 75)
+}
+
+test "three fields deep through a pool" {
+    mut pool = Pool<Outer>.new()
+    let h = pool.insert(Outer { mid: Mid { inner: Inner { v: 1 }, tag: 2 } })
+
+    pool[h].mid.inner.v = 99
+    pool[h].mid.tag += 5
+
+    assert_eq(pool[h].mid.inner.v, 99)
+    assert_eq(pool[h].mid.tag, 7)
+}
+
+test "a Vec element's nested field takes the write" {
+    mut v = Vec<Outer>.new()
+    v.push(Outer { mid: Mid { inner: Inner { v: 1 }, tag: 2 } })
+
+    v[0].mid.inner.v = 77
+    v[0].mid.tag -= 1
+
+    assert_eq(v[0].mid.inner.v, 77)
+    assert_eq(v[0].mid.tag, 1)
+}
+
+test "writes to two pool elements don't bleed into each other" {
+    mut pool = Pool<Entity>.new()
+    let a = pool.insert(Entity {
+        active: true,
+        hp: 10,
+        health: Health { current: 10, max: 10 },
+    })
+    let b = pool.insert(Entity {
+        active: true,
+        hp: 20,
+        health: Health { current: 20, max: 20 },
+    })
+
+    pool[a].health.current = 1
+    pool[b].health.current = 2
+
+    assert_eq(pool[a].health.current, 1)
+    assert_eq(pool[b].health.current, 2)
+    assert_eq(pool[a].health.max, 10)
+    assert_eq(pool[b].health.max, 20)
+}
