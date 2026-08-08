@@ -18,6 +18,8 @@ jobs:
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
 
     - name: Cache Cargo
       uses: actions/cache@v4
@@ -77,6 +79,15 @@ jobs:
     - name: Docs snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs docs/ README.md
+
+    # The playground's wasm build. Nothing here compiled for wasm32, so a
+    # cfg-gated stdlib module could lose its callers' guards and only break in
+    # the deploy workflow — which is how docs deploys stayed red for 30
+    # consecutive runs (#622). `check` not `build`: enough to catch it, cheap.
+    - name: Wasm target builds
+      if: ${{ !cancelled() }}
+      run: cargo check -p rask-wasm --target wasm32-unknown-unknown
+      working-directory: compiler
 
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
     # compile+run golden fixtures). Runs last and independently: a failure here
