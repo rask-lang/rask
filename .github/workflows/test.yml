@@ -11,10 +11,13 @@ on:
 # Two concurrent jobs, split so they finish at about the same time:
 #
 #   gates      — everything that needs the rask binary (~3m25 warm)
-#   rust-tests — cargo test, which needs no rask binary of its own (~3m00 warm)
+#   rust-tests — cargo test, which needs no rask binary of its own (~1m50 warm)
 #
 # Warm is the number that matters: a cold cache adds ~1m20 to the compiler
 # build and ~1m25 to cargo test. Measured on run 31270117921.
+#
+# gates is now the critical path. What's left in it is Rust compilation
+# (~1m) and the differential harness (~1m10); everything else is under 15s.
 #
 # The old single job ran cargo test *after* a `cargo build -p rask-cli` it never
 # needed, so ~2m30 of Rust compilation sat behind ~1m of unrelated work.
@@ -154,6 +157,21 @@ jobs:
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
     # compile+run golden fixtures). cargo builds whatever binaries the tests
     # need, so this job needs no separate `cargo build -p rask-cli`.
+    #
+    # Debug, not --release. These tests are compile-bound, and dropping
+    # optimization cuts the build far more than it costs at run time:
+    #
+    #   --release   2m52 compile + 40s run
+    #   debug       1m38 compile + 43s run
+    #
+    # Same 942 tests, both green — debug isn't skipping anything. The run
+    # barely moves because the fixtures shell out to a rask binary from the
+    # same profile but spend their time in process startup and linking, not
+    # in optimized inner loops.
+    #
+    # The other half of the trade is the point: debug turns on integer
+    # overflow checks and `debug_assert!`. Nothing fires today, so this costs
+    # no red CI now and catches the next arithmetic bug for free.
     - name: cargo test
-      run: cargo test --release
+      run: cargo test
       working-directory: compiler
