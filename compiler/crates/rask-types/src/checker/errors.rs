@@ -234,6 +234,11 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
+    #[error("`{found}` can't be iterated")]
+    NotIterable {
+        found: Type,
+        span: Span,
+    },
     #[error("{operation} requires `unsafe` block")]
     UnsafeRequired {
         operation: String,

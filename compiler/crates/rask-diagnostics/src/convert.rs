@@ -732,6 +732,36 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "not a Result type")
             }
 
+            NotIterable { found, span } => {
+                let ty = found.to_string();
+                let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))
+                    .with_code("E0827")
+                    .with_primary(*span, "`for` needs a collection here")
+                    .with_why(
+                        "`for` walks a Vec, Map, Pool, array, slice, range or iterator \
+                         chain. A single value has no elements to visit \
+                         [ctrl.control-flow]",
+                    );
+                // Each of these is a specific slip with a specific answer, and
+                // naming the answer beats restating the rule.
+                let is_number = matches!(
+                    ty.as_str(),
+                    "i8" | "i16" | "i32" | "i64" | "i128"
+                        | "u8" | "u16" | "u32" | "u64" | "u128"
+                );
+                diag = match ty.as_str() {
+                    // A string is a sequence, just not of itself.
+                    "string" => diag.with_fix("ask for the elements: `for c in s.chars()`"),
+                    // A count in the iterator position wants the range it counts.
+                    _ if is_number => diag.with_fix("count with a range: `for i in 0..n`"),
+                    _ => diag.with_fix(format!(
+                        "iterate a collection — a `Vec<{}>`, or a field of `{}` that holds one",
+                        ty, ty
+                    )),
+                };
+                diag
+            }
+
             UnsafeRequired { operation, span } => {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0330")

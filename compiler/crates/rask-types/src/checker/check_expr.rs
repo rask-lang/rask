@@ -295,6 +295,7 @@ impl TypeChecker {
                         if matches!(obj_ty, Type::Var(_)) {
                             self.ctx.add_constraint(TypeConstraint::IndexElement {
                                 container: raw_obj_ty,
+                                index: idx_ty.clone(),
                                 is_range,
                                 result: result.clone(),
                                 span: expr.span,
@@ -3116,7 +3117,7 @@ impl TypeChecker {
     /// is rejected immediately; every other index is deferred to
     /// `validate_pending_index` so a literal index can adapt to the key/element
     /// type after constraint solving.
-    fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
+    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
         match self.classify_index_container(container) {
             Some(IndexContainer::Sequence) => {
                 // A range index is a valid slice; a scalar index must be integer.
@@ -3193,6 +3194,63 @@ impl TypeChecker {
 
     /// Name of a builtin generic container, matching by TypeId (resolved) or by
     /// spelling (unresolved).
+    /// The element type a `for` loop takes out of `ty`.
+    ///
+    /// Every container the language can walk is named here. Anything else that
+    /// has *resolved to a concrete type* is a program that says `for x in 3` —
+    /// leaving that alone reported it as "couldn't work out the type of x",
+    /// which blames the binding for the container's problem.
+    pub(super) fn container_elem_type(&self, ty: &Type) -> ContainerElem {
+        let arg = |n: usize| -> Option<Type> {
+            let args = match ty {
+                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+                _ => return None,
+            };
+            match args.get(n) {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => None,
+            }
+        };
+        match ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => {
+                ContainerElem::Known((**elem).clone())
+            }
+            // Still open, a generic parameter, or already errored — the body
+            // pins these, and an error here would land on working code.
+            Type::Var(_) | Type::Error | Type::Never => ContainerElem::Deferred,
+            // A bare `Range` carries no element type at all, so the loop
+            // variable's width comes from the body's arithmetic.
+            Type::UnresolvedNamed(_) => ContainerElem::Deferred,
+            Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                // `Iterator<T>` is what every `.iter().map(…)` chain resolves
+                // to, so this is the common case, not an edge one.
+                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Iterator") {
+                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
+                }
+                match self.generic_base_name(ty) {
+                    Some("Vec") => arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known),
+                    // stdlib.collections: a map iterates its (key, value) entries.
+                    Some("Map") => match (arg(0), arg(1)) {
+                        (Some(k), Some(v)) => ContainerElem::Known(Type::Tuple(vec![k, v])),
+                        _ => ContainerElem::Deferred,
+                    },
+                    // mem.pools/PF1: a pool iterates its handles, not its values.
+                    Some("Pool") => match arg(0) {
+                        Some(elem) => ContainerElem::Known(Type::UnresolvedGeneric {
+                            name: "Handle".to_string(),
+                            args: vec![GenericArg::Type(Box::new(elem))],
+                        }),
+                        None => ContainerElem::Deferred,
+                    },
+                    // A user generic may implement the iterator protocol, and
+                    // its element type isn't readable from here.
+                    _ => ContainerElem::Deferred,
+                }
+            }
+            _ => ContainerElem::NotIterable,
+        }
+    }
+
     /// What `container[index]` yields, for the shapes it can be read off the
     /// container's type. `None` means "nothing to say" — an unresolved container,
     /// or a generic whose argument list doesn't carry the element.
@@ -3379,6 +3437,18 @@ impl TypeChecker {
         }
         self.types.resolve_type_names(&u) == self.types.resolve_type_names(pool_elem)
     }
+}
+
+/// What `container_elem_type` could work out about a `for` loop's source.
+pub(super) enum ContainerElem {
+    /// The element type, read off the container.
+    Known(Type),
+    /// A container whose element type isn't readable here but which the body
+    /// legitimately pins — a bare `Range`, a type variable, a user generic that
+    /// may implement the iterator protocol.
+    Deferred,
+    /// Resolved to something no `for` loop can walk.
+    NotIterable,
 }
 
 /// Indexable container class at an index site (#310).

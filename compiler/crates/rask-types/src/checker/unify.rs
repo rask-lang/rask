@@ -5,6 +5,7 @@ use rask_ast::Span;
 
 use super::inference::{TypeConstraint, WrapPosition};
 use super::errors::TypeError;
+use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
@@ -184,8 +185,8 @@ impl TypeChecker {
                 self.resolve_element_of(container, elem, span)
             }
 
-            TypeConstraint::IndexElement { container, is_range, result, span } => {
-                self.resolve_index_element(container, is_range, result, span)
+            TypeConstraint::IndexElement { container, index, is_range, result, span } => {
+                self.resolve_index_element(container, index, is_range, result, span)
             }
         }
     }
@@ -194,6 +195,7 @@ impl TypeChecker {
     fn resolve_index_element(
         &mut self,
         container: Type,
+        index: Type,
         is_range: bool,
         result: Type,
         span: Span,
@@ -202,6 +204,7 @@ impl TypeChecker {
         if matches!(resolved, Type::Var(_)) {
             self.ctx.add_constraint(TypeConstraint::IndexElement {
                 container,
+                index,
                 is_range,
                 result,
                 span,
@@ -211,8 +214,13 @@ impl TypeChecker {
         if let Some(found) = self.index_result_type(&resolved, is_range) {
             self.unify(&result, &found, span)?;
         }
-        // Whether indexing this container is legal at all is #310's check
-        // (`check_index_types`), not this one's — it only supplies the type.
+        // #310 polices the *index* type, but it ran at the index site with the
+        // container still a variable, so it classified nothing and let a
+        // field-reached index through unchecked. Now that the container is known,
+        // register it — `validate_pending_index` runs after the solver, so this
+        // lands in time. That check reports an unindexable container itself, so
+        // there's nothing left to fall through here.
+        self.check_index_types(&resolved, &index, is_range, span);
         Ok(true)
     }
 
@@ -228,31 +236,16 @@ impl TypeChecker {
             self.ctx.add_constraint(TypeConstraint::ElementOf { container, elem, span });
             return Ok(false);
         }
-        if let Some(found) = self.container_elem_type(&resolved) {
-            self.unify(&elem, &found, span)?;
-        }
-        // A shape this doesn't model — Map entries, a fused iterator chain, a
-        // Pool — leaves the element where it was. Those paths work out their own
-        // element type, and rejecting here would fire on programs that are fine.
-        Ok(true)
-    }
-
-    /// The element type a `for` loop takes out of `ty`, for the shapes where it
-    /// reads straight off the container. `None` means "nothing to say".
-    pub(super) fn container_elem_type(&self, ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Array { elem, .. } | Type::Slice(elem) => Some((**elem).clone()),
-            _ if self.generic_base_name(ty) == Some("Vec") => {
-                let args = match ty {
-                    Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => Some(args),
-                    _ => None,
-                };
-                match args.and_then(|a| a.first()) {
-                    Some(GenericArg::Type(elem)) => Some((**elem).clone()),
-                    _ => None,
-                }
+        match self.container_elem_type(&resolved) {
+            ContainerElem::Known(found) => {
+                self.unify(&elem, &found, span)?;
+                Ok(true)
             }
-            _ => None,
+            ContainerElem::Deferred => Ok(true),
+            ContainerElem::NotIterable => Err(TypeError::NotIterable {
+                found: self.nameable(&resolved),
+                span,
+            }),
         }
     }
 

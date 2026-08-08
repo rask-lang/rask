@@ -294,6 +294,9 @@ impl Default for ErrorCodeRegistry {
                 "E0826" => ("type does not implement Displayable", Type,
                     "`{}` in a format template calls `to_string()`, which comes from `Displayable` (std.fmt/D4). Primitives have it; structs and enums opt in with `extend Type with Displayable`, and error types get it for free from `message()` (D5). Optionals and results are never Displayable — an optional may have nothing to show, so the missing case has to be spelled out at the call.",
                     "let found: User? = lookup(id)\nprintln(\"{found}\")   // error: `User?` has no to_string()\n// fix: `println(\"{found ?? \\\"nobody\\\"}\")`, or narrow first with `if found? as u { … }`"),
+                "E0827" => ("type can't be iterated", Type,
+                    "A `for` loop walks a Vec, Map, Pool, array, slice, range or iterator chain. The thing in the iterator position resolved to a single value instead — most often a count where the range was meant, a string where `.chars()` was meant, or a struct where one of its collection fields was meant. A container reached through a field resolves later than the loop, so this is reported once its type settles rather than at the loop itself.",
+                    "for x in self.count { … }   // error: `i64` can't be iterated\n// fix: `for x in 0..self.count { … }`"),
             },
         }
     }

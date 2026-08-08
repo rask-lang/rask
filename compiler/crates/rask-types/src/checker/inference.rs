@@ -95,6 +95,9 @@ pub enum TypeConstraint {
     /// `HasField` has resolved the container.
     IndexElement {
         container: Type,
+        /// Carried so #310's index-type check can run once the container is
+        /// known — at the index site it had nothing to classify against.
+        index: Type,
         is_range: bool,
         result: Type,
         span: Span,

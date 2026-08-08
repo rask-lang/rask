@@ -8,6 +8,7 @@ use rask_ast::Span;
 use super::errors::TypeError;
 use super::inference::{TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
+use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -15,14 +16,18 @@ use crate::types::Type;
 impl TypeChecker {
     /// Type a `for` binding takes when iterating `iter_ty`.
     ///
-    /// A fresh var is the fallback for iterables whose element type can't be
-    /// read off the type here (ranges, user iterators) — inference pins those
-    /// from the body. `Vec<T>` is spelled out because leaving it a free var
-    /// loses the element's identity: a `Vec<any Trait>` binding then has no
-    /// trait to dispatch against.
+    /// The element type is spelled out wherever it can be read off the
+    /// container: leaving it a free var loses the element's identity, and a
+    /// `Vec<any Trait>` binding then has no trait to dispatch against.
+    ///
+    /// Everything else gets a fresh var plus an `ElementOf` constraint — either
+    /// because the container is a field access whose type hasn't resolved yet,
+    /// or because it genuinely can't say (a bare `Range` carries no element
+    /// type, so the body's arithmetic pins the width). The constraint is what
+    /// reports a container that turns out not to be iterable at all.
     fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
-        if let Some(elem) = self.container_elem_type(&resolved) {
+        if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
             return elem;
         }
         let elem = self.ctx.fresh_var();
@@ -30,13 +35,11 @@ impl TypeChecker {
         // unresolved here. Tie the element to it and come back once it settles —
         // otherwise `for t in self.tables` leaves `t` open forever and every
         // binding derived from it reports E0361 (#632).
-        if matches!(resolved, Type::Var(_)) {
-            self.ctx.add_constraint(TypeConstraint::ElementOf {
-                container: iter_ty.clone(),
-                elem: elem.clone(),
-                span,
-            });
-        }
+        self.ctx.add_constraint(TypeConstraint::ElementOf {
+            container: iter_ty.clone(),
+            elem: elem.clone(),
+            span,
+        });
         elem
     }
 

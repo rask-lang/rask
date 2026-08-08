@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `for` loop over something that isn't a collection.
+//
+// This used to come out as "couldn't work out the type of `x`" (E0361), which
+// blames the loop variable for the container's problem. The element type is
+// worked out from a deferred constraint — a field's type isn't resolved yet at
+// the loop — and when the container finally settled as something with no
+// elements, that constraint just gave up and left the binding open (#632).
+// Now it says what's actually wrong, and names the fix for each shape.
+//
+// Spec: ctrl.control-flow, type.gradual
+
+struct Row {
+    n: i64
+}
+
+struct Bag {
+    rows: Vec<Row>
+    count: i64
+    label: string
+    one: Row
+}
+
+extend Bag {
+    // ERROR: `i64` can't be iterated — a count wants the range it counts
+    func over_int(self) -> i64 {
+        mut total = 0
+        for x in self.count {
+            total = total + x
+        }
+        return total
+    }
+
+    // ERROR: `string` can't be iterated — a string is a sequence, of chars
+    func over_string(self) -> i64 {
+        mut n = 0
+        for c in self.label {
+            n = n + 1
+        }
+        return n
+    }
+
+    // ERROR: `Row` can't be iterated — a struct has fields, not elements
+    func over_struct(self) -> i64 {
+        mut n = 0
+        for r in self.one {
+            n = n + 1
+        }
+        return n
+    }
+
+    // ERROR: cannot index `Vec<Row>` with `string` — #310's index check now
+    // reaches a container arrived at through a field. It ran at the index site,
+    // where the container was still an unresolved variable, so it classified
+    // nothing and let this through.
+    func bad_index(self) -> i64 {
+        return self.rows["nope"].n
+    }
+}
+
+// A bare local, not through a field — the same error, the direct route.
+func over_local_int(n: i64) -> i64 {
+    mut total = 0
+    for x in n {
+        total = total + x
+    }
+    return total
+}
+
+func main() {
+    let b = Bag { rows: Vec.new(), count: 3, label: "x", one: Row { n: 1 } }
+    println("{b.over_int()} {b.over_string()} {b.over_struct()} {b.bad_index()}")
+    println("{over_local_int(3)}")
+}
