@@ -284,44 +284,24 @@ impl TypeChecker {
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
                 self.check_index_types(&obj_ty, &idx_ty, is_range, index.span);
-                match &obj_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => {
-                        if is_range {
-                            Type::Slice(elem.clone())
-                        } else {
-                            *elem.clone()
+                match self.index_result_type(&obj_ty, is_range) {
+                    Some(elem) => elem,
+                    None => {
+                        let result = self.ctx.fresh_var();
+                        // A field's type arrives as a deferred `HasField`, so the
+                        // container can still be unresolved here — `w.entities[h]`
+                        // where the same index on a local works fine. Tie the
+                        // result to it and come back once it settles (#632).
+                        if matches!(obj_ty, Type::Var(_)) {
+                            self.ctx.add_constraint(TypeConstraint::IndexElement {
+                                container: raw_obj_ty,
+                                is_range,
+                                result: result.clone(),
+                                span: expr.span,
+                            });
                         }
+                        result
                     }
-                    Type::String => {
-                        if is_range {
-                            Type::String
-                        } else {
-                            Type::Char
-                        }
-                    }
-                    // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
-                    // Map<K,V> indexed by K → value type from second arg.
-                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                        let is_map = match &obj_ty {
-                            Type::UnresolvedGeneric { name, .. } => name == "Map",
-                            Type::Generic { base, .. } => self
-                                .types
-                                .get_type_id("Map")
-                                .map_or(false, |id| id == *base),
-                            _ => false,
-                        };
-                        let elem_arg = if is_map { args.get(1) } else { args.first() };
-                        if let Some(GenericArg::Type(elem)) = elem_arg {
-                            if is_range {
-                                Type::Slice(elem.clone())
-                            } else {
-                                *elem.clone()
-                            }
-                        } else {
-                            self.ctx.fresh_var()
-                        }
-                    }
-                    _ => self.ctx.fresh_var(),
                 }
             }
 
@@ -3213,6 +3193,42 @@ impl TypeChecker {
 
     /// Name of a builtin generic container, matching by TypeId (resolved) or by
     /// spelling (unresolved).
+    /// What `container[index]` yields, for the shapes it can be read off the
+    /// container's type. `None` means "nothing to say" — an unresolved container,
+    /// or a generic whose argument list doesn't carry the element.
+    pub(super) fn index_result_type(&self, container: &Type, is_range: bool) -> Option<Type> {
+        match container {
+            Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
+                Type::Slice(elem.clone())
+            } else {
+                (**elem).clone()
+            }),
+            Type::String => Some(if is_range { Type::String } else { Type::Char }),
+            // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
+            // Map<K,V> indexed by K → value type from second arg.
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                let is_map = match container {
+                    Type::UnresolvedGeneric { name, .. } => name == "Map",
+                    Type::Generic { base, .. } => self
+                        .types
+                        .get_type_id("Map")
+                        .map_or(false, |id| id == *base),
+                    _ => false,
+                };
+                let elem_arg = if is_map { args.get(1) } else { args.first() };
+                match elem_arg {
+                    Some(GenericArg::Type(elem)) => Some(if is_range {
+                        Type::Slice(elem.clone())
+                    } else {
+                        (**elem).clone()
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
         const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
         match ty {

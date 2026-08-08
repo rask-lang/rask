@@ -79,6 +79,26 @@ pub enum TypeConstraint {
         result: Type,
         span: Span,
     },
+    /// The element type of a container being iterated.
+    ///
+    /// A field's type arrives as a deferred `HasField`, so `for t in self.tables`
+    /// meets an unresolved container at the loop. Handing back a fresh variable
+    /// with nothing tying it to the container left the element open however the
+    /// field later resolved; this comes back for it once the container settles.
+    ElementOf {
+        container: Type,
+        elem: Type,
+        span: Span,
+    },
+    /// What `container[index]` yields. Same deferral as `ElementOf`, for the
+    /// index position: `w.entities[h]` reaches the index before the field's
+    /// `HasField` has resolved the container.
+    IndexElement {
+        container: Type,
+        is_range: bool,
+        result: Type,
+        span: Span,
+    },
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).

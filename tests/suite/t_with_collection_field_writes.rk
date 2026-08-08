@@ -50,7 +50,10 @@ extend Store {
         return with self.tasks[h] as t { t.weight }
     }
 
-    func tag_count(self, h: Handle<Task>) -> i64 {
+    // `len()` answers `usize`, so this is a u64. It was declared `i64` while
+    // the type of a `with`-over-a-field-index block was an unconstrained
+    // variable — nothing checked the mismatch until #632 tied it down.
+    func tag_count(self, h: Handle<Task>) -> u64 {
         return with self.tasks[h] as t { t.tags.len() }
     }
 

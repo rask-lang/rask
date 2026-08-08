@@ -17,8 +17,13 @@
 13_string_operations.rk  # native exit 1
 16_concurrency_basics.rk # native exit 1
 18_resource_types.rk     # native exit 1
-game_loop.rk             # both exit 0, stdout DIVERGES — was a MIR lowering failure,
-                         # now runs on both and disagrees. PLAN Track 3.
+game_loop.rk             # both exit 0, stdout DIVERGES. Re-measured 2026-08-08: it
+                         # checks and runs on both backends now (#632's field-index
+                         # inference gap, and the native `for h in pool` handle
+                         # mistyping that made it panic once it got that far). What's
+                         # left is a genuine disagreement in the entity systems —
+                         # native reaches Frame 180 with 8 entities and score 0 where
+                         # interp has 5 and 100. Needs its own bisect. PLAN Track 3.
 sensor_processor.rk      # native exit 1; interp now TIMES OUT (>60s) where it used to
                          # finish — a second bug on top of the #272 layout miscompile
 

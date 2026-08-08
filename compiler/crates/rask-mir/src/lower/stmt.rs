@@ -1651,6 +1651,13 @@ impl<'a> MirLowerer<'a> {
             // as a bare i64 the element load came back as just the key, and
             // reading field 1 off it dereferenced that value as a pointer.
             MirType::Tuple(self.map_entry_pair_types(iter_expr))
+        } else if is_pool {
+            // mem.pools/PF1-PF4: `for h in pool` iterates the handle snapshot,
+            // so the binding is a `Handle`, not the pool's value type. Asking
+            // `iter_expr` — still the pool — gave the value type, so the loop
+            // read each 8-byte handle as if it were an element struct and
+            // `pool[h]` then panicked with "invalid handle".
+            MirType::Handle
         } else {
             self.extract_iterator_elem_type(iter_expr)
                 // `m.keys()` / `m.values()` hand back a Vec of the map's own key
@@ -1672,6 +1679,10 @@ impl<'a> MirLowerer<'a> {
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
+        } else if is_pool {
+            // Same prefix `for h in pool.handles()` gets, so indexing on the
+            // binding resolves the same way.
+            self.meta_mut(single_name).type_prefix = Some("Handle".to_string());
         } else {
             // MirType is Ptr — try to derive element prefix from iterable context.
             // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.

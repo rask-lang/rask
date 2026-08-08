@@ -3,6 +3,7 @@
 
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::{TypeConstraint, WrapPosition};
@@ -19,22 +20,24 @@ impl TypeChecker {
     /// from the body. `Vec<T>` is spelled out because leaving it a free var
     /// loses the element's identity: a `Vec<any Trait>` binding then has no
     /// trait to dispatch against.
-    fn iter_elem_type(&mut self, iter_ty: &Type) -> Type {
+    fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
-        match &resolved {
-            Type::Array { elem, .. } | Type::Slice(elem) => return (**elem).clone(),
-            _ => {}
+        if let Some(elem) = self.container_elem_type(&resolved) {
+            return elem;
         }
-        if self.generic_base_name(&resolved) == Some("Vec") {
-            let args = match &resolved {
-                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => Some(args),
-                _ => None,
-            };
-            if let Some(crate::types::GenericArg::Type(elem)) = args.and_then(|a| a.first()) {
-                return (**elem).clone();
-            }
+        let elem = self.ctx.fresh_var();
+        // A field's type is a deferred `HasField`, so the container can still be
+        // unresolved here. Tie the element to it and come back once it settles —
+        // otherwise `for t in self.tables` leaves `t` open forever and every
+        // binding derived from it reports E0361 (#632).
+        if matches!(resolved, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::ElementOf {
+                container: iter_ty.clone(),
+                elem: elem.clone(),
+                span,
+            });
         }
-        self.ctx.fresh_var()
+        elem
     }
 
     // ------------------------------------------------------------------------
@@ -266,7 +269,7 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = self.iter_elem_type(&iter_ty);
+                let elem_ty = self.iter_elem_type(&iter_ty, stmt.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {

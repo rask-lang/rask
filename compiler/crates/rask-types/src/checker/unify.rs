@@ -179,6 +179,80 @@ impl TypeChecker {
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
             }
+
+            TypeConstraint::ElementOf { container, elem, span } => {
+                self.resolve_element_of(container, elem, span)
+            }
+
+            TypeConstraint::IndexElement { container, is_range, result, span } => {
+                self.resolve_index_element(container, is_range, result, span)
+            }
+        }
+    }
+
+    /// What an index yields, once the container is known.
+    fn resolve_index_element(
+        &mut self,
+        container: Type,
+        is_range: bool,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&container);
+        if matches!(resolved, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::IndexElement {
+                container,
+                is_range,
+                result,
+                span,
+            });
+            return Ok(false);
+        }
+        if let Some(found) = self.index_result_type(&resolved, is_range) {
+            self.unify(&result, &found, span)?;
+        }
+        // Whether indexing this container is legal at all is #310's check
+        // (`check_index_types`), not this one's — it only supplies the type.
+        Ok(true)
+    }
+
+    /// The element type of an iterated container, once the container is known.
+    fn resolve_element_of(
+        &mut self,
+        container: Type,
+        elem: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&container);
+        if matches!(resolved, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::ElementOf { container, elem, span });
+            return Ok(false);
+        }
+        if let Some(found) = self.container_elem_type(&resolved) {
+            self.unify(&elem, &found, span)?;
+        }
+        // A shape this doesn't model — Map entries, a fused iterator chain, a
+        // Pool — leaves the element where it was. Those paths work out their own
+        // element type, and rejecting here would fire on programs that are fine.
+        Ok(true)
+    }
+
+    /// The element type a `for` loop takes out of `ty`, for the shapes where it
+    /// reads straight off the container. `None` means "nothing to say".
+    pub(super) fn container_elem_type(&self, ty: &Type) -> Option<Type> {
+        match ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => Some((**elem).clone()),
+            _ if self.generic_base_name(ty) == Some("Vec") => {
+                let args = match ty {
+                    Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => Some(args),
+                    _ => None,
+                };
+                match args.and_then(|a| a.first()) {
+                    Some(GenericArg::Type(elem)) => Some((**elem).clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
