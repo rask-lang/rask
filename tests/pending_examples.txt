@@ -10,5 +10,5 @@
 # PASSING, the gate fails on purpose — the feature landed, so delete its line
 # and the example goes back to being enforced forever.
 
-litmus_edge_cases.rk     # `x is none` (OPT15) — spec settled 2026-08-05, tracked in #600
-04_pattern_matching.rk   # `x is none` (OPT15) — spec settled 2026-08-05, tracked in #600
+# (empty — `is none` landed in the compiler, so both former entries went back
+# to being enforced. The gate told us to remove them, which is the whole point.)

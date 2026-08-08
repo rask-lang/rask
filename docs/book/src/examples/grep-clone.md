@@ -48,7 +48,7 @@ func parse_args(args: Vec<string>) -> Options or GrepError {
 `T or E` is the error type; there's no `Result<T, E>` and no `Ok`/`Err` constructors. Returning
 a bare `Options` auto-wraps into the success branch. Callers pick one of three words:
 
-<!-- test: pending -->
+<!-- test: parse -->
 ```rask
 let opts = try parse_args(args)                            // propagate to my caller
 let opts = parse_args(args) catch e => return usage(e)     // handle it, exit here

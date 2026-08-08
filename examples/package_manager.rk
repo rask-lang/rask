@@ -830,7 +830,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 
     mut tmp_file = fs.create(tmp_path)
         catch e => return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
-    ensure fs.remove(tmp_path) else |_| {}
+    ensure fs.remove(tmp_path)
 
     mut out = string.new()
     out.push_str("lockfile-version = 1\n\n")

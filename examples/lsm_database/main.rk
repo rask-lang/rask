@@ -177,7 +177,7 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> void or DbError
 func run(args: CliArgs) -> void or DbError {
     let config = DbConfig.default_for(args.db_dir)
     mut db = try Db.open(config)
-    ensure db.close() else |_| {}
+    ensure db.close()
 
     match args.command {
         "put" => {
