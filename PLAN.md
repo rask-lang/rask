@@ -42,10 +42,19 @@ old table claimed work that's done, which is the exact failure mode this file ke
 | A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **done** — `try` on optionals works; ER47 fires on a bare flat `try` | #598 |
 | A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
 | A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
-| A7 | `while expr? as v` binder never enters scope | **still broken** — `while q.pop()? as v { total += v }` is `E0200: undefined symbol: v` | #593 |
+| A7 | `while expr? as v` binder never enters scope | **still broken**, and not the small resolver fix it looks like — see below | #593 |
 | A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
 
-So Track 0 is A7 and nothing else. It's a resolver bug and small.
+So Track 0 is A7 and nothing else — but it's three layers, not the one the old table implied.
+`while q.pop()? as v { total += v }` is `E0200: undefined symbol: v` because the resolver's `While`
+arm never defines the binder, unlike its `If` arm. Mirroring the If arm fixes the diagnostic and
+makes things worse: MIR lowering then dies with `unresolved variable v` on native and the interp
+fails at runtime, because neither `while` lowering has a notion of a loop-carried binding. Tried it,
+reverted it — a clean compile error beats a lowering crash.
+
+The shortest route is probably not the `?` path at all: `while rx.try_receive() is Reading as r`
+already works on both backends (it's what `examples/sensor_processor` drains with), so lowering
+`while expr? as v` the way `while expr is T as v` already lowers is the model to copy.
 
 What the wave left behind, found by working the corpus rather than the spec:
 
