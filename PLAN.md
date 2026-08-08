@@ -11,6 +11,11 @@ has grown from 31 files to 158. **Re-run `tests/differential.sh` and `tests/exam
 write the numbers down before planning off this document.** Every stale claim in here got that way
 because someone read it instead of measuring.
 
+**Last measured 2026-08-08** (at `da34410` plus this round's fixes): `tests/differential.sh`
+**147 green, 19 expected-red, 0 untracked**; `tests/examples_gate.sh` **21 ok, 0 failed, 0 pending**.
+Write your own numbers here when you re-measure — the paragraph below is from July and is kept only
+because its *structure* still holds.
+
 **Where things stand (numbers as of 2026-07-21, structure still current):**
 
 - `rask test-specs` only checks that spec snippets *parse* — weak conformance signal, still true.
@@ -46,7 +51,7 @@ tree is broken in between.
 | A4 | Shape-agnostic `try` — on optionals too, plus the shape rule against the enclosing return and the flat `T? or E` operand error. | #598 |
 | A5 | `x is none` + the `== none` lint. | #600 |
 | A6 | `take <place>` — moves the payload out of a mutable `T?`, leaves `none`. Token already exists in parameter position; don't collide. | #586 |
-| A7 | `while expr? as v` parses but the binder never enters scope. Resolver bug, small. | #593 |
+| A7 | ~~`while expr? as v`~~ **done** (2026-08-08). Not a resolver bug and not small: four layers — resolve defines the binder in the loop scope, the checker types it, MIR binds the payload per iteration in the body block, interp does the same. Lowers the way `while expr is T as v` already did, sharing the payload read with the `if` form. | #593 |
 | A8 | Migrate the corpus, one sweep, after A1–A7. `stdlib/`, `examples/`, `tests/`, fixtures, `tutorials/`. Leave `projects/` out — design content, already partly unparseable (#592). | #602 |
 
 Every rule above needs a conformance test tagged with the rule it witnesses — positive in
