@@ -9,7 +9,7 @@ func main() {}
 test "conc.select/A1 — fires the ready receive arm" {
     let (tx1, rx1) = Channel<i64>.buffered(4)
     let (tx2, rx2) = Channel<i64>.buffered(4)
-    tx1.send(7).ok()          // only rx1 is ready
+    let _ = tx1.send(7)          // only rx1 is ready
     let got = select {
         rx1 -> v: v,
         rx2 -> v: v + 1000,

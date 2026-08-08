@@ -16,7 +16,7 @@ test "conc.async/S3 — thread returns a computed value via channel" {
             acc += i
             i += 1
         }
-        tx.send(acc).ok()
+        let _ = tx.send(acc)
         return
     }).join()
     mut got = 0
@@ -33,9 +33,9 @@ test "conc.async/S4 — spawn multiple threads and join each" {
     let txa = tx.clone()
     let txb = tx.clone()
     let txc = tx.clone()
-    let h1 = Thread.spawn(own || { txa.send(100).ok(); return })
-    let h2 = Thread.spawn(own || { txb.send(200).ok(); return })
-    let h3 = Thread.spawn(own || { txc.send(300).ok(); return })
+    let h1 = Thread.spawn(own || { let _ = txa.send(100); return })
+    let h2 = Thread.spawn(own || { let _ = txb.send(200); return })
+    let h3 = Thread.spawn(own || { let _ = txc.send(300); return })
     h1.join()
     h2.join()
     h3.join()
@@ -66,7 +66,7 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
         for x in data {
             s += x
         }
-        tx.send(s).ok()
+        let _ = tx.send(s)
         return
     }).join()
     mut owned = 0
@@ -81,7 +81,7 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
 test "conc.async/H2 — join happens-before the reader" {
     let (tx, rx) = Channel<i64>.buffered(1)
     let h = Thread.spawn(own || {
-        tx.send(42).ok()
+        let _ = tx.send(42)
         return
     })
     h.join()
