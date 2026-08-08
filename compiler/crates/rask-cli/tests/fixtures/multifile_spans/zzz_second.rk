@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The error is here, on line 8, in the second file of the package.
+//
+// E0361 points at the binding's `name_span`, which the parser lifts straight
+// off a token. Those used to carry file_id 0 whatever file they came from, so
+// this error rendered against the first file at a nonsense column.
+
+func main() {
+    let unconstrained = Vec.new()
+    let cfg = make_config()
+    println("port: {cfg.port}")
+}

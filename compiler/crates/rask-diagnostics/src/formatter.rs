@@ -20,6 +20,7 @@ use colored::Colorize;
 
 use rask_ast::LineMap;
 
+use crate::source_map::SourceMap;
 use crate::{Diagnostic, Help, LabelStyle, Severity};
 
 /// Formats diagnostics for terminal output.
@@ -27,6 +28,9 @@ pub struct DiagnosticFormatter<'a> {
     source: &'a str,
     file_name: Option<&'a str>,
     line_map: LineMap,
+    /// Set for a multi-file build. Each label then resolves through its span's
+    /// `file_id` instead of against the single source above.
+    sources: Option<&'a SourceMap>,
 }
 
 /// A source line with its labels.
@@ -50,7 +54,18 @@ impl<'a> DiagnosticFormatter<'a> {
             source,
             file_name: None,
             line_map,
+            sources: None,
         }
+    }
+
+    /// Resolve each label through its span's `file_id`.
+    ///
+    /// Without this a package's diagnostics all render against one file, so a
+    /// span from any other lands at an arbitrary offset — the reason errors
+    /// showed up on the wrong file at columns past the end of the line.
+    pub fn with_sources(mut self, sources: &'a SourceMap) -> Self {
+        self.sources = Some(sources);
+        self
     }
 
     pub fn with_file_name(mut self, name: &'a str) -> Self {
@@ -80,9 +95,9 @@ impl<'a> DiagnosticFormatter<'a> {
 
         // Line 2: --> file:line:col
         let first = &annotated[0];
-        let file = self.file_name.unwrap_or("<source>");
+        let file = self.name_of(diagnostic.labels.first().map_or(0, |l| l.span.file_id));
         let first_label = diagnostic.labels.first().unwrap();
-        let (_, col) = self.offset_to_line_col(first_label.span.start);
+        let (_, col) = self.offset_to_line_col(first_label.span.start, first_label.span.file_id);
         out.push_str(&format!(
             "  {} {}:{}:{}\n",
             "-->".blue(),
@@ -207,8 +222,8 @@ impl<'a> DiagnosticFormatter<'a> {
 
         // Show code suggestion if available
         if let Some(ref suggestion) = help.suggestion {
-            let (line, col) = self.offset_to_line_col(suggestion.span.start);
-            let source_line = self.get_line(line);
+            let (line, col) = self.offset_to_line_col(suggestion.span.start, suggestion.span.file_id);
+            let source_line = self.get_line(line, suggestion.span.file_id);
             if let Some(source_line) = source_line {
                 // Show the suggested replacement
                 let prefix = &source_line[..col.saturating_sub(1).min(source_line.len())];
@@ -249,19 +264,19 @@ impl<'a> DiagnosticFormatter<'a> {
             std::collections::BTreeMap::new();
 
         for label in &diagnostic.labels {
-            let (line_num, col_start) = self.offset_to_line_col(label.span.start);
-            let (end_line, col_end) = self.offset_to_line_col(label.span.end);
+            let (line_num, col_start) = self.offset_to_line_col(label.span.start, label.span.file_id);
+            let (end_line, col_end) = self.offset_to_line_col(label.span.end, label.span.file_id);
 
             // For multi-line spans, just annotate the start line
             let effective_col_end = if end_line == line_num {
                 col_end
             } else {
-                let line_text = self.get_line(line_num).unwrap_or("");
+                let line_text = self.get_line(line_num, label.span.file_id).unwrap_or("");
                 line_text.len() + 1
             };
 
             let entry = lines_map.entry(line_num).or_insert_with(|| {
-                let text = self.get_line(line_num).unwrap_or("").to_string();
+                let text = self.get_line(line_num, label.span.file_id).unwrap_or("").to_string();
                 AnnotatedLine {
                     line_num,
                     text,
@@ -377,15 +392,34 @@ impl<'a> DiagnosticFormatter<'a> {
         }
     }
 
+    /// The text and line index a span should be read against.
+    fn file_of(&self, file_id: u16) -> (&str, &LineMap) {
+        match self.sources.and_then(|m| m.get(file_id)) {
+            Some(f) => (f.text.as_str(), &f.line_map),
+            None => (self.source, &self.line_map),
+        }
+    }
+
     /// Convert byte offset to (line, col), both 1-based.
-    fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
-        let (line, col) = self.line_map.offset_to_line_col(offset);
+    fn offset_to_line_col(&self, offset: usize, file_id: u16) -> (usize, usize) {
+        let (_, line_map) = self.file_of(file_id);
+        let (line, col) = line_map.offset_to_line_col(offset);
         (line as usize, col as usize)
     }
 
     /// Get source line text by 1-based line number.
-    fn get_line(&self, line_num: usize) -> Option<&str> {
-        self.line_map.line_text(self.source, line_num as u32)
+    fn get_line(&self, line_num: usize, file_id: u16) -> Option<&str> {
+        let (text, line_map) = self.file_of(file_id);
+        line_map.line_text(text, line_num as u32)
+    }
+
+    /// The name to print in the `-->` header for this span.
+    fn name_of(&self, file_id: u16) -> &str {
+        self.sources
+            .and_then(|m| m.get(file_id))
+            .map(|f| f.name.as_str())
+            .or(self.file_name)
+            .unwrap_or("<source>")
     }
 }
 

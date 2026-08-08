@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Deliberately the alphabetically-first file, so it is file_id 0. The error
+// lives in the *other* file — if spans lose their file, it gets reported here.
+
+struct Config {
+    port: u16
+}
+
+func make_config() -> Config {
+    return Config { port: 8080 }
+}
