@@ -1721,8 +1721,25 @@ int rask_runtime_checks_enabled = 0;
 
 // ─── Entry point ──────────────────────────────────────────────────
 
+// Flush stdout, then let the signal kill us as it would have. stdout is fully
+// buffered when it's a pipe, so everything printed before a crash used to be
+// lost — which puts the crash earlier than it really was, every time (#605).
+// Reset to the default handler and re-raise rather than exiting, so the parent
+// still sees "died on signal N".
+static void rask_fatal_signal(int sig) {
+    fflush(stdout);
+    fflush(stderr);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGSEGV, rask_fatal_signal);
+    signal(SIGILL, rask_fatal_signal);
+    signal(SIGBUS, rask_fatal_signal);
+    signal(SIGFPE, rask_fatal_signal);
+    signal(SIGABRT, rask_fatal_signal);
     const char *checks_env = getenv("RASK_RUNTIME_CHECKS");
     if (checks_env && checks_env[0] == '1') {
         rask_runtime_checks_enabled = 1;
