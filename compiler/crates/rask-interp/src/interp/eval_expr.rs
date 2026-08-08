@@ -120,6 +120,17 @@ fn absent_value() -> Value {
     }
 }
 
+/// The present counterpart — an optional holding `payload`.
+fn present_value(payload: Value) -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "Some".to_string(),
+        fields: vec![payload],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
 /// ER31a: build the boundary-enum variant around a propagated error.
 impl Interpreter {
     /// Run a `catch` handler with the error bound. `catch _ =>` binds nothing —
@@ -1755,8 +1766,17 @@ impl Interpreter {
                 // none` is the common one) keeps the shape, so a success goes
                 // back wrapped rather than unwrapped.
                 let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
+                // `catch _ => none` is the one handler whose own shape differs
+                // from the operand's: a `T or E` in, a `T?` out. Passing the
+                // `Ok(v)` straight back left a Result sitting where the type
+                // said `T?`, and a `T?` annotation then wrapped it a second
+                // time — so `got? as v` bound a Result to `v` (#634).
+                let drop_to_optional = keeps_shape && matches!(clause.body.kind, ExprKind::None);
                 match &val {
                     Value::Enum { variant, fields, .. } => match variant.as_str() {
+                        "Ok" | "Some" if drop_to_optional => Ok(present_value(
+                            fields.first().cloned().unwrap_or(Value::Unit),
+                        )),
                         "Ok" | "Some" if keeps_shape => Ok(val.clone()),
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {

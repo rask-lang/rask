@@ -966,9 +966,16 @@ impl TypeChecker {
                 // The layers don't stack: on a success type that's already
                 // optional, the drop lands on the outer one (OPT30).
                 if matches!(clause.body.kind, ExprKind::None) {
-                    self.fallback_keeps_shape.insert(expr.id);
                     let ok_ty = self.ctx.apply(&ok_ty);
-                    return if ok_ty.is_option() { ok_ty } else { Type::option(ok_ty) };
+                    // On a flat `T? or E` the success side is already the `T?`
+                    // the whole expression produces, so it passes straight
+                    // through — marking it "keeps shape" would make both
+                    // backends re-wrap and hand back a `T??` (#634).
+                    if ok_ty.is_option() {
+                        return ok_ty;
+                    }
+                    self.fallback_keeps_shape.insert(expr.id);
+                    return Type::option(ok_ty);
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
