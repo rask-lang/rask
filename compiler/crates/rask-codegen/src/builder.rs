@@ -2192,13 +2192,44 @@ impl<'a> FunctionBuilder<'a> {
         );
 
         if let Some(dst_id) = dst {
-            let results = builder.inst_results(call_inst);
-            if !results.is_empty() {
+            let result = builder.inst_results(call_inst).first().copied();
+            if let Some(result) = result {
                 let var = ctx.var_map.get(dst_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureCall destination not found".to_string()
                     ))?;
-                builder.def_var(*var, results[0]);
+                // A closure body is an ordinary Rask function, so it returns an
+                // aggregate the way the Return terminator does: the bare value
+                // when it fits in a word, otherwise a pointer into its own frame.
+                // Neither survives being parked in the destination variable —
+                // the word gets dereferenced as an address (#633) and the
+                // pointer is overwritten by the next call's frame (#611). Copy
+                // into the destination's own slot here, like every other call
+                // site does.
+                if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
+                    match *size {
+                        8 => { builder.ins().stack_store(result, *ss, 0); }
+                        // A slot narrower than a word still gets a whole word
+                        // back, because the callee loaded one. Only the low
+                        // `size` bytes mean anything, and storing all 8 would
+                        // run off the end of a 2-byte slot into whatever sits
+                        // next to it. Park the word in a scratch slot that can
+                        // hold it and copy out just the meaningful bytes.
+                        n if n < 8 => {
+                            let scratch = builder.create_sized_stack_slot(
+                                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0),
+                            );
+                            builder.ins().stack_store(result, scratch, 0);
+                            let scratch_ptr = builder.ins().stack_addr(types::I64, scratch, 0);
+                            Self::copy_aggregate(builder, scratch_ptr, *ss, n);
+                        }
+                        n => { Self::copy_aggregate(builder, result, *ss, n); }
+                    }
+                    let addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    builder.def_var(*var, addr);
+                } else {
+                    builder.def_var(*var, result);
+                }
             }
         }
         Ok(())
