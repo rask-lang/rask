@@ -3469,6 +3469,16 @@ impl<'a> MirLowerer<'a> {
                                 .map(|s| s.param_ty_strs.clone())
                                 .unwrap_or_default();
                             let mut arg_operands = Vec::new();
+                            // Same escape as bare `spawn` (#463): the body runs
+                            // after this frame is gone, and the runtime frees the
+                            // environment once it finishes. A scope-limited closure
+                            // puts that environment on the stack, so the task read a
+                            // dead frame and then handed a stack address to free() —
+                            // glibc aborted with "free(): invalid size" (#589). The
+                            // #463 fix keyed off an `Ident("spawn")` callee, which
+                            // `Thread.spawn` never is; it arrives here instead.
+                            let spawns_closure = method == "spawn"
+                                && (base_name == "Thread" || base_name == "ThreadPool");
                             for (i, arg) in args.iter().enumerate() {
                                 // An unannotated closure parameter takes its type
                                 // from the callee's declared `func(...)` parameter;
@@ -3477,7 +3487,8 @@ impl<'a> MirLowerer<'a> {
                                 let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                                     self.lower_closure_expecting(
-                                        params, ret_ty.as_deref(), body, *is_own, &expected,
+                                        params, ret_ty.as_deref(), body,
+                                        *is_own || spawns_closure, &expected,
                                         Some(arg.expr.id),
                                     )?
                                 } else {
