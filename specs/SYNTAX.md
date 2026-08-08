@@ -1131,8 +1131,8 @@ names = [u.name for u in active_users]
 
 **Rask:**
 ```rask
-let active_users = users.filter(|u| u.active).collect()
-let names = active_users.map(|u| u.name).collect()
+let active_users = users.filter(|u| u.active).to_vec()
+let names = active_users.map(|u| u.name).to_vec()
 ```
 
 ---

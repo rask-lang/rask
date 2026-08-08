@@ -70,11 +70,11 @@ for u in s { print(u.name) }     // runs the chain
 let count = s.count()          // runs the chain AGAIN
 ```
 
-To consume twice without re-running, materialize with `.collect()`:
+To consume twice without re-running, materialize with `.to_vec()`:
 
 <!-- test: skip -->
 ```rask
-let active = users.iter().filter(|u| u.active).collect()
+let active = users.iter().filter(|u| u.active).to_vec()
 for u in active { print(u.name) }
 let count = active.len()
 ```
@@ -216,8 +216,9 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 
 | Terminal | Behavior | Returns |
 |----------|----------|---------|
-| `collect()` | Materialize into a `Vec<T>` | `Vec<T>` |
-| `collect<C>()` | Materialize into `C: FromSequence<T>` | `C` |
+| `to_vec()` | Materialize into a `Vec<T>` | `Vec<T>` |
+| `to_map()` | Materialize a `Sequence<(K, V)>` into a `Map<K, V>` | `Map<K, V>` |
+| `join(sep)` | Concatenate a `Sequence<string>` with a separator | `string` |
 | `fold(init, f)` | Reduce with initial | `A` |
 | `reduce(f)` | Reduce without initial | `T?` (`none` if empty) |
 | `sum()` | Sum items | `T where T: Numeric` |
@@ -238,8 +239,39 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 ```rask
 let total = orders.iter().map(|o| o.amount).sum()
 let admin = users.iter().find(|u| u.is_admin)
-let active = users.iter().filter(|u| u.active).collect()
+let active = users.iter().filter(|u| u.active).to_vec()
 ```
+
+## Materializing
+
+Every terminal that builds a collection names the collection it builds. There is no one terminal that builds "whatever you asked for" — that would need a type argument, an annotation, or backwards inference, and Rask pays for none of them.
+
+| Rule | Description |
+|------|-------------|
+| **SEQ28: `to_vec()` builds a `Vec<T>`** | The target is fixed. No type parameter, no annotation, no inference from later use. `seq.to_vec()` on a `Sequence<T>` is `Vec<T>` and nothing else |
+| **SEQ29: `to_map()` builds a `Map<K, V>`** | Defined only on `Sequence<(K, V)>`. Later keys overwrite earlier ones — identical to repeated `insert`. A sequence of non-pairs is a type error at the call, not a silent tuple coercion |
+| **SEQ30: `join(sep)` builds a `string`** | Defined only on `Sequence<string>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
+| **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` trait, no turbofish. Adding a materializing target means adding a named terminal to this table |
+| **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
+| **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
+
+<!-- test: skip -->
+```rask
+let lines = input.lines().to_vec()
+let parts = version.split(".").to_vec()
+
+let views = rows()
+    .iter()
+    .skip(page * size)
+    .take(size)
+    .map(|r| r.view.clone())
+    .to_vec()
+
+let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
+let csv = fields.iter().map(|f| f.escaped()).join(",")
+```
+
+Each line says what it produces, at the end of the chain, with no annotation and no type argument. The element type comes from the chain; the container type comes from the method name.
 
 ## Lockstep Iteration
 
@@ -260,7 +292,7 @@ func zip_indexable(a: Vec<i32>, b: Vec<i32>) {
 
 func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
     // Non-indexable (rare — explicit buffer shows the cost)
-    let a_items = tree_a.in_order().collect()
+    let a_items = tree_a.in_order().to_vec()
     mut idx = 0
     tree_b.in_order()(|b_node| {
         if idx >= a_items.len(): return false
@@ -309,7 +341,7 @@ func collect_active(users: Vec<User>) -> Vec<User> {
     return users
         .iter()                        // Sequence borrows users
         .filter(|u| u.active)          // Filter borrows the Sequence
-        .collect()                     // Materialized here — no Sequence escapes
+        .to_vec()                      // Materialized here — no Sequence escapes
 }
 
 func bad_return(users: Vec<User>) -> Sequence<User> {
@@ -349,13 +381,45 @@ ERROR [mem.closures/SL2]: sequence borrows a value that does not outlive the ret
 WHY: A Sequence<T> built over a borrowed source is scope-limited
      to that borrow. Returning it would outlive the source.
 
-FIX 1: Consume inside the function (collect, fold, for-loop):
+FIX 1: Consume inside the function (to_vec, fold, for-loop):
 
-  return users.iter().filter(|u| u.active).collect()
+  return users.iter().filter(|u| u.active).to_vec()
 
 FIX 2: Take ownership of the source:
 
   func active(take users: Vec<User>) -> Sequence<User> { ... }
+```
+
+**`collect()` no longer exists [type.sequence/SEQ31]:**
+```
+ERROR [type.sequence/SEQ31]: no method `collect` on Sequence<View>
+   |
+5  |      .collect()
+   |       ^^^^^^^ materializing terminals name what they build
+
+WHY: `collect` didn't say what it produced, so it needed an annotation
+     or a type argument at every call. Each target got its own name.
+
+FIX: pick the one you meant:
+
+  .to_vec()          // Vec<View>
+  .to_map()          // Map<K, V> — on a sequence of (K, V) pairs
+  .join(", ")        // string — on a sequence of strings
+```
+
+**`to_map()` on a non-pair sequence [type.sequence/SEQ29]:**
+```
+ERROR [type.sequence/SEQ29]: `to_map` needs a sequence of pairs, got Sequence<User>
+   |
+3  |  let by_id = users.iter().to_map()
+   |                           ^^^^^^ each item must be a (K, V) tuple
+
+WHY: A Map needs a key per value. `to_map` reads the key out of the
+     first tuple slot — it will not invent one.
+
+FIX: produce the pairs first:
+
+  let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
 ```
 
 **Break with value in Sequence for-loop:**
@@ -412,6 +476,23 @@ FIX: Use find() or capture via a local:
 
 **Why no zip.** General zip over two `Sequence<T>` values requires either buffering (hidden allocation), a green task (not universally available — `conc.async/C1`), or a compiler-synthesized state machine (effectively generators, rejected above). All three hide cost. Indices cover the real use case; explicit buffer covers the rest; cost is visible either way. This matches `core-design/transparency-of-cost`.
 
+**Why there's no `collect` (SEQ28–SEQ33).** `collect` is polymorphic in its result, and a result-polymorphic function has to get its answer from somewhere the call site doesn't say. Rust's somewhere is the annotation or the turbofish. I don't want either on a line this common, so I looked at what the polymorphism was actually buying.
+
+It was buying almost nothing. Rask has three collection types — `Vec`, `Map`, `Pool` — and `Pool` isn't a materializing target, because what comes out of a Pool is handles. Across every `.collect()` in `examples/`, the spec corpus and the test suite, the answer was `Vec` in *every single case*. Not "mostly Vec, with an escape hatch" — Vec, always. A trait, a type argument and an inference story, to serve a choice nobody was making. That's `FromIterator` imported by reflex (`std.api/SD4`), and the give-away is `join`: the string target already had a better name than "collect into a string" and nobody ever missed it.
+
+So each target gets a name, and the name is the one the naming table already assigns: `to_*` is "non-consuming conversion, allocates" (`canonical-patterns`), which is exactly what a terminal on a re-runnable sequence is. `to_vec` isn't borrowed from `slice::to_vec` — it falls out of Rask's own vocabulary, and `into_vec` would be wrong here for a real reason (SEQ32: the sequence survives).
+
+Rejected, with the sketches that killed them:
+
+- **Infer the target from later use.** Best-looking call site, and it doesn't work on Rask's own code. `let lines = input.lines().collect()` is followed by `lines[i]`, `lines.len()` and `for l in lines` — every one of those is shared between `Vec` and `Map`, so there's nothing to infer *from*. Inference only bites when the value is returned or passed to a typed parameter, which the common local-buffer case never does. Paying for backwards type flow through a function body, and getting a worse error when it fails, to resolve a fraction of call sites — no.
+- **Require the annotation.** `let parts: Vec<string> = s.split(".").collect()` — the source already said `string` twice and the reader already knew it was a Vec. Worse in the shape that motivated it: `let users: Vec<UserResponse> = d.users.values().map(|u| UserResponse { … }).collect()` names `UserResponse` twice in one statement. Go writes this in one term with no annotation; principle 4 says that's a design bug, not a style preference.
+- **Keep `collect()` for Vec, add `to_map()` for the rest.** Works, and it's the closest runner-up. It loses on consistency: `collect` names the process, `to_map` names the result, and they sit in the same slot at the end of the same chain. Renaming the Vec case to match is a smaller change than teaching everyone why the two look different.
+- **Target leads: `Vec.from(seq)`, `Map.from(seq)`.** Reads fine on one-liners and badly on the chains that matter. `Vec.from(rows().iter().skip(n).take(m).map(|r| r.view.clone()))` puts the opening paren four lines above its close and forces the reader to jump back to the head to find out what's being built. Terminals belong in trailing position because that's the direction chains are read. `Vec.from` keeps its array-literal job (SEQ33) and doesn't grow a sequence overload — one operation, one spelling.
+
+This also settles the note in `rejected-features.md` about associated types being worth promoting for "a `collect` that targets `Vec` or `Map`": there is no such `collect`, so that particular argument for associated types is withdrawn.
+
+**Why `to_map` overwrites instead of erroring.** Duplicate keys are the normal case for the pattern this serves — indexing a list by some field, where a later record supersedes an earlier one. An error type would put a `try` on a line whose failure mode nobody handles. `to_map` behaves like a loop of `insert`, which is what it replaces, and grouping (keeping every value) is a different operation that would need a different name if it ever earns one.
+
 **Why SequenceMut is separate.** One unified `Sequence<T, M>` with a mode parameter is possible but makes the signatures noisier without helping users — the two cases are used differently and rarely mixed. Two aliases keep each simple.
 
 **Re-consumption runs twice.** Rust's pull iterators solve this by consuming on use (the iterator is dropped after `.collect()`). Push sequences are function values — no consumption. The tradeoff is visibility: in exchange for simpler authoring, users see a footgun around side-effectful traversals. Documented, not eliminated.
@@ -424,6 +505,7 @@ The retired `Iterator<Item>` trait mapped to these patterns:
 |-----|-----|
 | `extend MyType with Iterator<T> { func next(...) }` | `public func iter(self) -> Sequence<T> { return \|yield\| { ... } }` |
 | `collection.iterate()` (returned `VecRefIterator<T>` etc.) | `collection.iter()` returns `Sequence<T>` |
+| `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
 | `.take_all()` returning consuming iterator struct | `.take_all()` returns `Sequence<T>` yielding owned items |
 | `pool.handles()` returning handle iterator | `pool.handles()` returns `Sequence<Handle<T>>` |
 | `iter.zip(other)` | Use indices: `for i in 0..min(a.len(), b.len())` |
