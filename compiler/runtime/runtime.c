@@ -76,6 +76,25 @@ void rask_exit(int64_t code) {
 // struct.targets/EX4: an error returned from main is a failed run — status 1.
 // A panic is 101 and goes through rask_panic instead. `msg` is optional; when
 // the error type has no message() there's nothing to print but the fact.
+// Debug aid: fill the stack region that later frames will occupy with a nonzero
+// pattern. A codegen path that reads a slot it never wrote sees 0 on a
+// freshly-mapped stack and looks correct, which is why such bugs only show up
+// after a program has run a while. Poisoning makes the read deterministic.
+// Opt-in via RASK_POISON_STACK; when off this costs one load.
+__attribute__((noinline)) void rask_poison_stack(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("RASK_POISON_STACK");
+        enabled = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (!enabled) {
+        return;
+    }
+    volatile unsigned char buf[192 * 1024];
+    memset((void *)buf, 0xAA, sizeof buf);
+    (void)buf[0];
+}
+
 _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     fflush(stdout);
     if (msg && rask_string_len(msg) > 0) {
@@ -1745,6 +1764,7 @@ int main(int argc, char **argv) {
         rask_runtime_checks_enabled = 1;
     }
     rask_args_init(argc, argv);
+    rask_poison_stack();
     rask_main();
     return 0;
 }

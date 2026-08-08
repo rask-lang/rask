@@ -401,6 +401,7 @@ static void *worker_entry(void *arg) {
     int my_id = wa->id;
     tl_worker_id = my_id;
     tl_rng_state = (uint32_t)(my_id + 1) * 2654435761U;
+    rask_poison_stack();
 
     int idle_spins = 0;
 
