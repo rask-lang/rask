@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write   # the failure reporter below opens/updates an issue
     steps:
     - uses: actions/checkout@v4
 
@@ -108,3 +109,28 @@ jobs:
         publish_branch: gh-pages
         enable_jekyll: false
         force_orphan: true
+
+    # This workflow only runs on push to main, so its failures can't fail a PR —
+    # which is how it stayed red for 30 consecutive runs without anyone noticing
+    # (#622). Opening an issue costs nothing on a green run: the step is skipped.
+    # It reuses one issue rather than filing a new one per failed push.
+    - name: Report deploy failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = 'Docs deploy is failing'
+          const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+          const body = `Deploy failed on \`${context.sha.slice(0, 8)}\`.\n\n${url}\n\nThe site is serving whatever last deployed successfully until this is fixed.`
+          const { data: found } = await github.rest.search.issuesAndPullRequests({
+            q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "${title}"`,
+          })
+          if (found.total_count > 0) {
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: found.items[0].number, body,
+            })
+          } else {
+            await github.rest.issues.create({
+              ...context.repo, title, body,
+            })
+          }

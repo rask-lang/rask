@@ -8,8 +8,20 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Two jobs that run concurrently. The split is by what the gate needs, not by
+# balancing the clock: `backends` runs the things that execute Rask programs on
+# both backends, `checks` runs the Rust tests and the static/snippet gates.
+#
+# Both build the compiler themselves (~1min on a warm cache) rather than passing
+# it as an artifact — cargo test needs the whole target dir anyway, so an
+# artifact would save nothing there and only add upload/download latency.
+#
+# Within a job every gate keeps its `!cancelled()` guard, so one failing gate
+# never masks the others and each run still reports the full matrix.
+
 jobs:
-  test:
+  backends:
+    name: backends (execution gates)
     runs-on: ubuntu-latest
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
@@ -28,13 +40,11 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           compiler/target/
-        key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-backends-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-backends-
 
     # Build steps are hard prerequisites: if either fails, the gates below are
-    # skipped (nothing can run without the binary). Everything AFTER the build
-    # runs on `!cancelled() && builds succeeded`, so a failure in ONE gate never
-    # skips the others — every run reports the full matrix, and the job still
-    # fails if any gate failed.
+    # skipped (nothing can run without the binary).
     - name: Build C runtime
       id: runtime
       run: make -C compiler/runtime
@@ -48,8 +58,7 @@ jobs:
     # fails on any UNTRACKED interp/native divergence. Tracked bugs/pending
     # features live in tests/known_divergences.txt + tests/pending_features.txt.
     # This is the native-execution gate; it subsumes a bare `rask test
-    # tests/suite/` and additionally checks parity. Binary-only — independent of
-    # cargo test, so it runs even if cargo test fails.
+    # tests/suite/` and additionally checks parity.
     - name: Differential harness (interp vs native)
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/differential.sh
@@ -67,6 +76,42 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask build examples/validation --release
 
+  checks:
+    name: checks (rust tests + snippets)
+    runs-on: ubuntu-latest
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-checks-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-checks-
+
+    # The snippet gates compile and RUN their `test: run` blocks natively, so
+    # this job needs the C runtime too.
+    - name: Build C runtime
+      id: runtime
+      run: make -C compiler/runtime
+
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
@@ -78,18 +123,18 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs docs/ README.md
 
+    # The playground's wasm build. Nothing here compiled for wasm32, so a
+    # cfg-gated stdlib module could lose its callers' guards and only break in
+    # the deploy workflow — which is how docs deploys stayed red for 30
+    # consecutive runs (#622). `check` not `build`: enough to catch it, cheap.
+    - name: Wasm target builds
+      if: ${{ !cancelled() }}
+      run: cargo check -p rask-wasm --target wasm32-unknown-unknown
+      working-directory: compiler
+
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
-    # compile+run golden fixtures). Runs last and independently: a failure here
-    # no longer skips the gates above.
+    # compile+run golden fixtures).
     - name: cargo test
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: cargo test --release
       working-directory: compiler
-
-    # Informational: raw native suite run. Non-blocking (continue-on-error)
-    # because ~16 suite files have tracked divergences; the harness above is the
-    # blocking parity gate. Surfaces the raw native pass/fail count in the log.
-    - name: Native suite run (informational)
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      continue-on-error: true
-      run: ./compiler/target/release/rask test tests/suite/

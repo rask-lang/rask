@@ -285,12 +285,19 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 self.call_output_instance_method(&guard.fields, method)
             }
+            // The stdlib `io` module is compiled out on wasm, and it owns both
+            // these handlers and the `io.stdout()`/`stdin()`/`stderr()` calls
+            // that produce these structs — so on wasm these arms are dead as
+            // well as unbuildable.
+            #[cfg(not(target_arch = "wasm32"))]
             Value::Struct(ref s) if s.lock().unwrap().name == "Stdin" => {
                 self.call_stdin_method(method, args)
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Value::Struct(ref s) if s.lock().unwrap().name == "Stdout" => {
                 self.call_stdout_method(method, args)
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Value::Struct(ref s) if s.lock().unwrap().name == "Stderr" => {
                 self.call_stderr_method(method, args)
             }
