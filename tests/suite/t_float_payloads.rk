@@ -133,6 +133,51 @@ test "stdlib.collections — f64 Map values round-trip" {
     }
 }
 
+// One storage rule now covers every 8-byte slot in the language: a float lives
+// there as an f64, whatever its declared width. Struct fields already did this;
+// collections and Option/Result payloads were brought into line. These cases
+// cross between the three, so they only pass while all three agree.
+struct Holder {
+    small: f32
+    big: f64
+}
+
+test "type.optionals — an f32 struct field survives a trip through an optional" {
+    let h = Holder { small: 0.5, big: 4.25 }
+    let small: f32? = h.small
+    let big: f64? = h.big
+    if small? as v {
+        assert v == 0.5
+    } else {
+        assert false
+    }
+    if big? as v {
+        assert v == 4.25
+    } else {
+        assert false
+    }
+}
+
+test "stdlib.collections — an f32 field into a Vec and back" {
+    let h = Holder { small: 0.5, big: 4.25 }
+    mut v: Vec<f32> = Vec.new()
+    v.push(h.small)
+    v.push(2.5)
+    assert v[0] == 0.5
+    assert v[1] == 2.5
+}
+
+test "mem.boxes — a float through a Cell keeps its value" {
+    let cell = Cell.new(3.5)
+    with cell as v {
+        assert v == 3.5
+    }
+    let small = Cell.new(0.5)
+    with small as v {
+        assert v == 0.5
+    }
+}
+
 // The integer and aggregate payloads that already worked — the float fix widened
 // the shared payload path, so these guard against trading one break for another.
 test "type.optionals — integer and bool payloads are unaffected" {

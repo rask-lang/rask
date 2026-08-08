@@ -3325,9 +3325,25 @@ impl<'a> FunctionBuilder<'a> {
                     let payload_addr = builder.ins().iadd_imm(base_val, crate::layouts::PAYLOAD_OFFSET as i64);
                     return Ok(payload_addr);
                 }
+                // Read at the slot's storage width, not the payload's declared
+                // one: an f32 payload is stored as an f64, so a 4-byte load here
+                // would take the double's zero low half. The narrowing tail below
+                // demotes it back, the same way a struct's f32 field is read.
+                if let Some(storage) = Self::slot_storage_type(inner.as_ref()) {
+                    load_ty = storage;
+                }
                 crate::layouts::PAYLOAD_OFFSET + (*field_index * 8) as i32
             }
             Some(MirType::Result { ok, err }) => {
+                // Same storage rule as an Option payload: a scalar float sits in
+                // the slot as an f64, so read it at that width and let the
+                // narrowing tail demote. Only the ok side can be a float here —
+                // an error type is a nominal enum or struct.
+                let payload_storage = Self::slot_storage_type(ok.as_ref())
+                    .filter(|t| t.is_float());
+                if let Some(storage) = payload_storage {
+                    load_ty = storage;
+                }
                 // Use explicit byte_offset when provided (e.g., origin field reads)
                 if let Some(off) = byte_offset {
                     // A payload read still hands back the address when the
@@ -3357,8 +3373,16 @@ impl<'a> FunctionBuilder<'a> {
                         // Without this, convert_value would truncate the address to I32.
                         if let Some(exp) = expected_ty {
                             if exp != types::I64 {
-                                let loaded = builder.ins().load(exp, MemFlags::new(), payload_addr, 0);
-                                return Ok(loaded);
+                                // Load at the slot's storage width, then narrow to
+                                // what the caller asked for — an f32 read straight
+                                // at 4 bytes would take the stored double's zero
+                                // low half.
+                                let width = payload_storage.unwrap_or(exp);
+                                let loaded =
+                                    builder.ins().load(width, MemFlags::new(), payload_addr, 0);
+                                return Ok(Self::convert_value(
+                                    builder, loaded, width, exp, None,
+                                ));
                             }
                         }
                         return Ok(payload_addr);
@@ -3973,26 +3997,15 @@ impl<'a> FunctionBuilder<'a> {
                         // non-NULL path: Some(payload copied from ptr)
                         builder.switch_to_block(else_block);
                         builder.seal_block(else_block);
-                        // A scalar float payload is loaded, not byte-copied: the
-                        // runtime slot holds a float as f64 (`value_to_ptr`) while
-                        // an Option payload is read at the payload's own width, so
-                        // copying the bytes handed an f32 read the double's zero
-                        // low half — `m.get(k)` on a `Map<K, f32>` answered 0 for
-                        // every hit (#629).
-                        let scalar_float = dst_local.and_then(|l| match &l.ty {
-                            MirType::Option(inner) if !Self::is_boxed_payload(inner) => {
-                                mir_to_cranelift_type(inner).ok().filter(|t| t.is_float())
-                            }
-                            _ => None,
-                        });
-                        if let Some(want) = scalar_float {
-                            let payload = Self::load_scalar_slot(builder, ptr, want);
-                            Self::build_some(builder, *ss, payload);
-                        } else {
-                            let payload_size =
-                                *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
-                            Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
-                        }
+                        // A plain byte copy is right for every payload now that the
+                        // runtime slot and the Option payload agree on width: both
+                        // hold a float as f64. This used to need a load-and-demote
+                        // special case for f32, because the two sides disagreed and
+                        // the copy handed an f32 read the stored double's zero low
+                        // half — `m.get(k)` on a `Map<K, f32>` answered 0 for every
+                        // hit (#629).
+                        let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
+                        Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -4955,7 +4968,26 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(None);
         }
         let ty = mir_to_cranelift_type(inner)?;
-        Ok(Some(if ty.is_float() { ty } else { types::I64 }))
+        Ok(Some(if ty.is_float() { types::F64 } else { types::I64 }))
+    }
+
+    /// The Cranelift type an 8-byte storage slot holds a scalar as.
+    ///
+    /// One rule for every slot in the language: **a float lives in an 8-byte slot
+    /// as an f64**, integers as a full-width integer. Struct fields already did
+    /// this, collections were made to (#621/#629), and Option/Result payloads
+    /// joined them rather than staying a third convention. `None` for anything
+    /// that isn't a scalar — those live at their own address.
+    ///
+    /// Reads go through here too, so the write width and the read width can't
+    /// drift: that drift is exactly what made `v.push(2.5)` on a `Vec<f32>` store
+    /// 8 bytes and read back 4.
+    fn slot_storage_type(inner: &MirType) -> Option<Type> {
+        if Self::is_boxed_payload(inner) {
+            return None;
+        }
+        let ty = mir_to_cranelift_type(inner).ok()?;
+        Some(if ty.is_float() { types::F64 } else { ty })
     }
 
     /// How many optional layers a MIR type carries.
