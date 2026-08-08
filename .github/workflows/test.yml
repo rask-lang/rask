@@ -172,6 +172,27 @@ jobs:
     # The other half of the trade is the point: debug turns on integer
     # overflow checks and `debug_assert!`. Nothing fires today, so this costs
     # no red CI now and catches the next arithmetic bug for free.
+    #
+    # What dropping --release here does NOT give up, checked rather than
+    # assumed:
+    #   - Rask's generated code is identical either way. Cranelift is pinned to
+    #     opt_level "speed" unconditionally (codegen/module.rs:56,95), not
+    #     derived from how rask itself was built, so the codegen tests assert
+    #     the same machine code in both profiles.
+    #   - Profile-divergent Rust: one `cfg!(debug_assertions)` in the whole
+    #     tree (codegen/dispatch.rs) and it's a debug-ONLY duplicate-key
+    #     diagnostic — debug is the stricter side of that branch, not the
+    #     weaker one.
+    #   - Optimization-exposed UB: two `unsafe` sites in the tree, both signal
+    #     and fd handling in interp/stdlib/os.rs, which these tests don't
+    #     reach in either profile.
+    #   - Timing flakes: no sleeps, timeouts or duration assertions in tests.
+    #
+    # And the release build is still exercised hard every run — the gates job
+    # builds rask with --release and pushes ~360 program compilations through
+    # it (differential 158x2, examples 20x2, plus snippets and the flagship
+    # package). What's left uncovered is a rustc miscompile of safe Rust,
+    # which isn't worth ~3m30 on every run to chase.
     - name: cargo test
       run: cargo test
       working-directory: compiler
