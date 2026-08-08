@@ -86,6 +86,8 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
 pub(super) fn cond_binds_pattern(cond: &Expr) -> bool {
     match &cond.kind {
         ExprKind::IsPattern { .. } => true,
+        // OPT19: `expr? as v` binds too — a bare `expr?` with no binder doesn't.
+        ExprKind::IsPresent { binding: Some(_), .. } => true,
         ExprKind::Binary { op: BinOp::And, left, right } => {
             cond_binds_pattern(left) || cond_binds_pattern(right)
         }
@@ -301,6 +303,23 @@ impl Interpreter {
                     }
                     None => Ok(false),
                 }
+            }
+            // OPT19: `expr? as v` — present means bind the payload and take the
+            // branch; absent (or an error) means don't.
+            ExprKind::IsPresent { expr: inner, binding: Some(name) } => {
+                let value = self.eval_expr(inner)?;
+                let (present, payload) = match &value {
+                    Value::Enum { variant, fields, .. } => (
+                        matches!(variant.as_str(), "Some" | "Ok"),
+                        fields.first().cloned().unwrap_or(Value::Unit),
+                    ),
+                    // A niche-encoded optional arrives as the payload itself.
+                    other => (true, other.clone()),
+                };
+                if present {
+                    self.env.define(name.clone(), payload);
+                }
+                Ok(present)
             }
             _ => {
                 let value = self.eval_expr(cond)?;

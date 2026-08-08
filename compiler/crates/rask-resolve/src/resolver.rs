@@ -1761,6 +1761,21 @@ impl Resolver {
             StmtKind::While { label, cond, body } => {
                 self.resolve_expr(cond);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
+                // OPT19 on a loop: `while expr? as v` binds the payload for the
+                // body, re-read each iteration. Same binder the `If` arm defines,
+                // scoped to the loop instead of a then-branch.
+                if let ExprKind::IsPresent { binding: Some(name), .. } = &cond.kind {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        Span::new(0, 0),
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                        self.errors.push(e);
+                    }
+                }
                 for s in body {
                     self.resolve_stmt(s);
                 }

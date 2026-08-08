@@ -252,6 +252,12 @@ impl TypeChecker {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));
                 self.push_scope();
+                // OPT19 on a loop: `while expr? as v` binds the payload for the
+                // body. The test narrows nothing — this is a binding, re-read
+                // once per iteration, exactly as in the `if` form.
+                if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
+                    self.define_local_const(name, payload_ty);
+                }
                 for s in body {
                     self.check_stmt(s);
                 }

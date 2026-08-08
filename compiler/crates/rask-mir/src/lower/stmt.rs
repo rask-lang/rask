@@ -1368,15 +1368,55 @@ impl<'a> MirLowerer<'a> {
             target: check_block,
         }));
 
+        // OPT19 on a loop: `while <expr>? as v` reads the scrutinee once per
+        // iteration in the check block and rebinds the payload at the top of the
+        // body — the same two-part shape `while <expr> is <T> as v` lowers to.
+        // A bare `while <expr>?` with no binder needs none of this; the plain
+        // path already lowers the test to a bool.
+        let presence = match &cond.kind {
+            ExprKind::IsPresent { expr: inner, binding: Some(name) } => Some((inner, name.clone())),
+            _ => None,
+        };
+
         self.builder.switch_to_block(check_block);
-        let (cond_op, _) = self.lower_expr(cond)?;
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: cond_op,
-            then_block: body_block,
-            else_block: exit_block,
-        }));
+        let bind_in_body = match presence {
+            Some((inner, name)) => {
+                let (val, scrutinee_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &scrutinee_ty);
+                let tag = self.emit_option_tag(&val, is_niche);
+                // Tag 0 is present (Some/Ok); anything else ends the loop.
+                let is_present = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: is_present,
+                    rvalue: MirRValue::BinaryOp {
+                        op: BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(0)),
+                    },
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_present),
+                    then_block: body_block,
+                    else_block: exit_block,
+                }));
+                let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
+                Some((name, val, payload_ty, is_niche))
+            }
+            None => {
+                let (cond_op, _) = self.lower_expr(cond)?;
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: cond_op,
+                    then_block: body_block,
+                    else_block: exit_block,
+                }));
+                None
+            }
+        };
 
         self.builder.switch_to_block(body_block);
+        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
+            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
+        }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
