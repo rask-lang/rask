@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #577: the success exit of a `void or E` function is a bare `return`, and the
+// inliner used to paste that body in without assigning anything to the caller's
+// result slot. The `try` then branched on leftover stack — Ok while the stack
+// happened to be zeroed, a spurious error carrying a payload nobody wrote once
+// it wasn't. That made a working server die roughly 40% of the time, always
+// after enough requests had dirtied the stack.
+//
+// The tag itself is asserted in rask-mir (transform::inline::tests::
+// bare_return_writes_ok_tag); this one keeps the end-to-end shape honest on
+// both backends — the widening `try`, the void success side, and the error
+// side still reaching its message.
+
+enum ValidationError {
+    Empty(string)
+    TooLong(string, usize)
+    BadEnum(string, string)
+}
+
+extend ValidationError with ErrorMessage {
+    func message(self) -> string {
+        match self {
+            Empty(field)          => return "{field} must not be empty",
+            TooLong(field, max)   => return "{field} exceeds {max} characters",
+            BadEnum(field, value) => return "{value} is not a valid {field}",
+        }
+    }
+}
+
+enum ApiError {
+    Validation(ValidationError)
+    BadRequest(string)
+}
+
+extend ApiError with ErrorMessage {
+    func message(self) -> string {
+        match self {
+            Validation(e) => return e.message(),
+            BadRequest(m) => return "bad request: {m}",
+        }
+    }
+}
+
+// void success side, reached by a bare `return`.
+func check_len(field: string, value: string, max: usize) -> void or ValidationError {
+    if value.is_empty() { return ValidationError.Empty(field) }
+    if value.len() > max { return ValidationError.TooLong(field, max) }
+    return
+}
+
+// Also a bare `return`, one level up — this is the body that gets inlined.
+func validate(title: string) -> void or ValidationError {
+    try check_len("title", title, 12)
+    return
+}
+
+// `try` widens ValidationError into ApiError here.
+func handle(title: string) -> i64 or ApiError {
+    try validate(title)
+    return 7
+}
+
+func describe(title: string) -> string {
+    let n = handle(title) catch e => return e.message()
+    return "ok {n}"
+}
+
+test "type.errors — a void success side survives the widening try" {
+    assert describe("task") == "ok 7"
+}
+
+test "type.errors — the error side still reaches its message" {
+    assert describe("") == "title must not be empty"
+    assert describe("a title that runs well past the limit") == "title exceeds 12 characters"
+}
+
+// The success path taken many times over: the old bug only showed once earlier
+// calls had left something non-zero where the result slot lands.
+test "type.errors — repeated success calls stay on the ok side" {
+    mut seen = 0
+    for i in 0..64 {
+        if describe("task") == "ok 7" { seen = seen + 1 }
+        let _ = describe("")
+    }
+    assert seen == 64
+}
