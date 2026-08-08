@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// is_ok/is_err on `T or E` and is_some/is_none on `T?` (#482).
+// Failure and absence tests on the two wrapper shapes (#482, #599).
 
 struct LoadError { detail: string }
 
@@ -23,30 +23,30 @@ func lookup(found: bool) -> i32? {
     return none
 }
 
-test "is_err on the error side" {
+test "the error side answers to its own type" {
     let r = load(true)
-    assert r.is_err()
-    assert r.is_ok() == false
+    assert r is LoadError
+    assert (r is i32) == false
 }
 
-test "is_ok on the value side" {
+test "the value side does too" {
     let r = load(false)
-    assert r.is_ok()
-    assert r.is_err() == false
+    assert r is i32
+    assert (r is LoadError) == false
 }
 
-test "predicates on a string payload" {
+test "the test reads as a condition" {
     let r = load(true)
-    if r.is_err() {
+    if r is LoadError {
         assert true
     } else {
         assert false
     }
 }
 
-test "is_some and is_none" {
-    assert lookup(true).is_some()
-    assert lookup(false).is_none()
-    assert lookup(true).is_none() == false
-    assert lookup(false).is_some() == false
+test "presence and absence" {
+    assert lookup(true)?
+    assert lookup(false) is none
+    assert (lookup(true) is none) == false
+    assert lookup(false)? == false
 }

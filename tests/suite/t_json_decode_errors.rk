@@ -16,7 +16,7 @@ struct User {
 
 /// The error text, or "OK" when the decode succeeded.
 func failure(body: string) -> string {
-    let u = try json.decode<User>(body) else |e| {
+    let u = json.decode<User>(body) catch e => {
         return e.message()
     }
     return "OK"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// #482: is_ok/is_err on `T or E` and is_some/is_none on `T?`.
-// These type-checked but had no codegen — native died on
-// `Function not found: Result_is_err`.
+// The predicates the wrappers used to carry are operators now: `x?` for
+// presence, `x is none` for absence, `r is E` for failure (#599). This file
+// keeps #482's coverage — the shapes had no codegen at all back then.
 
 struct MyErr { detail: string }
 
@@ -19,30 +19,28 @@ func find(hit: bool) -> i64? {
     return none
 }
 
-test "is_err and is_ok on a result" {
+test "testing a result's error side" {
     let bad = load(true)
-    assert bad.is_err()
-    assert bad.is_ok() == false
+    assert bad is MyErr
 
     let good = load(false)
-    assert good.is_ok()
-    assert good.is_err() == false
+    assert (good is MyErr) == false
 }
 
-test "is_some and is_none on an optional" {
+test "presence and absence on an optional" {
     let present = find(true)
-    assert present.is_some()
-    assert present.is_none() == false
+    assert present?
+    assert (present is none) == false
 
     let absent = find(false)
-    assert absent.is_none()
-    assert absent.is_some() == false
+    assert absent is none
+    assert absent? == false
 }
 
-test "predicates compose in conditions" {
+test "tests compose in conditions" {
     let r = load(true)
     mut seen = 0
-    if r.is_err() { seen = seen + 1 }
-    if r.is_ok() { seen = seen + 10 }
+    if r is MyErr { seen = seen + 1 }
+    if r is i32 { seen = seen + 10 }
     assert seen == 1
 }

@@ -56,8 +56,8 @@ enum ConfigError {
 }
 
 func load_config_v1(path: string) -> Config or ConfigError {
-    let content = try read_file(path).map_err(|e| ConfigError.Io(e))
-    let config = try parse_config(content).map_err(|e| ConfigError.Parse(e))
+    let content = read_file(path) catch e => return ConfigError.Io(e)
+    let config = parse_config(content) catch e => return ConfigError.Parse(e)
     return config
 }
 

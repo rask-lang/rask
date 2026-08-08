@@ -146,11 +146,6 @@ impl TypeChecker {
         None
     }
 
-    /// Check if a local variable is read-only (const binding or default parameter).
-    pub(super) fn is_local_read_only(&self, name: &str) -> bool {
-        self.lookup_binding_kind(name).map_or(false, |k| k.is_read_only())
-    }
-
     /// Extract the root identifier name from an assignment target expression.
     pub(super) fn root_ident_name(expr: &Expr) -> Option<String> {
         match &expr.kind {

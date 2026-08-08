@@ -97,6 +97,8 @@ pub struct Interpreter {
     /// ER31a: `try` sites whose error the checker decided to wrap in a variant
     /// of the enclosing function's error enum, keyed by the `try` expression.
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
+    /// ER14a: `??` sites that keep the optional shape instead of unwrapping.
+    pub(crate) fallback_keeps_shape: std::collections::HashSet<rask_ast::NodeId>,
     /// Final values of `mutate` parameters from the most recent user-function
     /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
     /// this to write each value back to its argument place. Cleared before every
@@ -128,6 +130,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
         }
     }
@@ -146,6 +149,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
             build_state: None,
             source_info: None,
             mutate_writebacks: Vec::new(),
@@ -170,6 +174,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
         };
         (interp, buffer)
@@ -211,6 +216,15 @@ impl Interpreter {
         self.error_wraps = wraps;
     }
 
+    /// ER14a: supply the `??` sites whose right side is still wrapped, so a
+    /// present left operand is handed back with its layer intact.
+    pub fn set_fallback_keeps_shape(
+        &mut self,
+        sites: std::collections::HashSet<rask_ast::NodeId>,
+    ) {
+        self.fallback_keeps_shape = sites;
+    }
+
     pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
         let mut fields = IndexMap::new();
         fields.insert("os".to_string(), Value::String(Arc::new(Mutex::new(cfg.os.clone()))));
@@ -237,6 +251,7 @@ impl Interpreter {
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.error_wraps = self.error_wraps.clone();
+        child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);
         }

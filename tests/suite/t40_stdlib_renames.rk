@@ -66,7 +66,7 @@ test "fs write_text / append_text / read_text round-trip" {
     let path = "/tmp/rask_t40_fs.txt"
     let _ = fs.write_text(path, "hello\n")
     let _ = fs.append_text(path, "world\n")
-    let content = fs.read_text(path) ?? "READ_FAILED"
+    let content = fs.read_text(path) catch _ => "READ_FAILED"
     assert content == "hello\nworld\n"
     assert content.len() == 12
 }
@@ -76,7 +76,7 @@ test "fs write_text / append_text / read_text round-trip" {
 test "time.sleep returns void or SysError" {
     // A tiny sleep must succeed; the point is the void-or-SysError result shape.
     let r = time.sleep(Duration.millis(1))
-    assert r?
+    assert (r is SysError) == false
 }
 
 // --- Channel.receive (blocking; was recv) ---

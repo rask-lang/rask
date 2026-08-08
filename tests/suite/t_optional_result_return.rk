@@ -39,11 +39,11 @@ func failing() -> Row? or Fault {
 }
 
 func lookup(which: i64) -> string or Fault {
-    let row = try if which == 0 { absent() } else { present(which) }
-    if row? as r {
-        return "row {r.id}"
-    }
-    return "not found"
+    // ER47: the operand can fail *and* be absent, so the line says which is
+    // which — `try` sends the error up, `??` handles the absence here.
+    let source = if which == 0 { absent() } else { present(which) }
+    let r = try source ?? return "not found"
+    return "row {r.id}"
 }
 
 test "none is the success branch, not an error" {
@@ -56,10 +56,11 @@ test "a bare value fills the present side" {
 
 test "the error branch still works" {
     let r = failing()
-    assert (r? == false)
+    assert r is Fault
 }
 
 test "a value survives the round trip" {
     let p = present(3)
-    assert p?
+    assert (p is Fault) == false
+    assert (p is none) == false
 }

@@ -22,7 +22,7 @@ test "present value auto-wraps" {
 
 test "none construction" {
     let x: i32? = none
-    assert x == none
+    assert x is none
 }
 
 test "force unwrap present" {
@@ -41,7 +41,7 @@ test "is Some with binding" {
 
 test "is None" {
     let x: i32? = none
-    assert x == none
+    assert x is none
     if x? {
         assert false, "expected none"
     }
@@ -50,7 +50,7 @@ test "is None" {
 test "optional from function" {
     assert safe_div(10, 2)?
     assert safe_div(10, 2)! == 5
-    assert safe_div(10, 0) == none
+    assert safe_div(10, 0) is none
 }
 
 test "optional with Vec" {
@@ -64,7 +64,7 @@ test "optional with Vec" {
     assert found! == 20
 
     let not_found = find(v, 99)
-    assert not_found == none
+    assert not_found is none
 }
 
 func main() {}

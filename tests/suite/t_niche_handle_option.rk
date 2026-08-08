@@ -44,10 +44,10 @@ test "a handle option compares against none through a binding" {
     let idx = Index.new()
     let hit = idx.by_id.get(1)
     let miss = idx.by_id.get(99)
-    assert hit != none
-    assert !(hit == none)
-    assert miss == none
-    assert !(miss != none)
+    assert hit?
+    assert !(hit is none)
+    assert miss is none
+    assert miss is none
 }
 
 test "`??` on a missed lookup falls through to the default" {
@@ -63,7 +63,7 @@ test "a handle option built directly still compares the same way" {
     mut pool = Pool<Task>.new()
     let h = pool.insert(Task { title: "direct", done: true })
     let direct: Handle<Task>? = h
-    assert direct != none
+    assert direct?
     let empty: Handle<Task>? = none
-    assert empty == none
+    assert empty is none
 }

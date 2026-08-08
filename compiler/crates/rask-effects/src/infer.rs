@@ -371,11 +371,12 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
                 classify_expr(&arm.body, effects, callees);
             }
         }
-        ExprKind::Try { expr: e, else_clause } => {
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => {
             classify_expr(e, effects, callees);
-            if let Some(ec) = else_clause {
-                classify_expr(&ec.body, effects, callees);
-            }
+        }
+        ExprKind::Catch { value, clause } => {
+            classify_expr(value, effects, callees);
+            classify_expr(&clause.body, effects, callees);
         }
         ExprKind::IsPresent { expr: e, .. } => {
             classify_expr(e, effects, callees);
@@ -598,10 +599,9 @@ fn rt_scan_expr(expr: &Expr, depth: u32, unguarded: &mut HashSet<String>) -> boo
             }
             r
         }
-        ExprKind::Try { expr: e, else_clause } => {
-            let mut r = rt_scan_expr(e, depth, unguarded);
-            if let Some(ec) = else_clause { r |= rt_scan_expr(&ec.body, depth, unguarded); }
-            r
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => rt_scan_expr(e, depth, unguarded),
+        ExprKind::Catch { value, clause } => {
+            rt_scan_expr(value, depth, unguarded) | rt_scan_expr(&clause.body, depth, unguarded)
         }
         ExprKind::NullCoalesce { value, default } => {
             rt_scan_expr(value, depth, unguarded) | rt_scan_expr(default, depth, unguarded)

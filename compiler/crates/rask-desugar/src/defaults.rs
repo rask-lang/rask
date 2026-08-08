@@ -463,11 +463,10 @@ impl DefaultDesugarer {
                     self.desugar_expr(&mut arm.body);
                 }
             }
-            ExprKind::Try { expr: e, ref mut else_clause } => {
-                self.desugar_expr(e);
-                if let Some(ec) = else_clause {
-                    self.desugar_expr(&mut ec.body);
-                }
+            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => self.desugar_expr(e),
+            ExprKind::Catch { value, ref mut clause } => {
+                self.desugar_expr(value);
+                self.desugar_expr(&mut clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => {
                 self.desugar_expr(e);

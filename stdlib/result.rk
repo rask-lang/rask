@@ -4,40 +4,23 @@
 ///
 /// `T or E` is a builtin sum type: a success value of type `T` or an error
 /// of type `E`. There are no `Ok`/`Err` constructors — bare values auto-wrap
-/// to the correct branch at return, picked by the value's type (see spec
-/// type.errors/ER9). Disjointness rule: T ≠ E.
+/// to the correct branch at return, picked by the value's type
+/// (type.errors/ER9). Disjointness rule: T ≠ E.
 ///
 /// Every `E` must implement `ErrorMessage` (structural trait requiring
-/// `message(self) -> string`; see spec type.errors/ER4-6).
+/// `message(self) -> string`; type.errors/ER4-6).
+///
+/// It has **no methods**. The operator surface is the whole API:
+///
+///     r is E as e          did it fail, and with what?   [ER23]
+///     try r                or leave, error unchanged     [ER16]
+///     r catch e => v       handle it, naming the error   [ER14]
+///     r catch _ => v       handle it, dropping it visibly
+///     r catch e => return f(e)   transform and leave
+///     r catch _ => none    drop the error, keep a `T?`
+///     r!                   or panic
+///     match r { … }        when there are more than two outcomes
+///
+/// An error is never dropped without the source saying so — that's why
+/// `catch`'s binder is mandatory and there is no bare-value form.
 public enum Result<T, E> { }
-
-extend Result<T, E> {
-    /// True if the result is a success.
-    public func is_ok(self) -> bool { }
-
-    /// True if the result is an error.
-    public func is_err(self) -> bool { }
-
-    /// Extract the success value, panicking on error.
-    public func unwrap(self) -> T { }
-
-    /// Extract the error, panicking on success.
-    @unimplemented
-    public func unwrap_err(self) -> E { }
-
-    /// Return the success value or `default` on error.
-    public func unwrap_or(self, default: T) -> T { }
-
-    /// Transform the success value; error propagates unchanged.
-    public func map(self, f: func(T) -> U) -> U or E { }
-
-    /// Translate the error; success propagates unchanged.
-    public func map_err(self, f: func(E) -> F) -> T or F { }
-
-    /// Transform the success value, flattening nested Results.
-    @unimplemented
-    public func and_then(self, f: func(T) -> U or E) -> U or E { }
-
-    /// Drop the error and lift to Option.
-    public func ok(self) -> T? { }
-}

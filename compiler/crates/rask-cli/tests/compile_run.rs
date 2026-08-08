@@ -806,7 +806,7 @@ fn error_ambiguous_error_wrap() {
     assert!(failed, "two variants wrapping the same error must be rejected: {}", out);
     assert!(
         out.contains("E0359") && out.contains("`Store` and `Fatal`")
-            && out.contains("else |e| ApiError.Store(e)"),
+            && out.contains("catch e => return ApiError.Store(e)"),
         "should name both candidates and how to choose: {}", out,
     );
 }
@@ -2208,7 +2208,7 @@ func run() -> string or StoreError {
 }
 
 func main() {
-    let s = try run() else |_e| { println("recovered"); return }
+    let s = run() catch _e => { println("recovered"); return }
     println(s)
 }
 "#),
@@ -2272,7 +2272,7 @@ func handle(id: u64) -> View or ApiError {
 
 func main() {
     // Error side: a deep read of the wrapped payload used to trap.
-    let bad = try handle(999) else |e| {
+    let bad = handle(999) catch e => {
         println("code={code(e)}")
         println("message={e.message()}")
         ok_side()
@@ -2282,7 +2282,7 @@ func main() {
 }
 
 func ok_side() {
-    let v = try handle(3) else |_e| { println("unexpected error"); return }
+    let v = handle(3) catch _e => { println("unexpected error"); return }
     println("ok={v.id}")
 }
 "#),

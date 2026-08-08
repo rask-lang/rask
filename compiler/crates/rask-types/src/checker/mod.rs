@@ -138,6 +138,13 @@ pub struct TypeChecker {
     /// target error enum could wrap it. Settled after constraint solving.
     /// (`try` node, source error, target error, span).
     pub(super) pending_try_errors: Vec<(NodeId, Type, Type, rask_ast::Span)>,
+    /// ER14a: `??` sites whose right side is still wrapped, so the whole
+    /// expression keeps the optional shape. Both backends read this to know
+    /// whether the present path yields the payload or the operand as-is.
+    pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
+    /// Only there may a `try` take a flat `T? or E` operand (ER47).
+    pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -213,6 +220,8 @@ impl TypeChecker {
             trait_coercions: HashMap::new(),
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
+            flat_try_sites: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             accumulate_errors: false,
@@ -399,6 +408,7 @@ impl TypeChecker {
 
         let trait_coercions = self.trait_coercions.clone();
         let error_wraps = self.error_wraps.clone();
+        let fallback_keeps_shape = self.fallback_keeps_shape.clone();
 
         let unsafe_ops = self.unsafe_ops;
 
@@ -432,6 +442,7 @@ impl TypeChecker {
             call_targets: self.call_targets,
             trait_coercions,
             error_wraps,
+            fallback_keeps_shape,
             unsafe_ops,
             span_types,
             channel_send_sites: self.channel_send_sites,

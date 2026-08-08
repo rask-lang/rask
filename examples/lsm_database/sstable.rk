@@ -92,8 +92,8 @@ func write_sstable(
         out.push_str("===\n")
     }
 
-    try fs.write_text(path, out)
-        else |e| SstError.WriteFailure("cannot write {path}: {e}")
+    fs.write_text(path, out)
+        catch e => return SstError.WriteFailure("cannot write {path}: {e}")
 
     let min_key = entries[0].key
     let max_key = entries[entries.len() - 1].key
@@ -112,8 +112,8 @@ func write_sstable(
 // ─── Read ───────────────────────────────────────────────────────────
 
 func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or SstError {
-    let content = try fs.read_text(path)
-        else |e| SstError.ReadFailure("cannot read {path}: {e}")
+    let content = fs.read_text(path)
+        catch e => return SstError.ReadFailure("cannot read {path}: {e}")
 
     let sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
     let data = content[sep_pos + 4..].to_string()
@@ -154,8 +154,8 @@ func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or Ss
 }
 
 func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
-    let content = try fs.read_text(path)
-        else |e| SstError.ReadFailure("cannot read index: {path}: {e}")
+    let content = fs.read_text(path)
+        catch e => return SstError.ReadFailure("cannot read index: {path}: {e}")
 
     mut index = Vec.new()
     for line in content.lines() {
@@ -180,8 +180,8 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
 }
 
 func read_sstable_bloom(path: string) -> BloomFilter or SstError {
-    let content = try fs.read_text(path)
-        else |e| SstError.ReadFailure("cannot read bloom: {path}: {e}")
+    let content = fs.read_text(path)
+        catch e => return SstError.ReadFailure("cannot read bloom: {path}: {e}")
 
     for line in content.lines() {
         let trimmed = line.trim()
@@ -195,8 +195,8 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
 }
 
 func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
-    let content = try fs.read_text(path)
-        else |e| SstError.ReadFailure("cannot read {path}: {e}")
+    let content = fs.read_text(path)
+        catch e => return SstError.ReadFailure("cannot read {path}: {e}")
 
     let sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
     let data = content[sep_pos + 4..].to_string()

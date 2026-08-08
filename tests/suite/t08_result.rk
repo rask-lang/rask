@@ -31,7 +31,7 @@ func chained(a: i32, b: i32, c: i32) -> i32 or DivError {
 
 test "Ok result" {
     let r = divide(10, 2)
-    assert r?
+    assert r is i32
     assert r! == 5
 }
 
@@ -50,7 +50,7 @@ test "match on result" {
 
 test "try propagation success" {
     let r = double_divide(10, 2)
-    assert r?
+    assert r is i32
     assert r! == 10
 }
 
@@ -61,7 +61,7 @@ test "try propagation failure" {
 
 test "chained try" {
     let r1 = chained(100, 2, 5)
-    assert r1?
+    assert r1 is i32
     assert r1! == 10
 
     let r2 = chained(100, 0, 5)

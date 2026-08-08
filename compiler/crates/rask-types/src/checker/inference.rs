@@ -55,6 +55,19 @@ pub enum TypeConstraint {
         ty_name: String,
         span: Span,
     },
+    /// ER14a: `value ?? default`. Which of the three cases applies depends on
+    /// the right side's shape, which often isn't known until a method-call
+    /// return type resolves — so the whole decision waits here.
+    Coalesce {
+        /// The `??` expression itself, so the settled case can be recorded
+        /// for the backends — a still-wrapped `??` yields the left operand
+        /// as-is, a collapsing one yields the payload.
+        node: NodeId,
+        value: Type,
+        default: Type,
+        result: Type,
+        span: Span,
+    },
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).

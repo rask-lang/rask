@@ -3,7 +3,9 @@
 
 // try_receive() returns `T or E`: Ok(value) when a value is ready, Err on
 // empty/closed. Native codegen used to leak the empty status as a present
-// value, so a drain loop never terminated (Track 1.6 follow-up).
+// value, so a drain loop never terminated (Track 1.6 follow-up). Sends are
+// bare here on purpose — a discarded `send()` currently double-sends (tracked
+// separately), which would skew the drained counts.
 
 test "try_receive drains an i64 channel then reports empty" {
     let (tx, rx) = Channel<i64>.buffered(8)
@@ -55,9 +57,9 @@ test "try_receive on an empty channel reports none-equivalent immediately" {
     assert n == 0
 }
 
-// A discarded send must still send exactly once. Native codegen used to lower
-// the receiver of the discard twice, sending every value twice (#349).
-test "a discarded send delivers the value exactly once" {
+// A discarded `send(x)` must send x exactly once. Native codegen used to
+// lower the receiver twice, sending every value twice (#349).
+test "a discarded send() sends the value exactly once" {
     let (tx, rx) = Channel<i64>.buffered(8)
     let _ = tx.send(1)
     let _ = tx.send(2)

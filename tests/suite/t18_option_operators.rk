@@ -12,10 +12,10 @@ func returns_none() -> i32? {
 
 test "none literal" {
     let x: i32? = none
-    assert x == none
+    assert x is none
 
     let y = returns_none()
-    assert y == none
+    assert y is none
 }
 
 // --- force unwrap x! (OPT14) ---
@@ -76,14 +76,14 @@ test "optional chaining present path" {
 test "optional chaining absent short-circuits" {
     let user = get_user(false)
     let name = user?.profile?.name
-    assert name == none
+    assert name is none
 }
 
 test "optional chaining on none field" {
     let p: Profile? = none
     let user: User? = User { profile: p }
     let name = user?.profile?.name
-    assert name == none
+    assert name is none
 }
 
 // --- auto-wrap T to T? (OPT5) ---
@@ -122,51 +122,56 @@ test "try on Option extracts" {
 
 test "try on Option propagates none" {
     let result = try_propagates_none()
-    assert result == none
+    assert result is none
 }
 
-// --- Option methods from spec ---
+// --- The wrapper has no methods; the bind does the work (#599) ---
 
-test "map on present" {
+test "transform the payload through the bind" {
     let x: i32? = 5
-    let y = x.map(|v| v * 2)
-    assert y! == 10
+    let y = if x? as v { v * 2 } else { 0 }
+    assert y == 10
 }
 
-test "map on absent" {
+test "an absent value never reaches the transform" {
     let x: i32? = none
-    let y = x.map(|v| v * 2)
-    assert y == none
+    let y = if x? as v { v * 2 } else { 0 }
+    assert y == 0
 }
 
-test "filter keeps matching" {
+test "a condition on the payload is an ordinary if" {
     let x: i32? = 10
-    let y = x.filter(|v| v > 5)
+    mut y: i32? = none
+    if x? as v {
+        if v > 5 { y = v }
+    }
     assert y! == 10
 }
 
-test "filter rejects non-matching" {
+test "and it rejects when the condition fails" {
     let x: i32? = 3
-    let y = x.filter(|v| v > 5)
-    assert y == none
+    mut y: i32? = none
+    if x? as v {
+        if v > 5 { y = v }
+    }
+    assert y is none
 }
 
-// --- is-patterns and narrowing (OPT19-OPT20) ---
+// --- Binding, not narrowing (OPT19) ---
 
-test "is Some with implicit narrowing" {
+test "the payload comes from the `as` bind" {
     let opt: i32? = 42
-    if opt? {
-        assert opt == 42
+    if opt? as v {
+        assert v == 42
     } else {
         assert false, "expected present"
     }
 }
 
-// Operator-form replacement for the old `match x { Some(v) => ..., None => ... }`.
-// Match on Option is rejected by the compiler; operator form is idiomatic.
+// Match on an optional is rejected; the operator form is the idiom.
 test "operator-form branch" {
     let x: i32? = 7
-    let result = if x? { x * 2 } else { 0 }
+    let result = if x? as v { v * 2 } else { 0 }
     assert result == 14
 }
 

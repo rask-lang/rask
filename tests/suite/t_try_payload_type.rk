@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `try expr` and `try expr else |e| …` on a struct-returning fallible call.
+// `try expr` and `expr catch e => …` on a struct-returning fallible call.
 //
 // Two sources know the ok payload type: the checker's type for the expression,
 // and the MIR type the inner expression lowered to. Either can come back as an
@@ -78,7 +78,7 @@ extend Store {
 
 // `try … else` widens the error and binds the payload.
 func check_via_else(store: Store, id: u64, want: string) -> void or ApiError {
-    let v = try store.view(id) else |e| e.to_api()
+    let v = store.view(id) catch e => return e.to_api()
     assert v.id == id
     assert v.title == want
     let encoded = json.encode(v)
@@ -109,10 +109,8 @@ test "type.errors — plain try keeps the payload's struct type too" {
 test "type.errors — a miss still takes the err path" {
     let store = Store.new()
     let missing = store.view(99)
-    let found = missing?
-    assert !found
+    assert missing is StoreError
 
     let hit = store.view(1)
-    let present = hit?
-    assert present
+    assert (hit is StoreError) == false
 }

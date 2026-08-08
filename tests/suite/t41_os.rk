@@ -27,5 +27,5 @@ test "os.env_vars lists the environment (was vars)" {
 test "os.env reads a single variable as an optional" {
     // Unlikely-to-exist var reads as absent; the point is the Option shape.
     let missing = os.env("RASK_DEFINITELY_NOT_SET_12345")
-    assert missing == none
+    assert missing is none
 }

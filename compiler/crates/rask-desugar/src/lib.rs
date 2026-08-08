@@ -460,11 +460,10 @@ impl Desugarer {
                     self.desugar_match_arm(arm);
                 }
             }
-            ExprKind::Try { expr: e, ref mut else_clause } => {
-                self.desugar_expr(e);
-                if let Some(ec) = else_clause {
-                    self.desugar_expr(&mut ec.body);
-                }
+            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => self.desugar_expr(e),
+            ExprKind::Catch { value, ref mut clause } => {
+                self.desugar_expr(value);
+                self.desugar_expr(&mut clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
             ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
@@ -578,6 +577,47 @@ impl Desugarer {
 
         // Then, transform operators if applicable
         let span = expr.span;
+
+        // `using Pool<T> { ... }` (and `using Pool<T>(cap) { ... }`) creates a
+        // fresh pool for the block and binds it to the lowercase name `pool`,
+        // so `pool.insert(...)` / `pool[h]` work with no separate `let`
+        // (mem.context-clauses/CC4, #269). Rewriting this here — instead of
+        // teaching the resolver and type checker a second, block-scoped
+        // binding mechanism — means it's exactly as if the user had written
+        // `mut pool = Pool<T>.new()` themselves, so every later pass (borrow
+        // checking, closures capturing `pool` for `spawn`, native codegen)
+        // already handles it. `Multitasking`/`ThreadPool` contexts are left
+        // alone; they install a runtime, not a value.
+        if matches!(&expr.kind, ExprKind::UsingBlock { name, .. } if base_type_name(name) == "Pool") {
+            let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
+            if let ExprKind::UsingBlock { name, args, mut body } = old {
+                let ctor_method = if args.is_empty() { "new" } else { "with_capacity" };
+                let pool_init = Expr {
+                    id: self.fresh_id(),
+                    kind: ExprKind::MethodCall {
+                        object: Box::new(Expr { id: self.fresh_id(), kind: ExprKind::Ident(name), span }),
+                        method: ctor_method.to_string(),
+                        type_args: None,
+                        args,
+                    },
+                    span,
+                };
+                let pool_stmt = Stmt {
+                    id: self.fresh_id(),
+                    kind: StmtKind::Mut {
+                        name: "pool".to_string(),
+                        name_span: span,
+                        ty: None,
+                        init: pool_init,
+                    },
+                    span,
+                };
+                let mut new_body = vec![pool_stmt];
+                new_body.append(&mut body);
+                expr.kind = ExprKind::Block(new_body);
+            }
+        }
+
         if matches!(&expr.kind, ExprKind::Binary { op, .. } if binary_op_method(*op).is_some()) {
             // Take ownership of the entire Binary node to avoid placeholder values
             let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
@@ -1120,6 +1160,11 @@ fn extract_message_attr_template(attr: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
+/// Strip generic args from a context-clause name: "Pool<Entity>" → "Pool".
+fn base_type_name(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name)
+}
+
 /// Map binary operators to method names (if they should be desugared).
 fn binary_op_method(op: BinOp) -> Option<&'static str> {
     match op {
@@ -1182,9 +1227,11 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
             offset_expr_spans(object, offset);
             offset_expr_spans(index, offset);
         }
-        ExprKind::Try { expr, else_clause } => {
-            offset_expr_spans(expr, offset);
-            if let Some(tc) = else_clause { offset_expr_spans(&mut tc.body, offset); }
+        ExprKind::Try { expr } => offset_expr_spans(expr, offset),
+        ExprKind::Take { place } => offset_expr_spans(place, offset),
+        ExprKind::Catch { value, clause } => {
+            offset_expr_spans(value, offset);
+            offset_expr_spans(&mut clause.body, offset);
         }
         ExprKind::IsPresent { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),

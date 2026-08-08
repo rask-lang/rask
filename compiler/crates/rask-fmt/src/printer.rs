@@ -1526,7 +1526,7 @@ impl<'a> Printer<'a> {
             ExprKind::If { cond, then_branch, else_branch, else_binding } => {
                 self.format_if_expr(cond, then_branch, else_branch, else_binding.as_deref());
             }
-            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding } => {
                 self.emit("if ");
                 self.format_expr(scrutinee);
                 self.emit(" is ");
@@ -1602,15 +1602,20 @@ impl<'a> Printer<'a> {
                     self.emit("}");
                 }
             }
-            ExprKind::Try { expr: inner, ref else_clause } => {
+            ExprKind::Try { expr: inner } => {
                 self.emit("try ");
                 self.format_expr(inner);
-                if let Some(ec) = else_clause {
-                    self.emit(" else |");
-                    self.emit(&ec.error_binding);
-                    self.emit("| ");
-                    self.format_expr(&ec.body);
-                }
+            }
+            ExprKind::Take { place } => {
+                self.emit("take ");
+                self.format_expr(place);
+            }
+            ExprKind::Catch { value, ref clause } => {
+                self.format_expr(value);
+                self.emit(" catch ");
+                self.emit(&clause.binder);
+                self.emit(" => ");
+                self.format_expr(&clause.body);
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.format_expr(inner);
