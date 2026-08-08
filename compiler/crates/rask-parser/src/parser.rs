@@ -18,6 +18,10 @@ pub struct Parser {
     pending_gt: bool,
     /// Controls whether `{` can start struct literals (false in control flow conditions)
     allow_brace_expr: bool,
+    /// Set while parsing an element of a comma list — call arguments, struct
+    /// literal fields, array/tuple elements. A diverging `??`/`catch` right
+    /// side there needs parens (ER45a).
+    in_comma_list: bool,
     /// Collected errors during parsing
     errors: Vec<ParseError>,
     /// Counter for generating unique NodeIds
@@ -47,7 +51,7 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false }
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -288,7 +292,7 @@ impl Parser {
                 TokenKind::AmpAmp | TokenKind::PipePipe
                 | TokenKind::EqEq | TokenKind::BangEq
                 | TokenKind::LtEq | TokenKind::GtEq
-                | TokenKind::QuestionQuestion
+                | TokenKind::QuestionQuestion | TokenKind::Catch
                 | TokenKind::Pipe | TokenKind::Caret | TokenKind::Amp
                 | TokenKind::LtLt | TokenKind::GtGt
                 | TokenKind::Slash | TokenKind::Percent
@@ -2442,6 +2446,8 @@ impl Parser {
     fn parse_block_body(&mut self) -> Result<Vec<Stmt>, ParseError> {
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
+        // Statements inside a block are not elements of any enclosing comma list.
+        let outer_list = std::mem::replace(&mut self.in_comma_list, false);
 
         let mut stmts = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
@@ -2461,6 +2467,7 @@ impl Parser {
             self.skip_newlines();
         }
 
+        self.in_comma_list = outer_list;
         self.expect(&TokenKind::RBrace)?;
         Ok(stmts)
     }
@@ -2884,6 +2891,7 @@ impl Parser {
                 | TokenKind::If | TokenKind::Match | TokenKind::With
                 | TokenKind::Select | TokenKind::SelectPriority
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
+                | TokenKind::Take
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
                 | TokenKind::None | TokenKind::Null | TokenKind::ReadKw
         )
@@ -3037,6 +3045,73 @@ impl Parser {
         self.expect_ident()
     }
 
+    /// The right side of `??` or the body of `catch` — a value or a divergence
+    /// (`return` / `break` / `continue`; `panic(…)` is an ordinary call whose
+    /// type is Never). `min_bp` is 0 for a greedy `catch` body, the operator's
+    /// right binding power for `??`.
+    ///
+    /// ER45a: a *diverging* right side inside a comma list reads ambiguously —
+    /// the comma could end the exit or continue the list — so it needs parens.
+    fn parse_fallback_body(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        let start = self.current().span.start;
+        let diverges = matches!(
+            self.current_kind(),
+            TokenKind::Return | TokenKind::Break | TokenKind::Continue
+        );
+        if diverges && self.in_comma_list {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "a `return`/`break`/`continue` fallback inside a comma list needs parens"
+                    .to_string(),
+                hint: Some(
+                    "wrap the whole fallback: `f((x ?? return e), y)` — otherwise the comma \
+                     could belong to either the exit or the list"
+                        .to_string(),
+                ),
+                why: None,
+            });
+        }
+        if diverges {
+            // Statement keywords aren't expressions; wrap in a block, whose type is Never.
+            return self.parse_inline_block(start);
+        }
+        let saved = std::mem::replace(&mut self.in_comma_list, false);
+        let body = self.parse_expr_bp(min_bp);
+        self.in_comma_list = saved;
+        body
+    }
+
+    /// The `<binder> => <body>` of a `catch`. The binder is mandatory (ER14);
+    /// `catch <expr>` names both spellings instead of silently swallowing.
+    fn parse_catch_clause(
+        &mut self,
+        catch_span: rask_ast::Span,
+    ) -> Result<rask_ast::expr::CatchClause, ParseError> {
+        let binder = match self.current_kind().clone() {
+            TokenKind::Ident(name) if self.peek(1) == &TokenKind::FatArrow => {
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError {
+                    span: catch_span,
+                    message: "`catch` needs a binder".to_string(),
+                    hint: Some(
+                        "write `catch e => value` to use the error, or `catch _ => value` to \
+                         drop it — there is no bare-value form, so an error is never swallowed \
+                         silently"
+                            .to_string(),
+                    ),
+                    why: None,
+                });
+            }
+        };
+        self.expect(&TokenKind::FatArrow)?;
+        // Greedy, like a match-arm body: `a catch _ => b catch _ => c` right-nests.
+        let body = self.parse_fallback_body(0)?;
+        Ok(rask_ast::expr::CatchClause { binder, body: Box::new(body) })
+    }
+
     /// Detect and parse a non-`try` lossy conversion suffix on `lhs`
     /// (type.primitives CV5/CV6/CV8/CV9): `truncate to T`, `saturate to T`,
     /// `float to int T`, `float to int T (saturating)`. Returns None if the
@@ -3162,15 +3237,9 @@ impl Parser {
 
                 if self.check(&TokenKind::QuestionQuestion) {
                     self.advance();
-                    // OPT13: diverging RHS — `x ?? return y`, `?? break`, `?? continue`.
-                    // Wrap the statement in a Block expression; block type is Never.
-                    let rhs_start = self.current().span.start;
-                    let default = match self.current_kind() {
-                        TokenKind::Return | TokenKind::Break | TokenKind::Continue => {
-                            self.parse_inline_block(rhs_start)?
-                        }
-                        _ => self.parse_expr_bp(r_bp)?,
-                    };
+                    // OPT11: the right side is a value or any divergence —
+                    // `x ?? return y`, `?? break`, `?? continue`, `?? panic(…)`.
+                    let default = self.parse_fallback_body(r_bp)?;
                     let end = default.span.end;
                     lhs = Expr {
                         id: self.next_id(),
@@ -3178,6 +3247,22 @@ impl Parser {
                             value: Box::new(lhs),
                             default: Box::new(default),
                         },
+                        span: self.span(start, end),
+                    };
+                    continue;
+                }
+
+                // ER14: `r catch e => body` / `r catch _ => body`. Left side
+                // groups at level 7 like `??`; the body is greedy to the right,
+                // so a `catch` chain right-nests without parens.
+                if self.check(&TokenKind::Catch) {
+                    let catch_span = self.current().span;
+                    self.advance();
+                    let clause = self.parse_catch_clause(catch_span)?;
+                    let end = clause.body.span.end;
+                    lhs = Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Catch { value: Box::new(lhs), clause },
                         span: self.span(start, end),
                     };
                     continue;
@@ -3409,7 +3494,8 @@ impl Parser {
                     return Err(ParseError {
                         span: self.span(start, end),
                         message: "cannot negate `?` with prefix `!`".to_string(),
-                        hint: Some("use `x == none` for Option or `r is E` for Result".to_string()),
+                        // OPT16: absence has its own spelling; `r is E` tests a result.
+                        hint: Some("use `x is none` for an optional, `r is E` for a result".to_string()),
                         why: None,
                     });
                 }
@@ -3547,6 +3633,41 @@ impl Parser {
 
             TokenKind::Check => self.parse_check_expr(),
 
+            // A range with no start — `s[..5]`, `buf[..]`. The open-end form
+            // falls out of the infix table; this one has nothing to its left.
+            TokenKind::DotDot | TokenKind::DotDotEq => {
+                let inclusive = self.check(&TokenKind::DotDotEq);
+                self.advance();
+                let end = if self.is_expr_start() {
+                    Some(Box::new(self.parse_expr_bp(4)?))
+                } else {
+                    None
+                };
+                let end_span = end
+                    .as_ref()
+                    .map(|e| e.span.end)
+                    .unwrap_or(self.tokens[self.pos - 1].span.end);
+                Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Range { start: None, end, inclusive },
+                    span: self.span(start, end_span),
+                })
+            }
+
+            // OPT32: `take <place>` moves the payload out of a mutable
+            // optional slot and leaves `none`. Binds like the other prefixes,
+            // so `take conn.pending` covers the whole field path.
+            TokenKind::Take => {
+                self.advance();
+                let place = self.parse_expr_bp(Self::PREFIX_BP)?;
+                let end = place.span.end;
+                Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Take { place: Box::new(place) },
+                    span: self.span(start, end),
+                })
+            }
+
             TokenKind::Try => {
                 self.advance();
                 let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
@@ -3584,35 +3705,32 @@ impl Parser {
                     });
                 }
 
-                let mut end = inner.span.end;
-                let else_clause = if self.check(&TokenKind::Else) ||
-                    (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
+                // `try … else …` is gone (ER45/ER46/ER48 deleted). Point at the
+                // replacement rather than failing on a stray `else`.
+                if self.check(&TokenKind::Else)
+                    || (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else())
+                {
                     if self.check(&TokenKind::Newline) {
                         self.skip_newlines();
                     }
+                    let else_span = self.current().span;
                     self.advance();
-                    self.expect(&TokenKind::Pipe)?;
-                    let error_binding = self.expect_ident()?;
-                    self.expect(&TokenKind::Pipe)?;
-                    // ER18: diverging body — `else |e| return e`, `break`, `continue`.
-                    let body_start = self.current().span.start;
-                    let body = match self.current_kind() {
-                        TokenKind::Return | TokenKind::Break | TokenKind::Continue => {
-                            self.parse_inline_block(body_start)?
-                        }
-                        _ => self.parse_expr()?,
-                    };
-                    end = body.span.end;
-                    Some(rask_ast::expr::TryElse {
-                        error_binding,
-                        body: Box::new(body),
-                    })
-                } else {
-                    None
-                };
+                    return Err(ParseError {
+                        span: else_span,
+                        message: "`try` has no `else` clause".to_string(),
+                        hint: Some(
+                            "handle a failure with `catch e => …` (or `catch _ => …` to drop it), \
+                             an absence with `?? …`; bare `try` only propagates"
+                                .to_string(),
+                        ),
+                        why: None,
+                    });
+                }
+
+                let end = inner.span.end;
                 Ok(Expr {
                     id: self.next_id(),
-                    kind: ExprKind::Try { expr: Box::new(inner), else_clause },
+                    kind: ExprKind::Try { expr: Box::new(inner) },
                     span: self.span(start, end),
                 })
             }
@@ -3626,6 +3744,13 @@ impl Parser {
     }
 
     fn parse_struct_literal(&mut self, name: String, start: usize) -> Result<Expr, ParseError> {
+        let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        let result = self.parse_struct_literal_inner(name, start);
+        self.in_comma_list = outer_list;
+        result
+    }
+
+    fn parse_struct_literal_inner(&mut self, name: String, start: usize) -> Result<Expr, ParseError> {
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -3713,7 +3838,10 @@ impl Parser {
         // the way to write one there — `if (c == Shape.Circle { r: 4 }) { … }`.
         let outer_braces = self.allow_brace_expr;
         self.allow_brace_expr = true;
+        // Parens end the enclosing comma list — that's the ER45a escape hatch.
+        let outer_list = std::mem::replace(&mut self.in_comma_list, false);
         let result = self.parse_paren_or_tuple_inner(start);
+        self.in_comma_list = outer_list;
         self.allow_brace_expr = outer_braces;
         result
     }
@@ -3729,10 +3857,12 @@ impl Parser {
 
         if self.match_token(&TokenKind::Comma) {
             let mut elements = vec![first];
+            self.in_comma_list = true;
             while !self.check(&TokenKind::RParen) && !self.at_end() {
                 elements.push(self.parse_expr()?);
                 if !self.match_token(&TokenKind::Comma) { break; }
             }
+            self.in_comma_list = false;
             self.expect(&TokenKind::RParen)?;
             let end = self.tokens[self.pos - 1].span.end;
             Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(elements), span: self.span(start, end) })
@@ -3743,6 +3873,13 @@ impl Parser {
     }
 
     fn parse_array_literal(&mut self) -> Result<Expr, ParseError> {
+        let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        let result = self.parse_array_literal_inner();
+        self.in_comma_list = outer_list;
+        result
+    }
+
+    fn parse_array_literal_inner(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::LBracket)?;
         self.skip_newlines();
@@ -4074,6 +4211,18 @@ impl Parser {
         self.skip_newlines();
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
+        let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        let result = self.parse_args_loop(raw_first_string, &mut args);
+        self.in_comma_list = outer_list;
+        result?;
+        Ok(args)
+    }
+
+    fn parse_args_loop(
+        &mut self,
+        raw_first_string: bool,
+        args: &mut Vec<CallArg>,
+    ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
                 if let TokenKind::String(s) = self.current_kind().clone() {
@@ -4134,7 +4283,7 @@ impl Parser {
             if self.check(&TokenKind::RParen) { break; }
         }
 
-        Ok(args)
+        Ok(())
     }
 
     fn parse_if_expr(&mut self) -> Result<Expr, ParseError> {
@@ -4153,30 +4302,40 @@ impl Parser {
                 Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
             };
 
-            let else_branch = if self.check(&TokenKind::Else) ||
+            let (else_branch, else_binding) = if self.check(&TokenKind::Else) ||
                 (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
                 if self.check(&TokenKind::Newline) {
                     self.skip_newlines();
                 }
                 self.expect(&TokenKind::Else)?;
-                if self.check(&TokenKind::If) {
-                    Some(Box::new(self.parse_if_expr()?))
+                // ER22: `else as e { … }` binds the branch the test ruled out.
+                let binding = if self.check(&TokenKind::As)
+                    && matches!(self.peek(1), TokenKind::Ident(_))
+                {
+                    self.advance();
+                    Some(self.expect_ident()?)
+                } else {
+                    None
+                };
+                let body = if self.check(&TokenKind::If) {
+                    Box::new(self.parse_if_expr()?)
                 } else if self.match_token(&TokenKind::Colon) {
-                    Some(Box::new(self.parse_inline_block(start)?))
+                    Box::new(self.parse_inline_block(start)?)
                 } else {
                     self.skip_newlines();
                     let stmts = self.parse_block_body()?;
                     let end = self.tokens[self.pos - 1].span.end;
-                    Some(Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }))
-                }
+                    Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
+                };
+                (Some(body), binding)
             } else {
-                None
+                (None, None)
             };
 
             let end = self.tokens[self.pos - 1].span.end;
             return Ok(Expr {
                 id: self.next_id(),
-                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch },
+                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch, else_binding },
                 span: self.span(start, end),
             });
         }
@@ -4852,9 +5011,11 @@ impl Parser {
                 Self::offset_spans(object, offset);
                 Self::offset_spans(index, offset);
             }
-            ExprKind::Try { expr, else_clause } => {
-                Self::offset_spans(expr, offset);
-                if let Some(tc) = else_clause { Self::offset_spans(&mut tc.body, offset); }
+            ExprKind::Try { expr } => Self::offset_spans(expr, offset),
+            ExprKind::Take { place } => Self::offset_spans(place, offset),
+            ExprKind::Catch { value, clause } => {
+                Self::offset_spans(value, offset);
+                Self::offset_spans(&mut clause.body, offset);
             }
             ExprKind::Unwrap { expr, .. } => Self::offset_spans(expr, offset),
             ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
@@ -4899,6 +5060,13 @@ impl Parser {
             TokenKind::Ident(name) if name == "_" => {
                 self.advance();
                 Ok(Pattern::Wildcard)
+            }
+            // OPT15: `x is none` — the absent branch named as a type. `none`
+            // is a keyword, so it never reaches the identifier arm. No `as`
+            // form: there's no payload to bind.
+            TokenKind::None => {
+                self.advance();
+                Ok(Pattern::TypePat { ty_name: "none".to_string(), binding: None })
             }
             TokenKind::Ident(name) => {
                 self.advance();
@@ -5044,7 +5212,7 @@ impl Parser {
             TokenKind::AmpAmp => Some((3, 4)),
             TokenKind::EqEq | TokenKind::BangEq => Some((5, 6)),
             TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Some((7, 8)),
-            TokenKind::QuestionQuestion => Some((9, 10)),
+            TokenKind::QuestionQuestion | TokenKind::Catch => Some((9, 10)),
             TokenKind::Pipe => Some((11, 12)),
             TokenKind::Caret => Some((13, 14)),
             TokenKind::Amp => Some((15, 16)),
@@ -5208,6 +5376,7 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try
+            | TokenKind::Take
             | TokenKind::Unsafe
             | TokenKind::Using
             | TokenKind::With
@@ -5263,6 +5432,7 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         // Error handling
         TokenKind::Ensure => "ensure",
         TokenKind::Try => "try",
+        TokenKind::Catch => "catch",
         // Testing
         TokenKind::Test => "test",
         TokenKind::Benchmark => "benchmark",

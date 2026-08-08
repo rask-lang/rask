@@ -1859,8 +1859,7 @@ impl<'a> MirLowerer<'a> {
                 expr,
                 pattern,
                 then_branch,
-                else_branch,
-            } => {
+                else_branch, else_binding } => {
                 let (val, val_ty) = self.lower_expr(expr)?;
                 let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
@@ -1907,7 +1906,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     self.extract_payload_type(expr).unwrap_or(MirType::I64)
                 };
-                self.bind_pattern_payload_niche(pattern, val, bind_ty, is_niche, &val_ty);
+                self.bind_pattern_payload_niche(pattern, val.clone(), bind_ty, is_niche, &val_ty);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 if self.builder.current_block_unterminated() {
@@ -1921,7 +1920,44 @@ impl<'a> MirLowerer<'a> {
                 // Else block: evaluate else branch or default to zero-value
                 self.builder.switch_to_block(else_block);
                 if let Some(else_expr) = else_branch {
+                    // ER22: `else as e` binds the branch the test ruled out —
+                    // the other side of the same two-branch value.
+                    let mut shadowed = None;
+                    if let Some(name) = else_binding {
+                        let other_ty = match &val_ty {
+                            MirType::Result { ok, err } => {
+                                let err_side = match pattern {
+                                    rask_ast::expr::Pattern::TypePat { ty_name, .. } => {
+                                        self.pattern_is_err_side(ty_name, &val_ty)
+                                    }
+                                    _ => false,
+                                };
+                                if err_side { (**ok).clone() } else { (**err).clone() }
+                            }
+                            _ => MirType::I64,
+                        };
+                        let local = self.builder.alloc_local(name.clone(), other_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Field {
+                                base: val.clone(),
+                                field_index: 0,
+                                byte_offset: self.payload_byte_offset(&other_ty),
+                                access: FieldAccess::Word,
+                            },
+                        }));
+                        if let Some(prefix) = self.mir_type_name(&other_ty) {
+                            self.meta_mut(name).type_prefix = Some(prefix);
+                        }
+                        shadowed = Some((name.clone(), self.locals.insert(name.clone(), (local, other_ty))));
+                    }
                     let (else_val, _) = self.lower_expr(else_expr)?;
+                    if let Some((name, prev)) = shadowed {
+                        match prev {
+                            Some(p) => { self.locals.insert(name, p); }
+                            None => { self.locals.remove(&name); }
+                        }
+                    }
                     if self.builder.current_block_unterminated() {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: result_local,
@@ -2014,17 +2050,79 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result), MirType::Bool))
             }
 
-            // Try expression (spec L3)
-            ExprKind::Try { expr: inner, ref else_clause } => {
-                match (else_clause, &inner.kind) {
-                    // ER18 block form: the block's own value is the result, and
-                    // any `try` inside it lands in the handler.
-                    (Some(try_else), ExprKind::Block(_)) => {
-                        self.lower_try_else_block(inner, try_else)
-                    }
-                    (Some(try_else), _) => self.lower_try_else(inner, try_else),
-                    (None, _) => self.lower_try(expr.id, inner),
-                }
+            // ER16: `try` propagates; ER17: a block operand propagates per `try`.
+            ExprKind::Try { expr: inner } => self.lower_try(expr.id, inner),
+
+            // ER14: `r catch <binder> => <body>`.
+            ExprKind::Catch { value, ref clause } => self.lower_catch(expr.id, value, clause),
+
+            // OPT32: hand back what the slot held, and leave `none` in it.
+            //
+            // Rebuilt branch by branch rather than copied whole: a copy of the
+            // option's own storage aliases the slot, and the write-back then
+            // overwrites the value that was just read.
+            ExprKind::Take { place } => {
+                let (val, ty) = self.lower_expr(place)?;
+                let is_niche = self.option_is_niche(place, &ty);
+                let payload_ty = match &ty {
+                    MirType::Option(inner) => (**inner).clone(),
+                    MirType::Result { ok, .. } => (**ok).clone(),
+                    _ => MirType::I64,
+                };
+                let name = format!("__taken_{}", self.closure_counter);
+                self.closure_counter += 1;
+                let taken = self.builder.alloc_local(name, ty.clone());
+
+                let tag = self.emit_option_tag(&val, is_niche);
+                let present_block = self.builder.create_block();
+                let absent_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(tag),
+                    then_block: absent_block,
+                    else_block: present_block,
+                }));
+
+                // Present: assigning the payload into an option-typed local is
+                // the wrap, the same way `let x: T? = value` builds one.
+                self.builder.switch_to_block(present_block);
+                let payload = self.emit_option_payload(val.clone(), payload_ty, is_niche);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: taken,
+                    rvalue: MirRValue::Use(MirOperand::Local(payload)),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+
+                self.builder.switch_to_block(absent_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: taken,
+                    offset: 0,
+                    value: MirOperand::Constant(MirConst::Int(1)),
+                    store_size: None,
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+
+                self.builder.switch_to_block(merge_block);
+                // The `none` carries the place's own node id so it picks up the
+                // slot's option layout (niche or tagged) instead of guessing.
+                let absent = Expr {
+                    id: place.id,
+                    kind: ExprKind::None,
+                    span: expr.span,
+                };
+                self.lower_stmt(&rask_ast::stmt::Stmt {
+                    id: expr.id,
+                    kind: rask_ast::stmt::StmtKind::Assign {
+                        target: (**place).clone(),
+                        value: absent,
+                    },
+                    span: expr.span,
+                })?;
+                Ok((MirOperand::Local(taken), ty))
             }
 
             // Presence predicate (postfix ?) — evaluates to bool.
@@ -2092,20 +2190,37 @@ impl<'a> MirLowerer<'a> {
                 }));
 
                 self.builder.switch_to_block(some_block);
+                // ER14a: a still-wrapped right side means the chain carries the
+                // layer onward, so a present left operand goes back untouched.
+                // Only a collapsing `??` reads the payload out.
+                let keeps_shape = self.ctx.fallback_keeps_shape.contains(&expr.id);
                 // The checker often leaves this node's type an unresolved var,
                 // and reading the payload as an opaque pointer hands back the
                 // slot's address instead of the value. The lowered receiver
                 // knows its own ok type — take that when the checker has
                 // nothing better.
-                let payload_ty = Self::better_payload_ty(
-                    self.extract_payload_type(value),
-                    match &val_ty {
-                        MirType::Result { ok, .. } => Some((**ok).clone()),
-                        MirType::Option(inner) => Some((**inner).clone()),
-                        _ => None,
-                    },
-                ).unwrap_or(MirType::I64);
-                let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
+                let payload_ty = if keeps_shape {
+                    val_ty.clone()
+                } else {
+                    Self::better_payload_ty(
+                        self.extract_payload_type(value),
+                        match &val_ty {
+                            MirType::Result { ok, .. } => Some((**ok).clone()),
+                            MirType::Option(inner) => Some((**inner).clone()),
+                            _ => None,
+                        },
+                    ).unwrap_or(MirType::I64)
+                };
+                let result_local = if keeps_shape {
+                    let slot = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: slot,
+                        rvalue: MirRValue::Use(val),
+                    }));
+                    slot
+                } else {
+                    self.emit_option_payload(val, payload_ty.clone(), is_niche)
+                };
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
                 self.builder.switch_to_block(none_block);

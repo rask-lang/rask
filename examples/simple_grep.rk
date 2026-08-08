@@ -17,24 +17,21 @@ extend GrepError {
 }
 
 func grep_file(pattern: string, path: string) -> i32 or GrepError {
-    let lines_result = fs.read_lines(path)
+    // The guard: handle the failure where it happens, then read flat.
+    let lines = fs.read_lines(path) catch e => return GrepError.Msg(e.message())
 
-    if lines_result? {
-        mut match_count = 0
-        mut line_num = 0
+    mut match_count = 0
+    mut line_num = 0
 
-        for line in lines_result {
-            line_num = line_num + 1
-            if line.contains(pattern) {
-                match_count = match_count + 1
-                println("{line_num}: {line}")
-            }
+    for line in lines {
+        line_num = line_num + 1
+        if line.contains(pattern) {
+            match_count = match_count + 1
+            println("{line_num}: {line}")
         }
-
-        return match_count
-    } else as e {
-        return GrepError.Msg(e.message())
     }
+
+    return match_count
 }
 
 func main() {
@@ -53,7 +50,7 @@ func main() {
 
     let result = grep_file(pattern, file_path)
 
-    if result? as count {
+    if result is i32 as count {
         println("")
         println("Found {count} matching lines")
         if count == 0 {

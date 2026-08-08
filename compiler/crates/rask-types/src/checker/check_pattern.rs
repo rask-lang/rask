@@ -77,6 +77,27 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
     }
 }
 
+/// The leaf types a two-branch value can actually hold, normalized and with
+/// the outermost error last. `T?` gives `[T, none]`; a flat `T? or E` gives
+/// `[T, none, E]`, because the layers stay distinct (OPT30) and each one is
+/// separately matchable.
+pub(super) fn two_branch_leaves(
+    ctx: &mut super::inference::InferenceContext,
+    types: &TypeTable,
+    ty: &Type,
+) -> Vec<Type> {
+    let resolved = ctx.apply(ty);
+    let Type::Result { ok, err } = &resolved else {
+        return vec![normalize_type(&resolved, types)];
+    };
+    let mut leaves = two_branch_leaves(ctx, types, ok);
+    match normalize_type(&ctx.apply(err), types) {
+        Type::Union(variants) => leaves.extend(variants),
+        other => leaves.push(other),
+    }
+    leaves
+}
+
 /// Resolve a bare type name to a Type.
 /// Returns UnresolvedNamed when the name isn't a known primitive or user type.
 fn resolve_type_name(name: &str, types: &TypeTable) -> Type {
@@ -111,23 +132,39 @@ impl TypeChecker {
                         return vec![];
                     }
                 }
-                // ER27: bare `Type` in a Result match is a type pattern.
-                // Recognize when `name` resolves to a type matching the ok or
-                // err branch of the scrutinee.
+                // ER27: a bare `Type` against a two-branch scrutinee is a type
+                // pattern, not a binding. A name that resolves to a real type
+                // has to be one of the branches — otherwise the test can never
+                // be true, and falling through to a binding hid that: `r is
+                // i32` on a `void or DivError` type-checked, then the two
+                // backends disagreed about the answer.
                 let resolved = self.ctx.apply(scrutinee_ty);
-                if let Type::Result { ok, err } = &resolved {
+                if let Type::Result { .. } = &resolved {
                     let candidate = resolve_type_name(name, &self.types);
                     if !matches!(candidate, Type::UnresolvedNamed(_)) {
-                        let ok_applied = self.ctx.apply(ok);
-                        let err_applied = self.ctx.apply(err);
-                        let matches_ok = ok_applied == candidate;
-                        let matches_err = match &err_applied {
-                            Type::Union(variants) => variants.contains(&candidate),
-                            other => other == &candidate,
-                        };
-                        if matches_ok || matches_err {
+                        let candidate = normalize_type(&candidate, &self.types);
+                        let branches =
+                            two_branch_leaves(&mut self.ctx, &self.types, &resolved);
+                        if branches.contains(&candidate) {
                             return vec![];
                         }
+                        // A branch that hasn't resolved yet can't be compared
+                        // against; the deferred check settles it later.
+                        if branches.iter().any(|b| matches!(b, Type::Var(_))) {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: candidate,
+                                ty_name: name.clone(),
+                                span,
+                            });
+                            return vec![];
+                        }
+                        self.errors.push(TypeError::TypePatternNotResult {
+                            ty_name: name.clone(),
+                            found: resolved,
+                            span,
+                        });
+                        return vec![];
                     }
                 }
                 vec![(name.clone(), scrutinee_ty.clone())]
@@ -247,17 +284,26 @@ impl TypeChecker {
                 let narrow_ty = normalize_type(&resolve_type_name(ty_name, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 match &resolved {
-                    Type::Result { ok, err } => {
-                        let ok_applied = normalize_type(&self.ctx.apply(ok), &self.types);
-                        let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
-                        let matches_ok = ok_applied == narrow_ty;
-                        let matches_err = match &err_applied {
-                            Type::Union(variants) => variants.contains(&narrow_ty),
-                            other => other == &narrow_ty,
-                        };
-                        if !matches_ok && !matches_err {
-                            // If err was a single type (not union), emit the
-                            // "not in union" error for clearer messaging.
+                    Type::Result { err, .. } => {
+                        // Every branch the scrutinee could hold — a flat
+                        // `T? or E` offers `T`, `none` and `E` (OPT30).
+                        let branches = two_branch_leaves(&mut self.ctx, &self.types, &resolved);
+                        // A branch that hasn't resolved yet can't be compared
+                        // against. Defer — by then it's either a match or a
+                        // real error, and the message can name the type.
+                        if !branches.contains(&narrow_ty)
+                            && branches.iter().any(|b| matches!(b, Type::Var(_)))
+                        {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: narrow_ty.clone(),
+                                ty_name: ty_name.clone(),
+                                span,
+                            });
+                        } else if !branches.contains(&narrow_ty) {
+                            let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
+                            // A union error side gets the "not in union"
+                            // wording, which names the alternatives.
                             if matches!(&err_applied, Type::Union(_)) {
                                 self.errors.push(TypeError::TypePatternNotInUnion {
                                     ty_name: ty_name.clone(),

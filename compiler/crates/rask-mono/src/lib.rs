@@ -40,6 +40,8 @@ pub struct MonoProgram {
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
     /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
+    /// ER14a: instantiated `??` nodes whose right side is still wrapped.
+    pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
 }
 
 impl MonoProgram {
@@ -72,6 +74,14 @@ impl MonoProgram {
     ) -> HashMap<NodeId, rask_types::ErrorWrap> {
         let mut merged = typed.error_wraps.clone();
         merged.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
+        merged
+    }
+
+    /// ER14a: every `??` site that keeps the optional shape, source and
+    /// instantiated alike.
+    pub fn all_fallback_keeps_shape(&self, typed: &TypedProgram) -> HashSet<NodeId> {
+        let mut merged = typed.fallback_keeps_shape.clone();
+        merged.extend(self.instantiated_fallback_keeps_shape.iter().copied());
         merged
     }
 }
@@ -329,6 +339,7 @@ pub fn monomorphize_with_packages(
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
+        instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
     })
 }
 
@@ -526,6 +537,7 @@ mod tests {
             call_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
+            fallback_keeps_shape: std::collections::HashSet::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),

@@ -11,7 +11,7 @@ func main() {}
 test "A1 — the ready receive arm fires, and its binding is the received value" {
     let (tx1, rx1) = Channel<i64>.buffered(4)
     let (tx2, rx2) = Channel<i64>.buffered(4)
-    tx1.send(7).ok()
+    let _ = tx1.send(7)
     let got = select {
         rx1 -> v: v * 2,
         rx2 -> v: v + 1000,
@@ -22,7 +22,7 @@ test "A1 — the ready receive arm fires, and its binding is the received value"
 test "A1 — a later arm fires when the earlier channel is empty" {
     let (tx1, rx1) = Channel<i64>.buffered(4)
     let (tx2, rx2) = Channel<i64>.buffered(4)
-    tx2.send(3).ok()
+    let _ = tx2.send(3)
     let got = select {
         rx1 -> v: v,
         rx2 -> v: v + 100,
@@ -41,7 +41,7 @@ test "A3 — the default arm fires when nothing is ready" {
 
 test "A3 — the default arm does not fire when something is ready" {
     let (tx, rx) = Channel<i64>.buffered(4)
-    tx.send(42).ok()
+    let _ = tx.send(42)
     let got = select {
         rx -> v: v,
         _: -1,
@@ -63,8 +63,8 @@ test "A2 — a send arm fires when the channel has room" {
 
 test "select drains one value per evaluation" {
     let (tx, rx) = Channel<i64>.buffered(4)
-    tx.send(1).ok()
-    tx.send(2).ok()
+    let _ = tx.send(1)
+    let _ = tx.send(2)
     mut total = 0
     for i in 0..2 {
         total += select {
@@ -79,7 +79,7 @@ test "select blocks until a spawned producer sends" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
         let h = spawn(own || {
-            tx.send(5).ok()
+            let _ = tx.send(5)
             return 0
         })
         let got = select {

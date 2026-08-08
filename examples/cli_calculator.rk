@@ -330,9 +330,8 @@ func main() -> void or Error {
             "quit" | "exit" | "q" => break,
             "help" | "h" | "?" => print_help(),
             _ => {
-                let r = calc(input.to_string())
-                if r? {
-                    println("= {r}")
+                if calc(input.to_string()) is f64 as value {
+                    println("= {value}")
                 } else as e {
                     println("Error: {e.message()}")
                 }

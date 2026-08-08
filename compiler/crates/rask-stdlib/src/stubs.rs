@@ -519,16 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn option_methods_present() {
-        let reg = StubRegistry::load();
-        assert!(reg.has_method("Option", "is_some"));
-        assert!(reg.has_method("Option", "unwrap"));
-        assert!(reg.has_method("Option", "map"));
-        assert!(reg.has_method("Option", "or"));
-    }
-
-
-    #[test]
     fn string_methods_present() {
         let reg = StubRegistry::load();
         assert!(reg.has_method("string", "len"));
@@ -706,33 +696,20 @@ mod tests {
         assert!(reg.has_method("string", "to_lowercase"), "string missing to_lowercase");
     }
 
+    /// std.api/SD4: neither wrapper has methods — the operators are the whole
+    /// API, and a stub reappearing here would put a second spelling back.
     #[test]
-    fn option_full_api() {
+    fn the_wrappers_carry_no_methods() {
         let reg = StubRegistry::load();
-        let expected = [
-            "is_some", "is_none", "unwrap", "unwrap_or",
-            "map", "and_then", "or",
+        let cut = [
+            "is_some", "is_none", "is_ok", "is_err",
+            "unwrap", "unwrap_err", "unwrap_or", "unwrap_or_else",
+            "map", "map_err", "and_then", "filter", "or", "ok", "to_option",
+            "ok_or", "to_result",
         ];
-        for method in &expected {
-            assert!(reg.has_method("Option", method), "Option missing method: {}", method);
-        }
-    }
-
-    #[test]
-    fn option_filter_discoverable() {
-        let reg = StubRegistry::load();
-        assert!(reg.has_method("Option", "filter"), "Option missing filter");
-    }
-
-    #[test]
-    fn result_full_api() {
-        let reg = StubRegistry::load();
-        let expected = [
-            "is_ok", "is_err", "unwrap", "unwrap_err", "unwrap_or",
-            "map", "map_err",
-        ];
-        for method in &expected {
-            assert!(reg.has_method("Result", method), "Result missing method: {}", method);
+        for method in &cut {
+            assert!(!reg.has_method("Option", method), "Option grew a method: {}", method);
+            assert!(!reg.has_method("Result", method), "Result grew a method: {}", method);
         }
     }
 
@@ -785,7 +762,6 @@ mod tests {
             ("Vec", "len"), ("Vec", "pop"), ("Vec", "get"),
             ("Map", "len"), ("Map", "get"), ("Map", "contains_key"),
             ("string", "len"), ("string", "contains"),
-            ("Option", "unwrap"), ("Option", "is_some"),
         ];
         for (ty, method) in &checks {
             let m = reg.lookup_method(ty, method)

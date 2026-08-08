@@ -104,7 +104,7 @@ test "std.collections/Map.get present and absent" {
     mut m = Map.new()
     m.insert("k", 42)
     assert m.get("k")! == 42
-    assert m.get("missing") == none
+    assert m.get("missing") is none
 }
 
 // --- Map: keys / values iteration ---

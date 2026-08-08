@@ -27,7 +27,7 @@ func main() {
 
     let nothing: i32? = none
 
-    if nothing == none {
+    if nothing is none {
         print("Got nothing\n")
     }
 }

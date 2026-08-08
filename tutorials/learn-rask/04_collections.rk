@@ -30,8 +30,8 @@
 //         println("got {score}")
 //     }
 //
-//   Or test for absence with `== none`:
-//     if result == none { println("missing") }
+//   Or test for absence with `is none`:
+//     if result is none { println("missing") }
 //
 //   This forces you to handle the missing case. No more KeyError crashes.
 //   We'll cover Option in depth in lesson 08. For now, just know it exists.
@@ -56,8 +56,7 @@ func example_map() {
     elements.insert("Li", 3)
 
     // .get() returns Option — a bare value or `none`
-    let h = elements.get("H")
-    if h? {
+    if elements.get("H")? as h {
         println("Hydrogen: atomic number {h}")
     }
 }

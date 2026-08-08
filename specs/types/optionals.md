@@ -55,7 +55,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
-| **OPT15: Absent check** | `x is none` | tests the absent branch. As an `is` test it participates in the general union narrowing rules (mechanism, not idiom — the canonical forms bind or use `??`). Presence is `x?` — there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
+| **OPT15: Absent check** | `x is none` | tests the absent branch — a plain bool, like every other `is` test. Presence is `x?`; there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
 
 OPT12 (the `try x else <diverge>` absence-exit construct) is deleted — `try`'s clause is gone language-wide. Propagating absence is bare `try x`; leaving with anything else is `??` with the exit written out.

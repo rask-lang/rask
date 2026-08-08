@@ -37,7 +37,7 @@ func main() {
     }
 
     let e: i64? = first_even(3, 4)
-    if e? { println("even {e}") } else { println("no even") }
+    if e? as v { println("even {v}") } else { println("no even") }
     let none_case: i64? = first_even(1, 3)
-    if none_case? { println("even {none_case}") } else { println("no even") }
+    if none_case? as v { println("even {v}") } else { println("no even") }
 }

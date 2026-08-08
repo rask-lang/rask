@@ -38,8 +38,8 @@ test "add negative" {
 }
 
 test "divide success" {
-    assert divide(10.0, 2.0)?
-    assert divide(6.0, 3.0)?
+    assert divide(10.0, 2.0) is f64
+    assert divide(6.0, 3.0) is f64
 }
 
 test "divide by zero" {

@@ -3,7 +3,7 @@
 // error enum that takes it, so a boundary enum costs nothing at the call site.
 //
 // Before this, every hop across a layer boundary needed a hand-written map —
-// `try store.view(id) else |e| ApiError.Store(e)` — and a `to_api()` lifter per
+// `store.view(id) catch e => return ApiError.Store(e)` — and a `to_api()` lifter per
 // source type. examples/validation carried 19 of them (#341).
 //
 // What's covered: a free-function source, a method-call source (whose error type
@@ -110,7 +110,7 @@ func serve(key: string) -> string or TopError {
 
 // An explicit handler still wins where it's written.
 func explicit(key: string) -> string or ApiError {
-    let v = try lookup(key) else |e| ApiError.BadRequest(e.message())
+    let v = lookup(key) catch e => return ApiError.BadRequest(e.message())
     return "got {v}"
 }
 

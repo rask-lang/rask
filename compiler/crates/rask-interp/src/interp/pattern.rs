@@ -221,28 +221,35 @@ impl Interpreter {
                 if in_range { Some(HashMap::new()) } else { None }
             }
 
-            // ER23/ER27: `TypeName [as name]` type pattern.
-            // For Result scrutinees, match either the Ok branch (T side) or
-            // Err branch (E side) by inspecting the payload's runtime type.
+            // ER23/ER27: `TypeName [as name]` type pattern, and OPT15's
+            // `none`. A flat `T? or E` wears two wrappers, so the walk goes
+            // down layer by layer — the pattern names one leaf (OPT30).
             Pattern::TypePat { ty_name, binding } => {
-                let Value::Enum { name: sc_name, variant, fields, .. } = value else {
-                    return None;
-                };
-                // Only Result (and Option, but TypePat is Result-scoped) match here.
-                if sc_name != "Result" {
-                    return None;
+                let mut current = value;
+                loop {
+                    let Value::Enum { name: sc_name, variant, fields, .. } = current else {
+                        return None;
+                    };
+                    if sc_name != "Result" && sc_name != "Option" {
+                        return None;
+                    }
+                    // The absent branch carries no payload, so it's the
+                    // variant itself that answers, not an inner value.
+                    if ty_name == "none" {
+                        if variant == "None" {
+                            return Some(HashMap::new());
+                        }
+                    }
+                    let Some(inner) = fields.first() else { return None };
+                    if runtime_type_matches(inner, ty_name) {
+                        let mut bindings = HashMap::new();
+                        if let Some(n) = binding {
+                            bindings.insert(n.clone(), inner.clone());
+                        }
+                        return Some(bindings);
+                    }
+                    current = inner;
                 }
-                let inner = fields.first()?;
-                if !runtime_type_matches(inner, ty_name) {
-                    return None;
-                }
-                // Found a match. Must be Ok or Err — both bind the inner.
-                let _ = variant;
-                let mut bindings = HashMap::new();
-                if let Some(n) = binding {
-                    bindings.insert(n.clone(), inner.clone());
-                }
-                Some(bindings)
             }
         }
     }

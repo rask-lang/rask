@@ -4,40 +4,20 @@
 ///
 /// `T?` is a builtin status type: either a present `T` or the `none` sentinel.
 /// There are no `Some`/`None` constructors — bare values auto-wrap to the
-/// present branch at return and assignment (see spec type.optionals/OPT5-6).
-/// `none` is the absence literal (like `true`, `false`).
+/// present branch at return and assignment (type.optionals/OPT5-6). `none` is
+/// the absence literal, like `true` and `false`.
+///
+/// It has **no methods**. The operator surface is the whole API:
+///
+///     x?              is it there?          [OPT9]
+///     x is none       is it absent?         [OPT15]
+///     if x? as v      bind the payload      [OPT19]
+///     x ?? v          value, or this one    [OPT11]
+///     x ?? return e   or leave, saying why
+///     try x           or leave as `none`    [type.errors/ER16]
+///     x!              or panic              [OPT13]
+///     take slot       move it out, leave none [OPT32]
+///
+/// Each job has one spelling, and the fallbacks are lazy by construction —
+/// which is why the eager/lazy method pairs other languages carry aren't here.
 public enum Option<T> { }
-
-extend Option<T> {
-    /// True if the value is present.
-    public func is_some(self) -> bool { }
-
-    /// True if the value is absent.
-    public func is_none(self) -> bool { }
-
-    /// Extract the contained value, panicking if absent.
-    public func unwrap(self) -> T { }
-
-    /// Return the contained value or `default` if absent.
-    public func unwrap_or(self, default: T) -> T { }
-
-    /// Return self if present, otherwise `other`.
-    @unimplemented
-    public func or(self, other: T?) -> T? { }
-
-    /// Transform the contained value if present.
-    public func map(self, f: func(T) -> U) -> U? { }
-
-    /// Keep the value only if the predicate returns true.
-    public func filter(self, f: func(T) -> bool) -> T? { }
-
-    /// Transform and flatten nested Options.
-    @unimplemented
-    public func and_then(self, f: func(T) -> U?) -> U? { }
-
-    /// Lift to Result, using `err` when absent.
-    ///
-    /// Required because `??` does not widen to `T or E`.
-    @unimplemented
-    public func to_result(self, err: E) -> T or E { }
-}

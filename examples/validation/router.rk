@@ -22,12 +22,8 @@ func route_inner(req: Request) -> Response {
         MwOutcome.Continue    => {},
     }
 
-    let outcome = dispatch(req)
-    if outcome? as resp {
-        return resp
-    } else as e {
-        return error_response(e)
-    }
+    // The fold at the boundary: every handler error becomes a response here.
+    return dispatch(req) catch e => error_response(e)
 }
 
 func dispatch(req: Request) -> Response or ApiError {

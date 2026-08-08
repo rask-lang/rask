@@ -69,7 +69,7 @@ test "type.primitives/CV7 — try convert yields none out of range" {
     let ok = try 100 convert to u8
     assert ok! == 100
     let overflow = try 300 convert to u8
-    assert overflow == none
+    assert overflow is none
 }
 
 // --- BL1/BL2: boolean ops and short-circuit ---
@@ -119,9 +119,9 @@ test "type.primitives/CH3 — from_u32 validates code points" {
         assert false, "65 is a valid scalar"
     }
     let surrogate = char.from_u32(0xD800)
-    assert surrogate == none
+    assert surrogate is none
     let too_big = char.from_u32(0x110000)
-    assert too_big == none
+    assert too_big is none
 }
 
 // --- P4/BL3: bool is distinct; comparisons yield bool ---

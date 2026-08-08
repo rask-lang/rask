@@ -109,6 +109,8 @@ enum RawToken {
     Check,
     #[token("try")]
     Try,
+    #[token("catch")]
+    Catch,
     #[token("or")]
     Or,
     #[token("package")]
@@ -497,6 +499,7 @@ impl<'a> Lexer<'a> {
             RawToken::Assert => TokenKind::Assert,
             RawToken::Check => TokenKind::Check,
             RawToken::Try => TokenKind::Try,
+            RawToken::Catch => TokenKind::Catch,
             RawToken::Or => TokenKind::Or,
             RawToken::Package => TokenKind::Package,
             RawToken::Private => TokenKind::Private,

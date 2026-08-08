@@ -447,12 +447,12 @@ impl TypeSubstitutor {
                     expr,
                     pattern,
                     then_branch,
-                    else_branch,
-                } => ExprKind::IfLet {
+                    else_branch, else_binding } => ExprKind::IfLet {
                     expr: Box::new(self.clone_expr(expr)),
                     pattern: self.clone_pattern(pattern),
                     then_branch: Box::new(self.clone_expr(then_branch)),
                     else_branch: else_branch.as_ref().map(|e| Box::new(self.clone_expr(e))),
+                    else_binding: else_binding.clone(),
                 },
                 ExprKind::GuardPattern {
                     expr,
@@ -473,12 +473,18 @@ impl TypeSubstitutor {
                 },
 
                 // Error handling
-                ExprKind::Try { expr: inner, ref else_clause } => ExprKind::Try {
+                ExprKind::Try { expr: inner } => ExprKind::Try {
                     expr: Box::new(self.clone_expr(inner)),
-                    else_clause: else_clause.as_ref().map(|ec| rask_ast::expr::TryElse {
-                        error_binding: ec.error_binding.clone(),
-                        body: Box::new(self.clone_expr(&ec.body)),
-                    }),
+                },
+                ExprKind::Take { place } => ExprKind::Take {
+                    place: Box::new(self.clone_expr(place)),
+                },
+                ExprKind::Catch { value, ref clause } => ExprKind::Catch {
+                    value: Box::new(self.clone_expr(value)),
+                    clause: rask_ast::expr::CatchClause {
+                        binder: clause.binder.clone(),
+                        body: Box::new(self.clone_expr(&clause.body)),
+                    },
                 },
                 ExprKind::IsPresent { expr: inner, binding } => ExprKind::IsPresent {
                     expr: Box::new(self.clone_expr(inner)),

@@ -109,8 +109,35 @@ fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
     }
 }
 
+/// The absent value an emptied optional slot is left holding (OPT32).
+fn absent_value() -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "None".to_string(),
+        fields: vec![],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
 /// ER31a: build the boundary-enum variant around a propagated error.
 impl Interpreter {
+    /// Run a `catch` handler with the error bound. `catch _ =>` binds nothing —
+    /// the discard is visible in the source, so there's no name to introduce.
+    fn run_catch_body(
+        &mut self,
+        clause: &rask_ast::expr::CatchClause,
+        err: Value,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        self.env.push_scope();
+        if !clause.is_discard() {
+            self.env.define(clause.binder.clone(), err);
+        }
+        let result = self.eval_expr(&clause.body);
+        self.env.pop_scope();
+        result
+    }
+
     fn wrap_propagated_error(&self, wrap: &rask_types::ErrorWrap, inner: Value) -> Value {
         let variant_index = self
             .enums
@@ -1584,6 +1611,7 @@ impl Interpreter {
                 pattern,
                 then_branch,
                 else_branch,
+                else_binding,
             } => {
                 let value = self.eval_expr(expr)?;
 
@@ -1596,21 +1624,21 @@ impl Interpreter {
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
-                    self.eval_expr(else_br)
-                } else {
-                    // ER24: early-exit narrowing. `if x is ErrType { <diverges> }`
-                    // with no `else` — the pattern didn't match, so `x` holds the
-                    // success side. Rebind it (in the current scope, so the
-                    // narrowing reaches the statements after this whole `if`) to
-                    // the unwrapped payload.
-                    if let (ExprKind::Ident(name), Value::Enum { variant, fields, .. }) =
-                        (&expr.kind, &value)
-                    {
-                        if matches!(variant.as_str(), "Ok" | "Some") {
-                            let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                            self.env.define(name.clone(), payload);
-                        }
+                    // ER22: `else as e` binds the branch the test ruled out.
+                    self.env.push_scope();
+                    if let Some(name) = else_binding {
+                        let payload = match &value {
+                            Value::Enum { fields, .. } => {
+                                fields.first().cloned().unwrap_or(Value::Unit)
+                            }
+                            other => other.clone(),
+                        };
+                        self.env.define(name.clone(), payload);
                     }
+                    let result = self.eval_expr(else_br);
+                    self.env.pop_scope();
+                    result
+                } else {
                     Ok(Value::Unit)
                 }
             }
@@ -1644,39 +1672,11 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Try { expr: inner, ref else_clause } => {
-                // ER17/ER18: `try { … }` block form. Catches TryError raised
-                // by inner `try` propagations and routes to the else handler.
-                // Without an else, behaves like a normal block (errors continue
-                // propagating to the enclosing function).
+            ExprKind::Try { expr: inner } => {
+                // ER17: `try { … }` block form. Inner `try`s raise TryError;
+                // nothing catches it here, so it keeps going to the caller.
                 if matches!(&inner.kind, ExprKind::Block(_)) {
-                    let block_result = self.eval_expr(inner);
-                    return match block_result {
-                        Ok(v) => Ok(v),
-                        Err(diag) => match diag.error {
-                            RuntimeError::TryError(err_val) => {
-                                if let Some(ec) = else_clause {
-                                    let inner_err = match &err_val {
-                                        Value::Enum { fields, .. } => {
-                                            fields.first().cloned().unwrap_or(Value::Unit)
-                                        }
-                                        _ => err_val,
-                                    };
-                                    self.env.push_scope();
-                                    self.env.define(ec.error_binding.clone(), inner_err);
-                                    let transformed = self.eval_expr(&ec.body);
-                                    self.env.pop_scope();
-                                    transformed
-                                } else {
-                                    Err(RuntimeDiagnostic::new(
-                                        RuntimeError::TryError(err_val),
-                                        diag.span,
-                                    ))
-                                }
-                            }
-                            other => Err(RuntimeDiagnostic::new(other, diag.span)),
-                        },
-                    };
+                    return self.eval_expr(inner);
                 }
                 let val = self.eval_expr(inner)?;
                 match &val {
@@ -1686,25 +1686,9 @@ impl Interpreter {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {
                             let origin = self.origin_string(expr.span);
-                            if let Some(ec) = else_clause {
-                                // try...else: bind error value, evaluate handler, wrap in Err and propagate
-                                let err_val = fields.first().cloned().unwrap_or(Value::Unit);
-                                self.env.push_scope();
-                                self.env.define(ec.error_binding.clone(), err_val);
-                                let transformed = self.eval_expr(&ec.body)?;
-                                self.env.pop_scope();
-                                let wrapped = Value::Enum {
-                                    name: "Result".to_string(),
-                                    variant: "Err".to_string(),
-                                    fields: vec![set_error_origin(transformed, &origin)],
-                                    variant_index: 0,
-                                    origin: Some(origin),
-                                };
-                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
-                            } else if let Some(wrap) = self.error_wraps.get(&expr.id).cloned() {
+                            if let Some(wrap) = self.error_wraps.get(&expr.id).cloned() {
                                 // ER31a: the caller declared a boundary enum, so
-                                // the error leaves wearing it — the same value
-                                // `else |e| ApiError.Store(e)` would have built.
+                                // the error leaves wearing it.
                                 let inner = fields.first().cloned().unwrap_or(Value::Unit);
                                 let wrapped = Value::Enum {
                                     name: "Result".to_string(),
@@ -1724,7 +1708,7 @@ impl Interpreter {
                         }
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
-                                "? operator requires Ok/Some or Err/None variant, got {}",
+                                "`try` requires an Ok/Some or Err/None variant, got {}",
                                 variant
                             )),
                             expr.span
@@ -1732,12 +1716,77 @@ impl Interpreter {
                     },
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
-                            "? operator requires Result or Option, got {}",
+                            "`try` requires a result or an optional, got {}",
                             val.type_name()
                         )),
                         expr.span
                     )),
                 }
+            }
+
+            // ER14: `r catch e => body`. The body runs only on failure, with
+            // the error bound; `catch _ =>` binds nothing.
+            ExprKind::Catch { value, ref clause } => {
+                // ER18: on a `try { … }` operand the handler covers the whole
+                // block — the first inner `try` that fails lands here.
+                let is_try_block = match &value.kind {
+                    ExprKind::Try { expr: e } => matches!(e.kind, ExprKind::Block(_)),
+                    _ => false,
+                };
+                if is_try_block {
+                    return match self.eval_expr(value) {
+                        Ok(v) => Ok(v),
+                        Err(diag) => match diag.error {
+                            RuntimeError::TryError(err_val) => {
+                                let bound = match &err_val {
+                                    Value::Enum { fields, .. } => {
+                                        fields.first().cloned().unwrap_or(Value::Unit)
+                                    }
+                                    _ => err_val,
+                                };
+                                self.run_catch_body(clause, bound)
+                            }
+                            other => Err(RuntimeDiagnostic::new(other, diag.span)),
+                        },
+                    };
+                }
+                let val = self.eval_expr(value)?;
+                // ER14a: a handler that produces a two-branch value (`catch _ =>
+                // none` is the common one) keeps the shape, so a success goes
+                // back wrapped rather than unwrapped.
+                let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
+                match &val {
+                    Value::Enum { variant, fields, .. } => match variant.as_str() {
+                        "Ok" | "Some" if keeps_shape => Ok(val.clone()),
+                        "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                        "Err" | "None" => {
+                            let bound = fields.first().cloned().unwrap_or(Value::Unit);
+                            self.run_catch_body(clause, bound)
+                        }
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "`catch` requires a result, got variant {}",
+                                variant
+                            )),
+                            expr.span,
+                        )),
+                    },
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "`catch` requires a result, got {}",
+                            val.type_name()
+                        )),
+                        expr.span,
+                    )),
+                }
+            }
+
+            // OPT32: `take slot` — hand back what was there, leave `none`.
+            ExprKind::Take { place } => {
+                let val = self.eval_expr(place)?;
+                self.assign_target(place, absent_value())
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                Ok(val)
             }
 
             // Postfix `?` — presence predicate. OPT10/ER12.
@@ -1903,26 +1952,24 @@ impl Interpreter {
 
             ExprKind::NullCoalesce { value, default } => {
                 let val = self.eval_expr(value)?;
+                // ER14a: when the right side is still wrapped the chain carries
+                // the layer onward, so a present left operand goes back
+                // untouched. Only a collapsing `??` hands back the payload.
+                let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
                 match &val {
-                    // T? (Option.Some) — legacy or direct optional
                     Value::Enum { name, variant, fields, .. }
-                        if name == "Option" && variant == "Some" =>
+                        if matches!(name.as_str(), "Option" | "Result")
+                            && matches!(variant.as_str(), "Some" | "Ok") =>
                     {
-                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                        if keeps_shape {
+                            Ok(val.clone())
+                        } else {
+                            Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                        }
                     }
                     Value::Enum { name, variant, .. }
-                        if name == "Option" && variant == "None" =>
-                    {
-                        self.eval_expr(default)
-                    }
-                    // T or none (Result.Ok / Result.Err with none payload)
-                    Value::Enum { name, variant, fields, .. }
-                        if name == "Result" && variant == "Ok" =>
-                    {
-                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
-                    }
-                    Value::Enum { name, variant, .. }
-                        if name == "Result" && variant == "Err" =>
+                        if matches!(name.as_str(), "Option" | "Result")
+                            && matches!(variant.as_str(), "None" | "Err") =>
                     {
                         self.eval_expr(default)
                     }

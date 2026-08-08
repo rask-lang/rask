@@ -12,12 +12,12 @@ import fs
 
 // Channel.recv → receive
 func old_recv(rx: Receiver<i64>) {
-    rx.recv().ok()          // ERROR: no method `recv` (renamed to `receive`)
+    let _ = rx.recv()  // ERROR: no method `recv` (renamed to `receive`)
 }
 
 // Channel.try_recv → try_receive
 func old_try_recv(rx: Receiver<i64>) {
-    rx.try_recv().ok()      // ERROR: no method `try_recv` (renamed to `try_receive`)
+    let _ = rx.try_recv()  // ERROR: no method `try_recv` (renamed to `try_receive`)
 }
 
 // Duration.as_secs → as_seconds
@@ -42,17 +42,17 @@ func old_os_vars() {
 
 // fs.read_file → fs.read_text
 func old_read_file() {
-    fs.read_file("/tmp/x").ok()     // ERROR: no method `read_file` (renamed to `read_text`)
+    let _ = fs.read_file("/tmp/x")  // ERROR: no method `read_file` (renamed to `read_text`)
 }
 
 // fs.write_file → fs.write_text
 func old_write_file() {
-    fs.write_file("/tmp/x", "y").ok()  // ERROR: no method `write_file` (renamed to `write_text`)
+    let _ = fs.write_file("/tmp/x", "y")  // ERROR: no method `write_file` (renamed to `write_text`)
 }
 
 // fs.append_file → fs.append_text
 func old_append_file() {
-    fs.append_file("/tmp/x", "y").ok() // ERROR: no method `append_file` (renamed to `append_text`)
+    let _ = fs.append_file("/tmp/x", "y")  // ERROR: no method `append_file` (renamed to `append_text`)
 }
 
 // File.lines() removed (#276) — only fs.read_lines (eager) survives.

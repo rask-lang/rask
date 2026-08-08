@@ -9,7 +9,7 @@ use crate::{
     MirTerminatorKind, MirType,
     types::RESULT_PAYLOAD_OFFSET,
 };
-use rask_ast::expr::{CallArg, Expr, ExprKind, TryElse};
+use rask_ast::expr::{CallArg, CatchClause, Expr, ExprKind};
 
 /// ER31a: where a propagated error goes inside the caller's error enum.
 struct ErrorWrapTarget {
@@ -126,7 +126,7 @@ impl<'a> MirLowerer<'a> {
         // Inside a `try { … } else |e| …` block the error belongs to the
         // handler, not to the caller (ER18), so read it straight into the
         // handler's binding at the type the handler will dispatch on.
-        let handler = self.try_else_stack.last().cloned();
+        let handler = self.catch_frames.last().cloned();
         let err_ty = match &handler {
             Some(frame) => frame.err_ty.clone(),
             None => self.resolved_err_type(inner, &result_ty),
@@ -396,10 +396,10 @@ impl<'a> MirLowerer<'a> {
     /// the block as if it were a Result read a tag off the block's own value —
     /// on `try { try s.parse<f64>() }` that meant tag-testing an f64, which the
     /// Cranelift verifier rejected outright (#480).
-    pub(super) fn lower_try_else_block(
+    pub(super) fn lower_catch_block(
         &mut self,
         block: &Expr,
-        try_else: &TryElse,
+        clause: &CatchClause,
     ) -> Result<TypedOperand, LoweringError> {
         // The handler binds `e` at the enclosing function's error type — that's
         // what the checker scopes it as.
@@ -412,14 +412,14 @@ impl<'a> MirLowerer<'a> {
         let handler_block = self.builder.create_block();
         let merge_block = self.builder.create_block();
 
-        self.try_else_stack.push(super::TryElseFrame {
+        self.catch_frames.push(super::CatchFrame {
             handler_block,
             err_val,
             err_ty: err_ty.clone(),
             origin_line,
         });
         let block_result = self.lower_expr(block);
-        self.try_else_stack.pop();
+        self.catch_frames.pop();
         let (block_op, block_ty) = block_result?;
 
         let value = self.builder.alloc_temp(block_ty.clone());
@@ -436,14 +436,17 @@ impl<'a> MirLowerer<'a> {
         // Handler: `e` is in scope, and its value is the expression's value.
         // In practice the handler diverges (`return`), which terminates here.
         self.builder.switch_to_block(handler_block);
-        let shadowed = self.locals.insert(
-            try_else.error_binding.clone(),
-            (err_val, err_ty),
-        );
-        let (handler_op, _) = self.lower_expr(&try_else.body)?;
-        match shadowed {
-            Some(prev) => { self.locals.insert(try_else.error_binding.clone(), prev); }
-            None => { self.locals.remove(&try_else.error_binding); }
+        let shadowed = if clause.is_discard() {
+            None
+        } else {
+            self.locals.insert(clause.binder.clone(), (err_val, err_ty))
+        };
+        let (handler_op, _) = self.lower_expr(&clause.body)?;
+        if !clause.is_discard() {
+            match shadowed {
+                Some(prev) => { self.locals.insert(clause.binder.clone(), prev); }
+                None => { self.locals.remove(&clause.binder); }
+            }
         }
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -459,7 +462,23 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(value), block_ty))
     }
 
-    pub(super) fn lower_try_else(&mut self, inner: &Expr, try_else: &TryElse) -> Result<TypedOperand, LoweringError> {
+    /// ER14: `r catch <binder> => <body>`. The success payload on the ok path,
+    /// the handler's value on the err path — and the handler only runs there,
+    /// which is what makes the right side lazy.
+    pub(super) fn lower_catch(
+        &mut self,
+        node: rask_ast::NodeId,
+        inner: &Expr,
+        clause: &CatchClause,
+    ) -> Result<TypedOperand, LoweringError> {
+        // ER18: `try { … } catch e => …` — the handler covers the whole block,
+        // so the first inner `try` that fails jumps straight to it.
+        if let ExprKind::Try { expr: block } = &inner.kind {
+            if matches!(block.kind, ExprKind::Block(_)) {
+                return self.lower_catch_block(block, clause);
+            }
+        }
+
         let (result, result_ty) = self.lower_expr(inner)?;
 
         // Same comptime short-circuit as `lower_try` — a collapsed scalar can't
@@ -471,9 +490,7 @@ impl<'a> MirLowerer<'a> {
         let tag_local = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tag_local,
-            rvalue: MirRValue::EnumTag {
-                value: result.clone(),
-            },
+            rvalue: MirRValue::EnumTag { value: result.clone() },
         }));
 
         let ok_block = self.builder.create_block();
@@ -486,10 +503,27 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         }));
 
-        // Err path — bind error to param, evaluate else body, return transformed error.
+        // ER14a: when the handler's value is itself two-branch (`catch _ =>
+        // none`), the whole expression stays wrapped — but in the *handler's*
+        // shape, not the operand's, so the success has to be re-wrapped rather
+        // than passed through. The two differ in what the other branch holds.
+        let keeps_shape = self.ctx.fallback_keeps_shape.contains(&node);
+        let payload_ty = Self::better_payload_ty(
+            self.extract_payload_type(inner),
+            match &result_ty {
+                MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
+                _ => None,
+            },
+        ).unwrap_or(MirType::I64);
+        let ok_ty = if keeps_shape {
+            MirType::Option(Box::new(payload_ty.clone()))
+        } else {
+            payload_ty.clone()
+        };
+        let value = self.builder.alloc_temp(ok_ty.clone());
+
+        // Err path — bind the error (unless it's `_`) and run the handler.
         self.builder.switch_to_block(err_block);
-        // The error binding's type must be concrete so a method on it (the
-        // common `else |e| e.to_api()`) can dispatch.
         let err_ty = self.resolved_err_type(inner, &result_ty);
         let err_val = self.builder.alloc_temp(err_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -497,132 +531,57 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: result.clone(),
                 field_index: 0,
-                // Explicit offset so a scalar err payload loads its value even when
-                // the ok side is an aggregate (same ambiguity as #389's ok-path fix).
                 byte_offset: self.payload_byte_offset(&err_ty),
                 access: FieldAccess::Word,
             },
         }));
-
-        // Read source origin before transform body (ER15 first-propagation)
-        let src_origin_line = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: src_origin_line,
-            rvalue: MirRValue::Field {
-                base: result.clone(),
-                field_index: 1,
-                byte_offset: Some(crate::types::RESULT_ORIGIN_LINE_OFFSET),
-                access: FieldAccess::Sized(8),
-            },
-        }));
-
-        let err_binding = &try_else.error_binding;
-        self.locals.insert(err_binding.clone(), (err_val, err_ty));
-
-        let (transformed_op, transformed_ty) = self.lower_expr(&try_else.body)?;
-
-        // Only emit return if body didn't already terminate (e.g. bare `return` in body)
-        if self.builder.current_block_unterminated() {
-            // Construct full Result.Err with origin (ER15). The transformed error
-            // is returned from the enclosing function, so the built Result carries
-            // the *function's* return type, not the inner expression's. When the
-            // two differ (e.g. `parse -> i32 or ParseError` transformed into
-            // `i32 or ContextError`), using the inner type made codegen see a
-            // type mismatch on return and re-wrap the whole Result as Ok — the
-            // caller then read tag 0 and took the ok branch (#389).
-            let ret_result = self.builder.alloc_temp(self.builder.ret_ty().clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: ret_result,
-                offset: crate::types::RESULT_TAG_OFFSET,
-                value: MirOperand::Constant(MirConst::Int(1)),
-                store_size: None,
-            }));
-            // Preserve source origin if set, otherwise use this try site
-            let try_line = self.ctx.line_map
-                .map(|lm| lm.offset_to_line_col(self.builder.current_span().start).0 as i64)
-                .unwrap_or(0);
-            let origin_set_blk = self.builder.create_block();
-            let origin_unset_blk = self.builder.create_block();
-            let origin_merge_blk = self.builder.create_block();
-            let origin_line_local = self.builder.alloc_temp(MirType::I64);
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                cond: MirOperand::Local(src_origin_line),
-                then_block: origin_set_blk,
-                else_block: origin_unset_blk,
-            }));
-            self.builder.switch_to_block(origin_set_blk);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: origin_line_local,
-                rvalue: MirRValue::Use(MirOperand::Local(src_origin_line)),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: origin_merge_blk }));
-            self.builder.switch_to_block(origin_unset_blk);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: origin_line_local,
-                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(try_line))),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: origin_merge_blk }));
-            self.builder.switch_to_block(origin_merge_blk);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: ret_result,
-                offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
-                value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: None,
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: ret_result,
-                offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
-                value: MirOperand::Local(origin_line_local),
-                store_size: None,
-            }));
-            let transformed_store_size = if transformed_ty.size() > 8 { Some(transformed_ty.size()) } else { None };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: ret_result,
-                offset: RESULT_PAYLOAD_OFFSET,
-                value: transformed_op,
-                store_size: transformed_store_size,
-            }));
-            if self.ensure_stack.is_empty() {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                    value: Some(MirOperand::Local(ret_result)),
-                }));
-            } else {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                    value: Some(MirOperand::Local(ret_result)),
-                    cleanup_chain: self.cleanup_chain(),
-                }));
+        let shadowed = if clause.is_discard() {
+            None
+        } else {
+            self.locals.insert(clause.binder.clone(), (err_val, err_ty))
+        };
+        let (handler_op, _) = self.lower_expr(&clause.body)?;
+        if !clause.is_discard() {
+            match shadowed {
+                Some(prev) => { self.locals.insert(clause.binder.clone(), prev); }
+                None => { self.locals.remove(&clause.binder); }
             }
         }
+        // A diverging handler (`catch e => return …`) already terminated.
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: value,
+                rvalue: MirRValue::Use(handler_op),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
 
-        // Ok path — extract payload
+        // Ok path — read the payload out, and re-wrap it when the shape stays.
         self.builder.switch_to_block(ok_block);
-        let ok_ty = Self::better_payload_ty(
-            self.extract_payload_type(inner),
-            match &result_ty {
-                MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
-                _ => None,
-            },
-        ).unwrap_or(MirType::I64);
-        let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        let payload = self.builder.alloc_temp(payload_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: ok_val,
+            dst: payload,
             rvalue: MirRValue::Field {
                 base: result,
                 field_index: 0,
-                // Explicit offset so codegen loads the value at RESULT_PAYLOAD_OFFSET
-                // instead of guessing "aggregate" from the err side's type and handing
-                // back the slot address — the ok path of `try ... else` was still
-                // returning the slot address here after #467's partial fix (#389).
-                byte_offset: self.payload_byte_offset(&ok_ty),
+                byte_offset: self.payload_byte_offset(&payload_ty),
                 access: FieldAccess::Word,
             },
+        }));
+        // Assigning a bare payload into an option-typed slot is the wrap —
+        // codegen and the interpreter both read the destination's type.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Use(MirOperand::Local(payload)),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(merge_block);
-        Ok((MirOperand::Local(ok_val), ok_ty))
+        Ok((MirOperand::Local(value), ok_ty))
     }
 
     /// Inline expansion of `result.map_err(|e| transform(e))`.

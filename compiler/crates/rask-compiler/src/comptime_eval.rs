@@ -231,6 +231,7 @@ fn try_eval_comptime_mir(
         comptime_interp: None,
         trait_coercions: &empty_coercions,
         error_wraps: &typed.error_wraps,
+        fallback_keeps_shape: &typed.fallback_keeps_shape,
         call_rewrites: &empty_rewrites,
         call_targets: &empty_targets,
         resource_types: &empty_resource_types,

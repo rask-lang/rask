@@ -456,7 +456,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0355")
                 .with_primary(*span, format!("propagates `{}`", inner_err))
                 .with_fix(format!(
-                    "map it here — `try expr else |e| {}.SomeVariant(e)` — or give `{}` a variant taking a single `{}`, which `try` then fills in on its own",
+                    "name the wrap here — `expr catch e => return {}.SomeVariant(e)` — or give `{}` a variant taking a single `{}`, which `try` then fills in on its own",
                     outer_err, outer_err, inner_err
                 ))
                 .with_why("try propagates errors to the enclosing function — the error types must be compatible [error-types/ER9]")
@@ -475,11 +475,88 @@ impl ToDiagnostic for rask_types::TypeError {
                     inner_err,
                 ))
                 .with_fix(format!(
-                    "name the one you want: `try expr else |e| {}.{}(e)`",
+                    "name the one you want: `expr catch e => return {}.{}(e)`",
                     outer_err,
                     variants.first().map(String::as_str).unwrap_or("Variant"),
                 ))
                 .with_why("`try` only wraps on its own when exactly one variant of the boundary enum takes the error [error-types/ER31a]")
+            }
+
+            TryAbsenceIntoResult { return_ty, span } => {
+                Diagnostic::error("`try` here would propagate `none`, and this function has no absent branch")
+                    .with_code("E0360")
+                    .with_primary(*span, "`none` has nowhere to go")
+                    .with_note(format!("this function returns `{}`", return_ty))
+                    .with_fix("name the error instead: `x ?? return <error>`")
+                    .with_why("bare `try` sends the operand's other branch out unchanged, so it has to fit the return — an absence doesn't fit an error branch [type.errors/ER47]")
+            }
+
+            TryErrorIntoOptional { return_ty, span } => {
+                Diagnostic::error("`try` here would propagate an error, and this function only returns absence")
+                    .with_code("E0361")
+                    .with_primary(*span, "the error has nowhere to go")
+                    .with_note(format!("this function returns `{}`", return_ty))
+                    .with_fix("drop the error where it happens: `r catch _ => return none`")
+                    .with_why("bare `try` sends the operand's other branch out unchanged, so it has to fit the return [type.errors/ER47]")
+            }
+
+            TryOnFlatShape { found, span } => {
+                Diagnostic::error(format!(
+                    "`try` on `{}` has two ways to leave — the error and the absence",
+                    found
+                ))
+                .with_code("E0362")
+                .with_primary(*span, "which branch should leave?")
+                .with_fix("say both: `try f() ?? return none` — `try` sends the error up, `??` handles the absence here")
+                .with_why("a value that can fail and can be absent needs each outcome spelled out; `try` alone would guess [type.errors/ER47, ER16b]")
+            }
+
+            CatchOnOptional { found, span } => {
+                Diagnostic::error(format!("`catch` on `{}` — an absence carries no error to bind", found))
+                    .with_code("E0363")
+                    .with_primary(*span, "nothing to catch")
+                    .with_fix("use `??` for the absent case: `x ?? <value>`")
+                    .with_why("`catch` names or drops an error; `none` isn't one [type.errors/ER14]")
+            }
+
+            PresenceTestOnResult { found, span } => {
+                Diagnostic::error(format!("`?` on `{}` — `?` asks whether a value is there, and this can fail", found))
+                    .with_code("E0368")
+                    .with_primary(*span, "this is a result, not an optional")
+                    .with_fix("test the error with `r is <ErrorType> as e`, or handle it with `r catch e => …`")
+                    .with_why("presence and failure are different questions: a miss carries nothing, a failure carries an error you shouldn't step over [type.errors/ER12]")
+            }
+
+            CoalesceOnResult { found, span } => {
+                Diagnostic::error(format!("`??` on `{}` — `?` marks absence, and this can fail", found))
+                    .with_code("E0364")
+                    .with_primary(*span, "this is a result, not an optional")
+                    .with_fix("use `catch _ => <value>`, which says an error is being dropped")
+                    .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
+            }
+
+            TakeOnNonOptional { found, span } => {
+                Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
+                    .with_code("E0365")
+                    .with_primary(*span, "not a `T?` place")
+                    .with_fix("if this is a `T or E`, use `match` — an error is not a slot you empty")
+                    .with_why("`take` leaves `none` behind, so the place has to have an absent branch to leave [type.optionals/OPT32]")
+            }
+
+            TakeOnImmutablePlace { name, span } => {
+                Diagnostic::error(format!("`take` would empty `{}`, which is a `let` binding", name))
+                    .with_code("E0366")
+                    .with_primary(*span, "not writable")
+                    .with_fix(format!("declare it `mut {} = …`", name))
+                    .with_why("`take` writes `none` back into the slot — that's a mutation [type.optionals/OPT32]")
+            }
+
+            WrapperMethodCut { method, receiver, fix, span } => {
+                Diagnostic::error(format!("no method `{}` on `{}`", method, receiver))
+                    .with_code("E0367")
+                    .with_primary(*span, "the wrapper shapes have no methods")
+                    .with_fix(fix.clone())
+                    .with_why("`T?` and `T or E` are operator-only: one spelling per job, and the right side is lazy by construction [std.api/SD4]")
             }
 
             TryOutsideFunction { span } => {
@@ -1016,11 +1093,25 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
             }
             TypePatternNotResult { ty_name, found, span } => {
-                Diagnostic::error(format!("type pattern `{}` needs a Result scrutinee", ty_name))
+                // Two shapes of the same mistake: a scrutinee that has no
+                // branches at all, and one whose branches don't include this
+                // type. The second reads badly under the first's wording.
+                if matches!(found, rask_types::Type::Result { .. }) {
+                    Diagnostic::error(format!(
+                        "`{}` is not a branch of `{}` — this test can never be true",
+                        ty_name, found
+                    ))
                     .with_code("E0346")
-                    .with_primary(*span, format!("found `{}`", found))
-                    .with_help("type patterns narrow the error side of `T or E`; the scrutinee must be a Result")
-                    .with_why("`is Type as name` dispatches on the error branch — not applicable to other types [type.errors/ER23]")
+                    .with_primary(*span, "not one of its branches")
+                    .with_fix("name one of the branches, or drop the test")
+                    .with_why("`is` dispatches on the branches the scrutinee actually has [type.errors/ER23]")
+                } else {
+                    Diagnostic::error(format!("`is {}` needs a two-branch scrutinee", ty_name))
+                        .with_code("E0346")
+                        .with_primary(*span, format!("found `{}`", found))
+                        .with_fix("test a `T or E` or a `T?` — a plain value has no branch to pick")
+                        .with_why("`is Type as name` dispatches on one branch of a two-branch value [type.errors/ER23]")
+                }
             }
             TypePatternNotInUnion { ty_name, union, span } => {
                 Diagnostic::error(format!("`{}` is not a component of `{}`", ty_name, union))

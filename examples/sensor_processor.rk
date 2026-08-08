@@ -132,11 +132,11 @@ func interrupt_handler(
 
         for sensor_id in 0..3 {
             let value = read_hardware_sensor(sensor_id, sequence)
-            tx.send(Reading {
+            let _ = tx.send(Reading {
                 sensor_id: sensor_id,
                 value: value,
                 timestamp_ns: now_ns,
-            }).ok()
+            })
         }
 
         sequence += 1

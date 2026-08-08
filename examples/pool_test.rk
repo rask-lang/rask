@@ -58,7 +58,7 @@ func main() {
 
     // Safe get on stale handle (should be none)
     let stale = pool.get(h3)
-    if stale == none {
+    if stale is none {
         println("Correctly got none for stale handle")
     }
 
