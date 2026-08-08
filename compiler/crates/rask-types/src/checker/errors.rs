@@ -126,6 +126,11 @@ pub enum TypeError {
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },
+    /// OPT19: `while expr? as v` — parses and checks, but no backend can lower
+    /// a loop-carried binding yet (#593). Reported here rather than letting the
+    /// resolver blame the binder's name.
+    #[error("`while … ? as {binding}` isn't implemented yet")]
+    WhilePresenceBindingUnsupported { binding: String, span: Span },
     /// OPT32: `take` needs a `T?` place.
     #[error("`take` needs an optional slot, found `{found}`")]
     TakeOnNonOptional { found: Type, span: Span },

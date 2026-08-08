@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `while … ? as v` isn't implemented
+// ERROR: isn't implemented — the binder wouldn't survive to the loop body
+//
+// The form parses and would type-check, but no backend can bind a payload per
+// iteration: define the name and native MIR lowering dies with `unresolved
+// variable v` while the interpreter fails at runtime. So it's refused at the
+// form, hard and at check time, rather than compiling into a crash.
+//
+// It's also refused rather than left to the resolver, which used to get there
+// first and report `undefined symbol: v` — an error that blames the binder and
+// sends you looking at your own spelling (#593).
+//
+// `while <expr> is <Type> as v` does work on both backends, and is what the fix
+// line points at. Delete this file when #593 lands.
+
+func main() {
+    mut q: Vec<i64> = Vec.new()
+    q.push(1)
+    q.push(2)
+    mut total: i64 = 0
+    while q.pop()? as v {
+        total += v
+    }
+    println("total={total}")
+}

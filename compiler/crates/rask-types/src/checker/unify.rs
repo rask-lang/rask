@@ -62,6 +62,34 @@ impl TypeChecker {
             }
         }
 
+        // One last attempt at the shape constraints that only ever wait on
+        // another type settling — `??`, `!`, indexing. A constraint that defers
+        // reports no progress, so if nothing else moved in the same pass the
+        // loop above exits and the drain below throws it away, even though the
+        // substitution it was waiting for landed earlier in that very pass. That
+        // ordering is what left `try t.lookup(key) ?? continue` un-inferrable:
+        // the `try`'s ok type was bound after the `??` had already deferred.
+        //
+        // Bounded to a single retry on purpose — anything still unresolved after
+        // it genuinely has nothing to resolve from, and looping until quiet
+        // risks never going quiet.
+        let deferred = std::mem::take(&mut self.ctx.constraints);
+        for constraint in deferred {
+            if matches!(
+                constraint,
+                TypeConstraint::Coalesce { .. }
+                    | TypeConstraint::Unwrap { .. }
+                    | TypeConstraint::Index { .. }
+            ) {
+                match self.solve_constraint(constraint) {
+                    Ok(_) => {}
+                    Err(e) => self.errors.push(e),
+                }
+            } else {
+                self.ctx.constraints.push(constraint);
+            }
+        }
+
         // Report leftover constraints that the solver couldn't resolve.
         // These are real errors — silently dropping them lets bad code
         // reach MIR/codegen where it panics or produces wrong results.
@@ -174,6 +202,10 @@ impl TypeChecker {
 
             TypeConstraint::Unwrap { value, result, span } => {
                 self.resolve_unwrap(value, result, span)
+            }
+
+            TypeConstraint::Index { object, result, is_range, span } => {
+                self.resolve_index(object, result, is_range, span)
             }
 
             TypeConstraint::Coalesce { node, value, default, result, span } => {
@@ -305,6 +337,32 @@ impl TypeChecker {
         }
     }
 
+    /// Settle `object[index]` once the container's shape is known. Defers while
+    /// the container is still a variable — a Pool behind a struct field only
+    /// gets its type when that field's own constraint resolves.
+    fn resolve_index(
+        &mut self,
+        object: Type,
+        result: Type,
+        is_range: bool,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let obj = self.ctx.apply(&object);
+        if let Some(elem) = self.index_result_type(&obj, is_range) {
+            self.unify(&result, &elem, span)?;
+            return Ok(true);
+        }
+        if matches!(obj, Type::Var(_)) {
+            self.ctx
+                .add_constraint(TypeConstraint::Index { object, result, is_range, span });
+            return Ok(false);
+        }
+        // A container that resolved to something with no element type to read —
+        // an unparameterized generic, say. `check_index_types` already reported
+        // whatever was a real error at the index site, so stay quiet here.
+        Ok(false)
+    }
+
     fn resolve_coalesce(
         &mut self,
         node: rask_ast::NodeId,
@@ -315,6 +373,17 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let def = self.ctx.apply(&default);
         if matches!(def, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
+            return Ok(false);
+        }
+
+        // A diverging right side contributes no type of its own, so the result
+        // can only come from the left — and if the left hasn't resolved yet,
+        // there's nothing to take. Going ahead anyway bound the left to a shape
+        // whose payload was a fresh variable that nothing would ever fill, so
+        // `let v = try t.lookup(key) ?? continue` came out un-inferrable however
+        // `lookup` later resolved (#620 family).
+        if matches!(def, Type::Never) && matches!(self.ctx.apply(&value), Type::Var(_)) {
             self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
             return Ok(false);
         }

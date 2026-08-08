@@ -424,6 +424,11 @@ impl Interpreter {
         let mut skipped: Option<String> = None;
         let mut expect_fail = false;
 
+        // The body's prints belong to this test, so they're captured and handed
+        // back with the result instead of going straight to the terminal ahead
+        // of the harness's own banner (#612).
+        let outer_capture = self.begin_output_capture();
+
         self.env.push_scope();
 
         for stmt in body {
@@ -465,6 +470,7 @@ impl Interpreter {
 
         self.run_ensures(&ensures, false);
         self.env.pop_scope();
+        let output = self.restore_output_capture(outer_capture);
 
         // T13: expect_fail inverts pass/fail
         let passed = if expect_fail {
@@ -482,6 +488,7 @@ impl Interpreter {
             duration: start.elapsed(),
             errors,
             skipped,
+            output,
         }
     }
 
@@ -491,6 +498,8 @@ impl Interpreter {
         let mut errors: Vec<String> = Vec::new();
         let mut skipped: Option<String> = None;
         let mut expect_fail = false;
+
+        let outer_capture = self.begin_output_capture();
 
         match self.call_function(func, vec![]) {
             Ok(_) => {}
@@ -515,6 +524,8 @@ impl Interpreter {
             }
         }
 
+        let output = self.restore_output_capture(outer_capture);
+
         let passed = if expect_fail {
             !errors.is_empty()
         } else {
@@ -530,6 +541,7 @@ impl Interpreter {
             duration: start.elapsed(),
             errors,
             skipped,
+            output,
         }
     }
 

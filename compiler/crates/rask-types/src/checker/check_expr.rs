@@ -284,44 +284,24 @@ impl TypeChecker {
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
                 self.check_index_types(&obj_ty, &idx_ty, is_range, index.span);
-                match &obj_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => {
-                        if is_range {
-                            Type::Slice(elem.clone())
-                        } else {
-                            *elem.clone()
-                        }
+                match self.index_result_type(&obj_ty, is_range) {
+                    Some(elem) => elem,
+                    None => {
+                        // Shape unknown here — `state.entities[h]` waits on the
+                        // field's type, which arrives as a deferred constraint of
+                        // its own. Record the relationship rather than handing
+                        // back a fresh variable with nothing tying it to the
+                        // container, which left `let e = state.entities[h]` with
+                        // an open type however the field later resolved (#632).
+                        let elem = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Index {
+                            object: raw_obj_ty,
+                            result: elem.clone(),
+                            is_range,
+                            span: expr.span,
+                        });
+                        elem
                     }
-                    Type::String => {
-                        if is_range {
-                            Type::String
-                        } else {
-                            Type::Char
-                        }
-                    }
-                    // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
-                    // Map<K,V> indexed by K → value type from second arg.
-                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                        let is_map = match &obj_ty {
-                            Type::UnresolvedGeneric { name, .. } => name == "Map",
-                            Type::Generic { base, .. } => self
-                                .types
-                                .get_type_id("Map")
-                                .map_or(false, |id| id == *base),
-                            _ => false,
-                        };
-                        let elem_arg = if is_map { args.get(1) } else { args.first() };
-                        if let Some(GenericArg::Type(elem)) = elem_arg {
-                            if is_range {
-                                Type::Slice(elem.clone())
-                            } else {
-                                *elem.clone()
-                            }
-                        } else {
-                            self.ctx.fresh_var()
-                        }
-                    }
-                    _ => self.ctx.fresh_var(),
                 }
             }
 
@@ -1542,6 +1522,45 @@ impl TypeChecker {
     // ------------------------------------------------------------------------
     // Specific Type Checks
     // ------------------------------------------------------------------------
+
+    /// What `object[index]` yields, given the container's type. `None` means the
+    /// container's shape isn't known yet — the caller defers instead of guessing.
+    ///
+    /// Shared with the deferred `Index` constraint so both readings of an index
+    /// agree; they used to be the same match written once, inline, with a fresh
+    /// variable where this returns `None`.
+    pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
+        match obj_ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
+                Type::Slice(elem.clone())
+            } else {
+                *elem.clone()
+            }),
+            Type::String => Some(if is_range { Type::String } else { Type::Char }),
+            // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
+            // Map<K,V> indexed by K → value type from second arg.
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                let is_map = match obj_ty {
+                    Type::UnresolvedGeneric { name, .. } => name == "Map",
+                    Type::Generic { base, .. } => self
+                        .types
+                        .get_type_id("Map")
+                        .map_or(false, |id| id == *base),
+                    _ => false,
+                };
+                let elem_arg = if is_map { args.get(1) } else { args.first() };
+                match elem_arg {
+                    Some(GenericArg::Type(elem)) => Some(if is_range {
+                        Type::Slice(elem.clone())
+                    } else {
+                        *elem.clone()
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 
     pub(super) fn check_binary(&mut self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Type {
         let left_ty = self.infer_expr(left);

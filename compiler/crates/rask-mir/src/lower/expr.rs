@@ -3953,15 +3953,33 @@ impl<'a> MirLowerer<'a> {
             // read came back as a pointer and a `Cell<i32>` got loaded eight bytes
             // wide.
             self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
-        } else if qualified_name == "Receiver_receive_struct" {
+        } else if matches!(qualified_name.as_str(),
+            "Receiver_receive_struct" | "Receiver_try_receive")
+        {
             // Renamed from Receiver_receive above for struct elements. Only the
             // original name is in the stub metadata, so the fallback typed the
             // result a bare i64 — then `r?` read a tag off a local that never got
             // a Result slot and every receive looked like a failure (#463).
+            //
+            // `try_receive` has the same gap and a worse symptom. Its stub says
+            // `T or TryReceiveError`; neither side survives to MIR, so the result
+            // typed as `i64 or i64`. With both sides nameless the ok/err routing
+            // ran out of type identities and fell through to its last-resort
+            // capitalization guess, which sent `is Reading` to the *error* tag —
+            // so the success branch ran on an empty channel and read a payload
+            // nothing had written (#631).
+            let stub = if qualified_name == "Receiver_try_receive" {
+                "Receiver_try_receive"
+            } else {
+                "Receiver_receive"
+            };
             self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
-                .or_else(|| self.func_sigs.get("Receiver_receive").map(|s| s.ret_ty.clone()))
-                .or_else(|| Some(super::stdlib_return_mir_type("Receiver_receive")))
+                .filter(|t| matches!(t,
+                    MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
+                .or_else(|| self.ctx.lookup_node_type(expr.id)
+                    .filter(|t| matches!(t, MirType::Option(_))))
+                .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
+                .or_else(|| Some(super::stdlib_return_mir_type(stub)))
         } else if qualified_name == "string_parse"
             || qualified_name.strip_prefix("string_parse_")
                 .is_some_and(super::is_parse_target_type_name)
