@@ -1041,7 +1041,7 @@ impl TypeChecker {
     /// operators are homogeneous, so `a + b` on mixed types is still an error.
     /// That's the line C's "usual arithmetic conversions" crossed, and it's why
     /// `-1 < 1u` is true there.
-    fn is_integer_widening(from: &Type, to: &Type) -> bool {
+    pub(super) fn is_integer_widening(from: &Type, to: &Type) -> bool {
         let (Some((from_bits, from_signed)), Some((to_bits, to_signed))) =
             (Self::int_shape(from), Self::int_shape(to))
         else {

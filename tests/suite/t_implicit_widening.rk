@@ -73,3 +73,95 @@ test "type.primitives — widening still works through a call chain" {
     let big: i64 = mid
     assert takes_i64(big) == 7
 }
+
+// Every position CV1a coerces at, in one place. 3000000000 is the probe value
+// throughout: bit 31 is set, so a sign-extend shows up as a negative rather than
+// a number that looks nearly right.
+struct Assignable {
+    wide: i64
+}
+
+enum Bad {
+    Nope
+}
+
+extend Bad {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func returns_result(x: u32) -> i64 or Bad {
+    return x
+}
+
+test "type.primitives — a widened value reaches a struct field, both ways in" {
+    let big: u32 = 3000000000
+    let lit = Assignable { wide: big }
+    assert lit.wide == 3000000000
+    mut asg = Assignable { wide: 0 }
+    asg.wide = big
+    assert asg.wide == 3000000000
+}
+
+test "stdlib.collections — a widened value survives a Vec and a Map" {
+    let big: u32 = 3000000000
+    mut v: Vec<i64> = Vec.new()
+    v.push(big)
+    assert v[0] == 3000000000
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", big)
+    if m.get("k")? as got {
+        assert got == 3000000000
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — a widened value survives an optional and a result" {
+    let big: u32 = 3000000000
+    let opt: i64? = big
+    if opt? as got {
+        assert got == 3000000000
+    } else {
+        assert false
+    }
+    let res = returns_result(big) catch _ => -1
+    assert res == 3000000000
+}
+
+test "mem.boxes — a widened value survives a closure and a Cell" {
+    let big: u32 = 3000000000
+    let f = || {
+        return big
+    }
+    let captured: i64 = f()
+    assert captured == 3000000000
+
+    let cell = Cell.new(0)
+    cell.set(big)
+    with cell as c {
+        assert c == 3000000000
+    }
+}
+
+// A tuple literal is built at the *annotated* layout, not its elements'. Typed
+// from the elements it packed a u32 at offset 0 and a u16 at offset 4, then those
+// bytes were copied into an `(i64, i32)` slot whose fields sit at 0 and 8 —
+// reading `.0` spanned both and gave `60000 << 32 | 3000000000`.
+test "type.tuples — a tuple literal widens its elements into the declared shape" {
+    let big: u32 = 3000000000
+    let mid: u16 = 60000
+    let t: (i64, i32) = (big, mid)
+    assert t.0 == 3000000000
+    assert t.1 == 60000
+}
+
+test "type.tuples — a mixed-width tuple with no coercion is unchanged" {
+    let a: (i64, i32) = (3000000000, 60000)
+    assert a.0 == 3000000000
+    assert a.1 == 60000
+    let b: (i32, i64) = (7, 3000000000)
+    assert b.0 == 7
+    assert b.1 == 3000000000
+}
