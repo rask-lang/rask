@@ -837,7 +837,10 @@ impl Desugarer {
 
     /// Parse the expression text inside a `{…}` placeholder.
     fn parse_placeholder_expr(&mut self, text: &str, span: rask_ast::Span) -> Option<Expr> {
-        let lex = rask_lexer::Lexer::new(text).tokenize();
+        // The placeholder body is re-lexed, so its tokens need the enclosing
+        // file stamped on them — the parser lifts token spans directly for
+        // names, and without this everything inside a `"{…}"` claimed file 0.
+        let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
         if !lex.errors.is_empty() {
             self.errors.push(DesugarError {
                 message: format!("`{{{}}}` in the format template isn't an expression", text),
@@ -981,7 +984,7 @@ impl Desugarer {
                 }
                 InterpSegment::Expr(expr_str, offset_in_str) => {
                     // Parse the expression using the real lexer/parser
-                    let lex = rask_lexer::Lexer::new(expr_str).tokenize();
+                    let lex = rask_lexer::Lexer::new_with_file_id(expr_str, span.file_id).tokenize();
                     if !lex.errors.is_empty() {
                         return None; // Parse error — leave as raw string
                     }

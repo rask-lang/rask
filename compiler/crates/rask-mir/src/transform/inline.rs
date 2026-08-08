@@ -391,16 +391,22 @@ fn try_inline_call(
 fn compute_body_span(func: &MirFunction) -> Span {
     let mut min_start = u32::MAX;
     let mut max_end = 0u32;
+    // Offsets only mean something against a file, so carry the one they came
+    // from. A merged span that dropped it claimed file 0 and pointed into
+    // whatever sits at that offset there.
+    let mut file_id = 0u16;
     for block in &func.blocks {
         for stmt in &block.statements {
             let s = stmt.span;
             if s.end > 0 {
+                if min_start == u32::MAX { file_id = s.file_id; }
                 min_start = min_start.min(s.start as u32);
                 max_end = max_end.max(s.end as u32);
             }
         }
         let t = block.terminator.span;
         if t.end > 0 {
+            if min_start == u32::MAX { file_id = t.file_id; }
             min_start = min_start.min(t.start as u32);
             max_end = max_end.max(t.end as u32);
         }
@@ -408,7 +414,7 @@ fn compute_body_span(func: &MirFunction) -> Span {
     if max_end == 0 {
         Span::new(0, 0)
     } else {
-        Span::new(min_start as usize, max_end as usize)
+        Span::with_file(min_start as usize, max_end as usize, file_id)
     }
 }
 

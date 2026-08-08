@@ -4906,7 +4906,7 @@ impl Parser {
 
                 let bad_expr = |parser: &mut Self, detail: &str| {
                     parser.errors.push(ParseError {
-                        span: Span::new(abs_offset, abs_offset + expr_str.len()),
+                        span: parser.span(abs_offset, abs_offset + expr_str.len()),
                         message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
                         hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
                         why: None,

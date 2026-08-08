@@ -2453,8 +2453,8 @@ fn package_diagnostic_names_the_right_file() {
         "expected the unresolved-type error from the fixture, got:\n{combined}"
     );
     assert!(
-        combined.contains("zzz_second.rk:9:9"),
-        "diagnostic should point at zzz_second.rk:9:9 — the binding's real home.\n\
+        combined.contains("zzz_second.rk:12:9"),
+        "diagnostic should point at zzz_second.rk:12:9 — the binding's real home.\n\
          Reporting aaa_first.rk means token spans lost their file_id again.\n\
          Got:\n{combined}"
     );
@@ -2467,5 +2467,11 @@ fn package_diagnostic_names_the_right_file() {
     assert!(
         combined.contains("let unconstrained = Vec.new()"),
         "the snippet should show the actual offending line:\n{combined}"
+    );
+    // A second error, this one inside a string interpolation — desugar re-lexes
+    // the placeholder body, so those tokens need the file stamped too.
+    assert!(
+        combined.contains("zzz_second.rk:14:"),
+        "the interpolation error should also name the second file:\n{combined}"
     );
 }
