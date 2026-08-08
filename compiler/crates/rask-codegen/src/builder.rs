@@ -2192,13 +2192,31 @@ impl<'a> FunctionBuilder<'a> {
         );
 
         if let Some(dst_id) = dst {
-            let results = builder.inst_results(call_inst);
-            if !results.is_empty() {
+            let result = builder.inst_results(call_inst).first().copied();
+            if let Some(result) = result {
                 let var = ctx.var_map.get(dst_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureCall destination not found".to_string()
                     ))?;
-                builder.def_var(*var, results[0]);
+                // A closure body is an ordinary Rask function, so it returns an
+                // aggregate the way the Return terminator does: the bare value
+                // when it fits in a word, otherwise a pointer into its own frame.
+                // Neither survives being parked in the destination variable —
+                // the word gets dereferenced as an address (#633) and the
+                // pointer is overwritten by the next call's frame (#611). Copy
+                // into the destination's own slot here, like every other call
+                // site does.
+                if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
+                    if *size <= 8 {
+                        builder.ins().stack_store(result, *ss, 0);
+                    } else {
+                        Self::copy_aggregate(builder, result, *ss, *size);
+                    }
+                    let addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    builder.def_var(*var, addr);
+                } else {
+                    builder.def_var(*var, result);
+                }
             }
         }
         Ok(())
