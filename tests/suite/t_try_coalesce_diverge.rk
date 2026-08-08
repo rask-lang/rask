@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try X ?? continue` on a nested `T? or E` — registered divergence (#635).
+//
+// The composite reads as: propagate the error, skip this iteration on absence,
+// otherwise take the value. Interp does that. Native takes `continue` on every
+// item and falls out of the loop, so the hit is never found.
+//
+// Kept as its own file so the rest of the field-iteration tests
+// (t_iterate_field_collection.rk) stay in the green gate. Delete this file's
+// line from known_divergences.txt when the codegen is fixed.
+
+enum StoreError {
+    Broken
+}
+
+extend StoreError {
+    func message(self) -> string {
+        return "broken"
+    }
+}
+
+struct Item {
+    n: i64
+}
+
+extend Item {
+    func lookup(self) -> string? or StoreError {
+        if self.n < 0 {
+            return StoreError.Broken
+        }
+        if self.n == 0 {
+            return none
+        }
+        return "v{self.n}"
+    }
+}
+
+struct Bag {
+    items: Vec<Item>
+}
+
+extend Bag {
+    func first_hit(self) -> string or StoreError {
+        for it in self.items {
+            let v = try it.lookup() ?? continue
+            return v
+        }
+        return "MISS"
+    }
+}
+
+func build() -> Bag {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })
+    items.push(Item { n: 3 })
+    return Bag { items: items }
+}
+
+test "type.errors — `try … ?? continue` finds the hit past a miss" {
+    let got = build().first_hit() catch _ => "ERR"
+    assert got == "v3"
+}

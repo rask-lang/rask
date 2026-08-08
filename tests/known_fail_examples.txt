@@ -11,16 +11,27 @@
 # 11_closures, 12_iterators, 14_borrowing_patterns, 15_memory_management,
 # pool_test. Re-measure before trusting a line here — a stale registry reads as
 # "known broken" and nobody rechecks.
+#
+# Re-measured again 2026-08-08. Two lines were stale: sensor_processor runs on
+# both backends now (#580 fixed), and game_loop no longer gets far enough to
+# diverge — it stops at an E0361 instead.
 
 # --- native fails to run (interp OK) — native codegen rot ---
 09_generics.rk           # both exit 0, stdout DIVERGES (generic layout, #272 family)
 13_string_operations.rk  # native exit 1
 16_concurrency_basics.rk # native exit 1
 18_resource_types.rk     # native exit 1
-game_loop.rk             # both exit 0, stdout DIVERGES — was a MIR lowering failure,
-                         # now runs on both and disagrees. PLAN Track 3.
-sensor_processor.rk      # native exit 1; interp now TIMES OUT (>60s) where it used to
-                         # finish — a second bug on top of the #272 layout miscompile
+
+# --- runs on both backends, but can't be goldened ---
+sensor_processor.rk      # #580 fixed: both exit 0 and print the same report. No golden
+                         # because the numbers are wall-clock derived — sample counts,
+                         # cycle times and the simulated sensor values all differ run
+                         # to run, on one backend as much as between two.
+
+game_loop.rk             # native panics "pool access with invalid handle" at line 187,
+                         # one frame in; interp runs all 300 frames and exits 0. Was an
+                         # E0361 on `let e = state.entities[h]` until #632 fixed the
+                         # index inference, which is what got it this far.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1

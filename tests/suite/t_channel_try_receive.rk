@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try_receive()` narrows to the right side of its Result (#631).
+//
+// The stub says `T or TryReceiveError` and neither side survived to MIR, so the
+// result typed as `i64 or i64`. With no type identity on either side the ok/err
+// routing fell through to guessing from capitalization, and an uppercase
+// element name went to the *error* tag — so `is Reading` was true exactly when
+// the channel was empty, and the body then read a payload nothing had written.
+
+struct Reading {
+    sensor_id: i64
+    value: f64
+    timestamp_ns: i64
+}
+
+test "concurrency.channels — try_receive narrows to the element on a hit" {
+    let (tx, rx) = Channel<Reading>.buffered(16)
+    tx.send(Reading { sensor_id: 7, value: 2.5, timestamp_ns: 100 })
+    if rx.try_receive() is Reading as r {
+        assert r.sensor_id == 7
+        assert r.value == 2.5
+        assert r.timestamp_ns == 100
+    } else {
+        assert false
+    }
+}
+
+test "concurrency.channels — try_receive on an empty channel doesn't narrow" {
+    let (tx, rx) = Channel<Reading>.buffered(16)
+    if rx.try_receive() is Reading as r {
+        // The empty case used to land here and read an unwritten payload.
+        assert false
+    } else {
+        assert true
+    }
+}
+
+// The drain loop is the shape that crashed examples/sensor_processor: it runs
+// until the channel is empty, so it always takes the miss branch last.
+test "concurrency.channels — a drain loop stops when the channel empties" {
+    let (tx, rx) = Channel<Reading>.buffered(16)
+    tx.send(Reading { sensor_id: 1, value: 1.0, timestamp_ns: 10 })
+    tx.send(Reading { sensor_id: 2, value: 2.0, timestamp_ns: 20 })
+    tx.send(Reading { sensor_id: 3, value: 3.0, timestamp_ns: 30 })
+
+    mut seen: i64 = 0
+    mut id_sum: i64 = 0
+    mut value_sum: f64 = 0.0
+    while rx.try_receive() is Reading as r {
+        seen += 1
+        id_sum += r.sensor_id
+        value_sum += r.value
+    }
+    assert seen == 3
+    assert id_sum == 6
+    assert value_sum == 6.0
+}
+
+test "concurrency.channels — a scalar element drains the same way" {
+    let (tx, rx) = Channel<i64>.buffered(8)
+    tx.send(11)
+    tx.send(31)
+    mut total: i64 = 0
+    while rx.try_receive() is i64 as v {
+        total += v
+    }
+    assert total == 42
+}

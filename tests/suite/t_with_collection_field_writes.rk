@@ -50,7 +50,10 @@ extend Store {
         return with self.tasks[h] as t { t.weight }
     }
 
-    func tag_count(self, h: Handle<Task>) -> i64 {
+    // `len()` answers `usize`, so this returns u64 — it read `i64` until the
+    // deferred index constraint gave the `with` block a real type and the
+    // mismatch became visible (#632).
+    func tag_count(self, h: Handle<Task>) -> u64 {
         return with self.tasks[h] as t { t.tags.len() }
     }
 

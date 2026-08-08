@@ -50,6 +50,10 @@ pub struct TestResult {
     pub errors: Vec<String>,
     /// Test was skipped via skip("reason")
     pub skipped: Option<String>,
+    /// Whatever the body printed. Captured per-test rather than written straight
+    /// through, so the CLI can show it under the test that produced it — and so
+    /// both backends render it the same way (#612).
+    pub output: String,
 }
 
 /// Result of running a single benchmark.
@@ -459,6 +463,33 @@ impl Interpreter {
         }
     }
 
+    /// Divert print output into a fresh buffer, handing back whatever was
+    /// installed before. Restore with `restore_output_capture`.
+    pub(crate) fn begin_output_capture(&mut self) -> Option<Arc<Mutex<String>>> {
+        let previous = self.output_buffer.take();
+        self.output_buffer = Some(Arc::new(Mutex::new(String::new())));
+        previous
+    }
+
+    /// Put back `previous` and return what was captured meanwhile. When a buffer
+    /// was already installed the captured text is appended to it instead, so an
+    /// outer capture still sees everything.
+    pub(crate) fn restore_output_capture(
+        &mut self,
+        previous: Option<Arc<Mutex<String>>>,
+    ) -> String {
+        let captured = self
+            .output_buffer
+            .take()
+            .map(|b| b.lock().unwrap().clone())
+            .unwrap_or_default();
+        if let Some(outer) = &previous {
+            outer.lock().unwrap().push_str(&captured);
+        }
+        self.output_buffer = previous;
+        captured
+    }
+
     fn write_output(&self, s: &str) {
         if let Some(buf) = &self.output_buffer {
             buf.lock().unwrap().push_str(s);
@@ -670,6 +701,7 @@ impl Interpreter {
                     duration: std::time::Duration::ZERO,
                     errors: vec![format!("{}", e)],
                     skipped: None,
+                    output: String::new(),
                 }];
             }
         };
