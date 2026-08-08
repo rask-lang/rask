@@ -771,13 +771,16 @@ fn fixup_return_values(
 }
 
 /// The (offset, value) stores that spell out what a valueless `return` means
-/// for a Result- or Option-returning callee. These mirror the slots the return
+/// for a Result- or Option-returning callee. These match the slots the return
 /// terminator builds out of line, so inlining a function can't change what it
 /// means. Empty for every other return type, where a bare `return` has nothing
 /// to write.
 ///
-/// The Option arm only exists to keep the two paths identical — the checker
-/// rejects a bare `return` in a `-> T?` function (E0308), so nothing reaches it.
+/// A bare `return` carries no value, so on the Option side it can only mean
+/// absence. Nothing reaches that arm today — the checker rejects `return` with
+/// no value in a `-> T?` function (E0308) — but if a lowering path ever
+/// produces one, `none` is the only reading of it that isn't a fabricated
+/// payload.
 fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64)> {
     use rask_mono::abi;
     match ret_ty {
@@ -788,10 +791,8 @@ fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64)> {
             (abi::RESULT_ORIGIN_LINE_OFFSET, 0),
             (abi::RESULT_PAYLOAD_OFFSET, 0),
         ],
-        MirType::Option(_) => vec![
-            (abi::OPTION_TAG_OFFSET, 0),
-            (abi::OPTION_PAYLOAD_OFFSET, 0),
-        ],
+        // none: tag 1, payload dead.
+        MirType::Option(_) => vec![(abi::OPTION_TAG_OFFSET, 1)],
         _ => Vec::new(),
     }
 }
@@ -980,20 +981,14 @@ mod tests {
         assert!(main.locals.len() > 1, "expected >1 locals, got {}", main.locals.len());
     }
 
-    /// #577: a `void or E` callee whose success exit is a bare `return` has to
-    /// leave an Ok tag in the caller's destination. Without it the caller's `try`
-    /// branched on an untouched stack slot — Ok while the stack was still zeroed,
-    /// a spurious error (with a payload nobody wrote) once it wasn't.
-    #[test]
-    fn bare_return_writes_ok_tag() {
-        let void_or_err = MirType::Result {
-            ok: Box::new(MirType::Void),
-            err: Box::new(MirType::I32),
-        };
+    /// Inline a callee whose only exit is a valueless `return`, and report the
+    /// (destination, tag) the caller's result slot ends up with — None when
+    /// nothing wrote the tag at all.
+    fn inline_bare_return(ret_ty: MirType) -> Option<(LocalId, i64)> {
         let callee = MirFunction {
             name: "check".to_string(),
             params: vec![],
-            ret_ty: void_or_err.clone(),
+            ret_ty: ret_ty.clone(),
             locals: vec![],
             blocks: vec![MirBlock {
                 id: BlockId(0),
@@ -1008,7 +1003,7 @@ mod tests {
             name: "main".to_string(),
             params: vec![],
             ret_ty: MirType::Void,
-            locals: vec![make_local(0, "r", void_or_err, false)],
+            locals: vec![make_local(0, "r", ret_ty, false)],
             blocks: vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Call {
@@ -1026,17 +1021,41 @@ mod tests {
         let mut fns = vec![caller, callee];
         let _ = inline_functions(&mut fns);
 
-        let dst = fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| {
-            match &s.kind {
-                MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
-                    if *offset == rask_mono::abi::OPTION_TAG_OFFSET => Some((*addr, *v)),
-                _ => None,
-            }
+        fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
+            MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
+                if *offset == rask_mono::abi::OPTION_TAG_OFFSET => Some((*addr, *v)),
+            _ => None,
+        })
+    }
+
+    /// #577: a `void or E` callee whose success exit is a bare `return` has to
+    /// leave an Ok tag in the caller's destination. Without it the caller's `try`
+    /// branched on an untouched stack slot — Ok while the stack was still zeroed,
+    /// a spurious error (with a payload nobody wrote) once it wasn't.
+    #[test]
+    fn bare_return_writes_ok_tag() {
+        let found = inline_bare_return(MirType::Result {
+            ok: Box::new(MirType::Void),
+            err: Box::new(MirType::I32),
         });
         assert_eq!(
-            dst,
+            found,
             Some((LocalId(0), 0)),
             "inlined bare `return` left the caller's Result slot unwritten",
+        );
+    }
+
+    /// A `return` with no value can only mean absence on the Option side, so it
+    /// writes the none tag rather than wrapping a zero as `Some`. Unreachable
+    /// from source — the checker rejects the form — but it has to agree with
+    /// what codegen's empty_return_value builds out of line.
+    #[test]
+    fn bare_return_writes_none_tag() {
+        let found = inline_bare_return(MirType::Option(Box::new(MirType::I32)));
+        assert_eq!(
+            found,
+            Some((LocalId(0), 1)),
+            "inlined bare `return` should leave `none`, not a fabricated Some",
         );
     }
 

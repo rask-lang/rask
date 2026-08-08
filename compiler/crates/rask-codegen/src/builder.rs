@@ -4610,9 +4610,15 @@ impl<'a> FunctionBuilder<'a> {
     /// Emit a return instruction.
     /// The value a bare `return` yields in a function that returns something.
     ///
-    /// For `T or E` / `T?` that's a wrapped ok/some with a zero payload — the
-    /// shape the plain `Return` path builds — handed back as the address of the
-    /// result slot. Anything else gets a zero of the return type.
+    /// For `T or E` that's Ok with a zero payload — the success exit of a
+    /// `void or E`. For `T?` it's `none`: a bare `return` carries no value, so
+    /// building a `Some` around a zero would invent a payload the source never
+    /// wrote. Either way it's handed back as the address of the result slot.
+    /// Anything else gets a zero of the return type.
+    ///
+    /// The Option side is unreachable today — the checker rejects `return` with
+    /// no value in a `-> T?` function (E0308) — but the inline pass spells out
+    /// the same two cases, and the two have to agree.
     fn empty_return_value(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
@@ -4624,10 +4630,10 @@ impl<'a> FunctionBuilder<'a> {
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot, slot_size, 0,
             ));
-            let zero = builder.ins().iconst(types::I64, 0);
             if matches!(ctx.ret_ty, MirType::Option(_)) {
-                Self::build_some(builder, ss, zero);
+                Self::build_none(builder, ss);
             } else {
+                let zero = builder.ins().iconst(types::I64, 0);
                 Self::build_ok(builder, ss, zero);
             }
             return Ok(builder.ins().stack_addr(types::I64, ss, 0));
