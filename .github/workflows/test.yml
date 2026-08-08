@@ -10,8 +10,11 @@ on:
 
 # Two concurrent jobs, split so they finish at about the same time:
 #
-#   gates      — everything that needs the rask binary (~2m35)
-#   rust-tests — cargo test, which needs no rask binary of its own (~2m35)
+#   gates      — everything that needs the rask binary (~3m25 warm)
+#   rust-tests — cargo test, which needs no rask binary of its own (~3m00 warm)
+#
+# Warm is the number that matters: a cold cache adds ~1m20 to the compiler
+# build and ~1m25 to cargo test. Measured on run 31270117921.
 #
 # The old single job ran cargo test *after* a `cargo build -p rask-cli` it never
 # needed, so ~2m30 of Rust compilation sat behind ~1m of unrelated work.
@@ -52,7 +55,12 @@ jobs:
           ~/.cargo/git/db/
           compiler/target/
         key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-gates-
+        # Falls back to this job's last cache, then to the pre-split key. Without
+        # that second line, renaming the key costs one fully cold run per branch
+        # — 2m24 to build the compiler instead of ~1m, and 3m56 for cargo test.
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+          ${{ runner.os }}-cargo-test-
 
     # Build steps are hard prerequisites: if either fails, the gates below are
     # skipped (nothing can run without the binary).
@@ -123,7 +131,8 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     # Separate key from the gates job so the two don't race to write the same
-    # cache; restore-keys still warms this one from its own last run.
+    # cache; restore-keys warms this one from its own last run, then from the
+    # pre-split key so renaming doesn't cost a cold run on every new branch.
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -134,7 +143,9 @@ jobs:
           ~/.cargo/git/db/
           compiler/target/
         key: ${{ runner.os }}-cargo-rust-tests-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-rust-tests-
+        restore-keys: |
+          ${{ runner.os }}-cargo-rust-tests-
+          ${{ runner.os }}-cargo-test-
 
     # The native compile+run golden fixtures shell out to the C runtime.
     - name: Build C runtime
