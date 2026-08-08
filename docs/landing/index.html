@@ -136,14 +136,16 @@ entities[enemy].target = player_handle</code></pre>
                     <td>No lifetime annotations</td>
                 </tr>
                 <tr>
-                    <td>Implicit string sharing</td>
-                    <td>Explicit .clone() when needed</td>
+                    <td>Implicit copies of large values</td>
+                    <td>Allocations you can see in the source</td>
                 </tr>
                 <tr>
                     <td>Direct pointer traversal</td>
                     <td>Handles with runtime checks</td>
                 </tr>
             </table>
+
+            <p>Strings are the deliberate exception: <code>string</code> is immutable and refcounted, so it's Copy at 16 bytes and passes around like an integer — no <code>.clone()</code>. The visible cost is for the things that actually own heap memory, like Vec and Map.</p>
 
             <p>For pointer-level optimization, use Rust or C++. I'm betting that most application code can live with these tradeoffs — but that's still being tested.</p>
         </section>
