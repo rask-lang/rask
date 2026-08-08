@@ -264,6 +264,17 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::While { cond, body, .. } => {
+                // OPT19: `while expr? as v` parses and would check, but nothing
+                // can lower a loop-carried binding — define the name and native
+                // MIR lowering dies on it while the interpreter fails at runtime.
+                // Say so at the form instead of letting the resolver report
+                // `undefined symbol: v`, which blames the binder (#593).
+                if let ExprKind::IsPresent { binding: Some(name), .. } = &cond.kind {
+                    self.errors.push(TypeError::WhilePresenceBindingUnsupported {
+                        binding: name.clone(),
+                        span: stmt.span,
+                    });
+                }
                 let cond_ty = self.infer_expr(cond);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));

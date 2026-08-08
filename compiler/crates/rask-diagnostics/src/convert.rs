@@ -548,6 +548,21 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
+            WhilePresenceBindingUnsupported { binding, span } => {
+                Diagnostic::error(format!(
+                    "`while … ? as {}` isn't implemented — the binder wouldn't survive to the loop body",
+                    binding
+                ))
+                    .with_code("E0369")
+                    .with_primary(*span, "no backend can bind this per iteration yet")
+                    .with_fix(format!(
+                        "use the `is` form, which does: `while <expr> is <Type> as {} {{ … }}` — \
+                         or unwrap inside the loop: `loop {{ let opt = <expr>; if opt? as {} {{ … }} else {{ break }} }}`",
+                        binding, binding
+                    ))
+                    .with_why("the resolver would define the name and lowering would then fail on it, so this stops at the form rather than at your variable [type.optionals/OPT19, #593]")
+            }
+
             TakeOnNonOptional { found, span } => {
                 Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
                     .with_code("E0365")
