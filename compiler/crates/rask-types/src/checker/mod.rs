@@ -25,6 +25,7 @@ mod unify;
 mod generics;
 mod resolve;
 mod validate;
+mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
@@ -364,6 +365,8 @@ impl TypeChecker {
             .iter()
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
+
+        self.validate_resolved_binding_types(decls, &node_types);
 
         // Build reverse map TypeId → name for normalizing Named types
         let id_to_name: HashMap<crate::TypeId, String> = self.types.type_names

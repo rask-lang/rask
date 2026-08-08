@@ -424,6 +424,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            UnresolvedType { name, hint, span } => {
+                let shown = hint.as_deref().unwrap_or("SomeType");
+                Diagnostic::error(format!("couldn't work out the type of `{}`", name))
+                    .with_code("E0361")
+                    .with_primary(*span, "type is still open here")
+                    .with_fix(format!("annotate it: `let {}: {} = …`", name, shown))
+                    .with_help(format!(
+                        "nothing in scope pins this down, so there's no type to compile against.                          Writing it out settles it: `let {}: {} = …`.                          If you think it should have been inferable, that's a compiler bug worth reporting.",
+                        name, shown
+                    ))
+                    .with_why("every value needs a known type before it can be compiled — guessing one would silently pick the wrong size for a float, a string, or a struct")
+            }
+
             SingleLetterTypeName { name, kind, span } => {
                 Diagnostic::error(format!(
                     "single-letter type name `{}` is reserved for type parameters",
