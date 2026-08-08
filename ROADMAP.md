@@ -6,17 +6,23 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). The validation programs have regressed and need fixes (#203).
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). Two of the five validation programs run on both backends; the rest are down to one named bug each, not a general regression.
 
 ## Validation programs
 
+Re-measured 2026-08-08 by running all five. Every blocker below is a live
+symptom with an issue; the previous table had drifted badly — it blamed
+`Pool.insert returns Result` (it returns a bare `Handle<T>`), a string-slice
+error in grep clone (which works), and type mismatches in the text editor
+(which type-checks).
+
 | Program | Status | Blocker |
 |---------|--------|---------|
-| grep clone | Regressed | String slice storage error |
-| Text editor with undo | Regressed | Type mismatches from API changes |
-| Game loop with entities | Regressed | Pool.insert returns Result now |
-| Sensor processor | Regressed | Missing methods on generic T |
-| HTTP JSON API server | Blocked | Needs `json.encode`/`decode` (Phase 1) |
+| Sensor processor | **Works** | — enrolled in the gate with a golden |
+| grep clone | **Works** | not gated: the gate can't pass argv (#658) |
+| Game loop with entities | Native only | native rejects handles from `for h in pool` (#652) |
+| Text editor with undo | Hangs | spins forever at EOF instead of quitting (#659) |
+| HTTP JSON API server | Blocked | needs `json.encode`/`decode` (Phase 1) |
 
 ## Stdlib architecture
 

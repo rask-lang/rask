@@ -28,24 +28,29 @@ starts; items marked **(file)** aren't tracked yet.
 
 ---
 
-## Track 0 — The error family (added 2026-08-07; nearly done, re-measured 2026-08-08)
+## Track 0 — The error family (added 2026-08-07; re-measured 2026-08-08, second pass)
 
 Written when none of the August spec wave existed in the compiler — no `catch` token, 464 `.rk`
-files on the old spelling. Almost all of it has since landed. Re-measured rather than re-read; the
-old table claimed work that's done, which is the exact failure mode this file keeps having.
+files on the old spelling. Almost all of it has since landed.
+
+**Every row below was re-verified by running its repro**, not by reading the previous table. That
+caught one row claiming more than it had: A4 said "done" and ER16a isn't implemented at all. Five
+rows were right and their issues are now closed with the evidence attached (#597, #599, #601, #586,
+#600, #602). The lesson is the one this file keeps re-learning — a state column is a claim, and a
+claim nobody re-runs drifts.
 
 | # | Item | State | Issue |
 |---|------|-------|-------|
 | A1 | Split the fallback: `??` optionals-only, results get `catch e => …` | **done** — `catch e =>` and `catch _ =>` parse, check and run on both backends | #597 |
 | A2 | Cut every method from `T?` and `T or E` | **done** — no `unwrap_or` / `.ok()` anywhere in the tree | #599 |
 | A3 | Delete scrutinee flow typing | **done** — all four functions gone from `check_expr.rs` | #601 |
-| A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **done** — `try` on optionals works; ER47 fires on a bare flat `try` | #598 |
+| A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **mostly** — `try` on optionals works and ER47 fires; ER16a (`try` in a postfix chain) is not implemented, split to #647. The flat composite is right on interp and blocked on native by #644. | #598 |
 | A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
 | A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
 | A7 | `while expr? as v` binder never enters scope | **not implemented, and now says so** — E0369 at check time; see below | #593 |
 | A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
 
-So Track 0 is A7 and nothing else — but it's three layers, not the one the old table implied. The
+So Track 0 is A7 and A4's remainder (#647). A7 is three layers, not the one the old table implied. The
 resolver's `While` arm never defined the binder (its `If` arm does), so it reported `undefined symbol:
 v` — an error that blames your spelling. Defining it just moves the failure: MIR lowering then dies
 with `unresolved variable v` on native and the interpreter fails at runtime, because neither `while`
@@ -67,6 +72,14 @@ What the wave left behind, found by working the corpus rather than the spec:
   handled (`flat_try_sites`); `catch` didn't get the equivalent.
 - **#635** — `try X ?? continue` on a nested `T? or E` answers wrong on native: it takes the
   `continue` every time. Interp is right. This is the composite `examples/tiered_store.rk` uses.
+- **#644** — one layer under #634/#635: a function returning `T? or E` segfaults on native the moment
+  it returns a bare payload, because MIR never wraps it (`return 5` where `return none` and
+  `return <error>` both build a tagged value). Every composite over that shape inherits the crash
+  from its callee, which is what makes #635 present at the `try` site.
+- **#642** — a string literal inside an interpolation hole ends the outer string early, and the
+  leftovers can re-parse as a comparison chain — so `println("hit: {r ?? "<none>"}")` prints `false`
+  on native and exits 0. Not part of the error family, but it will waste the time of anyone
+  debugging it, because the wrong value comes from the line you added to observe the bug.
 
 Every rule above needs a conformance test tagged with the rule it witnesses — positive in
 `tests/suite/`, negative in `tests/compile_errors/`. That's what keeps this delta from recurring.
@@ -86,7 +99,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.3 | `as` casts unchecked: narrowing, sign reinterpret, float↔int, `n as char`, `1 as bool` all silently accepted. And the sanctioned lossy forms (`truncate to`, `saturate to`, `convert to T?`) don't exist — no correct path, wrong path open. | type.primitives/CV1–CV10, CH5, BL3 | `rask-types/src/checker/check_expr.rs:948-970` only validates `as any Trait` | **(file)** |
 | 1.4 | Trait-object dispatch miscompiles: vtable offset computed from position among *all* trait methods, but vtable stores compatible methods only — wrong slot when an incompatible method precedes. TR3 (reject generic methods through `any`) unenforced. | type.traits/TR1, TR3 | `rask-mir/src/lower/expr.rs:1467` | related: #194 |
 | 1.5 | Panic path in compiled code runs no ensures and aborts the process; interp gets multi-ensure panics wrong (first ensure-panic skips the rest, secondary panic dropped). | ctrl.panic/P1, P4, U1, E2–E3 | `runtime/panic.c:118` aborts | #299 tracking (#287, #288, #289, #290, #291, #298) |
-| 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). | — | sensor_processor is no longer evidence for this — it runs to completion on both backends since #580/#608 (the crash was `try_receive` narrowing on the Err tag, not layout). Needs a live repro or closing. | #272, #259 family; verify coverage, else file |
+| 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). | — | **No live repro.** sensor_processor was the evidence and it now runs identically on both backends — goldened and gated. The crash was `try_receive` narrowing on the Err tag (#631), not layout. The float-payload work (#608/#629) closed the "f64 read back as a pointer-sized 0" family and is covered by `t_float_payloads.rk` (13 tests, both backends) and the `f32`/`f64` columns of `tests/matrix`. Either produce a failing case or close #272. | #272, #259 family |
 | 1.7 | Index expression types never checked (`vec[string]` typechecks). | stdlib.collections | — | #310 |
 | 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
 | 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | T1 send-consumption + take-param consumption now enforced; T3 borrow-capture already rejected by SL2; T2 structural | #359 (done, folds in #296); #360 (native non-scalar channel recv) |
