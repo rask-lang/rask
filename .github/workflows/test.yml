@@ -8,76 +8,29 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Two jobs that run concurrently. The split is by what the gate needs, not by
-# balancing the clock: `backends` runs the things that execute Rask programs on
-# both backends, `checks` runs the Rust tests and the static/snippet gates.
+# Two concurrent jobs, split so they finish at about the same time:
 #
-# Both build the compiler themselves (~1min on a warm cache) rather than passing
-# it as an artifact — cargo test needs the whole target dir anyway, so an
-# artifact would save nothing there and only add upload/download latency.
+#   gates      — everything that needs the rask binary (~2m35)
+#   rust-tests — cargo test, which needs no rask binary of its own (~2m35)
+#
+# The old single job ran cargo test *after* a `cargo build -p rask-cli` it never
+# needed, so ~2m30 of Rust compilation sat behind ~1m of unrelated work.
+#
+# Measured before changing anything (run 31259380257, 10m15s total): the
+# differential harness and cargo test were 29% and 25%, and a third step — a
+# `continue-on-error` re-run of the suite the differential harness already
+# subsumes — was another 28% that could never fail the build. That one is gone.
+#
+# cargo test is compile-bound, not run-bound: 2m52 to build the test binaries
+# vs 40s to run them, both already saturating cores. So a faster test runner
+# (nextest) would only touch the 40s — not worth the dependency.
 #
 # Within a job every gate keeps its `!cancelled()` guard, so one failing gate
 # never masks the others and each run still reports the full matrix.
 
 jobs:
-  backends:
-    name: backends (execution gates)
-    runs-on: ubuntu-latest
-    env:
-      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache Cargo
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          compiler/target/
-        key: ${{ runner.os }}-cargo-backends-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-backends-
-
-    # Build steps are hard prerequisites: if either fails, the gates below are
-    # skipped (nothing can run without the binary).
-    - name: Build C runtime
-      id: runtime
-      run: make -C compiler/runtime
-
-    - name: Build compiler (release)
-      id: compiler
-      run: cargo build --release -p rask-cli
-      working-directory: compiler
-
-    # Differential backend harness — every tests/suite/ file on BOTH backends,
-    # fails on any UNTRACKED interp/native divergence. Tracked bugs/pending
-    # features live in tests/known_divergences.txt + tests/pending_features.txt.
-    # This is the native-execution gate; it subsumes a bare `rask test
-    # tests/suite/` and additionally checks parity.
-    - name: Differential harness (interp vs native)
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: tests/differential.sh
-
-    # Example run-gate — every example with a tests/golden/ output must match on
-    # both backends. Catches native codegen rot in examples/.
-    - name: Example run-gate
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: tests/examples_gate.sh
-
-    # The multi-file validation program. Nothing built it before, which is how
-    # a package-wide `catch` migration (#607) and the span mis-attribution
-    # (#621) both shipped — every other gate runs single files.
-    - name: Flagship package builds
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask build examples/validation --release
-
-  checks:
-    name: checks (rust tests + snippets)
+  gates:
+    name: gates (needs the rask binary)
     runs-on: ubuntu-latest
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
@@ -98,11 +51,11 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           compiler/target/
-        key: ${{ runner.os }}-cargo-checks-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-checks-
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-gates-
 
-    # The snippet gates compile and RUN their `test: run` blocks natively, so
-    # this job needs the C runtime too.
+    # Build steps are hard prerequisites: if either fails, the gates below are
+    # skipped (nothing can run without the binary).
     - name: Build C runtime
       id: runtime
       run: make -C compiler/runtime
@@ -111,6 +64,32 @@ jobs:
       id: compiler
       run: cargo build --release -p rask-cli
       working-directory: compiler
+
+    # Differential backend harness — every tests/suite/ file on BOTH backends,
+    # fails on any UNTRACKED interp/native divergence. Tracked bugs/pending
+    # features live in tests/known_divergences.txt + tests/pending_features.txt.
+    # This is the native-execution gate; it subsumes a bare `rask test
+    # tests/suite/` and additionally checks parity.
+    #
+    # Fans out across cores (DIFF_JOBS, default nproc): 3m35 -> 52s locally,
+    # with byte-identical output and exit code to the serial version.
+    - name: Differential harness (interp vs native)
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/differential.sh
+
+    # Example run-gate — every example with a tests/golden/ output must match on
+    # both backends. Catches native codegen rot in examples/. Also parallel
+    # (GATE_JOBS): 45s -> 16s locally.
+    - name: Example run-gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/examples_gate.sh
+
+    # The multi-file validation program. Nothing built it before, which is how
+    # a package-wide `catch` migration (#607) and the span mis-attribution
+    # (#621) both shipped — every other gate runs single files.
+    - name: Flagship package builds
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: ./compiler/target/release/rask build examples/validation --release
 
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
@@ -132,9 +111,38 @@ jobs:
       run: cargo check -p rask-wasm --target wasm32-unknown-unknown
       working-directory: compiler
 
+  rust-tests:
+    name: rust-tests (cargo test)
+    runs-on: ubuntu-latest
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    # Separate key from the gates job so the two don't race to write the same
+    # cache; restore-keys still warms this one from its own last run.
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-rust-tests-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-rust-tests-
+
+    # The native compile+run golden fixtures shell out to the C runtime.
+    - name: Build C runtime
+      run: make -C compiler/runtime
+
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
-    # compile+run golden fixtures).
+    # compile+run golden fixtures). cargo builds whatever binaries the tests
+    # need, so this job needs no separate `cargo build -p rask-cli`.
     - name: cargo test
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: cargo test --release
       working-directory: compiler

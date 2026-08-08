@@ -71,8 +71,19 @@ both_fail=0
 fail_files=()
 upass_files=()
 
-for f in "$SUITE_DIR"/*.rk; do
-    [ -e "$f" ] || continue
+# Each file is independent — two subprocesses and a comparison — so the runs
+# fan out across cores and only the classification below stays sequential. The
+# native path compiles to a temp binary named with the compiler's own PID, so
+# concurrent invocations can't collide on it.
+#
+# Workers write one record per file; the loop then reads them back in glob
+# order, so output and exit codes are identical to running this serially.
+JOBS="${DIFF_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+run_one() {
+    f="$1"
     base="$(basename "$f")"
 
     # Capture rask's real exit code (a pipe would report the filter's instead).
@@ -87,6 +98,29 @@ for f in "$SUITE_DIR"/*.rk; do
     # known_divergences.txt, else it fails the harness.
     green=0
     if [ "$icode" -eq 0 ] && [ "$ncode" -eq 0 ] && [ "$iout" = "$nout" ]; then green=1; fi
+
+    printf '%s\t%s\t%s\n' "$green" "$icode" "$ncode" > "$WORK/$base.status"
+    if [ "$green" -eq 0 ]; then
+        # `%s\n` not `%s`: without the trailing newline the separator merges
+        # into the last output line and the split below cuts in the wrong place.
+        {
+            printf '%s\n' "$iout" | tail -4 | sed 's/^/  /'
+            printf '\037\n'
+            printf '%s\n' "$nout" | tail -4 | sed 's/^/  /'
+        } > "$WORK/$base.detail"
+    fi
+}
+export -f run_one normalize
+export RASK WORK
+
+find "$SUITE_DIR" -maxdepth 1 -name '*.rk' -print0 \
+    | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+
+for f in "$SUITE_DIR"/*.rk; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"
+    [ -f "$WORK/$base.status" ] || { echo "FAILURE:    $base — worker produced no result"; divergent=$((divergent+1)); fail_files+=("$base"); continue; }
+    IFS=$'\t' read -r green icode ncode < "$WORK/$base.status"
 
     if [ "$green" -eq 1 ]; then
         if known_fail "$base"; then
@@ -112,9 +146,9 @@ for f in "$SUITE_DIR"/*.rk; do
     else
         echo "FAILURE:    $base [$kind] (interp exit $icode, native exit $ncode) — untracked"
         echo "  --- interp (normalized tail) ---"
-        echo "$iout" | tail -4 | sed 's/^/  /'
+        sed -n "1,/\o037/p" "$WORK/$base.detail" | sed '$d'
         echo "  --- native (normalized tail) ---"
-        echo "$nout" | tail -4 | sed 's/^/  /'
+        sed -n "/\o037/,\$p" "$WORK/$base.detail" | sed '1d'
         divergent=$((divergent+1))
         fail_files+=("$base")
     fi
