@@ -35,7 +35,7 @@ func seed_store() {
     mut (tx, rx) = Channel<SeedSpec>.buffered(8)
     let total = seed_specs().len()
 
-    let producer = spawn(own || {
+    let producer: TaskHandle<void> = spawn(own || {
         for spec in seed_specs() {
             let sent = tx.send(spec.clone())
             if sent? { continue }

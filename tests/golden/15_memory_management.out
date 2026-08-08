@@ -1,0 +1,24 @@
+=== Pool/Handle Pattern ===
+
+Creating linked list with handles:
+List values: 1 -> 2 -> 3 -> end
+
+Creating game entities:
+
+Entity relationships:
+Player (HP: 100) -> targets Goblin
+Goblin (HP: 50) -> targets Player
+Orc (HP: 80) -> targets Player
+
+Applying damage:
+Goblin health: 30
+Player health: 90
+
+Removing defeated enemy:
+Enemy1 removed from pool
+
+=== Key Benefits ===
+- No lifetime parameters
+- Handles never dangle (invalidation explicit)
+- Perfect for graphs, entity systems, UI trees
+- Pool owns memory, handles are lightweight IDs

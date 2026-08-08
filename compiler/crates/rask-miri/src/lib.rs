@@ -171,6 +171,29 @@ impl MiriValue {
         }
     }
 
+    /// The Rask type name of what an Array holds, spelled the way a type
+    /// annotation would be. A comptime global kept its bytes and its length but
+    /// dropped what those bytes *are*, so indexing one had nothing to resolve.
+    pub fn elem_type_name(&self) -> Option<&'static str> {
+        let MiriValue::Array(elems) = self else { return None };
+        Some(match elems.first()? {
+            MiriValue::Bool(_) => "bool",
+            MiriValue::I8(_) => "i8",
+            MiriValue::I16(_) => "i16",
+            MiriValue::I32(_) => "i32",
+            MiriValue::I64(_) => "i64",
+            MiriValue::U8(_) => "u8",
+            MiriValue::U16(_) => "u16",
+            MiriValue::U32(_) => "u32",
+            MiriValue::U64(_) => "u64",
+            MiriValue::F32(_) => "f32",
+            MiriValue::F64(_) => "f64",
+            MiriValue::Char(_) => "char",
+            MiriValue::String(_) => "string",
+            _ => return None,
+        })
+    }
+
     /// Type prefix for codegen dispatch.
     pub fn type_prefix(&self) -> &'static str {
         match self {

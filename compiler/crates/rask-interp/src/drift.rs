@@ -101,6 +101,9 @@ fn dummy_value(type_name: &str) -> Value {
         }
         "Shared" => Value::Shared(Arc::new(RwLock::new(Value::Unit))),
         "Mutex" => Value::RaskMutex(Arc::new(Mutex::new(Value::Unit))),
+        // Int rather than Unit: `Cell.get`/`replace` hand the payload back, and a
+        // Unit payload makes them look unimplemented to this walk.
+        "Cell" => Value::Cell(Arc::new(Mutex::new(Value::int(0)))),
         "AtomicBool" => {
             Value::AtomicBool(Arc::new(std::sync::atomic::AtomicBool::new(false)))
         }

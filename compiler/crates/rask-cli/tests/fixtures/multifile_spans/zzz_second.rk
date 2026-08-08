@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two errors, both in this file — the second one in the package, so a lost
+// file_id lands them on aaa_first.rk instead.
+//
+// Line 9 is a plain binding: E0361 points at the binding's `name_span`, which
+// the parser lifts straight off a token.
+//
+// Line 12 is inside a string interpolation. Desugar re-lexes the placeholder
+// body, so its tokens need the enclosing file stamped on them too.
+
+func main() {
+    let unconstrained = Vec.new()
+    let cfg = make_config()
+    println("port: {cfg.no_such_field}")
+}

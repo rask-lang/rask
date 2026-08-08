@@ -34,7 +34,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
-        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Mutex"
+        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Mutex" | "Cell"
         | "AtomicBool" | "AtomicI8" | "AtomicU8"
         | "AtomicI16" | "AtomicU16" | "AtomicI32" | "AtomicU32"
         | "AtomicI64" | "AtomicU64" | "AtomicUsize" | "AtomicIsize"
@@ -192,6 +192,7 @@ const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
 const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
 const SHARED_METHODS: &[&str] = &["read", "write", "try_read", "try_write", "clone"];
 const MUTEX_METHODS: &[&str] = &["lock", "try_lock", "clone"];
+const CELL_METHODS: &[&str] = &["get", "set", "replace", "into_inner"];
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
     "add", "sub", "mul", "div", "scale",
@@ -267,7 +268,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "JsonValue",
     "Duration", "Instant",
     "Path", "Args",
-    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared", "Mutex",
+    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared", "Mutex", "Cell",
     "AtomicBool", "AtomicI8", "AtomicU8",
     "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
     "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
@@ -311,6 +312,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,
         "Mutex" => MUTEX_METHODS,
+        "Cell" => CELL_METHODS,
         "AtomicBool" => ATOMIC_BOOL_METHODS,
         "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
         | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicU64"

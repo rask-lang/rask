@@ -277,7 +277,12 @@ impl TypeChecker {
             }
             StmtKind::Break { value, .. } => {
                 if let Some(v) = value {
-                    self.infer_expr(v);
+                    let ty = self.infer_expr(v);
+                    if let Some(loop_ty) = self.loop_value_types.last().cloned() {
+                        if let Err(e) = self.unify(&ty, &loop_ty, v.span) {
+                            self.errors.push(e);
+                        }
+                    }
                 }
             }
             StmtKind::Continue(_) => {}

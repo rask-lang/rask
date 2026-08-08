@@ -37,7 +37,7 @@ const POWERS_OF_TWO = comptime {
 }
 
 // Prime numbers up to 50
-const PRIMES = comptime {
+const PRIMES: Vec<i64> = comptime {
     mut primes = Vec.new()
 
     for n in 2..50 {

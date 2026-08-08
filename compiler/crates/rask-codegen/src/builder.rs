@@ -1648,9 +1648,15 @@ impl<'a> FunctionBuilder<'a> {
         // works if `p = ...` copies bytes into `*p`'s slot.
         let needs_copy = match (&dst_local.ty, rvalue) {
             (MirType::String, _) => true,
-            // Field on aggregate base returns pointer for aggregate elements
+            // Field on aggregate base returns pointer for aggregate elements.
+            // TraitObject belongs here: it's a 16-byte fat pointer, so reading one
+            // out of a `T?` payload as a scalar took the data half and left the
+            // vtable behind. The call through it then read the concrete value's
+            // first word as a vtable — for `Circle { r: 2.0 }` that meant
+            // jumping through 2.0 (#552).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
-             MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+             MirType::Result { .. } | MirType::Option(_) |
+             MirType::TraitObject { .. }, MirRValue::Field { .. }) => true,
             // Whole-aggregate copy: rvalue produces a pointer to the source
             // aggregate, dst has its own storage (either a stack slot or an
             // external pointer for mutate-params).
@@ -3875,7 +3881,8 @@ impl<'a> FunctionBuilder<'a> {
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
             if matches!(func.name.as_str(),
-                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire")
+                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire"
+                | "Cell_acquire")
             {
                 let results = builder.inst_results(call_inst);
                 let ptr = if !results.is_empty() {
@@ -4871,6 +4878,11 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::String
                 | MirType::Option(_)
                 | MirType::Result { .. }
+                // A trait object is two words, so the payload read has to hand
+                // back its address like any other aggregate. Loading the first
+                // 8 bytes as a scalar kept the data pointer and dropped the
+                // vtable (#552).
+                | MirType::TraitObject { .. }
         )
     }
 
@@ -5458,7 +5470,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 CallAdapt::None
             }
-            "Cell_set" => {
+            // Both take the new value by pointer, so a scalar spills to a slot
+            // first. `replace` additionally hands back the old value's address —
+            // returning CallAdapt::None here would leave that pointer as the
+            // result and `let old = c.replace(0)` would print an address.
+            "Cell_set" | "Cell_replace" => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
@@ -5466,7 +5482,7 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                CallAdapt::None
+                if func_name == "Cell_replace" { CallAdapt::DerefResult } else { CallAdapt::None }
             }
 
             // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size

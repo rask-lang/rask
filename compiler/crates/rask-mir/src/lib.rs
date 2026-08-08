@@ -9,6 +9,7 @@
 
 pub mod analysis;
 mod builder;
+pub mod fallback;
 mod closures;
 mod display;
 mod function;

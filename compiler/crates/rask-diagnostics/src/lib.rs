@@ -9,6 +9,7 @@
 pub mod codes;
 pub mod convert;
 pub mod formatter;
+pub mod source_map;
 pub mod json;
 pub mod suggestions;
 

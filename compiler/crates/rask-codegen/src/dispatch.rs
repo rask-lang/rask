@@ -1110,6 +1110,25 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
+        StdlibEntry {
+            mir_name: "Cell_replace", c_name: "rask_cell_replace",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+        },
+        // `into_inner` consumes the cell and yields what it held — the same read
+        // as `get`, just the last one. Freeing the cell here would dangle the
+        // pointer it returns.
+        StdlibEntry {
+            mir_name: "Cell_into_inner", c_name: "rask_cell_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        // `with cell as v { ... }` — same slot address as `Cell_get`, but the
+        // block decides for itself whether to load through it or alias it, so no
+        // ret_adapt here. Separate MIR names keep the two uses from drifting; a
+        // Cell has no lock, so there's no release counterpart.
+        StdlibEntry::simple("Cell_acquire", "rask_cell_get", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Cell_data", "rask_cell_get", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),

@@ -282,8 +282,8 @@ impl<'a> MirLowerer<'a> {
         field_name: &str,
         opt_local: crate::LocalId,
     ) -> Result<(), LoweringError> {
-        let opt_ty = self.builder.local_type(opt_local).unwrap_or(MirType::I64);
-        let payload_ty = Self::payload_of_mir(&opt_ty).unwrap_or(MirType::I64);
+        let opt_ty = self.builder.local_type(opt_local).unwrap_or_else(|| crate::fallback::i64_fallback("lower/collections:285"));
+        let payload_ty = Self::payload_of_mir(&opt_ty).unwrap_or_else(|| crate::fallback::i64_fallback("lower/collections:286"));
 
         let tag = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

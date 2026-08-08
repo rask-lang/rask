@@ -16,6 +16,18 @@ pub enum TypeError {
     },
     #[error("undefined type: {0}")]
     Undefined(String),
+    /// Inference finished and this binding's type is still open. Either nothing
+    /// in scope pinned it down (the program needs an annotation) or inference
+    /// has a gap (our bug) — the message says both, because the compiler can't
+    /// tell which from here.
+    #[error("couldn't work out the type of `{name}`")]
+    UnresolvedType {
+        name: String,
+        /// A concrete type worth suggesting, when the shape is known enough to
+        /// guess at one — `Vec<…>` for a `Vec` whose element is open.
+        hint: Option<String>,
+        span: Span,
+    },
     #[error("arity mismatch: expected {expected} arguments, found {found}")]
     ArityMismatch {
         expected: usize,

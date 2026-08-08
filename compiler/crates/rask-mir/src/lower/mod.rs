@@ -131,6 +131,9 @@ pub struct ComptimeGlobalMeta {
     pub elem_count: usize,
     /// Type prefix for method dispatch ("Vec", "Array", etc.)
     pub type_prefix: String,
+    /// What the elements are, for a Vec/Array global. Without it, indexing one
+    /// had no element type to resolve and lowering fell back to a guess.
+    pub elem_type: Option<String>,
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
@@ -1019,12 +1022,52 @@ impl<'a> MirLowerer<'a> {
 
     /// Element MIR type of a checker `Vec<T>`, in either the pre-resolve
     /// (`UnresolvedGeneric`) or resolved (`Generic`) spelling.
-    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+    /// The name and type arguments of a possibly-generic checker type.
+    ///
+    /// `type_names` stores the *declaration* form, so a resolved `Generic` for a
+    /// Map comes back as `"Map<K, V>"`, not `"Map"`. Comparing that against a
+    /// bare name never matched, which quietly disabled the resolved-`Generic`
+    /// path entirely — only `UnresolvedGeneric`, which carries a bare name, ever
+    /// resolved. Strip the parameters before comparing.
+    pub(crate) fn generic_head<'t>(&self, ty: &'t Type) -> Option<(String, &'t Vec<rask_types::GenericArg>)> {
         let (name, args) = match ty {
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             Type::Generic { base, args } => (self.ctx.type_names.get(base)?.clone(), args),
             _ => return None,
         };
+        let bare = name.split('<').next().unwrap_or(&name).trim().to_string();
+        Some((bare, args))
+    }
+
+    /// What a collection holds: the element of a `Vec`/`Pool`, the *value* of a
+    /// `Map`. Indexing any of them yields this type.
+    pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = self.generic_head(ty)?;
+        // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
+        // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
+        // exactly that.
+        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Owned") {
+            let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
+            return self.collection_elem_of_checker_type(inner);
+        }
+        let arg = match name.as_str() {
+            // Iterator is here because a `for` source is often one, and it
+            // carries its element type the same way.
+            "Vec" | "Pool" | "Iterator" => args.first()?,
+            // `m[k]` and `m.get(k)` yield V, not K.
+            "Map" => args.get(1)?,
+            _ => return None,
+        };
+        match arg {
+            // An unresolved variable is not an answer — see below.
+            rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
+            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        let (name, args) = self.generic_head(ty)?;
         if name != "Vec" {
             return None;
         }
@@ -1115,6 +1158,56 @@ impl<'a> MirLowerer<'a> {
     /// A `Vec.new()` filled by `push` leaves the checker with an inference
     /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
     /// argument node.
+    /// What the collection this expression evaluates to holds — element for a
+    /// `Vec`/`Pool`, value for a `Map`.
+    ///
+    /// Tries the checker's type for the expression, then the declared type of a
+    /// struct field, then `Vec`-specific tracking. The field case is the one that
+    /// matters most: push-tracking is per-function and the checker doesn't type
+    /// every node, so a collection that arrived as a field of something built
+    /// elsewhere has only its declaration to go on.
+    pub(crate) fn collection_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            if let Some(elem) = self.collection_elem_of_checker_type(ty) {
+                return Some(elem);
+            }
+        }
+        if let ExprKind::Field { object, field } = &expr.kind {
+            if let Some(layout) = self.struct_layout_of_expr(object) {
+                if let Some(f) = layout.fields.iter().find(|f| f.name == *field) {
+                    if let Some(elem) = self.collection_elem_of_checker_type(&f.ty.clone()) {
+                        return Some(elem);
+                    }
+                }
+            }
+        }
+        // A comptime-built global — `const SQUARES = comptime { … }` — records
+        // what it holds alongside its bytes.
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(elem) = self.ctx.comptime_globals.get(name)
+                .and_then(|g| g.elem_type.as_deref())
+            {
+                return Some(self.ctx.resolve_type_str(elem));
+            }
+        }
+        // A view over a collection holds what the collection holds, so ask the
+        // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
+        // leaves the element a variable — while `PRIMES` itself knows.
+        // `iter`/`values` view a collection; `lock`/`read`/`write` unwrap a box
+        // around one. Either way the receiver is the thing that knows.
+        if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
+            if matches!(
+                method.as_str(),
+                "iter" | "values" | "into_iter" | "lock" | "read" | "write"
+            ) {
+                if let Some(elem) = self.collection_elem_of_expr(object) {
+                    return Some(elem);
+                }
+            }
+        }
+        self.vec_elem_of_expr(expr)
+    }
+
     pub(crate) fn vec_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             if let Some(elem) = self.vec_elem_of_checker_type(ty) {
@@ -1687,7 +1780,36 @@ impl<'a> MirLowerer<'a> {
             .map(|l| l.ty.clone()))
     }
 
+    /// Lower one function, and refuse to hand back MIR that was built on a
+    /// guessed type.
+    ///
+    /// Every place lowering can't resolve a type routes through
+    /// `fallback::i64_fallback`. Guessing i64 there is right only for a payload
+    /// that already fits a machine word, so it used to pass silently for
+    /// integers and quietly corrupt everything else. The record is drained
+    /// around each function so a failure names the function that caused it.
     fn lower_function_inner(
+        decl: &Decl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+        qualified_name: Option<&str>,
+        const_init: Option<(&str, &Expr)>,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
+        crate::fallback::reset();
+        let result = Self::lower_function_typed(decl, all_decls, ctx, qualified_name, const_init);
+        let gave_up = crate::fallback::take_hits();
+        // An empty node-type map means nobody ran the checker — the lowering unit
+        // tests hand-build ASTs to assert block structure, so *every* node is
+        // untyped there and "couldn't resolve a type" says nothing. A real
+        // compile always arrives with node types.
+        let synthetic = ctx.node_types.is_empty();
+        if !gave_up.is_empty() && !synthetic && !crate::fallback::fallback_allowed() {
+            return Err(LoweringError::UnknownType(gave_up));
+        }
+        result
+    }
+
+    fn lower_function_typed(
         decl: &Decl,
         all_decls: &[Decl],
         ctx: &MirContext,
@@ -2180,6 +2302,48 @@ impl<'a> MirLowerer<'a> {
         self.vec_elem_of_expr(expr)
     }
 
+    /// The success payload of an Option/Result being bound, from the checker if
+    /// it typed the node and from the value's own MIR type otherwise.
+    ///
+    /// The checker doesn't type every node, so `extract_payload_type` alone
+    /// returns None often enough to matter — and the lowered value's type is
+    /// sitting right there saying `Option(T)` or `Result { ok: T }`. Consulting
+    /// it turns most "couldn't work out the payload" cases into an answer instead
+    /// of a guess.
+    pub(super) fn payload_type_of(&self, expr: &Expr, val_ty: &MirType) -> Option<MirType> {
+        self.extract_payload_type(expr).or_else(|| match val_ty {
+            MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
+            MirType::Option(inner) => Some(inner.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    /// As `payload_type_of`, for a site that knows whether the optional is
+    /// niche-encoded.
+    ///
+    /// A niche optional carries no tag and no wrapper — a `Handle?` *is* a
+    /// `Handle`, with `none` as a sentinel — so `val_ty` is already the payload
+    /// type and there's no `Option` for the match above to see through.
+    pub(super) fn payload_type_of_niche(
+        &self,
+        expr: &Expr,
+        val_ty: &MirType,
+        is_niche: bool,
+    ) -> Option<MirType> {
+        if is_niche {
+            return Some(val_ty.clone());
+        }
+        self.payload_type_of(expr, val_ty)
+    }
+
+    /// The error payload, same two sources as `payload_type_of`.
+    pub(super) fn err_type_of(&self, expr: &Expr, val_ty: &MirType) -> Option<MirType> {
+        self.extract_err_type(expr).or_else(|| match val_ty {
+            MirType::Result { err, .. } => Some(err.as_ref().clone()),
+            _ => None,
+        })
+    }
+
     /// Extract the Ok/Some payload type from the raw type of an expression.
     /// For Option<T>, returns T. For Result<T, E>, returns T.
     /// MirType::Ptr is a legitimate result for Vec/Map/Pool/Channel/etc.,
@@ -2585,18 +2749,24 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
-        payload_ty: MirType,
+        payload_ty: Option<MirType>,
         scrutinee_ty: &MirType,
     ) {
         self.bind_pattern_payload_niche(pattern, value, payload_ty, false, scrutinee_ty);
     }
 
     /// Bind pattern payload — with niche awareness.
+    /// `payload_ty` is optional because for the common case there is no such
+    /// type to have: a Constructor pattern on a user enum takes each field's
+    /// type from the enum layout, and the Option/Result payload is never
+    /// consulted. Resolving it eagerly at the call site meant asking a question
+    /// with no answer on every `if m is Msg.Text(t)`. The paths that genuinely
+    /// need it demand it below, where not knowing it is a real gap.
     fn bind_pattern_payload_niche(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
-        payload_ty: MirType,
+        payload_ty: Option<MirType>,
         is_niche: bool,
         scrutinee_ty: &MirType,
     ) {
@@ -2611,12 +2781,15 @@ impl<'a> MirLowerer<'a> {
                 let variant_fields = self.variant_field_types(scrutinee_ty, name);
                 for (i, field_pat) in fields.iter().enumerate() {
                     if let Pattern::Ident(name) = field_pat {
+                        let demand = || payload_ty.clone().unwrap_or_else(|| {
+                            crate::fallback::i64_fallback("lower/mod:constructor_payload")
+                        });
                         let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
                             vf.get(i)
                                 .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
-                                .unwrap_or((payload_ty.clone(), None))
+                                .unwrap_or_else(|| (demand(), None))
                         } else {
-                            (payload_ty.clone(), None)
+                            (demand(), None)
                         };
                         let local = self.builder.alloc_local(name.clone(), field_ty.clone());
                         self.locals.insert(name.clone(), (local, field_ty.clone()));
@@ -2651,7 +2824,9 @@ impl<'a> MirLowerer<'a> {
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
             Pattern::TypePat { ty_name: _, binding: Some(name) } => {
-                let bound_ty = payload_ty.clone();
+                let bound_ty = payload_ty.clone().unwrap_or_else(|| {
+                    crate::fallback::i64_fallback("lower/mod:typepat_payload")
+                });
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
                 let is_aggregate = matches!(
                     bound_ty,
@@ -3340,6 +3515,35 @@ pub enum LoweringError {
     UnresolvedVariable(String),
     UnresolvedGeneric(String),
     InvalidConstruct(String),
+    /// Lowering couldn't work out a type and would have guessed i64. Fatal on
+    /// purpose: the guess is only ever right for a payload that already fits a
+    /// machine word, so silently taking it turns a missing feature into a
+    /// miscompile — an f64 loses its value, a string or a struct becomes an
+    /// address. Carries the sites that gave up so the report names them.
+    UnknownType(Vec<(&'static str, u32)>),
+}
+
+impl std::fmt::Display for LoweringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoweringError::UnresolvedVariable(name) => write!(f, "unresolved variable `{name}`"),
+            LoweringError::UnresolvedGeneric(name) => write!(f, "unresolved generic `{name}`"),
+            LoweringError::InvalidConstruct(what) => write!(f, "{what}"),
+            LoweringError::UnknownType(sites) => {
+                let where_ = sites.iter().map(|(s, _)| *s).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "couldn't work out a type here, so there's nothing safe to \
+                     compile — a guess is only ever right for a value that fits a \
+                     machine word, and would silently corrupt an f64, a string or \
+                     a struct.\n         \
+                     A type annotation on the binding usually settles it \
+                     (`const xs: Vec<i64> = …`).\n         \
+                     Gave up in: {where_}"
+                )
+            }
+        }
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

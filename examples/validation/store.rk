@@ -149,7 +149,7 @@ extend Store {
             return a.id.compare(b.id)
         })
 
-        let page = ranked
+        let page: Vec<TaskView> = ranked
             .iter()
             .skip(filter.offset)
             .take(filter.limit)

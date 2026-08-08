@@ -2414,3 +2414,64 @@ func main() {
         "an unknown member must still be reported by name: {}", out,
     );
 }
+
+// ── Multi-file span attribution ────────────────────────────────────────────
+
+/// A diagnostic in a package must name the file it came from.
+///
+/// Nothing used to build a multi-file package in a test — every fixture was a
+/// single file checked on its own, where `file_id: 0` is right by construction,
+/// so the bug this guards was invisible. The lexer stamped every token span with
+/// file 0 because it had no idea which file it was reading, and the parser lifts
+/// spans straight off tokens for `let` names, fields and parameters. Roughly
+/// half of all spans claimed the first file, and errors rendered against it at
+/// offsets that were meaningless there.
+///
+/// The fixture puts the error in the alphabetically *later* file so a lost
+/// file_id lands it on the first one.
+#[test]
+fn package_diagnostic_names_the_right_file() {
+    let rask = rask_binary();
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("multifile_spans");
+
+    let out = Command::new(&rask)
+        .arg("build")
+        .arg(&pkg)
+        .output()
+        .expect("failed to run rask build");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    assert!(
+        combined.contains("E0361"),
+        "expected the unresolved-type error from the fixture, got:\n{combined}"
+    );
+    assert!(
+        combined.contains("zzz_second.rk:12:9"),
+        "diagnostic should point at zzz_second.rk:12:9 — the binding's real home.\n\
+         Reporting aaa_first.rk means token spans lost their file_id again.\n\
+         Got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("aaa_first.rk:"),
+        "no diagnostic should be attributed to the first file here:\n{combined}"
+    );
+    // The rendered source line must be the real one, not whatever sits at that
+    // offset in another file.
+    assert!(
+        combined.contains("let unconstrained = Vec.new()"),
+        "the snippet should show the actual offending line:\n{combined}"
+    );
+    // A second error, this one inside a string interpolation — desugar re-lexes
+    // the placeholder body, so those tokens need the file stamped too.
+    assert!(
+        combined.contains("zzz_second.rk:14:"),
+        "the interpolation error should also name the second file:\n{combined}"
+    );
+}

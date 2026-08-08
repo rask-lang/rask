@@ -10,6 +10,39 @@ use crate::{
 use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::{NodeId, Span};
 
+/// Which runtime calls a box's `with` block takes and drops access through.
+///
+/// Every box in the family hands back the payload's address the same way, so the
+/// block itself is one piece of code; only these three names differ. `release` is
+/// `None` for a box holding no lock — a `Cell` is single-task by construction
+/// (mem.cell/CE1), so there's nothing to unlock on the way out.
+pub(super) struct BoxWithSyms {
+    /// Takes exclusive access, returns the payload's address.
+    pub acquire: &'static str,
+    /// The payload's address again, for the write-back — acquire consumed its own
+    /// result. Must not re-take access.
+    pub data: &'static str,
+    /// Drops access. `None` when the box holds none.
+    pub release: Option<&'static str>,
+}
+
+impl BoxWithSyms {
+    pub(super) const MUTEX: Self = Self {
+        acquire: "Mutex_acquire",
+        data: "Mutex_data",
+        release: Some("Mutex_release"),
+    };
+
+    /// `Cell_acquire` and `Cell_data` both land on `rask_cell_get` — the slot's
+    /// address, no lock involved. They stay distinct MIR names so this path and
+    /// the `cell.get()` path (CE6, which copies out) can't drift into each other.
+    pub(super) const CELL: Self = Self {
+        acquire: "Cell_acquire",
+        data: "Cell_data",
+        release: None,
+    };
+}
+
 impl<'a> MirLowerer<'a> {
     /// Extract the inner type name from a Shared/Mutex expression — the `T` in
     /// `Shared<T>`/`Mutex<T>`, whether the checker left it a resolved `Generic`
@@ -96,7 +129,7 @@ impl<'a> MirLowerer<'a> {
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), MirType::I64);
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
 
-        let mut data_param_ty = self.resolve_sync_payload_mir(object).unwrap_or(MirType::I64);
+        let mut data_param_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::i64_fallback("lower/concurrency:132"));
         let inner_type_name = self.resolve_shared_inner_type_name(object);
         if let Some(ref type_name) = inner_type_name {
             if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
@@ -208,15 +241,16 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::I64))
     }
 
-    /// Lower `with mutex.lock() as v { body }`.
+    /// Lower `with <box> as v { body }` for a box whose payload is reached by
+    /// address — `Mutex` (via `.lock()` or bare) and `Cell`.
     ///
-    /// The body runs in this frame, between `Mutex_acquire` and `Mutex_release`,
-    /// not in a synthesized closure. The closure form got two things wrong that
-    /// no amount of patching inside it could fix: a `return` in the body
-    /// returned from the closure instead of the enclosing function, so the
-    /// function fell through to whatever came after the `with`; and the
-    /// write-back of a word-sized payload was skipped whenever the body ended
-    /// terminated, so the mutation was lost too.
+    /// The body runs in this frame, between acquire and release, not in a
+    /// synthesized closure. The closure form got two things wrong that no amount
+    /// of patching inside it could fix: a `return` in the body returned from the
+    /// closure instead of the enclosing function, so the function fell through to
+    /// whatever came after the `with`; and the write-back of a word-sized payload
+    /// was skipped whenever the body ended terminated, so the mutation was lost
+    /// too.
     ///
     /// ```text
     /// func bump(m: Mutex<i64>) -> i64 {
@@ -228,19 +262,20 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Release (and the write-back) go in a cleanup block on the ensure stack,
     /// so `return`, `try`, `break` and `continue` all run them on the way out.
-    pub(super) fn lower_mutex_with_block(
+    pub(super) fn lower_box_with_block(
         &mut self,
         object: &Expr,
         binding_name: &str,
         body: &[rask_ast::stmt::Stmt],
+        syms: &BoxWithSyms,
     ) -> Result<TypedOperand, LoweringError> {
-        let (mutex_op, _) = self.lower_expr(object)?;
+        let (box_op, _) = self.lower_expr(object)?;
 
         // A payload that lives in its own storage is aliased through the pointer
         // acquire hands back; anything word-sized is loaded into the local
         // (codegen does the load), which is why it needs writing back.
         let inner_type_name = self.resolve_shared_inner_type_name(object);
-        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or(MirType::I64);
+        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::i64_fallback("lower/concurrency:278"));
         if let Some(ref type_name) = inner_type_name {
             if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
                 guard_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
@@ -251,8 +286,8 @@ impl<'a> MirLowerer<'a> {
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
-            func: FunctionRef::internal("Mutex_acquire".to_string()),
-            args: vec![mutex_op.clone()],
+            func: FunctionRef::internal(syms.acquire.to_string()),
+            args: vec![box_op.clone()],
         }));
 
         let saved_binding = self.locals.insert(binding_name.to_string(), (guard_local, guard_ty.clone()));
@@ -262,7 +297,7 @@ impl<'a> MirLowerer<'a> {
 
         let writeback = (!by_address).then(|| guard_ty.size());
         let depth = self.ensure_stack.len();
-        self.push_guard_cleanup(&mutex_op, guard_local, writeback);
+        self.push_guard_cleanup(&box_op, guard_local, writeback, syms);
 
         let result = self.lower_block(body);
 
@@ -307,9 +342,10 @@ impl<'a> MirLowerer<'a> {
     /// chains through it.
     fn push_guard_cleanup(
         &mut self,
-        mutex_op: &MirOperand,
+        box_op: &MirOperand,
         guard_local: crate::LocalId,
         writeback: Option<u32>,
+        syms: &BoxWithSyms,
     ) {
         let cleanup_block = self.builder.create_block();
         let continue_block = self.builder.create_block();
@@ -322,8 +358,8 @@ impl<'a> MirLowerer<'a> {
             let slot = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(slot),
-                func: FunctionRef::internal("Mutex_data".to_string()),
-                args: vec![mutex_op.clone()],
+                func: FunctionRef::internal(syms.data.to_string()),
+                args: vec![box_op.clone()],
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: slot,
@@ -332,11 +368,13 @@ impl<'a> MirLowerer<'a> {
                 store_size: Some(size),
             }));
         }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("Mutex_release".to_string()),
-            args: vec![mutex_op.clone()],
-        }));
+        if let Some(release) = syms.release {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(release.to_string()),
+                args: vec![box_op.clone()],
+            }));
+        }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
         self.ensure_stack.push(cleanup_block);
@@ -436,6 +474,15 @@ impl<'a> MirLowerer<'a> {
         self.locals.insert(guard_name.clone(), (guard_local, guard_ty));
         if let Some(n) = &inner_name {
             self.meta_mut(&guard_name).type_prefix = Some(n.clone());
+        }
+        // What the payload holds, when the payload is a collection. The guard is
+        // a synthetic local with no checker type of its own, so
+        // `self.counters.lock().get(k)` on a `Mutex<Map<string, u64>>` had
+        // nothing to resolve the value type from once `.lock()` desugared away.
+        if let Some(elem) = self.ctx.lookup_raw_type(box_obj.id)
+            .and_then(|ty| self.collection_elem_of_checker_type(ty))
+        {
+            self.meta_mut(&guard_name).elem_type = Some(elem);
         }
 
         // Lower the trailing operation on the guard through the normal path.

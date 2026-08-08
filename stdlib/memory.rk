@@ -1,5 +1,31 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+/// One mutable value behind a stable heap address. Access via
+/// `with cell as v { }`; `get`/`set` are the single-expression shorthands.
+///
+/// A Cell is single-task by construction — no lock, so no `Mutex` overhead.
+/// Mutation goes through the heap slot, not the binding, which is why `set` and
+/// `replace` take a plain `self`: `let c = Cell.new(0)` followed by `c.set(1)`
+/// is the point of the type, not a mistake (mem.cell/CE1, CE2).
+public struct Cell<T> { }
+
+extend Cell<T> {
+    /// Heap-allocate `value` and hand back a cell holding it.
+    public func new(value: T) -> Cell<T> { }
+
+    /// Copy the inner value out. Copy types only (CE6).
+    public func get(self) -> T { }
+
+    /// Replace the inner value.
+    public func set(self, value: T) { }
+
+    /// Swap in a new value, return the old one.
+    public func replace(self, value: T) -> T { }
+
+    /// Consume the cell, return what it held.
+    public func into_inner(take self) -> T { }
+}
+
 /// Arena allocator for graph structures. Elements are accessed via handles.
 public struct Pool<T> { }
 

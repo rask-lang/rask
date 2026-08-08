@@ -172,6 +172,10 @@ impl TypeChecker {
                 span,
             } => self.resolve_type_pattern(scrutinee, narrow_ty, ty_name, span),
 
+            TypeConstraint::Unwrap { value, result, span } => {
+                self.resolve_unwrap(value, result, span)
+            }
+
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
             }
@@ -269,6 +273,38 @@ impl TypeChecker {
     /// chain carries on; a bare success value collapses. Only the second one
     /// needs the left side, and only to tell a chain from a layer collapse
     /// (`T??` fed a `T?`, OPT30) — unresolved, the chain reading wins.
+    /// `x!` yields the success payload of `x`. Both shapes read the same way —
+    /// `T?` is a `Result` whose error side is `none` — so the ok side is the
+    /// answer for either. Defers while the operand is still a variable.
+    fn resolve_unwrap(
+        &mut self,
+        value: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let val = self.ctx.apply(&value);
+        match &val {
+            Type::Result { ok, .. } => {
+                self.unify(&result, ok, span)?;
+                Ok(true)
+            }
+            // Not settled yet — come back once the operand resolves.
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::Unwrap { value, result, span });
+                Ok(false)
+            }
+            // `!` on something that can't fail or be absent. The direct arm in
+            // check_expr already reports this when the type is known up front;
+            // this catches the case that only resolved later.
+            Type::Error => Ok(true),
+            other => Err(TypeError::Mismatch {
+                expected: Type::option(self.ctx.fresh_var()),
+                found: other.clone(),
+                span,
+            }),
+        }
+    }
+
     fn resolve_coalesce(
         &mut self,
         node: rask_ast::NodeId,
@@ -504,6 +540,19 @@ impl TypeChecker {
                 Ok(false)
             }
 
+            // Never is the bottom type: it fits anywhere, so unifying it must
+            // never *bind* anything. These arms sit above the Var arms for that
+            // reason — below them, `(Never, Var)` matched the var arm and pinned
+            // the variable to Never. That's how a closure over an inferred float
+            // lost its type: the body `{ return c }` diverges, so its type is
+            // Never, and unifying that with the closure's return variable
+            // clobbered the literal var the `return` had just bound it to. Once
+            // it read Never instead of Var, literal defaulting skipped it, MIR
+            // fell back to i64, and `|| { return 2.5 }` printed 2. Integers hid
+            // it — i64 was the right guess for them.
+            (Type::Never, _) => Ok(false),
+            (_, Type::Never) => Ok(false),
+
             // Two bare vars, one of them a literal's: point the plain var at the
             // literal var, not the other way round. Binding the literal var
             // takes it off the defaulting list, and if nothing else ever pins
@@ -730,9 +779,6 @@ impl TypeChecker {
             }
 
             (Type::Error, _) | (_, Type::Error) => Ok(false),
-
-            (Type::Never, _) => Ok(false),
-            (_, Type::Never) => Ok(false),
 
             (Type::Result { ok: _, err: _ }, Type::Named(id)) | (Type::Named(id), Type::Result { ok: _, err: _ }) => {
                 if Some(*id) == self.types.get_result_type_id() {

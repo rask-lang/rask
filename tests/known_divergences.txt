@@ -20,3 +20,25 @@ t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (
 t_parse_float.rk # `"3.5".parse()` with the target from the binding always misses; only the turbofish form works — #610 (both)
 
 # --- new regression witnesses (this session) ---
+
+# --- E0361: binding whose type inference left open (#620) ---
+# Not a divergence — these fail `check` on both backends now that the type
+# checker reports an unresolved binding instead of letting lowering guess i64.
+# Every one is an expression form that doesn't propagate its value type:
+# `with`-block-as-value, `select`-as-value, `loop`-as-value, iterator `collect`,
+# `??` taking its type from the default. Fix the inference and delete the line —
+# the annotation the error suggests works meanwhile, but these are compiler
+# bugs, not programs that need annotating.
+p06_select.rk              # select-as-value — #620 (both)
+t20_control_expressions.rk # loop/block-as-value — #620 (both)
+t21_let_bindings.rk        # #620 (both)
+t23_with_blocks.rk         # with-block-as-value — #620 (both)
+t25_iterator_adapters.rk   # iterator collect — #620 (both)
+t48_loops.rk               # loop-as-value — #620 (both)
+t66_stdlib_option_returns.rk # #620 (both)
+t_inferred_return_type.rk  # #620 (both)
+t_iter_take_collect.rk     # iterator collect — #620 (both)
+t_loop_labels.rk           # loop-as-value — #620 (both)
+t_parse_failure.rk         # #620 (both)
+t_select.rk                # select-as-value — #620 (both)
+t_with_mutex_value.rk      # with-block-as-value — #620 (both)

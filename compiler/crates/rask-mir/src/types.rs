@@ -82,6 +82,14 @@ impl MirType {
                 | MirType::Result { .. }
                 | MirType::Union(_)
                 | MirType::SimdVector { .. }
+                // A trait object is a 16-byte fat pointer in a stack slot, with
+                // the local holding the slot's address — the same convention as
+                // a struct. Leaving it out here while `is_aggregate_dst` in
+                // codegen counted it as an aggregate is what broke reading one
+                // back out of a `T?`: the payload copy sized itself for a
+                // scalar and dropped the vtable half, so the call through it
+                // segfaulted (#552).
+                | MirType::TraitObject { .. }
         )
     }
 

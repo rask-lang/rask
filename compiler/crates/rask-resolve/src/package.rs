@@ -194,7 +194,10 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             }
         };
 
-        let mut lexer = rask_lexer::Lexer::new(&source);
+        // Same id the parser is about to use — token spans have to agree with
+        // the composite spans the parser builds, or half the diagnostics in this
+        // file point somewhere else.
+        let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, successful_file_idx);
         let lex_result = lexer.tokenize();
         if !lex_result.is_ok() {
             file_errors.push(PackageError::Lex {

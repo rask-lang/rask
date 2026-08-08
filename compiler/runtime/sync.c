@@ -366,6 +366,20 @@ void rask_cell_set(int64_t cell, int64_t data_ptr) {
     }
 }
 
+// Swap in the new value, hand back the old one's address. The old value has to
+// outlive the call, so it goes in its own allocation rather than being returned
+// out of the slot we're about to overwrite.
+int64_t rask_cell_replace(int64_t cell, int64_t data_ptr) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    RASK_CHECK_NONNULL(c, "Cell.replace: cell is null");
+    void *old = rask_alloc(c->data_size);
+    memcpy(old, c->data, (size_t)c->data_size);
+    if (data_ptr) {
+        memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)c->data_size);
+    }
+    return (int64_t)(intptr_t)old;
+}
+
 void rask_cell_free(int64_t cell) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
     if (!c) return;

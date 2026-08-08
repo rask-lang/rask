@@ -1,0 +1,30 @@
+Sum: 15
+Count: 5
+
+First: 1
+User: Alice, age 30
+Age: 30
+User name: Alice
+
+User: Bob, age 25
+User: Bob, age 25
+
+User: Alice, age 35
+Retrieved age: 35
+
+All users:
+User: Charlie, age 40
+User: Diana, age 28
+User: Eve, age 32
+
+Total users: 3
+
+Vectors have equal length
+Vec1 length: 3
+Vec2 length: 3
+
+Original: 10 20 30 
+Copy: 10 20 30 
+
+Max value: 9
+Data length: 5

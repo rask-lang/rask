@@ -25,6 +25,7 @@ mod unify;
 mod generics;
 mod resolve;
 mod validate;
+mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
@@ -83,6 +84,11 @@ pub struct TypeChecker {
     pub(super) errors: Vec<TypeError>,
     /// Current function's return type (for checking return statements).
     pub(super) current_return_type: Option<Type>,
+    /// Result type of each enclosing loop-as-expression, innermost last. A
+    /// `break v` unifies `v` with the top of this; without it the loop's type
+    /// was a fresh variable nothing ever wrote to, so `let found = loop { … }`
+    /// stayed open however the breaks were typed.
+    pub(super) loop_value_types: Vec<Type>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Trait bounds on the current function's type params (name → trait names).
@@ -201,6 +207,7 @@ impl TypeChecker {
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
+            loop_value_types: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             local_types: Vec::new(),
@@ -364,6 +371,8 @@ impl TypeChecker {
             .iter()
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
+
+        self.validate_resolved_binding_types(decls, &node_types);
 
         // Build reverse map TypeId → name for normalizing Named types
         let id_to_name: HashMap<crate::TypeId, String> = self.types.type_names

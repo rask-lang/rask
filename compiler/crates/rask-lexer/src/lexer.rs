@@ -389,12 +389,30 @@ const MAX_ERRORS: usize = 20;
 pub struct Lexer<'a> {
     source: &'a str,
     errors: Vec<LexError>,
+    /// Which file these tokens came from. Stamped into every span so the parser
+    /// can lift a token's span directly and keep the attribution.
+    file_id: u16,
 }
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer for the given source code.
     pub fn new(source: &'a str) -> Self {
-        Self { source, errors: Vec::new() }
+        Self { source, errors: Vec::new(), file_id: 0 }
+    }
+
+    /// Lex a file that isn't the only one in the build.
+    ///
+    /// Token spans carry the file they came from, so anything the parser lifts
+    /// straight off a token — a `let`'s name span, a field's, a parameter's —
+    /// keeps pointing at the right file. Without this they all claimed file 0
+    /// and rendered against whichever source the formatter happened to hold,
+    /// which is how errors landed on the wrong file at impossible columns.
+    pub fn new_with_file_id(source: &'a str, file_id: u16) -> Self {
+        Self { source, errors: Vec::new(), file_id }
+    }
+
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::with_file(start, end, self.file_id)
     }
 
     /// Tokenize the entire source, collecting multiple errors.
@@ -431,13 +449,13 @@ impl<'a> Lexer<'a> {
 
             tokens.push(Token {
                 kind,
-                span: Span::new(span.start, span.end),
+                span: self.span(span.start, span.end),
             });
         }
 
         tokens.push(Token {
             kind: TokenKind::Eof,
-            span: Span::new(self.source.len(), self.source.len()),
+            span: self.span(self.source.len(), self.source.len()),
         });
 
         LexResult {
