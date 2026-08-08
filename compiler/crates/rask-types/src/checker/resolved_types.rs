@@ -67,13 +67,6 @@ impl TypeChecker {
         decls: &[Decl],
         node_types: &HashMap<NodeId, Type>,
     ) {
-        // Opt-in while the backlog it finds is worked down (#620). The check is
-        // right and the 68 things it currently reports are real — they're just
-        // not all fixable in one go, and a red tree stops anyone landing the
-        // fixes. Flip this to unconditional when the count reaches zero.
-        if std::env::var_os("RASK_STRICT_TYPES").is_none() {
-            return;
-        }
         let names: HashMap<crate::TypeId, String> = self
             .types
             .type_names

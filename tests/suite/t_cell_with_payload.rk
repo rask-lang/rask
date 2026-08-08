@@ -40,7 +40,7 @@ test "writes through the binding land in the cell" {
 
 test "the block is an expression" {
     let c = Cell.new(21)
-    let doubled = with c as v { v * 2 }
+    let doubled: i64 = with c as v { v * 2 }
     assert_eq(doubled, 42)
 }
 

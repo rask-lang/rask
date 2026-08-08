@@ -79,7 +79,7 @@ func user_id(path: string) -> UserId or ApiError {
 func segment_id(path: string, prefix: string) -> u64 or ApiError {
     let rest = path[prefix.len()..].to_string()
     let trimmed = strip_suffix(rest, "/deps")
-    let n = trimmed.parse<u64>() ?? return ApiError.BadRequest("invalid id in path: {path}")
+    let n: u64 = trimmed.parse<u64>() ?? return ApiError.BadRequest("invalid id in path: {path}")
     return n
 }
 

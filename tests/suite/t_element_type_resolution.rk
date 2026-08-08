@@ -52,7 +52,7 @@ test "a Map inside a Mutex resolves its value type through lock" {
     with m as inner {
         inner.insert("k", 2.5)
     }
-    let got = m.lock().get("k") ?? 0.0
+    let got: f64 = m.lock().get("k") ?? 0.0
     assert_eq(got, 2.5)
 }
 

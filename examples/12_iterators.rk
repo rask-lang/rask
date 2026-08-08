@@ -17,7 +17,7 @@ func main() {
     print("\n\n")
 
     // Map - transform each element
-    let doubled = numbers.iter()
+    let doubled: Vec<i64> = numbers.iter()
         .map(|n| n * 2)
         .collect()
 
@@ -28,7 +28,7 @@ func main() {
     }
     print("\n")
 
-    let squared = numbers.iter()
+    let squared: Vec<i64> = numbers.iter()
         .map(|n| n * n)
         .collect()
 
@@ -63,7 +63,7 @@ func main() {
     print("\n\n")
 
     // Chain multiple operations
-    let result = numbers.iter()
+    let result: Vec<i64> = numbers.iter()
         .filter(|n| n % 2 == 0)  // Keep evens
         .map(|n| n * n)           // Square them
         .collect()
@@ -89,7 +89,7 @@ func main() {
     print("\n\n")
 
     // Complex chain
-    let complex = numbers.iter()
+    let complex: Vec<i64> = numbers.iter()
         .skip(1)                  // Skip first element
         .filter(|n| n < 8)        // Keep elements < 8
         .map(|n| n * 3)           // Triple them
@@ -157,7 +157,7 @@ func main() {
     // Working with strings
     let words = Vec.from(["hello", "world", "rask", "language"])
 
-    let uppercase = words.iter()
+    let uppercase: Vec<string> = words.iter()
         .map(|s| s.to_uppercase())
         .collect()
 

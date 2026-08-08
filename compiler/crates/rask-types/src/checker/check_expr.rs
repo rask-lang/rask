@@ -1067,8 +1067,18 @@ impl TypeChecker {
                         *ok.clone()
                     }
                     Type::Var(_) => {
-                        // Don't constrain yet - let later context determine if Option or Result
-                        self.ctx.fresh_var()
+                        // Shape unknown here — `v.get(0)!` waits on the method's
+                        // return type. Record the relationship rather than
+                        // handing back a fresh variable with nothing tying it to
+                        // the operand, which left `let got = v.get(0)!` with an
+                        // open type no matter what the operand turned out to be.
+                        let payload = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Unwrap {
+                            value: inner_ty.clone(),
+                            result: payload.clone(),
+                            span: expr.span,
+                        });
+                        payload
                     }
                     _ => {
                         self.errors.push(TypeError::Mismatch {
@@ -1184,11 +1194,15 @@ impl TypeChecker {
             }
 
             ExprKind::Loop { body, .. } => {
+                // Loop-as-expression gets its type from break values — each
+                // `break v` unifies into this.
+                let result = self.ctx.fresh_var();
+                self.loop_value_types.push(result.clone());
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                // Loop-as-expression gets its type from break values
-                self.ctx.fresh_var()
+                self.loop_value_types.pop();
+                result
             }
 
             ExprKind::Unsafe { body } => {

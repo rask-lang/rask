@@ -83,7 +83,7 @@ func handle_sleep(req: Request) -> Response or ApiError {
 
 func handle_list_tasks(req: Request) -> Response or ApiError {
     let filter = try build_filter(req)
-    let page = store.lock().list_views(filter)
+    let page: ListResponse = store.lock().list_views(filter)
     return json_response(200, json.encode(page))
 }
 

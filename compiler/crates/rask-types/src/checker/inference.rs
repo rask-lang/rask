@@ -58,6 +58,17 @@ pub enum TypeConstraint {
     /// ER14a: `value ?? default`. Which of the three cases applies depends on
     /// the right side's shape, which often isn't known until a method-call
     /// return type resolves — so the whole decision waits here.
+    /// `x!` — the payload of whatever `value` turns out to wrap.
+    ///
+    /// The shape usually isn't known at the `!`: `v.get(0)!` has to wait for the
+    /// method's return type to resolve. Returning a fresh variable and moving on
+    /// left the result permanently disconnected from the operand, so it stayed
+    /// open forever even once the operand settled.
+    Unwrap {
+        value: Type,
+        result: Type,
+        span: Span,
+    },
     Coalesce {
         /// The `??` expression itself, so the settled case can be recorded
         /// for the backends — a still-wrapped `??` yields the left operand

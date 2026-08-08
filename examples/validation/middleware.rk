@@ -88,7 +88,7 @@ extend RateLimiter with Middleware {
 
         // Inline .lock() per access: `with self.counters as c` on a field
         // Mutex doesn't unwrap in the current checker (FINDINGS).
-        let used = self.counters.lock().get(key) ?? 0
+        let used: u64 = self.counters.lock().get(key) ?? 0
         if used >= limit {
             return MwOutcome.Short(error_response(ApiError.RateLimited(60)))
         }

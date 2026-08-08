@@ -172,6 +172,10 @@ impl TypeChecker {
                 span,
             } => self.resolve_type_pattern(scrutinee, narrow_ty, ty_name, span),
 
+            TypeConstraint::Unwrap { value, result, span } => {
+                self.resolve_unwrap(value, result, span)
+            }
+
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
             }
@@ -269,6 +273,38 @@ impl TypeChecker {
     /// chain carries on; a bare success value collapses. Only the second one
     /// needs the left side, and only to tell a chain from a layer collapse
     /// (`T??` fed a `T?`, OPT30) — unresolved, the chain reading wins.
+    /// `x!` yields the success payload of `x`. Both shapes read the same way —
+    /// `T?` is a `Result` whose error side is `none` — so the ok side is the
+    /// answer for either. Defers while the operand is still a variable.
+    fn resolve_unwrap(
+        &mut self,
+        value: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let val = self.ctx.apply(&value);
+        match &val {
+            Type::Result { ok, .. } => {
+                self.unify(&result, ok, span)?;
+                Ok(true)
+            }
+            // Not settled yet — come back once the operand resolves.
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::Unwrap { value, result, span });
+                Ok(false)
+            }
+            // `!` on something that can't fail or be absent. The direct arm in
+            // check_expr already reports this when the type is known up front;
+            // this catches the case that only resolved later.
+            Type::Error => Ok(true),
+            other => Err(TypeError::Mismatch {
+                expected: Type::option(self.ctx.fresh_var()),
+                found: other.clone(),
+                span,
+            }),
+        }
+    }
+
     fn resolve_coalesce(
         &mut self,
         node: rask_ast::NodeId,
