@@ -1,0 +1,15 @@
+{
+  "name": "rask-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "rask_wasm_bg.wasm",
+    "rask_wasm.js",
+    "rask_wasm.d.ts"
+  ],
+  "main": "rask_wasm.js",
+  "types": "rask_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
