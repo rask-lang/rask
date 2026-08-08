@@ -176,6 +176,10 @@ impl TypeChecker {
                 self.resolve_unwrap(value, result, span)
             }
 
+            TypeConstraint::Index { object, result, is_range, span } => {
+                self.resolve_index(object, result, is_range, span)
+            }
+
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
             }
@@ -303,6 +307,32 @@ impl TypeChecker {
                 span,
             }),
         }
+    }
+
+    /// Settle `object[index]` once the container's shape is known. Defers while
+    /// the container is still a variable — a Pool behind a struct field only
+    /// gets its type when that field's own constraint resolves.
+    fn resolve_index(
+        &mut self,
+        object: Type,
+        result: Type,
+        is_range: bool,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let obj = self.ctx.apply(&object);
+        if let Some(elem) = self.index_result_type(&obj, is_range) {
+            self.unify(&result, &elem, span)?;
+            return Ok(true);
+        }
+        if matches!(obj, Type::Var(_)) {
+            self.ctx
+                .add_constraint(TypeConstraint::Index { object, result, is_range, span });
+            return Ok(false);
+        }
+        // A container that resolved to something with no element type to read —
+        // an unparameterized generic, say. `check_index_types` already reported
+        // whatever was a real error at the index site, so stay quiet here.
+        Ok(false)
     }
 
     fn resolve_coalesce(
