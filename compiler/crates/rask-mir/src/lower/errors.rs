@@ -200,6 +200,36 @@ impl<'a> MirLowerer<'a> {
             None => (err_val, err_store_size),
         };
 
+        // An optional-returning function propagates *absence*, and an Option is
+        // a tag with nothing beside it — no origin fields, no payload. The
+        // Result construction below writes origin at offsets 8 and 16 and a
+        // payload at 24, which runs past the end of a 16-byte Option slot; and
+        // the type match further down only knows about Result, so the slot got
+        // typed after the *source* optional instead of the return. That's how
+        // `try raw` in a `-> u16?` built a `string?`-shaped Result and the
+        // caller's `??` read a payload of 1 where the default belonged (#608).
+        if let MirType::Option(_) = self.builder.ret_ty() {
+            let none_ty = self.builder.ret_ty().clone();
+            let ret_none = self.builder.alloc_temp(none_ty);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: ret_none,
+                offset: rask_mono::abi::OPTION_TAG_OFFSET,
+                value: MirOperand::Constant(MirConst::Int(1)),
+                store_size: None,
+            }));
+            if self.ensure_stack.is_empty() {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                    value: Some(MirOperand::Local(ret_none)),
+                }));
+            } else {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                    value: Some(MirOperand::Local(ret_none)),
+                    cleanup_chain: self.cleanup_chain(),
+                }));
+            }
+            return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
+        }
+
         // Construct full Result.Err with origin (ER15). The slot has to be the
         // *enclosing* function's return type — this value is what `return`
         // hands back. Using the callee's Result type gave the caller a slot of
