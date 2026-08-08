@@ -1695,8 +1695,18 @@ impl<'a> FunctionBuilder<'a> {
         // If the source is an aggregate and dst is Option<aggregate>,
         // we need full-aggregate wrap (tag + memcpy payload), not the
         // scalar wrap.
+        // A string constant lowers to the address of its 16 bytes, same as a
+        // string local — so it takes the aggregate wrap too. Treated as a
+        // scalar, `let a: string? = "hello"` stored the *pointer* at the
+        // payload offset and reading the payload back handed out that slot's
+        // address instead of the string (#613).
+        let src_is_addressed = match rvalue {
+            MirRValue::Use(MirOperand::Local(_)) => true,
+            MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+            _ => false,
+        };
         let wrap_as_some_aggregate = wrap_as_some
-            && matches!(rvalue, MirRValue::Use(MirOperand::Local(_)))
+            && src_is_addressed
             && if let MirType::Option(inner) = &dst_local.ty {
                 matches!(inner.as_ref(),
                     MirType::Struct(_) | MirType::Enum(_) |

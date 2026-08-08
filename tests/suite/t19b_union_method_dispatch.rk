@@ -71,7 +71,7 @@ test "error union div error" {
 // `e: A | B` resolves by dispatching to whichever variant `e` holds.
 func union_message(s: string, b: i32) -> string {
     let r = combined(s, b)
-    if r? as v {
+    if r is i32 as v {
         return "ok({v})"
     } else as e {
         return e.message()

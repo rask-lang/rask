@@ -250,11 +250,12 @@ impl<'a> WarnContext<'a> {
                     self.check_expr(&arm.body, warnings);
                 }
             }
-            ExprKind::Try { expr: e, else_clause } => {
+            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => {
                 self.check_expr(e, warnings);
-                if let Some(ec) = else_clause {
-                    self.check_expr(&ec.body, warnings);
-                }
+            }
+            ExprKind::Catch { value, clause } => {
+                self.check_expr(value, warnings);
+                self.check_expr(&clause.body, warnings);
             }
             ExprKind::IsPresent { expr: e, .. } => {
                 self.check_expr(e, warnings);

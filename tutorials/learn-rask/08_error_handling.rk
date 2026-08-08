@@ -176,7 +176,7 @@ func safe_get(v: Vec<i32>, i: i32) -> i32? {
 
 test "valid temperature" {
     let r = validate_temperature(20.0)
-    assert r?
+    assert r is f64
 }
 
 test "temperature too high" {
@@ -188,15 +188,14 @@ test "temperature too low" {
 }
 
 test "temperature at boundary" {
-    assert validate_temperature(-40.0)?
-    assert validate_temperature(150.0)?
+    assert validate_temperature(-40.0) is f64
+    assert validate_temperature(150.0) is f64
 }
 
 test "parse altitude" {
     let r = parse_altitude("35000")
-    assert r?
-    if r? {
-        assert r == 35000
+    if r is i32 as altitude {
+        assert altitude == 35000
     } else {
         assert false
     }
@@ -212,9 +211,8 @@ test "parse empty altitude" {
 
 test "average valid readings" {
     let r = average_readings(20.0, 22.0, 21.0)
-    assert r?
-    if r? {
-        assert r == 21.0
+    if r is f64 as avg {
+        assert avg == 21.0
     } else {
         assert false
     }
@@ -232,8 +230,8 @@ test "safe get in bounds" {
 
 test "safe get out of bounds" {
     let v = Vec.from([10, 20, 30])
-    assert safe_get(v, 5) == none
-    assert safe_get(v, -1) == none
+    assert safe_get(v, 5) is none
+    assert safe_get(v, -1) is none
 }
 
 func main() {

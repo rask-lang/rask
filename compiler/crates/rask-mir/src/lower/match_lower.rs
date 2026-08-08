@@ -30,6 +30,184 @@ fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_
 }
 
 impl<'a> MirLowerer<'a> {
+
+    /// A value that can fail *and* be absent — `T? or E` — carries an error
+    /// tag around an option tag. Nothing else in MIR nests two wrappers.
+    fn is_flat_two_layer(ty: &MirType) -> bool {
+        match ty {
+            MirType::Result { ok, err } => {
+                !matches!(**err, MirType::Void)
+                    && matches!(**ok, MirType::Option(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// `match` on a flat `T? or E`. The three leaves (`T`, `none`, `E`) sit
+    /// behind two tags, so this computes one discriminant for them — 0 for the
+    /// payload, 1 for absent, 2 for the error — and switches on that. Reading a
+    /// single tag would collapse `none` and `T` into the same arm (OPT30).
+    fn lower_flat_match(
+        &mut self,
+        scrutinee: &Expr,
+        scrutinee_op: MirOperand,
+        scrutinee_ty: MirType,
+        arms: &[rask_ast::expr::MatchArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
+
+        let (inner_opt_ty, err_ty) = match &scrutinee_ty {
+            MirType::Result { ok, err } => ((**ok).clone(), (**err).clone()),
+            _ => unreachable!("checked by is_flat_two_layer"),
+        };
+        let payload_ty = match &inner_opt_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            _ => MirType::I64,
+        };
+
+        // The inner optional, lifted out of the result's payload slot. It's a
+        // tagged aggregate living inline, so what's wanted is its address —
+        // loading a word here would hand back the tag and the next read would
+        // dereference it.
+        let inner_local = self.builder.alloc_temp(inner_opt_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: inner_local,
+            rvalue: MirRValue::Field {
+                base: scrutinee_op.clone(),
+                field_index: 0,
+                byte_offset: None,
+                access: FieldAccess::Word,
+            },
+        }));
+
+        // leaf = 2 on the error side, otherwise the inner option's own tag.
+        let leaf = self.builder.alloc_temp(MirType::U8);
+        let outer_tag = self.emit_option_tag(&scrutinee_op, false);
+        let err_blk = self.builder.create_block();
+        let ok_blk = self.builder.create_block();
+        let disc_blk = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(outer_tag),
+            then_block: err_blk,
+            else_block: ok_blk,
+        }));
+        self.builder.switch_to_block(err_blk);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: leaf,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(2))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: disc_blk }));
+        self.builder.switch_to_block(ok_blk);
+        let inner_tag = self.emit_option_tag(&MirOperand::Local(inner_local), false);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: leaf,
+            rvalue: MirRValue::Use(MirOperand::Local(inner_tag)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: disc_blk }));
+        self.builder.switch_to_block(disc_blk);
+
+        let merge_block = self.builder.create_block();
+        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let mut cases: Vec<(u64, BlockId)> = Vec::new();
+        let mut default_block = merge_block;
+
+        // Which leaf each arm names. `none` is the absent one; anything the
+        // error side answers to is the error; the rest is the payload.
+        let leaf_of = |lowerer: &Self, name: &str| -> u64 {
+            if name == "none" {
+                1
+            } else if lowerer.pattern_is_err_side(name, &scrutinee_ty) {
+                2
+            } else {
+                0
+            }
+        };
+
+        for (i, arm) in arms.iter().enumerate() {
+            let name = match &arm.pattern {
+                Pattern::Wildcard => {
+                    default_block = arm_blocks[i];
+                    continue;
+                }
+                Pattern::TypePat { ty_name, .. } => ty_name.clone(),
+                Pattern::Ident(n) => n.clone(),
+                Pattern::Constructor { name, .. } => name.clone(),
+                _ => {
+                    default_block = arm_blocks[i];
+                    continue;
+                }
+            };
+            cases.push((leaf_of(self, &name), arm_blocks[i]));
+        }
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(leaf),
+            cases,
+            default: default_block,
+        }));
+
+        let mut result_ty = MirType::Void;
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.switch_to_block(arm_blocks[i]);
+
+            if let Pattern::TypePat { ty_name, binding: Some(binding) } = &arm.pattern {
+                // The payload comes from the layer the arm named: the inner
+                // option for `T`, the outer result for `E`.
+                // The payload comes from the layer the arm named. The error
+                // reads out of the result the way any `T or E` arm does; the
+                // success value reads out of the inner option, whose slot
+                // holds a word unless the payload is a real aggregate.
+                let (bind_ty, base, byte_offset) = if leaf_of(self, ty_name) == 2 {
+                    let off = self.payload_byte_offset(&err_ty);
+                    (err_ty.clone(), scrutinee_op.clone(), off)
+                } else {
+                    let off = if matches!(
+                        payload_ty,
+                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                    ) {
+                        None
+                    } else {
+                        Some(crate::types::RESULT_PAYLOAD_OFFSET)
+                    };
+                    (payload_ty.clone(), MirOperand::Local(inner_local), off)
+                };
+                let local = self.builder.alloc_local(binding.clone(), bind_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: local,
+                    rvalue: MirRValue::Field {
+                        base,
+                        field_index: 0,
+                        byte_offset,
+                        access: FieldAccess::Word,
+                    },
+                }));
+                if let Some(p) = self.mir_type_name(&bind_ty) {
+                    self.meta_mut(binding).type_prefix = Some(p);
+                }
+                self.locals.insert(binding.clone(), (local, bind_ty));
+            }
+
+            let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
+            if i == 0 {
+                result_ty = arm_ty;
+            }
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(body_val),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+            }
+        }
+
+        let _ = scrutinee;
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
     /// Match expression lowering (spec L2).
     pub(super) fn lower_match(
         &mut self,
@@ -60,6 +238,12 @@ impl<'a> MirLowerer<'a> {
                 .map_or(false, |ty| matches!(ty, rask_types::Type::String));
         if is_string_match {
             return self.lower_string_match(scrutinee_op, arms);
+        }
+
+        // A flat `T? or E` wears two tags, and the arms name leaves across
+        // both layers. Flatten first, then it's an ordinary switch.
+        if Self::is_flat_two_layer(&scrutinee_ty) {
+            return self.lower_flat_match(scrutinee, scrutinee_op, scrutinee_ty, arms);
         }
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));

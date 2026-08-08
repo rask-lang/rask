@@ -7,8 +7,8 @@ Rask is a compiled systems language: value semantics, single ownership, no GC, n
 ## Syntax core
 
 ```rask
-let x = 42                 // permanent binding (not "let")
-mut counter = 0              // rebindable binding
+let x = 42                 // permanent binding, deep: no reassign, no mutation through it
+mut counter = 0              // rebindable binding (never "let mut" — one keyword each)
 counter = counter + 1
 
 func add(a: i32, b: i32) -> i32 {
@@ -298,9 +298,9 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 ## Common mistakes (especially if you know Rust)
 
 1. **`type X = Y` creates a distinct nominal type.** For a transparent alias write `type alias X = Y` — the opposite of Rust/TypeScript.
-2. **No `Ok`/`Err`/`Some`/`None`.** Return bare values or the error value; test with `r?`, match on types (`IoError as e`), never `is Ok`.
+2. **No `Ok`/`Err`/`Some`/`None`.** Return bare values or the error value. On results: handle with `catch`, test with `is` (`IoError as e`), never `is Ok` — and never `r?`; `?` is absence-only and doesn't apply to results.
 3. **Bindings are `let`/`mut`** — never `let mut`. `mut`, not `let`, is the rebindable one; `const` exists only at module level.
-4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means something else (success test / optional chain).
+4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means absence, on optionals only — and **`?`-tests don't narrow; there is no flow typing.** `if x? { use(x) }` doesn't unwrap `x`; Kotlin/TypeScript smart-cast instincts fail here. Bind instead (`if x? as v { use(v) }`) or exit with the fallback (`let v = x ?? return`).
 5. **Methods live in `extend Point { }` blocks**, not in the struct body; trait conformance is `extend Point with Trait { }` — and it's required (nominal), methods matching by shape is not enough.
 6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Trait`, even when the target type is known.
 7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store `Handle<T>`, indices, or `Span`s instead of references; use `with` for multi-statement element access.
@@ -314,4 +314,4 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 
 ## Spec vs compiler (temporary)
 
-The spec is normative; the compiler lags it. Currently the compiler still accepts old-style code for: structural trait matching (nominal conformance not yet enforced, #283), implicit `any Trait` coercion (#284), `duck trait`/`scoped extend`/`public extend` parsing, seeded Map order (#285), and some codegen paths fail on valid programs (#203). Write to the spec; don't infer rules from what today's binary accepts.
+The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Trait` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.

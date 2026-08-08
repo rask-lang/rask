@@ -230,6 +230,9 @@ pub struct MirContext<'a> {
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
+    /// ER14a: `??` sites whose right side is still wrapped, so the present
+    /// path hands back the left operand instead of its payload.
+    pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -300,6 +303,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_ERROR_WRAPS: std::sync::LazyLock<HashMap<NodeId, rask_types::ErrorWrap>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
@@ -324,6 +329,7 @@ impl<'a> MirContext<'a> {
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
+            fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -807,15 +813,15 @@ pub struct MirLowerer<'a> {
     /// checker leaves `collect()`'s element an inference variable — and a binding
     /// needs it so `for v in page` knows what it is iterating.
     collected_elem_types: HashMap<LocalId, MirType>,
-    /// Stack of enclosing `try { … } else |e| …` handlers (innermost last).
+    /// Stack of enclosing `try { … } catch e => …` handlers (innermost last).
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
-    try_else_stack: Vec<TryElseFrame>,
+    catch_frames: Vec<CatchFrame>,
 }
 
-/// Where a `try` inside a `try { … } else |e| …` block sends its error.
+/// Where a `try` inside a `try { … } catch e => …` block sends its error.
 #[derive(Clone)]
-pub(crate) struct TryElseFrame {
+pub(crate) struct CatchFrame {
     /// Block that binds `e` and runs the handler body.
     pub(crate) handler_block: BlockId,
     /// Slot the failing error payload is copied into before the jump.
@@ -1928,7 +1934,7 @@ impl<'a> MirLowerer<'a> {
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
-            try_else_stack: Vec::new(),
+            catch_frames: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -2403,6 +2409,12 @@ impl<'a> MirLowerer<'a> {
             MirType::Option(inner) => (Some(inner.as_ref()), None),
             _ => (None, None),
         };
+        // OPT15: `none` names the absent branch, which is always the other
+        // side. Without this the lowercase-means-ok fallback below claimed it
+        // for the payload, and `x is none` answered backwards on native.
+        if name == "none" {
+            return true;
+        }
         // Exact identity match wins.
         if let Some(ok) = ok_ty {
             if self.mir_type_name(ok).as_deref() == Some(name) {
@@ -2421,10 +2433,22 @@ impl<'a> MirLowerer<'a> {
         }
         // One side named but unmatched ⇒ the pattern is the other side. Handles
         // generic ok types (`Vec<i32>` → Ptr) that lose their nominal name.
-        if err_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+        //
+        // Only a *nominal* name counts. An error type that didn't get a layout
+        // lowers to `i64`, and taking that as "the err side is named, so this
+        // pattern must be the ok side" routed `r is SysError` on a
+        // `void or SysError` to tag 0 — the success arm.
+        let is_nominal = |n: &str| n.chars().next().is_some_and(|c| c.is_uppercase());
+        if err_ty
+            .and_then(|t| self.mir_type_name(t))
+            .is_some_and(|n| is_nominal(&n))
+        {
             return false;
         }
-        if ok_ty.map_or(false, |t| self.mir_type_name(t).is_some()) {
+        if ok_ty
+            .and_then(|t| self.mir_type_name(t))
+            .is_some_and(|n| is_nominal(&n))
+        {
             return true;
         }
         // Last resort: lowercase ⇒ ok, uppercase ⇒ err.
@@ -2458,7 +2482,12 @@ impl<'a> MirLowerer<'a> {
                 // otherwise a nested enum variant → its own tag.
                 if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
                     let matches_side = self.mir_side_names_contain(val_ty, name);
-                    if matches_side {
+                    // A side whose type never got a layout lowers to `i64`, so
+                    // the name comparison can't find it. Falling through to the
+                    // variant lookup then answered 0 for every such name, and
+                    // `r is SysError` on a `void or SysError` routed to the
+                    // success arm.
+                    if matches_side || !self.names_a_known_variant(name) {
                         return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
                     }
                 }
@@ -2470,6 +2499,16 @@ impl<'a> MirLowerer<'a> {
             }
             _ => self.pattern_tag(pattern),
         }
+    }
+
+    /// True when some declared enum has a variant by this name.
+    fn names_a_known_variant(&self, name: &str) -> bool {
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        self.ctx
+            .enum_layouts
+            .iter()
+            .any(|l| l.variants.iter().any(|v| v.name == bare))
+            || rask_stdlib::ordering_tag(bare).is_some()
     }
 
     /// True when `name` is the nominal name of the ok side, err side, or an err
@@ -2918,13 +2957,14 @@ impl<'a> MirLowerer<'a> {
                 for p in inner_params { inner_bound.insert(p.name.clone()); }
                 self.walk_free_vars(body, &inner_bound, seen, free);
             }
-            ExprKind::Try { expr: inner, ref else_clause } => {
+            ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.walk_free_vars(inner, bound, seen, free);
-                if let Some(ec) = else_clause {
-                    let mut inner_bound = bound.clone();
-                    inner_bound.insert(ec.error_binding.clone());
-                    self.walk_free_vars(&ec.body, &inner_bound, seen, free);
-                }
+            }
+            ExprKind::Catch { value, ref clause } => {
+                self.walk_free_vars(value, bound, seen, free);
+                let mut inner_bound = bound.clone();
+                inner_bound.insert(clause.binder.clone());
+                self.walk_free_vars(&clause.body, &inner_bound, seen, free);
             }
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
@@ -2943,7 +2983,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch } => {
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding } => {
                 self.walk_free_vars(inner, bound, seen, free);
                 let mut then_bound = bound.clone();
                 collect_pattern_names(pattern, &mut then_bound);
@@ -3617,7 +3657,7 @@ mod tests {
     fn try_expr(inner: Expr) -> Expr {
         Expr {
             id: NodeId(112),
-            kind: ExprKind::Try { expr: Box::new(inner), else_clause: None },
+            kind: ExprKind::Try { expr: Box::new(inner) },
             span: sp(),
         }
     }
@@ -4395,6 +4435,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4415,6 +4456,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4460,6 +4502,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4480,6 +4523,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -4531,6 +4575,7 @@ mod tests {
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
+        let empty_fallback_shape = std::collections::HashSet::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -4551,6 +4596,7 @@ mod tests {
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
+            fallback_keeps_shape: &empty_fallback_shape,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,

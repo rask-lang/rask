@@ -96,7 +96,7 @@ test "mem.pools/PL5 — get on stale handle is none" {
     let h = pool.insert(Entity { health: 42, level: 3 })
     pool.remove(h)
     let got = pool.get(h)
-    assert got == none
+    assert got is none
 }
 
 func main() {}

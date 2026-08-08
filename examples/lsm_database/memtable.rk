@@ -100,7 +100,7 @@ test "memtable put and get" {
     let b = mt.get("b") ?? panic("expected present")
     assert b.value == "2"
 
-    assert mt.get("z") == none
+    assert mt.get("z") is none
 }
 
 test "memtable overwrites by key" {

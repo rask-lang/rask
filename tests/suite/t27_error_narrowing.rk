@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Error/Option narrowing and spec operators not covered by t07/t08/t17-t20.
+// The guard forms that replaced scrutinee narrowing (#601), plus the spec
+// operators not covered by t07/t08/t17-t20. No test changes a binding's type;
+// getting at a payload is always a bind or an operator.
 //
-// Spec: type.optionals (OPT13, OPT19-OPT22), type.errors (ER23, ER24, ER27)
+// Spec: type.optionals (OPT11, OPT19, OPT22), type.errors (ER14, ER23, ER27)
 
 // --- E0350: Ok/Err/Some/None rejected as patterns ---
 // Covered as compile-error tests; here we confirm the *correct* forms compile.
@@ -54,7 +56,7 @@ test "?? { return } unwraps present" {
     assert use_block() == 84
 }
 
-// --- ER18: try expr else |e| return (diverging handler) ---
+// --- ER18: expr catch e => return (diverging handler) ---
 
 enum FetchError { NotFound }
 extend FetchError {
@@ -68,11 +70,11 @@ extend FetchError {
 func inner() -> i32 or FetchError { return 10 }
 
 func try_else_return() -> i32 {
-    mut v = try inner() else |e| return -1
+    mut v = inner() catch e => return -1
     return v
 }
 
-test "try expr else |e| return unwraps present" {
+test "expr catch e => return unwraps present" {
     assert try_else_return() == 10
 }
 
@@ -87,7 +89,7 @@ test "is T as v else binds the success type" {
     assert use_type_pattern() == 15
 }
 
-// --- ER24: early-exit narrowing on is ErrType ---
+// --- The guard that replaced the early-exit narrow ---
 
 struct Cfg { port: i32 }
 
@@ -103,33 +105,34 @@ extend CfgError {
 func load_cfg() -> Cfg or CfgError { return Cfg { port: 8080 } }
 
 func cfg_port() -> i32 {
-    let c = load_cfg()
-    if c is CfgError {
-        return -1
-    }
-    // ER24: c is narrowed to Cfg here
+    // The guard binds the success by construction, so the rest reads flat.
+    let c = load_cfg() catch _ => return -1
     return c.port
 }
 
-test "early-exit narrows c to ok after is ErrType diverges" {
+test "catch binds the success and the rest reads flat" {
     assert cfg_port() == 8080
 }
 
-// --- ER24 via if x == none { return } ---
+// --- The same shape for an absence ---
 
 func opt_source() -> i32? { return 7 }
 
-func narrow_via_none() -> i32 {
-    let x = opt_source()
-    if x == none {
-        return -1
-    }
-    // Early-exit narrow: x is i32 here
+func guard_on_absence() -> i32 {
+    let x = opt_source() ?? return -1
     return x + 100
 }
 
-test "early-exit narrows x after x == none diverges" {
-    assert narrow_via_none() == 107
+test "?? return binds the payload" {
+    assert guard_on_absence() == 107
+}
+
+// `x is none` on its own is a plain bool — it changes nothing about `x`.
+test "is none is a test, not a narrow" {
+    let x: i32? = none
+    assert x is none
+    let y = opt_source()
+    assert (y is none) == false
 }
 
 // --- rask#217: generic type patterns parse ---
@@ -150,17 +153,16 @@ test "generic type pattern in is ... else guard" {
     assert generic_guard() == 2
 }
 
-// --- #224: bare `if x?` narrows when scrutinee's type-var is solved later ---
+// --- #224: the `as v` bind works when the scrutinee's type-var is solved later ---
 //
-// `Map.new()` without an annotation leaves V unsolved at the point `if existing?`
-// is checked. Narrowing must still bind `existing` to the unwrapped type so
-// constraint-solving can later resolve it through downstream `insert` calls.
+// `Map.new()` without an annotation leaves V unsolved at the point the bind is
+// checked. `v` still has to get the payload type, so constraint-solving can
+// resolve it through the downstream `insert` calls.
 
 func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
     mut counts = Map.new()
     for item in items {
-        let existing = counts.get(item)
-        if existing? {
+        if counts.get(item)? as existing {
             counts.insert(item, existing + 1)
         } else {
             counts.insert(item, 1)

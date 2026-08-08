@@ -70,7 +70,7 @@ test "type.union-types/S2 — multiple inputs, success flows unchanged" {
 // --- S1: success value binds via `? as v` on the union (present branch) ---
 func first_or_zero(s: string, b: i32) -> i32 {
     let r = compute(s, b, 1000000)
-    if r? as v {
+    if r is i32 as v {
         return v
     } else {
         return 0

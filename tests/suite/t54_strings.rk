@@ -7,7 +7,7 @@
 // Notes on portable idioms used here:
 //   - `usize?` / `char?` have no derived `eq`, and `(opt?)` as an rvalue is
 //     miscompiled on native — so optional results are inspected with `!`
-//     (force-unwrap) or `if opt? { .. }` narrowing, never `== none`.
+//     (force-unwrap) or an `if opt? as v` bind, never `== none`.
 //   - `char == char` inside `assert` hits a native codegen verifier bug, so
 //     char equality is bound to a bool first, then asserted.
 

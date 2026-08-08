@@ -10,12 +10,12 @@ extend DivError {
 }
 
 func main() {
-    // Handling T or E with narrowing
+    // Handling T or E: the test names the branch, the `as` binds it
     let result = divide(10, 2)
 
-    if result? {
+    if result is i32 as v {
         print("10 / 2 = ")
-        print(result)
+        print(v)
         print("\n")
     } else as e {
         print("Error: ")
@@ -26,9 +26,9 @@ func main() {
     // Division by zero
     let bad = divide(10, 0)
 
-    if bad? {
+    if bad is i32 as v {
         print("Result: ")
-        print(bad)
+        print(v)
         print("\n")
     } else as e {
         print("Error: ")
@@ -36,7 +36,7 @@ func main() {
         print("\n")
     }
 
-    // Using narrowing
+    // Handling it in place instead of branching
     let safe = safe_calc()
     print("Safe calc result: ")
     print(safe)
@@ -51,9 +51,7 @@ func divide(a: i32, b: i32) -> i32 or DivError {
 }
 
 func safe_calc() -> i32 {
-    let x = divide(20, 4)
-    if x? {
-        return x * 2
-    }
-    return 0
+    // `catch` gives the value straight out, so the rest reads flat
+    let x = divide(20, 4) catch _ => return 0
+    return x * 2
 }

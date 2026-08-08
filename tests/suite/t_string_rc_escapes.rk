@@ -50,7 +50,7 @@ test "the field survives an intervening allocation" {
 
 test "string returned as a Result ok payload" {
     let r = encoded(1)
-    if r? as body {
+    if r is string as body {
         assert body == "a fairly long string here 1"
         assert body.len() == 27
     } else {

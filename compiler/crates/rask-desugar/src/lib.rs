@@ -460,11 +460,10 @@ impl Desugarer {
                     self.desugar_match_arm(arm);
                 }
             }
-            ExprKind::Try { expr: e, ref mut else_clause } => {
-                self.desugar_expr(e);
-                if let Some(ec) = else_clause {
-                    self.desugar_expr(&mut ec.body);
-                }
+            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => self.desugar_expr(e),
+            ExprKind::Catch { value, ref mut clause } => {
+                self.desugar_expr(value);
+                self.desugar_expr(&mut clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
             ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
@@ -1182,9 +1181,11 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
             offset_expr_spans(object, offset);
             offset_expr_spans(index, offset);
         }
-        ExprKind::Try { expr, else_clause } => {
-            offset_expr_spans(expr, offset);
-            if let Some(tc) = else_clause { offset_expr_spans(&mut tc.body, offset); }
+        ExprKind::Try { expr } => offset_expr_spans(expr, offset),
+        ExprKind::Take { place } => offset_expr_spans(place, offset),
+        ExprKind::Catch { value, clause } => {
+            offset_expr_spans(value, offset);
+            offset_expr_spans(&mut clause.body, offset);
         }
         ExprKind::IsPresent { expr, .. } => offset_expr_spans(expr, offset),
         ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),

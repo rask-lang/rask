@@ -9,7 +9,7 @@
 
 test "empty vec and empty slot are different answers" {
     mut empty: Vec<i64?> = Vec.new()
-    assert head(empty) == none
+    assert head(empty) is none
 
     mut hole: Vec<i64?> = Vec.new()
     hole.push(none)

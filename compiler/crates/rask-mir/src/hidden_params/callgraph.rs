@@ -295,11 +295,12 @@ fn collect_callees_from_expr(pass: &HiddenParamPass, expr: &Expr, callees: &mut 
                 collect_callees_from_expr(pass, &arm.body, callees);
             }
         }
-        ExprKind::Try { expr: e, ref else_clause } => {
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => {
             collect_callees_from_expr(pass, e, callees);
-            if let Some(ec) = else_clause {
-                collect_callees_from_expr(pass, &ec.body, callees);
-            }
+        }
+        ExprKind::Catch { value, ref clause } => {
+            collect_callees_from_expr(pass, value, callees);
+            collect_callees_from_expr(pass, &clause.body, callees);
         }
         ExprKind::IsPresent { expr: e, .. } => {
             collect_callees_from_expr(pass, e, callees);

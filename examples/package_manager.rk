@@ -276,8 +276,8 @@ struct LockedPackage {
 //   }
 
 func load_manifest(path: string) -> Manifest or FetchError {
-    let content = try fs.read_text(path) else |e| FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
-    return try parse_manifest(content) else |e| FetchError.Manifest(e)
+    let content = fs.read_text(path) catch e => return FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
+    return parse_manifest(content) catch e => return FetchError.Manifest(e)
 }
 
 func parse_manifest(content: string) -> Manifest or ManifestError {
@@ -637,8 +637,8 @@ func resolve_one(
     }
 
     // Query registry for available versions
-    let versions = try registry.available(name)
-        else |e| FetchError.Registry(e)
+    let versions = registry.available(name)
+        catch e => return FetchError.Registry(e)
 
     // Filter to satisfying versions, pick newest via sort_by
     let want = constraint.clone()
@@ -762,11 +762,11 @@ func fetch_packages(
             let item_tx = tx.clone()
             let item_counter = counter.clone()
             spawn(own || {
-                if fetch_one(item, registry)? as path {
+                if fetch_one(item, registry) is string as path {
                     with item_counter.lock() as c { c += 1 }
-                    item_tx.send(FetchResult.Done(path))
+                    let _ = item_tx.send(FetchResult.Done(path))
                 } else as e {
-                    item_tx.send(FetchResult.Failed(e))
+                    let _ = item_tx.send(FetchResult.Failed(e))
                 }
             }).detach()
         }
@@ -779,7 +779,7 @@ func fetch_packages(
                 if result is FetchResult.Done(msg) {
                     println("  {msg}")
                 } else if result is FetchResult.Failed(e) {
-                    if first_error == none {
+                    if first_error is none {
                         first_error = e
                     }
                 }
@@ -799,16 +799,16 @@ func fetch_packages(
 }
 
 func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError {
-    let pkg_path = try registry.fetch_package(item.name, item.version)
-        else |e| FetchError.Registry(e)
+    let pkg_path = registry.fetch_package(item.name, item.version)
+        catch e => return FetchError.Registry(e)
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
         let content = fs.read_text("{pkg_path}/meta.json") is string as c else {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
-        try verify_checksum(content, item.checksum, item.name)
-            else |e| FetchError.Registry(e)
+        verify_checksum(content, item.checksum, item.name)
+            catch e => return FetchError.Registry(e)
     }
 
     return "fetch   {item.name}@{item.version.to_string()}"
@@ -828,8 +828,8 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
     // Write to temp file, rename on success. ensure cleans up on error.
     let tmp_path = "{path}.tmp"
 
-    mut tmp_file = try fs.create(tmp_path)
-        else |e| FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
+    mut tmp_file = fs.create(tmp_path)
+        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
     ensure fs.remove(tmp_path) else |_| {}
 
     mut out = string.new()
@@ -863,13 +863,13 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         }
     }
 
-    try tmp_file.write(out)
-        else |e| FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
+    tmp_file.write(out)
+        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
     tmp_file.close()
 
     // Atomic rename: success path — cancels ensure (EN6)
-    try fs.rename(tmp_path, path)
-        else |e| FetchError.Io(IoErrorMsg.Msg("cannot rename lock file: {e.message()}"))
+    fs.rename(tmp_path, path)
+        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot rename lock file: {e.message()}"))
 
     return ()
 }
@@ -1236,19 +1236,13 @@ func run(args: CliArgs) -> void or FetchError {
 
 func main() {
     let args = cli.args()
-    let parsed = parse_cli_args(args)
-    let cli_args = if parsed? {
-        parsed
-    } else as e {
+    let cli_args = parse_cli_args(args) catch e => {
         println("rask-fetch: {e.message()}")
         print_usage()
         std.exit(1)
     }
 
-    let run_result = run(cli_args)
-    if run_result? {
-        // success
-    } else as e {
+    run(cli_args) catch e => {
         println("error: {e.message()}")
         std.exit(1)
     }

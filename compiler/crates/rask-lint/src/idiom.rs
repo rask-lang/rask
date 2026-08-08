@@ -186,11 +186,12 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(object, source, diags);
             walk_expr_for_unwrap(index, source, diags);
         }
-        ExprKind::Try { expr: inner, ref else_clause } => {
+        ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
             walk_expr_for_unwrap(inner, source, diags);
-            if let Some(ec) = else_clause {
-                walk_expr_for_unwrap(&ec.body, source, diags);
-            }
+        }
+        ExprKind::Catch { value, clause } => {
+            walk_expr_for_unwrap(value, source, diags);
+            walk_expr_for_unwrap(&clause.body, source, diags);
         }
         ExprKind::IsPresent { expr: inner, .. } => {
             walk_expr_for_unwrap(inner, source, diags);
@@ -601,4 +602,128 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     }
 
     diags
+}
+
+/// I5: `x == none` / `x != none`. Equality on a zero-field type is ordinary,
+/// so this type-checks — but it asks a *shape* question with the *value* verb.
+/// `is` tests a branch everywhere else in the language (`type.optionals/OPT15`).
+pub fn check_equality_absent_check(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+    for decl in decls {
+        for body in decl_bodies(decl) {
+            walk_stmts_for_none_eq(body, source, &mut diags);
+        }
+    }
+    diags
+}
+
+/// Every statement list a declaration owns.
+fn decl_bodies(decl: &Decl) -> Vec<&[Stmt]> {
+    match &decl.kind {
+        DeclKind::Fn(f) => vec![f.body.as_slice()],
+        DeclKind::Test(t) => vec![t.body.as_slice()],
+        DeclKind::Benchmark(b) => vec![b.body.as_slice()],
+        DeclKind::Struct(s) => s.methods.iter().map(|m| m.body.as_slice()).collect(),
+        DeclKind::Enum(e) => e.methods.iter().map(|m| m.body.as_slice()).collect(),
+        DeclKind::Impl(i) => i.methods.iter().map(|m| m.body.as_slice()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn walk_stmts_for_none_eq(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
+                check_expr_for_none_eq(init, source, diags)
+            }
+            StmtKind::LetTuple { init, .. } => check_expr_for_none_eq(init, source, diags),
+            StmtKind::Expr(e) => check_expr_for_none_eq(e, source, diags),
+            StmtKind::Return(Some(e)) => check_expr_for_none_eq(e, source, diags),
+            StmtKind::Assign { target, value } => {
+                check_expr_for_none_eq(target, source, diags);
+                check_expr_for_none_eq(value, source, diags);
+            }
+            StmtKind::While { cond, body, .. } => {
+                check_expr_for_none_eq(cond, source, diags);
+                walk_stmts_for_none_eq(body, source, diags);
+            }
+            StmtKind::For { iter, body, .. } => {
+                check_expr_for_none_eq(iter, source, diags);
+                walk_stmts_for_none_eq(body, source, diags);
+            }
+            StmtKind::Loop { body, .. } => walk_stmts_for_none_eq(body, source, diags),
+            StmtKind::Ensure { body, .. } => walk_stmts_for_none_eq(body, source, diags),
+            _ => {}
+        }
+    }
+}
+
+fn check_expr_for_none_eq(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
+    use rask_ast::expr::BinOp;
+    // Descend first, so a comparison nested in a condition is still reached.
+    match &expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            check_expr_for_none_eq(left, source, diags);
+            check_expr_for_none_eq(right, source, diags);
+        }
+        ExprKind::Unary { operand, .. } => check_expr_for_none_eq(operand, source, diags),
+        ExprKind::Block(stmts) => walk_stmts_for_none_eq(stmts, source, diags),
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
+            check_expr_for_none_eq(cond, source, diags);
+            check_expr_for_none_eq(then_branch, source, diags);
+            if let Some(e) = else_branch {
+                check_expr_for_none_eq(e, source, diags);
+            }
+        }
+        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+            for a in args {
+                check_expr_for_none_eq(&a.expr, source, diags);
+            }
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            check_expr_for_none_eq(scrutinee, source, diags);
+            for arm in arms {
+                check_expr_for_none_eq(&arm.body, source, diags);
+            }
+        }
+        ExprKind::Assert { condition, .. } | ExprKind::Check { condition, .. } => {
+            check_expr_for_none_eq(condition, source, diags)
+        }
+        _ => {}
+    }
+
+    let (op, left, right) = match &expr.kind {
+        ExprKind::Binary { op, left, right } => (*op, left, right),
+        _ => return,
+    };
+    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+        return;
+    }
+    if !matches!(left.kind, ExprKind::None) && !matches!(right.kind, ExprKind::None) {
+        return;
+    }
+    // `none == none` is a constant, not an absent check.
+    if matches!(left.kind, ExprKind::None) && matches!(right.kind, ExprKind::None) {
+        return;
+    }
+    let (line, col) = util::line_col(source, expr.span.start);
+    let source_line = util::get_source_line(source, line);
+    let (message, fix) = if matches!(op, BinOp::Eq) {
+        (
+            "`== none` asks a branch question with the equality verb",
+            "write `x is none` — the same `is` test the rest of the language uses",
+        )
+    } else {
+        (
+            "`!= none` is the presence test spelled the long way",
+            "write `x?`",
+        )
+    };
+    diags.push(LintDiagnostic {
+        rule: "idiom/equality-absent-check".to_string(),
+        severity: Severity::Warning,
+        message: message.to_string(),
+        location: LintLocation { line, column: col, source_line },
+        fix: fix.to_string(),
+    });
 }

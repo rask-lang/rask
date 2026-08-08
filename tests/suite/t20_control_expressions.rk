@@ -221,7 +221,7 @@ func err_result() -> i32 or GuardError {
 }
 
 func extract_ok(result: i32 or GuardError) -> i32 {
-    if result? as value { return value }
+    if result is i32 as value { return value }
     return -1
 }
 

@@ -276,6 +276,10 @@ pub struct TypedProgram {
     /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing
     /// function's error enum. NodeId of the `try` expression → the variant.
     pub error_wraps: HashMap<NodeId, ErrorWrap>,
+    /// ER14a: `??` sites whose right side is still wrapped. There the present
+    /// path hands back the left operand unchanged — unwrapping it would throw
+    /// away the layer the chain is still carrying.
+    pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).
