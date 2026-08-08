@@ -115,6 +115,10 @@ impl TypeChecker {
                         // The expectation only wins where the element actually
                         // coerced to it; anything else keeps its own type so a
                         // genuine mismatch is still reported downstream.
+                        // Integer coercion only, because that's all CV1a makes
+                        // implicit — if float widening joins it, this and MIR's
+                        // matching guard both have to widen or `(f64, f32)` goes
+                        // back to being laid out at its elements' widths (#660).
                         let ty = Type::Tuple(
                             elem_types
                                 .iter()

@@ -214,6 +214,11 @@ impl<'a> MirLowerer<'a> {
     /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
     /// what an unsubstituted generic parameter looks like by the time it reaches
     /// MIR, and it must never be mistaken for a real layout.
+    ///
+    /// Integers only because they're the only implicit coercion today (CV1a). If
+    /// float widening ever becomes implicit, this has to widen with it or the
+    /// tuple-literal layout bug comes back for `(f64, f32)` — the `Ptr` exclusion
+    /// is the part that must survive, not the integer restriction (#660).
     fn is_int_scalar(ty: &MirType) -> bool {
         matches!(
             ty,
