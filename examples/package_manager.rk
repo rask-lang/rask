@@ -779,7 +779,7 @@ func fetch_packages(
                 if result is FetchResult.Done(msg) {
                     println("  {msg}")
                 } else if result is FetchResult.Failed(e) {
-                    if first_error == none {
+                    if first_error is none {
                         first_error = e
                     }
                 }

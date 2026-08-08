@@ -24,6 +24,9 @@ pub enum Expectation {
     ParseFail,
     /// Don't test this block
     Skip,
+    /// Canon syntax the compiler hasn't caught up to yet. Expected to fail;
+    /// passing is a failure that says "implemented — promote the marker."
+    Pending,
     /// Run and verify output matches expected (interpreter + native)
     Run(String),
     /// Run through interpreter only — escape hatch for unimplemented codegen
@@ -129,6 +132,7 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
             "parse" => Expectation::Parse,
             "parse-fail" => Expectation::ParseFail,
             "skip" => Expectation::Skip,
+            "pending" => Expectation::Pending,
             _ => return None,
         };
         return Some((expectation, 1));

@@ -295,5 +295,5 @@ test "find block for key" {
     assert find_block_for_key(index, "abc")! == 0
     assert find_block_for_key(index, "nnn")! == 1
     assert find_block_for_key(index, "zzz")! == 2
-    assert find_block_for_key(index, "000") == none
+    assert find_block_for_key(index, "000") is none
 }

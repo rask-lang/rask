@@ -1,0 +1,14 @@
+# Examples written in canon syntax that the compiler hasn't implemented yet.
+#
+# Different from known_fail_examples.txt: those are BUGS (native codegen rot,
+# unimplemented stdlib) and have no golden. These are CORRECT — the spec settled
+# on a spelling, the sources moved to it, and the compiler is still catching up.
+# They keep their golden in tests/golden/, because the expected output never
+# changed; only the syntax did.
+#
+# tests/examples_gate.sh treats a failure here as expected. If one starts
+# PASSING, the gate fails on purpose — the feature landed, so delete its line
+# and the example goes back to being enforced forever.
+
+litmus_edge_cases.rk     # `x is none` (OPT15) — spec settled 2026-08-05, tracked in #600
+04_pattern_matching.rk   # `x is none` (OPT15) — spec settled 2026-08-05, tracked in #600

@@ -90,8 +90,8 @@ test "safe get in bounds" {
 
 test "safe get out of bounds" {
     let v = Vec.from([10, 20, 30])
-    assert safe_get(v, 5) == none
-    assert safe_get(v, -1) == none
+    assert safe_get(v, 5) is none
+    assert safe_get(v, -1) is none
 }
 
 func main() { println("All solutions for lesson 08") }

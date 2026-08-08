@@ -36,6 +36,17 @@ export RASK_RUNTIME_DIR="${RASK_RUNTIME_DIR:-$ROOT/compiler/runtime}"
 
 fails=0
 ok=0
+pending=0
+
+# Examples written in canon syntax the compiler hasn't implemented yet. They
+# keep their golden (the expected output is still right — only the spelling
+# moved ahead), but a failure is expected rather than fatal. If one starts
+# passing, that's a hard failure: the feature landed, so drop it from here.
+PENDING_FILE="$ROOT/tests/pending_examples.txt"
+is_pending() {
+    [ -f "$PENDING_FILE" ] || return 1
+    grep -qE "^$1\.rk([[:space:]]|#|$)" "$PENDING_FILE"
+}
 
 for golden in "$GOLDEN_DIR"/*.out; do
     [ -e "$golden" ] || continue
@@ -57,6 +68,17 @@ for golden in "$GOLDEN_DIR"/*.out; do
     [ "$iout" != "$want" ] && bad="$bad interp-mismatch"
     [ "$nout" != "$want" ] && bad="$bad native-mismatch"
 
+    if is_pending "$name"; then
+        if [ -z "$bad" ]; then
+            echo "FAIL: $name — listed in pending_examples.txt but passes now; remove the line"
+            fails=$((fails+1))
+        else
+            echo "pending: $name —$bad (canon syntax, compiler behind)"
+            pending=$((pending+1))
+        fi
+        continue
+    fi
+
     if [ -z "$bad" ]; then
         ok=$((ok+1))
     else
@@ -70,6 +92,6 @@ for golden in "$GOLDEN_DIR"/*.out; do
 done
 
 echo "──────────────────────────────────────────────────"
-echo "examples gate: $ok ok, $fails failed"
+echo "examples gate: $ok ok, $fails failed, $pending pending"
 [ "$fails" -eq 0 ] || exit 1
 exit 0

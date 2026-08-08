@@ -78,7 +78,7 @@ test "Vec.get — none for out of bounds" {
     v.push(42)
 
     let out = v.get(5)
-    assert out == none
+    assert out is none
 }
 
 test "Vec.get — force-extract matches expected value" {
