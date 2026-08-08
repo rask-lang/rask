@@ -19,7 +19,7 @@ impl TypeChecker {
     /// from the body. `Vec<T>` is spelled out because leaving it a free var
     /// loses the element's identity: a `Vec<any Trait>` binding then has no
     /// trait to dispatch against.
-    fn iter_elem_type(&mut self, iter_ty: &Type) -> Type {
+    fn iter_elem_type(&mut self, iter_ty: &Type, span: rask_ast::Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
         match &resolved {
             Type::Array { elem, .. } | Type::Slice(elem) => return (**elem).clone(),
@@ -33,6 +33,22 @@ impl TypeChecker {
             if let Some(crate::types::GenericArg::Type(elem)) = args.and_then(|a| a.first()) {
                 return (**elem).clone();
             }
+        }
+        // The iterable's own type isn't known yet — `for t in self.tables` waits
+        // on the field, which arrives as a deferred constraint of its own. A bare
+        // fresh variable here never gets tied to the element, so the binding's
+        // type stayed open however the field resolved, and everything downstream
+        // of it went with it. The Index constraint already computes "element of
+        // container" and re-runs once the container settles, so reuse it (#632).
+        if matches!(resolved, Type::Var(_)) {
+            let elem = self.ctx.fresh_var();
+            self.ctx.add_constraint(TypeConstraint::Index {
+                object: iter_ty.clone(),
+                result: elem.clone(),
+                is_range: false,
+                span,
+            });
+            return elem;
         }
         self.ctx.fresh_var()
     }
@@ -260,7 +276,7 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = self.iter_elem_type(&iter_ty);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
