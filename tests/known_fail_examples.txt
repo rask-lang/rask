@@ -28,10 +28,14 @@ sensor_processor.rk      # #580 fixed: both exit 0 and print the same report. No
                          # cycle times and the simulated sensor values all differ run
                          # to run, on one backend as much as between two.
 
-game_loop.rk             # native panics "pool access with invalid handle" at line 187,
-                         # one frame in; interp runs all 300 frames and exits 0. Was an
-                         # E0361 on `let e = state.entities[h]` until #632 fixed the
-                         # index inference, which is what got it this far.
+game_loop.rk             # both exit 0, stdout DIVERGES on the entity counts. Re-measured
+                         # 2026-08-08 after #632 (the field-index inference) and the
+                         # native `for h in pool` handle mistyping — it no longer panics
+                         # at line 187, and runs all 300 frames on both. What's left is a
+                         # real disagreement: native reaches Frame 180 with 8 entities
+                         # and 240 with 10, interp has 7 and 9. Score matches (0) on
+                         # both, so it's the spawn/cleanup systems, not scoring. Needs
+                         # its own bisect. PLAN Track 3.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1

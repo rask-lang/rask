@@ -16,9 +16,6 @@ t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (
 
 # --- interpreter lag (native correct) ---
 
-t_try_coalesce_diverge.rk # `try X ?? continue` on a nested `T? or E`: native takes the
-                          # continue every time and never sees the hit — #635 (native)
-
 # --- shared / both-backend bugs ---
 t_parse_float.rk # `"3.5".parse()` with the target from the binding always misses; only the turbofish form works — #610 (both)
 

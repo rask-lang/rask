@@ -1761,11 +1761,9 @@ impl Resolver {
             StmtKind::While { label, cond, body } => {
                 self.resolve_expr(cond);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
-                // OPT19: define `while expr? as v`'s binder, the same way the `If`
-                // arm defines it for a then-branch. Lowering still can't carry a
-                // per-iteration binding, so the checker rejects the whole form
-                // (E0369) — but it has to be the error the user sees, and without
-                // this the resolver got there first and blamed `v` instead (#593).
+                // OPT19 on a loop: `while expr? as v` binds the payload for the
+                // body, re-read each iteration. Same binder the `If` arm defines,
+                // scoped to the loop instead of a then-branch.
                 if let ExprKind::IsPresent { binding: Some(name), .. } = &cond.kind {
                     let sym_id = self.symbols.insert(
                         name.clone(),
