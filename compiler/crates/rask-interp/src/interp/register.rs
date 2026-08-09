@@ -87,16 +87,34 @@ impl Interpreter {
     /// same name shadows the stdlib's rather than the other way round — the same
     /// order the resolver and checker use.
     ///
-    /// Only the variants, not the methods: a stub's method bodies are empty
-    /// because the interpreter implements them natively, and registering them
-    /// would shadow those implementations with `{ }`.
+    /// Variants, plus any method the stub actually implements. An empty body
+    /// means the interpreter has a native implementation and registering the
+    /// stub would shadow it with `{ }` — but some stub methods are real code,
+    /// and dropping those left them uncallable: `IoError.message()` is written
+    /// out in io.rk and native runs it, while the interpreter answered "method
+    /// not found on `IoError`".
     fn register_stdlib_enums(&mut self) {
         for (name, decl) in rask_stdlib::modules::enum_decls() {
-            self.enums.entry(name.clone()).or_insert_with(|| {
-                let mut without_methods = decl.clone();
-                without_methods.methods.clear();
-                without_methods
+            let entry = self.enums.entry(name.clone()).or_insert_with(|| {
+                let mut implemented = decl.clone();
+                implemented.methods.retain(|m| !m.body.is_empty());
+                implemented
             });
+            let methods = entry.methods.clone();
+            if !methods.is_empty() {
+                let type_methods = self.methods.entry(name.clone()).or_default();
+                for m in methods {
+                    type_methods.entry(m.name.clone()).or_insert(m);
+                }
+            }
+        }
+        // Same rule for `extend` blocks — the body is where most of the
+        // stdlib's real Rask code lives (`IoError.message`, `Method.to_string`).
+        for (type_name, methods) in rask_stdlib::modules::impl_methods() {
+            let type_methods = self.methods.entry(type_name.clone()).or_default();
+            for m in methods {
+                type_methods.entry(m.name.clone()).or_insert_with(|| m.clone());
+            }
         }
     }
 

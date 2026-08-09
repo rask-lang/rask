@@ -1705,6 +1705,17 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Tuple literal
+            ExprKind::Tuple(elems) if elems.is_empty() => {
+                // `()` is the unit value, and MIR spells unit `Void`. Lowered as
+                // an empty tuple it got a local of its own, which every "does
+                // this operand carry a value?" test downstream answered yes to:
+                // `return ()` out of a `void or E` function with an `ensure`
+                // handed the cleanup path a zero and the caller read a Result
+                // tag out of address 0.
+                let local = self.builder.alloc_temp(MirType::Void);
+                Ok((MirOperand::Local(local), MirType::Void))
+            }
+
             ExprKind::Tuple(elems) => {
                 let mut elem_types = Vec::new();
                 let mut lowered_elems = Vec::new();

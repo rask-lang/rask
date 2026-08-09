@@ -36,12 +36,17 @@
                          # the interpreter implements the lazy Iterator protocol, native
                          # has none of it. Only chains the MIR fuser recognises work
                          # natively. #656, and #676 for the shape that loses fusion.
-16_concurrency_basics.rk # native exits 101 part-way through the thread-pool section,
-                         # after "Pool task 7 running", with nothing on stderr. Was
-                         # SIGABRT 134 ("free(): invalid size") before; it now gets
-                         # further and dies differently, so the old note is stale. #589
-18_resource_types.rk     # native SIGSEGV (139) in rask_file_read_all — the File value
-                         # reaches the runtime as a small integer, not the FILE*. #654
+16_concurrency_basics.rk # Runs clean on both backends now (#657 — pool tasks ran twice
+                         # and joined a handle of the wrong shape). Still can't be
+                         # gated: pool tasks interleave differently every run, on both
+                         # backends, so there is no fixed stdout to diff. Sorted, the
+                         # two backends' output is identical.
+18_resource_types.rk     # Runs to completion on both backends now (#654 — the string
+                         # out-param). One line still differs: reading a file opened
+                         # for writing errors on both, but interp says "Bad file
+                         # descriptor (os error 9)" and native "unexpected end of
+                         # file" — native's runtime hands back a bare failure flag and
+                         # the adapter turns every one into IoError.UnexpectedEof.
 cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct answers);
                          # native SIGSEGV (139) right after the banner, before the first
                          # result. Gate-runnable now that .stdin exists — this is a real

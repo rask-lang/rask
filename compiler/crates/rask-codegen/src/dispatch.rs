@@ -763,8 +763,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── File instance methods ─────────────────────────────────
         StdlibEntry::simple("File_close", "rask_file_close", &[types::I64], None, false),
-        StdlibEntry::simple("File_read_all", "rask_file_read_all", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("File_read_text", "rask_file_read_all", &[types::I64], Some(types::I64), false),
+        // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
+        // comes back through the out-param, the return value is the ok/err tag
+        // for `string or IoError`. Declared as a 1-arg call returning i64, the
+        // FILE* landed in `out` and the runtime wrote a 16-byte RaskStr over
+        // it (#654).
+        StdlibEntry {
+            mir_name: "File_read_all", c_name: "rask_file_read_all",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "File_read_text", c_name: "rask_file_read_all",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("File_write", "rask_file_write", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("File_write_all", "rask_file_write_all", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("File_write_line", "rask_file_write_line", &[types::I64, types::I64], None, false),

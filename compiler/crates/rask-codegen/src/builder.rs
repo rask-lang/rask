@@ -4606,6 +4606,13 @@ impl<'a> FunctionBuilder<'a> {
                     if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
                         // Jump to shared cleanup block, passing return value.
                         // main is void — never pass a return value.
+                        // `return ()` out of a `void or E` function reaches here
+                        // as a *void-typed local*, not as `None`. Lowered as a
+                        // value it becomes a plain zero, and the shared cleanup
+                        // block returns that as if it were the Result — the caller
+                        // then reads a tag out of address 0. Build the Ok slot
+                        // instead, the same as the no-value case below.
+                        let value = value.as_ref().filter(|op| !Self::is_void_operand(op, ctx));
                         if ctx.is_main {
                             builder.ins().jump(shared_block, &[]);
                         } else if let Some(val_op) = value {
@@ -4745,6 +4752,18 @@ impl<'a> FunctionBuilder<'a> {
     /// The Option side is unreachable today — the checker rejects `return` with
     /// no value in a `-> T?` function (E0308) — but the inline pass spells out
     /// the same two cases, and the two have to agree.
+    /// True for an operand that carries no value — a local the lowering typed
+    /// `void`. `return ()` and a bare `return` produce the same thing at the
+    /// source level but different MIR, and a return path has to treat them alike.
+    fn is_void_operand(op: &MirOperand, ctx: &CodegenCtx) -> bool {
+        match op {
+            MirOperand::Local(id) => ctx.locals.iter()
+                .find(|l| l.id == *id)
+                .is_some_and(|l| matches!(l.ty, MirType::Void)),
+            _ => false,
+        }
+    }
+
     fn empty_return_value(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
