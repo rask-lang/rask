@@ -43,6 +43,17 @@ impl TypeChecker {
         }
     }
 
+    /// The inverse of `resolve_named`, for diagnostics: a `Named(TypeId)`
+    /// prints as `<type#75>`, which tells the reader nothing. Errors that read
+    /// well happen to be holding the unresolved-name form already; this puts a
+    /// resolved type back into it so a message can name the struct or enum.
+    pub(super) fn nameable(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(id) => Type::UnresolvedNamed(self.types.type_name(*id)),
+            other => other.clone(),
+        }
+    }
+
     pub(super) fn resolve_named(&self, ty: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(name) => {

@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A for-loop over a field-held collection infers its element type (#632).
+//
+// Same gap as indexing through a field: the field's type arrives as a deferred
+// constraint, so at the loop the iterable is still an unresolved variable and the
+// binding got a fresh one with nothing tying it to the element. That stayed open
+// however the field resolved, and everything reached through the binding went
+// with it — which is what stopped `examples/tiered_store` from type-checking.
+
+enum StoreError {
+    Broken
+}
+
+extend StoreError {
+    func message(self) -> string {
+        return "broken"
+    }
+}
+
+struct Item {
+    n: i64
+}
+
+extend Item {
+    func plain(self) -> i64? {
+        if self.n > 0 {
+            return self.n
+        }
+        return none
+    }
+
+    // The nested shape: `T? or E`. `try` strips the error, `??` the absence.
+    func lookup(self) -> string? or StoreError {
+        if self.n < 0 {
+            return StoreError.Broken
+        }
+        if self.n == 0 {
+            return none
+        }
+        return "v{self.n}"
+    }
+}
+
+struct Bag {
+    items: Vec<Item>
+    labels: Vec<string>
+}
+
+extend Bag {
+    func sum_plain(self) -> i64 {
+        mut total: i64 = 0
+        for it in self.items {
+            let v = it.plain() ?? continue
+            total += v
+        }
+        return total
+    }
+
+    // `try … ?? continue` on a field-held collection: the shape from
+    // examples/tiered_store's `get`. The element's own method answers the nested
+    // `T? or E`, which is the part that needed both waits — `try` strips the
+    // error, `continue` contributes no type, so only the loop variable can say
+    // what this is.
+    func first_hit(self) -> string or StoreError {
+        for it in self.items {
+            let v = try it.lookup() ?? continue
+            return v
+        }
+        return "MISS"
+    }
+
+    // The flat outer return this file used to avoid: `catch _ => none` on a
+    // `T? or E` used to gain a layer it shouldn't (#634), so it was the thing
+    // failing here rather than the inference under test. Both are fixed, so the
+    // shape is spelled out properly now — absent stays absent, an error is
+    // dropped to absent, and a hit comes back as a hit.
+    func first_hit_optional(self) -> string? {
+        return self.first_hit() catch _ => none
+    }
+
+    func joined(self) -> string {
+        mut out = ""
+        for l in self.labels {
+            out = "{out}{l}."
+        }
+        return out
+    }
+
+    func count_positive(self) -> i64 {
+        mut n: i64 = 0
+        for it in self.items {
+            if it.n > 0 {
+                n += 1
+            }
+        }
+        return n
+    }
+}
+
+// The three branches the composite has to tell apart, built from the field.
+func broken_bag() -> Bag {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })     // absent -> continue
+    items.push(Item { n: -1 })    // error  -> propagate
+    return Bag { items: items, labels: Vec.new() }
+}
+
+func empty_bag() -> Bag {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })     // absent -> continue, then fall out
+    return Bag { items: items, labels: Vec.new() }
+}
+
+func build() -> Bag {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })
+    items.push(Item { n: 3 })
+    items.push(Item { n: 4 })
+
+    mut labels: Vec<string> = Vec.new()
+    labels.push("a")
+    labels.push("b")
+
+    return Bag { items: items, labels: labels }
+}
+
+test "stdlib.collections — a method on the loop variable resolves" {
+    assert build().count_positive() == 2
+}
+
+test "stdlib.collections — a string element keeps its type" {
+    assert build().joined() == "a.b."
+}
+
+test "type.optionals — `?? continue` on a field-held collection's element" {
+    assert build().sum_plain() == 7
+}
+
+func show(r: string or StoreError) -> string {
+    match r {
+        string as s     => return s,
+        StoreError as e => return "err:{e.message()}",
+    }
+}
+
+test "type.errors/ER16b — `try … ?? continue` skips absences, finds the hit" {
+    // items are n=0 (absent), n=3, n=4 — so the first hit is past a skip.
+    assert_eq(show(build().first_hit()), "v3")
+    assert_eq(show(broken_bag().first_hit()), "err:broken")
+    assert_eq(show(empty_bag().first_hit()), "MISS")
+}
+
+test "type.errors/ER14a — the same result dropped to an optional (#634)" {
+    // This is what the file avoided spelling out while `catch _ => none` on a
+    // `T? or E` still gained a layer.
+    if build().first_hit_optional()? as v {
+        assert_eq(v, "v3")
+    } else {
+        assert false
+    }
+    // An error becomes an absence, not a nested one.
+    assert broken_bag().first_hit_optional() is none
+}

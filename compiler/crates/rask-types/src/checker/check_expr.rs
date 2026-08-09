@@ -97,6 +97,47 @@ impl TypeChecker {
                 self.node_types.insert(expr.id, ty.clone());
                 return ty;
             }
+            // CV1a: push the expectation into a tuple literal's elements, so each
+            // one is checked against the slot it fills and the tuple's recorded
+            // type is the annotated shape. Typed from its elements instead, the
+            // literal's node type stayed `(u32, u16)` while the binding was
+            // `(i64, i32)` — element-wise unification accepted the widening, but
+            // MIR then built the slot at the *source* layout and the destination
+            // read fields that were never at those offsets.
+            ExprKind::Tuple(elements) => {
+                if let Type::Tuple(expected_elems) = expected {
+                    if expected_elems.len() == elements.len() && !elements.is_empty() {
+                        let elem_types: Vec<_> = elements
+                            .iter()
+                            .zip(expected_elems.iter())
+                            .map(|(e, want)| self.infer_expr_expecting(e, want))
+                            .collect();
+                        // The expectation only wins where the element actually
+                        // coerced to it; anything else keeps its own type so a
+                        // genuine mismatch is still reported downstream.
+                        // Integer coercion only, because that's all CV1a makes
+                        // implicit — if float widening joins it, this and MIR's
+                        // matching guard both have to widen or `(f64, f32)` goes
+                        // back to being laid out at its elements' widths (#660).
+                        let ty = Type::Tuple(
+                            elem_types
+                                .iter()
+                                .zip(expected_elems.iter())
+                                .map(|(got, want)| {
+                                    let got_r = self.ctx.apply(got);
+                                    if Self::is_integer_widening(&got_r, want) {
+                                        want.clone()
+                                    } else {
+                                        got.clone()
+                                    }
+                                })
+                                .collect(),
+                        );
+                        self.node_types.insert(expr.id, ty.clone());
+                        return ty;
+                    }
+                }
+            }
             _ => {}
         }
         let ty = self.infer_expr(expr);
@@ -284,44 +325,29 @@ impl TypeChecker {
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
                 self.check_index_types(&obj_ty, &idx_ty, is_range, index.span);
-                match &obj_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => {
-                        if is_range {
-                            Type::Slice(elem.clone())
-                        } else {
-                            *elem.clone()
-                        }
+                match self.index_result_type(&obj_ty, is_range) {
+                    Some(elem) => elem,
+                    None => {
+                        // Shape unknown here — `state.entities[h]` waits on the
+                        // field's type, which arrives as a deferred constraint of
+                        // its own. Record the relationship rather than handing
+                        // back a fresh variable with nothing tying it to the
+                        // container, which left `let e = state.entities[h]` with
+                        // an open type however the field later resolved (#632).
+                        let elem = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Index {
+                            object: raw_obj_ty,
+                            // Carried so #310's index-type check can run again
+                            // once the container is known. The call above had an
+                            // unresolved container, so it classified nothing and
+                            // a field-reached index went unchecked.
+                            index: idx_ty.clone(),
+                            result: elem.clone(),
+                            is_range,
+                            span: expr.span,
+                        });
+                        elem
                     }
-                    Type::String => {
-                        if is_range {
-                            Type::String
-                        } else {
-                            Type::Char
-                        }
-                    }
-                    // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
-                    // Map<K,V> indexed by K → value type from second arg.
-                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                        let is_map = match &obj_ty {
-                            Type::UnresolvedGeneric { name, .. } => name == "Map",
-                            Type::Generic { base, .. } => self
-                                .types
-                                .get_type_id("Map")
-                                .map_or(false, |id| id == *base),
-                            _ => false,
-                        };
-                        let elem_arg = if is_map { args.get(1) } else { args.first() };
-                        if let Some(GenericArg::Type(elem)) = elem_arg {
-                            if is_range {
-                                Type::Slice(elem.clone())
-                            } else {
-                                *elem.clone()
-                            }
-                        } else {
-                            self.ctx.fresh_var()
-                        }
-                    }
-                    _ => self.ctx.fresh_var(),
                 }
             }
 
@@ -749,13 +775,22 @@ impl TypeChecker {
             }
 
             ExprKind::Range { start, end, .. } => {
-                if let Some(s) = start {
-                    self.infer_expr(s);
+                // The bounds share one type, and it's the type the loop variable
+                // takes. A bare `Range` threw that away, so `for i in 1..6` left
+                // `i` a free variable — and anything it fed too:
+                // `mut v = Vec.new()` filled by `v.push(i)` had no element type,
+                // so `v[0]` and everything downstream of it came out open (#620).
+                let elem = self.ctx.fresh_var();
+                for bound in [start, end].into_iter().flatten() {
+                    let bound_ty = self.infer_expr(bound);
+                    if let Err(e) = self.unify(&bound_ty, &elem, bound.span) {
+                        self.errors.push(e);
+                    }
                 }
-                if let Some(e) = end {
-                    self.infer_expr(e);
+                Type::UnresolvedGeneric {
+                    name: "Range".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem))],
                 }
-                Type::UnresolvedNamed("Range".to_string())
             }
 
             ExprKind::Try { expr: inner } => {
@@ -966,9 +1001,16 @@ impl TypeChecker {
                 // The layers don't stack: on a success type that's already
                 // optional, the drop lands on the outer one (OPT30).
                 if matches!(clause.body.kind, ExprKind::None) {
-                    self.fallback_keeps_shape.insert(expr.id);
                     let ok_ty = self.ctx.apply(&ok_ty);
-                    return if ok_ty.is_option() { ok_ty } else { Type::option(ok_ty) };
+                    // On a flat `T? or E` the success side is already the `T?`
+                    // the whole expression produces, so it passes straight
+                    // through — marking it "keeps shape" would make both
+                    // backends re-wrap and hand back a `T??` (#634).
+                    if ok_ty.is_option() {
+                        return ok_ty;
+                    }
+                    self.fallback_keeps_shape.insert(expr.id);
+                    return Type::option(ok_ty);
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
@@ -1571,6 +1613,48 @@ impl TypeChecker {
     // Specific Type Checks
     // ------------------------------------------------------------------------
 
+    /// What `object[index]` yields, given the container's type. `None` means the
+    /// container's shape isn't known yet — the caller defers instead of guessing.
+    ///
+    /// Shared with the deferred `Index` constraint so both readings of an index
+    /// agree; they used to be the same match written once, inline, with a fresh
+    /// variable where this returns `None`.
+    /// What `container[index]` yields, for the shapes it can be read off the
+    /// container's type. `None` means "nothing to say" — an unresolved container,
+    /// or a generic whose argument list doesn't carry the element.
+    pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
+        match obj_ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
+                Type::Slice(elem.clone())
+            } else {
+                *elem.clone()
+            }),
+            Type::String => Some(if is_range { Type::String } else { Type::Char }),
+            // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
+            // Map<K,V> indexed by K → value type from second arg.
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                let is_map = match obj_ty {
+                    Type::UnresolvedGeneric { name, .. } => name == "Map",
+                    Type::Generic { base, .. } => self
+                        .types
+                        .get_type_id("Map")
+                        .map_or(false, |id| id == *base),
+                    _ => false,
+                };
+                let elem_arg = if is_map { args.get(1) } else { args.first() };
+                match elem_arg {
+                    Some(GenericArg::Type(elem)) => Some(if is_range {
+                        Type::Slice(elem.clone())
+                    } else {
+                        *elem.clone()
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn check_binary(&mut self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Type {
         let left_ty = self.infer_expr(left);
         let right_ty = self.infer_expr(right);
@@ -2161,6 +2245,9 @@ impl TypeChecker {
             let is_range = matches!(
                 &self.ctx.apply(&obj_ty),
                 Type::UnresolvedNamed(n) if n == "Range"
+            ) || matches!(
+                &self.ctx.apply(&obj_ty),
+                Type::UnresolvedGeneric { name, .. } if name == "Range"
             );
             if is_range {
                 if let Some(first_arg) = args.first() {
@@ -3157,7 +3244,7 @@ impl TypeChecker {
     /// is rejected immediately; every other index is deferred to
     /// `validate_pending_index` so a literal index can adapt to the key/element
     /// type after constraint solving.
-    fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
+    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
         match self.classify_index_container(container) {
             Some(IndexContainer::Sequence) => {
                 // A range index is a valid slice; a scalar index must be integer.
@@ -3234,6 +3321,71 @@ impl TypeChecker {
 
     /// Name of a builtin generic container, matching by TypeId (resolved) or by
     /// spelling (unresolved).
+    /// The element type a `for` loop takes out of `ty`.
+    ///
+    /// Every container the language can walk is named here. Anything else that
+    /// has *resolved to a concrete type* is a program that says `for x in 3` —
+    /// leaving that alone reported it as "couldn't work out the type of x",
+    /// which blames the binding for the container's problem.
+    pub(super) fn container_elem_type(&self, ty: &Type) -> ContainerElem {
+        let arg = |n: usize| -> Option<Type> {
+            let args = match ty {
+                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+                _ => return None,
+            };
+            match args.get(n) {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => None,
+            }
+        };
+        match ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => {
+                ContainerElem::Known((**elem).clone())
+            }
+            // Still open, a generic parameter, or already errored — the body
+            // pins these, and an error here would land on working code.
+            Type::Var(_) | Type::Error | Type::Never => ContainerElem::Deferred,
+            // An adapted range (`(0..5).rev()`) still resolves to a bare `Range`,
+            // which carries no element type, so the body's arithmetic pins the
+            // width there.
+            Type::UnresolvedNamed(_) => ContainerElem::Deferred,
+            Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                // `Iterator<T>` is what every `.iter().map(…)` chain resolves
+                // to, so this is the common case, not an edge one.
+                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Iterator") {
+                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
+                }
+                // ctrl.ranges: a range's bounds share the loop variable's type.
+                // The old bare `Range` carried none, so `for i in 1..6` left `i`
+                // free — and `mut v = Vec.new()` filled by `v.push(i)` then had
+                // no element type either, all the way down to `v[0]` (#620).
+                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Range") {
+                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
+                }
+                match self.generic_base_name(ty) {
+                    Some("Vec") => arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known),
+                    // stdlib.collections: a map iterates its (key, value) entries.
+                    Some("Map") => match (arg(0), arg(1)) {
+                        (Some(k), Some(v)) => ContainerElem::Known(Type::Tuple(vec![k, v])),
+                        _ => ContainerElem::Deferred,
+                    },
+                    // mem.pools/PF1: a pool iterates its handles, not its values.
+                    Some("Pool") => match arg(0) {
+                        Some(elem) => ContainerElem::Known(Type::UnresolvedGeneric {
+                            name: "Handle".to_string(),
+                            args: vec![GenericArg::Type(Box::new(elem))],
+                        }),
+                        None => ContainerElem::Deferred,
+                    },
+                    // A user generic may implement the iterator protocol, and
+                    // its element type isn't readable from here.
+                    _ => ContainerElem::Deferred,
+                }
+            }
+            _ => ContainerElem::NotIterable,
+        }
+    }
+
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
         const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
         match ty {
@@ -3384,6 +3536,18 @@ impl TypeChecker {
         }
         self.types.resolve_type_names(&u) == self.types.resolve_type_names(pool_elem)
     }
+}
+
+/// What `container_elem_type` could work out about a `for` loop's source.
+pub(super) enum ContainerElem {
+    /// The element type, read off the container.
+    Known(Type),
+    /// A container whose element type isn't readable here but which the body
+    /// legitimately pins — a bare `Range`, a type variable, a user generic that
+    /// may implement the iterator protocol.
+    Deferred,
+    /// Resolved to something no `for` loop can walk.
+    NotIterable,
 }
 
 /// Indexable container class at an index site (#310).

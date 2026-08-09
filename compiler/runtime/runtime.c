@@ -76,6 +76,25 @@ void rask_exit(int64_t code) {
 // struct.targets/EX4: an error returned from main is a failed run — status 1.
 // A panic is 101 and goes through rask_panic instead. `msg` is optional; when
 // the error type has no message() there's nothing to print but the fact.
+// Debug aid: fill the stack region that later frames will occupy with a nonzero
+// pattern. A codegen path that reads a slot it never wrote sees 0 on a
+// freshly-mapped stack and looks correct, which is why such bugs only show up
+// after a program has run a while. Poisoning makes the read deterministic.
+// Opt-in via RASK_POISON_STACK; when off this costs one load.
+__attribute__((noinline)) void rask_poison_stack(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("RASK_POISON_STACK");
+        enabled = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (!enabled) {
+        return;
+    }
+    volatile unsigned char buf[192 * 1024];
+    memset((void *)buf, 0xAA, sizeof buf);
+    (void)buf[0];
+}
+
 _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     fflush(stdout);
     if (msg && rask_string_len(msg) > 0) {
@@ -1721,13 +1740,31 @@ int rask_runtime_checks_enabled = 0;
 
 // ─── Entry point ──────────────────────────────────────────────────
 
+// Flush stdout, then let the signal kill us as it would have. stdout is fully
+// buffered when it's a pipe, so everything printed before a crash used to be
+// lost — which puts the crash earlier than it really was, every time (#605).
+// Reset to the default handler and re-raise rather than exiting, so the parent
+// still sees "died on signal N".
+static void rask_fatal_signal(int sig) {
+    fflush(stdout);
+    fflush(stderr);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGSEGV, rask_fatal_signal);
+    signal(SIGILL, rask_fatal_signal);
+    signal(SIGBUS, rask_fatal_signal);
+    signal(SIGFPE, rask_fatal_signal);
+    signal(SIGABRT, rask_fatal_signal);
     const char *checks_env = getenv("RASK_RUNTIME_CHECKS");
     if (checks_env && checks_env[0] == '1') {
         rask_runtime_checks_enabled = 1;
     }
     rask_args_init(argc, argv);
+    rask_poison_stack();
     rask_main();
     return 0;
 }

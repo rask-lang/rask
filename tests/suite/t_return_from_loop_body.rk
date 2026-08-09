@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `return` that ends a loop body has to actually return.
+//
+// Native dropped it. Every loop form built its body, then unconditionally
+// terminated the current block with "goto next iteration" — overwriting the
+// `return` the body had just put there. So `for x in xs { return x }` ran the
+// loop out and fell through to whatever came after it. A `return` nested in an
+// `if` survived, because the if-lowering leaves a separate merge block current,
+// which is why this went unnoticed (#635).
+//
+// The composite that found it is the last case here: `try t.lookup() ?? continue`
+// inside a `for`, which is what examples/tiered_store drains with. The `continue`
+// looked like the culprit — native took it on every iteration — but the real
+// story is that the `return v` after it was being discarded.
+//
+// What's covered: every loop form — while, `while … is T as v`, for-over-Vec,
+// for-over-Map, for-over-range, for-over-stepped-range, fused iterator chain,
+// bare `loop` — with the `return` as the sole body statement and as the last of
+// several; `break` and `continue` still working; and the `try … ?? continue`
+// composite on all three of its branches.
+//
+// Spec: ctrl.control-flow (LP1–LP4), type.errors (ER16b)
+
+enum StoreError {
+    Broken
+}
+
+extend StoreError {
+    func message(self) -> string {
+        return "broken"
+    }
+}
+
+struct Item {
+    public n: i64
+}
+
+extend Item {
+    // Flat `T? or E`: an error, an absence, and a value.
+    func lookup(self) -> string? or StoreError {
+        if self.n < 0 { return StoreError.Broken }
+        if self.n == 0 { return none }
+        return "v{self.n}"
+    }
+}
+
+// --- the return as a loop body's only statement, one loop form each ---
+
+func from_while(n: i64) -> i64 {
+    mut i = 0
+    while i < n {
+        return i + 10
+    }
+    return -1
+}
+
+func from_for_vec(items: Vec<i64>) -> i64 {
+    for it in items {
+        return it
+    }
+    return -1
+}
+
+func from_for_range(n: i64) -> i64 {
+    for i in 0..n {
+        return i + 20
+    }
+    return -1
+}
+
+func from_for_stepped_range(n: i64) -> i64 {
+    for i in (0..n).step(2) {
+        return i + 30
+    }
+    return -1
+}
+
+func from_for_chain(items: Vec<i64>) -> i64 {
+    for it in items.iter().map(|x| x * 2) {
+        return it
+    }
+    return -1
+}
+
+func from_loop() -> i64 {
+    loop {
+        return 40
+    }
+}
+
+func from_for_map(m: Map<string, i64>) -> i64 {
+    for (k, v) in m {
+        return v
+    }
+    return -1
+}
+
+// `while <expr> is <Type> as v` — the loop form that carries a per-iteration
+// binding, and its own lowering site.
+func from_while_is() -> i64 {
+    mut xs: Vec<i64> = Vec.new()
+    xs.push(9)
+    while xs.pop() is i64 as v {
+        return v + 50
+    }
+    return -1
+}
+
+// --- the return after other statements, and past a `continue` ---
+
+func after_statements(items: Vec<i64>) -> i64 {
+    mut seen = 0
+    for it in items {
+        seen = seen + 1
+        let doubled = it * 2
+        return doubled + seen
+    }
+    return -1
+}
+
+// ER16b: propagate the error, skip the absent ones, return the first hit.
+func first_hit(items: Vec<Item>) -> string or StoreError {
+    for it in items {
+        let v = try it.lookup() ?? continue
+        return v
+    }
+    return "MISS"
+}
+
+// --- break and continue still behave ---
+
+func with_break(items: Vec<i64>) -> i64 {
+    mut last = -1
+    for it in items {
+        last = it
+        break
+    }
+    return last
+}
+
+func with_continue(items: Vec<i64>) -> i64 {
+    mut total = 0
+    for it in items {
+        if it < 0 {
+            continue
+        }
+        total = total + it
+    }
+    return total
+}
+
+// A conditional return — the shape that always worked, kept as the control.
+func conditional(items: Vec<i64>) -> i64 {
+    for it in items {
+        if it > 5 {
+            return it
+        }
+    }
+    return -1
+}
+
+func nums() -> Vec<i64> {
+    mut xs: Vec<i64> = Vec.new()
+    xs.push(7)
+    xs.push(9)
+    return xs
+}
+
+func show(r: string or StoreError) -> string {
+    match r {
+        string as s     => return s,
+        StoreError as e => return "err:{e.message()}",
+    }
+}
+
+test "ctrl.control-flow/LP1 — a bare `return` ends every loop form" {
+    assert_eq(from_while(3), 10)
+    assert_eq(from_for_vec(nums()), 7)
+    assert_eq(from_for_range(3), 20)
+    assert_eq(from_for_stepped_range(4), 30)
+    assert_eq(from_for_chain(nums()), 14)
+    assert_eq(from_loop(), 40)
+    assert_eq(from_while_is(), 59)
+}
+
+test "ctrl.control-flow/LP1 — over a Map too" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 99)
+    assert_eq(from_for_map(m), 99)
+}
+
+test "ctrl.control-flow/LP1 — a `return` after other body statements" {
+    assert_eq(after_statements(nums()), 15)
+}
+
+test "type.errors/ER16b — `try … ?? continue` finds the hit past a miss" {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })     // absent -> continue
+    items.push(Item { n: 3 })     // present -> "v3"
+    assert_eq(show(first_hit(items)), "v3")
+}
+
+test "type.errors/ER16b — an error still propagates, absences still skip" {
+    mut broken: Vec<Item> = Vec.new()
+    broken.push(Item { n: 0 })
+    broken.push(Item { n: -1 })
+    assert_eq(show(first_hit(broken)), "err:broken")
+
+    mut empty: Vec<Item> = Vec.new()
+    empty.push(Item { n: 0 })
+    assert_eq(show(first_hit(empty)), "MISS")
+}
+
+test "ctrl.control-flow/LP3 — break and continue are unaffected" {
+    assert_eq(with_break(nums()), 7)
+    mut mixed: Vec<i64> = Vec.new()
+    mixed.push(3)
+    mixed.push(-1)
+    mixed.push(4)
+    assert_eq(with_continue(mixed), 7)
+    assert_eq(conditional(nums()), 7)
+}
+
+func main() {
+    println("{from_for_vec(nums())}")
+    println("{from_loop()}")
+    println(show(first_hit(Vec.new())))
+}

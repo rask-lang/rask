@@ -3,7 +3,7 @@
 
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
-use crate::value::Value;
+use crate::value::{map_entries_seeded, MapKey, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -304,7 +304,7 @@ impl Interpreter {
                     // LP13: for mutate on Map — write back values by key
                     Value::Map(ref m) if *mutate => {
                         let map_arc = std::sync::Arc::clone(m);
-                        let pairs: Vec<(Value, Value)> = map_arc.lock().unwrap().clone();
+                        let pairs = map_entries_seeded(&map_arc.lock().unwrap());
                         for (key, val) in pairs {
                             self.env.push_scope();
                             // Bind as tuple (k, v) or single pair
@@ -325,8 +325,8 @@ impl Interpreter {
                                         if names.len() >= 2 {
                                             if let Some(v) = self.env.get(&names[1]).cloned() {
                                                 let mut guard = map_arc.lock().unwrap();
-                                                if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
-                                                    pair.1 = v;
+                                                if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
+                                                    *slot = v;
                                                 }
                                             }
                                         }
@@ -339,8 +339,8 @@ impl Interpreter {
                                         if names.len() >= 2 {
                                             if let Some(v) = self.env.get(&names[1]).cloned() {
                                                 let mut guard = map_arc.lock().unwrap();
-                                                if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
-                                                    pair.1 = v;
+                                                if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
+                                                    *slot = v;
                                                 }
                                             }
                                         }
@@ -358,8 +358,8 @@ impl Interpreter {
                                 if names.len() >= 2 {
                                     if let Some(v) = self.env.get(&names[1]).cloned() {
                                         let mut guard = m.lock().unwrap();
-                                        if let Some(pair) = guard.iter_mut().find(|(k, _)| Self::value_eq(k, &key)) {
-                                            pair.1 = v;
+                                        if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
+                                            *slot = v;
                                         }
                                     }
                                 }
@@ -448,7 +448,7 @@ impl Interpreter {
                     }
                     // Map iteration (non-mutating): yield (key, value) tuples
                     Value::Map(m) => {
-                        let pairs: Vec<(Value, Value)> = m.lock().unwrap().clone();
+                        let pairs = map_entries_seeded(&m.lock().unwrap());
                         for (key, val) in pairs {
                             self.env.push_scope();
                             if let ForBinding::Tuple(names) = binding {

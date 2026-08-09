@@ -574,6 +574,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
+            NarrowingNeedsPolicy { from, to, span } => {
+                Diagnostic::error(format!(
+                    "`{}` doesn't fit in `{}` — some values would be lost",
+                    from, to
+                ))
+                    .with_code("E0370")
+                    .with_primary(*span, format!("this is a `{}`", from))
+                    .with_fix(format!(
+                        "say which values to lose: `x truncate to {}` keeps the low bits, \
+                         `x saturate to {}` clamps to the range, `x convert to {}?` answers \
+                         `none` when it doesn't fit",
+                        to, to, to
+                    ))
+                    .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
+            }
+
             TakeOnNonOptional { found, span } => {
                 Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
                     .with_code("E0365")
@@ -756,6 +772,36 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
                     .with_code("E0329")
                     .with_primary(*span, "not a Result type")
+            }
+
+            NotIterable { found, span } => {
+                let ty = found.to_string();
+                let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))
+                    .with_code("E0827")
+                    .with_primary(*span, "`for` needs a collection here")
+                    .with_why(
+                        "`for` walks a Vec, Map, Pool, array, slice, range or iterator \
+                         chain. A single value has no elements to visit \
+                         [ctrl.control-flow]",
+                    );
+                // Each of these is a specific slip with a specific answer, and
+                // naming the answer beats restating the rule.
+                let is_number = matches!(
+                    ty.as_str(),
+                    "i8" | "i16" | "i32" | "i64" | "i128"
+                        | "u8" | "u16" | "u32" | "u64" | "u128"
+                );
+                diag = match ty.as_str() {
+                    // A string is a sequence, just not of itself.
+                    "string" => diag.with_fix("ask for the elements: `for c in s.chars()`"),
+                    // A count in the iterator position wants the range it counts.
+                    _ if is_number => diag.with_fix("count with a range: `for i in 0..n`"),
+                    _ => diag.with_fix(format!(
+                        "iterate a collection — a `Vec<{}>`, or a field of `{}` that holds one",
+                        ty, ty
+                    )),
+                };
+                diag
             }
 
             UnsafeRequired { operation, span } => {

@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: the int→int conversions CV1a does NOT make implicit
+// ERROR: doesn't fit in
+//
+// CV1a's test is "can every value of the source be represented in the target".
+// These are the four ways the answer is no. Each has to name a policy instead —
+// `truncate to`, `saturate to`, or `convert to T?`.
+//
+// The narrowing pair mattered most: it used to type-check and then the backends
+// disagreed about what it meant. `let small: u8 = big` where big is 300 kept 300
+// on the interpreter and truncated to 44 natively, silently, in both cases (#649
+// covers the residual hole this closed for typed positions).
+
+func main() {
+    let u: u64 = 7
+    let i: i64 = -7
+    let big: u32 = 7
+    let byte: u8 = 200
+
+    // u64 -> i64: a u64 above i64.MAX doesn't fit
+    let a: i64 = u
+
+    // i64 -> u64: negatives have nowhere to go
+    let b: u64 = i
+
+    // u32 -> i32: same width, and the target loses a bit to the sign
+    let c: i32 = big
+
+    // u8 -> i8: 200 doesn't fit, even though the widths match
+    let d: i8 = byte
+
+    // i64 -> i16: plain narrowing (CV2)
+    let e: i16 = i
+
+    println("{a} {b} {c} {d} {e}")
+}

@@ -26,12 +26,10 @@ test "char survives" {
     assert_eq(f(), 'x')
 }
 
-// Bound before comparing on purpose. Passing `f()` straight in as an operand
-// corrupts the string on native — that is #611, a separate defect in how a
-// closure call's 16-byte result is held, not the return type this file is about.
 test "string survives" {
     let c = "hi"
     let f = || { return c }
+    assert_eq(f(), "hi")
     let got = f()
     assert_eq(got, "hi")
     assert_eq(got.len(), 2)
@@ -40,6 +38,7 @@ test "string survives" {
 test "a struct survives" {
     let c = Pair { a: 1, b: 2 }
     let f = || { return c }
+    assert_eq(f().a, 1)
     let got = f()
     assert_eq(got.a, 1)
     assert_eq(got.b, 2)

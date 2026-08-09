@@ -697,9 +697,7 @@ impl<'a> MirLowerer<'a> {
                 for s in body {
                     self.lower_stmt(s)?;
                 }
-                // EN7: run loop-scoped ensures at iteration end
-                self.emit_loop_cleanup(ensure_depth);
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
+                self.close_loop_body(ensure_depth, check_block);
                 self.loop_stack.pop();
                 self.ensure_stack.truncate(ensure_depth);
 
@@ -1435,15 +1433,55 @@ impl<'a> MirLowerer<'a> {
             target: check_block,
         }));
 
+        // OPT19 on a loop: `while <expr>? as v` reads the scrutinee once per
+        // iteration in the check block and rebinds the payload at the top of the
+        // body — the same two-part shape `while <expr> is <T> as v` lowers to.
+        // A bare `while <expr>?` with no binder needs none of this; the plain
+        // path already lowers the test to a bool.
+        let presence = match &cond.kind {
+            ExprKind::IsPresent { expr: inner, binding: Some(name) } => Some((inner, name.clone())),
+            _ => None,
+        };
+
         self.builder.switch_to_block(check_block);
-        let (cond_op, _) = self.lower_expr(cond)?;
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: cond_op,
-            then_block: body_block,
-            else_block: exit_block,
-        }));
+        let bind_in_body = match presence {
+            Some((inner, name)) => {
+                let (val, scrutinee_ty) = self.lower_expr(inner)?;
+                let is_niche = self.option_is_niche(inner, &scrutinee_ty);
+                let tag = self.emit_option_tag(&val, is_niche);
+                // Tag 0 is present (Some/Ok); anything else ends the loop.
+                let is_present = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: is_present,
+                    rvalue: MirRValue::BinaryOp {
+                        op: BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(0)),
+                    },
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_present),
+                    then_block: body_block,
+                    else_block: exit_block,
+                }));
+                let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
+                Some((name, val, payload_ty, is_niche))
+            }
+            None => {
+                let (cond_op, _) = self.lower_expr(cond)?;
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: cond_op,
+                    then_block: body_block,
+                    else_block: exit_block,
+                }));
+                None
+            }
+        };
 
         self.builder.switch_to_block(body_block);
+        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
+            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
+        }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
@@ -1456,11 +1494,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: check_block,
-        }));
+        self.close_loop_body(ensure_depth, check_block);
 
         self.loop_stack.pop();
         self.ensure_stack.truncate(ensure_depth);
@@ -1677,20 +1711,18 @@ impl<'a> MirLowerer<'a> {
 
         // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
-        let elem_ty = if is_pool {
-            // `for h in pool` iterates the `Pool_handles` snapshot above, so the
-            // element is a handle — not the pool's own element type, which is
-            // what the lookups below answer when handed the pool expression.
-            // Typed as the element struct, the handle word was read as a struct
-            // address and `pool[h]` in the body panicked "pool access with
-            // invalid handle" on the first iteration. `for h in pool.handles()`
-            // was fine, because there the iterated expression says `Vec<Handle>`.
-            MirType::Handle
-        } else if is_map {
+        let elem_ty = if is_map {
             // A map entry is a (key, value) pair, laid out like a tuple. Typed
             // as a bare i64 the element load came back as just the key, and
             // reading field 1 off it dereferenced that value as a pointer.
             MirType::Tuple(self.map_entry_pair_types(iter_expr))
+        } else if is_pool {
+            // mem.pools/PF1-PF4: `for h in pool` iterates the handle snapshot,
+            // so the binding is a `Handle`, not the pool's value type. Asking
+            // `iter_expr` — still the pool — gave the value type, so the loop
+            // read each 8-byte handle as if it were an element struct and
+            // `pool[h]` then panicked with "invalid handle".
+            MirType::Handle
         } else {
             self.extract_iterator_elem_type(iter_expr)
                 // `m.keys()` / `m.values()` hand back a Vec of the map's own key
@@ -1712,6 +1744,10 @@ impl<'a> MirLowerer<'a> {
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
+        } else if is_pool {
+            // Same prefix `for h in pool.handles()` gets, so indexing on the
+            // binding resolves the same way.
+            self.meta_mut(single_name).type_prefix = Some("Handle".to_string());
         } else {
             // MirType is Ptr — try to derive element prefix from iterable context.
             // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
@@ -1771,9 +1807,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
+        self.close_loop_body(ensure_depth, continue_target);
 
         // Writeback blocks for `for mutate`
         // LP13: Vec uses Vec_set(vec, idx, elem), Map uses Map_set(map, key, value)
@@ -2047,9 +2081,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_target }));
+        self.close_loop_body(ensure_depth, continue_target);
 
         // LP13: Pool_set writeback blocks for `for mutate`
         if let (Some(wb), Some(vl)) = (wb_block, val_local) {
@@ -2176,9 +2208,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        self.close_loop_body(ensure_depth, inc_block);
 
         // counter = counter + 1
         self.builder.switch_to_block(inc_block);
@@ -2384,8 +2414,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
+        self.close_loop_body(ensure_depth, inc_block);
 
         self.builder.switch_to_block(inc_block);
         let next = self.builder.alloc_temp(start_ty);
@@ -2434,11 +2463,7 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: loop_block,
-        }));
+        self.close_loop_body(ensure_depth, loop_block);
 
         self.loop_stack.pop();
         self.ensure_stack.truncate(ensure_depth);
@@ -2563,9 +2588,7 @@ impl<'a> MirLowerer<'a> {
             self.lower_stmt(stmt)?;
         }
 
-        // EN7: run loop-scoped ensures at iteration end
-        self.emit_loop_cleanup(ensure_depth);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
+        self.close_loop_body(ensure_depth, setup.inc_block);
         self.loop_stack.pop();
         self.ensure_stack.truncate(ensure_depth);
 

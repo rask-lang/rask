@@ -1,0 +1,278 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// OPT19 on a loop: `while <expr>? as v` re-reads the scrutinee each iteration
+// and binds the payload for the body.
+//
+// It parsed but nothing behind the parser knew about it: the resolver only
+// defined an `x? as v` binder for `if` conditions, so every use in the body was
+// `undefined symbol: v` — an error blaming the binder's spelling for a form the
+// compiler hadn't implemented (#593). Three layers had to land together, since
+// defining the name without lowering it turns a clean check error into a
+// crash: resolve defines the binder in the loop scope, the checker gives it the
+// payload type, and both backends bind it per iteration.
+//
+// It lowers the way `while <expr> is <T> as v` already did — scrutinee read once
+// in the check block, payload bound at the top of the body — and shares the
+// payload-binding code with the `if` form so a loop reads it identically.
+//
+// What's covered: a scalar payload, an aggregate one (string, struct), draining
+// a Vec through `pop()`, the `(try …)? as line` composite the canonical I/O
+// pattern uses, labels with break/continue, nesting, shadowing the scrutinee's
+// own name, and a bare `while <expr>?` with no binder still working.
+//
+// Spec: type.optionals (OPT19), ctrl.control-flow (CF-loop forms)
+
+struct Cursor {
+    pos: i64
+    limit: i64
+}
+
+extend Cursor {
+    func peek(self) -> i64? {
+        if self.pos < self.limit {
+            return self.pos
+        }
+        return none
+    }
+}
+
+struct Word {
+    public text: string
+    public len: u64
+}
+
+struct Reader {
+    lines: Vec<string>
+    at: i64
+}
+
+extend Reader {
+    func next(self) -> string? {
+        if self.at >= self.lines.len() {
+            return none
+        }
+        return self.lines[self.at]
+    }
+
+    func word(self) -> Word? {
+        if self.at >= self.lines.len() {
+            return none
+        }
+        let t = self.lines[self.at]
+        return Word { text: t, len: t.len() }
+    }
+}
+
+enum IoError {
+    Closed
+}
+
+extend IoError {
+    func message(self) -> string {
+        return "closed"
+    }
+}
+
+struct Stream {
+    lines: Vec<string>
+    at: i64
+    broken: bool
+}
+
+extend Stream {
+    // The canonical I/O shape: a fallible read that may also be at end of input.
+    func read_line(self) -> string? or IoError {
+        if self.broken {
+            return IoError.Closed
+        }
+        if self.at >= self.lines.len() {
+            return none
+        }
+        return self.lines[self.at]
+    }
+}
+
+func words() -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("alpha")
+    v.push("beta")
+    return v
+}
+
+// --- scalar payload ---
+
+func sum_positions(limit: i64) -> i64 {
+    mut c = Cursor { pos: 0, limit: limit }
+    mut total = 0
+    while c.peek()? as p {
+        total = total + p
+        c.pos = c.pos + 1
+    }
+    return total
+}
+
+// --- aggregate payloads ---
+
+func join_lines() -> string {
+    mut r = Reader { lines: words(), at: 0 }
+    mut out = ""
+    while r.next()? as line {
+        out = "{out}[{line}]"
+        r.at = r.at + 1
+    }
+    return out
+}
+
+func total_word_len() -> u64 {
+    mut r = Reader { lines: words(), at: 0 }
+    mut n: u64 = 0
+    while r.word()? as w {
+        n = n + w.len
+        r.at = r.at + 1
+    }
+    return n
+}
+
+// --- draining a collection ---
+
+func drain_sum() -> i64 {
+    mut xs: Vec<i64> = Vec.new()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    mut total = 0
+    while xs.pop()? as x {
+        total = total + x
+    }
+    return total
+}
+
+// --- the `(try …)? as line` composite: the `try` takes the error out, the `?`
+//     tests what's left ---
+
+func read_all(broken: bool) -> string or IoError {
+    mut s = Stream { lines: words(), at: 0, broken: broken }
+    mut out = ""
+    while (try s.read_line())? as line {
+        out = "{out}<{line}>"
+        s.at = s.at + 1
+    }
+    return out
+}
+
+// --- labels, break, continue ---
+
+func first_over(limit: i64, floor: i64) -> i64 {
+    mut c = Cursor { pos: 0, limit: limit }
+    mut found = -1
+    outer: while c.peek()? as p {
+        c.pos = c.pos + 1
+        if p < floor {
+            continue outer
+        }
+        found = p
+        break outer
+    }
+    return found
+}
+
+// --- nesting: two live bindings at once ---
+
+func nested(limit: i64) -> i64 {
+    mut a = Cursor { pos: 0, limit: limit }
+    mut total = 0
+    while a.peek()? as outer {
+        mut b = Cursor { pos: 0, limit: 2 }
+        while b.peek()? as inner {
+            total = total + outer * 10 + inner
+            b.pos = b.pos + 1
+        }
+        a.pos = a.pos + 1
+    }
+    return total
+}
+
+// --- shadowing: `as` may reuse the scrutinee's own name ---
+
+func shadowed(limit: i64) -> i64 {
+    mut c = Cursor { pos: 0, limit: limit }
+    mut total = 0
+    while c.peek()? as peek {
+        total = total + peek
+        c.pos = c.pos + 1
+    }
+    return total
+}
+
+// --- no binder: the plain presence test, unchanged ---
+
+func count_until_absent(limit: i64) -> i64 {
+    mut c = Cursor { pos: 0, limit: limit }
+    mut n = 0
+    while c.peek()? {
+        n = n + 1
+        c.pos = c.pos + 1
+    }
+    return n
+}
+
+// --- a return out of the body still returns (see t_return_from_loop_body) ---
+
+func first_position(limit: i64) -> i64 {
+    mut c = Cursor { pos: 0, limit: limit }
+    while c.peek()? as p {
+        return p + 100
+    }
+    return -1
+}
+
+func show(r: string or IoError) -> string {
+    match r {
+        string as s  => return s,
+        IoError as e => return "err:{e.message()}",
+    }
+}
+
+test "type.optionals/OPT19 — a scalar payload binds per iteration" {
+    assert_eq(sum_positions(4), 6)
+    assert_eq(sum_positions(0), 0)
+}
+
+test "type.optionals/OPT19 — aggregate payloads survive the bind" {
+    assert_eq(join_lines(), "[alpha][beta]")
+    assert_eq(total_word_len(), 9)
+}
+
+test "type.optionals/OPT19 — draining a Vec through pop()" {
+    assert_eq(drain_sum(), 6)
+}
+
+test "type.errors/ER16 — `(try read())? as line` reads to end, then propagates" {
+    assert_eq(show(read_all(false)), "<alpha><beta>")
+    assert_eq(show(read_all(true)), "err:closed")
+}
+
+test "ctrl.control-flow — labels, break and continue in the bound loop" {
+    assert_eq(first_over(5, 3), 3)
+    assert_eq(first_over(2, 9), -1)
+}
+
+test "type.optionals/OPT19 — nested loops keep both bindings live" {
+    assert_eq(nested(2), 22)
+}
+
+test "type.optionals/OPT19 — the binder may shadow, and needs no name at all" {
+    assert_eq(shadowed(4), 6)
+    assert_eq(count_until_absent(3), 3)
+}
+
+test "ctrl.control-flow — a `return` out of the bound body returns" {
+    assert_eq(first_position(2), 100)
+    assert_eq(first_position(0), -1)
+}
+
+func main() {
+    println("{sum_positions(4)}")
+    println(join_lines())
+    println(show(read_all(false)))
+    println(show(read_all(true)))
+}

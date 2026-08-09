@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Indexing a collection reached through a field infers its element type (#632).
+//
+// A field's type arrives as a deferred constraint, so at the index the container
+// is still an unresolved variable. The element type used to be a fresh variable
+// with nothing tying it to the container, so it stayed open however the field
+// later resolved — `let e = state.entities[h]` didn't compile, while the same
+// index on a local did.
+
+struct Entity {
+    hp: i64
+    active: bool
+}
+
+struct World {
+    entities: Pool<Entity>
+    names: Vec<string>
+    scores: Map<string, i64>
+    grid: Vec<Vec<i64>>
+}
+
+extend World {
+    func hp_of(self, h: Handle<Entity>) -> i64 {
+        let e = self.entities[h]
+        return e.hp
+    }
+}
+
+func build() -> World {
+    mut entities = Pool.new()
+    let h = entities.insert(Entity { hp: 10, active: true })
+    entities.insert(Entity { hp: 20, active: false })
+
+    mut names: Vec<string> = Vec.new()
+    names.push("first")
+    names.push("second")
+
+    mut scores: Map<string, i64> = Map.new()
+    scores.insert("a", 7)
+
+    mut inner: Vec<i64> = Vec.new()
+    inner.push(3)
+    inner.push(4)
+    mut grid: Vec<Vec<i64>> = Vec.new()
+    grid.push(inner)
+
+    return World { entities: entities, names: names, scores: scores, grid: grid }
+}
+
+test "mem.pools — a Pool behind a field indexes to its element type" {
+    let w = build()
+    mut ids: Vec<Handle<Entity>> = Vec.new()
+    for h in w.entities.handles() {
+        ids.push(h)
+    }
+    let e = w.entities[ids[0]]
+    assert e.hp == 10
+    assert e.active
+}
+
+test "stdlib.collections — a Vec behind a field indexes to its element type" {
+    let w = build()
+    let name = w.names[1]
+    assert name == "second"
+}
+
+test "stdlib.collections — a Map behind a field indexes to its value type" {
+    let w = build()
+    let score = w.scores["a"]
+    assert score == 7
+}
+
+test "stdlib.collections — a nested Vec indexes twice" {
+    let w = build()
+    let row = w.grid[0]
+    assert row[1] == 4
+}
+
+test "mem.pools — the same index inside a method" {
+    let w = build()
+    mut ids: Vec<Handle<Entity>> = Vec.new()
+    for h in w.entities.handles() {
+        ids.push(h)
+    }
+    assert w.hp_of(ids[0]) == 10
+}

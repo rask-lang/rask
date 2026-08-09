@@ -211,6 +211,28 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
+    /// what an unsubstituted generic parameter looks like by the time it reaches
+    /// MIR, and it must never be mistaken for a real layout.
+    ///
+    /// Integers only because they're the only implicit coercion today (CV1a). If
+    /// float widening ever becomes implicit, this has to widen with it or the
+    /// tuple-literal layout bug comes back for `(f64, f32)` — the `Ptr` exclusion
+    /// is the part that must survive, not the integer restriction (#660).
+    fn is_int_scalar(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::I8
+                | MirType::I16
+                | MirType::I32
+                | MirType::I64
+                | MirType::U8
+                | MirType::U16
+                | MirType::U32
+                | MirType::U64
+        )
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
@@ -1683,8 +1705,64 @@ impl<'a> MirLowerer<'a> {
                     lowered_elems.push(elem_op);
                     elem_types.push(elem_ty);
                 }
+                // CV1a: the tuple is built at the *destination's* layout, not the
+                // elements'. `let t: (i64, i32) = (u32_val, u16_val)` type-checks
+                // by widening each element, so the slot has to be the annotated
+                // shape — built from the element types it packed a u32 at offset 0
+                // and a u16 at offset 4, then copied those bytes into an
+                // `(i64, i32)` slot whose fields live at 0 and 8. Reading `t.0`
+                // took eight bytes spanning both, and printed
+                // `60000 << 32 | 3000000000`.
+                // Only an integer element is overridden, and only by another
+                // integer type. In a generic body the checker's type is the
+                // *unsubstituted* parameter — `-> (A, B)` — which reaches MIR as a
+                // pointer, and taking that as the layout gave the monomorphized
+                // copy of `both<i64, string>` a slot shaped for neither.
+                let target_elems = match self.ctx.lookup_node_type(expr.id) {
+                    Some(MirType::Tuple(target)) if target.len() == elem_types.len() => Some(target),
+                    _ => None,
+                };
+                let elem_types: Vec<MirType> = match target_elems {
+                    None => elem_types,
+                    Some(target) => elem_types
+                        .into_iter()
+                        .zip(target.into_iter())
+                        .map(|(got, want)| {
+                            if Self::is_int_scalar(&got) && Self::is_int_scalar(&want) {
+                                want
+                            } else {
+                                got
+                            }
+                        })
+                        .collect(),
+                };
                 let tuple_ty = MirType::Tuple(elem_types.clone());
                 let result_local = self.builder.alloc_temp(tuple_ty.clone());
+                // Widen each element into the slot's type first. Going through an
+                // Assign rather than extending in the store keeps one place that
+                // knows unsigned widening zero-extends (#326) instead of two.
+                let lowered_elems: Vec<MirOperand> = lowered_elems
+                    .into_iter()
+                    .zip(elem_types.iter())
+                    .map(|(op, target_ty)| {
+                        let src_ty = match &op {
+                            MirOperand::Local(id) => self.builder.local_type(*id),
+                            MirOperand::Constant(_) => None,
+                        };
+                        let coerces = src_ty.as_ref().is_some_and(|s| {
+                            s != target_ty && s.size() <= 8 && target_ty.size() <= 8
+                        });
+                        if !coerces {
+                            return op;
+                        }
+                        let widened = self.builder.alloc_temp(target_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: widened,
+                            rvalue: MirRValue::Use(op),
+                        }));
+                        MirOperand::Local(widened)
+                    })
+                    .collect();
                 let mut offset = 0u32;
                 for (elem_op, elem_ty) in lowered_elems.into_iter().zip(elem_types.iter()) {
                     let elem_size = elem_ty.size();
@@ -3478,6 +3556,16 @@ impl<'a> MirLowerer<'a> {
                                 .map(|s| s.param_ty_strs.clone())
                                 .unwrap_or_default();
                             let mut arg_operands = Vec::new();
+                            // Same escape as bare `spawn` (#463): the body runs
+                            // after this frame is gone, and the runtime frees the
+                            // environment once it finishes. A scope-limited closure
+                            // puts that environment on the stack, so the task read a
+                            // dead frame and then handed a stack address to free() —
+                            // glibc aborted with "free(): invalid size" (#589). The
+                            // #463 fix keyed off an `Ident("spawn")` callee, which
+                            // `Thread.spawn` never is; it arrives here instead.
+                            let spawns_closure = method == "spawn"
+                                && (base_name == "Thread" || base_name == "ThreadPool");
                             for (i, arg) in args.iter().enumerate() {
                                 // An unannotated closure parameter takes its type
                                 // from the callee's declared `func(...)` parameter;
@@ -3486,7 +3574,8 @@ impl<'a> MirLowerer<'a> {
                                 let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                                     self.lower_closure_expecting(
-                                        params, ret_ty.as_deref(), body, *is_own, &expected,
+                                        params, ret_ty.as_deref(), body,
+                                        *is_own || spawns_closure, &expected,
                                         Some(arg.expr.id),
                                     )?
                                 } else {
@@ -3962,15 +4051,33 @@ impl<'a> MirLowerer<'a> {
             // read came back as a pointer and a `Cell<i32>` got loaded eight bytes
             // wide.
             self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
-        } else if qualified_name == "Receiver_receive_struct" {
+        } else if matches!(qualified_name.as_str(),
+            "Receiver_receive_struct" | "Receiver_try_receive")
+        {
             // Renamed from Receiver_receive above for struct elements. Only the
             // original name is in the stub metadata, so the fallback typed the
             // result a bare i64 — then `r?` read a tag off a local that never got
             // a Result slot and every receive looked like a failure (#463).
+            //
+            // `try_receive` has the same gap and a worse symptom. Its stub says
+            // `T or TryReceiveError`; neither side survives to MIR, so the result
+            // typed as `i64 or i64`. With both sides nameless the ok/err routing
+            // ran out of type identities and fell through to its last-resort
+            // capitalization guess, which sent `is Reading` to the *error* tag —
+            // so the success branch ran on an empty channel and read a payload
+            // nothing had written (#631).
+            let stub = if qualified_name == "Receiver_try_receive" {
+                "Receiver_try_receive"
+            } else {
+                "Receiver_receive"
+            };
             self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
-                .or_else(|| self.func_sigs.get("Receiver_receive").map(|s| s.ret_ty.clone()))
-                .or_else(|| Some(super::stdlib_return_mir_type("Receiver_receive")))
+                .filter(|t| matches!(t,
+                    MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
+                .or_else(|| self.ctx.lookup_node_type(expr.id)
+                    .filter(|t| matches!(t, MirType::Option(_))))
+                .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
+                .or_else(|| Some(super::stdlib_return_mir_type(stub)))
         } else if qualified_name == "string_parse"
             || qualified_name.strip_prefix("string_parse_")
                 .is_some_and(super::is_parse_target_type_name)
@@ -5355,6 +5462,45 @@ impl<'a> MirLowerer<'a> {
     /// Lower `if expr? [as v] { then } [else [as e] { else_br }]` — present-check
     /// with payload narrowing. Mirrors the interpreter path in
     /// `rask-interp/src/interp/eval_expr.rs::ExprKind::If(IsPresent ..)`.
+    /// The payload type behind an `x?` scrutinee.
+    pub(crate) fn presence_payload_type(&mut self, inner: &Expr, scrutinee_ty: &MirType) -> MirType {
+        self.extract_payload_type(inner)
+            .or_else(|| Self::payload_of_mir(scrutinee_ty))
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:presence_payload"))
+    }
+
+    /// Bind an `x? as v` payload as a local in the current block. Shared by the
+    /// `if` form and the `while` form, so a loop reads the payload exactly the
+    /// way the branch does.
+    pub(crate) fn bind_presence_payload(
+        &mut self,
+        name: &str,
+        val: &MirOperand,
+        payload_ty: &MirType,
+        is_niche: bool,
+    ) {
+        let local = self.builder.alloc_local(name.to_string(), payload_ty.clone());
+        let rvalue = if is_niche {
+            MirRValue::Use(val.clone())
+        } else {
+            // Scalar payloads need the explicit offset so codegen loads the
+            // value at RESULT_PAYLOAD_OFFSET. Without it, a `T or E` whose
+            // err side is an aggregate makes codegen guess "aggregate" and
+            // return the slot address instead of the ok scalar (#389).
+            MirRValue::Field {
+                base: val.clone(),
+                field_index: 0,
+                byte_offset: self.payload_byte_offset(payload_ty),
+                access: FieldAccess::Word,
+            }
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
+        self.locals.insert(name.to_string(), (local, payload_ty.clone()));
+        if let Some(prefix) = self.mir_type_name(payload_ty) {
+            self.meta_mut(name).type_prefix = Some(prefix);
+        }
+    }
+
     fn lower_if_present(
         &mut self,
         inner: &Expr,
@@ -5390,30 +5536,9 @@ impl<'a> MirLowerer<'a> {
 
         // Then: bind the present payload as the narrow name, lower body.
         self.builder.switch_to_block(then_block);
-        let payload_ty = self.extract_payload_type(inner)
-            .or_else(|| Self::payload_of_mir(&scrutinee_ty))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:5274"));
+        let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         if let Some(name) = then_name.as_ref() {
-            let local = self.builder.alloc_local(name.clone(), payload_ty.clone());
-            let rvalue = if is_niche {
-                MirRValue::Use(val.clone())
-            } else {
-                // Scalar payloads need the explicit offset so codegen loads the
-                // value at RESULT_PAYLOAD_OFFSET. Without it, a `T or E` whose
-                // err side is an aggregate makes codegen guess "aggregate" and
-                // return the slot address instead of the ok scalar (#389).
-                MirRValue::Field {
-                    base: val.clone(),
-                    field_index: 0,
-                    byte_offset: self.payload_byte_offset(&payload_ty),
-                    access: FieldAccess::Word,
-                }
-            };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
-            self.locals.insert(name.clone(), (local, payload_ty.clone()));
-            if let Some(prefix) = self.mir_type_name(&payload_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            }
+            self.bind_presence_payload(name, &val, &payload_ty, is_niche);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         let result_local = self.builder.alloc_temp(then_ty.clone());

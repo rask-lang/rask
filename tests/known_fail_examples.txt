@@ -11,21 +11,31 @@
 # 11_closures, 12_iterators, 14_borrowing_patterns, 15_memory_management,
 # pool_test. Re-measure before trusting a line here — a stale registry reads as
 # "known broken" and nobody rechecks.
+#
+# Re-measured again 2026-08-08. Two lines were stale: sensor_processor runs on
+# both backends now (#580 fixed), and game_loop no longer gets far enough to
+# diverge — it stops at an E0361 instead.
 
 # --- native fails to run (interp OK) — native codegen rot ---
 09_generics.rk           # both exit 0, stdout DIVERGES (generic layout, #272 family)
 13_string_operations.rk  # native exit 1
 16_concurrency_basics.rk # native exit 1
 18_resource_types.rk     # native exit 1
-game_loop.rk             # fails `check` on both — `let e = state.entities[h]` (index
-                         # through a field) leaves the element type open, E0361.
-                         # Annotate those six bindings and both backends run all 300
-                         # frames and exit 0, but stdout DIVERGES: interp scores 200 and
-                         # retires entities, native scores 0. The "pool access with
-                         # invalid handle" panic is gone — `for h in pool` was typing the
-                         # handle as the pool's element type. PLAN Track 3.
-sensor_processor.rk      # native exit 1; interp now TIMES OUT (>60s) where it used to
-                         # finish — a second bug on top of the #272 layout miscompile
+
+# --- runs on both backends, but can't be goldened ---
+sensor_processor.rk      # #580 fixed: both exit 0 and print the same report. No golden
+                         # because the numbers are wall-clock derived — sample counts,
+                         # cycle times and the simulated sensor values all differ run
+                         # to run, on one backend as much as between two.
+
+game_loop.rk             # both exit 0, stdout DIVERGES on the entity counts. Re-measured
+                         # 2026-08-08 after #632 (the field-index inference) and the
+                         # native `for h in pool` handle mistyping — it no longer panics
+                         # at line 187, and runs all 300 frames on both. What's left is a
+                         # real disagreement: native reaches Frame 180 with 8 entities
+                         # and 240 with 10, interp has 7 and 9. Score matches (0) on
+                         # both, so it's the spawn/cleanup systems, not scoring. Needs
+                         # its own bisect. PLAN Track 3.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1

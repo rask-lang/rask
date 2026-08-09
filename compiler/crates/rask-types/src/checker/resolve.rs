@@ -31,6 +31,41 @@ impl TypeChecker {
         }
     }
 
+    /// Desugared operators that take their argument at the receiver's own type
+    /// and hand back that same type.
+    ///
+    /// Shifts are absent on purpose — the shift amount is its own type — and so
+    /// are `pow`, `to_float` and the single-operand forms.
+    fn is_homogeneous_arithmetic(method: &str) -> bool {
+        matches!(
+            method,
+            "add" | "sub" | "mul" | "div" | "rem"
+            | "bit_and" | "bit_or" | "bit_xor"
+            | "min" | "max"
+        )
+    }
+
+    /// Desugared comparisons: argument at the receiver's type, result `bool`.
+    fn is_homogeneous_comparison(method: &str) -> bool {
+        matches!(method, "eq" | "ne" | "lt" | "gt" | "le" | "ge")
+    }
+
+    fn is_homogeneous_operator(method: &str) -> bool {
+        Self::is_homogeneous_arithmetic(method) || Self::is_homogeneous_comparison(method)
+    }
+
+    /// A concrete number. Deliberately excludes nominal types with operator
+    /// impls: `5 + meters` should still be rejected, not quietly given the
+    /// newtype's type.
+    fn is_numeric_primitive(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64
+        )
+    }
+
     /// The element type `T` of a `Handle<T>`, or `None` for anything else.
     /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
     pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
@@ -441,7 +476,45 @@ impl TypeChecker {
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),
-            Type::Var(_) => {
+            Type::Var(id) => {
+                // A primitive arithmetic operator takes both operands at the
+                // same type, but desugaring rewrote `1000 / n` into
+                // `1000.div(n)` and that fact went with the operator. With an
+                // unresolved literal on the left there is nothing left tying it
+                // to `n`, so the result type stayed open forever and the binding
+                // it fed got reported as un-inferrable. Take the type from the
+                // argument — that's where the operand's type actually is (#630).
+                if self.ctx.literal_vars.contains_key(id)
+                    && Self::is_homogeneous_operator(&method)
+                {
+                    if let [arg] = args.as_slice() {
+                        let arg_ty = self.ctx.apply(arg);
+                        if Self::is_numeric_primitive(&arg_ty) {
+                            self.unify(&ty, &arg_ty, span)?;
+                            // Settling the receiver isn't enough on its own —
+                            // resolve the call now that it has a concrete type,
+                            // or the result type is still nothing.
+                            return self.resolve_method(
+                                arg_ty, method, args, ret, span, call_node,
+                            );
+                        }
+                        // Both sides are still bare literals (`let r = 100`
+                        // then `1000 / r`). Tie them together and give the
+                        // result its type from the operator, so literal
+                        // defaulting settles all of it at once — deferring
+                        // again would strand it, since the leftover pass runs
+                        // before defaulting and never revisits.
+                        if matches!(arg_ty, Type::Var(arg_id) if self.ctx.literal_vars.contains_key(&arg_id))
+                        {
+                            self.unify(&ty, &arg_ty, span)?;
+                            return if Self::is_homogeneous_comparison(&method) {
+                                self.unify(&ret, &Type::Bool, span)
+                            } else {
+                                self.unify(&ret, &ty, span)
+                            };
+                        }
+                    }
+                }
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,
                     method,
@@ -688,6 +761,18 @@ impl TypeChecker {
                     "step" if args.len() == 1 => {
                         self.unify(&args[0], &Type::I64, span)?;
                         self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
+                    }
+                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+                }
+            }
+            // The adapters hand back the same range, element type included, so
+            // `for i in (0..5).rev()` still knows what `i` is.
+            Type::UnresolvedGeneric { name, .. } if name == "Range" => {
+                match method.as_str() {
+                    "rev" if args.is_empty() => self.unify(&ret, &ty, span),
+                    "step" if args.len() == 1 => {
+                        self.unify(&args[0], &Type::I64, span)?;
+                        self.unify(&ret, &ty, span)
                     }
                     _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }

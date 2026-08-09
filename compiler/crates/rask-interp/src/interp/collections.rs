@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Collection indexing and writeback.
 
-use crate::value::Value;
+use crate::value::{MapKey, Value};
 
 use super::{Interpreter, RuntimeError};
 
@@ -24,12 +24,9 @@ impl Interpreter {
             }
             (Value::Map(m), _) => {
                 let map = m.lock().unwrap();
-                for (k, v) in map.iter() {
-                    if Self::value_eq(k, key) {
-                        return Ok(v.clone());
-                    }
-                }
-                Err(RuntimeError::Panic("key not found in map".to_string()))
+                map.get(&MapKey(key.clone()))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Panic("key not found in map".to_string()))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "with...as: cannot index into {}", collection.type_name()
@@ -58,14 +55,7 @@ impl Interpreter {
                 Ok(())
             }
             (Value::Map(m), _) => {
-                let mut map = m.lock().unwrap();
-                for (k, v) in map.iter_mut() {
-                    if Self::value_eq(k, key) {
-                        *v = value;
-                        return Ok(());
-                    }
-                }
-                map.push((key.clone(), value));
+                m.lock().unwrap().insert(MapKey(key.clone()), value);
                 Ok(())
             }
             _ => Err(RuntimeError::TypeError(format!(

@@ -53,6 +53,11 @@ _Noreturn void rask_panic_fmt(const char *fmt, ...);
 #endif
 extern int rask_runtime_checks_enabled;
 
+// Fill the stack below this frame with a nonzero pattern when
+// RASK_POISON_STACK is set, so reads of never-written stack slots are
+// deterministic instead of accidentally reading zeros.
+void rask_poison_stack(void);
+
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");
     return a * b;
@@ -302,6 +307,9 @@ uint64_t rask_hash_bytes(const void *key, int64_t key_size);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);
+// Pins the per-process seed mixed into the above (see map.c) — a hook for a
+// future sim runtime, unused today.
+void     rask_map_set_seed(uint64_t seed);
 
 // ─── Pool ───────────────────────────────────────────────────
 // Handle-based sparse storage with generation counters.
