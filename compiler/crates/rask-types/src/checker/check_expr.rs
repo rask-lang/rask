@@ -3240,6 +3240,25 @@ impl TypeChecker {
         }
     }
 
+    /// V8: an index or count argument accepts any integer type. Used by the
+    /// `vec.get(i)` method family so it matches `vec[i]`, which has always
+    /// taken any integer. Pinning these to `i64` made the most ordinary loop
+    /// in the language — `for i in 0..v.len() { v.get(i) }` — a type error,
+    /// because `len()` answers `usize` (V9) and `usize` → `i64` is the one
+    /// int→int pair CV1a refuses.
+    ///
+    /// Deferred like the bracket form so an unsuffixed literal is still a
+    /// literal var when it's checked, and the runtime takes the index in an
+    /// `int64_t` either way.
+    pub(super) fn check_integer_arg(&mut self, container: &Type, index: &Type, span: Span) {
+        self.pending_index.push(PendingIndex {
+            container: container.clone(),
+            index: index.clone(),
+            kind: PendingIndexKind::Integer,
+            span,
+        });
+    }
+
     /// #310: classify a container at an index site. A range on a non-sequence
     /// is rejected immediately; every other index is deferred to
     /// `validate_pending_index` so a literal index can adapt to the key/element

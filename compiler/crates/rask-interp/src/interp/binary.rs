@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
-use crate::value::{StructData, Value};
+use crate::value::{FloatKind, StructData, Value};
 use super::{Interpreter, RuntimeError, RuntimeDiagnostic};
 use rask_ast::Span;
 
@@ -370,10 +370,10 @@ fn read_binary_field(data: &[u8], field: &BinaryFieldMeta) -> Value {
         }
         "f32" => {
             let bits = raw as u32;
-            Value::Float(f32::from_bits(bits) as f64)
+            Value::Float(f32::from_bits(bits) as f64, FloatKind::Untyped)
         }
         "f64" => {
-            Value::Float(f64::from_bits(raw))
+            Value::Float(f64::from_bits(raw), FloatKind::Untyped)
         }
         _ => Value::int(raw as i64),
     }
@@ -396,7 +396,7 @@ fn write_binary_field(buf: &mut [u8], field: &BinaryFieldMeta, value: &Value) {
 
     let raw: u64 = match value {
         Value::Int(n, _) => *n as u64,
-        Value::Float(f) => {
+        Value::Float(f, _) => {
             if field.bits == 32 {
                 (*f as f32).to_bits() as u64
             } else {

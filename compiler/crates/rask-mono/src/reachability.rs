@@ -495,6 +495,16 @@ impl<'a> Monomorphizer<'a> {
         matches!(decl.map(|d| &d.kind), Some(DeclKind::Fn(f)) if !f.body.is_empty())
     }
 
+    /// A non-generic top-level function with a body — the only thing a bare
+    /// name can refer to as a value. Methods and generics are excluded: there
+    /// are no type arguments at a bare-name reference to instantiate them with.
+    fn is_plain_fn(&self, name: &str) -> bool {
+        matches!(
+            self.fn_table.get(name).map(|d| &d.kind),
+            Some(DeclKind::Fn(f)) if !f.body.is_empty() && f.type_params.is_empty()
+        )
+    }
+
     /// Seed the work queue with main()
     pub fn add_entry(&mut self, name: &str) -> bool {
         if self.fn_table.contains_key(name) {
@@ -959,8 +969,22 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
-            | ExprKind::None
-            | ExprKind::Ident(_) => {}
+            | ExprKind::None => {}
+
+            // A bare name that resolves to a function is a reference to it —
+            // `listen_and_serve(addr, handle)` passes the handler this way.
+            // Treated as a leaf, the function was never marked reachable, so
+            // nothing emitted it and MIR lowering reported the name as an
+            // unresolved variable.
+            ExprKind::Ident(name) => {
+                // Only a plain top-level function. A generic one has nothing to
+                // instantiate from here — a bare name carries no type arguments
+                // — and enqueuing it with none produced a call to the
+                // uninstantiated `T_greet` that nothing emits.
+                if self.is_plain_fn(name) {
+                    self.enqueue(name.clone(), Vec::new());
+                }
+            }
         }
     }
 }

@@ -14,6 +14,77 @@ use rask_ast::{
 };
 
 impl<'a> MirLowerer<'a> {
+    /// A named function used as a value (`apply(double, 21)`, or the handler
+    /// `http.listen_and_serve` takes). Callers invoke it through
+    /// `closure_call`, which passes an environment pointer first, but a
+    /// top-level function has no such parameter — so wrap it in one that does
+    /// and hand back a closure with an empty environment.
+    ///
+    /// Without this, lowering treated the bare name as a variable lookup and
+    /// gave up: the flagship's `listen_and_serve("0.0.0.0:8080", handle)`
+    /// failed native compilation with "unresolved variable `handle`" while the
+    /// interpreter ran it.
+    ///
+    /// Returns `None` if the name isn't a known function, so the caller can
+    /// report its own unresolved-variable error.
+    pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
+        let sig = self.func_sigs.get(name)?;
+        let ret_ty = sig.ret_ty.clone();
+        let param_ty_strs = sig.param_ty_strs.clone();
+
+        // Named per use site, the way closure bodies are. A single global
+        // `<name>__fnval` looks tidier but the dedup that would need is
+        // per-lowerer, so passing the same function from two places emitted
+        // the wrapper twice and Cranelift rejected the duplicate definition.
+        let wrapper_name = format!("{}__fnval_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        {
+            let mut wb = BlockBuilder::new(wrapper_name.clone(), ret_ty.clone());
+            wb.add_param("__env".to_string(), MirType::Ptr);
+
+            let mut args = Vec::new();
+            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+                let ty = ty_str
+                    .as_deref()
+                    .map(|s| self.ctx.resolve_type_str(s))
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:fnval_param"));
+                let id = wb.add_param(format!("__a{}", i), ty);
+                args.push(MirOperand::Local(id));
+            }
+
+            let call_dst = if ret_ty == MirType::Void {
+                None
+            } else {
+                Some(wb.alloc_temp(ret_ty.clone()))
+            };
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: call_dst,
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+            wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: call_dst.map(MirOperand::Local),
+            }));
+
+            self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
+                ret_ty,
+                scalar_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            });
+            self.synthesized_functions.push(wb.finish());
+        }
+
+        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: result_local,
+            func_name: wrapper_name,
+            captures: Vec::new(),
+            heap: false,
+        }));
+        Some((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///

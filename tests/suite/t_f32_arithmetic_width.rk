@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// f32 arithmetic happens at f32's width on both backends.
+//
+// The interpreter stores every float in an f64 slot. Without a width tag on
+// the value it also *computed* f32 at f64 precision, so an f32 accumulator
+// kept ~29 bits it doesn't have and drifted away from native. game_loop's
+// fixed-timestep loop crossed its `accumulator >= dt` threshold a frame later
+// on one backend than the other, which showed up as a different entity count.
+
+test "an f32 sum lands on the f32 grid" {
+    // 0.1 + 0.2 at f32 width is 0.3 exactly as f32 spells it; at f64 width it
+    // is 0.30000000000000004.
+    let a: f32 = 0.1
+    let b: f32 = 0.2
+    let c = a + b
+    assert c.to_string() == "0.3"
+}
+
+test "the same sum at f64 width keeps f64's answer" {
+    let a: f64 = 0.1
+    let b: f64 = 0.2
+    let c = a + b
+    assert c.to_string() == "0.30000000000000004"
+}
+
+test "a fixed-timestep accumulator steps the same number of times" {
+    // The game_loop shape: add a frame time, drain whole timesteps.
+    let dt = 1.0f32 / 60.0f32
+    mut accumulator = 0.0f32
+    mut steps = 0
+
+    for frame in 0..300 {
+        accumulator += 0.016f32
+        while accumulator >= dt {
+            accumulator -= dt
+            steps += 1
+        }
+    }
+    assert steps == 287
+}
+
+test "an f32 division stays at f32 width" {
+    let one: f32 = 1.0
+    let three: f32 = 3.0
+    let third = one / three
+    assert third.to_string() == "0.33333334"
+}
+
+test "f32 multiply rounds each step, not just at the end" {
+    mut x: f32 = 1.0
+    for i in 0..10 {
+        x = x * 1.1f32
+    }
+    assert x.to_string() == "2.5937428"
+}

@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A named function passed as a value.
+//
+// Interp handled it; native failed MIR lowering with "unresolved variable".
+// Two gaps: reachability treated a bare name as a leaf so the function was
+// never emitted, and lowering had no way to turn a function into the closure
+// shape callers invoke through. The flagship passes its handler this way —
+// `http.listen_and_serve(addr, handle)`.
+
+func double(x: i64) -> i64 {
+    return x * 2
+}
+
+func negate(x: i64) -> i64 {
+    return 0 - x
+}
+
+func apply(f: func(i64) -> i64, v: i64) -> i64 {
+    return f(v)
+}
+
+func apply_twice(f: func(i64) -> i64, v: i64) -> i64 {
+    return f(f(v))
+}
+
+test "a named function passed as an argument" {
+    assert apply(double, 21) == 42
+}
+
+test "a closure in the same position still works" {
+    assert apply(|x| { return x * 2 }, 21) == 42
+}
+
+test "two different functions through the same parameter" {
+    assert apply(double, 5) == 10
+    assert apply(negate, 5) == -5
+}
+
+test "the same function passed more than once" {
+    assert apply_twice(double, 3) == 12
+    assert apply(double, 3) == 6
+}

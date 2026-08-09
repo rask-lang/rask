@@ -8,36 +8,44 @@
 # Every line below carries a measured symptom and an issue. If you find one
 # without an issue, that means nobody has looked; file before you assume.
 #
-# Re-measured 2026-08-08 (third pass). Changes this round:
-#   - sensor_processor is ENROLLED — made deterministic rather than documented.
-#   - 16_concurrency_basics and 18_resource_types said "native exit 1". Both
-#     die on a signal — SIGABRT and SIGSEGV. "exit 1" reads like a clean
-#     error return and sent me looking in the wrong place.
-#   - 13_string_operations now names its cause (#656) instead of "exit 1".
-#   - grep_clone works. It was never broken; the gate just can't pass it argv.
-#   - game_loop's line is the one measured after #652/#653 landed, not the
-#     panic it carried before them.
+# Re-measured 2026-08-09 (fourth pass). Changes this round:
+#   - game_loop is ENROLLED. The recorded "real disagreement on entity counts"
+#     was a misdiagnosis: the program used an unseeded RNG, so it disagreed with
+#     *itself* run to run. Seeded, it exposed two genuine bugs (SplitMix64 seed
+#     expansion, and f32 arithmetic running at f64 precision in the interpreter).
+#   - grep_clone is ENROLLED. The gate can pass argv now (golden/<name>.args).
+#   - text_editor is ENROLLED. It was never in this file at all — no golden, no
+#     line, nobody had run it. It turned up five native bugs.
+#   - cli_calculator has a measured symptom instead of "reads stdin". The gate
+#     can feed stdin now (golden/<name>.stdin), so that is no longer what
+#     blocks it.
+#   - http_api_server compiles natively now and has its own harness.
+#   - 16_concurrency_basics is exit 101, not SIGABRT 134, and gets further than
+#     it did.
 #
 # The lesson keeps repeating: re-measure before trusting a line here. A stale
-# registry reads as "known broken" and nobody rechecks.
+# registry reads as "known broken" and nobody rechecks. Two of this round's
+# enrolments were programs whose recorded diagnosis was simply wrong.
 
 # --- native fails to run (interp OK) — native codegen rot ---
-09_generics.rk           # both exit 0, stdout DIVERGES (generic layout, #272 family)
+09_generics.rk           # both exit 0, stdout DIVERGES on one line: interp prints
+                         # "Auto-wrapped: 3.14", native "Auto-wrapped: 4614253070214988800"
+                         # — the f64's bit pattern, so a generic slot is holding the
+                         # float and reading it back as an integer. #272 family.
 13_string_operations.rk  # native: codegen 'main': Function not found: Iterator_collect —
-                         # the interpreter implements collect, native never got it. #656
-16_concurrency_basics.rk # native SIGABRT (134): "free(): invalid size" after joining
-                         # a thread. #589
+                         # the interpreter implements the lazy Iterator protocol, native
+                         # has none of it. Only chains the MIR fuser recognises work
+                         # natively. #656, and #676 for the shape that loses fusion.
+16_concurrency_basics.rk # native exits 101 part-way through the thread-pool section,
+                         # after "Pool task 7 running", with nothing on stderr. Was
+                         # SIGABRT 134 ("free(): invalid size") before; it now gets
+                         # further and dies differently, so the old note is stale. #589
 18_resource_types.rk     # native SIGSEGV (139) in rask_file_read_all — the File value
                          # reaches the runtime as a small integer, not the FILE*. #654
-
-game_loop.rk             # both exit 0, stdout DIVERGES on the entity counts. Re-measured
-                         # 2026-08-08 after #632 (the field-index inference) and the
-                         # native `for h in pool` handle mistyping — it no longer panics
-                         # at line 187, and runs all 300 frames on both. What's left is a
-                         # real disagreement: native reaches Frame 180 with 8 entities
-                         # and 240 with 10, interp has 7 and 9. Score matches (0) on
-                         # both, so it's the spawn/cleanup systems, not scoring. Needs
-                         # its own bisect. PLAN Track 3.
+cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct answers);
+                         # native SIGSEGV (139) right after the banner, before the first
+                         # result. Gate-runnable now that .stdin exists — this is a real
+                         # native bug, not a harness gap. #675
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1
@@ -46,13 +54,17 @@ markdown_renderer.rk     # interp exit 1; native TIMES OUT (>60s)
 package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1
 
-# --- works, but the gate can't run it ---
-grep_clone.rk            # NOT broken. `rask run examples/grep_clone.rk -- alpha file.txt`
-                         # gives identical correct output on both backends, exit 0. With no
-                         # args it prints usage and exits 1, which is right for a grep and
-                         # is all the gate ever sees. Needs per-example argv to enroll —
-                         # #658. PLAN validation program.
-
-# --- block on stdin / network (not auto-runnable as a golden) ---
-cli_calculator.rk        # reads stdin
-http_api_server.rk       # http.serve; PLAN Track 3 validation program
+# --- has its own harness, not a stdout golden ---
+http_api_server.rk       # Compiles and serves on the interpreter; tests/http_api_harness.sh
+                         # drives a CRUD request sequence against golden/http_api.expected.
+                         # Can't join the examples gate — the program never exits, so
+                         # there's no stdout to diff.
+                         #
+                         # Native compiles but does not serve: it binds and accepts the
+                         # connection, then HttpServer.accept() fails with "malformed
+                         # request". Not the TCP accept and not the request-line parse —
+                         # both are byte-identical across backends. It's read_raw: the
+                         # extern `rask_io_read_string(fd, max) -> string` doesn't match
+                         # the C `(RaskStr *out, fd, max)`, and an extern declaration has
+                         # no way to say "returns through an out-param", so the arguments
+                         # shift by one. #673

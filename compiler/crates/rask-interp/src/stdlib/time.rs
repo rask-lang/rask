@@ -4,7 +4,7 @@
 //! Layer: HYBRID — Duration is pure arithmetic, Instant/sleep need OS.
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{FloatKind, Value};
 use std::sync::{Arc, Mutex, mpsc};
 
 impl Interpreter {
@@ -52,8 +52,8 @@ impl Interpreter {
             "as_millis" => Ok(Value::int((nanos / 1_000_000) as i64)),
             "as_micros" => Ok(Value::int((nanos / 1_000) as i64)),
             "as_nanos" => Ok(Value::int(nanos as i64)),
-            "as_seconds_f32" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
-            "as_seconds_f64" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
+            "as_seconds_f32" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0, FloatKind::Untyped)),
+            "as_seconds_f64" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0, FloatKind::Untyped)),
             // Arithmetic
             "add" => {
                 let other = args.first()

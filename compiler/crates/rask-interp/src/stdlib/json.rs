@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use rask_ast::decl::{field_attrs, StructDecl};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{MapData, MapKey, Value};
+use crate::value::{FloatKind, MapData, MapKey, Value};
 
 impl Interpreter {
     /// Handle json module methods.
@@ -425,7 +425,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
         Value::Unit => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Int(n, _) => n.to_string(),
-        Value::Float(f) => {
+        Value::Float(f, _) => {
             if f.is_nan() {
                 "null".to_string() // JSON has no NaN
             } else if f.is_infinite() {
@@ -561,7 +561,7 @@ fn stringify_json_variant(variant: &str, fields: &[Value], pretty: bool, indent:
             }
         }
         "Number" => {
-            if let Some(Value::Float(f)) = fields.first() {
+            if let Some(Value::Float(f, _)) = fields.first() {
                 if f.is_nan() || f.is_infinite() {
                     "null".to_string()
                 } else if *f == f.floor() && f.abs() < 1e15 {
@@ -635,7 +635,7 @@ fn value_to_json(
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
         Value::Int(n, _) => Ok(make_json_number(*n as f64)),
-        Value::Float(f) => Ok(make_json_number(*f)),
+        Value::Float(f, _) => Ok(make_json_number(*f)),
         Value::String(s) => Ok(make_json_string(&s.lock().unwrap())),
         Value::Vec(v) => {
             let vec = v.lock().unwrap();
@@ -725,7 +725,7 @@ fn make_json_number(n: f64) -> Value {
     Value::Enum {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
-        fields: vec![Value::Float(n)],
+        fields: vec![Value::Float(n, FloatKind::Untyped)],
         variant_index: 2, origin: None,
     }
 }
@@ -801,7 +801,7 @@ fn json_kind_name(v: &Value) -> &'static str {
     match unwrap_json_value(v) {
         Value::Unit => "null",
         Value::Bool(_) => "a boolean",
-        Value::Int(..) | Value::Float(_) => "a number",
+        Value::Int(..) | Value::Float(_, _) => "a number",
         Value::String(_) => "a string",
         Value::Vec(_) => "an array",
         Value::Map(_) => "an object",
@@ -965,7 +965,7 @@ fn literal_value(literal: &str, ty: &str) -> Option<Value> {
             "false" => Some(Value::Bool(false)),
             _ => None,
         },
-        "f32" | "f64" | "float" => literal.parse::<f64>().ok().map(Value::Float),
+        "f32" | "f64" | "float" => literal.parse::<f64>().ok().map(|f| { let k = FloatKind::from_name(ty).unwrap_or(FloatKind::F64); Value::Float(k.round(f), k) }),
         _ => literal.parse::<i64>().ok().map(|n| Value::Int(n, int_kind(ty))),
     }
 }
@@ -984,7 +984,7 @@ fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
     match ty {
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
         "bool" => Value::Bool(false),
-        "f32" | "f64" | "float" => Value::Float(0.0),
+        "f32" | "f64" | "float" => Value::Float(0.0, FloatKind::Untyped),
         _ if rask_ast::primitives::is_machine_integer(ty)
             || rask_ast::primitives::INT_ALIASES.contains(&ty) => Value::Int(0, int_kind(ty)),
         _ => match struct_decls.get(ty) {
@@ -1082,15 +1082,15 @@ fn extract_string(v: &Value) -> Result<Value, ()> {
 fn extract_int(v: &Value, kind: crate::value::IntKind) -> Result<Value, ()> {
     match v {
         Value::Int(n, _) => Ok(Value::Int(*n, kind)),
-        Value::Float(f) => Ok(Value::Int(*f as i64, kind)),
+        Value::Float(f, _) => Ok(Value::Int(*f as i64, kind)),
         _ => Err(()),
     }
 }
 
 fn extract_float(v: &Value) -> Result<Value, ()> {
     match v {
-        Value::Float(f) => Ok(Value::Float(*f)),
-        Value::Int(n, _) => Ok(Value::Float(*n as f64)),
+        Value::Float(f, k) => Ok(Value::Float(*f, *k)),
+        Value::Int(n, _) => Ok(Value::Float(*n as f64, FloatKind::Untyped)),
         _ => Err(()),
     }
 }

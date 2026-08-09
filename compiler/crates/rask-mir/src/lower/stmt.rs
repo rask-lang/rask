@@ -121,19 +121,24 @@ impl<'a> MirLowerer<'a> {
     /// copy is what dropped `ln.a.x = v` on native (#411). Returns `None` for
     /// anything not rooted at an aggregate local (pool index, Vec element,
     /// function result), which the caller lowers separately.
-    pub(crate) fn lower_place_chain(&self, expr: &Expr) -> Option<(crate::LocalId, u32, MirType)> {
+    /// Root local, byte offset, type at the end of the chain, and the layout's
+    /// byte size for that field (`None` at the root, which is the whole local).
+    pub(crate) fn lower_place_chain(
+        &self,
+        expr: &Expr,
+    ) -> Option<(crate::LocalId, u32, MirType, Option<u32>)> {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
                 match ty {
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty)),
+                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty, None)),
                     _ => None,
                 }
             }
             ExprKind::Field { object, field } => {
-                let (base, off, oty) = self.lower_place_chain(object)?;
-                let (foff, fty) = self.field_offset_ty(&oty, field)?;
-                Some((base, off + foff, fty))
+                let (base, off, oty, _) = self.lower_place_chain(object)?;
+                let (foff, fty, fsize) = self.field_offset_ty_size(&oty, field)?;
+                Some((base, off + foff, fty, fsize))
             }
             _ => None,
         }
@@ -168,26 +173,46 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Summed byte offset of a whole field path within `base_ty`.
-    fn field_path_offset(&self, base_ty: &MirType, fields: &[&str]) -> Option<u32> {
+    /// Byte offset of a field path, and how many bytes sit at the end of it.
+    /// The width is what tells a store how much to copy — without it a 16-byte
+    /// string field got an 8-byte pointer store.
+    ///
+    /// The size comes from the layout, not from the field type's nominal size.
+    /// A niche-packed `Handle?` is 8 bytes where its type reports 16, and a
+    /// 16-byte copy from an integer sentinel dereferences it.
+    fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32)> {
         let mut offset = 0;
         let mut ty = base_ty.clone();
+        let mut size = None;
         for field in fields {
-            let (off, fty) = self.field_offset_ty(&ty, field)?;
+            let (off, fty, fsize) = self.field_offset_ty_size(&ty, field)?;
             offset += off;
             ty = fty;
+            size = fsize;
         }
-        Some(offset)
+        Some((offset, size?))
     }
 
     /// Byte offset + MIR type of `field` within an aggregate MIR type.
     fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
+        self.field_offset_ty_size(oty, field).map(|(off, ty, _)| (off, ty))
+    }
+
+    /// Same, plus the layout's recorded byte size for the field when there is
+    /// one. Tuple fields carry their size in the layout too.
+    fn field_offset_ty_size(
+        &self,
+        oty: &MirType,
+        field: &str,
+    ) -> Option<(u32, MirType, Option<u32>)> {
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
-            return Some((fl.offset, self.ctx.resolve_type_str(&format!("{}", fl.ty))));
+            let ty = self.ctx.resolve_type_str(&format!("{}", fl.ty));
+            return Some((fl.offset, ty, Some(fl.size)));
         }
-        if let Some((_, ety, Some(off), _)) = Self::resolve_tuple_field(oty, field) {
-            return Some((off, ety));
+        if let Some((_, ety, Some(off), fsize)) = Self::resolve_tuple_field(oty, field) {
+            return Some((off, ety, fsize));
         }
         None
     }
@@ -432,12 +457,18 @@ impl<'a> MirLowerer<'a> {
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, _)) = self.lower_place_chain(target) {
+                        if let Some((base, offset, _, fsize)) = self.lower_place_chain(target) {
+                            // The field's own width, not None. Codegen only
+                            // copies the bytes when the size says the value is
+                            // wider than a pointer; with no size it stored the
+                            // 8-byte pointer instead, so `s.text = "lit"` left
+                            // the address of the constant in a 16-byte string
+                            // field and the field read back as garbage.
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: base,
                                 offset,
                                 value: val_op,
-                                store_size: None,
+                                store_size: fsize,
                             }));
                             return Ok(());
                         }
@@ -458,7 +489,7 @@ impl<'a> MirLowerer<'a> {
                             // stale handle should hit.
                             if self.index_object_is_pool(coll) {
                                 let (base_op, base_ty) = self.lower_expr(index_base)?;
-                                if let Some(offset) = self.field_path_offset(&base_ty, &path) {
+                                if let Some((offset, fsize)) = self.field_path_offset_ty(&base_ty, &path) {
                                     let base_local = match base_op {
                                         MirOperand::Local(id) => id,
                                         _ => {
@@ -476,7 +507,7 @@ impl<'a> MirLowerer<'a> {
                                         addr: base_local,
                                         offset,
                                         value: val_op,
-                                        store_size: None,
+                                        store_size: Some(fsize),
                                     }));
                                     return Ok(());
                                 }
@@ -491,7 +522,7 @@ impl<'a> MirLowerer<'a> {
                                     .map(|t| self.ctx.type_to_mir(t))
                                     .or_else(|| self.collection_elem_of_expr(coll));
                                 if let Some(elem_ty) = elem_ty {
-                                    if let Some(offset) = self.field_path_offset(&elem_ty, &path) {
+                                    if let Some((offset, fsize)) = self.field_path_offset_ty(&elem_ty, &path) {
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
                                         let tmp = self.builder.alloc_temp(elem_ty);
@@ -504,7 +535,7 @@ impl<'a> MirLowerer<'a> {
                                             addr: tmp,
                                             offset,
                                             value: val_op,
-                                            store_size: None,
+                                            store_size: Some(fsize),
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: None,

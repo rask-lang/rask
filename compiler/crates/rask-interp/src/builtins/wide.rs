@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{Value, WidePlan};
+use crate::value::{FloatKind, Value, WidePlan};
 
 impl Interpreter {
     /// Execute a plan into its lane vector. This is the one place work happens.
@@ -127,7 +127,7 @@ fn sum_lanes(lanes: &[Value]) -> Result<Value, RuntimeError> {
                     sum += n;
                 }
             }
-            Value::Float(f) => {
+            Value::Float(f, _) => {
                 if !is_float {
                     float_sum = sum as f64 + f;
                     is_float = true;
@@ -144,7 +144,7 @@ fn sum_lanes(lanes: &[Value]) -> Result<Value, RuntimeError> {
         }
     }
     if is_float {
-        Ok(Value::Float(float_sum))
+        Ok(Value::Float(float_sum, FloatKind::Untyped))
     } else {
         Ok(Value::int(sum))
     }
@@ -154,7 +154,7 @@ fn sum_lanes(lanes: &[Value]) -> Result<Value, RuntimeError> {
 fn numeric(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n, _) => Some(*n as f64),
-        Value::Float(f) => Some(*f),
+        Value::Float(f, _) => Some(*f),
         _ => None,
     }
 }

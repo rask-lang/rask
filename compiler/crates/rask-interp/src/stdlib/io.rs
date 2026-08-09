@@ -20,6 +20,20 @@ impl Interpreter {
                 use std::io::{self, BufRead};
                 let mut line = String::new();
                 match io::stdin().lock().read_line(&mut line) {
+                    // 0 bytes is end of input, not a blank line. Reporting it
+                    // as Ok("") makes the two indistinguishable, and every
+                    // `loop { read_line() }` spins forever once stdin runs out.
+                    Ok(0) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::Enum {
+                            name: "IoError".to_string(),
+                            variant: "UnexpectedEof".to_string(),
+                            fields: vec![],
+                            variant_index: 6, origin: None,
+                        }],
+                        variant_index: 1, origin: None,
+                    }),
                     Ok(_) => {
                         if line.ends_with('\n') {
                             line.pop();
@@ -161,6 +175,20 @@ impl Interpreter {
                 use std::io::{self, BufRead};
                 let mut line = String::new();
                 match io::stdin().lock().read_line(&mut line) {
+                    // 0 bytes is end of input, not a blank line. Reporting it
+                    // as Ok("") makes the two indistinguishable, and every
+                    // `loop { read_line() }` spins forever once stdin runs out.
+                    Ok(0) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::Enum {
+                            name: "IoError".to_string(),
+                            variant: "UnexpectedEof".to_string(),
+                            fields: vec![],
+                            variant_index: 6, origin: None,
+                        }],
+                        variant_index: 1, origin: None,
+                    }),
                     Ok(_) => {
                         if line.ends_with('\n') {
                             line.pop();

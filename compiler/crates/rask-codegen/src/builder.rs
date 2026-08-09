@@ -128,7 +128,16 @@ enum CallAdapt {
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries (slot, type the runtime wrote, type the destination wants).
     ParseResult(StackSlot, Type, Type),
+    /// Same idea for a string out-param: the call returned 0/1 and wrote a
+    /// 16-byte RaskStr into the given slot. Build a `string or E` — status==0
+    /// → Ok(string), else Err. Used by `io.read_line`, where the error case is
+    /// end of input.
+    StringResult(StackSlot),
 }
+
+/// `IoError.UnexpectedEof`'s variant index, counting the declaration order in
+/// stdlib/io.rk. Reordering that enum has to be reflected here.
+const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
 
 pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
@@ -4238,6 +4247,60 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().iconst(types::I64, 0)
                 }
+                CallAdapt::StringResult(value_ss) => {
+                    // status → `string or E`. 0 → Ok(the 16-byte RaskStr the
+                    // callee wrote), 1 → Err. Before this the runtime returned
+                    // the string alone and nothing wrote the tag, so the caller
+                    // read whatever was in that slot — `io.read_line()` failed
+                    // on its first call with a bogus error.
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 1)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let tag = builder.ins().iconst(types::I64, 0);
+                        builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, dst_ss);
+                        let src = builder.ins().stack_addr(types::I64, value_ss, 0);
+                        let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+                        Self::copy_bytes(
+                            builder, src, 0, dst_addr,
+                            crate::layouts::RESULT_PAYLOAD_OFFSET, 16,
+                        );
+                        builder.ins().jump(merge_block, &[]);
+
+                        // Err(IoError.UnexpectedEof). The payload has to be a
+                        // real variant index — leaving it unwritten means the
+                        // `catch` matches on whatever was in the slot, which
+                        // traps as an out-of-range tag.
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, dst_ss);
+                        let eof = builder.ins().iconst(types::I64, IO_ERROR_UNEXPECTED_EOF);
+                        builder.ins().stack_store(
+                            eof, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
+                        );
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
                 _ => {
                     let results = builder.inst_results(call_inst);
                     if !results.is_empty() {
@@ -5476,6 +5539,15 @@ impl<'a> FunctionBuilder<'a> {
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 args.insert(0, addr);
                 CallAdapt::StringOutParam(ss)
+            }
+
+            ArgAdapt::StringResultOutParam => {
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 16, 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.insert(0, addr);
+                CallAdapt::StringResult(ss)
             }
 
             ArgAdapt::StringClone => {

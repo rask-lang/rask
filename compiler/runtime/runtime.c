@@ -331,16 +331,20 @@ RaskVec *rask_fs_read_lines(const RaskStr *path) {
 
 // ─── IO module ────────────────────────────────────────────────────
 
-void rask_io_read_line(RaskStr *out) {
+// Returns 0 and writes the line, or 1 at end of input. The status is what
+// makes EOF distinguishable from a blank line — without it every `loop { }`
+// over stdin spins forever once the input runs out.
+int64_t rask_io_read_line(RaskStr *out) {
     char buf[4096];
     if (!fgets(buf, sizeof(buf), stdin)) {
         rask_string_new(out);
-        return;
+        return 1;
     }
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
     if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
     rask_string_from_bytes(out, buf, (int64_t)len);
+    return 0;
 }
 
 // ─── More FS module ───────────────────────────────────────────────

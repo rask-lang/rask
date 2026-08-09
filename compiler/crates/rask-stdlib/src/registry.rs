@@ -112,7 +112,12 @@ const CHAR_METHODS: &[&str] = &[
 const STRING_METHODS: &[&str] = &[
     "len", "is_empty", "clone", "starts_with", "ends_with", "contains",
     "push", "push_str", "trim", "trim_start", "trim_end", "trim_bounds",
-    "to_string", "to_owned", "to_uppercase", "to_lowercase",
+    // No `to_owned`: it's a Rust name with no entry in std.strings and no
+    // signature anywhere, so it resolved as a known method whose return type
+    // stayed open — MIR gave the temp `i64`, codegen had no string slot to
+    // copy into, and `part.to_owned()` segfaulted. The spec's two storable
+    // conversions are `.to_string()` (copies) and `.view()` (zero-copy).
+    "to_string", "to_uppercase", "to_lowercase",
     "split", "split_whitespace", "chars", "char_indices", "bytes", "lines",
     "replace", "substring", "parse_int", "parse",
     "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",

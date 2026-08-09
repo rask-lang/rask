@@ -497,6 +497,11 @@ impl<'a> MirLowerer<'a> {
                     None
                 }
             }
+            // A slice carries its source's element type, so look through to
+            // the container. Without this `parts[2..]` had no tracked element
+            // type and `.join()` fell back to the integer runtime, which
+            // printed each 16-byte string as the number its bytes spell.
+            ExprKind::Index { object: inner, .. } => Self::vec_tracking_key(inner),
             _ => None,
         }
     }
@@ -557,7 +562,7 @@ impl<'a> MirLowerer<'a> {
         // Field/index projection: pass the address of the place so the callee's
         // store lands in the caller's storage.
         if matches!(&arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
-            if let Some((base, offset, _)) = self.lower_place_chain(arg) {
+            if let Some((base, offset, _, _)) = self.lower_place_chain(arg) {
                 let addr = if offset == 0 {
                     MirOperand::Local(base)
                 } else {
@@ -762,6 +767,9 @@ impl<'a> MirLowerer<'a> {
                         }));
                         Ok((MirOperand::Local(result_local), mir_ty))
                     }
+                } else if let Some(fnval) = self.lower_fn_as_value(name) {
+                    // Not a variable — a function's name used as a value.
+                    Ok(fnval)
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
                 }
