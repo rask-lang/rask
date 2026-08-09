@@ -13,6 +13,24 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
 impl TypeChecker {
+    /// The element type `T` a channel end carries — `Receiver<T>`, `Sender<T>`
+    /// or `Channel<T>`. `None` for anything else.
+    pub(super) fn channel_element_type(&self, ty: &Type) -> Option<Type> {
+        let applied = self.ctx.apply(ty);
+        let (name, args) = match &applied {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if !matches!(name.as_str(), "Receiver" | "Sender" | "Channel") {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
     /// Desugared operators that take their argument at the receiver's own type
     /// and hand back that same type.
     ///
@@ -747,6 +765,18 @@ impl TypeChecker {
                     _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
+            // The adapters hand back the same range, element type included, so
+            // `for i in (0..5).rev()` still knows what `i` is.
+            Type::UnresolvedGeneric { name, .. } if name == "Range" => {
+                match method.as_str() {
+                    "rev" if args.is_empty() => self.unify(&ret, &ty, span),
+                    "step" if args.len() == 1 => {
+                        self.unify(&args[0], &Type::I64, span)?;
+                        self.unify(&ret, &ty, span)
+                    }
+                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+                }
+            }
             // Pool (bare, for static constructors like Pool.new())
             Type::UnresolvedNamed(name) if name == "Pool" => {
                 self.resolve_pool_static_method(&method, &args, &ret, span)
@@ -1399,6 +1429,16 @@ impl TypeChecker {
 
         match method {
             "add" => return Err(TypeError::StringAddForbidden { span }),
+            // `a == b` desugars to `a.eq(b)` and there's no `eq` in the string
+            // stubs, so this fell through as "no progress" and the result type
+            // stayed open. In a condition the `Equal(cond, bool)` constraint hid
+            // it; bound to a name (`let same = a == b`) there was nothing to pin
+            // it and the binding was reported as un-inferrable (#620). Ordering
+            // is lexicographic and both backends already do it.
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                self.unify(&args[0], &Type::String, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {

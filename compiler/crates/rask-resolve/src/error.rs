@@ -27,6 +27,13 @@ impl ResolveError {
         }
     }
 
+    pub fn unknown_break_target(name: String, labels: Vec<String>, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::UnknownBreakTarget { name, labels },
+            span,
+        }
+    }
+
     pub fn invalid_break(label: Option<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::InvalidBreak { label },
@@ -121,6 +128,9 @@ pub enum ResolveErrorKind {
 
     #[error("break outside of loop{}", label.as_ref().map(|l| format!(" (label: {})", l)).unwrap_or_default())]
     InvalidBreak { label: Option<String> },
+
+    #[error("`{name}` is neither a variable to break with nor a label to break to")]
+    UnknownBreakTarget { name: String, labels: Vec<String> },
 
     #[error("continue outside of loop{}", label.as_ref().map(|l| format!(" (label: {})", l)).unwrap_or_default())]
     InvalidContinue { label: Option<String> },

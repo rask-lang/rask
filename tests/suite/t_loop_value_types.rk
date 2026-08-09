@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A loop expression carries out whatever `break` puts in it, at that value's
+// own type (ctrl.flow/CF15).
+//
+// Native lowering allocated the result slot as `i64` no matter what broke out of
+// it. A string went in as a pointer and came back out as a number:
+// `let w = loop { break s }` printed 140728353807216 and compared equal to
+// nothing but itself. Floats and structs were wrong the same way. The
+// interpreter was right throughout, so nothing caught it (#620).
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+test "a string survives the trip out of a loop" {
+    let s = "done"
+    let w = loop {
+        break s
+    }
+    assert w == "done"
+    assert w.len() == 4
+
+    // A separate string with the same contents, so this can't pass on identity.
+    let other = "done"
+    assert w == other
+}
+
+test "a float keeps its bits" {
+    mut hits = 0
+    let f = loop {
+        hits += 1
+        if hits == 2 { break 0.5 }
+    }
+    assert f == 0.5
+}
+
+test "a struct comes out whole" {
+    let p = Point { x: 3, y: 4 }
+    let got = loop {
+        break p
+    }
+    assert got.x == 3
+    assert got.y == 4
+}
+
+test "a Vec comes out usable" {
+    mut v = Vec.new()
+    v.push(11)
+    v.push(22)
+    let got = loop {
+        break v
+    }
+    assert got.len() == 2
+    assert got[1] == 22
+}
+
+test "a bool is a bool, not a widened integer" {
+    mut n = 0
+    let flag = loop {
+        n += 1
+        if n == 3 { break n == 3 }
+    }
+    assert flag
+}
+
+// String comparison bound to a name: `a == b` desugars to `a.eq(b)`, and
+// `string` had no `eq` in its stubs, so the result type stayed open. In a
+// condition the bool constraint hid it; bound to a name it surfaced as an
+// un-inferrable binding.
+test "a string comparison is a bool wherever it lands" {
+    let a = "left"
+    let b = "left"
+    let same = a == b
+    assert same
+
+    let differs = a != "right"
+    assert differs
+
+    let ordered = "abc" < "abd"
+    assert ordered
+}

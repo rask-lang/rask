@@ -89,6 +89,32 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("`break` can only exit loop constructs")
             }
 
+            UnknownBreakTarget { name, labels } => {
+                let mut d = Diagnostic::error(format!(
+                    "`{name}` is neither a variable to break with nor a label to break to"
+                ))
+                .with_code("E0210")
+                .with_primary(self.span, "not a variable, and no loop here carries this label");
+                d = match labels.split_first() {
+                    Some((nearest, _)) => d
+                        .with_help(format!(
+                            "the enclosing loops are labelled {}",
+                            labels
+                                .iter()
+                                .map(|l| format!("`{l}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .with_fix(format!("break {nearest}")),
+                    None => d
+                        .with_help("no enclosing loop is labelled — this reads as a break value")
+                        .with_fix(format!("declare `{name}`, or drop it and write `break`")),
+                };
+                d.with_why(
+                    "`break x` breaks out with the value `x` unless `x` labels an enclosing loop",
+                )
+            }
+
             InvalidContinue { label } => {
                 let msg = match label {
                     Some(l) => format!("continue with label `{}` outside of loop", l),

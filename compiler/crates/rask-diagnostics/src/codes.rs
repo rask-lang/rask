@@ -120,6 +120,9 @@ impl Default for ErrorCodeRegistry {
                 "E0209" => ("shadows built-in", Resolution,
                     "A definition has the same name as a built-in type or function. This can cause confusing errors later. Choose a different name.",
                     "struct Vec { }  // error: shadows built-in Vec"),
+                "E0210" => ("unknown break target", Resolution,
+                    "`break x` means one of two things: break out with the value in `x`, or jump to the loop labelled `x`. This name is neither — no variable `x` is in scope and no enclosing loop carries that label.",
+                    "outer: loop {\n    break outr  // error: did you mean the label `outer`?\n}"),
 
                 // Type errors (E03xx)
                 "E0308" => ("mismatched types", Type,

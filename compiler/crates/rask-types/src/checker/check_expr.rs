@@ -775,13 +775,22 @@ impl TypeChecker {
             }
 
             ExprKind::Range { start, end, .. } => {
-                if let Some(s) = start {
-                    self.infer_expr(s);
+                // The bounds share one type, and it's the type the loop variable
+                // takes. A bare `Range` threw that away, so `for i in 1..6` left
+                // `i` a free variable — and anything it fed too:
+                // `mut v = Vec.new()` filled by `v.push(i)` had no element type,
+                // so `v[0]` and everything downstream of it came out open (#620).
+                let elem = self.ctx.fresh_var();
+                for bound in [start, end].into_iter().flatten() {
+                    let bound_ty = self.infer_expr(bound);
+                    if let Err(e) = self.unify(&bound_ty, &elem, bound.span) {
+                        self.errors.push(e);
+                    }
                 }
-                if let Some(e) = end {
-                    self.infer_expr(e);
+                Type::UnresolvedGeneric {
+                    name: "Range".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem))],
                 }
-                Type::UnresolvedNamed("Range".to_string())
             }
 
             ExprKind::Try { expr: inner } => {
@@ -1137,6 +1146,22 @@ impl TypeChecker {
                 // ESAD Phase 2: Check for aliasing violations in closure body
                 self.check_closure_aliasing(params, body);
 
+                // Bind each parameter to the same variable the closure's `Fn`
+                // type carries, so a caller that pins it (`map` unifying the
+                // param with the iterator's element type) also pins the body's
+                // view of it. Without this the body saw an unrelated variable:
+                // `views().iter().map(|r| r.id).collect()` could never work out
+                // `r.id`, so the element type of the collected Vec stayed open
+                // and the binding was reported as un-inferrable (#620).
+                self.push_scope();
+                for (p, ty) in params.iter().zip(&param_types) {
+                    if p.is_mutate || p.is_take {
+                        self.define_local(p.name.clone(), ty.clone());
+                    } else {
+                        self.define_local_param(p.name.clone(), ty.clone());
+                    }
+                }
+
                 // Save enclosing return type — `return` inside a closure
                 // returns from the closure, not the enclosing function
                 let outer_return_type = self.current_return_type.take();
@@ -1148,6 +1173,7 @@ impl TypeChecker {
 
                 let inferred_ret = self.infer_expr(body);
 
+                self.pop_scope();
                 self.current_return_type = outer_return_type;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
@@ -1529,9 +1555,19 @@ impl TypeChecker {
                 }
                 let mut result_ty: Option<Type> = None;
                 for arm in arms {
+                    // A receive arm binds its value for the body only, so each
+                    // arm gets its own scope. Skipping the binding left `v` as a
+                    // free variable, which spread to the whole select's type and
+                    // came out as "couldn't work out the type of" the binding it
+                    // fed (#620).
+                    self.push_scope();
                     match &arm.kind {
-                        rask_ast::expr::SelectArmKind::Recv { channel, binding: _ } => {
-                            self.infer_expr(channel);
+                        rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
+                            let chan_ty = self.infer_expr(channel);
+                            let elem = self
+                                .channel_element_type(&chan_ty)
+                                .unwrap_or_else(|| self.ctx.fresh_var());
+                            self.define_local(binding.clone(), elem);
                         }
                         rask_ast::expr::SelectArmKind::Send { channel, value } => {
                             self.infer_expr(channel);
@@ -1540,6 +1576,7 @@ impl TypeChecker {
                         rask_ast::expr::SelectArmKind::Default => {}
                     }
                     let body_ty = self.infer_expr(&arm.body);
+                    self.pop_scope();
                     if let Some(ref prev) = result_ty {
                         let _ = self.unify(prev, &body_ty, arm.body.span);
                     } else {
@@ -2208,6 +2245,9 @@ impl TypeChecker {
             let is_range = matches!(
                 &self.ctx.apply(&obj_ty),
                 Type::UnresolvedNamed(n) if n == "Range"
+            ) || matches!(
+                &self.ctx.apply(&obj_ty),
+                Type::UnresolvedGeneric { name, .. } if name == "Range"
             );
             if is_range {
                 if let Some(first_arg) = args.first() {
@@ -3305,13 +3345,21 @@ impl TypeChecker {
             // Still open, a generic parameter, or already errored — the body
             // pins these, and an error here would land on working code.
             Type::Var(_) | Type::Error | Type::Never => ContainerElem::Deferred,
-            // A bare `Range` carries no element type at all, so the loop
-            // variable's width comes from the body's arithmetic.
+            // An adapted range (`(0..5).rev()`) still resolves to a bare `Range`,
+            // which carries no element type, so the body's arithmetic pins the
+            // width there.
             Type::UnresolvedNamed(_) => ContainerElem::Deferred,
             Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
                 // `Iterator<T>` is what every `.iter().map(…)` chain resolves
                 // to, so this is the common case, not an edge one.
                 if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Iterator") {
+                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
+                }
+                // ctrl.ranges: a range's bounds share the loop variable's type.
+                // The old bare `Range` carried none, so `for i in 1..6` left `i`
+                // free — and `mut v = Vec.new()` filled by `v.push(i)` then had
+                // no element type either, all the way down to `v[0]` (#620).
+                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Range") {
                     return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
                 }
                 match self.generic_base_name(ty) {

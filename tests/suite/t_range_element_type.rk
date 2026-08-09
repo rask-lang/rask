@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A range knows what it iterates, and so does everything downstream of it
+// (ctrl.ranges).
+//
+// The range type was a bare name with no element type, so `for i in 1..6` left
+// `i` a free variable. Nothing in the loop body was wrong — the damage was
+// downstream: `mut v = Vec.new()` filled by `v.push(i)` had no element type, so
+// `v[0]`, an adapter chain over it, and any binding they fed all came out with
+// no type at all and were reported as un-inferrable (#620).
+
+test "ctrl.ranges — a range loop variable has a type on its own" {
+    mut total = 0
+    for i in 1..6 {
+        total += i
+    }
+    assert total == 15
+}
+
+test "ctrl.ranges — a Vec filled from a range loop knows its element type" {
+    mut v = Vec.new()
+    for i in 1..6 {
+        v.push(i)
+    }
+
+    let first = v[0]
+    assert first == 1
+
+    let last = v[4]
+    assert last == 5
+    assert v.len() == 5
+}
+
+test "ctrl.ranges — adapter chains over such a Vec collect to a real type" {
+    mut v = Vec.new()
+    for i in 1..6 {
+        v.push(i)
+    }
+
+    let doubled = v.map(|x| x * 2).collect()
+    assert doubled.len() == 5
+    assert doubled[0] == 2
+    assert doubled[4] == 10
+
+    let picked = v.filter(|x| x > 2).map(|x| x * 10).collect()
+    assert picked.len() == 3
+    assert picked[0] == 30
+    assert picked[2] == 50
+}
+
+test "ctrl.ranges — the bounds' type reaches the loop variable" {
+    mut count = 0i64
+    let stop = 4i64
+    for i in 0i64..stop {
+        count += i
+    }
+    assert count == 6
+
+    mut wide = 0u8
+    for b in 0u8..4u8 {
+        wide += b
+    }
+    assert wide == 6u8
+}
+
+test "ctrl.ranges — an adapted range still iterates" {
+    mut seen = 0
+    for i in (0..6).step(2) {
+        seen += i
+    }
+    assert seen == 6
+
+    mut backwards = 0
+    mut order = 0
+    for i in (0..4).rev() {
+        if backwards == 0 {
+            order = i
+        }
+        backwards += 1
+    }
+    assert backwards == 4
+    assert order == 3
+}

@@ -197,22 +197,14 @@ impl Interpreter {
             }
 
             StmtKind::Break { label, value } => {
-                let mut target = label.clone();
                 let val = match value {
                     Some(expr) => self.eval_expr(expr)?,
-                    None => {
-                        // Ambiguity: `break ident` parsed as label — if the label
-                        // is actually a variable name, it's a break value.
-                        match label.as_ref().and_then(|n| self.env.get(n)).cloned() {
-                            Some(v) => {
-                                target = None;
-                                v
-                            }
-                            None => Value::Unit,
-                        }
-                    }
+                    None => Value::Unit,
                 };
-                Err(RuntimeDiagnostic::new(RuntimeError::Break(val, target), stmt.span))
+                Err(RuntimeDiagnostic::new(
+                    RuntimeError::Break(val, label.clone()),
+                    stmt.span,
+                ))
             }
 
             StmtKind::Continue(label) => Err(RuntimeDiagnostic::new(

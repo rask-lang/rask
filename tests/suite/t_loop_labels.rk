@@ -99,3 +99,58 @@ test "labeled continue on a loop expression" {
     }
     assert done == 3
 }
+
+// Which of the two `break x` means is decided by the enclosing labels, and
+// nothing else. Guessing from the next token used to make every one of these a
+// jump to a label that doesn't exist, which left the loop's value type open and
+// got the binding reported as un-inferrable (#620).
+
+test "a bare variable is a break value, whatever follows it" {
+    mut i = 0
+    let found = loop {
+        if i == 7 { break i }
+        i += 1
+    }
+    assert found == 7
+
+    let s = "done"
+    let word = loop {
+        break s
+    }
+    assert word == "done"
+}
+
+test "a variable break value works inside a labeled loop too" {
+    mut n: i64 = 0
+    let got = outer: loop {
+        n += 1
+        for j in 0..3 {
+            if n == 4 { break outer n }
+            if j == 2 { continue outer }
+        }
+    }
+    assert got == 4
+}
+
+test "a label and a variable can share a name — the label wins" {
+    mut hits: i64 = 0
+    let got = tick: loop {
+        let tick = 99
+        hits += 1
+        if hits == 2 { break tick hits }
+    }
+    // `break tick hits` reads as label `tick` with value `hits`, not as
+    // breaking out with the local `tick`.
+    assert got == 2
+}
+
+test "a break value inside a closure in a loop is a value" {
+    mut total: i64 = 0
+    let n = 5
+    let got = loop {
+        let add = |x: i64| -> i64 { return x + n }
+        total += add(1)
+        if total >= 12 { break total }
+    }
+    assert got == 12
+}

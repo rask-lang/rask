@@ -82,3 +82,40 @@ test "stdlib.collections — a collected Vec of structs reads at the right strid
     assert page[1].title == "two"
     assert page[2].title == "three"
 }
+
+// What a closure parameter is comes from the caller, and the body has to see it.
+// The checker never bound `r` at all — the body worked on an unrelated variable,
+// so `r.view` had no type, so the collected element type stayed open and the
+// binding was reported as un-inferrable. `map` pins the parameter to the
+// iterator's element type; the body now shares that variable (#620).
+
+test "a map closure knows its parameter's type from the source" {
+    let titles = rows()
+        .iter()
+        .map(|r| r.view.title)
+        .collect()
+
+    assert titles.len() == 3
+    assert titles[0] == "one"
+    assert titles[2] == "three"
+}
+
+test "a filter closure knows it too, and the chain keeps the element type" {
+    let ids = rows()
+        .iter()
+        .filter(|r| r.rank > 1)
+        .map(|r| r.view.id)
+        .collect()
+
+    assert ids.len() == 2
+    assert ids[0] == 1
+    assert ids[1] == 2
+}
+
+test "a fold closure sees both the accumulator and the element" {
+    let total = rows()
+        .iter()
+        .fold(0, |acc: i64, r| acc + r.rank)
+
+    assert total == 6
+}

@@ -2867,9 +2867,18 @@ impl<'a> MirLowerer<'a> {
 
             // CF25: loop expression — allocate result slot for break-with-value
             ExprKind::Loop { body, label } => {
+                // The slot holds whatever `break v` puts in it, so its type is
+                // the loop's own. Hardcoding I64 meant `break s` on a string
+                // stored the pointer and read it back as a number —
+                // `let w = loop { break s }` then printed 140728353807216 and
+                // compared unequal to every string but itself.
+                let result_ty = self
+                    .ctx
+                    .lookup_node_type(expr.id)
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_local(
                     "__loop_result".to_string(),
-                    MirType::I64,
+                    result_ty.clone(),
                 );
                 let loop_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
@@ -2901,7 +2910,7 @@ impl<'a> MirLowerer<'a> {
                 self.ensure_stack.truncate(ensure_depth);
                 self.builder.switch_to_block(exit_block);
 
-                Ok((MirOperand::Local(result_local), MirType::I64))
+                Ok((MirOperand::Local(result_local), result_ty))
             }
 
             // Comptime expression — try compile-time evaluation (CC1)

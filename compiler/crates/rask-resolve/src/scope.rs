@@ -126,6 +126,24 @@ impl ScopeTree {
         self.find_loop_scope(Some(label)).is_some()
     }
 
+    /// Every loop label `break`/`continue` here could name, innermost first.
+    /// Stops at the enclosing function, same as label lookup.
+    pub fn labels_in_scope(&self) -> Vec<String> {
+        let mut labels = Vec::new();
+        let mut scope_id = Some(self.current);
+        while let Some(id) = scope_id {
+            let Some(scope) = self.scopes.get(id.0 as usize) else { break };
+            if let ScopeKind::Loop { label: Some(l) } = &scope.kind {
+                labels.push(l.clone());
+            }
+            if matches!(scope.kind, ScopeKind::Function(_)) {
+                break;
+            }
+            scope_id = scope.parent;
+        }
+        labels
+    }
+
     /// Find a loop scope in the chain, optionally matching a label.
     fn find_loop_scope(&self, label: Option<&str>) -> Option<ScopeId> {
         let mut scope_id = Some(self.current);

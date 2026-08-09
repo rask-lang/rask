@@ -29,25 +29,28 @@ t_parse_float.rk # `"3.5".parse()` with the target from the binding always misse
 # --- new regression witnesses (this session) ---
 
 # --- E0361: binding whose type inference left open (#620) ---
-# Not a divergence — these fail `check` on both backends now that the type
-# checker reports an unresolved binding instead of letting lowering guess i64.
-# Every one is an expression form that doesn't propagate its value type:
-# `with`-block-as-value, `select`-as-value, `loop`-as-value, iterator `collect`,
-# `??` taking its type from the default. Fix the inference and delete the line —
-# the annotation the error suggests works meanwhile, but these are compiler
-# bugs, not programs that need annotating.
+# Empty. All 19 files that lit up when E0361 went on by default now compile.
 #
-# Four came off this list when the literal-receiver operator gap closed (#630):
-# t21_let_bindings, t23_with_blocks, t_inferred_return_type, t_with_mutex_value.
-# `with`-block-as-value and inferred-return-type were never their own bugs — the
-# open type came from an arithmetic operator with a bare literal on the left,
-# somewhere inside the body.
-p06_select.rk              # select-as-value — #620 (both)
-t20_control_expressions.rk # loop/block-as-value — #620 (both)
-t25_iterator_adapters.rk   # iterator collect — #620 (both)
-t48_loops.rk               # loop-as-value — #620 (both)
-t66_stdlib_option_returns.rk # #620 (both)
-t_iter_take_collect.rk     # iterator collect — #620 (both)
-t_loop_labels.rk           # loop-as-value — #620 (both)
-t_parse_failure.rk         # #620 (both)
-t_select.rk                # select-as-value — #620 (both)
+# Worth knowing, because the labels on this list were wrong more often than
+# right. Only four of the categories were real:
+#
+#   `break x` was parsed as a jump, not a value. The parser guessed from the
+#   next token, so `break i` became "go to a label called i", the loop's value
+#   type had nothing to unify against, and three separate workarounds had grown
+#   downstream to paper over it.
+#
+#   A `select` arm never bound its received value, so the arm body typed `v` as
+#   a free variable and that spread to the whole select.
+#
+#   `?? <literal>` deferred forever. An unsuffixed number never settles on its
+#   own — literal defaulting does it, and that runs after the last solve, by
+#   which point the deferred constraint is gone.
+#
+#   Closure parameters were never bound at all. The body worked on a variable
+#   nobody could pin, so `map(|r| r.view.title)` couldn't type `r.view`.
+#
+# The rest were two other bugs wearing E0361's clothes: an operator with a bare
+# literal operand (#630, seven files) and a range that carried no element type,
+# so `for i in 1..6` left `i` free and every Vec it filled with it. Both
+# `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
+# a `with` block or a `collect` to fail.
