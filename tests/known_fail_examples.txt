@@ -35,7 +35,7 @@
 13_string_operations.rk  # native: codegen 'main': Function not found: Iterator_collect —
                          # the interpreter implements the lazy Iterator protocol, native
                          # has none of it. Only chains the MIR fuser recognises work
-                         # natively. #656
+                         # natively. #656, and #676 for the shape that loses fusion.
 16_concurrency_basics.rk # native exits 101 part-way through the thread-pool section,
                          # after "Pool task 7 running", with nothing on stderr. Was
                          # SIGABRT 134 ("free(): invalid size") before; it now gets
@@ -45,7 +45,7 @@
 cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct answers);
                          # native SIGSEGV (139) right after the banner, before the first
                          # result. Gate-runnable now that .stdin exists — this is a real
-                         # native bug, not a harness gap.
+                         # native bug, not a harness gap. #675
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1
@@ -67,4 +67,4 @@ http_api_server.rk       # Compiles and serves on the interpreter; tests/http_ap
                          # extern `rask_io_read_string(fd, max) -> string` doesn't match
                          # the C `(RaskStr *out, fd, max)`, and an extern declaration has
                          # no way to say "returns through an out-param", so the arguments
-                         # shift by one.
+                         # shift by one. #673
