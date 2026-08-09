@@ -12,6 +12,32 @@ use super::TypeChecker;
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
+/// Which parameters of a stdlib sequence method are positions or counts
+/// (`std.collections/V8`, `V9`). Those take **any** integer type: the value is
+/// range-checked at the access, so a negative or oversized index panics or
+/// answers `none` rather than wrapping.
+///
+/// Without this the signatures pinned an index to one integer type while
+/// `len()` answers `usize`, so `for i in 0..v.len() { v.get(i) }` — the most
+/// ordinary loop there is — didn't compile. `v[i]` never had the problem,
+/// because indexing was always checked this way; only the method spelling was.
+///
+/// Positions, not a blanket rule: a `u64` parameter elsewhere in the stdlib
+/// (`Duration.from_millis`) still means that type, and still gets checked.
+fn sequence_index_params(recv: &str, method: &str) -> &'static [usize] {
+    match recv {
+        "Vec" | "Slice" | "string" | "Array" => match method {
+            // `set`/`insert` are (index, value) — only the index is a position.
+            "get" | "get_clone" | "remove" | "remove_at" | "skip" | "take" | "limit"
+            | "chunks" | "truncate" | "split_at" | "repeat" | "with_capacity"
+            | "set" | "insert" => &[0],
+            "swap" | "slice" => &[0, 1],
+            _ => &[],
+        },
+        _ => &[],
+    }
+}
+
 impl TypeChecker {
     /// The element type `T` a channel end carries — `Receiver<T>`, `Sender<T>`
     /// or `Channel<T>`. `None` for anything else.
@@ -591,8 +617,21 @@ impl TypeChecker {
                         self.note_disjointness_obligations(&method, param_ty, &subst, span);
                     }
 
+                    let index_params = super::receiver_name(&ty, &self.types)
+                        .map(|n| sequence_index_params(&n, &method))
+                        .unwrap_or(&[]);
+
                     let mut progress = false;
-                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
+                    for (i, ((param_ty, _mode), arg)) in
+                        method_sig.params.iter().zip(args.iter()).enumerate()
+                    {
+                        // V8: a position or count takes any integer type. The
+                        // declared width is what the runtime receives, not a
+                        // constraint on the caller.
+                        if index_params.contains(&i) {
+                            self.check_integer_arg(&ty, arg, span);
+                            continue;
+                        }
                         let substituted = Self::substitute_type_params(param_ty, &subst);
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
@@ -892,8 +931,19 @@ impl TypeChecker {
                     // per name, shared across params and return so they line up.
                     let mut method_params: HashMap<String, Type> = HashMap::new();
 
+                    let index_params = super::receiver_name(&ty, &self.types)
+                        .map(|n| sequence_index_params(&n, &method))
+                        .unwrap_or(&[]);
+
                     let mut progress = false;
-                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
+                    for (i, ((param_ty, _mode), arg)) in
+                        method_sig.params.iter().zip(args.iter()).enumerate()
+                    {
+                        // V8: a position or count takes any integer type.
+                        if index_params.contains(&i) {
+                            self.check_integer_arg(&ty, arg, span);
+                            continue;
+                        }
                         let substituted = Self::substitute_type_params(param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
@@ -2310,12 +2360,12 @@ impl TypeChecker {
                 self.unify(ret, &Type::U64, span)
             }
             "get" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
             "set" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 let _ = self.unify(&args[1], &inner_type, span);
                 self.unify(ret, &Type::Unit, span)
             }
@@ -2330,18 +2380,18 @@ impl TypeChecker {
             }
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 let _ = self.unify(&args[1], &inner_type, span);
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove(index) -> T
             "remove" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 self.unify(ret, &inner_type, span)
             }
             // vec.chunks(size) -> Vec<Vec<T>>
             "chunks" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 let chunk_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(inner_type))],
@@ -2360,15 +2410,15 @@ impl TypeChecker {
                 self.unify(ret, &self_ty, span)
             }
             "skip" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 self.unify(ret, &self_ty, span)
             }
             "take" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 self.unify(ret, &self_ty, span)
             }
             "limit" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
+                self.check_integer_arg(&self_ty, &args[0], span);
                 self.unify(ret, &self_ty, span)
             }
             "collect" if args.is_empty() => {
