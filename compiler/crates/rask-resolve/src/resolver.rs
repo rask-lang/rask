@@ -1769,10 +1769,10 @@ impl Resolver {
                         name.clone(),
                         SymbolKind::Variable { mutable: false },
                         None,
-                        Span::new(0, 0),
+                        stmt.span,
                         false,
                     );
-                    if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                         self.errors.push(e);
                     }
                 }

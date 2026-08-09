@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An arithmetic operator takes its type from either operand (#630).
+//
+// `a + b` desugars to `a.add(b)`, which puts one operand in receiver position and
+// the other in argument position. Resolution only ever read the receiver, so a
+// bare literal on the left had nothing to take a type from and the result stayed
+// open — `let period = 1000000000 / rate_hz` didn't compile, while
+// `rate_hz / 1000000000` did.
+
+func divide_into(n: i64) -> i64 {
+    let period = 1000000000 / n
+    return period
+}
+
+func widths(a: i32, b: u8, c: f64) -> string {
+    let x = 7 / a
+    let y = 200 / b
+    let z = 2.5 / c
+    return "{x} {y} {z}"
+}
+
+test "type.primitives — a literal on the left takes its type from the right" {
+    assert divide_into(4) == 250000000
+}
+
+test "type.primitives — either side of the operator can carry the type" {
+    let n: i64 = 4
+    let left = 1000000000 / n
+    let right = n / 2
+    assert left == 250000000
+    assert right == 2
+}
+
+// The operand's own width has to win, not the literal's i32 default — the result
+// here doesn't fit in i32, and picking the default would truncate it.
+test "type.primitives — the operand's width wins over the literal default" {
+    let n: i64 = 4
+    let big = 1000000000 * n
+    assert big == 4000000000
+}
+
+test "type.primitives — narrower and unsigned operands work too" {
+    assert widths(2, 100, 2.0) == "3 2 1.25"
+}
+
+test "type.primitives — every arithmetic operator, literal on the left" {
+    let n: i64 = 4
+    assert 10 + n == 14
+    assert 10 - n == 6
+    assert 10 * n == 40
+    assert 10 / n == 2
+    assert 10 % n == 2
+}
+
+test "type.primitives — comparisons with a literal on the left stay bool" {
+    let n: i64 = 4
+    assert 10 > n
+    assert 3 < n
+    assert 4 == n
+    assert 5 != n
+    assert 4 <= n
+    assert 4 >= n
+}
+
+test "type.primitives — a float literal on the left takes the float's width" {
+    let f: f64 = 2.0
+    let g: f32 = 2.0
+    assert 5.0 / f == 2.5
+    assert 5.0 / g == 2.5
+}
+
+// Neither side is annotated, so there's nothing to take a type from — both
+// literals default together, and the result follows them.
+test "type.primitives — two bare literals still resolve through defaulting" {
+    let r = 100
+    let e = 1000000000 / r
+    assert e == 10000000
+    let cmp = 5 > r
+    assert !cmp
+}

@@ -25,6 +25,11 @@ impl TypeChecker {
     /// or because it genuinely can't say (a bare `Range` carries no element
     /// type, so the body's arithmetic pins the width). The constraint is what
     /// reports a container that turns out not to be iterable at all.
+    ///
+    /// This is deliberately *not* the `Index` constraint, though both wait on
+    /// the same field to resolve: indexing a container and iterating it don't
+    /// agree on Map or Pool. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
+    /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
     fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
         if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
@@ -272,7 +277,7 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = self.iter_elem_type(&iter_ty, stmt.span);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {

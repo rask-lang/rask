@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try` in an optional-returning function propagates absence, not a tag (#608).
+//
+// An Option is a tag with nothing beside it. The propagate path was building a
+// Result instead — origin fields at 8 and 16, payload at 24, past the end of a
+// 16-byte Option slot — in a local typed after the *source* optional rather than
+// the return. The caller's `??` then read a payload of 1 (the none tag, one slot
+// over) where the default belonged, which is how the flagship server ended up
+// listening on port 1 instead of 8080.
+
+func port_from(raw: string?) -> u16? {
+    let s = try raw
+    if s == "9090" {
+        return 9090
+    }
+    return none
+}
+
+// Same shape without `try`, as the control: this path always worked.
+func port_from_explicit(raw: string?) -> u16? {
+    if raw? as s {
+        if s == "9090" {
+            return 9090
+        }
+    }
+    return none
+}
+
+// Two `try`s in a row, and a non-string source optional.
+func chained(a: i64?, b: i64?) -> i64? {
+    let x = try a
+    let y = try b
+    return x + y
+}
+
+func first_char(raw: string?) -> string? {
+    let s = try raw
+    if s == "" {
+        return none
+    }
+    return s
+}
+
+test "type.optionals — try propagates none, and ?? sees the default" {
+    let missing: string? = none
+    assert (port_from(missing) ?? 8080) == 8080
+}
+
+test "type.optionals — try passes a present value through" {
+    let present: string? = "9090"
+    assert (port_from(present) ?? 8080) == 9090
+}
+
+test "type.optionals — a miss that isn't the try itself still answers none" {
+    let other: string? = "1234"
+    assert (port_from(other) ?? 8080) == 8080
+}
+
+test "type.optionals — the explicit unwrap agrees with try" {
+    let missing: string? = none
+    let present: string? = "9090"
+    assert (port_from_explicit(missing) ?? 8080) == 8080
+    assert (port_from_explicit(present) ?? 8080) == 9090
+}
+
+test "type.optionals — two try sites in one function" {
+    let seven: i64? = 7
+    let five: i64? = 5
+    let nothing: i64? = none
+    assert (chained(seven, five) ?? -1) == 12
+    assert (chained(nothing, five) ?? -1) == -1
+    assert (chained(seven, nothing) ?? -1) == -1
+}
+
+test "type.optionals — try with a string payload on both sides" {
+    let missing: string? = none
+    let empty: string? = ""
+    let real: string? = "abc"
+    assert (first_char(missing) ?? "D") == "D"
+    assert (first_char(empty) ?? "D") == "D"
+    assert (first_char(real) ?? "D") == "abc"
+}
+
+test "type.optionals — the result narrows with `is` too, not just ??" {
+    let missing: string? = none
+    let present: string? = "9090"
+    if port_from(missing) is u16 as p {
+        assert false
+    } else {
+        assert true
+    }
+    if port_from(present) is u16 as p {
+        assert p == 9090
+    } else {
+        assert false
+    }
+}

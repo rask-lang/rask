@@ -126,6 +126,10 @@ pub enum TypeError {
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },
+    /// CV1a/CV2: an integer that doesn't fit the position it's going into.
+    /// Widening is implicit; anything that can lose a value has to name a policy.
+    #[error("`{from}` doesn't fit in `{to}`")]
+    NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
     /// OPT32: `take` needs a `T?` place.
     #[error("`take` needs an optional slot, found `{found}`")]
     TakeOnNonOptional { found: Type, span: Span },

@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A float has to survive being carried as a payload (#608, #629).
+//
+// Every case here went through a container that codegen addresses by pointer —
+// an optional, a result, a Vec/Map element. The value used to be re-typed by the
+// container instead of by the payload: a float got renumbered as an integer, or
+// stored at one width and read back at the other, so the payload came out as a
+// denormal or a flat 0 while the tag stayed correct.
+
+func opt_f64(x: f64?) -> f64 {
+    if x? as v {
+        return v
+    }
+    return -1.0
+}
+
+func opt_f32(x: f32?) -> f32 {
+    if x? as v {
+        return v
+    }
+    return -1.0
+}
+
+enum Broken {
+    Nope
+}
+
+extend Broken {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func f64_result() -> f64 or Broken {
+    return 2.5
+}
+
+func f32_result() -> f32 or Broken {
+    return 2.5
+}
+
+func f32_optional() -> f32? {
+    return 2.5
+}
+
+test "type.optionals — an f64 payload survives an optional local" {
+    let a: f64? = 2.5
+    assert a is f64
+    if a? as v {
+        assert v == 2.5
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — an f32 payload survives an optional local" {
+    let a: f32? = 2.5
+    if a? as v {
+        assert v == 2.5
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — a float payload survives a call boundary" {
+    let a: f64? = 2.5
+    let b: f32? = 1.25
+    assert opt_f64(a) == 2.5
+    assert opt_f32(b) == 1.25
+    let missing: f64? = none
+    assert opt_f64(missing) == -1.0
+}
+
+test "type.optionals — a float payload survives an optional return" {
+    if f32_optional()? as v {
+        assert v == 2.5
+    } else {
+        assert false
+    }
+}
+
+test "type.errors — a float payload survives a result return" {
+    let a = f64_result() catch _ => -1.0
+    assert a == 2.5
+    let b = f32_result() catch _ => -1.0
+    assert b == 2.5
+}
+
+// A float literal argument and a float local argument reach the runtime by two
+// different routes; both end up in the same 8-byte element slot, so both have to
+// read back at the element's own width.
+test "stdlib.collections — f32 Vec elements round-trip from literal and local" {
+    let a: f32 = 1.5
+    mut v: Vec<f32> = Vec.new()
+    v.push(a)
+    v.push(2.5)
+    assert v[0] == 1.5
+    assert v[1] == 2.5
+}
+
+test "stdlib.collections — f64 Vec elements round-trip" {
+    mut v: Vec<f64> = Vec.new()
+    v.push(1.5)
+    v.push(2.5)
+    assert v[0] == 1.5
+    assert v[1] == 2.5
+}
+
+test "stdlib.collections — f32 Map values round-trip from literal and local" {
+    let a: f32 = 1.5
+    mut m: Map<string, f32> = Map.new()
+    m.insert("local", a)
+    m.insert("literal", 2.5)
+    if m.get("local")? as x {
+        assert x == 1.5
+    } else {
+        assert false
+    }
+    if m.get("literal")? as y {
+        assert y == 2.5
+    } else {
+        assert false
+    }
+}
+
+test "stdlib.collections — f64 Map values round-trip" {
+    mut m: Map<string, f64> = Map.new()
+    m.insert("k", 2.5)
+    if m.get("k")? as v {
+        assert v == 2.5
+    } else {
+        assert false
+    }
+}
+
+// One storage rule now covers every 8-byte slot in the language: a float lives
+// there as an f64, whatever its declared width. Struct fields already did this;
+// collections and Option/Result payloads were brought into line. These cases
+// cross between the three, so they only pass while all three agree.
+struct Holder {
+    small: f32
+    big: f64
+}
+
+test "type.optionals — an f32 struct field survives a trip through an optional" {
+    let h = Holder { small: 0.5, big: 4.25 }
+    let small: f32? = h.small
+    let big: f64? = h.big
+    if small? as v {
+        assert v == 0.5
+    } else {
+        assert false
+    }
+    if big? as v {
+        assert v == 4.25
+    } else {
+        assert false
+    }
+}
+
+test "stdlib.collections — an f32 field into a Vec and back" {
+    let h = Holder { small: 0.5, big: 4.25 }
+    mut v: Vec<f32> = Vec.new()
+    v.push(h.small)
+    v.push(2.5)
+    assert v[0] == 0.5
+    assert v[1] == 2.5
+}
+
+test "mem.boxes — a float through a Cell keeps its value" {
+    let cell = Cell.new(3.5)
+    with cell as v {
+        assert v == 3.5
+    }
+    let small = Cell.new(0.5)
+    with small as v {
+        assert v == 0.5
+    }
+}
+
+// The integer and aggregate payloads that already worked — the float fix widened
+// the shared payload path, so these guard against trading one break for another.
+test "type.optionals — integer and bool payloads are unaffected" {
+    let a: i64? = 42
+    let b: i32? = 42
+    let c: u8? = 200
+    let d: bool? = true
+    if a? as v { assert v == 42 } else { assert false }
+    if b? as v { assert v == 42 } else { assert false }
+    if c? as v { assert v == 200 } else { assert false }
+    if d? as v { assert v } else { assert false }
+}

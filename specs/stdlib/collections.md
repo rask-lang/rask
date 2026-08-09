@@ -81,6 +81,29 @@ let users = Map.from([
 | **V2: Expression borrow** | `vec[i].field` borrows for expression, released at `;` |
 | **V3: Safe get** | `vec.get(i)` returns `T?` (T: Copy), no panic |
 | **V8: Integer index** | The index is **any integer type** (no `as usize`). Checked at compile time — a non-integer index is a compile error (`type.operators/IX1`, `E0819`). The value is range-checked at access; negative or too-large panics, no wraparound |
+| **V9: A count is unsigned** | `len()`, `capacity()` and every count answer `usize`. Accumulate them into `usize`/`u64`, not `i64` — that needs a policy (CV1a) and the cast proves nothing |
+
+**V9, and why `len()` isn't signed.** Go, Java and Swift all answer `int` here, and
+it is more convenient: any counter type works. It's the wrong trade for Rask. A
+length cannot be negative, and a type that says so is information, not ceremony —
+throwing it away to save a keystroke is the deal commitment 5 exists to refuse.
+It also means `len() - 1` on an empty collection panics (`type.overflow/OV1`)
+instead of quietly producing `-1` for someone to index with.
+
+The friction people expect here doesn't materialise, because a count flows into
+another count with no conversion at all:
+
+<!-- test: skip -->
+```rask
+mut total: u64 = 0
+for v in batches {
+    total += v.len()        // no cast — both sides are counts
+}
+```
+
+`let n: i64 = v.len()` *is* an error, and correctly: `usize` → `i64` is the one
+int→int pair that can genuinely lose a value. Declaring the counter `i64` in the
+first place is the bug that error is pointing at.
 
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
@@ -252,7 +275,7 @@ for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```
 
-**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().collect().sort()`. See `determinism/D7`.
+**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().to_vec().sort()`. See `determinism/D7`.
 
 ## Shrinking
 

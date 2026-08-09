@@ -33,26 +33,60 @@ starts; items marked **(file)** aren't tracked yet.
 
 ---
 
-## Track 0 — The error family (added 2026-08-07, leads the queue)
+## Track 0 — The error family (added 2026-08-07; nearly done, re-measured 2026-08-08)
 
-A second spec wave landed in August and none of it exists in the compiler — there isn't even a
-`catch` token in the lexer. This goes first because it changes the **language surface**: 464 `.rk`
-files are written against the old spelling, and every new line of stdlib, example or test code adds
-to the migration. Codegen bugs don't get worse while they wait; this does.
+Written when none of the August spec wave existed in the compiler — no `catch` token, 464 `.rk`
+files on the old spelling. Almost all of it has since landed. Re-measured rather than re-read; the
+old table claimed work that's done, which is the exact failure mode this file keeps having.
 
-Ordered by dependency. The old spellings become hard errors, so A1–A8 land close together or the
-tree is broken in between.
+| # | Item | State | Issue |
+|---|------|-------|-------|
+| A1 | Split the fallback: `??` optionals-only, results get `catch e => …` | **done** — `catch e =>` and `catch _ =>` parse, check and run on both backends | #597 |
+| A2 | Cut every method from `T?` and `T or E` | **done** — no `unwrap_or` / `.ok()` anywhere in the tree | #599 |
+| A3 | Delete scrutinee flow typing | **done** — all four functions gone from `check_expr.rs` | #601 |
+| A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **done** — `try` on optionals works; ER47 fires on a bare flat `try` | #598 |
+| A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
+| A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
+| A7 | `while expr? as v` binder never enters scope | **not implemented, and now says so** — E0369 at check time; see below | #593 |
+| A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
 
-| # | Item | Issue |
-|---|------|-------|
-| A1 | Split the fallback: `??` becomes optionals-only, results get `catch e => …`. `??` currently serves both shapes on purpose (`check_expr.rs:1358-1390`, cites #394) — so this is splitting one node in two, not new machinery. `try` binds tighter than `??`; the catch body runs greedily rightward like a match arm. | #597, #578 |
-| A2 | Cut every method from `T?` and `T or E`. Registered in three places — `rask-stdlib/src/registry.rs:148-152`, the stubs, and `resolve.rs:2892-2990` — and asserted by cargo tests that must flip to assert absence. 52 call sites. | #599 |
-| A3 | Delete scrutinee flow typing. Four functions in `check_expr.rs` (`extract_is_some_narrowing` 2813, `extract_is_present_narrowing` 2849, `apply_early_exit_narrowing` 2930, `narrow_result_from_err_pattern` 3006) plus if-plumbing at 345-392. **Match** narrowing lives apart in `unify.rs:170-228` and survives. | #601 |
-| A4 | Shape-agnostic `try` — on optionals too, plus the shape rule against the enclosing return and the flat `T? or E` operand error. | #598 |
-| A5 | `x is none` + the `== none` lint. | #600 |
-| A6 | `take <place>` — moves the payload out of a mutable `T?`, leaves `none`. Token already exists in parameter position; don't collide. | #586 |
-| A7 | ~~`while expr? as v`~~ **done** (2026-08-08). Not a resolver bug and not small: four layers — resolve defines the binder in the loop scope, the checker types it, MIR binds the payload per iteration in the body block, interp does the same. Lowers the way `while expr is T as v` already did, sharing the payload read with the `if` form. | #593 |
-| A8 | Migrate the corpus, one sweep, after A1–A7. `stdlib/`, `examples/`, `tests/`, fixtures, `tutorials/`. Leave `projects/` out — design content, already partly unparseable (#592). | #602 |
+| # | Item | State | Issue |
+|---|------|-------|-------|
+| A1 | Split the fallback: `??` optionals-only, results get `catch e => …` | **done** — `catch e =>` and `catch _ =>` parse, check and run on both backends | #597 |
+| A2 | Cut every method from `T?` and `T or E` | **done** — no `unwrap_or` / `.ok()` anywhere in the tree | #599 |
+| A3 | Delete scrutinee flow typing | **done** — all four functions gone from `check_expr.rs` | #601 |
+| A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **done** — `try` on optionals works; ER47 fires on a bare flat `try` | #598 |
+| A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
+| A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
+| A7 | `while expr? as v` binder never enters scope | **done** (2026-08-08) — four layers, see below | #593 |
+| A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
+
+**Track 0 is closed.** A7 was never the one-line resolver patch the original table implied, and the
+E0369 stopgap that stood here briefly (a hard error at the form, with a negative test) has been
+replaced by the real thing. It took four layers, which is why defining the binder alone made things
+worse: the resolver defines it in the loop scope, the checker gives it the payload type, MIR binds the
+payload at the top of the body, and the interpreter does the same. The route was the one recorded on
+the issue — `while expr is T as v` already lowered exactly that shape, so the `?` form copies it, and
+the payload read is now one helper shared with the `if` form so a loop and a branch can't drift.
+
+What the wave left behind, all three now fixed:
+
+- **#634** — `catch _ => none` on a flat `T? or E` gained an optional layer (`string??` in MIR).
+  The checker had the right type but still flagged the site "keeps its shape", which both backends
+  read as "re-wrap"; on a flat shape the success side is already the `T?`.
+- **#635** — retitled, because the `continue` was never the problem. A `return` at the end of *any*
+  loop body was discarded on native: each loop form terminated the body block with "goto next
+  iteration" unconditionally, overwriting the `Return` the body had just put there. `for x in xs
+  { return x }` ran the loop out and fell through.
+- **#632** — a container reached through a field lost its element type, at both the `for` and the
+  index. Fixed twice, independently, and the merge keeps the better half of each: main's bounded
+  retry pass in the solver (a constraint that defers reports no progress, so a substitution landing
+  later in the same pass was thrown away) and this branch's shape modelling, which names every
+  container the language can walk and reports E0827 on one it can't.
+
+Two bugs filed on the way: #650 (`return` out of a `for mutate` body skips that iteration's
+writeback — both backends) and a native `for h in pool` mistyping fixed here, which had the loop
+binding taking the pool's *value* type instead of `Handle<T>`.
 
 Every rule above needs a conformance test tagged with the rule it witnesses — positive in
 `tests/suite/`, negative in `tests/compile_errors/`. That's what keeps this delta from recurring.
@@ -72,7 +106,7 @@ undermine the core promise (mechanical safety) and get fixed before feature work
 | 1.3 | `as` casts unchecked: narrowing, sign reinterpret, float↔int, `n as char`, `1 as bool` all silently accepted. And the sanctioned lossy forms (`truncate to`, `saturate to`, `convert to T?`) don't exist — no correct path, wrong path open. | type.primitives/CV1–CV10, CH5, BL3 | `rask-types/src/checker/check_expr.rs:948-970` only validates `as any Trait` | **(file)** |
 | 1.4 | Trait-object dispatch miscompiles: vtable offset computed from position among *all* trait methods, but vtable stores compatible methods only — wrong slot when an incompatible method precedes. TR3 (reject generic methods through `any`) unenforced. | type.traits/TR1, TR3 | `rask-mir/src/lower/expr.rs:1467` | related: #194 |
 | 1.5 | Panic path in compiled code runs no ensures and aborts the process; interp gets multi-ensure panics wrong (first ensure-panic skips the rest, secondary panic dropped). | ctrl.panic/P1, P4, U1, E2–E3 | `runtime/panic.c:118` aborts | #299 tracking (#287, #288, #289, #290, #291, #298) |
-| 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). Breaks sensor_processor today. | — | `rask compile examples/sensor_processor.rk` | #272, #259 family; verify coverage, else file |
+| 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). | — | sensor_processor is no longer evidence for this — it runs to completion on both backends since #580/#608 (the crash was `try_receive` narrowing on the Err tag, not layout). Needs a live repro or closing. | #272, #259 family; verify coverage, else file |
 | 1.7 | Index expression types never checked (`vec[string]` typechecks). | stdlib.collections | — | #310 |
 | 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
 | 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | T1 send-consumption + take-param consumption now enforced; T3 borrow-capture already rejected by SL2; T2 structural | #359 (done, folds in #296); #360 (native non-scalar channel recv) |

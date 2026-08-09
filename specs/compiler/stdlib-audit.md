@@ -49,7 +49,7 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 | `take(n)` / `limit(n)` | ✓ Implemented | Takes first n elements |
 | `chunks(size)` | ✓ Implemented | Splits into chunks |
 | `flatten()` | ✓ Implemented | Flattens nested vecs |
-| `collect()` | ✓ Implemented | No-op (already vec) |
+| `to_vec()` | Rename pending | Currently spelled `collect()`; see `type.sequence/SEQ28` |
 | `dedup()` | ✓ Implemented | Removes consecutive duplicates |
 | `sum()` | ✓ Implemented | Sums integers |
 | `min()` | ✓ Implemented | Finds minimum |

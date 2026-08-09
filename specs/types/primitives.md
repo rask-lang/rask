@@ -48,6 +48,7 @@ what you mean with `truncate to`, `saturate to`, or `convert to T?` (CV5–CV7).
 | Rule | Conversion | Allowed | Notes |
 |------|------------|---------|-------|
 | **CV1: Widening** | `i8` → `i32`, `u8` → `i16`, `i32` → `f64` | `as` | Lossless: int→int value-preserving widening, int→float, `f32`→`f64` |
+| **CV1a: Widening is implicit** | `u32` → `i64` with no cast | implicit | An int→int conversion needs no `as` when **every** value of the source fits the target. `as` is for saying it out loud |
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Use explicit operations below |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Use explicit operations below |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Use explicit operations below. Int→float goes via `as` (CV1) — it rounds but never wraps or corrupts |
@@ -56,6 +57,46 @@ what you mean with `truncate to`, `saturate to`, or `convert to T?` (CV5–CV7).
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
 let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 ```
+
+### CV1a: which conversions are implicit
+
+The test is one question: **can every value of the source be represented in the
+target?** If yes, the conversion is implicit — an `as` there would tell the
+reader nothing, and ceremony that informs nobody is a design bug
+(NORTH_STAR commitment 5). If no, it has to name a policy (CV5–CV7), because
+choosing what to lose is a real decision.
+
+| From → To | Implicit? | Why |
+|---|---|---|
+| `i32` → `i64` | yes | Same sign, wider |
+| `u16` → `u64` | yes | Same sign, wider |
+| `u32` → `i64` | yes | Every `u32` fits an `i64` |
+| `u8` → `i16` | yes | Strictly wider, so the sign bit is free |
+| `u8` → `i8` | **no** | 200 doesn't fit — the target loses a bit to the sign |
+| `u64` → `i64` | **no** | A `u64` above `i64.MAX` doesn't fit |
+| `i64` → `u64` | **no** | Negatives have nowhere to go |
+| `i64` → `i16` | **no** | Narrowing |
+
+Unsigned → signed needs the target *strictly* wider; same-signedness only needs
+it no narrower; signed → unsigned never coerces.
+
+**Positions, not arithmetic.** CV1a applies where a value fills a typed slot:
+assignment, argument, return, struct field. It is **not** operator promotion —
+operators are homogeneous (`type.operators`), so `a + b` on mixed integer types
+stays an error, and you widen one side yourself. This is the line C's "usual
+arithmetic conversions" crossed, and why `-1 < 1u` is *true* in C. Rask doesn't
+have that bug because it doesn't have that feature.
+
+**Why implicit widening is safe here and isn't in some other languages.** Go,
+Rust and Swift require a cast for every numeric conversion. That's the right call
+*for them*, because their lossy conversions are quiet — Rust's `300u32 as u8` is
+`44`, silently. When truncation is silent you can't let any conversion be
+implicit, because the reader can't tell the safe ones from the dangerous ones.
+Rask doesn't have that problem: the lossy directions are named verbs, and
+unnamed arithmetic panics on overflow in all builds (`type.overflow/OV1`). A
+value that doesn't fit can never quietly become a wrong number, so the only
+question left is whether the conversion is worth writing down — and when it
+cannot fail, it isn't.
 
 **Lossy conversions — explicit operations:**
 

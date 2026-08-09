@@ -16,6 +16,63 @@ pub struct TestOptions {
     pub seed: Option<String>,
 }
 
+/// What to tell the user about a fatal signal, beyond its name.
+fn signal_advice(sig: i32) -> Option<&'static str> {
+    match sig {
+        // SIGSEGV
+        11 => Some("run it again with RASK_RUNTIME_CHECKS=1 to turn a null \
+                   dereference into a panic that says where"),
+        // SIGILL — how a Cranelift `unreachable` trap surfaces
+        4 => Some("this is a Cranelift trap: an `unreachable` was reached, \
+                   usually a match on an out-of-range tag"),
+        // SIGFPE
+        8 => Some("integer division by zero or an overflowing division"),
+        // SIGBUS
+        7 => Some("a misaligned or out-of-bounds memory access"),
+        _ => None,
+    }
+}
+
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        15 => "SIGTERM",
+        _ => "signal",
+    }
+}
+
+/// The exit code to pass on for a finished child, reporting a fatal signal on
+/// the way out.
+///
+/// A signal-killed process carries no exit code, so `code().unwrap_or(1)` exited
+/// 1 having printed nothing — a segfault read exactly like a silent compile
+/// failure (#605). Mechanical safety promises unsafety surfaces as a named
+/// failure; this is the surface where that promise is kept.
+fn exit_code_reporting_signals(status: &process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            eprintln!(
+                "{}: program crashed with {} (signal {})",
+                output::error_label(),
+                signal_name(sig),
+                sig
+            );
+            if let Some(advice) = signal_advice(sig) {
+                eprintln!("  {} {}", "help:".cyan(), advice);
+            }
+            return 128 + sig;
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
@@ -78,7 +135,7 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
     match status {
         Ok(s) => {
             if !s.success() {
-                process::exit(s.code().unwrap_or(1));
+                process::exit(exit_code_reporting_signals(&s));
             }
         }
         Err(e) => {
@@ -289,6 +346,14 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     for r in &test_results {
         let escaped_name = json_escape(&r.name);
         let dur_ns = r.duration.as_nanos() as u64;
+        // The native runner's stdout has the body's prints sitting just ahead of
+        // that test's JSON line, because the line is written once the body is
+        // done. Reproduce that here so one renderer serves both backends and the
+        // two can't drift (#612).
+        json_lines.push_str(&r.output);
+        if !r.output.is_empty() && !r.output.ends_with('\n') {
+            json_lines.push('\n');
+        }
         if let Some(reason) = &r.skipped {
             json_lines.push_str(&format!(
                 "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
@@ -507,9 +572,31 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
     let mut skipped = 0;
     let mut total_duration = std::time::Duration::ZERO;
 
+    // Anything that isn't a protocol record is the running test's own output.
+    // It arrives before that test's record, since the record is written once the
+    // body is done — so hold it and print it under the test it belongs to. These
+    // lines used to be dropped on the floor natively while the interpreter wrote
+    // them straight to the terminal ahead of the banner, which made any suite
+    // test containing a `println` diverge by construction (#612).
+    let mut pending_output: Vec<&str> = Vec::new();
+    let print_output = |lines: &mut Vec<&str>| {
+        if lines.is_empty() {
+            return;
+        }
+        println!("      {}", "output:".dimmed());
+        for l in lines.iter() {
+            println!("      {} {}", "│".dimmed(), l);
+        }
+        lines.clear();
+    };
+
     for line in stdout.lines() {
+        let raw = line;
         let line = line.trim();
-        if !line.starts_with('{') { continue; }
+        if !line.starts_with('{') {
+            pending_output.push(raw);
+            continue;
+        }
 
         let name = parse_json_str(line, "name").unwrap_or("?");
         let passed_val = line.contains("\"passed\":true");
@@ -525,6 +612,7 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
                 name,
                 format!("({})", format_test_error(reason)).dimmed(),
             );
+            print_output(&mut pending_output);
             continue;
         }
 
@@ -535,15 +623,27 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
                 name,
                 format!("({}ms)", duration.as_millis()).dimmed(),
             );
+            print_output(&mut pending_output);
         } else {
             failed += 1;
             println!("  {} {}",
                 output::status_fail(),
                 name,
             );
+            print_output(&mut pending_output);
             if let Some(error) = parse_json_str(line, "error") {
                 println!("      {}", format_test_error(error).red());
             }
+        }
+    }
+
+    // Output with no record after it — the test that printed it never finished,
+    // so there's no result line to sit under. It's the most useful thing on
+    // screen when a test binary dies mid-run, so it isn't dropped.
+    if !pending_output.is_empty() {
+        println!("  {}", "output after the last completed test:".dimmed());
+        for l in &pending_output {
+            println!("      {} {}", "│".dimmed(), l);
         }
     }
 
@@ -671,7 +771,7 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     match status {
         Ok(s) => {
             if !s.success() {
-                process::exit(s.code().unwrap_or(1));
+                process::exit(exit_code_reporting_signals(&s));
             }
         }
         Err(e) => {
