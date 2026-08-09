@@ -77,19 +77,11 @@ pub enum TypeConstraint {
     /// stayed open however the field later settled.
     Index {
         object: Type,
+        /// Carried so #310's index-type check can run again once the container
+        /// is known — at the index site it had nothing to classify against.
+        index: Type,
         result: Type,
         is_range: bool,
-        span: Span,
-    },
-    /// `for x in object` — the type the loop binding takes.
-    ///
-    /// Deferred for the same reason as `Index`: `for h in self.entities` waits
-    /// on the field. Kept separate because iterating and indexing don't agree
-    /// for every container — a `Pool<T>` indexes to `T` but iterates to
-    /// `Handle<T>` (mem.pools/PF1, handle mode).
-    IterElem {
-        object: Type,
-        result: Type,
         span: Span,
     },
     Coalesce {
@@ -100,6 +92,17 @@ pub enum TypeConstraint {
         value: Type,
         default: Type,
         result: Type,
+        span: Span,
+    },
+    /// The element type of a container being iterated.
+    ///
+    /// A field's type arrives as a deferred `HasField`, so `for t in self.tables`
+    /// meets an unresolved container at the loop. Handing back a fresh variable
+    /// with nothing tying it to the container left the element open however the
+    /// field later resolved; this comes back for it once the container settles.
+    ElementOf {
+        container: Type,
+        elem: Type,
         span: Span,
     },
 }

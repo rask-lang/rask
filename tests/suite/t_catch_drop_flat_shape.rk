@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER14a/OPT30: `catch _ => none` drops the error and hands back the success
+// side. On a flat `T? or E` that success side is *already* a `T?`, so it goes
+// straight through — the drop doesn't add a layer.
+//
+// It used to. The checker returned the right type but still flagged the site as
+// "keeps its shape", so both backends re-wrapped: MIR named the local `string??`,
+// native read the inner option's tag as a pointer and segfaulted, and interp
+// handed back the whole Result so `got? as v` bound a Result to `v` (#634).
+//
+// What's covered: the flat shape on all three of its branches (value, absent,
+// error), a plain `T or E` still gaining its layer, an aggregate payload
+// (struct, string) surviving the copy out, and the `??` composite on the same
+// shape staying put.
+//
+// Spec: type.errors (ER14a), type.optionals (OPT30)
+
+enum Oops {
+    Bad(string)
+}
+
+extend Oops {
+    func message(self) -> string {
+        match self {
+            Bad(m) => return "bad: {m}",
+        }
+    }
+}
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+// Flat `T? or E`: three branches — a value, an absence, an error.
+func flat(n: i64) -> string? or Oops {
+    if n < 0 { return Oops.Bad("negative") }
+    if n == 0 { return none }
+    return "v{n}"
+}
+
+// Same shape with an aggregate payload, so the copy out is by address.
+func flat_struct(n: i64) -> Point? or Oops {
+    if n < 0 { return Oops.Bad("negative") }
+    if n == 0 { return none }
+    return Point { x: n, y: n * 2 }
+}
+
+// Plain `T or E` — here the drop genuinely does add the optional layer.
+func plain(n: i64) -> string or Oops {
+    if n < 0 { return Oops.Bad("negative") }
+    return "p{n}"
+}
+
+func describe(n: i64) -> string {
+    let got: string? = flat(n) catch _ => none
+    if got? as v {
+        return "some:{v}"
+    }
+    return "none"
+}
+
+// Without the annotation the checker has to reach the same answer on its own.
+func describe_inferred(n: i64) -> string {
+    let got = flat(n) catch _ => none
+    if got? as v {
+        return "some:{v}"
+    }
+    return "none"
+}
+
+func describe_struct(n: i64) -> string {
+    let got: Point? = flat_struct(n) catch _ => none
+    if got? as p {
+        return "some:{p.x},{p.y}"
+    }
+    return "none"
+}
+
+func describe_plain(n: i64) -> string {
+    let got: string? = plain(n) catch _ => none
+    if got? as v {
+        return "some:{v}"
+    }
+    return "none"
+}
+
+// The `??` side of the family, on the same flat operand.
+func coalesced(n: i64) -> string or Oops {
+    let v = try flat(n) ?? "MISS"
+    return v
+}
+
+func describe_coalesced(n: i64) -> string {
+    return coalesced(n) catch e => "err:{e.message()}"
+}
+
+test "type.errors/ER14a — the drop on a flat `T? or E` keeps one layer" {
+    assert_eq(describe(3), "some:v3")
+    assert_eq(describe(0), "none")
+    assert_eq(describe(-1), "none")
+}
+
+test "type.optionals/OPT30 — the same answer with the type inferred" {
+    assert_eq(describe_inferred(3), "some:v3")
+    assert_eq(describe_inferred(0), "none")
+    assert_eq(describe_inferred(-1), "none")
+}
+
+test "type.errors/ER14a — an aggregate payload copies out intact" {
+    assert_eq(describe_struct(4), "some:4,8")
+    assert_eq(describe_struct(0), "none")
+    assert_eq(describe_struct(-1), "none")
+}
+
+test "type.errors/ER14a — a plain `T or E` still gains the layer" {
+    assert_eq(describe_plain(2), "some:p2")
+    assert_eq(describe_plain(-1), "none")
+}
+
+test "type.errors/ER16b — the `??` composite on the same shape is unchanged" {
+    assert_eq(describe_coalesced(5), "v5")
+    assert_eq(describe_coalesced(0), "MISS")
+    assert_eq(describe_coalesced(-1), "err:bad: negative")
+}
+
+func main() {
+    println(describe(3))
+    println(describe(0))
+    println(describe(-1))
+    println(describe_struct(4))
+    println(describe_plain(2))
+    println(describe_coalesced(0))
+}

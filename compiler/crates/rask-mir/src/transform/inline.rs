@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use crate::analysis::call_graph::CallGraph;
+use crate::operand::MirConst;
 use crate::{
     BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
@@ -714,6 +715,13 @@ fn remap_terminator(
 
 /// Fixup: for each inlined block whose original callee terminator was
 /// Return { value: Some(op) }, insert an Assign to the caller's dst local.
+///
+/// A valueless `return` needs the same treatment when the callee hands back a
+/// Result or Option: the bare form is the success exit of a `void or E` (or the
+/// `none` exit of a `T?`), so the destination still has to be given a tag. Out
+/// of line the return terminator synthesizes one; skipping it here left the
+/// caller branching on whatever the stack slot happened to hold, which read as
+/// Ok only while the stack was still zeroed (#577).
 fn fixup_return_values(
     caller: &mut MirFunction,
     callee: &MirFunction,
@@ -722,25 +730,70 @@ fn fixup_return_values(
     ret_dst: LocalId,
 ) {
     for callee_block in &callee.blocks {
-        let ret_value = match &callee_block.terminator.kind {
-            MirTerminatorKind::Return { value: Some(ref op) } => Some(op),
-            MirTerminatorKind::CleanupReturn { value: Some(ref op), .. } => Some(op),
-            _ => None,
+        let (ret_value, is_return) = match &callee_block.terminator.kind {
+            MirTerminatorKind::Return { value } => (value.as_ref(), true),
+            MirTerminatorKind::CleanupReturn { value, .. } => (value.as_ref(), true),
+            _ => (None, false),
         };
-        if let Some(op) = ret_value {
-            let new_block_id = block_map[&callee_block.id];
-            // Find this block in the caller
-            if let Some(block) = caller.blocks.iter_mut().find(|b| b.id == new_block_id) {
-                let remapped_op = remap_operand(op, local_map);
-                block.statements.push(MirStmt::new(
-                    MirStmtKind::Assign {
-                        dst: ret_dst,
-                        rvalue: MirRValue::Use(remapped_op),
-                    },
-                    callee_block.terminator.span,
-                ));
-            }
+        if !is_return {
+            continue;
         }
+        let new_block_id = block_map[&callee_block.id];
+        let Some(block) = caller.blocks.iter_mut().find(|b| b.id == new_block_id) else {
+            continue;
+        };
+        let span = callee_block.terminator.span;
+
+        if let Some(op) = ret_value {
+            let remapped_op = remap_operand(op, local_map);
+            block.statements.push(MirStmt::new(
+                MirStmtKind::Assign {
+                    dst: ret_dst,
+                    rvalue: MirRValue::Use(remapped_op),
+                },
+                span,
+            ));
+            continue;
+        }
+
+        for (offset, value) in empty_return_stores(&callee.ret_ty) {
+            block.statements.push(MirStmt::new(
+                MirStmtKind::Store {
+                    addr: ret_dst,
+                    offset,
+                    value: MirOperand::Constant(MirConst::Int(value)),
+                    store_size: None,
+                },
+                span,
+            ));
+        }
+    }
+}
+
+/// The (offset, value) stores that spell out what a valueless `return` means
+/// for a Result- or Option-returning callee. These match the slots the return
+/// terminator builds out of line, so inlining a function can't change what it
+/// means. Empty for every other return type, where a bare `return` has nothing
+/// to write.
+///
+/// A bare `return` carries no value, so on the Option side it can only mean
+/// absence. Nothing reaches that arm today — the checker rejects `return` with
+/// no value in a `-> T?` function (E0308) — but if a lowering path ever
+/// produces one, `none` is the only reading of it that isn't a fabricated
+/// payload.
+fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64)> {
+    use rask_mono::abi;
+    match ret_ty {
+        // Ok: tag 0, no origin, zero payload.
+        MirType::Result { .. } => vec![
+            (abi::OPTION_TAG_OFFSET, 0),
+            (abi::RESULT_ORIGIN_FILE_OFFSET, 0),
+            (abi::RESULT_ORIGIN_LINE_OFFSET, 0),
+            (abi::RESULT_PAYLOAD_OFFSET, 0),
+        ],
+        // none: tag 1, payload dead.
+        MirType::Option(_) => vec![(abi::OPTION_TAG_OFFSET, 1)],
+        _ => Vec::new(),
     }
 }
 
@@ -926,6 +979,84 @@ mod tests {
         assert!(main.blocks.len() >= 3, "expected ≥3 blocks, got {}", main.blocks.len());
         // Should have more locals (callee's locals remapped)
         assert!(main.locals.len() > 1, "expected >1 locals, got {}", main.locals.len());
+    }
+
+    /// Inline a callee whose only exit is a valueless `return`, and report the
+    /// (destination, tag) the caller's result slot ends up with — None when
+    /// nothing wrote the tag at all.
+    fn inline_bare_return(ret_ty: MirType) -> Option<(LocalId, i64)> {
+        let callee = MirFunction {
+            name: "check".to_string(),
+            params: vec![],
+            ret_ty: ret_ty.clone(),
+            locals: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+            entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+        let caller = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![make_local(0, "r", ret_ty, false)],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(LocalId(0)),
+                    func: FunctionRef::internal("check".to_string()),
+                    args: vec![],
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+            entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+
+        let mut fns = vec![caller, callee];
+        let _ = inline_functions(&mut fns);
+
+        fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
+            MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
+                if *offset == rask_mono::abi::OPTION_TAG_OFFSET => Some((*addr, *v)),
+            _ => None,
+        })
+    }
+
+    /// #577: a `void or E` callee whose success exit is a bare `return` has to
+    /// leave an Ok tag in the caller's destination. Without it the caller's `try`
+    /// branched on an untouched stack slot — Ok while the stack was still zeroed,
+    /// a spurious error (with a payload nobody wrote) once it wasn't.
+    #[test]
+    fn bare_return_writes_ok_tag() {
+        let found = inline_bare_return(MirType::Result {
+            ok: Box::new(MirType::Void),
+            err: Box::new(MirType::I32),
+        });
+        assert_eq!(
+            found,
+            Some((LocalId(0), 0)),
+            "inlined bare `return` left the caller's Result slot unwritten",
+        );
+    }
+
+    /// A `return` with no value can only mean absence on the Option side, so it
+    /// writes the none tag rather than wrapping a zero as `Some`. Unreachable
+    /// from source — the checker rejects the form — but it has to agree with
+    /// what codegen's empty_return_value builds out of line.
+    #[test]
+    fn bare_return_writes_none_tag() {
+        let found = inline_bare_return(MirType::Option(Box::new(MirType::I32)));
+        assert_eq!(
+            found,
+            Some((LocalId(0), 1)),
+            "inlined bare `return` should leave `none`, not a fabricated Some",
+        );
     }
 
     #[test]

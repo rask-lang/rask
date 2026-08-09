@@ -130,11 +130,6 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
-    /// OPT19: `while expr? as v` — parses and checks, but no backend can lower
-    /// a loop-carried binding yet (#593). Reported here rather than letting the
-    /// resolver blame the binder's name.
-    #[error("`while … ? as {binding}` isn't implemented yet")]
-    WhilePresenceBindingUnsupported { binding: String, span: Span },
     /// OPT32: `take` needs a `T?` place.
     #[error("`take` needs an optional slot, found `{found}`")]
     TakeOnNonOptional { found: Type, span: Span },
@@ -240,6 +235,11 @@ pub enum TypeError {
     },
     #[error("`try` requires a Result or Option type, found {found}")]
     TryOnNonResult {
+        found: Type,
+        span: Span,
+    },
+    #[error("`{found}` can't be iterated")]
+    NotIterable {
         found: Type,
         span: Span,
     },

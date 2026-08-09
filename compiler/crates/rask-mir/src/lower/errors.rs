@@ -597,7 +597,10 @@ impl<'a> MirLowerer<'a> {
                 base: result,
                 field_index: 0,
                 byte_offset: self.payload_byte_offset(&payload_ty),
-                access: FieldAccess::Word,
+                // An aggregate payload — a nested `T?` on the flat shape, a
+                // struct, a string — has to come back as an address to copy
+                // from; a bare word read would take only its first 8 bytes.
+                access: aggregate_payload_access(&payload_ty),
             },
         }));
         // Assigning a bare payload into an option-typed slot is the wrap —

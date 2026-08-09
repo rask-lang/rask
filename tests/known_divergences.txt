@@ -11,13 +11,14 @@
 
 # --- native codegen bugs (interp correct) ---
 t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (A|B) codegen — #375, rask#211 (native)
-t_try_coalesce_diverge.rk # `try X ?? continue` on a nested `T? or E`: native takes the
-                          # continue every time and never sees the hit — #635 (native)
-t_pool_iter_handles.rk    # handles from `for h in pool` are rejected by the same pool on
-                          # native ("pool access with invalid handle"); 4 of its 5 tests
-                          # pass there, only the collect-then-remove one fails — #652 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
+#
+# Pruned 2026-08-08, both fixed and re-verified on native before removing the line:
+#   t_try_coalesce_diverge.rk — #635, which turned out not to be the `continue` at
+#     all: a `return` at the end of any loop body was being discarded.
+#   t_pool_iter_handles.rk    — #652, handles from `for h in pool` rejected by the
+#     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
 # (none right now)

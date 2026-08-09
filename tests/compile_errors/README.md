@@ -20,7 +20,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [type_errors.rk](type_errors.rk) | Implicit bool conversion, narrowing `as`, float comparison, Option no-auto-unwrap, try type mismatch, branch type mismatch, break value types |
 | [cast_rules.rk](cast_rules.rk) | `as` cast rules: narrowing (CV2), sign reinterpret (CV3), float→int (CV4), int→char (CH5), int↔bool (BL3); misused conversion forms (CV5–CV10) |
 | [index_types.rk](index_types.rk) | Index expression types: integer for Vec/slice/string, `K` for Map, `Handle<T>` for Pool; range slicing only on sequences (#310, V1, PL4) |
-| [while_presence_binding.rk](while_presence_binding.rk) | `while … ? as v` — refused at the form because no backend can bind per iteration; the `is` form works (#593, OPT19). Delete when it lands |
+| [not_iterable.rk](not_iterable.rk) | `for` over something with no elements — an integer, a string, a struct (E0827), and an index type check that only reaches a container arrived at through a field (#632) |
 | [implicit_widening_limits.rk](implicit_widening_limits.rk) | The int→int pairs CV1a does *not* make implicit: `u64`→`i64`, `i64`→`u64`, `u32`→`i32`, `u8`→`i8`, and plain narrowing (CV1a, CV2) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |

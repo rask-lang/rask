@@ -86,6 +86,8 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
 pub(super) fn cond_binds_pattern(cond: &Expr) -> bool {
     match &cond.kind {
         ExprKind::IsPattern { .. } => true,
+        // OPT19: `expr? as v` binds too — a bare `expr?` with no binder doesn't.
+        ExprKind::IsPresent { binding: Some(_), .. } => true,
         ExprKind::Binary { op: BinOp::And, left, right } => {
             cond_binds_pattern(left) || cond_binds_pattern(right)
         }
@@ -115,6 +117,17 @@ fn absent_value() -> Value {
         name: "Option".to_string(),
         variant: "None".to_string(),
         fields: vec![],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+/// The present counterpart — an optional holding `payload`.
+fn present_value(payload: Value) -> Value {
+    Value::Enum {
+        name: "Option".to_string(),
+        variant: "Some".to_string(),
+        fields: vec![payload],
         variant_index: 0,
         origin: None,
     }
@@ -290,6 +303,23 @@ impl Interpreter {
                     }
                     None => Ok(false),
                 }
+            }
+            // OPT19: `expr? as v` — present means bind the payload and take the
+            // branch; absent (or an error) means don't.
+            ExprKind::IsPresent { expr: inner, binding: Some(name) } => {
+                let value = self.eval_expr(inner)?;
+                let (present, payload) = match &value {
+                    Value::Enum { variant, fields, .. } => (
+                        matches!(variant.as_str(), "Some" | "Ok"),
+                        fields.first().cloned().unwrap_or(Value::Unit),
+                    ),
+                    // A niche-encoded optional arrives as the payload itself.
+                    other => (true, other.clone()),
+                };
+                if present {
+                    self.env.define(name.clone(), payload);
+                }
+                Ok(present)
             }
             _ => {
                 let value = self.eval_expr(cond)?;
@@ -1752,8 +1782,17 @@ impl Interpreter {
                 // none` is the common one) keeps the shape, so a success goes
                 // back wrapped rather than unwrapped.
                 let keeps_shape = self.fallback_keeps_shape.contains(&expr.id);
+                // `catch _ => none` is the one handler whose own shape differs
+                // from the operand's: a `T or E` in, a `T?` out. Passing the
+                // `Ok(v)` straight back left a Result sitting where the type
+                // said `T?`, and a `T?` annotation then wrapped it a second
+                // time — so `got? as v` bound a Result to `v` (#634).
+                let drop_to_optional = keeps_shape && matches!(clause.body.kind, ExprKind::None);
                 match &val {
                     Value::Enum { variant, fields, .. } => match variant.as_str() {
+                        "Ok" | "Some" if drop_to_optional => Ok(present_value(
+                            fields.first().cloned().unwrap_or(Value::Unit),
+                        )),
                         "Ok" | "Some" if keeps_shape => Ok(val.clone()),
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {

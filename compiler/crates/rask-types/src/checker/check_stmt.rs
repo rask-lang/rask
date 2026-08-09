@@ -3,10 +3,12 @@
 
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::{TypeConstraint, WrapPosition};
 use super::parse_type::parse_type_string;
+use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -14,43 +16,36 @@ use crate::types::Type;
 impl TypeChecker {
     /// Type a `for` binding takes when iterating `iter_ty`.
     ///
-    /// A fresh var is the fallback for iterables whose element type can't be
-    /// read off the type here (ranges, user iterators) — inference pins those
-    /// from the body. `Vec<T>` is spelled out because leaving it a free var
-    /// loses the element's identity: a `Vec<any Trait>` binding then has no
-    /// trait to dispatch against.
-    fn iter_elem_type(&mut self, iter_ty: &Type, span: rask_ast::Span) -> Type {
+    /// The element type is spelled out wherever it can be read off the
+    /// container: leaving it a free var loses the element's identity, and a
+    /// `Vec<any Trait>` binding then has no trait to dispatch against.
+    ///
+    /// Everything else gets a fresh var plus an `ElementOf` constraint — either
+    /// because the container is a field access whose type hasn't resolved yet,
+    /// or because it genuinely can't say (a bare `Range` carries no element
+    /// type, so the body's arithmetic pins the width). The constraint is what
+    /// reports a container that turns out not to be iterable at all.
+    ///
+    /// This is deliberately *not* the `Index` constraint, though both wait on
+    /// the same field to resolve: indexing a container and iterating it don't
+    /// agree on Map or Pool. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
+    /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
+    fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
-        match &resolved {
-            Type::Array { elem, .. } | Type::Slice(elem) => return (**elem).clone(),
-            _ => {}
-        }
-        if self.generic_base_name(&resolved) == Some("Vec") {
-            let args = match &resolved {
-                Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => Some(args),
-                _ => None,
-            };
-            if let Some(crate::types::GenericArg::Type(elem)) = args.and_then(|a| a.first()) {
-                return (**elem).clone();
-            }
-        }
-        // The iterable's own type isn't known yet — `for t in self.tables` waits
-        // on the field, which arrives as a deferred constraint of its own. A bare
-        // fresh variable here never gets tied to the element, so the binding's
-        // type stayed open however the field resolved, and everything downstream
-        // of it went with it. IterElem defers the same way and re-runs once the
-        // container settles (#632); it isn't the Index relation because a Pool
-        // iterates to `Handle<T>` and indexes to `T` (#653).
-        if matches!(resolved, Type::Var(_)) {
-            let elem = self.ctx.fresh_var();
-            self.ctx.add_constraint(TypeConstraint::IterElem {
-                object: iter_ty.clone(),
-                result: elem.clone(),
-                span,
-            });
+        if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
             return elem;
         }
-        self.ctx.fresh_var()
+        let elem = self.ctx.fresh_var();
+        // A field's type is a deferred `HasField`, so the container can still be
+        // unresolved here. Tie the element to it and come back once it settles —
+        // otherwise `for t in self.tables` leaves `t` open forever and every
+        // binding derived from it reports E0361 (#632).
+        self.ctx.add_constraint(TypeConstraint::ElementOf {
+            container: iter_ty.clone(),
+            elem: elem.clone(),
+            span,
+        });
+        elem
     }
 
     // ------------------------------------------------------------------------
@@ -264,21 +259,16 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::While { cond, body, .. } => {
-                // OPT19: `while expr? as v` parses and would check, but nothing
-                // can lower a loop-carried binding — define the name and native
-                // MIR lowering dies on it while the interpreter fails at runtime.
-                // Say so at the form instead of letting the resolver report
-                // `undefined symbol: v`, which blames the binder (#593).
-                if let ExprKind::IsPresent { binding: Some(name), .. } = &cond.kind {
-                    self.errors.push(TypeError::WhilePresenceBindingUnsupported {
-                        binding: name.clone(),
-                        span: stmt.span,
-                    });
-                }
                 let cond_ty = self.infer_expr(cond);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));
                 self.push_scope();
+                // OPT19 on a loop: `while expr? as v` binds the payload for the
+                // body. The test narrows nothing — this is a binding, re-read
+                // once per iteration, exactly as in the `if` form.
+                if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
+                    self.define_local_const(name, payload_ty);
+                }
                 for s in body {
                     self.check_stmt(s);
                 }

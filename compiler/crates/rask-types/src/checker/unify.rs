@@ -5,6 +5,7 @@ use rask_ast::Span;
 
 use super::inference::{TypeConstraint, WrapPosition};
 use super::errors::TypeError;
+use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
@@ -80,7 +81,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
-                    | TypeConstraint::IterElem { .. }
+                    | TypeConstraint::ElementOf { .. }
             ) {
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
@@ -205,17 +206,43 @@ impl TypeChecker {
                 self.resolve_unwrap(value, result, span)
             }
 
-            TypeConstraint::Index { object, result, is_range, span } => {
-                self.resolve_index(object, result, is_range, span)
-            }
-
-            TypeConstraint::IterElem { object, result, span } => {
-                self.resolve_iter_elem(object, result, span)
+            TypeConstraint::Index { object, index, result, is_range, span } => {
+                self.resolve_index(object, index, result, is_range, span)
             }
 
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
             }
+
+            TypeConstraint::ElementOf { container, elem, span } => {
+                self.resolve_element_of(container, elem, span)
+            }
+
+        }
+    }
+
+    /// The element type of an iterated container, once the container is known.
+    fn resolve_element_of(
+        &mut self,
+        container: Type,
+        elem: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&container);
+        if matches!(resolved, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::ElementOf { container, elem, span });
+            return Ok(false);
+        }
+        match self.container_elem_type(&resolved) {
+            ContainerElem::Known(found) => {
+                self.unify(&elem, &found, span)?;
+                Ok(true)
+            }
+            ContainerElem::Deferred => Ok(true),
+            ContainerElem::NotIterable => Err(TypeError::NotIterable {
+                found: self.nameable(&resolved),
+                span,
+            }),
         }
     }
 
@@ -348,48 +375,38 @@ impl TypeChecker {
     fn resolve_index(
         &mut self,
         object: Type,
+        index: Type,
         result: Type,
         is_range: bool,
         span: Span,
     ) -> Result<bool, TypeError> {
         let obj = self.ctx.apply(&object);
-        if let Some(elem) = self.index_result_type(&obj, is_range) {
-            self.unify(&result, &elem, span)?;
-            return Ok(true);
-        }
         if matches!(obj, Type::Var(_)) {
-            self.ctx
-                .add_constraint(TypeConstraint::Index { object, result, is_range, span });
+            self.ctx.add_constraint(TypeConstraint::Index {
+                object,
+                index,
+                result,
+                is_range,
+                span,
+            });
             return Ok(false);
         }
-        // A container that resolved to something with no element type to read —
-        // an unparameterized generic, say. `check_index_types` already reported
-        // whatever was a real error at the index site, so stay quiet here.
-        Ok(false)
-    }
-
-    /// Settle the binding of `for x in object` once the container's shape is
-    /// known. Same deferral as `resolve_index` — a Pool behind a struct field
-    /// only gets its type when that field's own constraint resolves.
-    fn resolve_iter_elem(
-        &mut self,
-        object: Type,
-        result: Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        let obj = self.ctx.apply(&object);
-        if let Some(elem) = self.iter_binding_type(&obj) {
-            self.unify(&result, &elem, span)?;
-            return Ok(true);
-        }
-        if matches!(obj, Type::Var(_)) {
-            self.ctx
-                .add_constraint(TypeConstraint::IterElem { object, result, span });
-            return Ok(false);
-        }
-        // Resolved to something with no element type to read — ranges and user
-        // iterators land here, and inference pins those from the loop body.
-        Ok(false)
+        let progressed = match self.index_result_type(&obj, is_range) {
+            Some(elem) => {
+                self.unify(&result, &elem, span)?;
+                true
+            }
+            // A container with no element type to read — an unparameterized
+            // generic, say. Nothing to say about the result type.
+            None => false,
+        };
+        // #310 polices the *index* type, but it ran at the index site with the
+        // container still a variable, so it classified nothing and a field-reached
+        // index went unchecked — `self.rows["nope"]` on a `Vec<Row>` field passed.
+        // The container is known now, and `validate_pending_index` runs after the
+        // solver, so registering here still lands in time.
+        self.check_index_types(&obj, &index, is_range, span);
+        Ok(progressed)
     }
 
     fn resolve_coalesce(

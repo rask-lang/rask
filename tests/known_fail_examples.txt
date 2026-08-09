@@ -10,12 +10,13 @@
 #
 # Re-measured 2026-08-08 (third pass). Changes this round:
 #   - sensor_processor is ENROLLED — made deterministic rather than documented.
-#   - game_loop stopped compiling entirely (#653) and is fixed; its native
-#     panic (#652) is what's left, which is what the line claimed all along.
 #   - 16_concurrency_basics and 18_resource_types said "native exit 1". Both
 #     die on a signal — SIGABRT and SIGSEGV. "exit 1" reads like a clean
 #     error return and sent me looking in the wrong place.
 #   - 13_string_operations now names its cause (#656) instead of "exit 1".
+#   - grep_clone works. It was never broken; the gate just can't pass it argv.
+#   - game_loop's line is the one measured after #652/#653 landed, not the
+#     panic it carried before them.
 #
 # The lesson keeps repeating: re-measure before trusting a line here. A stale
 # registry reads as "known broken" and nobody rechecks.
@@ -29,10 +30,14 @@
 18_resource_types.rk     # native SIGSEGV (139) in rask_file_read_all — the File value
                          # reaches the runtime as a small integer, not the FILE*. #654
 
-game_loop.rk             # native panics "pool access with invalid handle" at line 187,
-                         # one frame in; interp runs all 300 frames and exits 0. The
-                         # handles come from `for h in state.entities`, and native
-                         # rejects every one of them. #652
+game_loop.rk             # both exit 0, stdout DIVERGES on the entity counts. Re-measured
+                         # 2026-08-08 after #632 (the field-index inference) and the
+                         # native `for h in pool` handle mistyping — it no longer panics
+                         # at line 187, and runs all 300 frames on both. What's left is a
+                         # real disagreement: native reaches Frame 180 with 8 entities
+                         # and 240 with 10, interp has 7 and 9. Score matches (0) on
+                         # both, so it's the spawn/cleanup systems, not scoring. Needs
+                         # its own bisect. PLAN Track 3.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1
@@ -40,7 +45,13 @@ file_copy.rk             # both exit 1
 markdown_renderer.rk     # interp exit 1; native TIMES OUT (>60s)
 package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1
-grep_clone.rk            # both exit 1 (stdin-driven; PLAN validation program)
+
+# --- works, but the gate can't run it ---
+grep_clone.rk            # NOT broken. `rask run examples/grep_clone.rk -- alpha file.txt`
+                         # gives identical correct output on both backends, exit 0. With no
+                         # args it prints usage and exits 1, which is right for a grep and
+                         # is all the gate ever sees. Needs per-example argv to enroll —
+                         # #658. PLAN validation program.
 
 # --- block on stdin / network (not auto-runnable as a golden) ---
 cli_calculator.rk        # reads stdin

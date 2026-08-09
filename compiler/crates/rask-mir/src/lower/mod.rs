@@ -1594,6 +1594,26 @@ impl<'a> MirLowerer<'a> {
         Some((thunk_name, captures))
     }
 
+    /// End of a loop body: run the loop-scoped ensures (EN7) and hand control
+    /// to the next iteration.
+    ///
+    /// A body that already terminated has nothing to hand on. `return` is the
+    /// case that matters: it terminates the block and leaves it that way, so
+    /// terminating again overwrote the `return` with this goto and the value
+    /// was silently thrown away — `for x in xs { return x }` ran the loop out
+    /// and fell through to whatever followed (#635). `break` and `continue`
+    /// leave a fresh dead block behind instead, so they still land here and
+    /// still get their unreachable goto, same as before.
+    fn close_loop_body(&mut self, ensure_depth: usize, next: BlockId) {
+        if !self.builder.current_block_unterminated() {
+            return;
+        }
+        self.emit_loop_cleanup(ensure_depth);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: next,
+        }));
+    }
+
     fn emit_loop_cleanup(&mut self, depth: usize) {
         for i in (depth..self.ensure_stack.len()).rev() {
             let block_id = self.ensure_stack[i];

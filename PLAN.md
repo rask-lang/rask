@@ -11,6 +11,11 @@ has grown from 31 files to 158. **Re-run `tests/differential.sh` and `tests/exam
 write the numbers down before planning off this document.** Every stale claim in here got that way
 because someone read it instead of measuring.
 
+**Last measured 2026-08-08** (at `da34410` plus this round's fixes): `tests/differential.sh`
+**147 green, 19 expected-red, 0 untracked**; `tests/examples_gate.sh` **21 ok, 0 failed, 0 pending**.
+Write your own numbers here when you re-measure — the paragraph below is from July and is kept only
+because its *structure* still holds.
+
 **Where things stand (numbers as of 2026-07-21, structure still current):**
 
 - `rask test-specs` only checks that spec snippets *parse* — weak conformance signal, still true.
@@ -47,39 +52,45 @@ claim nobody re-runs drifts.
 | A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **mostly** — `try` on optionals works and ER47 fires; ER16a (`try` in a postfix chain) is not implemented, split to #647. The flat composite is right on interp and blocked on native by #644. | #598 |
 | A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
 | A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
-| A7 | `while expr? as v` binder never enters scope | **not implemented, and now says so** — E0369 at check time; see below | #593 |
+| A7 | `while expr? as v` binder never enters scope | **done** (2026-08-08) — four layers, see below | #593 |
 | A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
 
-So Track 0 is A7 and A4's remainder (#647). A7 is three layers, not the one the old table implied. The
-resolver's `While` arm never defined the binder (its `If` arm does), so it reported `undefined symbol:
-v` — an error that blames your spelling. Defining it just moves the failure: MIR lowering then dies
-with `unresolved variable v` on native and the interpreter fails at runtime, because neither `while`
-lowering has a notion of a loop-carried binding.
+**Track 0 is closed.** A7 was never the one-line resolver patch the original table implied, and the
+E0369 stopgap that stood here briefly (a hard error at the form, with a negative test) has been
+replaced by the real thing. It took four layers, which is why defining the binder alone made things
+worse: the resolver defines it in the loop scope, the checker gives it the payload type, MIR binds the
+payload at the top of the body, and the interpreter does the same. The route was the one recorded on
+the issue — `while expr is T as v` already lowered exactly that shape, so the `?` form copies it, and
+the payload read is now one helper shared with the `if` form so a loop and a branch can't drift.
 
-Both halves are now in, so the form fails hard and loud at the form itself: the resolver defines the
-binder and the checker rejects the whole shape with **E0369**, before lowering can be reached. One
-error, at check time, on both backends, naming the real gap and the working alternative. Negative
-test in `tests/compile_errors/while_presence_binding.rk` — delete it when A7 lands.
+What the wave left behind, all three now fixed:
 
-The shortest route is probably not the `?` path at all: `while rx.try_receive() is Reading as r`
-already works on both backends (it's what `examples/sensor_processor` drains with), so lowering
-`while expr? as v` the way `while expr is T as v` already lowers is the model to copy.
+- **#634** — `catch _ => none` on a flat `T? or E` gained an optional layer (`string??` in MIR).
+  The checker had the right type but still flagged the site "keeps its shape", which both backends
+  read as "re-wrap"; on a flat shape the success side is already the `T?`.
+- **#635** — retitled, because the `continue` was never the problem. A `return` at the end of *any*
+  loop body was discarded on native: each loop form terminated the body block with "goto next
+  iteration" unconditionally, overwriting the `Return` the body had just put there. `for x in xs
+  { return x }` ran the loop out and fell through.
+- **#632** — a container reached through a field lost its element type, at both the `for` and the
+  index. Fixed twice, independently, and the merge keeps the better half of each: main's bounded
+  retry pass in the solver (a constraint that defers reports no progress, so a substitution landing
+  later in the same pass was thrown away) and this branch's shape modelling, which names every
+  container the language can walk and reports E0827 on one it can't.
 
-What the wave left behind, found by working the corpus rather than the spec:
+Two bugs filed on the way: #650 (`return` out of a `for mutate` body skips that iteration's
+writeback — both backends) and a native `for h in pool` mistyping fixed here, which had the loop
+binding taking the pool's *value* type instead of `Handle<T>`.
 
-- **#634** — `catch _ => none` on a flat `T? or E` gains an optional layer (`string??` in MIR). Native
-  segfaults on it; interp reports a Result where a string belongs. The `??` side of that shape is
-  handled (`flat_try_sites`); `catch` didn't get the equivalent.
-- **#635** — `try X ?? continue` on a nested `T? or E` answers wrong on native: it takes the
-  `continue` every time. Interp is right. This is the composite `examples/tiered_store.rk` uses.
-- **#644** — one layer under #634/#635: a function returning `T? or E` segfaults on native the moment
-  it returns a bare payload, because MIR never wraps it (`return 5` where `return none` and
-  `return <error>` both build a tagged value). Every composite over that shape inherits the crash
-  from its callee, which is what makes #635 present at the `try` site.
+Still open from the same sweep, neither part of the error family but both filed against it:
+
+- **#647** — ER16a is unimplemented: `try f().len()` parses as `try (f().len())` instead of
+  `(try f()).len()`, then errors that the wrapper has no method. The message is correct on its own
+  terms, which is what makes it confusing — nothing hints the fix is moving the implied parens.
 - **#642** — a string literal inside an interpolation hole ends the outer string early, and the
-  leftovers can re-parse as a comparison chain — so `println("hit: {r ?? "<none>"}")` prints `false`
-  on native and exits 0. Not part of the error family, but it will waste the time of anyone
-  debugging it, because the wrong value comes from the line you added to observe the bug.
+  leftovers can re-parse as a comparison chain, so `println("hit: {r ?? "<none>"}")` prints `false`
+  on native and exits 0. It will waste the time of anyone debugging anything, because the wrong
+  value comes from the line you added to observe the bug.
 
 Every rule above needs a conformance test tagged with the rule it witnesses — positive in
 `tests/suite/`, negative in `tests/compile_errors/`. That's what keeps this delta from recurring.

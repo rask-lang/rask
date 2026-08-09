@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container reached through a field gives up its element type.
+//
+// A field's type arrives as a deferred `HasField` constraint, so at a `for` over
+// it — or an index into it — the container is still an unresolved variable. Both
+// sites handed back a fresh type variable with nothing tying it to the
+// container, so the element type stayed open however the field later resolved.
+// The same loop or index on a *local* worked, which is what made it look
+// arbitrary (#632):
+//
+//     let direct = pool[h]           // fine
+//     let viafield = w.entities[h]   // E0361: couldn't work out the type
+//
+// Both now register a constraint that re-runs once the container settles, the
+// same shape the `!` fix in #620 used.
+//
+// Also covered here: `for h in pool` iterates the *handle* snapshot
+// (mem.pools/PF1-PF4). Native typed the binding as the pool's value type
+// instead, so it read each 8-byte handle as an element struct and `pool[h]`
+// panicked with "pool access with invalid handle". `for h in pool.handles()`
+// always worked, which is why nothing caught it.
+//
+// Spec: type.gradual (inference), mem.pools (PF1-PF4)
+
+struct Entity {
+    public hp: i64
+    public active: bool
+}
+
+struct Row {
+    public key: string
+    public n: i64
+}
+
+struct World {
+    entities: Pool<Entity>
+    rows: Vec<Row>
+    index: Map<string, i64>
+}
+
+extend World {
+    // for over a Vec field
+    func total_n(self) -> i64 {
+        mut total = 0
+        for r in self.rows {
+            total = total + r.n
+        }
+        return total
+    }
+
+    // for over a Vec field, with a method call on the element
+    func keys_joined(self) -> string {
+        mut out = ""
+        for r in self.rows {
+            out = "{out}{r.key.to_uppercase()}/"
+        }
+        return out
+    }
+
+    // index into a Vec field, bare binding
+    func row_at(self, i: u64) -> string {
+        let r = self.rows[i]
+        return r.key
+    }
+
+    // index into a Map field, bare binding
+    func lookup(self, k: string) -> i64 {
+        let v = self.index[k]
+        return v
+    }
+
+    // for over a Pool field — yields handles
+    func count_active(self) -> i64 {
+        mut n = 0
+        for h in self.entities {
+            if self.entities[h].active {
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    // index into a Pool field, bare binding — the exact shape #632 reported
+    func first_hp(self) -> i64 {
+        for h in self.entities {
+            let e = self.entities[h]
+            return e.hp
+        }
+        return -1
+    }
+}
+
+// The same two loops over locals — the shapes that always worked.
+func local_pool_active() -> i64 {
+    mut p: Pool<Entity> = Pool.new()
+    let a = p.insert(Entity { hp: 10, active: true })
+    let b = p.insert(Entity { hp: 20, active: false })
+    let c = p.insert(Entity { hp: 30, active: true })
+    mut n = 0
+    for h in p {
+        if p[h].active {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+func local_pool_via_handles() -> i64 {
+    mut p: Pool<Entity> = Pool.new()
+    let a = p.insert(Entity { hp: 10, active: true })
+    let b = p.insert(Entity { hp: 20, active: false })
+    mut total = 0
+    for h in p.handles() {
+        total = total + p[h].hp
+    }
+    return total
+}
+
+func build() -> World {
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(Row { key: "a", n: 1 })
+    rows.push(Row { key: "b", n: 2 })
+
+    mut index: Map<string, i64> = Map.new()
+    index.insert("a", 10)
+    index.insert("b", 20)
+
+    mut entities: Pool<Entity> = Pool.new()
+    let e1 = entities.insert(Entity { hp: 5, active: true })
+    let e2 = entities.insert(Entity { hp: 7, active: false })
+    let e3 = entities.insert(Entity { hp: 9, active: true })
+
+    return World { entities: entities, rows: rows, index: index }
+}
+
+test "type.gradual — a `for` over a Vec field knows its element type" {
+    let w = build()
+    assert_eq(w.total_n(), 3)
+    assert_eq(w.keys_joined(), "A/B/")
+}
+
+test "type.gradual — indexing a Vec or Map field into a bare binding" {
+    let w = build()
+    assert_eq(w.row_at(1), "b")
+    assert_eq(w.lookup("b"), 20)
+}
+
+test "mem.pools/PF1 — `for h in pool` over a field yields handles" {
+    let w = build()
+    assert_eq(w.count_active(), 2)
+    assert_eq(w.first_hp(), 5)
+}
+
+test "mem.pools/PF1 — `for h in pool` over a local yields handles too" {
+    assert_eq(local_pool_active(), 2)
+    assert_eq(local_pool_via_handles(), 30)
+}
+
+func main() {
+    let w = build()
+    println("{w.total_n()}")
+    println(w.keys_joined())
+    println("{w.count_active()}")
+    println("{local_pool_active()}")
+}

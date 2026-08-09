@@ -1,0 +1,4 @@
+epsilon = 5
+alpha = 1
+omega is absent
+omega failed: corrupt table L0-0: bad row not-a-row
