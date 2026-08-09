@@ -10,6 +10,12 @@
 # different from interp is a FAILURE — an exit-0-but-wrong miscompile fails here.
 #
 # Adding tests/golden/<name>.out (for examples/<name>.rk) auto-enrolls it.
+#
+# An example that needs command-line arguments gets tests/golden/<name>.args:
+# one argv per line, blank and #-comment lines ignored, each line run in order
+# with stdout concatenated into the single golden. That's how a CLI example
+# covers its flags without needing a golden per invocation. Paths in .args are
+# relative to the repo root; put input files under tests/fixtures/.
 # Examples that currently fail natively (10_enums prints nothing, sensor_processor
 # generic-layout miscompile #272, etc.) have no golden yet and are listed, with
 # their tracking issue, in tests/known_fail_examples.txt — regenerate their
@@ -55,15 +61,40 @@ JOBS="${GATE_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Run every invocation for an example on one backend, concatenating stdout.
+# With no .args file that's a single bare run, which is what most examples are.
+# Otherwise each line of the .args file is one argv, so a CLI example can cover
+# its flags in a single golden. Paths inside .args are relative to the repo
+# root, and the runs happen there so a fixture path means the same thing on
+# both backends.
+run_backend() {
+    src="$1"
+    backend="$2"
+    argsfile="$3"
+    if [ ! -f "$argsfile" ]; then
+        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" 2>/dev/null)
+        return $?
+    fi
+    rc=0
+    while IFS= read -r argv || [ -n "$argv" ]; do
+        case "$argv" in ''|\#*) continue ;; esac
+        # Word-split argv on purpose: the file holds a command line.
+        # shellcheck disable=SC2086
+        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" -- $argv 2>/dev/null) || rc=$?
+    done < "$argsfile"
+    return $rc
+}
+
 run_one() {
     golden="$1"
     name="$(basename "$golden" .out)"
     src="$EXAMPLES_DIR/$name.rk"
     [ -f "$src" ] || { printf 'MISSINGSRC\n' > "$WORK/$name.res"; return; }
     want="$(cat "$golden")"
+    argsfile="$GOLDEN_DIR/$name.args"
 
-    iout="$(timeout 60 "$RASK" run --interp "$src" 2>/dev/null)"; ic=$?
-    nout="$(timeout 60 "$RASK" run --native "$src" 2>/dev/null)"; nc=$?
+    iout="$(run_backend "$src" --interp "$argsfile")"; ic=$?
+    nout="$(run_backend "$src" --native "$argsfile")"; nc=$?
 
     bad=""
     [ "$ic" -ne 0 ] && bad="$bad interp-exit=$ic"
@@ -77,8 +108,8 @@ run_one() {
         diff <(printf '%s' "$want") <(printf '%s' "$nout") | head -8 | sed 's/^/    /' > "$WORK/$name.diff"
     fi
 }
-export -f run_one
-export RASK WORK EXAMPLES_DIR
+export -f run_one run_backend
+export RASK WORK EXAMPLES_DIR GOLDEN_DIR ROOT
 
 find "$GOLDEN_DIR" -maxdepth 1 -name '*.out' -print0 \
     | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}

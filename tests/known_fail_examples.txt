@@ -37,13 +37,6 @@ markdown_renderer.rk     # interp exit 1; native TIMES OUT (>60s)
 package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1
 
-# --- works, but the gate can't run it ---
-grep_clone.rk            # NOT broken. `rask run examples/grep_clone.rk -- alpha file.txt`
-                         # gives identical correct output on both backends, exit 0. With no
-                         # args it prints usage and exits 1, which is right for a grep and
-                         # is all the gate ever sees. Needs per-example argv to enroll —
-                         # #658. PLAN validation program.
-
 # --- block on stdin / network (not auto-runnable as a golden) ---
 cli_calculator.rk        # reads stdin
 http_api_server.rk       # http.serve; PLAN Track 3 validation program

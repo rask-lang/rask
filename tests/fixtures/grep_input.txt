@@ -1,0 +1,6 @@
+alpha the first line
+beta the second line
+ALPHA shouting in caps
+gamma the fourth line
+alpha again near the end
+delta closes it out

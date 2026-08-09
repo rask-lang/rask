@@ -1,0 +1,6 @@
+# One invocation per line; stdout is concatenated in this order.
+# Paths are relative to the repo root.
+alpha tests/fixtures/grep_input.txt
+-n -i alpha tests/fixtures/grep_input.txt
+-c alpha tests/fixtures/grep_input.txt
+-v alpha tests/fixtures/grep_input.txt
