@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
-use crate::value::{ModuleKind, PoolData, ThreadHandleInner, Value};
+use crate::value::{FloatKind, ModuleKind, PoolData, ThreadHandleInner, Value};
 
 /// Construct a minimal dummy value for a given type name.
 /// Only needs to route to the right dispatch — doesn't need valid data.
@@ -19,7 +19,7 @@ fn dummy_value(type_name: &str) -> Value {
         "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => Value::int(0),
         "i128" => Value::Int128(0),
         "u128" => Value::Uint128(0),
-        "f64" => Value::Float(0.0),
+        "f64" => Value::Float(0.0, FloatKind::F64),
         "bool" => Value::Bool(false),
         "char" => Value::Char('a'),
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
