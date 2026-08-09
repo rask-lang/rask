@@ -1135,6 +1135,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Cell_data", "rask_cell_get", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_data", "rask_shared_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),

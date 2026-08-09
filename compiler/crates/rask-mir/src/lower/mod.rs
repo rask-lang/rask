@@ -461,6 +461,13 @@ impl<'a> MirContext<'a> {
                 {
                     return MirType::Ptr;
                 }
+                // Runtime handles (fds, opaque pointers) before the struct
+                // lookup: their stubs declare a field-less struct, and a
+                // struct-typed local makes codegen hand back the address of
+                // the payload instead of the handle in it.
+                if rask_stdlib::registry::is_runtime_handle(name) {
+                    return MirType::I64;
+                }
                 // A nominal newtype has no layout — it is whatever it wraps.
                 if let Some(underlying) = self.nominal_underlying.get(name) {
                     if underlying != name {

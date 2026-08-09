@@ -290,6 +290,13 @@ int64_t rask_shared_write_acquire(int64_t shared) {
     return (int64_t)(intptr_t)s->data;
 }
 
+// The payload's address without touching the lock — the Shared counterpart of
+// rask_mutex_data. Only ever called while the lock is held.
+int64_t rask_shared_data(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    return (int64_t)(intptr_t)s->data;
+}
+
 void rask_shared_release(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     pthread_rwlock_unlock(&s->lock);

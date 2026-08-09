@@ -11,6 +11,30 @@
 //! Separate from the spec MethodDefs in types.rs — the spec defines
 //! the planned API, this tracks what's implemented today.
 
+/// Stdlib types whose values are an opaque 8-byte handle from the runtime —
+/// a file descriptor, a pointer, or a table index.
+///
+/// Their stub files declare a `struct` so `extend` blocks have something to
+/// hang methods on, but the struct has no Rask-level fields. Treating one as
+/// an aggregate makes every value a pointer to a zero-byte payload, so a
+/// handle read out of a `T or E` comes back as the address of the result slot
+/// instead of the descriptor inside it.
+pub const RUNTIME_HANDLE_TYPES: &[&str] = &[
+    "TcpListener", "TcpConnection",
+    "File", "Metadata",
+    "ThreadHandle", "TaskHandle", "ThreadPool", "MultitaskingRuntime",
+    "Sender", "Receiver",
+    "Random", "Iterator", "StringBuilder",
+    "Instant",
+];
+
+/// True for a runtime handle type. Accepts a generic spelling
+/// (`TaskHandle<i64>`) as well as the bare name.
+pub fn is_runtime_handle(name: &str) -> bool {
+    let base = name.split('<').next().unwrap_or(name).trim();
+    RUNTIME_HANDLE_TYPES.contains(&base)
+}
+
 /// Where a stdlib type or module lives in the compilation pipeline.
 ///
 /// - `Runtime`: needs OS access — implemented in the C runtime
