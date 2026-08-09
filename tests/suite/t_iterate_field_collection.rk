@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A for-loop over a field-held collection infers its element type (#632).
+//
+// Same gap as indexing through a field: the field's type arrives as a deferred
+// constraint, so at the loop the iterable is still an unresolved variable and the
+// binding got a fresh one with nothing tying it to the element. That stayed open
+// however the field resolved, and everything reached through the binding went
+// with it — which is what stopped `examples/tiered_store` from type-checking.
+
+enum StoreError {
+    Broken
+}
+
+extend StoreError {
+    func message(self) -> string {
+        return "broken"
+    }
+}
+
+struct Item {
+    n: i64
+}
+
+extend Item {
+    func plain(self) -> i64? {
+        if self.n > 0 {
+            return self.n
+        }
+        return none
+    }
+
+    // The nested shape: `T? or E`. `try` strips the error, `??` the absence.
+    func lookup(self) -> string? or StoreError {
+        if self.n < 0 {
+            return StoreError.Broken
+        }
+        if self.n == 0 {
+            return none
+        }
+        return "v{self.n}"
+    }
+}
+
+struct Bag {
+    items: Vec<Item>
+    labels: Vec<string>
+}
+
+extend Bag {
+    func sum_plain(self) -> i64 {
+        mut total: i64 = 0
+        for it in self.items {
+            let v = it.plain() ?? continue
+            total += v
+        }
+        return total
+    }
+
+    // `try … ?? continue` on a field-held collection: the shape from
+    // examples/tiered_store's `get`. The element's own method answers the nested
+    // `T? or E`, which is the part that needed both waits — `try` strips the
+    // error, `continue` contributes no type, so only the loop variable can say
+    // what this is. The outer return is deliberately flat: `catch _ => none` on
+    // a `T? or E` gains an optional layer it shouldn't (#634), which would
+    // otherwise be the thing failing here rather than the inference.
+    func first_hit(self) -> string or StoreError {
+        for it in self.items {
+            let v = try it.lookup() ?? continue
+            return v
+        }
+        return "MISS"
+    }
+
+    func joined(self) -> string {
+        mut out = ""
+        for l in self.labels {
+            out = "{out}{l}."
+        }
+        return out
+    }
+
+    func count_positive(self) -> i64 {
+        mut n: i64 = 0
+        for it in self.items {
+            if it.n > 0 {
+                n += 1
+            }
+        }
+        return n
+    }
+}
+
+func build() -> Bag {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { n: 0 })
+    items.push(Item { n: 3 })
+    items.push(Item { n: 4 })
+
+    mut labels: Vec<string> = Vec.new()
+    labels.push("a")
+    labels.push("b")
+
+    return Bag { items: items, labels: labels }
+}
+
+test "stdlib.collections — a method on the loop variable resolves" {
+    assert build().count_positive() == 2
+}
+
+test "stdlib.collections — a string element keeps its type" {
+    assert build().joined() == "a.b."
+}
+
+test "type.optionals — `?? continue` on a field-held collection's element" {
+    assert build().sum_plain() == 7
+}

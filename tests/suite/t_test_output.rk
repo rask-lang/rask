@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `println` in a test body reaches the terminal on both backends (#612).
+//
+// It used to be dropped entirely under `rask test` and written straight out
+// under `rask test --interp`, ahead of the harness banner. So any suite file
+// with a print in it diverged by construction and failed the parity gate for a
+// reason unrelated to what it was testing. This file exists to keep that fixed:
+// it prints, so it can only stay green while both backends agree.
+
+test "std.testing — a print in a test body shows up" {
+    println("one line from the body")
+    assert true
+}
+
+test "std.testing — several prints keep their order" {
+    println("first")
+    println("second")
+    println("third")
+    assert true
+}
+
+test "std.testing — print and interpolation together" {
+    let n = 7
+    let name = "seven"
+    println("n={n} name={name}")
+    assert n == 7
+}
+
+test "std.testing — a test that prints nothing is unaffected" {
+    assert 1 + 1 == 2
+}
+
+test "std.testing — print inside a loop" {
+    mut i: i64 = 0
+    while i < 3 {
+        println("i={i}")
+        i += 1
+    }
+    assert i == 3
+}

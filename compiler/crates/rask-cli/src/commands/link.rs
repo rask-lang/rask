@@ -286,6 +286,16 @@ pub fn link_executable_with(
     for obj in &opts.objects {
         cmd.arg(obj);
     }
+    // Escape hatch for investigating a runtime-level bug: the runtime sources are
+    // compiled here, so there was otherwise no way to get a sanitizer into a
+    // Rask binary. `RASK_EXTRA_CFLAGS="-fsanitize=address -g"` is what #577's
+    // heap corruption needs, and the same door serves -fsanitize=undefined,
+    // coverage flags, or a one-off -D.
+    if let Ok(extra) = std::env::var("RASK_EXTRA_CFLAGS") {
+        for flag in extra.split_whitespace() {
+            cmd.arg(flag);
+        }
+    }
     cmd.args(["-o", bin_path]);
     for flag in &config.link_flags {
         cmd.arg(flag);
