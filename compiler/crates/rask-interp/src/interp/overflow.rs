@@ -305,7 +305,7 @@ fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
 /// CV8/CV9/CV10: float → int, truncating toward zero.
 fn float_to_int(val: Value, target: &str, saturating: bool, optional: bool) -> Result<Value, RuntimeError> {
     let f = match val {
-        Value::Float(f) => f,
+        Value::Float(f, _) => f,
         other => return Err(RuntimeError::TypeError(
             format!("`float to int` needs a float, found {}", other.type_name()))),
     };

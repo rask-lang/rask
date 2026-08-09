@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{IteratorState, Value};
+use crate::value::{FloatKind, IteratorState, Value};
 
 impl Interpreter {
     /// Handle string method calls.
@@ -176,7 +176,8 @@ impl Interpreter {
                 let text = s.lock().unwrap().trim().to_string();
                 let (parsed, what) = if matches!(target.as_str(), "f32" | "f64") {
                     (text.parse::<f64>().ok().map(|f| {
-                        if target == "f32" { Value::Float(f as f32 as f64) } else { Value::Float(f) }
+                        let k = FloatKind::from_name(&target).unwrap_or(FloatKind::F64);
+                        Value::Float(k.round(f), k)
                     }), "float")
                 } else {
                     (text.parse::<i64>().ok().map(Value::int), "integer")
@@ -237,7 +238,7 @@ impl Interpreter {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::Float(n)],
+                        fields: vec![Value::Float(n, FloatKind::Untyped)],
                         variant_index: 0, origin: None,
                     }),
                     Err(_) => Ok(Value::Enum {

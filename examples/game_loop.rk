@@ -60,6 +60,10 @@ struct GameState {
     player: Handle<Entity>?
     score: i32
     game_over: bool
+    // Seeded so a run is reproducible. Enemy spawn positions decide which
+    // collisions happen, so an unseeded RNG makes the entity counts — and the
+    // score — different every run, on either backend.
+    rng: Random
 }
 
 extend GameState {
@@ -81,6 +85,7 @@ extend GameState {
             player: player_handle,
             score: 0,
             game_over: false,
+            rng: Random.from_seed(20260809),
         }
     }
 
@@ -199,11 +204,10 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
     let spawn_interval = 2.0f32
 
     if time_since_last_spawn >= spawn_interval {
-        // Spawn enemy at right edge with random y. random.range returns i64,
-        // which widens to f32 losslessly here — random.f32()/f64() both
-        // return f64 (stdlib convention), and there's no `as` conversion
-        // that narrows f64 to f32.
-        let y = random.range(50, 550) as f32
+        // Spawn enemy at right edge with random y. range() returns i64, which
+        // widens to f32 losslessly here — f32()/f64() both return f64 (stdlib
+        // convention), and there's no `as` conversion that narrows f64 to f32.
+        let y = state.rng.range(50, 550) as f32
         let _ = state.spawn_enemy(850.0f32, y)
         return 0.0f32  // Reset timer
     } else {
@@ -248,7 +252,7 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
     let _ = num_threads
     mut handles = entities.handles()
     for i in 0..handles.len() {
-        let h = handles[i as i64]
+        let h = handles[i]
         if !entities[h].active: continue
         entities[h].position.x += entities[h].velocity.dx * dt
         entities[h].position.y += entities[h].velocity.dy * dt

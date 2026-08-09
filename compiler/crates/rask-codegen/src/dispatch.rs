@@ -40,6 +40,10 @@ pub enum ArgAdapt {
     WrapArg1And2,
     /// Inject 16-byte string out-param as first arg
     StringOutParam,
+    /// Same, but the call also returns a 0/1 status that becomes the
+    /// `string or E` tag. The string goes to a scratch slot rather than to
+    /// dst, because dst is the Result and the string is only its payload.
+    StringResultOutParam,
     /// Copy 16 bytes to dst then RC inc (string_clone/string_to_owned)
     StringClone,
     /// In-place string mutation: out-param IS the self string
@@ -787,8 +791,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── IO module ───────────────────────────────────────────
         StdlibEntry {
             mir_name: "io_read_line", c_name: "rask_io_read_line",
-            params: &[types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
         // ── FS module ───────────────────────────────────────────

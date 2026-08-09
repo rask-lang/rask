@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{map_entries_seeded, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value};
+use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value};
 
 /// Helper function to check if a value is truthy.
 fn is_truthy(val: &Value) -> bool {
@@ -473,7 +473,7 @@ impl Interpreter {
                                 sum += n;
                             }
                         }
-                        Value::Float(f) => {
+                        Value::Float(f, _) => {
                             if !is_float {
                                 float_sum = sum as f64 + f;
                                 is_float = true;
@@ -490,7 +490,7 @@ impl Interpreter {
                     }
                 }
                 if is_float {
-                    Ok(Value::Float(float_sum))
+                    Ok(Value::Float(float_sum, FloatKind::Untyped))
                 } else {
                     Ok(Value::int(sum))
                 }

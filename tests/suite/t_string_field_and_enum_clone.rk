@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Native codegen: writing a string into a field, and cloning an enum that
+// carries one. Both were silently wrong on native only — found by running
+// text_editor, where they showed up as edits storing empty text and redo
+// trapping on an out-of-range tag.
+
+struct Line {
+    text: string
+}
+
+enum Cmd {
+    Insert(at: i32, text: string),
+    Modify(at: i32, old: string, new: string),
+}
+
+func describe(c: Cmd) -> string {
+    match c {
+        Insert(at, text) => return "Insert@{at}:{text}",
+        Modify(at, old, new) => return "Modify@{at}:{old}->{new}",
+    }
+}
+
+test "a string literal assigned to a struct field" {
+    mut s = Line { text: "orig" }
+    s.text = "replaced"
+    assert s.text == "replaced"
+}
+
+test "a string literal assigned through a Vec element" {
+    mut v: Vec<Line> = Vec.new()
+    v.push(Line { text: "orig" })
+    v[0].text = "replaced"
+    assert v[0].text == "replaced"
+}
+
+test "a string literal assigned through a Pool handle" {
+    mut p: Pool<Line> = Pool.new()
+    let h = p.insert(Line { text: "orig" })
+    p[h].text = "replaced"
+    assert p[h].text == "replaced"
+}
+
+test "reading a field before overwriting it keeps the old value" {
+    mut p: Pool<Line> = Pool.new()
+    let h = p.insert(Line { text: "before" })
+    let old = p[h].text
+    p[h].text = "after"
+    assert old == "before"
+    assert p[h].text == "after"
+}
+
+test "cloning an enum that carries strings" {
+    let a = Cmd.Modify(at: 2, old: "a", new: "b")
+    let c = a.clone()
+    assert describe(c) == "Modify@2:a->b"
+    // the original is untouched
+    assert describe(a) == "Modify@2:a->b"
+}
+
+test "clone survives a round trip through a Vec" {
+    mut stack: Vec<Cmd> = Vec.new()
+    stack.push(Cmd.Insert(at: 1, text: "hello"))
+    stack.push(Cmd.Modify(at: 2, old: "x", new: "y"))
+
+    let top = stack.pop()!
+    assert describe(top) == "Modify@2:x->y"
+
+    stack.push(top.clone())
+    let again = stack.pop()!
+    assert describe(again) == "Modify@2:x->y"
+
+    let bottom = stack.pop()!
+    assert describe(bottom) == "Insert@1:hello"
+}
+
+test "a sliced Vec<string> joins as strings, not as numbers" {
+    mut parts: Vec<string> = Vec.new()
+    for p in "i 0 first line".split_whitespace() {
+        parts.push(p.to_string())
+    }
+    assert parts[2..].join(" ") == "first line"
+    assert parts.join(",") == "i,0,first,line"
+}

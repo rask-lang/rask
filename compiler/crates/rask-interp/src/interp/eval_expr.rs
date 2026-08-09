@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{MapKey, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -29,7 +29,7 @@ fn value_is_copy_scalar(v: &Value) -> bool {
         Value::Int(..)
             | Value::Int128(_)
             | Value::Uint128(_)
-            | Value::Float(_)
+            | Value::Float(_, _)
             | Value::Bool(_)
             | Value::Char(_)
             | Value::Unit
@@ -55,7 +55,8 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
             "NAN" => f64::NAN,
             _ => return None,
         };
-        return Some(Value::Float(v));
+        let kind = FloatKind::from_name(type_name).unwrap_or(FloatKind::Untyped);
+        return Some(Value::Float(kind.round(v), kind));
     }
     let (min, max, kind) = match type_name {
         "i8" => (i8::MIN as i64, i8::MAX as i64, IntKind::I8),
@@ -455,7 +456,22 @@ impl Interpreter {
                 };
                 Ok(Value::Int(*n, kind))
             }
-            ExprKind::Float(n, _) => Ok(Value::Float(*n)),
+            // Same as the integer literal above: the suffix wins, otherwise
+            // take the width the checker inferred. This is where a float's
+            // width first attaches to a value.
+            ExprKind::Float(n, suffix) => {
+                use rask_ast::token::FloatSuffix;
+                let kind = match suffix {
+                    Some(FloatSuffix::F32) => FloatKind::F32,
+                    Some(FloatSuffix::F64) => FloatKind::F64,
+                    None => self
+                        .node_types
+                        .get(&expr.id)
+                        .map(FloatKind::from_type)
+                        .unwrap_or(FloatKind::Untyped),
+                };
+                Ok(Value::Float(kind.round(*n), kind))
+            }
             // A plain string is literal text. It used to be re-scanned for
             // `{...}` at runtime, which broke escapes: `"{{braces}}"` desugars
             // to the literal `{braces}`, and the re-scan read that back as an
@@ -922,7 +938,7 @@ impl Interpreter {
                         Value::Int(n, kind) => super::overflow::checked_neg(kind, n)
                             .map(|v| Value::Int(v, kind))
                             .map_err(|e| RuntimeDiagnostic::new(e, expr.span)),
-                        Value::Float(n) => Ok(Value::Float(-n)),
+                        Value::Float(n, k) => Ok(Value::Float(-n, k)),
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
                                 "- requires number, got {}",
@@ -1915,9 +1931,9 @@ impl Interpreter {
                     // result has to go through f32 — keeping full i64 precision
                     // here made the interpreter answer 16777217 where native
                     // (which really has an f32) answered 16777216 (#334).
-                    (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64)),
-                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64)),
-                    (Value::Float(n), t @ ("i64" | "i32" | "int" | "i16" | "i8"
+                    (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
+                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Float(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n as i64), kind))
@@ -1930,7 +1946,7 @@ impl Interpreter {
                     (Value::Int(n, _), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
-                    (Value::Float(n), "string") => {
+                    (Value::Float(n, _), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8" | "u64" | "usize") => {
@@ -1944,22 +1960,29 @@ impl Interpreter {
                     (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
-                    (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
-                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
+                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
                     (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64)),
-                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
+                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
                     (Value::Uint128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
-                    (Value::Float(n), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Float(n), "u128") => Ok(Value::Uint128(n as u128)),
+                    (Value::Float(n, _), "i128") => Ok(Value::Int128(n as i128)),
+                    (Value::Float(n, _), "u128") => Ok(Value::Uint128(n as u128)),
+                    // float → float: retag, and round if the target is
+                    // narrower. Without this the cast fell through the
+                    // catch-all below and kept the source's width.
+                    (Value::Float(n, _), t @ ("f32" | "f64" | "float")) => {
+                        let k = FloatKind::from_name(t).unwrap_or(FloatKind::F64);
+                        Ok(Value::Float(k.round(n), k))
+                    }
                     // E18: fieldless enum to integer cast
                     (Value::Enum { name, variant, fields, variant_index, .. }, target)
                         if fields.is_empty()

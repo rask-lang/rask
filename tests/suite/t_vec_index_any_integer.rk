@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// V8: a position or count argument takes any integer type, not just i64.
+//
+// `v[i]` always accepted any integer, but the method spelling `v.get(i)` was
+// pinned to i64. Since `len()` answers usize (V9) and usize -> i64 is the one
+// int->int pair CV1a refuses, `for i in 0..v.len() { v.get(i) }` — the most
+// ordinary loop there is — did not compile.
+
+test "get by the type len() returns" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    mut sum = 0
+    for i in 0..v.len() {
+        sum = sum + v.get(i)!
+    }
+    assert sum == 60
+}
+
+test "get by every integer width" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    let a: i64 = 0
+    let b: i32 = 1
+    let c: u64 = 2
+    assert v.get(a)! == 10
+    assert v.get(b)! == 20
+    assert v.get(c)! == 30
+    assert v.get(0)! == 10
+}
+
+test "index-taking mutators take any integer" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    let i: u64 = 0
+    v.set(i, 99)
+    assert v.get(0)! == 99
+
+    v.insert(i, 55)
+    assert v.get(0)! == 55
+    assert v.get(1)! == 99
+
+    let removed = v.remove(i)
+    assert removed == 55
+    assert v.get(0)! == 99
+}
+
+test "an out-of-range count answers none, it does not wrap" {
+    mut v = Vec.new()
+    v.push(1)
+
+    assert v.get(v.len() + 5) is none
+}

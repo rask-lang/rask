@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{IteratorState, Value};
+use crate::value::{FloatKind, IteratorState, Value};
 
 fn is_truthy(val: &Value) -> bool {
     match val {
@@ -398,7 +398,7 @@ impl Interpreter {
                         Some(Value::Int(n, _)) => {
                             if is_float { ftotal += n as f64; } else { total += n; }
                         }
-                        Some(Value::Float(n)) => {
+                        Some(Value::Float(n, _)) => {
                             if !is_float { ftotal = total as f64; is_float = true; }
                             ftotal += n;
                         }
@@ -406,7 +406,7 @@ impl Interpreter {
                         None => break,
                     }
                 }
-                if is_float { Ok(Value::Float(ftotal)) } else { Ok(Value::int(total)) }
+                if is_float { Ok(Value::Float(ftotal, FloatKind::Untyped)) } else { Ok(Value::int(total)) }
             }
             "to_vec" => {
                 // Alias for collect

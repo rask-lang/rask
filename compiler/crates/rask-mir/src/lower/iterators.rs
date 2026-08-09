@@ -130,6 +130,23 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
+        // `map.values()` / `map.keys()` are expression-scoped iterators
+        // (std.collections), so the checker types them `Iterator<T>` and none
+        // of the tests above match. They still lower to a call that hands back
+        // a Vec, which is exactly what the fused loop indexes — so they are a
+        // source. Without this `m.values().map(f).collect()` fell through to
+        // `Iterator_map`, which native has no implementation for.
+        if let ExprKind::MethodCall { method, args, .. } = &expr.kind {
+            if matches!(method.as_str(), "values" | "keys") && args.is_empty() {
+                let yields_iterator = matches!(
+                    self.ctx.lookup_raw_type(expr.id),
+                    Some(Type::UnresolvedGeneric { ref name, .. }) if name == "Iterator"
+                );
+                if yields_iterator {
+                    return true;
+                }
+            }
+        }
         false
     }
 

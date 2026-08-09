@@ -1,0 +1,27 @@
+Simple Text Editor - type 'help' for commands
+> Inserted line
+> Inserted line
+> Inserted line
+> 1: first line
+2: second line
+3: third line
+> Modified line 2
+> 1: first line
+2: EDITED second
+3: third line
+> Undone
+> 1: first line
+2: second line
+3: third line
+> Redone
+> 1: first line
+2: EDITED second
+3: third line
+> Deleted line 1
+> 1: EDITED second
+2: third line
+> Undone
+> 1: first line
+2: EDITED second
+3: third line
+> Warning: unsaved changes

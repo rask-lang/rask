@@ -114,7 +114,7 @@ impl Interpreter {
             Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),
             Value::Uint128(a) => return self.call_uint128_method(*a, method, &args),
-            Value::Float(a) => return self.call_float_method(*a, method, &args),
+            Value::Float(a, ka) => return self.call_float_method(*a, *ka, method, &args),
             Value::Bool(a) => return self.call_bool_method(*a, method, &args),
             Value::Char(c) => return self.call_char_method(*c, method, &args),
             Value::String(s) => return self.call_string_method(s, method, args),

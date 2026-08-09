@@ -419,7 +419,7 @@ void        rask_file_write_line(int64_t file, const RaskStr *content);
 RaskVec    *rask_file_lines(int64_t file);
 
 // ─── IO module ──────────────────────────────────────────────
-void        rask_io_read_line(RaskStr *out);
+int64_t     rask_io_read_line(RaskStr *out);  // 0 = line, 1 = EOF
 int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
 
 // ─── Time module ────────────────────────────────────────────

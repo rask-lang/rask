@@ -62,7 +62,7 @@ func handle(req: Request) -> Response {
         (Method.Get, "/health") => Response.ok("ok"),
         (Method.Get, "/users") => list_users(),
         (Method.Get, path) if path.starts_with("/users/") => {
-            let id_str = path[7..]
+            let id_str = path[7..].to_string()
             let id = id_str.parse<i64>() is i64 else {
                 return Response.bad_request("invalid user id")
             }
@@ -70,7 +70,7 @@ func handle(req: Request) -> Response {
         }
         (Method.Post, "/users") => create_user(req.body),
         (Method.Delete, path) if path.starts_with("/users/") => {
-            let id_str = path[7..]
+            let id_str = path[7..].to_string()
             let id = id_str.parse<i64>() is i64 else {
                 return Response.bad_request("invalid user id")
             }

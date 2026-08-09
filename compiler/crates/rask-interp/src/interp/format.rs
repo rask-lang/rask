@@ -3,7 +3,7 @@
 
 use rask_ast::fmt_spec::{pad, parse_spec, FormatSpec, SpecType};
 
-use crate::value::Value;
+use crate::value::{FloatKind, Value};
 
 use super::{Interpreter, RuntimeError};
 
@@ -135,7 +135,7 @@ impl Interpreter {
         let base = match spec.ty {
             SpecType::Debug => self.debug_format(value),
             SpecType::Exp => match value {
-                Value::Float(n) => format!("{:e}", n),
+                Value::Float(n, _) => format!("{:e}", n),
                 Value::Int(n, _) => format!("{:e}", *n as f64),
                 _ => display,
             },
@@ -153,7 +153,7 @@ impl Interpreter {
                 None => display,
             },
             SpecType::Display => match (spec.precision, value) {
-                (Some(prec), Value::Float(n)) => format!("{:.prec$}", n, prec = prec),
+                (Some(prec), Value::Float(n, _)) => format!("{:.prec$}", n, prec = prec),
                 // Precision on a string truncates it — the one non-float use
                 // the grammar allows.
                 (Some(prec), Value::String(_)) => display.chars().take(prec).collect(),
@@ -163,7 +163,7 @@ impl Interpreter {
 
         let numeric = matches!(
             value,
-            Value::Int(..) | Value::Float(_) | Value::Int128(_) | Value::Uint128(_)
+            Value::Int(..) | Value::Float(_, _) | Value::Int128(_) | Value::Uint128(_)
         );
         pad(&base, spec.width, spec.effective_align(numeric), spec.fill)
     }
@@ -296,13 +296,13 @@ impl Interpreter {
         );
         let spec = &spec[1..]; // strip leading ':'
         match value {
-            Value::Float(f) => {
+            Value::Float(f, k) => {
                 if let Some(precision) = spec.strip_prefix('.') {
                     if let Ok(p) = precision.parse::<usize>() {
                         return format!("{:.*}", p, f);
                     }
                 }
-                format!("{}", f)
+                k.format(*f)
             }
             Value::Int(n, k) => {
                 let unsigned = *n as u64;

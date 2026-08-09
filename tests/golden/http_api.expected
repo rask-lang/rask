@@ -1,0 +1,18 @@
+=== GET /health
+ok
+=== GET /users
+[]
+=== POST /users
+{"id":1,"name":"Ada","email":"ada@example.com"}
+=== GET /users
+[{"id":1,"name":"Ada","email":"ada@example.com"}]
+=== GET /users/1
+{"id":1,"name":"Ada","email":"ada@example.com"}
+=== GET /users/999
+{"error":"user not found"}
+=== DELETE /users/1
+
+=== GET /users
+[]
+=== GET /nope
+
