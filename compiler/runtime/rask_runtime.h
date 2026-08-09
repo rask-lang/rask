@@ -302,6 +302,9 @@ uint64_t rask_hash_bytes(const void *key, int64_t key_size);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);
+// Pins the per-process seed mixed into the above (see map.c) — a hook for a
+// future sim runtime, unused today.
+void     rask_map_set_seed(uint64_t seed);
 
 // ─── Pool ───────────────────────────────────────────────────
 // Handle-based sparse storage with generation counters.

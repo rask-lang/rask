@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{MapData, MapKey, Value};
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {
@@ -245,11 +245,11 @@ impl Interpreter {
         };
 
         // Build headers as Map
-        let header_map: Vec<(Value, Value)> = headers
+        let header_map: MapData = headers
             .into_iter()
             .map(|(k, v)| {
                 (
-                    Value::String(Arc::new(Mutex::new(k))),
+                    MapKey(Value::String(Arc::new(Mutex::new(k)))),
                     Value::String(Arc::new(Mutex::new(v))),
                 )
             })
@@ -329,7 +329,7 @@ impl Interpreter {
                         let map = m.lock().unwrap();
                         map.iter()
                             .filter_map(|(k, v)| {
-                                let k_str = match k {
+                                let k_str = match &k.0 {
                                     Value::String(s) => s.lock().unwrap().clone(),
                                     _ => return None,
                                 };

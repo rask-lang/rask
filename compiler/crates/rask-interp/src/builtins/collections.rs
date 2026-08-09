@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{IteratorState, PoolData, TypeConstructorKind, Value};
+use crate::value::{map_entries_seeded, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value};
 
 /// Helper function to check if a value is truthy.
 fn is_truthy(val: &Value) -> bool {
@@ -1066,110 +1066,53 @@ impl Interpreter {
     /// Handle Map method calls.
     pub(crate) fn call_map_method(
         &mut self,
-        m: &Arc<Mutex<Vec<(Value, Value)>>>,
+        m: &Arc<Mutex<MapData>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        let option_of = |v: Option<Value>| match v {
+            Some(v) => Value::Enum {
+                name: "Option".to_string(),
+                variant: "Some".to_string(),
+                fields: vec![v],
+                variant_index: 0, origin: None,
+            },
+            None => Value::Enum {
+                name: "Option".to_string(),
+                variant: "None".to_string(),
+                fields: vec![],
+                variant_index: 0, origin: None,
+            },
+        };
         match method {
             "insert" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let value = args.get(1).cloned().unwrap_or(Value::Unit).copy_on_bind();
-                let mut map = m.lock().unwrap();
-
-                // Check if key exists, update if so
-                for (k, v) in map.iter_mut() {
-                    if Self::value_eq(k, &key) {
-                        let old_value = v.clone();
-                        *v = value;
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![old_value],
-                            variant_index: 0, origin: None,
-                        });
-                    }
-                }
-
-                // Key doesn't exist, insert new
-                map.push((key, value));
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                let old = m.lock().unwrap().insert(MapKey(key), value);
+                Ok(option_of(old))
             }
             "get" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let map = m.lock().unwrap();
-
-                for (k, v) in map.iter() {
-                    if Self::value_eq(k, &key) {
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![v.clone()],
-                            variant_index: 0, origin: None,
-                        });
-                    }
-                }
-
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                Ok(option_of(found))
             }
             "remove" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let mut map = m.lock().unwrap();
-
-                let mut index = None;
-                for (i, (k, _)) in map.iter().enumerate() {
-                    if Self::value_eq(k, &key) {
-                        index = Some(i);
-                        break;
-                    }
-                }
-
-                if let Some(idx) = index {
-                    let (_, v) = map.remove(idx);
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    })
-                } else {
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    })
-                }
+                let removed = m.lock().unwrap().remove(&MapKey(key));
+                Ok(option_of(removed))
             }
             "contains" | "contains_key" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let map = m.lock().unwrap();
-
-                for (k, _) in map.iter() {
-                    if Self::value_eq(k, &key) {
-                        return Ok(Value::Bool(true));
-                    }
-                }
-
-                Ok(Value::Bool(false))
+                Ok(Value::Bool(m.lock().unwrap().contains_key(&MapKey(key))))
             }
             "keys" => {
-                let map = m.lock().unwrap();
-                let keys: Vec<Value> = map.iter().map(|(k, _)| k.clone()).collect();
+                let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
+                    .into_iter().map(|(k, _)| k).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(keys))))
             }
             "values" => {
-                let map = m.lock().unwrap();
-                let values: Vec<Value> = map.iter().map(|(_, v)| v.clone()).collect();
+                let values: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
+                    .into_iter().map(|(_, v)| v).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
             "len" => Ok(Value::int(m.lock().unwrap().len() as i64)),
@@ -1179,21 +1122,14 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             "iter" => {
-                let map = m.lock().unwrap();
-                let pairs: Vec<Value> = map
-                    .iter()
-                    .map(|(k, v)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![k.clone(), v.clone()])))
-                    })
+                let pairs: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
+                    .into_iter()
+                    .map(|(k, v)| Value::Vec(Arc::new(Mutex::new(vec![k, v]))))
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
             }
             "clone" => {
-                let map = m.lock().unwrap();
-                let cloned: Vec<(Value, Value)> = map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let cloned: MapData = m.lock().unwrap().clone();
                 Ok(Value::Map(Arc::new(Mutex::new(cloned))))
             }
             "ensure" => {
@@ -1203,16 +1139,11 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                // Check if key already exists
-                let key_exists = {
-                    let map = m.lock().unwrap();
-                    map.iter().any(|(k, _)| Self::value_eq(k, &key))
-                };
-
+                let key_exists = m.lock().unwrap().contains_key(&MapKey(key.clone()));
                 if !key_exists {
                     // Key doesn't exist, call factory and insert
                     let new_value = self.call_closure_no_args(factory)?;
-                    m.lock().unwrap().push((key, new_value));
+                    m.lock().unwrap().insert(MapKey(key), new_value);
                 }
 
                 Ok(Value::Unit)
@@ -1228,17 +1159,15 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                // Check if key exists
-                let mut map = m.lock().unwrap();
-                let existing_value = map.iter_mut().find(|(k, _)| Self::value_eq(k, &key));
-
-                let value_to_modify = if let Some((_, v)) = existing_value {
-                    v.clone()
-                } else {
-                    // Key doesn't exist, call factory and insert
-                    let new_value = self.call_closure_no_args(factory)?;
-                    map.push((key.clone(), new_value.clone()));
-                    new_value
+                let existing = m.lock().unwrap().get(&MapKey(key.clone())).cloned();
+                let value_to_modify = match existing {
+                    Some(v) => v,
+                    None => {
+                        // Key doesn't exist, call factory and insert
+                        let new_value = self.call_closure_no_args(factory)?;
+                        m.lock().unwrap().insert(MapKey(key), new_value.clone());
+                        new_value
+                    }
                 };
 
                 // Call modifier and return result
@@ -1246,9 +1175,10 @@ impl Interpreter {
                 Ok(result)
             }
             "take_all" => {
-                let items = std::mem::take(&mut *m.lock().unwrap());
+                let items: MapData = std::mem::take(&mut *m.lock().unwrap());
+                let pairs = map_entries_seeded(&items);
                 Ok(Value::Vec(Arc::new(Mutex::new(
-                    items.into_iter().map(|(k, v)| {
+                    pairs.into_iter().map(|(k, v)| {
                         Value::Vec(Arc::new(Mutex::new(vec![k, v])))
                     }).collect()
                 ))))
@@ -1260,24 +1190,14 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let map = m.lock().unwrap();
-                for (k, v) in map.iter() {
-                    if Self::value_eq(k, &key) {
-                        let result = self.call_value(closure.clone(), vec![v.clone()])?;
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![result],
-                            variant_index: 0, origin: None,
-                        });
+                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                match found {
+                    Some(v) => {
+                        let result = self.call_value(closure.clone(), vec![v])?;
+                        Ok(option_of(Some(result)))
                     }
+                    None => Ok(option_of(None)),
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
             }
             "modify" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
@@ -1286,24 +1206,14 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let mut map = m.lock().unwrap();
-                for (k, v) in map.iter_mut() {
-                    if Self::value_eq(k, &key) {
-                        let result = self.call_value(closure.clone(), vec![v.clone()])?;
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![result],
-                            variant_index: 0, origin: None,
-                        });
+                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                match found {
+                    Some(v) => {
+                        let result = self.call_value(closure.clone(), vec![v])?;
+                        Ok(option_of(Some(result)))
                     }
+                    None => Ok(option_of(None)),
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Map".to_string(),
@@ -1418,11 +1328,11 @@ impl Interpreter {
                 Ok(Value::Vec(Arc::new(Mutex::new(tuple))))
             }
             (TypeConstructorKind::Map, "new") => {
-                Ok(Value::Map(Arc::new(Mutex::new(Vec::new()))))
+                Ok(Value::Map(Arc::new(Mutex::new(MapData::new()))))
             }
             (TypeConstructorKind::Map, "with_capacity") => {
                 let cap = self.expect_int(&args, 0)? as usize;
-                Ok(Value::Map(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
+                Ok(Value::Map(Arc::new(Mutex::new(MapData::with_capacity(cap)))))
             }
             (TypeConstructorKind::Map, "from") => {
                 // Map.from(array_of_tuples) — build map from [(key, value), ...]
@@ -1433,13 +1343,13 @@ impl Interpreter {
                 match arr {
                     Value::Vec(v) => {
                         let vec = v.lock().unwrap();
-                        let mut pairs = Vec::with_capacity(vec.len());
+                        let mut pairs = MapData::with_capacity(vec.len());
                         for item in vec.iter() {
                             match item {
                                 Value::Vec(tuple) => {
                                     let t = tuple.lock().unwrap();
                                     if t.len() >= 2 {
-                                        pairs.push((t[0].clone(), t[1].clone()));
+                                        pairs.insert(MapKey(t[0].clone()), t[1].clone());
                                     }
                                 }
                                 _ => {}

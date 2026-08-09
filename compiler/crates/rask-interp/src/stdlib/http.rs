@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{MapData, MapKey, Value};
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {
@@ -64,7 +64,7 @@ fn make_response(status: i64, body: &str) -> Value {
     fields.insert("status".to_string(), Value::int(status));
     fields.insert(
         "headers".to_string(),
-        Value::Map(Arc::new(Mutex::new(vec![]))),
+        Value::Map(Arc::new(Mutex::new(MapData::new()))),
     );
     fields.insert("body".to_string(), make_string(body));
     Value::new_struct("Response".to_string(), fields, None)
@@ -195,9 +195,9 @@ impl Interpreter {
                     Some(Value::String(s)) => s.lock().unwrap().clone(),
                     _ => String::new(),
                 };
-                let params: Vec<(Value, Value)> = parse_query(&url)
+                let params: MapData = parse_query(&url)
                     .iter()
-                    .map(|(k, v)| (make_string(k), make_string(v)))
+                    .map(|(k, v)| (MapKey(make_string(k)), make_string(v)))
                     .collect();
                 Ok(Value::Map(Arc::new(Mutex::new(params))))
             }
@@ -283,7 +283,7 @@ impl Interpreter {
                     // Add header to the headers map
                     if let Some(Value::Map(m)) = new_fields.get("headers") {
                         let mut map = m.lock().unwrap();
-                        map.push((make_string(&name), make_string(&value)));
+                        map.insert(MapKey(make_string(&name)), make_string(&value));
                     }
                     Ok(Value::new_struct("Response".to_string(), new_fields, None))
                 } else {
@@ -332,10 +332,10 @@ impl Interpreter {
                 };
                 let mut fields = IndexMap::new();
                 fields.insert("status".to_string(), Value::int(200));
-                let headers = vec![(
-                    make_string("Content-Type"),
+                let headers = MapData::from_iter([(
+                    MapKey(make_string("Content-Type")),
                     make_string("application/json"),
-                )];
+                )]);
                 fields.insert(
                     "headers".to_string(),
                     Value::Map(Arc::new(Mutex::new(headers))),
@@ -373,7 +373,7 @@ impl Interpreter {
                 };
                 let mut fields = IndexMap::new();
                 fields.insert("status".to_string(), Value::int(302));
-                let headers = vec![(make_string("Location"), make_string(&url))];
+                let headers = MapData::from_iter([(MapKey(make_string("Location")), make_string(&url))]);
                 fields.insert(
                     "headers".to_string(),
                     Value::Map(Arc::new(Mutex::new(headers))),
