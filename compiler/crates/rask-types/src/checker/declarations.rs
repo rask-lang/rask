@@ -595,6 +595,25 @@ impl TypeChecker {
     // Runs after all types and impl methods are registered.
     // ------------------------------------------------------------------------
 
+    /// The type as its own methods see it. A generic type's derived signatures
+    /// have to name the parameters (`Pair<T>`, not `Pair`), or the substitution at
+    /// the call site has nothing to replace and the argument is expected at the
+    /// bare type constructor. `h == kept` on two `Handle<Entity>` values then
+    /// reported "expected `Handle`, found `Handle<Entity>`" — the derived `eq`
+    /// took its parameter as bare `Handle` (#661).
+    fn self_type_with_params(id: crate::types::TypeId, type_params: &[String]) -> Type {
+        if type_params.is_empty() {
+            return Type::Named(id);
+        }
+        Type::Generic {
+            base: id,
+            args: type_params
+                .iter()
+                .map(|p| crate::types::GenericArg::Type(Box::new(Type::UnresolvedNamed(p.clone()))))
+                .collect(),
+        }
+    }
+
     fn auto_derive_traits(&mut self) {
         use crate::types::TypeId;
 
@@ -603,9 +622,10 @@ impl TypeChecker {
             let id = TypeId(idx as u32);
             let def = self.types.get(id).unwrap().clone();
             match &def {
-                TypeDef::Struct { fields, methods, is_resource, .. } => {
+                TypeDef::Struct { fields, methods, is_resource, type_params, .. } => {
                     if *is_resource { continue; }
                     let field_types: Vec<Type> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+                    let self_ty = Self::self_type_with_params(id, type_params);
                     let mut new_methods = Vec::new();
 
                     // EQ1: auto-derive eq if all fields are Equatable
@@ -616,7 +636,7 @@ impl TypeChecker {
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
-                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            params: vec![(self_ty.clone(), ParamMode::Default)],
                             ret: Type::Bool,
                         });
                     }
@@ -644,7 +664,7 @@ impl TypeChecker {
                             name: "default".to_string(),
                             self_param: SelfParam::None,
                             params: vec![],
-                            ret: Type::Named(id),
+                            ret: self_ty.clone(),
                         });
                     }
 
@@ -658,7 +678,7 @@ impl TypeChecker {
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
-                            ret: Type::Named(id),
+                            ret: self_ty.clone(),
                         });
                     }
 
@@ -673,7 +693,7 @@ impl TypeChecker {
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
-                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            params: vec![(self_ty.clone(), ParamMode::Default)],
                             ret: ordering_ty.clone(),
                         });
                         // ORD1: lt/le/gt/ge derived from compare
@@ -683,7 +703,7 @@ impl TypeChecker {
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
-                                    params: vec![(Type::Named(id), ParamMode::Default)],
+                                    params: vec![(self_ty.clone(), ParamMode::Default)],
                                     ret: Type::Bool,
                                 });
                             }
@@ -720,10 +740,11 @@ impl TypeChecker {
                     if cmp_ok { self.types.record_conformance(id, "Comparable"); }
                     self.types.record_conformance(id, "Debug");
                 }
-                TypeDef::Enum { variants, methods, .. } => {
+                TypeDef::Enum { variants, methods, type_params, .. } => {
                     let payload_types: Vec<Type> = variants.iter()
                         .flat_map(|(_, fields)| fields.iter().cloned())
                         .collect();
+                    let self_ty = Self::self_type_with_params(id, type_params);
                     let mut new_methods = Vec::new();
 
                     // EQ3: auto-derive eq for enums (tag + payload equality)
@@ -734,7 +755,7 @@ impl TypeChecker {
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
-                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            params: vec![(self_ty.clone(), ParamMode::Default)],
                             ret: Type::Bool,
                         });
                     }
@@ -765,7 +786,7 @@ impl TypeChecker {
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
-                            ret: Type::Named(id),
+                            ret: self_ty.clone(),
                         });
                     }
 
@@ -778,7 +799,7 @@ impl TypeChecker {
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
-                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            params: vec![(self_ty.clone(), ParamMode::Default)],
                             ret: ordering_ty.clone(),
                         });
                         // ORD1: lt/le/gt/ge derived from compare
@@ -788,7 +809,7 @@ impl TypeChecker {
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
-                                    params: vec![(Type::Named(id), ParamMode::Default)],
+                                    params: vec![(self_ty.clone(), ParamMode::Default)],
                                     ret: Type::Bool,
                                 });
                             }

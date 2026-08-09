@@ -321,6 +321,7 @@ pub fn print_test_help() {
         output::arg("<file.rk | dir> [-f <pattern>]"));
     println!();
     println!("{}", output::section_header("Options:"));
+    println!("  {}     Run on the interpreter instead of compiling (single file only)", output::arg("--interp"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
     println!("  {} {} Filter tests by name pattern", output::arg("-f"), output::arg("<pattern>"));
     println!("  {}   Show all test names", output::arg("--verbose"));

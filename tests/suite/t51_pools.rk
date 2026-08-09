@@ -102,17 +102,27 @@ test "mem.pools/PL7 — iterating the pool directly yields handles" {
     assert levels == 6
 }
 
-test "mem.pools/PL7 — a handle from pool iteration is a usable handle" {
+// A handle is a value, so two of them compare. The derived `eq` took its
+// argument at the bare type constructor (`Handle`, no argument), so once
+// anything pinned the loop variable to `Handle<Entity>` — `pool.contains(h)`
+// does — comparing it against the handle `insert` returned was a type
+// mismatch that read "expected `Handle`, found `Handle<Entity>`" (#661).
+test "mem.pools/PL7 — a handle from pool iteration compares with the one insert gave" {
     mut pool = Pool.new()
-    pool.insert(Entity { health: 5, level: 1 })
+    let kept = pool.insert(Entity { health: 5, level: 1 })
     pool.insert(Entity { health: 7, level: 2 })
 
     mut seen = 0
+    mut matched = 0
     for h in pool {
         assert pool.contains(h)
+        if h == kept {
+            matched += 1
+        }
         seen += 1
     }
     assert seen == 2
+    assert matched == 1
 }
 
 // --- Safe get returns value / none (PL5) ---

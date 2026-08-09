@@ -87,9 +87,17 @@ and file what you learned — that's a finished piece of work, not a blocker.
 | `rask api <file>` | Show a module's public API (structs, funcs, enums) |
 | `rask fmt <file>` | Format .rk source files |
 | `rask check <file>` | Type-check a .rk file |
-| `rask run <file>` | Execute a .rk program |
+| `rask run <file>` | Execute a .rk program (native) |
 | `rask run --interp <file>` | Execute via interpreter (no codegen) |
+| `rask test <file>` | Run `test` blocks — **native**, like `run` |
+| `rask test --interp <file>` | Run `test` blocks on the interpreter |
 | `rask compile --dump-mir <file>` | Print MIR before codegen (debug codegen issues) |
+
+**Native is the default everywhere.** `rask run` and `rask test` both compile and
+run natively; `--interp` opts out. `rask test --native` is accepted and does
+nothing, so a bug you "reproduced on the interpreter" with it was native all
+along. When the two disagree the interpreter is the reference for *what the answer
+should be* — it isn't what anyone ships.
 
 Binary: `compiler/target/release/rask` (build: `cd compiler && cargo build --release -p rask-cli`)
 Releases: https://github.com/rask-lang/rask/releases

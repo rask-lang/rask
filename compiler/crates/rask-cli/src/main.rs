@@ -403,6 +403,17 @@ fn main() {
             };
             let test_opts = commands::run::TestOptions { verbose, sequential, seed };
             let interp = cmd_args.contains(&"--interp");
+            // Native is what `test` already does, so `--native` reads as a
+            // deliberate choice and changes nothing. Anyone reaching for it is
+            // usually after the other backend — and silently getting native back
+            // means a bug "reproduced on the interpreter" was native all along.
+            if cmd_args.contains(&"--native") {
+                eprintln!(
+                    "{}: `rask test` already compiles and runs natively — `--native` does nothing. \
+                     Use `--interp` for the interpreter.",
+                    output::warning_label()
+                );
+            }
             let p = Path::new(file);
             if interp {
                 if p.is_dir() {
