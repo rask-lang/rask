@@ -32,10 +32,12 @@
                          # "Auto-wrapped: 3.14", native "Auto-wrapped: 4614253070214988800"
                          # — the f64's bit pattern, so a generic slot is holding the
                          # float and reading it back as an integer. #272 family.
-13_string_operations.rk  # native: codegen 'main': Function not found: Iterator_collect —
-                         # the interpreter implements the lazy Iterator protocol, native
-                         # has none of it. Only chains the MIR fuser recognises work
-                         # natively. #656, and #676 for the shape that loses fusion.
+13_string_operations.rk  # Compiles and runs on both backends now (#656 — the fuser didn't
+                         # recognise `s.split_whitespace()` as a source). One line still
+                         # differs: `print("{e}")` on the ParseError from a failed
+                         # `parse<i32>()` gives "invalid integer" on interp and the raw
+                         # number 1114129 on native. ParseError has no definition
+                         # anywhere in the stdlib — it's a name in a signature. #320.
 16_concurrency_basics.rk # Runs clean on both backends now (#657 — pool tasks ran twice
                          # and joined a handle of the wrong shape). Still can't be
                          # gated: pool tasks interleave differently every run, on both
