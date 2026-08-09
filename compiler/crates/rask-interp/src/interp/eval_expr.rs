@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{MapKey, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -1524,15 +1524,12 @@ impl Interpreter {
                     }
                     (Value::Map(m), _) => {
                         let map = m.lock().unwrap();
-                        for (k, v) in map.iter() {
-                            if Self::value_eq(k, &idx) {
-                                return Ok(v.clone());
-                            }
-                        }
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::Panic("key not found in map".to_string()),
-                            expr.span,
-                        ))
+                        map.get(&MapKey(idx.clone())).cloned().ok_or_else(|| {
+                            RuntimeDiagnostic::new(
+                                RuntimeError::Panic("key not found in map".to_string()),
+                                expr.span,
+                            )
+                        })
                     }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
