@@ -187,7 +187,7 @@ enum EditorCommand {
 func parse_command(input: string) -> EditorCommand? {
     mut parts: Vec<string> = Vec.new()
     for part in input.trim().split_whitespace() {
-        parts.push(part.to_owned())
+        parts.push(part.to_string())
     }
     if parts.is_empty(): return none
 

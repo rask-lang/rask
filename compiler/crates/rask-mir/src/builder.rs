@@ -61,6 +61,13 @@ impl BlockBuilder {
         self.current_block = block;
     }
 
+    /// The block statements are currently being appended to. Needed when a
+    /// lowering builds several blocks and has to come back to terminate the
+    /// one it started from.
+    pub fn current_block(&self) -> BlockId {
+        self.current_block
+    }
+
     /// How many locals this function has so far. Used to mint unique synthetic
     /// binding names.
     pub fn local_count(&self) -> u32 {

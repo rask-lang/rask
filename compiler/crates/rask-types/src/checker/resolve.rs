@@ -1500,7 +1500,24 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::String, span)?;
                 self.unify(ret, &Type::String, span)
             }
-            _ => Ok(false),
+            // `string` is Comparable, same as `char`. This had no signature —
+            // it only worked because the fallthrough below used to accept any
+            // name at all.
+            "compare" if args.len() == 1 => {
+                self.unify(&args[0], &Type::String, span)?;
+                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+            }
+            // A method `string` doesn't have is an error here, the way it
+            // already was for `char`. Answering `Ok(false)` accepted any name
+            // at all and left the return type open, so `s.frobnicate()`
+            // type-checked and MIR gave the temp `i64` — which is how
+            // `part.to_owned()` compiled and then segfaulted instead of
+            // saying the method doesn't exist.
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::String,
+                method: method.to_string(),
+                span,
+            }),
         }
     }
 

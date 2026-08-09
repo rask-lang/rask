@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// io.read_line() at end of input.
+//
+// Native never worked: the runtime returned a bare string where the caller
+// expected `string or IoError`, so nothing wrote the Ok tag and the very first
+// read came back as a bogus error. The interpreter answered Ok("") forever,
+// which is indistinguishable from a blank line — every `loop { read_line() }`
+// spun until killed. Both now answer IoError.UnexpectedEof.
+//
+// Runs with stdin at /dev/null under `rask test`, so the first read is EOF.
+
+import io
+
+func eof_variant() -> string {
+    let line = io.read_line() catch e => return "{e}"
+    return "read: {line}"
+}
+
+test "reading at end of input is an error, not an empty line" {
+    let got = eof_variant()
+    assert got != "read: "
+}
+
+test "the loop that used to spin terminates" {
+    mut n = 0
+    loop {
+        let line = io.read_line() catch e => break
+        let _ = line
+        n += 1
+        if n > 1000 { break }
+    }
+    assert n == 0
+}

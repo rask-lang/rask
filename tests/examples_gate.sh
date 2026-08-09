@@ -16,6 +16,10 @@
 # with stdout concatenated into the single golden. That's how a CLI example
 # covers its flags without needing a golden per invocation. Paths in .args are
 # relative to the repo root; put input files under tests/fixtures/.
+#
+# An example that reads stdin gets tests/golden/<name>.stdin — the session to
+# feed it. Examples without one get /dev/null, so an interactive example sees
+# EOF and exits rather than hanging the gate.
 # Examples that currently fail natively (10_enums prints nothing, sensor_processor
 # generic-layout miscompile #272, etc.) have no golden yet and are listed, with
 # their tracking issue, in tests/known_fail_examples.txt — regenerate their
@@ -71,8 +75,17 @@ run_backend() {
     src="$1"
     backend="$2"
     argsfile="$3"
+    stdinfile="$4"
+    # A stdin-driven example reads its session from a fixture. Without one,
+    # stdin is /dev/null so an interactive example hits EOF and exits instead
+    # of blocking the gate forever.
+    if [ -f "$stdinfile" ]; then
+        infile="$stdinfile"
+    else
+        infile=/dev/null
+    fi
     if [ ! -f "$argsfile" ]; then
-        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" 2>/dev/null)
+        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" 2>/dev/null < "$infile")
         return $?
     fi
     rc=0
@@ -80,7 +93,7 @@ run_backend() {
         case "$argv" in ''|\#*) continue ;; esac
         # Word-split argv on purpose: the file holds a command line.
         # shellcheck disable=SC2086
-        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" -- $argv 2>/dev/null) || rc=$?
+        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" -- $argv 2>/dev/null < "$infile") || rc=$?
     done < "$argsfile"
     return $rc
 }
@@ -92,9 +105,10 @@ run_one() {
     [ -f "$src" ] || { printf 'MISSINGSRC\n' > "$WORK/$name.res"; return; }
     want="$(cat "$golden")"
     argsfile="$GOLDEN_DIR/$name.args"
+    stdinfile="$GOLDEN_DIR/$name.stdin"
 
-    iout="$(run_backend "$src" --interp "$argsfile")"; ic=$?
-    nout="$(run_backend "$src" --native "$argsfile")"; nc=$?
+    iout="$(run_backend "$src" --interp "$argsfile" "$stdinfile")"; ic=$?
+    nout="$(run_backend "$src" --native "$argsfile" "$stdinfile")"; nc=$?
 
     bad=""
     [ "$ic" -ne 0 ] && bad="$bad interp-exit=$ic"

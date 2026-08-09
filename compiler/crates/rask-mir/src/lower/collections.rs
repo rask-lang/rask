@@ -679,7 +679,12 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Field {
                     base: src.clone(),
                     field_index: offset,
-                    byte_offset: None,
+                    // These are byte offsets, so say so. Left as `None`,
+                    // codegen read `field_index` as a *field* index, found no
+                    // variant with that many fields, and fell back to the first
+                    // variant's payload offset — so every word of the "copy"
+                    // came from the same place.
+                    byte_offset: Some(offset),
                     access: FieldAccess::Word,
                 },
             }));
@@ -707,6 +712,13 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
 
+            // The switch belongs on the block that read the tag. Building the
+            // variant blocks below moves the builder's cursor onto the last of
+            // them, so remember where to come back to — terminating from here
+            // put the switch on a variant block and left the tag-reading block
+            // with its default `unreachable`, which is what a `.clone()` on an
+            // enum carrying a string trapped on.
+            let dispatch_block = self.builder.current_block();
             let exit_block = self.builder.create_block();
             let mut cases = Vec::new();
 
@@ -722,6 +734,36 @@ impl<'a> MirLowerer<'a> {
                 for field in &variant.fields {
                     if let Some(cfn) = Self::clone_fn_for_type(&field.ty) {
                         let abs_offset = variant.payload_offset + field.offset;
+                        if cfn == "string_clone" {
+                            // A string is 16 bytes and the shallow copy above
+                            // already moved all of them; the only thing left is
+                            // the refcount. Take the field's address and bump
+                            // it in place.
+                            //
+                            // Reading it as one word, "cloning" that, and
+                            // storing the word back wrote the call's return
+                            // register over the string's first 8 bytes — which
+                            // is how `.clone()` on an enum carrying a string
+                            // produced a value whose tag then trapped.
+                            let field_addr = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: field_addr,
+                                rvalue: MirRValue::Field {
+                                    base: MirOperand::Local(result),
+                                    field_index: abs_offset,
+                                    byte_offset: Some(abs_offset),
+                                    access: FieldAccess::InPlace(16),
+                                },
+                            }));
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: None,
+                                func: FunctionRef::internal(cfn.to_string()),
+                                args: vec![MirOperand::Local(field_addr)],
+                            }));
+                            continue;
+                        }
+                        // Vec/Map payloads are an 8-byte pointer, and their
+                        // clone really does hand back a new one.
                         let field_val = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
@@ -749,6 +791,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
             }
 
+            self.builder.switch_to_block(dispatch_block);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
                 value: MirOperand::Local(tag),
                 cases,

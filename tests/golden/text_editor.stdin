@@ -1,0 +1,15 @@
+i 0 first line
+i 1 second line
+i 2 third line
+p
+e 2 EDITED second
+p
+u
+p
+r
+p
+d 1
+p
+u
+p
+q
