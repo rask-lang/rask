@@ -12,8 +12,11 @@
 //          (use try_insert)
 //
 // Note the tests read `r is none`, not `r is InsertError`: the stub returns
-// `Handle<T>?` where mem.pools/PL8 says `Handle or InsertError`. The bound is
-// enforced either way, so that's a signature question, tracked on #435.
+// `Handle<T>?` where mem.pools/PL8 says `Handle or InsertError`. That is not a
+// style difference — `try_insert` takes its value by move, so an optional has
+// no way to hand it back, and a refused `@resource` is dropped with nothing
+// consuming it. The error types don't exist yet, which is why the stub says
+// what it says. #666. Update these tests to match when it lands.
 
 struct Ent {
     hp: i32
