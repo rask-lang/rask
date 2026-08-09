@@ -30,15 +30,6 @@
 18_resource_types.rk     # native SIGSEGV (139) in rask_file_read_all — the File value
                          # reaches the runtime as a small integer, not the FILE*. #654
 
-game_loop.rk             # both exit 0, stdout DIVERGES on the entity counts. Re-measured
-                         # 2026-08-08 after #632 (the field-index inference) and the
-                         # native `for h in pool` handle mistyping — it no longer panics
-                         # at line 187, and runs all 300 frames on both. What's left is a
-                         # real disagreement: native reaches Frame 180 with 8 entities
-                         # and 240 with 10, interp has 7 and 9. Score matches (0) on
-                         # both, so it's the spawn/cleanup systems, not scoring. Needs
-                         # its own bisect. PLAN Track 3.
-
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1
 file_copy.rk             # both exit 1

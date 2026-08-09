@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{FloatKind, Value};
 
 /// Reinterpret the low `width` bits as an unsigned value, dropping whatever
 /// the i64 carries above them (sign extension, or a wider previous result).
@@ -86,7 +86,7 @@ impl Interpreter {
                 };
                 Ok(Value::String(Arc::new(Mutex::new(text))))
             }
-            "to_float" => Ok(Value::Float(a as f64)),
+            "to_float" => Ok(Value::Float(a as f64, FloatKind::F64)),
             // std.bits B1. Every answer depends on the receiver's declared
             // width, not on the i64 the value happens to live in — `(0 as
             // i32).count_zeros()` is 32, not 64 — so mask to the width first.
@@ -250,15 +250,24 @@ impl Interpreter {
     pub(crate) fn call_float_method(
         &self,
         a: f64,
+        ka: FloatKind,
         method: &str,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        // `a + b` desugars to `a.add(b)`, so this is the arithmetic path for
+        // most float code. The result carries the operands' width and is
+        // rounded onto it — an f32 that keeps computing at f64 precision is
+        // what made the interpreter disagree with native.
+        let k = match args.first() {
+            Some(Value::Float(_, kb)) => ka.unify(*kb),
+            _ => ka,
+        };
         match method {
-            "add" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a + b)) }
-            "sub" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a - b)) }
-            "mul" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a * b)) }
-            "div" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a / b)) }
-            "neg" => Ok(Value::Float(-a)),
+            "add" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a + b), k)) }
+            "sub" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a - b), k)) }
+            "mul" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a * b), k)) }
+            "div" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a / b), k)) }
+            "neg" => Ok(Value::Float(k.round(-a), k)),
             "eq" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a <= b)) }
@@ -268,30 +277,32 @@ impl Interpreter {
                 let b = self.expect_float(args, 0)?;
                 Ok(ordering_value(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)))
             }
-            "abs" => Ok(Value::Float(a.abs())),
-            "floor" => Ok(Value::Float(a.floor())),
-            "ceil" => Ok(Value::Float(a.ceil())),
-            "round" => Ok(Value::Float(a.round())),
-            "sqrt" => Ok(Value::Float(a.sqrt())),
-            "min" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.min(b))) }
-            "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.max(b))) }
-            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "abs" => Ok(Value::Float(k.round(a.abs()), k)),
+            "floor" => Ok(Value::Float(k.round(a.floor()), k)),
+            "ceil" => Ok(Value::Float(k.round(a.ceil()), k)),
+            "round" => Ok(Value::Float(k.round(a.round()), k)),
+            "sqrt" => Ok(Value::Float(k.round(a.sqrt()), k)),
+            "min" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.min(b)), k)) }
+            "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.max(b)), k)) }
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(
+                k.format(a),
+            )))),
             "to_int" => Ok(Value::int(a as i64)),
-            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.powf(b))) }
-            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(a.powi(b as i32))) }
-            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.rem_euclid(b))) }
-            "sin" => Ok(Value::Float(a.sin())),
-            "cos" => Ok(Value::Float(a.cos())),
-            "tan" => Ok(Value::Float(a.tan())),
-            "asin" => Ok(Value::Float(a.asin())),
-            "acos" => Ok(Value::Float(a.acos())),
-            "atan" => Ok(Value::Float(a.atan())),
-            "ln" => Ok(Value::Float(a.ln())),
-            "log10" => Ok(Value::Float(a.log10())),
-            "log2" => Ok(Value::Float(a.log2())),
-            "exp" => Ok(Value::Float(a.exp())),
-            "trunc" => Ok(Value::Float(a.trunc())),
-            "fract" => Ok(Value::Float(a.fract())),
+            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.powf(b)), k)) }
+            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(a.powi(b as i32)), k)) }
+            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.rem_euclid(b)), k)) }
+            "sin" => Ok(Value::Float(k.round(a.sin()), k)),
+            "cos" => Ok(Value::Float(k.round(a.cos()), k)),
+            "tan" => Ok(Value::Float(k.round(a.tan()), k)),
+            "asin" => Ok(Value::Float(k.round(a.asin()), k)),
+            "acos" => Ok(Value::Float(k.round(a.acos()), k)),
+            "atan" => Ok(Value::Float(k.round(a.atan()), k)),
+            "ln" => Ok(Value::Float(k.round(a.ln()), k)),
+            "log10" => Ok(Value::Float(k.round(a.log10()), k)),
+            "log2" => Ok(Value::Float(k.round(a.log2()), k)),
+            "exp" => Ok(Value::Float(k.round(a.exp()), k)),
+            "trunc" => Ok(Value::Float(k.round(a.trunc()), k)),
+            "fract" => Ok(Value::Float(k.round(a.fract()), k)),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "f64".to_string(),
                 method: method.to_string(),

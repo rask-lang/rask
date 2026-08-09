@@ -17,7 +17,7 @@ impl Interpreter {
                 let mut arr = [0.0f32; 8];
                 for (i, val) in vec.iter().take(8).enumerate() {
                     arr[i] = match val {
-                        Value::Float(f) => *f as f32,
+                        Value::Float(f, _) => *f as f32,
                         Value::Int(n, _) => *n as f32,
                         _ => 0.0,
                     };
@@ -58,10 +58,26 @@ impl Interpreter {
             }
         }
         match (op, &l, &r) {
-            (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-            (BinOp::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            (BinOp::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+            // The result goes back on the operand width's grid. Skipping that
+            // for f32 is what let the interpreter drift away from native: an
+            // f32 accumulator kept f64 precision and crossed a `>=` threshold
+            // a frame later than the same program does when compiled.
+            (BinOp::Add, Value::Float(a, ka), Value::Float(b, kb)) => {
+                let k = ka.unify(*kb);
+                Ok(Value::Float(k.round(a + b), k))
+            }
+            (BinOp::Sub, Value::Float(a, ka), Value::Float(b, kb)) => {
+                let k = ka.unify(*kb);
+                Ok(Value::Float(k.round(a - b), k))
+            }
+            (BinOp::Mul, Value::Float(a, ka), Value::Float(b, kb)) => {
+                let k = ka.unify(*kb);
+                Ok(Value::Float(k.round(a * b), k))
+            }
+            (BinOp::Div, Value::Float(a, ka), Value::Float(b, kb)) => {
+                let k = ka.unify(*kb);
+                Ok(Value::Float(k.round(a / b), k))
+            }
             (BinOp::Add, Value::SimdF32x8(a), Value::SimdF32x8(b)) => {
                 let mut r = [0.0f32; 8];
                 for i in 0..8 { r[i] = a[i] + b[i]; }
@@ -88,10 +104,10 @@ impl Interpreter {
             (BinOp::Gt, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a > b)),
             (BinOp::Le, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a <= b)),
             (BinOp::Ge, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a >= b)),
-            (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            (BinOp::Gt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            (BinOp::Le, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            (BinOp::Ge, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
+            (BinOp::Lt, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a > b)),
+            (BinOp::Le, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a <= b)),
+            (BinOp::Ge, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a >= b)),
             // Bitwise (no overflow); shifts and arithmetic are handled above.
             (BinOp::BitAnd, Value::Int(a, ka), Value::Int(b, kb)) => Ok(Value::Int(a & b, ka.unify(*kb))),
             (BinOp::BitOr, Value::Int(a, ka), Value::Int(b, kb)) => Ok(Value::Int(a | b, ka.unify(*kb))),

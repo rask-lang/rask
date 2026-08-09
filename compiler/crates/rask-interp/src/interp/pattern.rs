@@ -259,7 +259,7 @@ impl Interpreter {
             (Value::Int(a, _), ExprKind::Int(b, _)) => *a == *b,
             (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b as i128,
             (Value::Uint128(a), ExprKind::Int(b, _)) => *a == *b as u128,
-            (Value::Float(a), ExprKind::Float(b, _)) => *a == *b,
+            (Value::Float(a, _), ExprKind::Float(b, _)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
             (Value::Char(a), ExprKind::Char(b)) => *a == *b,
             (Value::String(a), ExprKind::String(b)) => *a.lock().unwrap() == *b,
@@ -273,7 +273,7 @@ impl Interpreter {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a, _), Value::Int(b, _)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Float(a, _), Value::Float(b, _)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
             (Value::Enum { name: n1, variant: v1, fields: f1, .. },
@@ -360,7 +360,7 @@ impl Interpreter {
             (Value::Int(a, _), Value::Int(b, _)) => Some(a.cmp(b)),
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::Float(a, _), Value::Float(b, _)) => a.partial_cmp(b),
             // `s <= s` hands the same Arc in twice; locking it a second time
             // deadlocks, so answer from identity first.
             (Value::String(a), Value::String(b)) => {
@@ -421,7 +421,7 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
             rask_ast::primitives::is_machine_integer(ty_name)
                 || rask_ast::primitives::INT_ALIASES.contains(&ty_name)
         }
-        Value::Float(_) => rask_ast::primitives::is_float(ty_name),
+        Value::Float(_, _) => rask_ast::primitives::is_float(ty_name),
         Value::Enum { name, .. } => name == ty_name,
         Value::Struct(s) => {
             let guard = s.lock().unwrap();

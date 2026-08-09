@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::value::{BuiltinKind, Value};
+use crate::value::{BuiltinKind, FloatKind, Value};
 
 use super::{Interpreter, RuntimeError};
 
@@ -323,7 +323,7 @@ impl Interpreter {
             Value::SimdF32x8(data) => match method {
                 "sum" => {
                     let sum: f32 = data.iter().sum();
-                    Ok(Value::Float(sum as f64))
+                    Ok(Value::Float(sum as f64, FloatKind::Untyped))
                 }
                 "add" | "sub" | "mul" | "div" => {
                     if args.is_empty() {
@@ -418,7 +418,7 @@ impl Interpreter {
     /// Helper to extract a float from args.
     pub(crate) fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {
-            Some(Value::Float(n)) => Ok(*n),
+            Some(Value::Float(n, _)) => Ok(*n),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected float, got {}",
                 v.type_name()

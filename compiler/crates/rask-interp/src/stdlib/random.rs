@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{RngState, Value};
+use crate::value::{FloatKind, RngState, Value};
 
 impl Interpreter {
     /// Handle random module methods.
@@ -28,7 +28,7 @@ impl Interpreter {
                 x ^= x >> 7;
                 x ^= x << 17;
                 let f = (x as f64) / (u64::MAX as f64);
-                Ok(Value::Float(f))
+                Ok(Value::Float(f, FloatKind::Untyped))
             }
             "i64" => {
                 use std::collections::hash_map::DefaultHasher;
@@ -119,8 +119,8 @@ impl Interpreter {
         match method {
             "u64" => Ok(Value::int(state.next_u64() as i64)),
             "i64" => Ok(Value::int(state.next_u64() as i64)),
-            "f64" => Ok(Value::Float(state.next_f64())),
-            "f32" => Ok(Value::Float(state.next_f32() as f64)),
+            "f64" => Ok(Value::Float(state.next_f64(), FloatKind::Untyped)),
+            "f32" => Ok(Value::Float(state.next_f32() as f64, FloatKind::Untyped)),
             "bool" => Ok(Value::Bool(state.next_bool())),
             "range" => {
                 if args.len() != 2 {

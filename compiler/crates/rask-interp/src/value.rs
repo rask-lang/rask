@@ -122,6 +122,122 @@ impl IntKind {
     }
 }
 
+/// Width carried by `Value::Float`, the float counterpart of `IntKind`.
+///
+/// Every float is stored in an `f64` slot, so without this tag an `f32`
+/// computation kept ~29 bits of mantissa it doesn't have and drifted away from
+/// native, where the same program does true 32-bit arithmetic. `round` puts the
+/// result back on the f32 grid after each operation.
+///
+/// A single `+ - * /` or `sqrt` done in f64 and then rounded to f32 gives
+/// exactly the f32 answer — f64 carries more than twice f32's mantissa, so
+/// there's no double-rounding error to worry about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatKind {
+    F32,
+    F64,
+    /// Width not known where the value was made (an internal constant, a
+    /// stdlib return). Treated as f64.
+    Untyped,
+}
+
+impl FloatKind {
+    pub fn from_type(ty: &rask_types::Type) -> FloatKind {
+        use rask_types::Type;
+        match ty {
+            Type::F32 => FloatKind::F32,
+            Type::F64 => FloatKind::F64,
+            _ => FloatKind::Untyped,
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<FloatKind> {
+        Some(match s {
+            "f32" => FloatKind::F32,
+            "f64" => FloatKind::F64,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FloatKind::F32 => "f32",
+            FloatKind::F64 | FloatKind::Untyped => "f64",
+        }
+    }
+
+    /// Snap a value onto this width's grid. The f64 cases are identity.
+    pub fn round(self, v: f64) -> f64 {
+        match self {
+            FloatKind::F32 => v as f32 as f64,
+            FloatKind::F64 | FloatKind::Untyped => v,
+        }
+    }
+
+    /// An untyped operand takes the other side's width, matching `IntKind`.
+    pub fn unify(self, other: FloatKind) -> FloatKind {
+        match (self, other) {
+            (FloatKind::Untyped, k) | (k, FloatKind::Untyped) => k,
+            (a, _) => a,
+        }
+    }
+
+    /// Spell a value at this width. f64 uses Rust's own shortest form; f32
+    /// mirrors `rask_fmt_float` in the C runtime so both backends print a
+    /// float the same way.
+    pub fn format(self, v: f64) -> String {
+        match self {
+            FloatKind::F32 => format_f32(v as f32),
+            FloatKind::F64 | FloatKind::Untyped => v.to_string(),
+        }
+    }
+}
+
+/// The shortest decimal that reads back as the same `f32`, spelled out with no
+/// exponent — the same walk the C runtime does.
+///
+/// Rust's own `{}` on an f32 also round-trips, but picks a different spelling
+/// for some values (123456792f32 comes out as `123456790`), so matching native
+/// means matching its algorithm rather than substituting an equivalent one.
+fn format_f32(val: f32) -> String {
+    if val.is_nan() {
+        return "NaN".to_string();
+    }
+    if val.is_infinite() {
+        return if val < 0.0 { "-inf" } else { "inf" }.to_string();
+    }
+    if val == 0.0 {
+        return if val.is_sign_negative() { "-0" } else { "0" }.to_string();
+    }
+
+    let d = val as f64;
+    // Fewest significant digits that still read back as this f32.
+    let mut prec = 1;
+    while prec < 9 {
+        if format!("{:.*e}", prec - 1, d).parse::<f32>() == Ok(val) {
+            break;
+        }
+        prec += 1;
+    }
+
+    // Take the decimal exponent from the same rendering rather than log10,
+    // which is off by one at exact powers of ten.
+    let rendered = format!("{:.*e}", prec - 1, d);
+    let exp10: i32 = rendered
+        .split('e')
+        .nth(1)
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(0);
+
+    let decimals = (prec as i32 - 1 - exp10).clamp(0, 60) as usize;
+    let out = format!("{:.*}", decimals, d);
+    if out.contains('.') {
+        out.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        out
+    }
+}
+
 /// Global pool ID counter. Each Pool gets a unique ID.
 static NEXT_POOL_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -541,8 +657,10 @@ pub enum Value {
     Int128(i128),
     /// 128-bit unsigned integer
     Uint128(u128),
-    /// Float (using f64 for all float types in interpreter)
-    Float(f64),
+    /// Float stored as f64, tagged with its source width. The tag is what
+    /// keeps `f32` arithmetic on the f32 grid instead of silently running at
+    /// double precision.
+    Float(f64, FloatKind),
     /// Character
     Char(char),
     /// String (mutable, like Vec)
@@ -685,14 +803,22 @@ pub struct RngState {
 
 impl RngState {
     pub fn from_seed(seed: u64) -> Self {
-        // SplitMix64 to expand seed into 4 state words
+        // SplitMix64 to expand seed into 4 state words.
+        //
+        // The counter advances by the golden gamma and nothing else; the
+        // mixing runs on a copy. That's what makes the state a Weyl sequence
+        // with a full 2^64 period. Feeding the mixed value back into `z`
+        // instead — which this used to do — turns the counter into a chaotic
+        // map with no period guarantee, and gave the interpreter a different
+        // stream from the C runtime for the same seed.
         let mut z = seed;
         let mut s = [0u64; 4];
         for slot in &mut s {
             z = z.wrapping_add(0x9e3779b97f4a7c15);
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-            *slot = z ^ (z >> 31);
+            let mut r = z;
+            r = (r ^ (r >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            r = (r ^ (r >> 27)).wrapping_mul(0x94d049bb133111eb);
+            *slot = r ^ (r >> 31);
         }
         Self { s }
     }
@@ -859,7 +985,7 @@ impl Value {
             Value::Int(_, _) => "i64",
             Value::Int128(_) => "i128",
             Value::Uint128(_) => "u128",
-            Value::Float(_) => "f64",
+            Value::Float(_, _) => "f64",
             Value::Char(_) => "char",
             Value::String(_) => "string",
             Value::Struct(_) => "struct",
@@ -916,7 +1042,7 @@ impl Value {
             "u64" | "uint" | "usize" => Value::Int(0, IntKind::U64),
             "i128" => Value::Int128(0),
             "u128" => Value::Uint128(0),
-            "f32" | "f64" => Value::Float(0.0),
+            "f32" | "f64" => Value::Float(0.0, FloatKind::Untyped),
             "bool" => Value::Bool(false),
             "char" => Value::Char('\0'),
             "string" => Value::String(Arc::new(Mutex::new(String::new()))),
@@ -1045,7 +1171,7 @@ impl Value {
     /// Extract f64 from Value::Float (for Duration.from_secs_f64).
     pub fn as_f64(&self) -> Result<f64, String> {
         match self {
-            Value::Float(f) => Ok(*f),
+            Value::Float(f, _) => Ok(*f),
             Value::Int(n, _) => Ok(*n as f64),
             _ => Err(format!("Expected float, found {}", self.type_name())),
         }
@@ -1088,7 +1214,9 @@ impl fmt::Display for Value {
             Value::Int(n, _) => write!(f, "{}", n),
             Value::Int128(n) => write!(f, "{}", n),
             Value::Uint128(n) => write!(f, "{}", n),
-            Value::Float(n) => write!(f, "{}", n),
+            // An f32 prints at f32 width. Widening it to f64 first spells the
+            // same number as 0.01666666567325592 instead of 0.016666666.
+            Value::Float(n, k) => write!(f, "{}", k.format(*n)),
             Value::Char(c) => write!(f, "{}", c),
             Value::String(s) => write!(f, "{}", s.lock().unwrap()),
             Value::Struct(s) => {
