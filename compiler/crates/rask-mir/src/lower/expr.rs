@@ -767,6 +767,9 @@ impl<'a> MirLowerer<'a> {
                         }));
                         Ok((MirOperand::Local(result_local), mir_ty))
                     }
+                } else if let Some(fnval) = self.lower_fn_as_value(name) {
+                    // Not a variable — a function's name used as a value.
+                    Ok(fnval)
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
                 }
