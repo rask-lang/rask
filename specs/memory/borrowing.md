@@ -281,7 +281,7 @@ for mutate entity in pool {
 }
 
 // Handle collection (for structural mutation like remove)
-let handles = pool.handles().collect()
+let handles = pool.handles().to_vec()
 for h in handles {
     with pool[h] as e { e.update() }
 }

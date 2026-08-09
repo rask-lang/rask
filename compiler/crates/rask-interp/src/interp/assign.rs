@@ -4,7 +4,7 @@
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::TuplePat;
 
-use crate::value::Value;
+use crate::value::{MapKey, Value};
 
 use super::{Interpreter, RuntimeError};
 
@@ -181,14 +181,7 @@ impl Interpreter {
                 }
             }
             Value::Map(m) => {
-                let mut map = m.lock().unwrap();
-                for (k, v) in map.iter_mut() {
-                    if Self::value_eq(k, idx) {
-                        *v = value;
-                        return Ok(());
-                    }
-                }
-                map.push((idx.clone(), value));
+                m.lock().unwrap().insert(MapKey(idx.clone()), value);
                 Ok(())
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -233,13 +226,11 @@ impl Interpreter {
                 }
             }
             Value::Map(m) => {
-                let mut map = m.lock().unwrap();
-                for (k, v) in map.iter_mut() {
-                    if Self::value_eq(k, idx) {
-                        return Self::assign_nested_field(&v, field_chain, value);
-                    }
+                let map = m.lock().unwrap();
+                match map.get(&MapKey(idx.clone())) {
+                    Some(v) => Self::assign_nested_field(v, field_chain, value),
+                    None => Err(RuntimeError::Panic("key not found in map".to_string())),
                 }
-                Err(RuntimeError::Panic(format!("key not found in map")))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot index into {}; only Vec, Map, and Pool support indexing", container.type_name()

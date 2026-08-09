@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use rask_ast::decl::{field_attrs, StructDecl};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{MapData, MapKey, Value};
 
 impl Interpreter {
     /// Handle json module methods.
@@ -512,7 +512,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
             if map.is_empty() {
                 return "{}".to_string();
             }
-            let key_of = |k: &Value| match k {
+            let key_of = |k: &MapKey| match &k.0 {
                 Value::String(s) => escape_json_string(&s.lock().unwrap()),
                 other => escape_json_string(&format!("{}", other)),
             };
@@ -671,7 +671,7 @@ fn value_to_json(
             let map = m.lock().unwrap();
             let mut entries = Vec::with_capacity(map.len());
             for (k, v) in map.iter() {
-                let key = match k {
+                let key = match &k.0 {
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };
@@ -751,17 +751,10 @@ fn make_json_array(items: Vec<Value>) -> Value {
 fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     // A real Map, not a struct that looks like one. The struct stand-in meant
     // `value.as_object()` handed back something with no `get` on it.
-    // Last value wins for a repeated key (J5).
-    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(entries.len());
+    // Last value wins for a repeated key (J5) — `insert` already does that.
+    let mut pairs = MapData::with_capacity(entries.len());
     for (k, v) in entries {
-        if let Some(slot) = pairs.iter_mut().find(|(ek, _)| match ek {
-            Value::String(s) => *s.lock().unwrap() == k,
-            _ => false,
-        }) {
-            slot.1 = v;
-            continue;
-        }
-        pairs.push((Value::String(Arc::new(Mutex::new(k))), v));
+        pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), v);
     }
     Value::Enum {
         name: "JsonValue".to_string(),
@@ -877,10 +870,10 @@ fn json_to_typed(
                 });
             }
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
-            let mut pairs = Vec::with_capacity(entries.len());
+            let mut pairs = MapData::with_capacity(entries.len());
             for (k, v) in entries {
                 let value = json_to_typed(&v, &args[1], &child_path(path, &k), struct_decls)?;
-                pairs.push((Value::String(Arc::new(Mutex::new(k))), value));
+                pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), value);
             }
             return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
         }
@@ -986,7 +979,7 @@ fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
         return Value::Vec(Arc::new(Mutex::new(Vec::new())));
     }
     if generic_args(ty, "Map").is_some() {
-        return Value::Map(Arc::new(Mutex::new(Vec::new())));
+        return Value::Map(Arc::new(Mutex::new(MapData::new())));
     }
     match ty {
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
@@ -1116,7 +1109,7 @@ fn object_entries(v: &Value) -> Option<Vec<(String, Value)>> {
             let map = m.lock().unwrap();
             let mut out = Vec::with_capacity(map.len());
             for (k, val) in map.iter() {
-                let Value::String(s) = k else { continue };
+                let Value::String(s) = &k.0 else { continue };
                 out.push((s.lock().unwrap().clone(), val.clone()));
             }
             Some(out)

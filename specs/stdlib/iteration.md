@@ -380,7 +380,7 @@ for (i, item) in vec.enumerate() {
 for i in to_remove.rev() { vec.remove_unordered(i) }
 
 // 3. Filter via take_all
-let vec = vec.take_all().filter(|item| !item.expired).collect()
+let vec = vec.take_all().filter(|item| !item.expired).to_vec()
 ```
 
 ### See Also

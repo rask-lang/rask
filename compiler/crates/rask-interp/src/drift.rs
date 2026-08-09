@@ -24,7 +24,7 @@ fn dummy_value(type_name: &str) -> Value {
         "char" => Value::Char('a'),
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
         "Vec" => Value::Vec(Arc::new(Mutex::new(vec![]))),
-        "Map" => Value::Map(Arc::new(Mutex::new(vec![]))),
+        "Map" => Value::Map(Arc::new(Mutex::new(Default::default()))),
         "Pool" => Value::Pool(Arc::new(Mutex::new(PoolData {
             pool_id: 0,
             slots: vec![],

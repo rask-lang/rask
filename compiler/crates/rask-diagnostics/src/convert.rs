@@ -548,6 +548,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
+            NarrowingNeedsPolicy { from, to, span } => {
+                Diagnostic::error(format!(
+                    "`{}` doesn't fit in `{}` — some values would be lost",
+                    from, to
+                ))
+                    .with_code("E0370")
+                    .with_primary(*span, format!("this is a `{}`", from))
+                    .with_fix(format!(
+                        "say which values to lose: `x truncate to {}` keeps the low bits, \
+                         `x saturate to {}` clamps to the range, `x convert to {}?` answers \
+                         `none` when it doesn't fit",
+                        to, to, to
+                    ))
+                    .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
+            }
+
             WhilePresenceBindingUnsupported { binding, span } => {
                 Diagnostic::error(format!(
                     "`while … ? as {}` isn't implemented — the binder wouldn't survive to the loop body",

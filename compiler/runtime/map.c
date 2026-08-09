@@ -7,6 +7,9 @@
 #include "rask_runtime.h"
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <time.h>
+#include <unistd.h>
 
 #define MAP_EMPTY     0
 #define MAP_OCCUPIED  1
@@ -29,11 +32,49 @@ struct RaskMap {
     RaskEqFn   eq_fn;
 };
 
+// ─── Hash seed ───────────────────────────────────────────────
+// Mixed into every hash below so map layout (and thus iteration order)
+// differs run to run: an attacker can no longer precompute FNV-1a collisions
+// (HashDoS), and no program can come to depend on the exact order — matching
+// determinism/D7 for production (sim's replay-exact seeding is future work,
+// once sim mode itself exists; rask_map_set_seed is the hook for it).
+static uint64_t g_map_seed;
+static pthread_once_t g_map_seed_once = PTHREAD_ONCE_INIT;
+
+static uint64_t map_seed_splitmix64(uint64_t z) {
+    z += 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+static void map_seed_init(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t raw = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    raw ^= (uint64_t)getpid() << 32;
+    raw ^= (uint64_t)(uintptr_t)&g_map_seed; // ASLR salt
+    g_map_seed = map_seed_splitmix64(raw);
+}
+
+static uint64_t map_seed(void) {
+    pthread_once(&g_map_seed_once, map_seed_init);
+    return g_map_seed;
+}
+
+// Lets a future sim runtime pin map hashing to a value derived from the sim
+// seed (for replay-exact order) instead of process entropy. Meant to be
+// called once, single-threaded, during startup before any Map exists.
+void rask_map_set_seed(uint64_t seed) {
+    pthread_once(&g_map_seed_once, map_seed_init);
+    g_map_seed = seed;
+}
+
 // ─── Built-in hash/eq ───────────────────────────────────────
 
 uint64_t rask_hash_bytes(const void *key, int64_t key_size) {
     const uint8_t *p = (const uint8_t *)key;
-    uint64_t h = 0xcbf29ce484222325ULL;
+    uint64_t h = 0xcbf29ce484222325ULL ^ map_seed();
     for (int64_t i = 0; i < key_size; i++) {
         h ^= p[i];
         h *= 0x100000001b3ULL;
@@ -51,7 +92,7 @@ uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
     const RaskStr *s = (const RaskStr *)key;
     int64_t len = rask_string_len(s);
     const char *data = rask_string_ptr(s);
-    uint64_t h = 0xcbf29ce484222325ULL;
+    uint64_t h = 0xcbf29ce484222325ULL ^ map_seed();
     for (int64_t i = 0; i < len; i++) {
         h ^= (uint8_t)data[i];
         h *= 0x100000001b3ULL;

@@ -84,7 +84,7 @@ Each stage is independently shippable and testable.
 - **File**: extend `stdlib/sequence.rk` with adapter and terminal definitions
 - Verify Rask allows `extend Sequence<T> { ... }` on a type alias. If not, either add support or make adapters free functions with method-call sugar
 - Adapters: `filter`, `map`, `take`, `skip`, `take_while`, `skip_while`, `chain`, `enumerate`, `flatten`, `flat_map`
-- Terminals: `collect`, `fold`, `reduce`, `sum`, `product`, `count`, `min`, `max`, `min_by`, `max_by`, `min_by_key`, `max_by_key`, `any`, `all`, `find`, `for_each`
+- Terminals: `to_vec`, `to_map`, `join`, `fold`, `reduce`, `sum`, `product`, `count`, `min`, `max`, `min_by`, `max_by`, `min_by_key`, `max_by_key`, `any`, `all`, `find`, `for_each` (`type.sequence/SEQ28-SEQ33` — there is no `collect`)
 - Each adapter is closure-returning — example:
   ```rask
   extend Sequence<T> {
@@ -147,7 +147,7 @@ Each stage is independently shippable and testable.
 
 - **New file**: `compiler/crates/rask-mir/tests/sequence_fusion.rs`
 - Parse, type-check, and MIR-lower canonical chains:
-  - `seq.filter(p).map(f).take(n).collect()`
+  - `seq.filter(p).map(f).take(n).to_vec()`
   - Custom Sequence via explicit closure
 - Assert MIR output equivalent to the hand-written loop (block count, no extra function calls per item beyond closure inlining)
 - Reuse the existing compiler test harness in `compiler/crates/rask-mir/tests/`
@@ -199,7 +199,7 @@ Each stage is independently shippable and testable.
 1. `cd compiler && cargo build --release -p rask-cli`
 2. Author a custom tree with a `Sequence` method (in-order traversal)
 3. `rask run tree_example.rk` prints nodes in order
-4. `tree.in_order().filter(|n| n.value > 10).take(5).collect()` works
+4. `tree.in_order().filter(|n| n.value > 10).take(5).to_vec()` works
 5. `for mutate node in tree.in_order_mut() { node.value += 1 }` works
 6. `for msg in rx.stream() { handle(msg) }` works with a spawned sender
 7. `rask test-project tests/suite` passes

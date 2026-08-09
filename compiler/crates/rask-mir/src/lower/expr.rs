@@ -211,6 +211,28 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
 }
 
 impl<'a> MirLowerer<'a> {
+    /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
+    /// what an unsubstituted generic parameter looks like by the time it reaches
+    /// MIR, and it must never be mistaken for a real layout.
+    ///
+    /// Integers only because they're the only implicit coercion today (CV1a). If
+    /// float widening ever becomes implicit, this has to widen with it or the
+    /// tuple-literal layout bug comes back for `(f64, f32)` — the `Ptr` exclusion
+    /// is the part that must survive, not the integer restriction (#660).
+    fn is_int_scalar(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::I8
+                | MirType::I16
+                | MirType::I32
+                | MirType::I64
+                | MirType::U8
+                | MirType::U16
+                | MirType::U32
+                | MirType::U64
+        )
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
@@ -1683,8 +1705,64 @@ impl<'a> MirLowerer<'a> {
                     lowered_elems.push(elem_op);
                     elem_types.push(elem_ty);
                 }
+                // CV1a: the tuple is built at the *destination's* layout, not the
+                // elements'. `let t: (i64, i32) = (u32_val, u16_val)` type-checks
+                // by widening each element, so the slot has to be the annotated
+                // shape — built from the element types it packed a u32 at offset 0
+                // and a u16 at offset 4, then copied those bytes into an
+                // `(i64, i32)` slot whose fields live at 0 and 8. Reading `t.0`
+                // took eight bytes spanning both, and printed
+                // `60000 << 32 | 3000000000`.
+                // Only an integer element is overridden, and only by another
+                // integer type. In a generic body the checker's type is the
+                // *unsubstituted* parameter — `-> (A, B)` — which reaches MIR as a
+                // pointer, and taking that as the layout gave the monomorphized
+                // copy of `both<i64, string>` a slot shaped for neither.
+                let target_elems = match self.ctx.lookup_node_type(expr.id) {
+                    Some(MirType::Tuple(target)) if target.len() == elem_types.len() => Some(target),
+                    _ => None,
+                };
+                let elem_types: Vec<MirType> = match target_elems {
+                    None => elem_types,
+                    Some(target) => elem_types
+                        .into_iter()
+                        .zip(target.into_iter())
+                        .map(|(got, want)| {
+                            if Self::is_int_scalar(&got) && Self::is_int_scalar(&want) {
+                                want
+                            } else {
+                                got
+                            }
+                        })
+                        .collect(),
+                };
                 let tuple_ty = MirType::Tuple(elem_types.clone());
                 let result_local = self.builder.alloc_temp(tuple_ty.clone());
+                // Widen each element into the slot's type first. Going through an
+                // Assign rather than extending in the store keeps one place that
+                // knows unsigned widening zero-extends (#326) instead of two.
+                let lowered_elems: Vec<MirOperand> = lowered_elems
+                    .into_iter()
+                    .zip(elem_types.iter())
+                    .map(|(op, target_ty)| {
+                        let src_ty = match &op {
+                            MirOperand::Local(id) => self.builder.local_type(*id),
+                            MirOperand::Constant(_) => None,
+                        };
+                        let coerces = src_ty.as_ref().is_some_and(|s| {
+                            s != target_ty && s.size() <= 8 && target_ty.size() <= 8
+                        });
+                        if !coerces {
+                            return op;
+                        }
+                        let widened = self.builder.alloc_temp(target_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: widened,
+                            rvalue: MirRValue::Use(op),
+                        }));
+                        MirOperand::Local(widened)
+                    })
+                    .collect();
                 let mut offset = 0u32;
                 for (elem_op, elem_ty) in lowered_elems.into_iter().zip(elem_types.iter()) {
                     let elem_size = elem_ty.size();

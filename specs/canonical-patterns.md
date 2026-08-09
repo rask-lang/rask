@@ -341,13 +341,13 @@ for item in collection {
 let found = users.find(|u| u.name == target)
 
 // Transform
-let names = users.map(|u| u.name).collect()
+let names = users.map(|u| u.name).to_vec()
 
 // Filter + transform
 let active = users
     .filter(|u| u.is_active())
     .map(|u| u.name)
-    .collect()
+    .to_vec()
 ```
 
 **Anti-patterns:**
@@ -377,8 +377,8 @@ let result = sb.build()
 if line.contains("error"): handle_error(line)
 if path.starts_with("/"): treat_as_absolute(path)
 
-// Splitting — returns iterators, collect() for random access
-let parts = line.split(",").collect()
+// Splitting — returns sequences, to_vec() for random access
+let parts = line.split(",").to_vec()
 for word in text.split_whitespace() {
     process(word)
 }

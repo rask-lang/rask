@@ -48,15 +48,18 @@ is_pending() {
     grep -qE "^$1\.rk([[:space:]]|#|$)" "$PENDING_FILE"
 }
 
-for golden in "$GOLDEN_DIR"/*.out; do
-    [ -e "$golden" ] || continue
+# Each example is independent, so the runs fan out across cores; only the
+# reporting below stays sequential, reading results back in glob order so the
+# output and exit code match a serial run exactly.
+JOBS="${GATE_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+run_one() {
+    golden="$1"
     name="$(basename "$golden" .out)"
     src="$EXAMPLES_DIR/$name.rk"
-    if [ ! -f "$src" ]; then
-        echo "MISSING SRC: $name.rk (has golden but no example)"
-        fails=$((fails+1))
-        continue
-    fi
+    [ -f "$src" ] || { printf 'MISSINGSRC\n' > "$WORK/$name.res"; return; }
     want="$(cat "$golden")"
 
     iout="$(timeout 60 "$RASK" run --interp "$src" 2>/dev/null)"; ic=$?
@@ -67,6 +70,28 @@ for golden in "$GOLDEN_DIR"/*.out; do
     [ "$nc" -ne 0 ] && bad="$bad native-exit=$nc"
     [ "$iout" != "$want" ] && bad="$bad interp-mismatch"
     [ "$nout" != "$want" ] && bad="$bad native-mismatch"
+
+    printf '%s\n' "$bad" > "$WORK/$name.res"
+    # Only the native diff is reported, so that's all the worker needs to keep.
+    if [ "$nout" != "$want" ]; then
+        diff <(printf '%s' "$want") <(printf '%s' "$nout") | head -8 | sed 's/^/    /' > "$WORK/$name.diff"
+    fi
+}
+export -f run_one
+export RASK WORK EXAMPLES_DIR
+
+find "$GOLDEN_DIR" -maxdepth 1 -name '*.out' -print0 \
+    | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+
+for golden in "$GOLDEN_DIR"/*.out; do
+    [ -e "$golden" ] || continue
+    name="$(basename "$golden" .out)"
+    if [ ! -f "$WORK/$name.res" ] || [ "$(cat "$WORK/$name.res")" = "MISSINGSRC" ]; then
+        echo "MISSING SRC: $name.rk (has golden but no example)"
+        fails=$((fails+1))
+        continue
+    fi
+    bad="$(cat "$WORK/$name.res")"
 
     if is_pending "$name"; then
         if [ -z "$bad" ]; then
@@ -83,9 +108,9 @@ for golden in "$GOLDEN_DIR"/*.out; do
         ok=$((ok+1))
     else
         echo "FAIL: $name —$bad"
-        if [ "$nout" != "$want" ]; then
+        if [ -f "$WORK/$name.diff" ]; then
             echo "  native diff (want → got):"
-            diff <(printf '%s' "$want") <(printf '%s' "$nout") | head -8 | sed 's/^/    /'
+            cat "$WORK/$name.diff"
         fi
         fails=$((fails+1))
     fi

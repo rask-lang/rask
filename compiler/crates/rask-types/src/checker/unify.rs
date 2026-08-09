@@ -473,6 +473,33 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
+        // CV1a/CV2: this is the one place the *direction* of a coercion is known
+        // — `expected` is the position being filled, `ret_ty` is the value going
+        // into it — so it's where "does every value fit" can be enforced. The
+        // general `Equal` arm can't: it's reached with the two types in either
+        // order, so it tests widening both ways round and accepts narrowing as a
+        // result. `let small: u8 = big_u64` type-checked, and then the backends
+        // disagreed about what it meant (interp kept 300, native truncated to
+        // 44). That hole is #649; this closes it for the positions that carry a
+        // direction, which are the ones CV1a is about.
+        {
+            let resolved_ret = self.ctx.apply(&ret_ty);
+            if let (Some(_), Some(_)) = (
+                Self::int_shape(&resolved_ret),
+                Self::int_shape(&resolved_expected),
+            ) {
+                if resolved_ret != resolved_expected
+                    && !Self::is_integer_widening(&resolved_ret, &resolved_expected)
+                {
+                    return Err(TypeError::NarrowingNeedsPolicy {
+                        from: resolved_ret,
+                        to: resolved_expected,
+                        span,
+                    });
+                }
+            }
+        }
+
         if let Type::Result { ok, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
             // Optional shape (T or none) is widened freely; non-optional sums
@@ -1008,17 +1035,55 @@ impl TypeChecker {
     }
 
     /// Check if `from` can widen to `to` (same signedness, strictly narrower).
-    fn is_integer_widening(from: &Type, to: &Type) -> bool {
-        match (from, to) {
-            (Type::I8, Type::I16 | Type::I32 | Type::I64 | Type::I128) => true,
-            (Type::I16, Type::I32 | Type::I64 | Type::I128) => true,
-            (Type::I32, Type::I64 | Type::I128) => true,
-            (Type::I64, Type::I128) => true,
-            (Type::U8, Type::U16 | Type::U32 | Type::U64 | Type::U128) => true,
-            (Type::U16, Type::U32 | Type::U64 | Type::U128) => true,
-            (Type::U32, Type::U64 | Type::U128) => true,
-            (Type::U64, Type::U128) => true,
-            _ => false,
+    /// Width and signedness of an integer type, or `None` if it isn't one.
+    fn int_shape(ty: &Type) -> Option<(u32, bool)> {
+        Some(match ty {
+            Type::I8 => (8, true),
+            Type::I16 => (16, true),
+            Type::I32 => (32, true),
+            Type::I64 => (64, true),
+            Type::I128 => (128, true),
+            Type::U8 => (8, false),
+            Type::U16 => (16, false),
+            Type::U32 => (32, false),
+            Type::U64 => (64, false),
+            Type::U128 => (128, false),
+            _ => return None,
+        })
+    }
+
+    /// Can every value of `from` be represented in `to`?
+    ///
+    /// This is the whole test for whether a conversion is implicit
+    /// (type.primitives/CV1a). A conversion that cannot fail tells the reader
+    /// nothing, and ceremony that informs nobody is a design bug
+    /// (NORTH_STAR commitment 5) — so it's implicit. A conversion that *can*
+    /// fail has to be written, and there are named verbs for those
+    /// (`truncate to`, `saturate to`, `convert to T?`).
+    ///
+    /// Cross-sign is allowed in exactly one direction and only when the target
+    /// is strictly wider: every `u32` fits an `i64`, so rejecting that protected
+    /// nobody. `u64` → `i64` stays rejected because a `u64` above `i64::MAX`
+    /// doesn't fit, and `i*` → `u*` never coerces because negatives never fit.
+    ///
+    /// Positions only — assignment, argument, return, field. Not arithmetic:
+    /// operators are homogeneous, so `a + b` on mixed types is still an error.
+    /// That's the line C's "usual arithmetic conversions" crossed, and it's why
+    /// `-1 < 1u` is true there.
+    pub(super) fn is_integer_widening(from: &Type, to: &Type) -> bool {
+        let (Some((from_bits, from_signed)), Some((to_bits, to_signed))) =
+            (Self::int_shape(from), Self::int_shape(to))
+        else {
+            return false;
+        };
+        match (from_signed, to_signed) {
+            // Same signedness: fits when the target is no narrower.
+            (true, true) | (false, false) => from_bits <= to_bits,
+            // Unsigned into signed: the target loses a bit to the sign, so it
+            // has to be strictly wider. u8 → i16 fits; u8 → i8 does not.
+            (false, true) => from_bits < to_bits,
+            // Signed into unsigned: negatives have nowhere to go.
+            (true, false) => false,
         }
     }
 }
