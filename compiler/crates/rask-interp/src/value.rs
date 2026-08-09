@@ -464,6 +464,68 @@ pub struct StructData {
     pub resource_id: Option<u64>,
 }
 
+/// A Map key. Hash/Eq delegate to `Interpreter::value_hash`/`value_eq` — the
+/// same structural comparison every other Value equality check in the
+/// interpreter uses — so a key found by `==` is always the key a Map finds too.
+#[derive(Debug, Clone)]
+pub struct MapKey(pub Value);
+
+impl PartialEq for MapKey {
+    fn eq(&self, other: &Self) -> bool {
+        crate::interp::Interpreter::value_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for MapKey {}
+
+impl std::hash::Hash for MapKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(crate::interp::Interpreter::value_hash(&self.0));
+    }
+}
+
+/// Map's backing store. Kept insertion-ordered (`IndexMap`, not `HashMap`) so
+/// internal users that need a specific order — struct-to-JSON encoding
+/// walking fields in declaration order, JSON decoding preserving source order
+/// — can just iterate it directly. A real Rask `Map`'s *observable* order
+/// (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`) must not
+/// be insertion order per determinism/D7 — those call sites go through
+/// `map_entries_seeded` instead of iterating this directly.
+///
+/// json.rs is the one exception: `JsonValue::Object` is *also* a `Value::Map`
+/// under the hood (it needs `.get()`), and its stringify path shares code
+/// with a directly-encoded struct's fields, which must stay in declaration
+/// order. So a `Map` value serialized through `json.encode`/`json.stringify`
+/// still comes out in insertion order today rather than seeded order — a
+/// narrower, untested corner of D7 traded off to avoid re-breaking #540.
+pub type MapData = IndexMap<MapKey, Value>;
+
+/// Per-process random value mixed into a key's hash to order a Map's
+/// observable iteration (determinism/D7: seeded hash order, not insertion
+/// order, not attacker-predictable). `RandomState` pulls its keys from OS
+/// entropy, so this varies run to run without a hand-rolled seed source.
+fn map_order_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static SEED: LazyLock<u64> = LazyLock::new(|| {
+        std::collections::hash_map::RandomState::new().build_hasher().finish()
+    });
+    *SEED
+}
+
+/// A Map's entries in seeded hash order — what every user-observable Map
+/// operation (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`)
+/// iterates instead of the insertion-ordered backing store. Stable for a
+/// given key set within one process, but neither insertion order nor
+/// guessable across processes.
+pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
+    let mut entries: Vec<(Value, Value)> = map.iter()
+        .map(|(k, v)| (k.0.clone(), v.clone()))
+        .collect();
+    let seed = map_order_seed();
+    entries.sort_by_key(|(k, _)| crate::interp::Interpreter::value_hash(k) ^ seed);
+    entries
+}
+
 /// A runtime value in the interpreter.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -574,7 +636,7 @@ pub enum Value {
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
-    Map(Arc<Mutex<Vec<(Value, Value)>>>),
+    Map(Arc<Mutex<MapData>>),
     /// Atomic bool (lock-free boolean)
     AtomicBool(Arc<std::sync::atomic::AtomicBool>),
     /// Atomic usize (lock-free unsigned integer)
@@ -948,8 +1010,8 @@ impl Value {
             }
             Value::Map(m) => {
                 let map = m.lock().unwrap();
-                let deep: Vec<(Value, Value)> = map.iter()
-                    .map(|(k, v)| (k.deep_clone(), v.deep_clone()))
+                let deep: MapData = map.iter()
+                    .map(|(k, v)| (MapKey(k.0.deep_clone()), v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
@@ -1159,9 +1221,9 @@ impl fmt::Display for Value {
             Value::Receiver(_) => write!(f, "<Receiver>"),
             Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
             Value::Map(m) => {
-                let map = m.lock().unwrap();
+                let entries = map_entries_seeded(&m.lock().unwrap());
                 write!(f, "Map {{ ")?;
-                for (i, (k, v)) in map.iter().enumerate() {
+                for (i, (k, v)) in entries.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }

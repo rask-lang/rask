@@ -97,6 +97,47 @@ impl TypeChecker {
                 self.node_types.insert(expr.id, ty.clone());
                 return ty;
             }
+            // CV1a: push the expectation into a tuple literal's elements, so each
+            // one is checked against the slot it fills and the tuple's recorded
+            // type is the annotated shape. Typed from its elements instead, the
+            // literal's node type stayed `(u32, u16)` while the binding was
+            // `(i64, i32)` — element-wise unification accepted the widening, but
+            // MIR then built the slot at the *source* layout and the destination
+            // read fields that were never at those offsets.
+            ExprKind::Tuple(elements) => {
+                if let Type::Tuple(expected_elems) = expected {
+                    if expected_elems.len() == elements.len() && !elements.is_empty() {
+                        let elem_types: Vec<_> = elements
+                            .iter()
+                            .zip(expected_elems.iter())
+                            .map(|(e, want)| self.infer_expr_expecting(e, want))
+                            .collect();
+                        // The expectation only wins where the element actually
+                        // coerced to it; anything else keeps its own type so a
+                        // genuine mismatch is still reported downstream.
+                        // Integer coercion only, because that's all CV1a makes
+                        // implicit — if float widening joins it, this and MIR's
+                        // matching guard both have to widen or `(f64, f32)` goes
+                        // back to being laid out at its elements' widths (#660).
+                        let ty = Type::Tuple(
+                            elem_types
+                                .iter()
+                                .zip(expected_elems.iter())
+                                .map(|(got, want)| {
+                                    let got_r = self.ctx.apply(got);
+                                    if Self::is_integer_widening(&got_r, want) {
+                                        want.clone()
+                                    } else {
+                                        got.clone()
+                                    }
+                                })
+                                .collect(),
+                        );
+                        self.node_types.insert(expr.id, ty.clone());
+                        return ty;
+                    }
+                }
+            }
             _ => {}
         }
         let ty = self.infer_expr(expr);

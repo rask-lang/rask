@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An aggregate coming back from a closure call has to be copied into the
+// caller's own slot before anything else runs. A Rask function returns an
+// aggregate two different ways — the bare value when it fits in a word, a
+// pointer into its own frame when it doesn't — and the closure call site used
+// to park whichever one it got straight into the destination variable. The word
+// then got dereferenced as an address (#633: struct and enum payloads
+// segfaulted) and the pointer got overwritten by the next call's frame (#611:
+// a string was garbage unless you bound it to a local before using it).
+//
+// So the tests here use each result twice: once straight as an operand, once
+// through a local. The direct form is the one that was broken.
+
+struct Small {
+    public a: i64
+}
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Mixed {
+    public n: i64
+    public s: string
+}
+
+// Narrower than a word. The callee hands back a whole word regardless, so the
+// call site has to copy out only the bytes this actually has.
+struct Pair8 {
+    public a: u8
+    public b: u8
+}
+
+struct Pair32 {
+    public a: i32
+    public b: i32
+}
+
+enum Colour {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Dot
+    Circle(i64)
+    Rect(i64, i64)
+}
+
+func colour_name(c: Colour) -> string {
+    match c {
+        Colour.Red => { return "red" }
+        Colour.Green => { return "green" }
+        Colour.Blue => { return "blue" }
+    }
+}
+
+func sum_pair(f: func() -> Big) -> i64 {
+    let v = f()
+    return v.a + v.b + v.c
+}
+
+test "a string result survives being used as an operand" {
+    let c = "hi"
+    let f = || { return c }
+    assert_eq(f(), "hi")
+    assert_eq(f().len(), 2)
+    let got = f()
+    assert_eq(got, "hi")
+}
+
+test "a string result survives two uses in one expression" {
+    let c = "ab"
+    let f = || { return c }
+    assert_eq(f().len() + f().len(), 4)
+}
+
+// A word-sized struct comes back as the value itself, not as an address.
+test "a one-word struct survives" {
+    let s = Small { a: 42 }
+    let f = || { return s }
+    assert_eq(f().a, 42)
+    let got = f()
+    assert_eq(got.a, 42)
+}
+
+test "a struct narrower than a word survives" {
+    let p = Pair8 { a: 1, b: 2 }
+    let f = || { return p }
+    assert_eq(f().a, 1)
+    assert_eq(f().b, 2)
+    let got = f()
+    assert_eq(got.a, 1)
+    assert_eq(got.b, 2)
+}
+
+// Exactly a word, but two fields rather than one.
+test "a two-field word-sized struct survives" {
+    let p = Pair32 { a: 3, b: 4 }
+    let f = || { return p }
+    assert_eq(f().a, 3)
+    assert_eq(f().b, 4)
+    let got = f()
+    assert_eq(got.a + got.b, 7)
+}
+
+test "a struct wider than a word survives" {
+    let b = Big { a: 1, b: 2, c: 3 }
+    let f = || { return b }
+    assert_eq(f().a, 1)
+    assert_eq(f().c, 3)
+    let got = f()
+    assert_eq(got.a + got.b + got.c, 6)
+}
+
+test "a struct with a string field survives" {
+    let m = Mixed { n: 7, s: "seven" }
+    let f = || { return m }
+    assert_eq(f().n, 7)
+    assert_eq(f().s, "seven")
+    let got = f()
+    assert_eq(got.s, "seven")
+}
+
+test "a fieldless enum survives" {
+    let c = Colour.Green
+    let f = || { return c }
+    assert_eq(colour_name(f()), "green")
+    let got = f()
+    assert_eq(colour_name(got), "green")
+}
+
+test "an enum with a payload survives" {
+    let s = Shape.Rect(3, 4)
+    let f = || { return s }
+    match f() {
+        Shape.Dot => { assert_eq(1, 0) }
+        Shape.Circle(r) => { assert_eq(r, 0) }
+        Shape.Rect(w, h) => { assert_eq(w * h, 12) }
+    }
+}
+
+// Calling through a `func()` parameter goes down the same path.
+test "a closure called through a parameter returns an aggregate" {
+    let b = Big { a: 4, b: 5, c: 6 }
+    let f = own || { return b }
+    assert_eq(sum_pair(f), 15)
+}
+
+// Scalars kept the old path — check they still work.
+test "scalar results are unaffected" {
+    let n = 99
+    let f = || { return n }
+    assert_eq(f(), 99)
+
+    let d = 2.5
+    let g = || { return d }
+    assert_eq(g(), 2.5)
+
+    let b = true
+    let h = || { return b }
+    assert_eq(h(), true)
+}
