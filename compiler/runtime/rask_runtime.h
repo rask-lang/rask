@@ -653,9 +653,21 @@ void      rask_runtime_shutdown(void);
 // Spawn a green task. poll_fn signature: int (*)(void *state, void *task_ctx).
 // state is heap-allocated, freed by scheduler on completion.
 void     *rask_green_spawn(void *poll_fn, void *state, int64_t state_size);
-int64_t   rask_green_join(void *handle);
+
+// Block until the task finishes. Returns 0 on success, -1 on panic.
+// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
+// (caller must free). Consumes the handle. Never re-panics in the joining
+// context — the caller decides what to do with the error (ctrl.panic/O1).
+int64_t   rask_green_join(void *handle, char **msg_out);
 void      rask_green_detach(void *handle);
-int64_t   rask_green_cancel(void *handle);
+
+// Request cooperative cancellation, then wait for the task to finish.
+// Returns 0 on success, -1 on panic. Consumes the handle.
+int64_t   rask_green_cancel(void *handle, char **msg_out);
+
+// Simplified join/cancel: no panic message output. Returns 0 on success, -1 on panic.
+int64_t   rask_green_join_simple(void *handle);
+int64_t   rask_green_cancel_simple(void *handle);
 
 // Closure-based spawn (bridge for codegen before state machine transform).
 void     *rask_green_closure_spawn(void *closure_ptr);
