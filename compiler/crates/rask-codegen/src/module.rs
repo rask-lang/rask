@@ -265,6 +265,29 @@ impl CodeGenerator {
             self.func_ids.insert("rask_print_u64".to_string(), id);
         }
 
+        // The stderr half of the print family — same signatures, one per type,
+        // so `eprint`/`eprintln` lower exactly like `print`/`println` with the
+        // other set of symbols.
+        for (name, param) in [
+            ("rask_eprint_i64", Some(types::I64)),
+            ("rask_eprint_bool", Some(types::I8)),
+            ("rask_eprint_string", Some(types::I64)),
+            ("rask_eprint_f64", Some(types::F64)),
+            ("rask_eprint_f32", Some(types::F32)),
+            ("rask_eprint_char", Some(types::I32)),
+            ("rask_eprint_u64", Some(types::I64)),
+            ("rask_eprint_newline", None),
+        ] {
+            let mut sig = self.module.make_signature();
+            if let Some(p) = param {
+                sig.params.push(AbiParam::new(p));
+            }
+            let id = self.module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
+        }
+
         // rask_exit(code: i64) -> void
         {
             let mut sig = self.module.make_signature();
@@ -775,7 +798,9 @@ impl CodeGenerator {
             f.blocks.iter().any(|b| {
                 b.statements.iter().any(|s| {
                     matches!(&s.kind, rask_mir::MirStmtKind::Call { func, args, .. }
-                        if (func.name == "print" || func.name == "println") && args.len() > 1)
+                        if matches!(func.name.as_str(),
+                                    "print" | "println" | "eprint" | "eprintln")
+                            && args.len() > 1)
                 })
             })
         });

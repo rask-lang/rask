@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Iterating a Pool binds a Handle, not the element (#653).
+// `for h in pool` is handle mode (mem.pools/PF1) — it yields `Handle<T>`, while
+// `pool[h]` yields `T`. When the deferred field-iteration path reused the Index
+// relation to mean "element of container", a Pool behind a field started binding
+// the loop variable to `T`, so `to_remove.push(h)` then wanted an `Entity` where
+// a `Handle<Entity>` belonged. A Pool held in a local was unaffected, because its
+// type is already resolved at the loop and inference pinned the binding from the
+// body — which is what made this look like a Vec bug rather than a Pool one.
+
+struct Entity {
+    id: i64
+    active: bool
+}
+
+struct GameState {
+    entities: Pool<Entity>
+    tags: Vec<string>
+}
+
+test "mem.pools — a Pool in a local binds a Handle" {
+    mut pool: Pool<Entity> = Pool.new()
+    let h1 = pool.insert(Entity { id: 1, active: true })
+    let h2 = pool.insert(Entity { id: 2, active: false })
+
+    mut handles: Vec<Handle<Entity>> = Vec.new()
+    for h in pool {
+        handles.push(h)
+    }
+    assert_eq(handles.len(), 2)
+}
+
+test "mem.pools — a Pool behind a field binds a Handle too" {
+    mut state = GameState { entities: Pool.new(), tags: Vec.new() }
+    let g1 = state.entities.insert(Entity { id: 10, active: true })
+    let g2 = state.entities.insert(Entity { id: 20, active: false })
+
+    mut handles: Vec<Handle<Entity>> = Vec.new()
+    for h in state.entities {
+        handles.push(h)
+    }
+    assert_eq(handles.len(), 2)
+}
+
+test "mem.pools — collect handles, then remove by handle" {
+    mut state = GameState { entities: Pool.new(), tags: Vec.new() }
+    let a = state.entities.insert(Entity { id: 1, active: true })
+    let b = state.entities.insert(Entity { id: 2, active: false })
+    let c = state.entities.insert(Entity { id: 3, active: false })
+
+    // The shape examples/game_loop.rk uses: the Vec's element type comes from
+    // the loop binding, so an element-typed binding breaks the remove below.
+    mut to_remove = Vec.new()
+    for h in state.entities {
+        if !state.entities[h].active {
+            to_remove.push(h)
+        }
+    }
+    assert_eq(to_remove.len(), 2)
+
+    for h in to_remove {
+        state.entities.remove(h)
+    }
+
+    mut left = 0
+    for h in state.entities {
+        left = left + 1
+    }
+    assert_eq(left, 1)
+}
+
+test "mem.pools — indexing still yields the element, not the handle" {
+    mut state = GameState { entities: Pool.new(), tags: Vec.new() }
+    let h = state.entities.insert(Entity { id: 42, active: true })
+
+    // Same container, the other relation: `pool[h]` is the element.
+    let e: Entity = state.entities[h]
+    assert_eq(e.id, 42)
+    assert(e.active)
+}
+
+test "stdlib.collections — a Vec behind a field still binds its element" {
+    mut state = GameState { entities: Pool.new(), tags: Vec.new() }
+    state.tags.push("alpha")
+    state.tags.push("beta")
+
+    mut joined = ""
+    for t in state.tags {
+        joined = "{joined}{t};"
+    }
+    assert_eq(joined, "alpha;beta;")
+}

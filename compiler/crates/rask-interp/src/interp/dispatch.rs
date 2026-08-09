@@ -116,6 +116,19 @@ impl Interpreter {
                 }
                 Ok(Value::Unit)
             }
+            // stderr isn't captured the way `write_output` captures stdout —
+            // test harnesses diff stdout, and the point of eprint is to stay
+            // out of that.
+            BuiltinKind::EPrintln => {
+                let line: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                eprintln!("{}", line.join(" "));
+                Ok(Value::Unit)
+            }
+            BuiltinKind::EPrint => {
+                let line: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                eprint!("{}", line.join(" "));
+                Ok(Value::Unit)
+            }
             BuiltinKind::Panic => {
                 let msg = args
                     .first()

@@ -76,8 +76,8 @@ extend Store {
     }
 }
 
-// `try … else` widens the error and binds the payload.
-func check_via_else(store: Store, id: u64, want: string) -> void or ApiError {
+// `catch e =>` widens the error and binds the payload.
+func check_via_catch(store: Store, id: u64, want: string) -> void or ApiError {
     let v = store.view(id) catch e => return e.to_api()
     assert v.id == id
     assert v.title == want
@@ -94,10 +94,10 @@ func check_via_try(store: Store, id: u64, want: string) -> void or StoreError {
     return
 }
 
-test "type.errors — the ok payload of try…else keeps its struct type" {
+test "type.errors — the ok payload of a catch guard keeps its struct type" {
     let store = Store.new()
-    check_via_else(store, 1, "one")!
-    check_via_else(store, 2, "two")!
+    check_via_catch(store, 1, "one")!
+    check_via_catch(store, 2, "two")!
 }
 
 test "type.errors — plain try keeps the payload's struct type too" {

@@ -17,55 +17,73 @@ extern void rask_main(void);
 
 // ─── Print functions ──────────────────────────────────────────────
 
-void rask_print_i64(int64_t val) {
-    printf("%lld", (long long)val);
+// One implementation per type, parameterized on the stream; the stdout and
+// stderr entry points below are thin wrappers. Codegen calls the wrappers
+// directly — it picks the pair from the builtin's name, so there's no
+// stream argument to thread through MIR.
+static void rask_fput_i64(FILE *out, int64_t val) {
+    fprintf(out, "%lld", (long long)val);
 }
 
-void rask_print_bool(int8_t val) {
-    printf("%s", val ? "true" : "false");
+static void rask_fput_bool(FILE *out, int8_t val) {
+    fputs(val ? "true" : "false", out);
 }
 
-void rask_print_f64(double val) {
+static void rask_fput_f64(FILE *out, double val) {
     char buf[RASK_F64_BUF_SIZE];
     rask_fmt_double(buf, sizeof(buf), val);
-    fputs(buf, stdout);
+    fputs(buf, out);
 }
 
-void rask_print_f32(float val) {
+static void rask_fput_f32(FILE *out, float val) {
     char buf[RASK_F64_BUF_SIZE];
     rask_fmt_float(buf, sizeof(buf), val);
-    fputs(buf, stdout);
+    fputs(buf, out);
 }
 
-void rask_print_char(int32_t codepoint) {
+static void rask_fput_char(FILE *out, int32_t codepoint) {
     if (codepoint < 0x80) {
-        putchar(codepoint);
+        putc(codepoint, out);
     } else if (codepoint < 0x800) {
-        putchar(0xC0 | (codepoint >> 6));
-        putchar(0x80 | (codepoint & 0x3F));
+        putc(0xC0 | (codepoint >> 6), out);
+        putc(0x80 | (codepoint & 0x3F), out);
     } else if (codepoint < 0x10000) {
-        putchar(0xE0 | (codepoint >> 12));
-        putchar(0x80 | ((codepoint >> 6) & 0x3F));
-        putchar(0x80 | (codepoint & 0x3F));
+        putc(0xE0 | (codepoint >> 12), out);
+        putc(0x80 | ((codepoint >> 6) & 0x3F), out);
+        putc(0x80 | (codepoint & 0x3F), out);
     } else {
-        putchar(0xF0 | (codepoint >> 18));
-        putchar(0x80 | ((codepoint >> 12) & 0x3F));
-        putchar(0x80 | ((codepoint >> 6) & 0x3F));
-        putchar(0x80 | (codepoint & 0x3F));
+        putc(0xF0 | (codepoint >> 18), out);
+        putc(0x80 | ((codepoint >> 12) & 0x3F), out);
+        putc(0x80 | ((codepoint >> 6) & 0x3F), out);
+        putc(0x80 | (codepoint & 0x3F), out);
     }
 }
 
-void rask_print_u64(uint64_t val) {
-    printf("%llu", (unsigned long long)val);
+static void rask_fput_u64(FILE *out, uint64_t val) {
+    fprintf(out, "%llu", (unsigned long long)val);
 }
 
-void rask_print_string(const RaskStr *s) {
-    fputs(rask_string_ptr(s), stdout);
+static void rask_fput_string(FILE *out, const RaskStr *s) {
+    fputs(rask_string_ptr(s), out);
 }
 
-void rask_print_newline(void) {
-    putchar('\n');
-}
+void rask_print_i64(int64_t val) { rask_fput_i64(stdout, val); }
+void rask_print_bool(int8_t val) { rask_fput_bool(stdout, val); }
+void rask_print_f64(double val) { rask_fput_f64(stdout, val); }
+void rask_print_f32(float val) { rask_fput_f32(stdout, val); }
+void rask_print_char(int32_t codepoint) { rask_fput_char(stdout, codepoint); }
+void rask_print_u64(uint64_t val) { rask_fput_u64(stdout, val); }
+void rask_print_string(const RaskStr *s) { rask_fput_string(stdout, s); }
+void rask_print_newline(void) { putchar('\n'); }
+
+void rask_eprint_i64(int64_t val) { rask_fput_i64(stderr, val); }
+void rask_eprint_bool(int8_t val) { rask_fput_bool(stderr, val); }
+void rask_eprint_f64(double val) { rask_fput_f64(stderr, val); }
+void rask_eprint_f32(float val) { rask_fput_f32(stderr, val); }
+void rask_eprint_char(int32_t codepoint) { rask_fput_char(stderr, codepoint); }
+void rask_eprint_u64(uint64_t val) { rask_fput_u64(stderr, val); }
+void rask_eprint_string(const RaskStr *s) { rask_fput_string(stderr, s); }
+void rask_eprint_newline(void) { putc('\n', stderr); }
 
 // ─── Runtime support ──────────────────────────────────────────────
 

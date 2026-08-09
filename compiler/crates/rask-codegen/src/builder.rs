@@ -3467,19 +3467,29 @@ impl<'a> FunctionBuilder<'a> {
         args: &[MirOperand],
         ctx: &CodegenCtx,
     ) -> CodegenResult<bool> {
-        // Builtin print/println — dispatch per-arg to typed runtime functions
-        if func.name == "print" || func.name == "println" {
+        // Builtin print/println/eprint/eprintln — dispatch per-arg to typed
+        // runtime functions. The stderr pair differs only in symbol prefix.
+        if matches!(func.name.as_str(), "print" | "println" | "eprint" | "eprintln") {
+            let to_stderr = func.name.starts_with('e');
+            let sep_fn = if to_stderr { "rask_eprint_string" } else { "rask_print_string" };
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
                     let sp = Self::lower_operand_typed(
                         builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
                         Some(types::I64), ctx,
                     )?;
-                    let print_str = ctx.func_refs.get("rask_print_string")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
+                    let print_str = ctx.func_refs.get(sep_fn)
+                        .ok_or_else(|| CodegenError::FunctionNotFound(sep_fn.into()))?;
                     builder.ins().call(*print_str, &[sp]);
                 }
-                let runtime_fn = Self::runtime_print_for_operand(a, ctx.locals);
+                let base_fn = Self::runtime_print_for_operand(a, ctx.locals);
+                let owned_fn;
+                let runtime_fn: &str = if to_stderr {
+                    owned_fn = base_fn.replacen("rask_print_", "rask_eprint_", 1);
+                    &owned_fn
+                } else {
+                    base_fn
+                };
                 let fr = ctx.func_refs.get(runtime_fn)
                     .ok_or_else(|| CodegenError::FunctionNotFound(runtime_fn.into()))?;
                 // Get the expected param type from the runtime function's signature
@@ -3495,9 +3505,10 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 builder.ins().call(*fr, &[val]);
             }
-            if func.name == "println" {
-                let nl = ctx.func_refs.get("rask_print_newline")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
+            if func.name == "println" || func.name == "eprintln" {
+                let nl_fn = if to_stderr { "rask_eprint_newline" } else { "rask_print_newline" };
+                let nl = ctx.func_refs.get(nl_fn)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(nl_fn.into()))?;
                 builder.ins().call(*nl, &[]);
             }
             // print/println return void — define dest as zero if needed

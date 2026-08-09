@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Bounded pools enforce their capacity (mem.pools/PL2, PL8, #435).
+// `Pool.with_capacity(n)` used to be unbounded on interp and wouldn't compile
+// at all on native ("Function not found: Pool_with_capacity"), so neither half
+// of PL8 could fire. Both work now; these pin them so the bound doesn't quietly
+// become advisory again.
+//
+// The PL8 panic path — plain `insert` into a full pool — is deliberately not
+// exercised here, because a panic fails the test that raises it. Verified by
+// hand on both backends, identical message naming the escape:
+//   panic: pool at capacity: cannot insert into a bounded pool of capacity 1
+//          (use try_insert)
+//
+// Note the tests read `r is none`, not `r is InsertError`: the stub returns
+// `Handle<T>?` where mem.pools/PL8 says `Handle or InsertError`. That is not a
+// style difference — `try_insert` takes its value by move, so an optional has
+// no way to hand it back, and a refused `@resource` is dropped with nothing
+// consuming it. The error types don't exist yet, which is why the stub says
+// what it says. #666. Update these tests to match when it lands.
+
+struct Ent {
+    hp: i32
+}
+
+test "mem.pools — try_insert rejects once a bounded pool is full" {
+    mut p: Pool<Ent> = Pool.with_capacity(1)
+    let h = p.insert(Ent { hp: 1 })
+
+    let r = p.try_insert(Ent { hp: 2 })
+    assert(r is none)
+    assert_eq(p.len(), 1)
+}
+
+test "mem.pools — capacity is the actual bound, not a fixed rejection" {
+    // The discriminating case: at capacity 2 the same second insert succeeds.
+    // Without this, a try_insert that always failed would pass the test above.
+    mut p: Pool<Ent> = Pool.with_capacity(2)
+    let h = p.insert(Ent { hp: 1 })
+
+    let r = p.try_insert(Ent { hp: 2 })
+    assert(r?)
+    assert_eq(p.len(), 2)
+}
+
+test "mem.pools — a bounded pool fills to exactly its capacity" {
+    mut p: Pool<Ent> = Pool.with_capacity(4)
+    mut accepted = 0
+    for i in 0..8 {
+        let r = p.try_insert(Ent { hp: 1 })
+        if r? {
+            accepted = accepted + 1
+        }
+    }
+    assert_eq(accepted, 4)
+    assert_eq(p.len(), 4)
+}
+
+test "mem.pools — removing frees a slot the bound can reuse" {
+    mut p: Pool<Ent> = Pool.with_capacity(1)
+    let h = p.insert(Ent { hp: 1 })
+
+    let blocked = p.try_insert(Ent { hp: 2 })
+    assert(blocked is none)
+
+    p.remove(h)
+    assert_eq(p.len(), 0)
+
+    let after = p.try_insert(Ent { hp: 3 })
+    assert(after?)
+    assert_eq(p.len(), 1)
+}

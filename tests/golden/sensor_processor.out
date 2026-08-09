@@ -1,0 +1,17 @@
+=== Real-Time Sensor Processor ===
+
+Sample rate: 1000 Hz (interrupt)
+Process rate: 100 Hz (main loop)
+Hard deadline: 5000 µs
+
+Started. Processing 200 cycles...
+
+=== Results ===
+
+Samples processed: 6000
+Processing cycles: 200
+
+Final Averages (64-sample window):
+  Temperature: 22.021874999999998 C
+  Pressure:    101.31124999999999 hPa
+  Humidity:    45.000625 %

@@ -211,7 +211,10 @@ func main() {
     let SAMPLE_RATE_HZ = 1000
     let PROCESS_RATE_HZ = 100
     let HARD_DEADLINE_US = 5000
-    let DURATION_SECS = 2
+    // A fixed cycle count, not a wall-clock duration: 200 cycles at 100 Hz is
+    // the same ~2 seconds, but the loop runs the same number of times on a
+    // busy machine as an idle one, so the report below is reproducible.
+    let PROCESS_CYCLES = 200
 
     println("Sample rate: {SAMPLE_RATE_HZ} Hz (interrupt)")
     println("Process rate: {PROCESS_RATE_HZ} Hz (main loop)")
@@ -269,12 +272,12 @@ func main() {
         interrupt_handler(tx, start_time, SAMPLE_RATE_HZ)
     })
 
-    println("Started. Processing for {DURATION_SECS} seconds...")
+    println("Started. Processing {PROCESS_CYCLES} cycles...")
     println("")
 
     mut cycle: i64 = 0
 
-    while (time.Instant.now().duration_since(start_time).as_seconds() saturate to i64) < DURATION_SECS {
+    while cycle < PROCESS_CYCLES {
         let cycle_start = time.Instant.now()
 
         // Drain available samples without blocking — try_receive returns once
@@ -301,28 +304,39 @@ func main() {
     // Wait for interrupt handler
     isr_handle.join()
 
+    // The ISR is done producing, so whatever is still queued is the tail the
+    // last cycle didn't reach. Draining it here is what makes the sample count
+    // and the averages a property of the program rather than of how the two
+    // threads happened to interleave.
+    while rx.try_receive() is Reading as r {
+        state.process_reading(r.sensor_id, r.value)
+    }
+    state.compute_averages()
+
     // Print results
     println("=== Results ===")
     println("")
     println("Samples processed: {state.samples_processed}")
     println("Processing cycles: {cycle}")
     println("")
+    // Cycle timings measure this machine, not this program — they move run to
+    // run on a single backend as much as they differ between two. They go to
+    // stderr so the run still reports them while stdout stays reproducible.
     let min_us = timing.min_ns / 1000
     let max_us = timing.max_ns / 1000
     let mean_us = timing.mean_ns() / 1000
-    println("Timing Statistics:")
-    println("  Min cycle:  {min_us} µs")
-    println("  Max cycle:  {max_us} µs")
-    println("  Mean cycle: {mean_us} µs")
-    println("  Deadline misses: {timing.deadline_misses}")
-    println("")
+    eprintln("Timing Statistics (wall-clock, varies per run):")
+    eprintln("  Min cycle:  {min_us} µs")
+    eprintln("  Max cycle:  {max_us} µs")
+    eprintln("  Mean cycle: {mean_us} µs")
+    eprintln("  Deadline misses: {timing.deadline_misses}")
     println("Final Averages (64-sample window):")
     println("  Temperature: {state.temp_avg} C")
     println("  Pressure:    {state.pressure_avg} hPa")
     println("  Humidity:    {state.humidity_avg} %")
 
     if timing.deadline_misses > 0 {
-        println("")
-        println("WARNING: {timing.deadline_misses} deadline misses detected!")
+        eprintln("")
+        eprintln("WARNING: {timing.deadline_misses} deadline misses detected!")
     }
 }
