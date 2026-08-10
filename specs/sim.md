@@ -53,7 +53,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 |------|-------------|
 | **C1: Fixed start** | `Instant` starts at 0; `SystemTime` starts at 2020-01-01T00:00:00Z. Wall-clock start is not an input (`determinism/D10`) |
 | **C2: Jump when idle** | When nothing is runnable and a timer is pending, the clock jumps to the earliest deadline and wakes it. A 30-day `sleep` costs no wall time |
-| **C3: Step tick** | Each scheduling step advances the clock 1 µs. Without this, `loop { if start.elapsed() > timeout { break } }` never terminates in sim |
+| **C3: Time is charged, not free** | The clock advances at two points: every scheduling step (1 µs), and every clock read — `Instant.now()`, `elapsed()`, `SystemTime.now()` each cost 1 µs. Observing time costs time |
 | **C4: I/O latency** | Every simulated I/O completes at `now + latency`, drawn per operation class from the fault stream. Slow-peer orderings come from the seed, not from a mock |
 | **C5: No advance API** | Tests cannot advance the clock explicitly at v1. Same code in both modes (`determinism/D3`) — a test that wants time to pass sleeps |
 
@@ -87,7 +87,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`) |
 | **B2: FFI reported** | Reaching `ffi`/`unsafe` does not stop the test. Its result is marked `unsimulated: ffi` and the report says the seed does not cover what happened in there. `--sim-strict` turns the mark into a refusal (`determinism/D14`) |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
-| **B4: Environment** | Env and args are empty and fixed. A test that needs them sets them in-process |
+| **B4: Environment** | Env and args are empty by default. `@sim(env: real)` passes the real process environment through — the test is then declaring that its result depends on the machine, and its replay line is only valid on that machine |
 | **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
 
 ## Failure output
@@ -184,11 +184,17 @@ WHY: Falling through to the real call would make the run unreplayable without
 
 **S5 (deadlock is a failure):** This is the feature people will not expect. Under a real runtime a deadlock is a hang, and a hung test is a timeout with no information. Sim knows the full set of parked tasks and pending wakeups, so it can prove nothing is coming and print who was waiting on whom.
 
-**C3 (step tick):** Pure event-driven virtual clocks freeze when a task spins on elapsed time — the loop never parks, so the clock never advances, so the loop never exits. Charging a nominal tick per step is the cheapest fix and makes timeout code behave the way its author meant.
+**C3 (time is charged):** Pure event-driven virtual clocks freeze when a task spins on elapsed time — the loop never parks, so the clock never advances, so the loop never exits. Tokio's paused clock has exactly this hole (auto-advance stops while the runtime has work), and madsim intercepts `clock_gettime` to return virtual time without charging for it, so it has the hole too.
+
+Two charge points close it between them, and each covers what the other misses. The scheduling-step tick means CPU work eventually lets pending timers fire, so a task burning cycles can't starve a `sleep` forever. The clock-read tick covers the case the step tick can't: a spin loop whose body inlines away has no safe points, so it produces no scheduling steps — but it must still call into the runtime to read the clock, or it has no exit condition to spin on. A loop that observes time advances time; a loop that doesn't observe time can't observe that time hasn't moved.
+
+The cost is that virtual duration measures scheduling steps and clock reads, not work. Sim was never going to tell you something is slow (see non-goals), so this trades nothing anyone had.
 
 **F1 vs F2 (on vs opt-in):** Short reads and adversarial ordering are things a correct program already handles, so turning them on by default costs nothing but finds real bugs the first time someone runs `--sim` over an existing suite. Injected I/O errors are different: turning them on globally would fail every test that opens a file, and a mode that cries wolf on first contact does not get run twice.
 
 **F4 (fixed rates):** A tunable failure rate is a second dial that changes what a seed means. One seed, one execution — keep it.
+
+**B4 (env opt-in):** Passing the real environment through by default would keep more existing tests running, at the price of an input that `determinism/D1` never sees — the seed no longer determines the run, and the replay line quietly stops working on someone else's machine. Opt-in fixes that by making the dependency a written fact: a test that says `@sim(env: real)` has declared it reads the world, and the runner can say so in the failure report.
 
 **B5 (read-through filesystem):** An empty simulated filesystem is purer and would break every test with a fixture directory. Reads are a recorded external input; treating the real tree as read-only input keeps existing tests working while guaranteeing sim never writes anything.
 
@@ -197,7 +203,6 @@ WHY: Falling through to the real call would make the run unreplayable without
 These are design calls, not implementation gaps:
 
 - **B2 strictness.** Report-and-continue is the default above; the alternative is refusing FFI-reaching tests outright and making `--sim-permissive` the opt-out. Report-first assumes people will read the mark.
-- **B4 environment.** Empty env is stated above. Passing the real env through would keep more existing tests running but makes the replay line machine-dependent, which weakens `determinism/D1`.
 - **Which backend first.** The sim runtime is described against the native runtime, where the interposition points (scheduler, reactor, timer wheel) already exist as design. The interpreter would be quicker to make deterministic but is not what anyone ships.
 - **Fault rates (F4).** The actual numbers are unset. They want to come from running real tests, not from taste.
 
