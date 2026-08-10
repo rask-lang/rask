@@ -769,7 +769,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── File instance methods ─────────────────────────────────
         StdlibEntry::simple("File_close", "rask_file_close", &[types::I64], None, false),
-        StdlibEntry::simple("File_read_text", "rask_file_read_all", &[types::I64], Some(types::I64), false),
+        // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
+        // comes back through the out-param, the return value is the ok/err tag
+        // for `string or IoError`. Declared as a 1-arg call returning i64, the
+        // FILE* landed in `out` and the runtime wrote a 16-byte RaskStr over
+        // it (#654).
+        StdlibEntry {
+            mir_name: "File_read_text", c_name: "rask_file_read_all",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         // read_bytes/write_bytes return/take a Vec<u8> pointer directly — a
         // plain heap pointer never looks negative, so the existing
         // negative-return-means-error convention (used elsewhere for handles
@@ -1009,14 +1018,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
 
         // ── Concurrency: spawn/join/detach (green scheduler) ────────
+        // join/cancel use the same negative-return-means-panicked convention as
+        // the OS-thread path (ThreadHandle_join below) — a panicked task no
+        // longer re-panics in the joiner, it hands back Err(-1) (ctrl.panic/O1).
         StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("join", "rask_green_join", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("join", "rask_green_join_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::simple("cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("cancel", "rask_green_cancel_simple", &[types::I64], Some(types::I64), true),
         // TaskHandle qualified names (same C functions as unqualified)
-        StdlibEntry::simple("TaskHandle_join", "rask_green_join", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("TaskHandle_join", "rask_green_join_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::simple("TaskHandle_cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("TaskHandle_cancel", "rask_green_cancel_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
         StdlibEntry::simple("rask_sleep_ns", "rask_green_sleep_ns", &[types::I64], None, false),
 
@@ -1149,6 +1161,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Cell_data", "rask_cell_get", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_data", "rask_shared_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),

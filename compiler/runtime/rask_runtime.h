@@ -412,7 +412,7 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 void        rask_file_close(int64_t file);
-void        rask_file_read_all(RaskStr *out, int64_t file);
+int64_t     rask_file_read_all(RaskStr *out, int64_t file);  // 0 = ok, 1 = read failed
 int64_t     rask_file_read_bytes(int64_t file);
 void        rask_file_write(int64_t file, const RaskStr *content);
 void        rask_file_write_all(int64_t file, const RaskStr *content);
@@ -663,9 +663,21 @@ void      rask_runtime_shutdown(void);
 // Spawn a green task. poll_fn signature: int (*)(void *state, void *task_ctx).
 // state is heap-allocated, freed by scheduler on completion.
 void     *rask_green_spawn(void *poll_fn, void *state, int64_t state_size);
-int64_t   rask_green_join(void *handle);
+
+// Block until the task finishes. Returns 0 on success, -1 on panic.
+// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
+// (caller must free). Consumes the handle. Never re-panics in the joining
+// context — the caller decides what to do with the error (ctrl.panic/O1).
+int64_t   rask_green_join(void *handle, char **msg_out);
 void      rask_green_detach(void *handle);
-int64_t   rask_green_cancel(void *handle);
+
+// Request cooperative cancellation, then wait for the task to finish.
+// Returns 0 on success, -1 on panic. Consumes the handle.
+int64_t   rask_green_cancel(void *handle, char **msg_out);
+
+// Simplified join/cancel: no panic message output. Returns 0 on success, -1 on panic.
+int64_t   rask_green_join_simple(void *handle);
+int64_t   rask_green_cancel_simple(void *handle);
 
 // Closure-based spawn (bridge for codegen before state machine transform).
 void     *rask_green_closure_spawn(void *closure_ptr);
@@ -715,6 +727,9 @@ int64_t rask_sleep_ns(int64_t ns);
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
+
+// ThreadPool.spawn — an OS-thread task, same handle shape as Thread.spawn.
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);
@@ -834,6 +849,7 @@ int64_t rask_mutex_data(int64_t mutex);
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
+int64_t rask_shared_data(int64_t shared);
 void    rask_shared_release(int64_t shared);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);

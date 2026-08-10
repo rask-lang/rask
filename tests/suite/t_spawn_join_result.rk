@@ -51,6 +51,17 @@ func detached() -> bool {
     return true
 }
 
+func survives_panicked_join() -> bool {
+    // green.c's join used to call rask_panic() when the joined task had
+    // panicked, re-panicking in the joiner and aborting the whole process
+    // instead of handing the error back (#288). This just has to come back.
+    using Multitasking {
+        let h = spawn(|| { panic("boom") })
+        let _ = h.join()
+    }
+    return true
+}
+
 test "join returns the task's value" {
     assert joined_value()! == 42
 }
@@ -69,6 +80,10 @@ test "an own closure joins the same way" {
 
 test "a task with nothing to return still detaches" {
     assert detached()
+}
+
+test "joining a panicked task returns instead of aborting (ctrl.panic/O1)" {
+    assert survives_panicked_join()
 }
 
 test "a second Multitasking scope starts cleanly" {

@@ -41,6 +41,18 @@ impl BoxWithSyms {
         data: "Cell_data",
         release: None,
     };
+
+    pub(super) const SHARED_READ: Self = Self {
+        acquire: "Shared_read_acquire",
+        data: "Shared_data",
+        release: Some("Shared_release"),
+    };
+
+    pub(super) const SHARED_WRITE: Self = Self {
+        acquire: "Shared_write_acquire",
+        data: "Shared_data",
+        release: Some("Shared_release"),
+    };
 }
 
 impl<'a> MirLowerer<'a> {
@@ -92,153 +104,6 @@ impl<'a> MirLowerer<'a> {
         };
         let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
         Some(self.ctx.type_to_mir(inner))
-    }
-
-    /// Lower `with shared.read() as d { body }` / `with shared.write() as d { body }`.
-    pub(super) fn lower_shared_with_block(
-        &mut self,
-        object: &Expr,
-        method: &str,
-        binding_name: &str,
-        body: &[rask_ast::stmt::Stmt],
-    ) -> Result<TypedOperand, LoweringError> {
-        let (shared_op, _) = self.lower_expr(object)?;
-
-        let mut free_vars = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut bound = std::collections::HashSet::new();
-        bound.insert(binding_name.to_string());
-        self.walk_free_vars_block(body, &bound, &mut seen, &mut free_vars);
-
-        let closure_name = format!("{}__with_{}", self.parent_name, self.closure_counter);
-        self.closure_counter += 1;
-
-        let mut captures = Vec::new();
-        let mut env_offset = 0u32;
-        for (_name, local_id, ty) in &free_vars {
-            let size = ty.size();
-            let aligned_offset = (env_offset + 7) & !7;
-            captures.push(ClosureCapture {
-                local_id: *local_id,
-                offset: aligned_offset,
-                size,
-            });
-            env_offset = aligned_offset + size;
-        }
-
-        let mut closure_builder = BlockBuilder::new(closure_name.clone(), MirType::I64);
-        let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
-
-        let mut data_param_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::i64_fallback("lower/concurrency:132"));
-        let inner_type_name = self.resolve_shared_inner_type_name(object);
-        if let Some(ref type_name) = inner_type_name {
-            if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
-                data_param_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
-            }
-            self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
-        }
-
-        // The box stores the payload's bytes; the lock hands the closure their
-        // address. When the payload lives in its own storage that address *is*
-        // the value, but anything that fits in a word — a Map or Vec handle, an
-        // integer — has to be loaded out. Passed straight through, `with
-        // mutex.lock() as m { m.insert(…) }` on a `Mutex<Map>` handed the map
-        // runtime a pointer to a pointer and crashed on the first hash (#477).
-        // A word-sized payload is loaded into a local, so whatever the body did
-        // to it has to be written back before the guard drops — otherwise
-        // `with m.lock() as v { v += 5 }` incremented a copy (#268).
-        let mut writeback_slot = None;
-        let data_param_id = if data_param_ty.passed_by_address() {
-            closure_builder.add_param(binding_name.to_string(), data_param_ty.clone())
-        } else {
-            let slot = closure_builder.add_param("__guard_slot".to_string(), MirType::Ptr);
-            let loaded = closure_builder.alloc_local(binding_name.to_string(), data_param_ty.clone());
-            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: loaded,
-                rvalue: MirRValue::Deref(MirOperand::Local(slot)),
-            }));
-            writeback_slot = Some((slot, loaded, data_param_ty.size()));
-            loaded
-        };
-
-        let mut closure_locals = std::collections::HashMap::new();
-        closure_locals.insert(binding_name.to_string(), (data_param_id, data_param_ty));
-
-        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
-            let cap = &captures[i];
-            let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
-                dst: local_id,
-                env_ptr: env_param_id,
-                offset: cap.offset,
-                by_ref: false,
-            }));
-            closure_locals.insert(name.clone(), (local_id, ty.clone()));
-        }
-
-        let body_result;
-        {
-            let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
-            let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
-            let saved_loop_stack = std::mem::take(&mut self.loop_stack);
-
-            body_result = self.lower_block(body);
-
-            closure_builder = std::mem::replace(&mut self.builder, saved_builder);
-            self.locals = saved_locals;
-            self.loop_stack = saved_loop_stack;
-        }
-
-        let (body_val, _) = body_result?;
-
-        if let Some((slot, loaded, size)) = writeback_slot {
-            if closure_builder.current_block_unterminated() {
-                closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: slot,
-                    offset: 0,
-                    value: MirOperand::Local(loaded),
-                    store_size: Some(size),
-                }));
-            }
-        }
-
-        if closure_builder.current_block_unterminated() {
-            closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                value: Some(body_val),
-            }));
-        }
-
-        let closure_fn = closure_builder.finish();
-        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            ret_ty: MirType::I64,
-            scalar_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
-        });
-        self.synthesized_functions.push(closure_fn);
-
-        let closure_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
-            dst: closure_local,
-            func_name: closure_name,
-            captures,
-            heap: false,
-        }));
-
-        let func_name = if method == "read" {
-            "Shared_read".to_string()
-        } else {
-            "Shared_write".to_string()
-        };
-
-        let result_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(result_local),
-            func: FunctionRef::internal(func_name),
-            args: vec![shared_op, MirOperand::Local(closure_local)],
-        }));
-
-        Ok((MirOperand::Local(result_local), MirType::I64))
     }
 
     /// Lower `with <box> as v { body }` for a box whose payload is reached by

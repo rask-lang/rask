@@ -532,20 +532,39 @@ void rask_file_close(int64_t file) {
     if (f) fclose(f);
 }
 
-void rask_file_read_all(RaskStr *out, int64_t file) {
+// Read from the current position to EOF. Returns 0 on success, 1 on failure —
+// `File.read_text` is `string or IoError`, and the caller needs the tag.
+//
+// Chunked rather than sized by ftell/fseek: a pipe or a terminal has no size to
+// seek to, and a stream opened write-only reports one anyway (0), so the old
+// version answered Ok("") for a file it could not read at all.
+int64_t rask_file_read_all(RaskStr *out, int64_t file) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) { rask_string_new(out); return; }
-    // Read from current position to end
-    long start = ftell(f);
-    fseek(f, 0, SEEK_END);
-    long end = ftell(f);
-    fseek(f, start, SEEK_SET);
-    long size = end - start;
-    char *buf = (char *)rask_alloc((int64_t)size + 1);
-    size_t n = fread(buf, 1, (size_t)size, f);
-    buf[n] = '\0';
-    rask_string_from_bytes(out, buf, (int64_t)n);
+    if (!f) { rask_string_new(out); return 1; }
+
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)rask_alloc((int64_t)cap);
+    for (;;) {
+        if (len == cap) {
+            size_t new_cap = cap * 2;
+            char *grown = (char *)rask_alloc((int64_t)new_cap);
+            memcpy(grown, buf, len);
+            rask_free(buf);
+            buf = grown;
+            cap = new_cap;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    if (ferror(f)) {
+        rask_free(buf);
+        rask_string_new(out);
+        return 1;
+    }
+    rask_string_from_bytes(out, buf, (int64_t)len);
     rask_free(buf);
+    return 0;
 }
 
 // Returns a RaskVec<u8>* (cast to int64_t), or -1 if the handle is null.

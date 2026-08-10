@@ -273,6 +273,24 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
     return rask_task_spawn(closure_spawn_entry, ctx);
 }
 
+// ThreadPool.spawn. Pool workers are OS threads that run a job to completion
+// (conc.io-context/IO2), so a pool task is an OS-thread task and the handle it
+// hands back is the `ThreadHandle<T>` the stub declares — the same handle
+// `ThreadHandle_join` knows how to join.
+//
+// It used to live in green.c and did two wrong things at once: it called the
+// closure inline and *then* handed the same closure to the green scheduler, so
+// every body ran twice off one allocation only one run would free; and the
+// green handle it returned was read by `ThreadHandle_join` as an OS-thread
+// handle, so join pthread_join'd whatever the first word happened to be (#657).
+//
+// Still not a bounded pool — `using ThreadPool(workers: n)` starts the green
+// scheduler and n is ignored here, so a thousand jobs are a thousand threads.
+// Tracked separately; running each job exactly once comes first.
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr) {
+    return rask_closure_spawn(closure_ptr);
+}
+
 int64_t rask_task_join_simple(void *h) {
     return rask_task_join((RaskTaskHandle *)h, NULL);
 }

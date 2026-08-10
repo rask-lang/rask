@@ -604,7 +604,7 @@ void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
     return h;
 }
 
-int64_t rask_green_join(void *handle) {
+int64_t rask_green_join(void *handle, char **msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
         rask_panic("join on consumed TaskHandle");
@@ -621,19 +621,28 @@ int64_t rask_green_join(void *handle) {
 
     int64_t result = t->result;
 
-    // If task panicked, propagate
+    // If task panicked, hand the message back instead of re-panicking here —
+    // the joiner decides what to do with it (matches thread.c's convention).
     if (t->panic_msg) {
-        char *msg = t->panic_msg;
+        if (msg_out) {
+            *msg_out = t->panic_msg;
+        } else {
+            free(t->panic_msg);
+        }
         t->panic_msg = NULL;
         task_release(t); // handle's ref
         free(h);
-        // Re-panic in the joining context
-        rask_panic(msg);
+        return -1;
     }
 
+    if (msg_out) *msg_out = NULL;
     task_release(t); // handle's ref
     free(h);
     return result;
+}
+
+int64_t rask_green_join_simple(void *handle) {
+    return rask_green_join(handle, NULL);
 }
 
 void rask_green_detach(void *handle) {
@@ -659,7 +668,7 @@ void rask_green_detach(void *handle) {
     free(h);
 }
 
-int64_t rask_green_cancel(void *handle) {
+int64_t rask_green_cancel(void *handle, char **msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
         rask_panic("cancel on consumed TaskHandle");
@@ -669,7 +678,11 @@ int64_t rask_green_cancel(void *handle) {
     atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
 
     // Wait for completion
-    return rask_green_join(handle);
+    return rask_green_join(handle, msg_out);
+}
+
+int64_t rask_green_cancel_simple(void *handle) {
+    return rask_green_cancel(handle, NULL);
 }
 
 // ─── Yield helpers (called by state machines) ───────────────
@@ -771,16 +784,6 @@ void *rask_green_closure_spawn(void *closure_ptr) {
     ps->alloc_base = closure_ptr;
 
     return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
-}
-
-// ─── ThreadPool (synchronous stub) ──────────────────────────
-// Calls the closure synchronously and returns a completed task handle.
-void *rask_threadpool_spawn(void *closure_ptr) {
-    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
-    void *env = (char *)closure_ptr + 8;
-    func(env);
-    // Return a dummy "completed" task handle (join on it is a no-op)
-    return rask_green_closure_spawn(closure_ptr);
 }
 
 // ─── I/O wrappers ───────────────────────────────────────────
