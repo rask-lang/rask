@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// StringBuilder through a `mutate` parameter.
+//
+// StringBuilder is a handle — the buffer lives in the C runtime. But the stub
+// declared a `buf: Vec<u8>` field, and a stdlib struct with fields is lowered
+// as an aggregate. So callers passed the 8-byte handle while the callee's
+// parameter was typed as a struct: `fill(mutate b)` read the handle as a
+// pointer to one. Natively that was a segfault or a bogus multi-terabyte
+// allocation; the interpreter never cared because it stores builders by
+// identity. Locals worked fine, so this only showed up across a call.
+
+func fill(mutate b: StringBuilder) {
+    b.push("hello")
+    b.push_char(' ')
+}
+
+func drain(mutate b: StringBuilder) -> string {
+    return b.build()
+}
+
+func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
+    if !b.is_empty() {
+        out.push(b.build())
+        b = StringBuilder.new()
+    }
+}
+
+test "a builder mutated through a parameter keeps its bytes" {
+    mut b = StringBuilder.new()
+    fill(mutate b)
+    assert b.len() == 6
+    b.push("world")
+    assert b.build() == "hello world"
+}
+
+test "build() through a mutate parameter returns the real string" {
+    mut b = StringBuilder.new()
+    b.push("abc")
+    assert drain(mutate b) == "abc"
+}
+
+test "flush-and-reset across a call boundary" {
+    mut out = Vec.new()
+    mut b = StringBuilder.new()
+
+    b.push("one")
+    flush_into(mutate out, mutate b)
+    b.push("two")
+    flush_into(mutate out, mutate b)
+    // Empty now — nothing should be appended.
+    flush_into(mutate out, mutate b)
+
+    assert out.len() == 2
+    assert out[0] == "one"
+    assert out[1] == "two"
+}
+
+test "char-at-a-time accumulation in a loop" {
+    mut b = StringBuilder.new()
+    for ch in "abc".chars() {
+        b.push_char(ch)
+        b.push_char('-')
+    }
+    assert b.build() == "a-b-c-"
+}

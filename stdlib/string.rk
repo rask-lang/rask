@@ -172,10 +172,13 @@ extend string {
 //
 // UTF-8 validity is maintained by construction: push() takes string,
 // push_char() takes char. No raw byte entry point.
+//
+// Field-less on purpose: the buffer lives in the C runtime and this is
+// just the handle to it. A field here makes MIR treat the builder as an
+// aggregate at function boundaries while call sites still pass the
+// handle, so `mutate b: StringBuilder` crashed natively.
 
-public struct StringBuilder {
-    buf: Vec<u8>
-}
+public struct StringBuilder { }
 
 extend StringBuilder {
     /// Create an empty builder.
