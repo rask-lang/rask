@@ -8,6 +8,14 @@
 # Every line below carries a measured symptom and an issue. If you find one
 # without an issue, that means nobody has looked; file before you assume.
 #
+# Re-measured 2026-08-10 (fifth pass). Changes this round:
+#   - markdown_renderer is ENROLLED. Its 27 check errors were all one missing
+#     method, and the method was never supposed to exist: the example was
+#     mutating `string` where std.strings/S7 says only StringBuilder mutates.
+#     Moving it to StringBuilder uncovered four native bugs, including a
+#     compiler hang (interval widening never converged) and `match` on a char
+#     matching nothing at all. Both backends are byte-identical now. #693
+#
 # Re-measured 2026-08-09 (fourth pass). Changes this round:
 #   - game_loop is ENROLLED. The recorded "real disagreement on entity counts"
 #     was a misdiagnosis: the program used an unseeded RNG, so it disagreed with
@@ -57,7 +65,6 @@ cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1
 file_copy.rk             # both exit 1
-markdown_renderer.rk     # interp exit 1; native TIMES OUT (>60s)
 package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1
 

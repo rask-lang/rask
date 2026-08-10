@@ -1,0 +1,5 @@
+# One invocation per line; stdout is concatenated in this order.
+# Paths are relative to the repo root.
+--stdout tests/fixtures/markdown_input.md
+--stdout --fragment tests/fixtures/markdown_input.md
+--help
