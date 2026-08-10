@@ -130,6 +130,9 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// ER11: `T or E` (E ≠ none) only auto-wraps at `return`.
+    #[error("`{value}` doesn't become a `{target}` here — auto-wrap is return-only")]
+    NoAutoWrapOutsideReturn { value: Type, target: Type, span: Span },
     /// OPT32: `take` needs a `T?` place.
     #[error("`take` needs an optional slot, found `{found}`")]
     TakeOnNonOptional { found: Type, span: Span },

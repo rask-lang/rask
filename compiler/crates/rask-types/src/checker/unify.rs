@@ -484,6 +484,33 @@ impl TypeChecker {
         Ok(true)
     }
 
+    /// ER11 rejection: a bare value at a non-return position, where the target
+    /// is a `T or E` whose `E` isn't `none`.
+    ///
+    /// Only ever built after the ordinary unify has already failed, so this
+    /// replaces the message and never the verdict.
+    fn er11_error(&self, value: &Type, target: &Type, span: Span) -> TypeError {
+        TypeError::NoAutoWrapOutsideReturn {
+            value: self.nameable_deep(value),
+            target: self.nameable_deep(target),
+            span,
+        }
+    }
+
+    /// `nameable`, but reaching inside a wrapper shape. The error type of a
+    /// `T or E` is the whole point of the ER11 message, and it sits one level
+    /// down — named only at the top, the message read `i64 or <type#77>`.
+    /// An optional is `Result { err: None }`, so this arm covers both shapes.
+    fn nameable_deep(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.nameable_deep(ok)),
+                err: Box::new(self.nameable_deep(err)),
+            },
+            other => self.nameable(other),
+        }
+    }
+
     /// Resolve a return-value / coercion constraint with deferred auto-wrap.
     ///
     /// `T or E`: at return position, bare `T` wraps to ok and bare `E` (or a
@@ -592,6 +619,7 @@ impl TypeChecker {
                     self.ctx.substitutions.insert(id, default);
                     let resolved_ret = self.ctx.apply(&ret_ty);
                     self.unify(&expected, &resolved_ret, span)
+                        .map_err(|_| self.er11_error(&resolved_ret, &resolved_expected, span))
                 }
                 Type::Var(_) => {
                     self.ctx.add_constraint(TypeConstraint::ReturnValue {
@@ -602,7 +630,14 @@ impl TypeChecker {
                     });
                     Ok(false)
                 }
-                _ if !allow_wrap => self.unify(&expected, &ret_ty, span),
+                // ER11: the value must already have the union type here. Say
+                // that rather than letting the generic mismatch answer, whose
+                // "change this to type `T or E`" is advice the author has
+                // already taken — and there's no Ok constructor to write
+                // instead, so it sends them nowhere (#641, #550).
+                _ if !allow_wrap => self
+                    .unify(&expected, &ret_ty, span)
+                    .map_err(|_| self.er11_error(&resolved_ret, &resolved_expected, span)),
                 _ => {
                     // ER9: pick the branch by type. A value whose type equals
                     // (or is in) E goes to the error branch; otherwise it goes

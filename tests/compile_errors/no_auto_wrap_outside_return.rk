@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a bare `T` only becomes a `T or E` at `return`
+// ERROR: a `i32` doesn't become a `i64 or LoadError` here — auto-wrap only fires at `return`
+//
+// ER11: for `T or E` where E isn't `none`, a bare value doesn't acquire the
+// union type at an assignment, an argument, or a field. At a `return` the
+// signature makes the branch obvious; anywhere else it wouldn't be, so the
+// choice is written rather than guessed.
+//
+// The rule was always enforced — what this file pins is the *message*. The
+// generic mismatch used to answer here, and its advice was "change this to type
+// `i64 or LoadError`", which is what the author already wrote; there's no Ok
+// constructor to write instead, so it sent people nowhere (#550, #641, #701).
+//
+// Optionals are deliberately exempt: `let n: i64? = 7` is legal, because `none`
+// is the only other branch and there's nothing to disambiguate.
+
+struct LoadError {
+    public why: string
+}
+
+extend LoadError {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Record {
+    public size: i64 or LoadError
+}
+
+func consume(size: i64 or LoadError) -> i64 {
+    return size catch _ => -1
+}
+
+// The one position that does wrap.
+func loaded() -> i64 or LoadError {
+    return 7
+}
+
+func failed() -> i64 or LoadError {
+    return LoadError { why: "nope" }
+}
+
+func main() {
+    // ERROR: assignment — the value must already have the union type
+    let from_binding: i64 or LoadError = 7
+
+    // ERROR: argument
+    let n = consume(7)
+
+    // ERROR: struct field
+    let rec = Record { size: 7 }
+
+    // THE FIX: get it from something whose `return` does the wrapping.
+    let ok_binding: i64 or LoadError = loaded()
+    let ok_arg = consume(loaded())
+    let ok_field = Record { size: loaded() }
+
+    // And the optional shape is exempt — this is fine at every position.
+    let opt: i64? = 7
+
+    println("{ok_arg} {opt ?? -1} {failed() catch _ => -2}")
+}
