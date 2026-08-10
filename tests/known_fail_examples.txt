@@ -9,6 +9,10 @@
 # without an issue, that means nobody has looked; file before you assume.
 #
 # Re-measured 2026-08-10 (fifth pass). Changes this round:
+#   - 16_concurrency_basics is ENROLLED. Nothing was wrong with it — the gate
+#     just couldn't express "these lines, in any order". It can now:
+#     golden/<name>.normalize holds a filter run over both backends' output and
+#     the golden before they're compared, and this example's is `sort`.
 #   - markdown_renderer is ENROLLED. Its 27 check errors were all one missing
 #     method, and the method was never supposed to exist: the example was
 #     mutating `string` where std.strings/S7 says only StringBuilder mutates.
@@ -46,11 +50,6 @@
                          # `parse<i32>()` gives "invalid integer" on interp and the raw
                          # number 1114129 on native. ParseError has no definition
                          # anywhere in the stdlib — it's a name in a signature. #320.
-16_concurrency_basics.rk # Runs clean on both backends now (#657 — pool tasks ran twice
-                         # and joined a handle of the wrong shape). Still can't be
-                         # gated: pool tasks interleave differently every run, on both
-                         # backends, so there is no fixed stdout to diff. Sorted, the
-                         # two backends' output is identical.
 18_resource_types.rk     # Runs to completion on both backends now (#654 — the string
                          # out-param). One line still differs: reading a file opened
                          # for writing errors on both, but interp says "Bad file

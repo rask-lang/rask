@@ -20,6 +20,17 @@
 # An example that reads stdin gets tests/golden/<name>.stdin — the session to
 # feed it. Examples without one get /dev/null, so an interactive example sees
 # EOF and exits rather than hanging the gate.
+#
+# An example whose output is correct but not in a fixed ORDER gets
+# tests/golden/<name>.normalize: a filter command, run over both backends'
+# output and over the golden before they're compared. `sort` is the usual one
+# — a program whose threads or pool tasks interleave differently every run
+# still has a fixed *set* of lines, and that's worth gating even when the
+# sequence isn't. Anything reading stdin and writing stdout works, so `sort`,
+# `grep -v`, and `sed` scrubs of timings or addresses all fit.
+#
+# This is a weaker check than an exact diff — it can't catch an ordering
+# regression — so don't reach for it when the order is actually deterministic.
 # Examples that currently fail natively (10_enums prints nothing, sensor_processor
 # generic-layout miscompile #272, etc.) have no golden yet and are listed, with
 # their tracking issue, in tests/known_fail_examples.txt — regenerate their
@@ -107,17 +118,39 @@ run_backend() {
     return $rc
 }
 
+# Run the example's normalizer over stdin, or pass it through unchanged when
+# the example has none. A normalizer that fails is a gate failure, not a
+# silent pass-through — otherwise a typo'd filter turns into "no comparison".
+normalize() {
+    normfile="$1"
+    if [ ! -f "$normfile" ]; then
+        cat
+        return 0
+    fi
+    # Skip comment and blank lines; the rest is one shell pipeline.
+    filter="$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$normfile")"
+    if [ -z "$filter" ]; then
+        cat
+        return 0
+    fi
+    eval "$filter"
+}
+
 run_one() {
     golden="$1"
     name="$(basename "$golden" .out)"
     src="$EXAMPLES_DIR/$name.rk"
     [ -f "$src" ] || { printf 'MISSINGSRC\n' > "$WORK/$name.res"; return; }
-    want="$(cat "$golden")"
     argsfile="$GOLDEN_DIR/$name.args"
     stdinfile="$GOLDEN_DIR/$name.stdin"
+    normfile="$GOLDEN_DIR/$name.normalize"
 
-    iout="$(run_backend "$src" --interp "$argsfile" "$stdinfile")"; ic=$?
-    nout="$(run_backend "$src" --native "$argsfile" "$stdinfile")"; nc=$?
+    want="$(normalize "$normfile" < "$golden")"
+
+    # PIPESTATUS, not $? — through a pipe $? is the normalizer's status, and a
+    # crashed program would read as a clean run with odd output.
+    iout="$(run_backend "$src" --interp "$argsfile" "$stdinfile" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; ic=$?
+    nout="$(run_backend "$src" --native "$argsfile" "$stdinfile" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; nc=$?
 
     bad=""
     [ "$ic" -ne 0 ] && bad="$bad interp-exit=$ic"
@@ -131,7 +164,7 @@ run_one() {
         diff <(printf '%s' "$want") <(printf '%s' "$nout") | head -8 | sed 's/^/    /' > "$WORK/$name.diff"
     fi
 }
-export -f run_one run_backend
+export -f run_one run_backend normalize
 export RASK WORK EXAMPLES_DIR GOLDEN_DIR ROOT RUN_TIMEOUT
 
 find "$GOLDEN_DIR" -maxdepth 1 -name '*.out' -print0 \

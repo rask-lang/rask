@@ -1,0 +1,4 @@
+# Pool tasks and spawned threads finish in whatever order the scheduler picks,
+# so the line order varies run to run on both backends. The set of lines does
+# not. Sorting gates that much rather than leaving the example ungated.
+sort
