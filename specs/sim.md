@@ -85,10 +85,13 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | Rule | Description |
 |------|-------------|
 | **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`) |
-| **B2: FFI reported** | Reaching `ffi`/`unsafe` does not stop the test. Its result is marked `unsimulated: ffi` and the report says the seed does not cover what happened in there. `--sim-strict` turns the mark into a refusal (`determinism/D14`) |
+| **B2: Escaping C is marked** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract. The test still runs; its result is marked `unsimulated: ffi` naming the symbol, and `--sim-strict` turns the mark into a refusal (`determinism/D14`) |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
 | **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
 | **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
+| **B6: Sealed C is inside the contract** | C that only computes is already deterministic — same bytes in, same bytes out. Sim classifies each linked object by its undefined symbols: if they all fall in the pure set (`memcpy`, `strlen`, libm, …), the code is sealed. No mark, full contract, nothing to simulate |
+| **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract |
+| **B8: Addresses are the C-side hole** | `determinism/D11` says addresses can't leak into logic — true of Rask, not of C, which can hash or sort by a pointer freely. The fixed-base allocator (B7) is what closes it, and it is the reason `malloc` is interposed rather than treated as pure |
 
 ## Failure output
 
@@ -194,6 +197,22 @@ The cost is that virtual duration measures scheduling steps and clock reads, not
 
 **F4 (fixed rates):** A tunable failure rate is a second dial that changes what a seed means. One seed, one execution — keep it.
 
+**B2/B6/B7 (three tiers of C):** The first draft put all of FFI outside the contract, which was lazy. You don't simulate the C — you don't have to. Machine code that only computes is already a pure function of its inputs; zlib decompresses the same buffer to the same bytes on every run of every seed. What breaks determinism is the small set of things C reaches *for*, and every one of them is a named symbol resolved at link time. Sim is already a link-time swap, so the interposition point is the one that already exists.
+
+That splits FFI into three, with a shrinking residue:
+
+| Tier | Undefined symbols | Under the contract? |
+|------|-------------------|---------------------|
+| Sealed | `memcpy`, `strlen`, libm | Yes, untouched |
+| Reaching | `clock_gettime`, `getrandom`, `malloc` | Yes, interposed |
+| Escaping | `pthread_create`, `socket`, `fork` | No — marked or refused |
+
+Classification is a set intersection against the object's undefined symbols, which `compile_c` and `link_library` (`struct.build/PM10`) already put on the link line. v1 climbs the first rung: classify, and let sealed C keep the full contract instead of losing it for nothing. Interposition is rung two.
+
+The residue is honest and probably permanent. A `syscall` instruction written in inline assembly has no symbol to intercept, so no symbol scan will find it — statically linked musl and anything Go-shaped does exactly this. Those get marked, which is what B2 is for.
+
+**B8 (addresses):** Worth stating out loud because it is the one place `determinism/D11` stops being true. Rask can't observe an address, so D11 costs nothing to guarantee. C can hash a pointer, sort by it, or key a table on it, and ASLR then makes the run different every time with no clock and no random anywhere in sight. This is why `malloc` sits in the interposed tier rather than the pure one — a fixed-base allocator is cheap and closes the hole, and poison-filling what it returns makes uninitialized reads deterministic too, the same trick `RASK_POISON_STACK` already plays on the Rask side.
+
 **B4 (sim owns the env):** Passing the real environment through — wholesale or by allowlist — buys an input `determinism/D1` never sees. `PORT=5` set in one shell and not another means the replay line stops working on someone else's machine, and nothing says why.
 
 No new syntax is needed to avoid that, because `os.set_env` already exists. A test that depends on a variable writes the variable:
@@ -216,7 +235,7 @@ The consequence is that sim is a sealed world: there is no way to read the machi
 
 These are design calls, not implementation gaps:
 
-- **B2 strictness.** Report-and-continue is the default above; the alternative is refusing FFI-reaching tests outright and making `--sim-permissive` the opt-out. Report-first assumes people will read the mark.
+- **B2 strictness.** Report-and-continue is the default above; the alternative is refusing escaping-C tests outright and making `--sim-permissive` the opt-out. Report-first assumes people will read the mark. Note the tiering (B6, B7) shrinks this to the genuinely-uncontainable cases, which makes refusing cheaper than it looked when FFI was one undifferentiated bucket.
 - **Which backend first.** The sim runtime is described against the native runtime, where the interposition points (scheduler, reactor, timer wheel) already exist as design. The interpreter would be quicker to make deterministic but is not what anyone ships.
 - **Fault rates (F4).** The actual numbers are unset. They want to come from running real tests, not from taste.
 
