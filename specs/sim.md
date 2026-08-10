@@ -87,7 +87,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`) |
 | **B2: FFI reported** | Reaching `ffi`/`unsafe` does not stop the test. Its result is marked `unsimulated: ffi` and the report says the seed does not cover what happened in there. `--sim-strict` turns the mark into a refusal (`determinism/D14`) |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
-| **B4: Environment** | Env and args are empty by default. `@sim(env: real)` passes the real process environment through — the test is then declaring that its result depends on the machine, and its replay line is only valid on that machine |
+| **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
 | **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
 
 ## Failure output
@@ -194,7 +194,21 @@ The cost is that virtual duration measures scheduling steps and clock reads, not
 
 **F4 (fixed rates):** A tunable failure rate is a second dial that changes what a seed means. One seed, one execution — keep it.
 
-**B4 (env opt-in):** Passing the real environment through by default would keep more existing tests running, at the price of an input that `determinism/D1` never sees — the seed no longer determines the run, and the replay line quietly stops working on someone else's machine. Opt-in fixes that by making the dependency a written fact: a test that says `@sim(env: real)` has declared it reads the world, and the runner can say so in the failure report.
+**B4 (sim owns the env):** Passing the real environment through — wholesale or by allowlist — buys an input `determinism/D1` never sees. `PORT=5` set in one shell and not another means the replay line stops working on someone else's machine, and nothing says why.
+
+No new syntax is needed to avoid that, because `os.set_env` already exists. A test that depends on a variable writes the variable:
+
+<!-- test: parse -->
+```rask
+test "config reads the port" {
+    os.set_env("PORT", "9000")
+    assert Config.load().port == 9000
+}
+```
+
+That is better than an attribute on two counts. The value is pinned rather than inherited, so the run is a function of source plus seed with nothing left over. And it sits one line above the assertion that depends on it, instead of in a header — a reader who wonders where 9000 came from is already looking at the answer.
+
+The consequence is that sim is a sealed world: there is no way to read the machine's real `HOME`, and no way to ask for one. A test that genuinely needs the developer's environment is testing the machine, and that is a different job from testing the program.
 
 **B5 (read-through filesystem):** An empty simulated filesystem is purer and would break every test with a fixture directory. Reads are a recorded external input; treating the real tree as read-only input keeps existing tests working while guaranteeing sim never writes anything.
 
