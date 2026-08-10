@@ -94,7 +94,7 @@ func handle_create_task(req: Request) -> Response or ApiError {
 
     let label = dto.priority ?? "medium"
     let priority = try Priority.from_label(label)
-    let project = ProjectId { value: dto.project_id }
+    let project = ProjectId(dto.project_id)
 
     let id = try store.lock().create_task(dto.title, project, priority)
     let view = try store.lock().view_task(id)
@@ -124,7 +124,7 @@ func handle_delete_task(id: TaskId) -> Response or ApiError {
 func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
     let dto = json.decode<AddDepRequest>(req.body)
         catch _ => return ApiError.BadRequest("invalid JSON")
-    let dep = TaskId { value: dto.dep_id }
+    let dep = TaskId(dto.dep_id)
     try store.lock().add_dependency(id, dep)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
@@ -166,7 +166,7 @@ func handle_create_project(req: Request) -> Response or ApiError {
         catch _ => return ApiError.BadRequest("invalid JSON")
     if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
 
-    let owner = UserId { value: dto.owner }
+    let owner = UserId(dto.owner)
     let id = try store.lock().create_project(dto.name, owner)
     return json_response(201, json.encode(ProjectView {
         id: id.value,
@@ -179,7 +179,7 @@ func handle_create_project(req: Request) -> Response or ApiError {
 // ─── Parsing helpers ─────────────────────────────────────────────────
 
 func build_filter(req: Request) -> ListFilter or ValidationError {
-    mut f = ListFilter.new()
+    mut f = ListFilter {}
     if req.query_param("status")? as s   { f.status = try Status.from_label(s) }
     if req.query_param("priority")? as p { f.priority = try Priority.from_label(p) }
     if req.query_param("offset")? as o   { f.offset = o.parse<usize>() ?? 0 }
@@ -188,16 +188,16 @@ func build_filter(req: Request) -> ListFilter or ValidationError {
 }
 
 func build_patch(dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
-    mut p = TaskPatch.new()
+    mut p = TaskPatch {}
     if dto.status? as s    { p.status = try Status.from_label(s) }
     if dto.priority? as pr { p.priority = try Priority.from_label(pr) }
-    if dto.assignee? as a  { p.assignee = UserId { value: a } }
+    if dto.assignee? as a  { p.assignee = UserId(a) }
     if dto.add_tags? as tags { p.add_tags = tags }
     return p
 }
 
 func to_txop(raw: BatchOp) -> TxOp or ValidationError {
-    let id = TaskId { value: raw.task_id }
+    let id = TaskId(raw.task_id)
     match raw.op {
         "status" => {
             let v = raw.value ?? return ValidationError.Empty("value")
@@ -211,7 +211,7 @@ func to_txop(raw: BatchOp) -> TxOp or ValidationError {
         }
         "dep" => {
             let d = raw.dep_id ?? return ValidationError.Empty("dep_id")
-            return TxOp.AddDep(id, TaskId { value: d })
+            return TxOp.AddDep(id, TaskId(d))
         }
         _ => return ValidationError.BadEnum("op", raw.op),
     }

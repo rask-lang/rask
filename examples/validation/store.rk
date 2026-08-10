@@ -8,37 +8,21 @@
 // nothing here ever has to mix error vocabularies.
 
 // Parsed patch built by the handler; the store never sees wire strings.
+// All fields default (FD1), so a handler starts from `TaskPatch {}` and sets
+// only what the request touched.
 struct TaskPatch {
-    status: Status?
-    priority: Priority?
-    assignee: UserId?
-    clear_assignee: bool
-    add_tags: Vec<string>
-}
-
-extend TaskPatch {
-    func new() -> TaskPatch {
-        return TaskPatch {
-            status: none,
-            priority: none,
-            assignee: none,
-            clear_assignee: false,
-            add_tags: Vec.new(),
-        }
-    }
+    status: Status? = none
+    priority: Priority? = none
+    assignee: UserId? = none
+    clear_assignee: bool = false
+    add_tags: Vec<string> = Vec.new()
 }
 
 struct ListFilter {
-    status: Status?
-    priority: Priority?
-    offset: usize
-    limit: usize
-}
-
-extend ListFilter {
-    func new() -> ListFilter {
-        return ListFilter { status: none, priority: none, offset: 0, limit: 50 }
-    }
+    status: Status? = none
+    priority: Priority? = none
+    offset: usize = 0
+    limit: usize = 50
 }
 
 struct Store {
@@ -58,9 +42,9 @@ extend Store {
             by_id: Map.new(),
             users: Map.new(),
             projects: Map.new(),
-            next_task: TaskId { value: 1 },
-            next_user: UserId { value: 1 },
-            next_project: ProjectId { value: 1 },
+            next_task: TaskId(1),
+            next_user: UserId(1),
+            next_project: ProjectId(1),
         }
     }
 
@@ -73,15 +57,12 @@ extend Store {
         let id = self.next_task
         self.next_task = self.next_task.next()
 
+        // status/assignee/deps/tags all fall to their field defaults (FD3).
         let task = Task {
             id: id,
             title: title,
             project: project,
             priority: priority,
-            status: Status.Open,
-            assignee: none,
-            deps: Vec.new(),
-            tags: Vec.new(),
             created_at: now_millis(),
         }
 
@@ -140,13 +121,12 @@ extend Store {
         }
 
         let total = ranked.len()
-        // Priority desc, then id asc. Comparators return the compare() result
-        // directly — the `Ordering` type can't be named in user code yet, so
-        // there's no `== Ordering.Equal` tie check; fall through on equal
-        // priority to the id comparison instead. See FINDINGS.
+        // Priority desc, then id asc — the auto-derived Comparable on Priority
+        // and TaskId. On equal priority, tie-break by id via `== Ordering.Equal`.
         ranked.sort_by(|a, b| {
-            if a.priority != b.priority { return b.priority.compare(a.priority) }
-            return a.id.compare(b.id)
+            let by_priority = b.priority.compare(a.priority)
+            if by_priority == Ordering.Equal { return a.id.compare(b.id) }
+            return by_priority
         })
 
         let page: Vec<TaskView> = ranked

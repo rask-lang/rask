@@ -4,42 +4,37 @@ Program: `examples/validation/` — an in-memory work-item tracker (16 files,
 ~1600 lines), written to the **spec**. This pass was redone against `main`
 after ~112 compiler commits landed.
 
-> **2026-08-06:** the dir now targets the settled `try`/`??`/`catch` family
-> (#565/#573/#574) and won't parse until the implementation lands (tasks in
-> flight). `examples/validation-pre-orelse/` is the byte-identical snapshot in
-> implemented syntax — the §A–§D status below describes *that* version.
-> Readability verdict on the migration: §F.
+> **2026-08 update:** the dir now targets the settled `try`/`??`/`catch` family
+> (#565/#573/#574) *and it builds and serves natively.* It also runs the
+> spec-idiomatic forms the earlier passes had to work around — nominal id
+> newtypes, struct field defaults, `@message` auto-delegation, and a nameable
+> `Ordering` — because the compiler fixes landed (§B is now a fixed-list).
+> Readability verdict on the `catch`/`??` migration: §F.
 
 **Status on current `main`:**
 
 | Stage | Result |
 |-------|--------|
-| `rask parse` (every file) | **clean — 0 errors** |
-| `rask build` type-check phase | **clean — 0 type errors** |
-| `rask build` MIR/codegen phase | fails — native codegen still broadly incomplete (see §D) |
+| `rask parse` / `rask build` type-check | **clean — 0 errors** |
+| `rask build --release` → native binary | **builds** |
+| Native server, every path (CRUD, PATCH, filter, batch, errors) | **works, stable** |
+| `rask test examples/validation` | **fails to compile the test binary — [#697]** |
 
-So the program is **spec-valid and fully type-checks**. It does not yet produce
-a native binary, because the MIR→Cranelift layer can't lower large parts of it
-— including stdlib functions the program only touches indirectly (`IoError.message`,
-`http.listen_and_serve`). That's a compiler-maturity axis separate from the
-language, and it's where the remaining work is.
-
-The parser is the big win since last pass: three of the five constructs that
-didn't parse before now do. The friction moved down a layer — into the type
-checker (worked around, §B), the stdlib surface (§C), and codegen (§D).
+The program is a working HTTP JSON API server: full CRUD, PATCH that persists,
+the batch transaction, the spawn/channel seed pipeline, metrics, filtering, and
+the whole error surface run natively. The one gap is `rask test`: the test
+binary drags in stdlib http-client functions the server never calls, and those
+fail to lower uninstantiated (#697) — `rask build` DCEs them and is fine.
 
 ---
 
 ## How to verify
 
 ```
-rask parse examples/validation/<file>.rk     # 0 errors, every file
-rask build examples/validation               # 0 error[E…] type errors; MIR errors remain
+rask build examples/validation --release      # builds a native binary
+./examples/validation/build/release/tracker &  # serves on :8080
+curl -H 'Authorization: Bearer dev-secret' localhost:8080/tasks
 ```
-
-`rask build` runs type-check then MIR lowering. Grep its output: there are no
-`error[E####]` (type) diagnostics; every `error:` is a `MIR lowering` / `codegen`
-line (§D).
 
 ---
 
@@ -52,53 +47,49 @@ Last pass, five spec constructs didn't parse. Now:
 | `duck trait` | ✗ | **✓ parses + checks** |
 | `scoped extend` | ✗ | **✓ parses + checks** |
 | comma-list `extend T with A, B` | ✗ | **✓ parses + checks** |
-| struct field defaults `f: T = expr` | ✗ | ✗ still unimplemented (#311) |
+| struct field defaults `f: T = expr` | ✗ | **✓ parses + runs** |
 | field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |
 
-Nominal trait conformance is now **enforced** (G1) — a good change; the program
-relies on it. The two remaining parser gaps (field defaults, field annotations)
-forced the only spec-shaped code I had to abandon:
+Nominal trait conformance is **enforced** (G1) — a good change; the program
+relies on it. Field defaults now land: `Config {}` is the fully-defaulted value
+(FD3), and `Task`/`TaskPatch`/`ListFilter` name only the fields that vary. The
+one remaining parser gap is field annotations:
 
-- **Field defaults** → explicit `.new()` constructors carry the defaults, and
-  every field is written at construction. `Config {}`-as-default-value (the
-  "No Default trait" design) can't be shown.
 - **Field annotations** → DTOs use plain field names; "optional on the wire" is
   a `T?` field plus a handler fallback. No `@rename`/`@no_serialize`/`@default` demo.
 
 ---
 
-## §B Type-checker gaps (worked around to keep it checking)
+## §B Type-checker findings — the four that were workarounds are now fixed
 
-Each of these type-checks fine in the spec form I *wanted* to write, but the
-checker rejects it, so the program uses the noted workaround. These are the
-highest-value findings — they're where writing spec-correct Rask hits a wall.
+Each of these once rejected the spec form the program wanted to write. Three
+have since been fixed and the program now uses the real form; one (B3) is still
+open. These were the highest-value findings — where spec-correct Rask hit a wall.
 
-### B1 — `extend` on a nominal newtype resolves no methods — [#445]
-`type TaskId = u64 with (...)` then `extend TaskId { func next(...) }` →
-`no method next found for type TaskId`, even for a plain method. `type.aliases/T13`
-says extend works on nominal types; it doesn't. **Workaround:** ids are
-`struct TaskId { public value: u64 }` (the "full struct wrapper" option). This
-also mooted the previous OC1-on-nominal question (#340) — EmailAddress is a struct.
+### B1 — `extend` on a nominal newtype — [#445], **fixed**
+`type TaskId = u64 with (...)` then `extend TaskId { func next(...) }` used to
+give `no method next found`. Fixed. The ids are nominal newtypes again —
+distinct types that inherit Equal/Hashable/Comparable via `with` and carry
+`next()` via `extend`, built `TaskId(n)`, unwrapped `.value`.
 
-### B2 — `Ordering` can't be named in user code — [#406]
-`func compare(self, o) -> Ordering` and `x == Ordering.Equal` both fail with
-`unknown type Ordering` — the checker carries it as an unresolved placeholder.
-**Workaround:** never name it. Comparators return `a.compare(b)` directly and
-tie-break by falling through; tests use `<`/`>`. Consequence: a hand-written
-`Comparable` conformance is impossible (its signature must name `Ordering`), so
-the EmailAddress `Comparable` override from the OC1 demo had to be dropped —
-only `Equal` + `Hashable` remain.
+### B2 — `Ordering` nameable in user code — [#406], **fixed**
+`x == Ordering.Equal` used to fail with `unknown type Ordering`. Fixed. The list
+handler tie-breaks with `by_priority == Ordering.Equal`, and the priority test
+asserts it directly. (A hand-written `Comparable` still needs all five of
+compare/lt/le/gt/ge — no derive-from-compare — so EmailAddress, never sorted,
+stays non-Comparable. That's the reason now, not "Ordering unnameable".)
 
-### B3 — `ErrorMessage` auto-derive (ER6) is unimplemented — [#378]
+### B3 — `ErrorMessage` auto-derive (ER6) is unimplemented — [#378], open
 A bare error enum gets no `message()` and can't be used as an error type
 (`does not implement ErrorMessage`). **Workaround:** every error enum needs
-`@message` or a manual `extend … with ErrorMessage`. AuthError became `@message`
-(losing the pure-auto-derive demo).
+`@message` or a manual `extend … with ErrorMessage`. AuthError carries `@message`
+(no pure-auto-derive demo).
 
-### B4 — `@message` auto-delegation (ER37) is unimplemented — [#446]
-A wrapper variant `Store(StoreError)` with no template →
-`has no message template and cannot auto-delegate`. **Workaround:** ApiError
-drops `@message` and hand-writes `message()`, delegating to `e.message()` per arm.
+### B4 — `@message` auto-delegation (ER37) — [#446], **fixed**
+A wrapper variant `Store(StoreError)` with no template auto-delegates its
+`message()` to the inner error now. `ApiError` is a `@message` enum: its four
+wrapper variants auto-delegate, its three prose variants carry templates, and
+the hand-written `message()` match is gone.
 
 ### B5 — `try` union widening (ER31) fails for explicit unions — [#447]
 `func f() -> T or (JsonError | ValidationError)` with `try json.decode(...)`
@@ -149,33 +140,30 @@ borrow and cannot escape`. With a literal (`ms >= 250.0`) it's fine.
 
 ---
 
-## §D Codegen — native build does not complete — [#454] (umbrella #203)
+## §D Codegen — now completes; the bugs this arc found are all fixed
 
-Type-check passes; MIR lowering then fails across the board. Representative:
+Codegen was where "up to spec" was furthest off — the program type-checked but
+didn't lower. That's closed: it builds a native binary and serves every path.
+Getting there, restoring the idiomatic forms surfaced five native/runtime bugs
+that the unit tests didn't. Each got a minimal repro and an issue, and each was
+fixed on `main`:
 
-```
-error: MIR lowering 'handle_create_task': InvalidConstruct("method `create_task`
-  on receiver of unresolved type — dispatch could not determine a stdlib type prefix")
-error: MIR lowering 'Store_update_task': InvalidConstruct("method `has_tag` …")
-error: MIR lowering 'task_is_blocked': InvalidConstruct("method `is_terminal` …")
-error: MIR lowering 'http_listen_and_serve': InvalidConstruct("method `close` …")
-error: MIR lowering 'IoError_message': UnresolvedVariable("msg")
-```
+- **#566 / #569** — a value returned from a cross-module `Mutex.lock().method()`
+  came back corrupt: an Ok newtype's `.value` read a wrong offset, and the error
+  payload of a `T or E` was garbage (a 404 crashed the server). Fixed in #575.
+- **#567** — a scalar write in `with self.pool[h] as t { t.f = x }` wasn't
+  flushed back to the pool slot (a Vec push in the same block was, which is what
+  made PATCH look half-broken). Fixed.
+- **#568** — `Request.query_param` segfaulted on any query string. Fixed; the
+  filter/pagination endpoint serves.
+- **#577** — a flaky (~40%) SIGSEGV/SIGILL during the batch transaction after a
+  mixed request load: inlining a bare `return` left a `void or E` result slot
+  unwritten, so `try` branched on stale stack. Fixed; the batch endpoint runs
+  0/30 clean now.
 
-Three distinct codegen problems, none fixable from the program:
-
-- **D1** Method dispatch can't resolve the receiver type for calls on `.lock()`
-  results, pool-element bindings, `Handle` context derefs, and even `self`-typed
-  receivers inside methods (`t.has_tag`). This is the bulk of the errors.
-- **D2** A module-level `Mutex<UserStruct>` + a `mutate self` method also
-  produces a Cranelift `mismatched argument count` verifier error in isolation.
-- **D3** Passing a function by name as a value (`listen_and_serve(addr, route)`)
-  → `UnresolvedVariable("route")`. Fixed in-program with a closure
-  (`|req| { route(req) }`), but `http.listen_and_serve`'s own stub still fails
-  to lower (`.close()` on unresolved type), as does `IoError.message`.
-
-Net: the codegen layer is where "up to spec" is still furthest off. The language
-as the type checker sees it is in good shape; the backend can't yet emit it.
+The one open codegen-adjacent gap is #697: `rask test` on this example drags in
+uninstantiated stdlib http-client functions that don't lower. `rask build`
+DCEs them and serves fine.
 
 ---
 
@@ -188,11 +176,12 @@ Still valid against `main`:
   one (used it directly); encoding.md remains wrong.
 - **#337** `using` clause vs return-type ordering — pools.md and
   canonical-patterns still disagree; program uses `-> Ret using Pool<T>`.
-- **#338** LANGUAGE_GUIDE omits `with (...)` on nominal newtypes. Compounded now
-  that nominal `extend` is broken (B1): the card points at a form that neither
-  carries traits nor takes methods.
-- **#340** OC1 × nominal `with (...)` delegation — unspecified. Sidestepped by
-  using a struct (B1), but the ambiguity stands.
+- **#338** LANGUAGE_GUIDE omits `with (...)` on nominal newtypes — a doc gap.
+  Now that nominal `extend` works (B1) and the ids use it, the card is the one
+  place a reader wouldn't learn the form the program relies on.
+- **#340** OC1 × nominal `with (...)` delegation — unspecified. The ids are
+  nominal now (B1 fixed); EmailAddress stays a struct with a custom `Equal`, so
+  the interaction still isn't exercised, but the spec ambiguity stands.
 - **#341** typed domain error → boundary enum has no `try` sugar — **fixed**
   (ER31a). `try` now places the error in the one ApiError variant that takes it.
   20 maps and 3 `to_api()` lifters deleted; the 6 `else |e|` maps left all say
@@ -223,33 +212,33 @@ by `T or E` + `try`.
 
 | Kind | Count |
 |------|-------|
-| conformance declarations (`extend … with`) | 11 |
-| `else \|e\| …` error mapping | 6 |
+| conformance declarations (`extend … with`) | 13 |
+| `catch _ => …` decode guards | 7 |
 | `as any Trait` casts | 6 |
 | `ensure` | 1 |
 
 Everything the design makes deliberately visible (conformances, casts, `ensure`)
-stays cheap. Error mapping used to dominate at 26; ER31a took out the 20 that
-only restated the enum declaration, and the 6 that are left each carry real
-information.
+stays cheap. Error mapping used to dominate at 26; the `try` auto-wrap (ER31a)
+took out the 20 that only restated the enum, and the `catch _ =>` guards that
+remain each write down a discard the old `else |e|` form hid (§F).
 
 ---
 
 ## What worked well on `main`
 
-- **Nominal conformance enforcement + comma-lists + `duck trait`** all parse and
-  check — the trait surface is solid now.
+- **Nominal conformance enforcement + comma-lists + `duck trait`** — the trait
+  surface is solid, and nominal newtype ids now carry traits + methods (B1).
 - **Pools**: `Pool<T>` + `Handle<T>`, `with pool[h] as e`, `using [frozen] Pool<T>`
-  context clauses, and handle-field auto-deref (`h.priority`, `h.deps`,
-  `dep.status`) all type-check. The store reads beautifully.
-- **`@resource` + `ensure`** with the commit/rollback transaction pattern
-  type-checks (C3–C5 shape).
-- **`spawn(own || …)` + channel `send`/`receive` + `join`** type-check (startup
-  seed pipeline).
-- **Inline sync access** (`store.lock().op()`, `config.read().field`) type-checks
-  and is terse.
-- **`T or E` + `try` + `try…else` + `??` + guards** cover the whole error surface
-  with no `if err != nil` equivalents.
+  context clauses, and handle-field auto-deref (`h.priority`, `dep.status`) run
+  natively. The store reads beautifully.
+- **`@resource` + `ensure`** with the commit/rollback batch transaction runs
+  (C3–C5 shape), and after #577 it's stable under load.
+- **`spawn(own || …)` + channel `send`/`receive` + `join`** run (startup seed
+  pipeline).
+- **Inline sync access** (`store.lock().op()`, `config.read().field`) is terse.
+- **`T or E` + `try` + `catch e =>` + `??` + guards** cover the whole error
+  surface with no `if err != nil` equivalents — and the `catch`/`??` split (§F)
+  makes every swallowed error one grep.
 
 ---
 

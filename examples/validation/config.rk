@@ -3,31 +3,20 @@
 
 import os
 
-// Field defaults (`port: u16 = 8080`, FD1) are the spec mechanism here and
-// would let `Config {}` be the default value — but the parser doesn't accept
-// them yet (#311). Until it does, an explicit `new()` carries the defaults.
+// Declared field defaults (FD1): `Config {}` is the fully-defaulted value
+// (FD3), and any subset can be overridden at the braces. No `new()` needed.
 
 struct Config {
-    public host: string
-    public port: u16
-    public store_capacity: usize
-    public rate_limit_per_min: u64
-    public request_log: bool
+    public host: string = "0.0.0.0"
+    public port: u16 = 8080
+    public store_capacity: usize = 10000
+    public rate_limit_per_min: u64 = 120
+    public request_log: bool = true
 }
 
 extend Config {
-    func new() -> Config {
-        return Config {
-            host: "0.0.0.0",
-            port: 8080,
-            store_capacity: 10000,
-            rate_limit_per_min: 120,
-            request_log: true,
-        }
-    }
-
     func from_env() -> Config {
-        mut c = Config.new()
+        mut c = Config {}
         c.host = os.env_or("TRACKER_HOST", c.host)
         c.port = parse_port(os.env("TRACKER_PORT")) ?? c.port
         return c
