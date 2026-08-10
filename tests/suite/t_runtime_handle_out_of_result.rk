@@ -32,7 +32,7 @@ test "std.fs — a File out of a `T or E` is the descriptor" {
         string as content => assert content == "handle round-trip\n"
         IoError as e => assert false, "read failed: {e.message()}"
     }
-    let _ = fs.remove(path)
+    let _ = fs.remove_file(path)
 }
 
 test "std.fs — reading a file opened for writing is an error, not a crash" {
@@ -40,6 +40,6 @@ test "std.fs — reading a file opened for writing is an error, not a crash" {
     mut w = fs.create(path) catch _ => { assert false, "create failed"; return }
     let result = w.read_text()
     w.close()
-    let _ = fs.remove(path)
+    let _ = fs.remove_file(path)
     assert result is IoError, "expected a read error on a write-only handle"
 }
