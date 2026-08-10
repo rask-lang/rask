@@ -62,6 +62,15 @@ is_pending() {
 # reporting below stays sequential, reading results back in glob order so the
 # output and exit code match a serial run exactly.
 JOBS="${GATE_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+
+# Per-invocation ceiling. Deliberately far above what any example needs — the
+# slowest gated one takes ~5s including compilation, run on its own. The gate
+# fans out across every core, so under load (another build, another suite) a
+# run can take many times its solo time, and a ceiling sized for the solo
+# number turns contention into a failed example. 60s did exactly that once.
+# It's still bounded, so an example that actually hangs fails instead of
+# blocking the gate.
+RUN_TIMEOUT="${GATE_TIMEOUT:-300}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -85,7 +94,7 @@ run_backend() {
         infile=/dev/null
     fi
     if [ ! -f "$argsfile" ]; then
-        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" 2>/dev/null < "$infile")
+        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" 2>/dev/null < "$infile")
         return $?
     fi
     rc=0
@@ -93,7 +102,7 @@ run_backend() {
         case "$argv" in ''|\#*) continue ;; esac
         # Word-split argv on purpose: the file holds a command line.
         # shellcheck disable=SC2086
-        (cd "$ROOT" && timeout 60 "$RASK" run "$backend" "$src" -- $argv 2>/dev/null < "$infile") || rc=$?
+        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>/dev/null < "$infile") || rc=$?
     done < "$argsfile"
     return $rc
 }
@@ -123,7 +132,7 @@ run_one() {
     fi
 }
 export -f run_one run_backend
-export RASK WORK EXAMPLES_DIR GOLDEN_DIR ROOT
+export RASK WORK EXAMPLES_DIR GOLDEN_DIR ROOT RUN_TIMEOUT
 
 find "$GOLDEN_DIR" -maxdepth 1 -name '*.out' -print0 \
     | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
