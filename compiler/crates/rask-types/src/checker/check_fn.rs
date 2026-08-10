@@ -155,6 +155,14 @@ impl TypeChecker {
             false
         };
 
+        // Record it for lowering. A receiver reached through a field has to be
+        // passed as that field's address for these, and MIR has no other way to
+        // know the mode was inferred rather than written (#702).
+        if inferred_self_mutate {
+            self.mutate_self_fns
+                .insert((f.span.start, f.span.end, f.span.file_id));
+        }
+
         // GC10: Public methods must declare self mode explicitly
         if let Some(sp) = self_param {
             if f.is_pub && !sp.is_mutate && !sp.is_take && Self::body_assigns_self(&f.body) {

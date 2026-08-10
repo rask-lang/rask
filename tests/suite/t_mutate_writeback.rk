@@ -33,6 +33,20 @@ extend Pair {
     func bump_left(mutate self) { self.left.bump() }
 }
 
+struct Inferred { n: usize }
+struct HoldsInferred { inner: Inferred }
+
+extend Inferred {
+    // No `mutate` written. type.gradual/GC9 infers it from the body, so the
+    // signature alone doesn't say the receiver is mutable — the type checker
+    // records what it decided and lowering reads that.
+    func bump(self) { self.n += 1 }
+}
+
+extend HoldsInferred {
+    func bump_inner(mutate self) { self.inner.bump() }
+}
+
 func bump(mutate c: Counter) { c.n += 1 }
 func bump_nested(mutate c: Counter) { bump(mutate c) }
 func bump_three_deep(mutate c: Counter) { bump_nested(mutate c) }
@@ -76,4 +90,11 @@ test "a method call on a field of self" {
     p.bump_left()
     assert p.left.n == 2
     assert p.right.n == 0
+}
+
+test "a GC9-inferred mutate self, reached through a field" {
+    mut h = HoldsInferred { inner: Inferred { n: 0 } }
+    h.inner.bump()
+    h.bump_inner()
+    assert h.inner.n == 2
 }

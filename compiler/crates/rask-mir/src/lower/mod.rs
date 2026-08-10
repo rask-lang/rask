@@ -184,9 +184,23 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
     )
 }
 
+/// An empty `mutate_self_fns` set, for lowering units built without a type
+/// checker run (tests, comptime evaluation). Nothing is treated as mutating
+/// self, which only costs the receiver-address optimization.
+pub fn empty_mutate_self_fns() -> &'static std::collections::HashSet<(usize, usize, u16)> {
+    static EMPTY: std::sync::LazyLock<std::collections::HashSet<(usize, usize, u16)>> =
+        std::sync::LazyLock::new(std::collections::HashSet::new);
+    &EMPTY
+}
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
+    /// GC9: spans of methods whose `self` is mutable, from the type checker.
+    /// A declared `mutate self` is visible on the Param, but an *inferred* one
+    /// isn't — this carries the checker's answer so lowering doesn't re-derive
+    /// the rule. Keyed by (span.start, span.end, file_id).
+    pub mutate_self_fns: &'a std::collections::HashSet<(usize, usize, u16)>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
@@ -315,6 +329,7 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
+            mutate_self_fns: empty_mutate_self_fns(),
             enum_layouts: &[],
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
@@ -1946,7 +1961,7 @@ impl<'a> MirLowerer<'a> {
                             let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
                             take_self_methods.insert(qualified);
                         }
-                        if method_mutates_self(m) {
+                        if method_mutates_self(m, ctx) {
                             mutate_self_methods
                                 .insert(format!("{}_{}", impl_decl.target_ty, m.name));
                         }
@@ -1958,7 +1973,7 @@ impl<'a> MirLowerer<'a> {
                     if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                         take_self_methods.insert(f.name.clone());
                     }
-                    if method_mutates_self(f) {
+                    if method_mutates_self(f, ctx) {
                         mutate_self_methods.insert(f.name.clone());
                     }
                 }
@@ -3514,14 +3529,14 @@ pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
     Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
 }
 
-/// True if this method writes through `self`. Declared `mutate self` or
-/// `take self` says so outright; otherwise look for an assignment into `self`,
-/// which is what type.gradual/GC9 infers `mutate self` from in a private method.
+/// True if this method writes through `self`.
 ///
-/// Definite assignments only, deliberately. Treating `self.helper()` as a write
-/// because the callee can't be seen here would pull read-only methods in, and
-/// the only cost of missing one is the copy this avoids.
-fn method_mutates_self(f: &rask_ast::decl::FnDecl) -> bool {
+/// `mutate self` and `take self` are visible right here on the parameter. An
+/// *inferred* mode is not: type.gradual/GC9 lets a private method omit it and
+/// have the compiler decide from the body, and that decision happens in the type
+/// checker. It records the spans it decided for, so this reads the answer rather
+/// than walking the body again — one implementation of GC9, not two that drift.
+fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
     let Some(p) = f.params.first() else { return false };
     if p.name != "self" {
         return false;
@@ -3529,45 +3544,8 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl) -> bool {
     if p.is_mutate || p.is_take {
         return true;
     }
-    body_assigns_self(&f.body)
-}
-
-fn body_assigns_self(body: &[rask_ast::stmt::Stmt]) -> bool {
-    use rask_ast::stmt::StmtKind;
-    body.iter().any(|stmt| match &stmt.kind {
-        StmtKind::Assign { target, .. } => expr_roots_at_self(target),
-        StmtKind::While { body, .. } | StmtKind::Loop { body, .. } => body_assigns_self(body),
-        StmtKind::For { body, .. } => body_assigns_self(body),
-        StmtKind::WhileLet { body, .. } => body_assigns_self(body),
-        StmtKind::Expr(e) => expr_assigns_self(e),
-        StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => expr_assigns_self(init),
-        StmtKind::Return(Some(e)) => expr_assigns_self(e),
-        _ => false,
-    })
-}
-
-/// Assignments hide inside block-valued expressions — `if` and `match` arms.
-fn expr_assigns_self(e: &Expr) -> bool {
-    match &e.kind {
-        ExprKind::Block(stmts) => body_assigns_self(stmts),
-        ExprKind::If { then_branch, else_branch, .. } => {
-            expr_assigns_self(then_branch)
-                || else_branch.as_deref().is_some_and(expr_assigns_self)
-        }
-        ExprKind::Match { arms, .. } => arms.iter().any(|a| expr_assigns_self(&a.body)),
-        _ => false,
-    }
-}
-
-/// `self`, `self.field`, `self.a.b`, `self.items[i]` — anything rooted at `self`.
-fn expr_roots_at_self(e: &Expr) -> bool {
-    match &e.kind {
-        ExprKind::Ident(name) => name == "self",
-        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
-            expr_roots_at_self(object)
-        }
-        _ => false,
-    }
+    ctx.mutate_self_fns
+        .contains(&(f.span.start, f.span.end, f.span.file_id))
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {
