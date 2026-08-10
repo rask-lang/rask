@@ -135,6 +135,41 @@ pub fn enum_decls() -> &'static HashMap<String, rask_ast::decl::EnumDecl> {
     })
 }
 
+static IMPL_METHODS: OnceLock<HashMap<String, Vec<rask_ast::decl::FnDecl>>> = OnceLock::new();
+
+/// Stdlib `extend` methods on stdlib **enums** that carry a real body, by enum
+/// name.
+///
+/// The interpreter had no way to reach these: `IoError.message()` is eight
+/// lines of match in io.rk, native runs it, and the interpreter answered
+/// "method not found on `IoError`".
+///
+/// Enums only. A struct's `extend` body is frequently a thin wrapper over a C
+/// runtime symbol the interpreter has no builtin for — registering `File`'s
+/// gave `undefined function fopen`, shadowing the native implementation with
+/// code the interpreter can't run. The stdlib's enums are error and tag types
+/// whose methods are pure Rask.
+pub fn impl_methods() -> &'static HashMap<String, Vec<rask_ast::decl::FnDecl>> {
+    IMPL_METHODS.get_or_init(|| {
+        let enums = enum_decls();
+        let mut out: HashMap<String, Vec<rask_ast::decl::FnDecl>> = HashMap::new();
+        for decl in StubRegistry::all_type_decls() {
+            let DeclKind::Impl(i) = decl.kind else { continue };
+            let target = base_name(&i.target_ty);
+            if !enums.contains_key(&target) {
+                continue;
+            }
+            let implemented: Vec<_> = i.methods.into_iter()
+                .filter(|m| !m.body.is_empty())
+                .collect();
+            if !implemented.is_empty() {
+                out.entry(target).or_default().extend(implemented);
+            }
+        }
+        out
+    })
+}
+
 /// Exports read straight off the stub sources, before the extras are added.
 ///
 /// The name set comes from the registry, which attributes a type to the file it

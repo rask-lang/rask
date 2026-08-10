@@ -412,7 +412,7 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 void        rask_file_close(int64_t file);
-void        rask_file_read_all(RaskStr *out, int64_t file);
+int64_t     rask_file_read_all(RaskStr *out, int64_t file);  // 0 = ok, 1 = read failed
 void        rask_file_write(int64_t file, const RaskStr *content);
 void        rask_file_write_all(int64_t file, const RaskStr *content);
 void        rask_file_write_line(int64_t file, const RaskStr *content);
@@ -711,6 +711,9 @@ int64_t rask_sleep_ns(int64_t ns);
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
 
+// ThreadPool.spawn — an OS-thread task, same handle shape as Thread.spawn.
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
+
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);
 
@@ -829,6 +832,7 @@ int64_t rask_mutex_data(int64_t mutex);
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
+int64_t rask_shared_data(int64_t shared);
 void    rask_shared_release(int64_t shared);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);

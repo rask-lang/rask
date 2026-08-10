@@ -1705,6 +1705,17 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Tuple literal
+            ExprKind::Tuple(elems) if elems.is_empty() => {
+                // `()` is the unit value, and MIR spells unit `Void`. Lowered as
+                // an empty tuple it got a local of its own, which every "does
+                // this operand carry a value?" test downstream answered yes to:
+                // `return ()` out of a `void or E` function with an `ensure`
+                // handed the cleanup path a zero and the caller read a Result
+                // tag out of address 0.
+                let local = self.builder.alloc_temp(MirType::Void);
+                Ok((MirOperand::Local(local), MirType::Void))
+            }
+
             ExprKind::Tuple(elems) => {
                 let mut elem_types = Vec::new();
                 let mut lowered_elems = Vec::new();
@@ -2654,9 +2665,15 @@ impl<'a> MirLowerer<'a> {
 
             // With-as binding
             ExprKind::WithAs { bindings, body } => {
-                // Detect Shared.read() / Shared.write() pattern:
-                //   with shared.read() as d { body }
-                // Synthesize a closure from the body and call Shared_read(handle, closure).
+                // `with shared.read() as d { body }` / `.write()`. Takes the same
+                // in-frame acquire/body/release path as Mutex and Cell below.
+                // It used to build a closure and hand it to Shared_read, and the
+                // closure's return type was hardcoded i64: a block ending in a
+                // string printed the pointer as a number, and a block ending in a
+                // struct returned the address of a slot in the closure's own
+                // frame — dead by the time the caller read it, so
+                // `with db.write() as d { Out { id: d.next_id, name: "hi" } }`
+                // came back with the id intact and the name gone.
                 if bindings.len() == 1 {
                     let binding = &bindings[0];
                     if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
@@ -2681,7 +2698,12 @@ impl<'a> MirLowerer<'a> {
                                 false
                             };
                             if is_shared {
-                                return self.lower_shared_with_block(object, method, &binding.name, body);
+                                let syms = if method == "read" {
+                                    &BoxWithSyms::SHARED_READ
+                                } else {
+                                    &BoxWithSyms::SHARED_WRITE
+                                };
+                                return self.lower_box_with_block(object, &binding.name, body, syms);
                             }
                         }
                     }

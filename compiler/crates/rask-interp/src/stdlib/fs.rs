@@ -9,6 +9,45 @@ use std::sync::{Arc, Mutex};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
+/// `Err(IoError.X)` for a failed filesystem call.
+///
+/// Every `fs.*` and `File` method is declared `… or IoError`, but the error
+/// side used to be a bare string, so `if result is IoError as e` never matched
+/// and the program silently took the success path. The variant comes from the
+/// OS error kind; anything without a spelled-out variant lands in `Other(msg)`.
+fn io_error_result(e: &std::io::Error) -> Value {
+    use std::io::ErrorKind;
+    let msg = e.to_string();
+    let (variant, index, carries_msg) = match e.kind() {
+        ErrorKind::NotFound => ("NotFound", 0, true),
+        ErrorKind::PermissionDenied => ("PermissionDenied", 1, true),
+        ErrorKind::AlreadyExists => ("AlreadyExists", 2, true),
+        ErrorKind::BrokenPipe => ("BrokenPipe", 3, false),
+        ErrorKind::ConnectionReset => ("ConnectionReset", 4, false),
+        ErrorKind::TimedOut => ("TimedOut", 5, false),
+        ErrorKind::UnexpectedEof => ("UnexpectedEof", 6, false),
+        _ => ("Other", 7, true),
+    };
+    let fields = if carries_msg {
+        vec![Value::String(Arc::new(Mutex::new(msg)))]
+    } else {
+        vec![]
+    };
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Err".to_string(),
+        fields: vec![Value::Enum {
+            name: "IoError".to_string(),
+            variant: variant.to_string(),
+            fields,
+            variant_index: index,
+            origin: None,
+        }],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
 impl Interpreter {
     /// Handle fs module methods.
     pub(crate) fn call_fs_method(
@@ -26,12 +65,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(content)))],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "read_bytes" => {
@@ -49,12 +83,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "read_lines" => {
@@ -72,12 +101,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "write_text" => {
@@ -90,12 +114,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "write_bytes" => {
@@ -124,12 +143,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "append_text" => {
@@ -148,12 +162,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "exists" => {
@@ -184,12 +193,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "create" => {
@@ -206,12 +210,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "canonicalize" => {
@@ -225,12 +224,7 @@ impl Interpreter {
                         )))],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "metadata" => {
@@ -260,12 +254,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "delete" | "remove" => {
@@ -277,12 +266,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "remove_dir" => {
@@ -294,12 +278,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "create_dir" => {
@@ -311,12 +290,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "create_dir_all" => {
@@ -328,12 +302,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "rename" => {
@@ -346,12 +315,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "copy" => {
@@ -364,12 +328,7 @@ impl Interpreter {
                         fields: vec![Value::int(bytes as i64)],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "list_dir" => {
@@ -391,12 +350,7 @@ impl Interpreter {
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -440,12 +394,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(content)))],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "write" => {
@@ -462,12 +411,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "write_line" => {
@@ -484,12 +428,7 @@ impl Interpreter {
                         fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {

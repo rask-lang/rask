@@ -32,16 +32,23 @@
                          # "Auto-wrapped: 3.14", native "Auto-wrapped: 4614253070214988800"
                          # — the f64's bit pattern, so a generic slot is holding the
                          # float and reading it back as an integer. #272 family.
-13_string_operations.rk  # native: codegen 'main': Function not found: Iterator_collect —
-                         # the interpreter implements the lazy Iterator protocol, native
-                         # has none of it. Only chains the MIR fuser recognises work
-                         # natively. #656, and #676 for the shape that loses fusion.
-16_concurrency_basics.rk # native exits 101 part-way through the thread-pool section,
-                         # after "Pool task 7 running", with nothing on stderr. Was
-                         # SIGABRT 134 ("free(): invalid size") before; it now gets
-                         # further and dies differently, so the old note is stale. #589
-18_resource_types.rk     # native SIGSEGV (139) in rask_file_read_all — the File value
-                         # reaches the runtime as a small integer, not the FILE*. #654
+13_string_operations.rk  # Compiles and runs on both backends now (#656 — the fuser didn't
+                         # recognise `s.split_whitespace()` as a source). One line still
+                         # differs: `print("{e}")` on the ParseError from a failed
+                         # `parse<i32>()` gives "invalid integer" on interp and the raw
+                         # number 1114129 on native. ParseError has no definition
+                         # anywhere in the stdlib — it's a name in a signature. #320.
+16_concurrency_basics.rk # Runs clean on both backends now (#657 — pool tasks ran twice
+                         # and joined a handle of the wrong shape). Still can't be
+                         # gated: pool tasks interleave differently every run, on both
+                         # backends, so there is no fixed stdout to diff. Sorted, the
+                         # two backends' output is identical.
+18_resource_types.rk     # Runs to completion on both backends now (#654 — the string
+                         # out-param). One line still differs: reading a file opened
+                         # for writing errors on both, but interp says "Bad file
+                         # descriptor (os error 9)" and native "unexpected end of
+                         # file" — native's runtime hands back a bare failure flag and
+                         # the adapter turns every one into IoError.UnexpectedEof.
 cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct answers);
                          # native SIGSEGV (139) right after the banner, before the first
                          # result. Gate-runnable now that .stdin exists — this is a real
@@ -60,11 +67,9 @@ http_api_server.rk       # Compiles and serves on the interpreter; tests/http_ap
                          # Can't join the examples gate — the program never exits, so
                          # there's no stdout to diff.
                          #
-                         # Native compiles but does not serve: it binds and accepts the
-                         # connection, then HttpServer.accept() fails with "malformed
-                         # request". Not the TCP accept and not the request-line parse —
-                         # both are byte-identical across backends. It's read_raw: the
-                         # extern `rask_io_read_string(fd, max) -> string` doesn't match
-                         # the C `(RaskStr *out, fd, max)`, and an extern declaration has
-                         # no way to say "returns through an out-param", so the arguments
-                         # shift by one. #673
+                         # Serves on native too as of #673. Two bugs were in the way:
+                         # TcpConnection resolved to its empty stub struct, so the fd
+                         # came out of `accept()` as the address of the result slot; and
+                         # `with shared.read() as d { ... }` ran the body in a synthesized
+                         # closure that always returned i64, losing strings and handing
+                         # back a pointer into a dead frame for structs.
