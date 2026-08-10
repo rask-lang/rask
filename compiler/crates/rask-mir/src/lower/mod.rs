@@ -184,15 +184,6 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
     )
 }
 
-/// An empty `mutate_self_fns` set, for lowering units built without a type
-/// checker run (tests, comptime evaluation). Nothing is treated as mutating
-/// self, which only costs the receiver-address optimization.
-pub fn empty_mutate_self_fns() -> &'static std::collections::HashSet<(usize, usize, u16)> {
-    static EMPTY: std::sync::LazyLock<std::collections::HashSet<(usize, usize, u16)>> =
-        std::sync::LazyLock::new(std::collections::HashSet::new);
-    &EMPTY
-}
-
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
@@ -200,7 +191,12 @@ pub struct MirContext<'a> {
     /// A declared `mutate self` is visible on the Param, but an *inferred* one
     /// isn't — this carries the checker's answer so lowering doesn't re-derive
     /// the rule. Keyed by (span.start, span.end, file_id).
-    pub mutate_self_fns: &'a std::collections::HashSet<(usize, usize, u16)>,
+    ///
+    /// `None` means no type checker ran, which is only legitimate for the
+    /// synthetic lowering units the unit tests hand-build. A real compile that
+    /// arrives without it is a plumbing bug, and `method_mutates_self` says so
+    /// rather than quietly answering "doesn't mutate".
+    pub mutate_self_fns: Option<&'a std::collections::HashSet<(usize, usize, u16)>>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
@@ -329,7 +325,7 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
-            mutate_self_fns: empty_mutate_self_fns(),
+            mutate_self_fns: None,
             enum_layouts: &[],
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
@@ -3541,11 +3537,23 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
     if p.name != "self" {
         return false;
     }
+    // Written in the signature — no need to ask anyone.
     if p.is_mutate || p.is_take {
         return true;
     }
-    ctx.mutate_self_fns
-        .contains(&(f.span.start, f.span.end, f.span.file_id))
+    match ctx.mutate_self_fns {
+        Some(set) => set.contains(&(f.span.start, f.span.end, f.span.file_id)),
+        // Same test for a synthetic unit the rest of lowering uses: no node
+        // types means nobody ran the checker, so there was no GC9 decision to
+        // record and "doesn't mutate" is the honest answer.
+        None if ctx.node_types.is_empty() => false,
+        None => panic!(
+            "lowering `{}` needs the GC9 self-mode decision but MirContext was \
+             built without `mutate_self_fns`. Only the checker can answer this — \
+             pass `Some(&typed.mutate_self_fns)`.",
+            f.name
+        ),
+    }
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {

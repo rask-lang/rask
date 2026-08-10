@@ -159,6 +159,18 @@ impl TypeChecker {
         // passed as that field's address for these, and MIR has no other way to
         // know the mode was inferred rather than written (#702).
         if inferred_self_mutate {
+            // The key has to identify one method. Real source always gives a
+            // non-empty span, and two methods can't occupy the same bytes;
+            // generic instantiations deliberately share theirs, since the self
+            // mode doesn't depend on the type argument. A zero-width span would
+            // mean a synthesized declaration reached here, and several of those
+            // would collide — which is the one way this could answer "mutates"
+            // for a method that doesn't.
+            debug_assert!(
+                f.span.end > f.span.start,
+                "zero-width span for `{}` — span keys must identify one method",
+                f.name
+            );
             self.mutate_self_fns
                 .insert((f.span.start, f.span.end, f.span.file_id));
         }
