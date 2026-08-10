@@ -1230,6 +1230,16 @@ impl<'a> MirLowerer<'a> {
 
             // Field access
             ExprKind::Field { object, field } => {
+                // CT49: inside an unrolled `comptime for field in reflect.fields<T>()`
+                // body, `field` isn't a runtime value — it never got a local — so
+                // `field.name`/`field.serial_name`/... splice the loop's current
+                // FieldInfo directly instead of going through object lowering.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(op) = self.comptime_field_const(name, field) {
+                        return Ok(op);
+                    }
+                }
+
                 // Primitive type constants: i64.MAX, i32.MIN, etc.
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(val) = primitive_type_constant(name, field) {
@@ -1462,12 +1472,22 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Dynamic field access: value.(expr) — should be resolved by comptime before MIR
+            // Dynamic field access: value.(expr) — CT49 resolves this to a
+            // direct field access once `expr` is comptime-known. The only
+            // source of a comptime-known name today is the loop binding of
+            // an enclosing `comptime for` (`value.(field.name)`, CT53).
             ExprKind::DynamicField { object, field_expr } => {
-                let _ = (object, field_expr);
-                Err(LoweringError::InvalidConstruct(
-                    "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
-                ))
+                let Some(name) = self.resolve_comptime_field_name(field_expr) else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
+                    ));
+                };
+                let synthetic = Expr {
+                    id: rask_ast::NodeId::DUMMY,
+                    span: expr.span,
+                    kind: ExprKind::Field { object: object.clone(), field: name },
+                };
+                self.lower_expr(&synthetic)
             }
 
             // Index access
@@ -3134,8 +3154,48 @@ impl<'a> MirLowerer<'a> {
     }
 
     // =================================================================
-    // Control flow lowering
+    // comptime for (CT48–CT54)
     // =================================================================
+
+    /// `object.field` where `object` is an active `comptime for` binding —
+    /// splice the loop's current FieldInfo member as a constant. Returns
+    /// `None` for anything else (not that binding, or not a FieldInfo member),
+    /// so the caller falls through to ordinary field-access lowering.
+    fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
+        let fc = self
+            .comptime_for_bindings
+            .iter()
+            .rev()
+            .find(|(name, _)| name == object_name)?
+            .1
+            .clone();
+        Some(match field {
+            "name" => (MirOperand::Constant(MirConst::String(fc.name)), MirType::String),
+            "type_name" => (MirOperand::Constant(MirConst::String(fc.type_name)), MirType::String),
+            "serial_name" => (MirOperand::Constant(MirConst::String(fc.serial_name)), MirType::String),
+            "offset" => (MirOperand::Constant(MirConst::Int(fc.offset as i64)), MirType::U64),
+            "size" => (MirOperand::Constant(MirConst::Int(fc.size as i64)), MirType::U64),
+            "is_public" => (MirOperand::Constant(MirConst::Bool(fc.is_public)), MirType::Bool),
+            "is_skipped" => (MirOperand::Constant(MirConst::Bool(fc.is_skipped)), MirType::Bool),
+            "has_default" => (MirOperand::Constant(MirConst::Bool(fc.has_default)), MirType::Bool),
+            _ => return None,
+        })
+    }
+
+    /// CT53: the expression in `value.(expr)` must be comptime-known. The
+    /// only source implemented so far is a `comptime for` loop binding's
+    /// string-valued FieldInfo members (`field.name`, `.serial_name`, `.type_name`).
+    fn resolve_comptime_field_name(&self, expr: &Expr) -> Option<String> {
+        let ExprKind::Field { object, field } = &expr.kind else { return None };
+        let ExprKind::Ident(name) = &object.kind else { return None };
+        let (_, fc) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)?;
+        match field.as_str() {
+            "name" => Some(fc.name.clone()),
+            "serial_name" => Some(fc.serial_name.clone()),
+            "type_name" => Some(fc.type_name.clone()),
+            _ => None,
+        }
+    }
 
     /// If expression lowering (spec L1).
     ///

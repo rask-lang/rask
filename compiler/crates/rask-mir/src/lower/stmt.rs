@@ -15,6 +15,15 @@ use rask_ast::{
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
+/// A bare single-letter name (`T`, `E`, ...) — Rask's convention for an
+/// uninstantiated generic type parameter, same heuristic reachability uses
+/// to tell "still a placeholder" from "a real single-letter type name" (there
+/// are none of the latter in practice).
+fn is_bare_type_param(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+}
+
 /// A range with its ctrl.ranges adapters already peeled off.
 struct AdaptedRange<'e> {
     start: Option<&'e Expr>,
@@ -912,13 +921,118 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            // CT48: comptime for — must be unrolled before MIR lowering
-            StmtKind::ComptimeFor { .. } => {
-                Err(LoweringError::InvalidConstruct(
-                    "comptime for must be unrolled at monomorphization time before MIR lowering".into()
-                ))
+            // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
+            // monomorphized function, mono has already substituted T to a
+            // concrete type on `reflect.fields<T>()` — that's what makes this
+            // "per instantiation" without a separate mono-side pass.
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                self.lower_comptime_for(binding, iter, body)
             }
         }
+    }
+
+    /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
+    /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
+    /// and `value.(field.xxx)` inside the body splice as compile-time
+    /// constants (CT49) instead of going through normal local lookup.
+    fn lower_comptime_for(
+        &mut self,
+        binding: &ForBinding,
+        iter: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let name = match binding {
+            ForBinding::Single(name) => name.clone(),
+            ForBinding::Tuple(_) => {
+                return Err(LoweringError::InvalidConstruct(
+                    "comptime for requires a single binding — the iterable is a list of fields, not tuples".into(),
+                ));
+            }
+        };
+
+        let fields = self.reflect_fields_for(iter)?;
+
+        for field in fields {
+            self.comptime_for_bindings.push((name.clone(), field));
+            for stmt in body {
+                self.lower_stmt(stmt)?;
+            }
+            self.comptime_for_bindings.pop();
+        }
+        Ok(())
+    }
+
+    /// CT51: the iterable must be comptime-known. The only form implemented
+    /// so far — matching the interpreter (rask-interp/src/stdlib/reflect.rs)
+    /// — is `reflect.fields<T>()`, T already concrete after mono substitution.
+    fn reflect_fields_for(
+        &self,
+        iter: &Expr,
+    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
+        use rask_ast::decl::field_attrs;
+
+        let unsupported = || {
+            LoweringError::InvalidConstruct(
+                "comptime for requires a comptime-known iterable, e.g. reflect.fields<T>()".into(),
+            )
+        };
+
+        let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
+            return Err(unsupported());
+        };
+        let is_reflect_fields = method == "fields"
+            && matches!(&object.kind, ExprKind::Ident(n) if n == "reflect");
+        if !is_reflect_fields {
+            return Err(unsupported());
+        }
+        let type_name = type_args
+            .as_ref()
+            .and_then(|ta| ta.first())
+            .ok_or_else(unsupported)?;
+
+        let Some((_, layout)) = self.ctx.find_struct(type_name) else {
+            // The uninstantiated generic template gets lowered too (alongside
+            // every real instantiation), with its type params still literal
+            // ("T"). It's never actually run — type.generics/G2 treats an
+            // uninstantiated generic body as a template, not code that has to
+            // fully resolve — so a bare single-letter placeholder unrolls to
+            // nothing instead of hard-erroring the whole compile. A real typo
+            // or a non-struct type still errors.
+            if is_bare_type_param(type_name) {
+                return Ok(Vec::new());
+            }
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.fields<{}>(): not a struct type",
+                type_name
+            )));
+        };
+
+        Ok(layout
+            .fields
+            .iter()
+            .map(|fl| {
+                let type_name = match &fl.ty {
+                    rask_types::Type::Named(id) => self
+                        .ctx
+                        .type_names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}", fl.ty)),
+                    other => format!("{}", other),
+                };
+                super::ReflectFieldConst {
+                    name: fl.name.clone(),
+                    type_name,
+                    offset: fl.offset,
+                    size: fl.size,
+                    is_public: true,
+                    serial_name: field_attrs::serial_name(&fl.attrs, &fl.name),
+                    is_skipped: field_attrs::is_skipped(&fl.attrs),
+                    has_default: fl.has_declared_default
+                        || field_attrs::default_literal(&fl.attrs).is_some(),
+                }
+            })
+            .collect())
     }
 
     /// Try to evaluate a `comptime if` block at compile time.
