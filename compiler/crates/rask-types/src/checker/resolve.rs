@@ -745,6 +745,13 @@ impl TypeChecker {
                 }
             }
             Type::String => self.resolve_string_method(&method, &args, &ret, span),
+            // `string` used as a type namespace — `string.from_utf8(bytes)`,
+            // and the `string.new()` people reach for out of Rust habit. The
+            // receiver is the type name, not a value, so it arrives unresolved
+            // and used to miss the resolver above entirely.
+            Type::UnresolvedNamed(ref name) if name == "string" => {
+                self.resolve_string_method(&method, &args, &ret, span)
+            }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } | Type::Slice(_) => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span)
@@ -1495,7 +1502,18 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::String, span)?;
                 self.unify(ret, &Type::Bool, span)
             }
-            "push" | "push_str" => self.unify(ret, &Type::Unit, span),
+            // std.strings/S7: `string` has no mutation methods. These two were
+            // accepted anyway, and they couldn't be made sound — `string` is an
+            // immutable 16-byte value that shares its buffer with every copy,
+            // so the backends disagreed about whether a push was visible
+            // through the other copies (#693). StringBuilder is the mutable
+            // one.
+            "push" | "push_str" | "push_char" | "push_byte" | "insert" | "clear" | "truncate" => {
+                Err(TypeError::StringIsImmutable { method: method.to_string(), span })
+            }
+            // Almost always the opening line of the same mistake, so it gets
+            // its own message rather than a bare "no method `new`".
+            "new" if args.is_empty() => Err(TypeError::StringNewRemoved { span }),
             "concat" if args.len() == 1 => {
                 self.unify(&args[0], &Type::String, span)?;
                 self.unify(ret, &Type::String, span)

@@ -9,8 +9,9 @@
 // small string optimization for <=15 bytes (S8). No mutation methods (S7).
 
 extend string {
-    /// Create a new empty string.
-    public func new() -> string { }
+    // No `new()`. An empty string is written `""`, and SD5 wants one spelling
+    // for one thing. It only existed to open `mut s = string.new()` followed by
+    // pushes — the Rust `String` habit S7 rules out.
 
     /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
     @unimplemented

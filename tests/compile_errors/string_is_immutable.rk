@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `string` has no mutation methods (std.strings/S7).
+//
+// `push` and `push_str` were accepted for a long time, and they couldn't be
+// made sound: `string` is Copy and every copy shares one buffer, so writing
+// through one changed the others on the interpreter and didn't on native.
+//
+//     let original = "abc"
+//     mut copy = original
+//     copy.push_str("XYZ")
+//     -> interpreter: original is now "abcXYZ"
+//     -> native:      original is still "abc"
+//
+// StringBuilder is the mutable one. Each mistake below is one error (#693),
+// plus one cascade: the failed `string.new()` leaves its binding untyped, so
+// E0361 follows it. Five errors total, four of them distinct mistakes.
+
+func append_string() {
+    mut out = ""
+    // ERROR: E0331 — `string` has no `push_str`
+    out.push_str("hello")
+}
+
+func append_char() {
+    mut out = ""
+    // ERROR: E0331 — `string` has no `push_char`
+    out.push_char('!')
+}
+
+func append_via_push() {
+    mut out = ""
+    // ERROR: E0331 — `string` has no `push`
+    out.push("hello")
+}
+
+func empty_constructor() {
+    // ERROR: E0331 — `string.new()` doesn't exist, an empty string is `""`
+    let s = string.new()
+    let _ = s
+}
+
+// The sanctioned spelling, which must keep compiling.
+func the_right_way() -> string {
+    mut b = StringBuilder.new()
+    b.push("hello")
+    b.push_char(' ')
+    b.push("world")
+    return b.build()
+}

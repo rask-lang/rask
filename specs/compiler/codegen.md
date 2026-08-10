@@ -146,16 +146,25 @@ Strings are 16-byte values (`std.strings/S8`), passed by pointer to C runtime fu
 | Rule | Description |
 |------|-------------|
 | **STR1: Out-param** | String-producing C functions take `RaskStr *out` as first parameter. Codegen allocates a 16-byte stack slot and passes its address. Result is read from the slot after the call |
-| **STR2: In-place mutation** | `push_str`, `push_char`, `push_byte` use signature `fn(out, self, arg)` — three parameters. `out` receives the mutated string, `self` points to the original, `arg` is the value to append. Codegen prepends the out-param (same slot as self for in-place semantics) |
+| **STR2: Builder append** | Appending goes through `StringBuilder`, which is an opaque handle passed by value: `rask_string_builder_append(handle, str)` and `..._append_char(handle, char)`. No out-param and no `self` pointer — the buffer lives in the runtime, so the handle is the whole ABI. `build()` transfers the buffer to a string through STR1's out-param |
 | **STR3: Read-only** | Non-mutating string functions (`len`, `eq`, `contains`, etc.) take `const RaskStr *` parameters — pointer to 16-byte value, no out-param |
 | **STR4: Literal init** | String constants lower to `rask_string_from(out, cstr)` where `cstr` is a `let char*` from the data section |
 
 ```
-// STR2 example: s.push_str("world")
-// MIR:  call string_push_str(s, "world")
-// Cranelift: call rask_string_push_str(s_slot_addr, s_slot_addr, world_slot_addr)
-//            s_slot_addr serves as both out and self
+// STR2 example: b.push("world")
+// MIR:  call StringBuilder_push(b, "world")
+// Cranelift: call rask_string_builder_append(b, world_slot_addr)
+//            b is the 8-byte handle, by value
 ```
+
+STR2 used to describe in-place mutation of a `string` — `fn(out, self, arg)`
+with the out-param aliasing self. That contradicted `std.strings/S7`, which
+says `string` has no mutation methods, and the two operations it described
+that actually existed (`push`, `push_str`) could not be made sound: `string`
+is Copy and every copy shares one buffer, so writing through one changed the
+others on the interpreter and didn't on native. `push_char` and `push_byte`
+were never wired up at all. The whole family is gone (#693); builders are the
+only way to append.
 
 ## Runtime Library (`rask-rt`)
 

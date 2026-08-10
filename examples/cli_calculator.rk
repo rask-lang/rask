@@ -109,24 +109,24 @@ extend Lexer {
     }
 
     func read_number(mutate self) -> Token or CalcError {
-        mut num_str = string.new()
+        mut num_str = StringBuilder.new()
         mut has_dot = false
 
         while self.peek_char()? {
             let c = self.peek_char()!
             if c.is_digit() {
-                num_str.push(c)
+                num_str.push_char(c)
                 self.advance()
             } else if c == '.' && !has_dot {
                 has_dot = true
-                num_str.push(c)
+                num_str.push_char(c)
                 self.advance()
             } else {
                 break
             }
         }
 
-        let value: f64 = num_str.parse()!
+        let value: f64 = num_str.build().parse()!
         return Token.Number(value)
     }
 }

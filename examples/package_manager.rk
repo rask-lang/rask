@@ -832,8 +832,8 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         catch e => return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
     ensure fs.remove(tmp_path)
 
-    mut out = string.new()
-    out.push_str("lockfile-version = 1\n\n")
+    mut out = StringBuilder.new()
+    out.push("lockfile-version = 1\n\n")
 
     let order = topo_sort(graph)
 
@@ -841,11 +841,11 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         with graph.packages[handle] as pkg {
             if pkg.meta.checksum.is_empty() { continue }
 
-            out.push_str("[[package]]\n")
-            out.push_str("name = \"{pkg.meta.name}\"\n")
+            out.push("[[package]]\n")
+            out.push("name = \"{pkg.meta.name}\"\n")
             let ver_str = pkg.meta.version.to_string()
-            out.push_str("version = \"{ver_str}\"\n")
-            out.push_str("checksum = \"{pkg.meta.checksum}\"\n")
+            out.push("version = \"{ver_str}\"\n")
+            out.push("checksum = \"{pkg.meta.checksum}\"\n")
 
             if !pkg.deps.is_empty() {
                 mut dep_names = Vec.new()
@@ -854,16 +854,16 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
                         dep_names.push("\"{dep_pkg.meta.name}\"")
                     }
                 }
-                out.push_str("deps = [")
-                out.push_str(dep_names.join(", "))
-                out.push_str("]\n")
+                out.push("deps = [")
+                out.push(dep_names.join(", "))
+                out.push("]\n")
             }
 
-            out.push_str("\n")
+            out.push("\n")
         }
     }
 
-    tmp_file.write(out)
+    tmp_file.write(out.build())
         catch e => return FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
     tmp_file.close()
 

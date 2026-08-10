@@ -182,6 +182,15 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("`string` has no `{method}` — strings are immutable")]
+    StringIsImmutable {
+        method: String,
+        span: Span,
+    },
+    #[error("`string.new()` doesn't exist — an empty string is `\"\"`")]
+    StringNewRemoved {
+        span: Span,
+    },
     #[error("string slices are temporary — cannot store `{view_var}`")]
     StringSliceStored {
         source_var: String,
