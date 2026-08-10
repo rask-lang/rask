@@ -8,6 +8,27 @@ use std::sync::{Arc, Mutex, mpsc};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{ThreadHandleInner, Value};
 
+/// ctrl.panic/O4: a detached task's panic prints to stderr instead of
+/// disappearing. `detach()` can't block on the result, so a reaper thread
+/// waits for it in the background — the process keeps running either way.
+fn report_detached_panic(jh: std::thread::JoinHandle<Result<Value, String>>) {
+    std::thread::spawn(move || {
+        if let Ok(Err(msg)) = jh.join() {
+            eprintln!("{}", msg);
+        }
+    });
+}
+
+/// Same as `report_detached_panic`, for tasks submitted to a thread pool
+/// (result arrives over a channel instead of a JoinHandle).
+fn report_detached_panic_recv(rx: mpsc::Receiver<Result<Value, String>>) {
+    std::thread::spawn(move || {
+        if let Ok(Err(msg)) = rx.recv() {
+            eprintln!("{}", msg);
+        }
+    });
+}
+
 impl Interpreter {
     /// Mark a handle as consumed in the resource tracker (conc.async/H1).
     fn consume_handle(&mut self, handle: &Arc<ThreadHandleInner>) {
@@ -81,7 +102,9 @@ impl Interpreter {
             }
             "detach" => {
                 self.consume_handle(handle);
-                let _ = handle.handle.lock().unwrap().take();
+                if let Some(jh) = handle.handle.lock().unwrap().take() {
+                    report_detached_panic(jh);
+                }
                 Ok(Value::Unit)
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -189,8 +212,14 @@ impl Interpreter {
             }
             "detach" => {
                 self.consume_handle(handle);
-                let _ = handle.handle.lock().unwrap().take();
-                let _ = handle.receiver.lock().unwrap().take();
+                // O4: detach doesn't wait, but the eventual panic (if any)
+                // still has to reach stderr — hand it to a reaper thread
+                // instead of dropping the result.
+                if let Some(rx) = handle.receiver.lock().unwrap().take() {
+                    report_detached_panic_recv(rx);
+                } else if let Some(jh) = handle.handle.lock().unwrap().take() {
+                    report_detached_panic(jh);
+                }
                 Ok(Value::Unit)
             }
             "cancel" => {

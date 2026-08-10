@@ -80,8 +80,16 @@ impl Interpreter {
         }
 
         if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
-            self.env.pop_scope();
-            return Err(RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0)));
+            let guard_diag = RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0));
+            // E3: a guard (R5/H1) firing while we're already unwinding from the
+            // body's own panic is a secondary panic — contained and reported,
+            // not a replacement for the original.
+            if matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::Panic(_))) {
+                self.report_secondary_panic(&guard_diag);
+            } else {
+                self.env.pop_scope();
+                return Err(guard_diag);
+            }
         }
 
         // mem.parameters/PM2: snapshot the final values of `mutate` params before

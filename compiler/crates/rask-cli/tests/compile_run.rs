@@ -1873,6 +1873,30 @@ fn panic_ensure_e3_first_panic_wins() {
 }
 
 #[test]
+fn panic_guard_during_unwind_is_secondary() {
+    // E3, issue #298: an H1 guard (unconsumed TaskHandle) tripping at scope
+    // exit while already unwinding from "boom" must not override it. Interp
+    // only — native's ensure/guard-on-panic plumbing has bigger pre-existing
+    // gaps here, untouched by this fix (ctrl.panic implementation notes).
+    let (_stdout, stderr, code) = run_capture("--interp", "panic_guard_unwind_secondary.rk");
+    assert_eq!(code, 101, "panic should exit 101 (P4): {}", stderr);
+    assert!(stderr.contains("panic: boom"), "the body's panic must win: {}", stderr);
+    assert!(stderr.contains("secondary panic during unwind") && stderr.contains("resource leak"),
+        "the guard trip must be contained and reported as secondary: {}", stderr);
+}
+
+#[test]
+fn panic_detached_task_reports_to_stderr() {
+    // O4, issue #298: detach() doesn't hide a panic — it prints to stderr and
+    // the process keeps running. Interp only; the compiled runtime's O4 fix
+    // is covered separately in the C runtime (thread.c/green.c).
+    let (stdout, stderr, code) = run_capture("--interp", "panic_detached_task_stderr.rk");
+    assert_eq!(code, 0, "a detached task's panic must not kill the process: {}", stderr);
+    assert_eq!(stdout, "done\n");
+    assert!(stderr.contains("boom"), "the detached panic must reach stderr: {}", stderr);
+}
+
+#[test]
 fn panic_ensure_runs_on_native_with_captured_receiver() {
     // U1 on native: an ensure calling a method on a captured receiver runs during
     // unwind, and the by-reference capture sees the pre-panic mutation (42, not 1).

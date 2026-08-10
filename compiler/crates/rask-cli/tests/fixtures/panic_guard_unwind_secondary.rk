@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/E3, issue #298: a runtime guard (H1 here — an unconsumed
+// TaskHandle) firing at scope exit *during unwind* is a secondary panic, not
+// a replacement for the one already in flight. `nested` panics with "boom";
+// its unjoined handle trips H1 on the way out, but "boom" stays the task's
+// panic and the leak is reported to stderr instead.
+func nested() -> i64 {
+    let h: TaskHandle<i64> = spawn(|| { return 1 })
+    panic("boom")
+}
+
+func main() {
+    using Multitasking {
+        nested()
+    }
+}
