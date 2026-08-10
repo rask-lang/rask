@@ -290,7 +290,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
 
     for line in lines {
         line_num += 1
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
 
         // Skip empty lines and comments
         if trimmed.is_empty() { continue }
@@ -721,7 +721,7 @@ func verify_checksum(data: string, expected: string, pkg_name: string) -> void o
     // Simple hash: sum all bytes mod 2^32 (real impl would SHA-256)
     mut hash: i64 = 0
     for ch in data.chars() {
-        hash = (hash * 31 + ch.to_int()) % 4294967296
+        hash = (hash * 31 + (ch as u32) as i64) % 4294967296
     }
     let got = "{hash}"
     if got != expected {
@@ -887,7 +887,7 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     mut current_checksum = ""
 
     for line in content.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
 
         if trimmed == "[[package]]" {
             // Flush previous
