@@ -809,6 +809,9 @@ pub struct MirLowerer<'a> {
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
+    /// Methods that write through `self` — declared `mutate self`/`take self`,
+    /// or private ones that assign into self (GC9 infers the mode there).
+    pub(crate) mutate_self_methods: std::collections::HashSet<String>,
     /// For each ensure cleanup block, the receiver variable name and its
     /// resource_id local. Used for consumption cancellation (C1/C2):
     /// if the receiver was consumed before scope exit, skip the ensure.
@@ -1929,6 +1932,12 @@ impl<'a> MirLowerer<'a> {
         // consumption cancellation. When such a method is called on an
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
+        // Methods that write through `self`. A receiver reached through a field
+        // has to be passed as that field's address for these, or the write lands
+        // in a copy — see `place_address` in lower/expr.rs (#702). Declared
+        // `mutate self` counts, and so does a private method that assigns into
+        // self, because type.gradual/GC9 infers the mode from the body there.
+        let mut mutate_self_methods = std::collections::HashSet::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Impl(impl_decl) => {
@@ -1937,6 +1946,10 @@ impl<'a> MirLowerer<'a> {
                             let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
                             take_self_methods.insert(qualified);
                         }
+                        if method_mutates_self(m) {
+                            mutate_self_methods
+                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
+                        }
                     }
                 }
                 DeclKind::Fn(f) => {
@@ -1944,6 +1957,9 @@ impl<'a> MirLowerer<'a> {
                     // named "Type_method" with a `take self` first parameter.
                     if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                         take_self_methods.insert(f.name.clone());
+                    }
+                    if method_mutates_self(f) {
+                        mutate_self_methods.insert(f.name.clone());
                     }
                 }
                 _ => {}
@@ -1974,6 +1990,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_taken: None,
             ensure_stack: Vec::new(),
             take_self_methods,
+            mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
             const_slots: HashMap::new(),
@@ -3495,6 +3512,62 @@ pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
     let open = s.find('<')?;
     let inner = s[open + 1..].strip_suffix('>')?;
     Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
+}
+
+/// True if this method writes through `self`. Declared `mutate self` or
+/// `take self` says so outright; otherwise look for an assignment into `self`,
+/// which is what type.gradual/GC9 infers `mutate self` from in a private method.
+///
+/// Definite assignments only, deliberately. Treating `self.helper()` as a write
+/// because the callee can't be seen here would pull read-only methods in, and
+/// the only cost of missing one is the copy this avoids.
+fn method_mutates_self(f: &rask_ast::decl::FnDecl) -> bool {
+    let Some(p) = f.params.first() else { return false };
+    if p.name != "self" {
+        return false;
+    }
+    if p.is_mutate || p.is_take {
+        return true;
+    }
+    body_assigns_self(&f.body)
+}
+
+fn body_assigns_self(body: &[rask_ast::stmt::Stmt]) -> bool {
+    use rask_ast::stmt::StmtKind;
+    body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Assign { target, .. } => expr_roots_at_self(target),
+        StmtKind::While { body, .. } | StmtKind::Loop { body, .. } => body_assigns_self(body),
+        StmtKind::For { body, .. } => body_assigns_self(body),
+        StmtKind::WhileLet { body, .. } => body_assigns_self(body),
+        StmtKind::Expr(e) => expr_assigns_self(e),
+        StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => expr_assigns_self(init),
+        StmtKind::Return(Some(e)) => expr_assigns_self(e),
+        _ => false,
+    })
+}
+
+/// Assignments hide inside block-valued expressions — `if` and `match` arms.
+fn expr_assigns_self(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Block(stmts) => body_assigns_self(stmts),
+        ExprKind::If { then_branch, else_branch, .. } => {
+            expr_assigns_self(then_branch)
+                || else_branch.as_deref().is_some_and(expr_assigns_self)
+        }
+        ExprKind::Match { arms, .. } => arms.iter().any(|a| expr_assigns_self(&a.body)),
+        _ => false,
+    }
+}
+
+/// `self`, `self.field`, `self.a.b`, `self.items[i]` — anything rooted at `self`.
+fn expr_roots_at_self(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => name == "self",
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => {
+            expr_roots_at_self(object)
+        }
+        _ => false,
+    }
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {

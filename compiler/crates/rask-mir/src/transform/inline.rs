@@ -58,10 +58,11 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
     // writeback). Inlining copies args into fresh locals before lowering the
     // body, so the writeback would land in the fresh local instead of the
     // caller's storage.
+    let writers = params_written_through(fns);
     let callee_bodies: HashMap<String, MirFunction> = fns
         .iter()
         .filter(|f| should_inline(&cg, &f.name))
-        .filter(|f| !writes_through_param(f))
+        .filter(|f| !writers.get(&f.name).is_some_and(|s| !s.is_empty()))
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 
@@ -77,17 +78,111 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
     inline_metadata
 }
 
-/// Determine if a function is a candidate for inlining at any call site.
-/// True if the function body contains a `Store` whose address is one of the
-/// function's parameters (mutate-param writeback). Such functions can't be
-/// inlined safely — the writeback needs to flow through the caller's pointer.
-fn writes_through_param(f: &MirFunction) -> bool {
-    use crate::MirStmtKind;
-    let param_ids: std::collections::HashSet<LocalId> =
-        f.params.iter().map(|p| p.id).collect();
-    f.blocks.iter().any(|b| b.statements.iter().any(|s| {
-        matches!(&s.kind, MirStmtKind::Store { addr, .. } if param_ids.contains(addr))
-    }))
+/// Which parameter positions a function can write through, by name.
+///
+/// A direct `Store` to a parameter is the obvious case, and it's all this used
+/// to look for. But *forwarding* a parameter to something that writes through
+/// it is every bit as unsafe to inline, and that was missed:
+///
+/// ```text
+/// func bump(mutate c: Ctr) { c.n += 1 }                // stores to param: excluded
+/// func bump_nested(mutate c: Ctr) { bump(mutate c) }    // only forwards: inlined
+/// ```
+///
+/// Inlining `bump_nested` copies the argument into a fresh local first, so the
+/// inner `bump` incremented the copy and the caller never saw it. One call deep
+/// worked, two didn't (#702).
+///
+/// So the property is transitive: a function writes through parameter `i` if it
+/// stores to it, or it passes it as argument `j` to a callee that writes through
+/// its own parameter `j`. Iterated to a fixpoint over the known functions.
+///
+/// Only pointer-shaped parameters are tracked. A scalar passed by value can't be
+/// written through, so a function forwarding an `i64` stays inlinable. An
+/// unknown callee (extern, stdlib) is assumed to write through any pointer-shaped
+/// argument, because there's nothing here that could prove otherwise.
+fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
+    use std::collections::HashSet;
+
+    let known: HashMap<&str, &MirFunction> =
+        fns.iter().map(|f| (f.name.as_str(), f)).collect();
+
+    let mut written: HashMap<String, HashSet<usize>> = HashMap::new();
+
+    // Seed with direct stores through a parameter.
+    for f in fns {
+        let mut set = HashSet::new();
+        let param_index: HashMap<LocalId, usize> =
+            f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+        for b in &f.blocks {
+            for s in &b.statements {
+                if let MirStmtKind::Store { addr, .. } = &s.kind {
+                    if let Some(&i) = param_index.get(addr) {
+                        set.insert(i);
+                    }
+                }
+            }
+        }
+        written.insert(f.name.clone(), set);
+    }
+
+    // Propagate through forwarding until nothing changes.
+    loop {
+        let mut changed = false;
+        for f in fns {
+            let param_index: HashMap<LocalId, usize> =
+                f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+            let mut add: HashSet<usize> = HashSet::new();
+            for b in &f.blocks {
+                for s in &b.statements {
+                    let MirStmtKind::Call { func: callee, args, .. } = &s.kind else { continue };
+                    for (j, arg) in args.iter().enumerate() {
+                        let MirOperand::Local(id) = arg else { continue };
+                        let Some(&i) = param_index.get(id) else { continue };
+                        if !pointer_shaped(&f.params[i].ty) {
+                            continue;
+                        }
+                        let callee_writes = match known.get(callee.name.as_str()) {
+                            Some(_) => written
+                                .get(&callee.name)
+                                .is_some_and(|s| s.contains(&j)),
+                            // Nothing to inspect — assume the worst.
+                            None => true,
+                        };
+                        if callee_writes {
+                            add.insert(i);
+                        }
+                    }
+                }
+            }
+            if let Some(set) = written.get_mut(&f.name) {
+                for i in add {
+                    changed |= set.insert(i);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    written
+}
+
+/// True if a parameter of this type is passed as a pointer to the caller's
+/// storage, so a callee could write back through it.
+fn pointer_shaped(ty: &MirType) -> bool {
+    matches!(
+        ty,
+        MirType::Ptr
+            | MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Tuple(_)
+            | MirType::Array { .. }
+            | MirType::String
+            | MirType::Option(_)
+            | MirType::Result { .. }
+    )
 }
 
 fn should_inline(cg: &CallGraph, callee_name: &str) -> bool {

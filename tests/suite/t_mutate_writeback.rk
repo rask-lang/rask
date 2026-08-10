@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Write-back through a `mutate` parameter, two hops and through a field.
+//
+// Two native-only bugs, both of which made a mutation land somewhere nobody
+// could see afterwards (#702).
+//
+// 1. The inliner refused to inline functions that store *directly* through a
+//    parameter, since inlining copies arguments into fresh locals first. But a
+//    function that only *forwards* the parameter looked safe, so it got inlined
+//    and the inner write hit the copy. One call deep worked, two didn't.
+//
+// 2. A receiver reached through a field was lowered by loading a copy of the
+//    aggregate, so `o.inner.bump()` incremented something that was thrown away
+//    on the next line.
+
+struct Counter { n: usize }
+
+struct Pair {
+    left: Counter
+    right: Counter
+}
+
+extend Counter {
+    func bump(mutate self) { self.n += 1 }
+    // A `mutate self` method that only forwards self to another one.
+    func bump_twice(mutate self) {
+        self.bump()
+        self.bump()
+    }
+}
+
+extend Pair {
+    func bump_left(mutate self) { self.left.bump() }
+}
+
+func bump(mutate c: Counter) { c.n += 1 }
+func bump_nested(mutate c: Counter) { bump(mutate c) }
+func bump_three_deep(mutate c: Counter) { bump_nested(mutate c) }
+
+test "a mutate parameter written directly" {
+    mut c = Counter { n: 0 }
+    bump(mutate c)
+    assert c.n == 1
+}
+
+test "a mutate parameter forwarded one hop" {
+    mut c = Counter { n: 0 }
+    bump_nested(mutate c)
+    assert c.n == 1
+}
+
+test "a mutate parameter forwarded two hops" {
+    mut c = Counter { n: 0 }
+    bump_three_deep(mutate c)
+    assert c.n == 1
+}
+
+test "a method calling another mutate-self method on self" {
+    mut c = Counter { n: 0 }
+    c.bump_twice()
+    assert c.n == 2
+}
+
+test "a method call on a field of a local" {
+    mut p = Pair { left: Counter { n: 0 }, right: Counter { n: 0 } }
+    p.left.bump()
+    assert p.left.n == 1
+    // The neighbouring field must be untouched — the receiver address has to
+    // land on the right field, not just somewhere in the struct.
+    assert p.right.n == 0
+}
+
+test "a method call on a field of self" {
+    mut p = Pair { left: Counter { n: 0 }, right: Counter { n: 0 } }
+    p.bump_left()
+    p.bump_left()
+    assert p.left.n == 2
+    assert p.right.n == 0
+}
