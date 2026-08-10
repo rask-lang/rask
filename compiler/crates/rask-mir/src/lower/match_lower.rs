@@ -309,11 +309,29 @@ impl<'a> MirLowerer<'a> {
 
         let mut cases: Vec<(u64, BlockId)> = Vec::new();
         let mut default_block = merge_block;
+        // Arms are tried in order, so the *first* catch-all owns the switch
+        // default. Letting a later one overwrite it skipped every catch-all
+        // before it — which is what happens the moment a guard is involved:
+        //
+        //   match c {
+        //       '+' => …
+        //       _ if c.is_digit() => read_number()
+        //       _ => error(c)
+        //   }
+        //
+        // Both wildcards set the default, the second won, and the guarded arm
+        // became unreachable. Every digit took the error arm (#675).
+        // A guarded arm that fails falls through to the next arm below, so
+        // ordering still works out once the first one wins.
+        let mut default_claimed = false;
 
         for (i, arm) in arms.iter().enumerate() {
             match &arm.pattern {
                 Pattern::Wildcard => {
-                    default_block = arm_blocks[i];
+                    if !default_claimed {
+                        default_block = arm_blocks[i];
+                        default_claimed = true;
+                    }
                 }
                 Pattern::Ident(name) => {
                     if let Some(tag) = self.resolve_pattern_tag(name) {
@@ -325,8 +343,10 @@ impl<'a> MirLowerer<'a> {
                         cases.push((tag, arm_blocks[i]));
                     } else if has_tag && is_variant_name(name) {
                         cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
-                    } else {
+                    } else if !default_claimed {
+                        // A plain binding pattern is a catch-all too.
                         default_block = arm_blocks[i];
+                        default_claimed = true;
                     }
                 }
                 Pattern::Constructor { name, .. } => {
@@ -569,6 +589,11 @@ impl<'a> MirLowerer<'a> {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
                 let guard_fail_block = if i + 1 < arm_blocks.len() {
                     arm_blocks[i + 1]
+                } else if default_block == arm_blocks[i] {
+                    // Last arm, and it's the catch-all that the switch already
+                    // defaults to. Falling back to `default_block` here would
+                    // branch this block at itself and spin.
+                    merge_block
                 } else {
                     default_block
                 };

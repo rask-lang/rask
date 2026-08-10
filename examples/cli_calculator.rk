@@ -72,13 +72,13 @@ extend Lexer {
         return self.input.char_at(self.pos)
     }
 
-    func advance(self) -> char? {
+    func advance(mutate self) -> char? {
         let c = try self.peek_char()
         self.pos += 1
         return c
     }
 
-    func skip_whitespace(self) {
+    func skip_whitespace(mutate self) {
         while self.peek_char()? {
             let c = self.peek_char()!
             if !c.is_whitespace(): break
@@ -86,7 +86,7 @@ extend Lexer {
         }
     }
 
-    func next_token(self) -> Token or CalcError {
+    func next_token(mutate self) -> Token or CalcError {
         self.skip_whitespace()
 
         let c = if self.peek_char()? as ch { ch } else { return Token.Eof }
@@ -108,7 +108,7 @@ extend Lexer {
         return token
     }
 
-    func read_number(self) -> Token or CalcError {
+    func read_number(mutate self) -> Token or CalcError {
         mut num_str = string.new()
         mut has_dot = false
 
@@ -144,11 +144,11 @@ extend Parser {
         return Parser { lexer: lexer, current: current }
     }
 
-    func advance(self) -> void or CalcError {
+    func advance(mutate self) -> void or CalcError {
         self.current = try self.lexer.next_token()
     }
 
-    func parse(self) -> Expr or CalcError {
+    func parse(mutate self) -> Expr or CalcError {
         let expr = try self.parse_expression()
 
         match self.current {
@@ -174,7 +174,7 @@ extend Parser {
     }
 
     // expression = term (('+' | '-') term)*
-    func parse_expression(self) -> Expr or CalcError {
+    func parse_expression(mutate self) -> Expr or CalcError {
         mut left = try self.parse_term()
 
         loop {
@@ -192,7 +192,7 @@ extend Parser {
     }
 
     // term = power (('*' | '/' | '%') power)*
-    func parse_term(self) -> Expr or CalcError {
+    func parse_term(mutate self) -> Expr or CalcError {
         mut left = try self.parse_power()
 
         loop {
@@ -211,7 +211,7 @@ extend Parser {
     }
 
     // power = unary ('^' power)?  (right associative)
-    func parse_power(self) -> Expr or CalcError {
+    func parse_power(mutate self) -> Expr or CalcError {
         let base = try self.parse_unary()
 
         if self.current is Caret {
@@ -224,7 +224,7 @@ extend Parser {
     }
 
     // unary = '-' unary | primary
-    func parse_unary(self) -> Expr or CalcError {
+    func parse_unary(mutate self) -> Expr or CalcError {
         if self.current is Minus {
             try self.advance()
             let expr = try self.parse_unary()
@@ -235,7 +235,7 @@ extend Parser {
     }
 
     // primary = NUMBER | '(' expression ')'
-    func parse_primary(self) -> Expr or CalcError {
+    func parse_primary(mutate self) -> Expr or CalcError {
         match self.current {
             Number(n) => {
                 try self.advance()
