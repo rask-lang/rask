@@ -25,18 +25,18 @@ func check_len(field: string, value: string, max: usize) -> void or ValidationEr
 }
 
 // ─── Task ────────────────────────────────────────────────────────────
-// Fields that would carry declared defaults (status Open, empty deps/tags —
-// FD1) are set explicitly at construction until #311 lands.
+// A fresh task is Open with no assignee, deps, or tags — declared as field
+// defaults (FD1) so `create_task` only names the fields that vary per task.
 
 struct Task {
     public id: TaskId
     public title: string
     public project: ProjectId
     public priority: Priority
-    public status: Status
-    public assignee: UserId?
-    public deps: Vec<Handle<Task>>
-    public tags: Vec<string>
+    public status: Status = Status.Open
+    public assignee: UserId? = none
+    public deps: Vec<Handle<Task>> = Vec.new()
+    public tags: Vec<string> = Vec.new()
     public created_at: i64
 }
 
