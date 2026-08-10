@@ -1008,14 +1008,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
 
         // ── Concurrency: spawn/join/detach (green scheduler) ────────
+        // join/cancel use the same negative-return-means-panicked convention as
+        // the OS-thread path (ThreadHandle_join below) — a panicked task no
+        // longer re-panics in the joiner, it hands back Err(-1) (ctrl.panic/O1).
         StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("join", "rask_green_join", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("join", "rask_green_join_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::simple("cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("cancel", "rask_green_cancel_simple", &[types::I64], Some(types::I64), true),
         // TaskHandle qualified names (same C functions as unqualified)
-        StdlibEntry::simple("TaskHandle_join", "rask_green_join", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("TaskHandle_join", "rask_green_join_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::simple("TaskHandle_cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
+        StdlibEntry::neg_err("TaskHandle_cancel", "rask_green_cancel_simple", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
         StdlibEntry::simple("rask_sleep_ns", "rask_green_sleep_ns", &[types::I64], None, false),
 
