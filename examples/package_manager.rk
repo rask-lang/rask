@@ -338,9 +338,9 @@ func extract_nth_quoted(line: string, n: i32, line_num: i32, label: string) -> s
     mut pos = 0
     mut found = 0
     while found <= n {
-        let open = line[pos..].find("\"") ?? return ManifestError.ParseError(line_num, "expected quoted {label}")
+        let open = line[pos..].index_of("\"") ?? return ManifestError.ParseError(line_num, "expected quoted {label}")
         let start = pos + open + 1
-        let close = line[start..].find("\"") ?? return ManifestError.ParseError(line_num, "unterminated {label}")
+        let close = line[start..].index_of("\"") ?? return ManifestError.ParseError(line_num, "unterminated {label}")
         if found == n {
             return line[start..start + close].to_string()
         }
@@ -404,7 +404,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
         return RegistryError.PackageNotFound(name)
     }
 
-    let parsed = json.parse(index_content) is JsonValue as v else {
+    let parsed = json.decode<JsonValue>(index_content) is JsonValue as v else {
         return RegistryError.IoError("invalid JSON in {index_path}")
     }
     let version_list = parsed.as_array() ?? return RegistryError.IoError("expected array in {index_path}")
@@ -438,7 +438,7 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
     let content = fs.read_text(path) is string as c else {
         return RegistryError.IoError("cannot read {path}")
     }
-    let parsed = json.parse(content) is JsonValue as v else {
+    let parsed = json.decode<JsonValue>(content) is JsonValue as v else {
         return RegistryError.IoError("invalid JSON in {path}")
     }
     return parse_meta_from_json(parsed, path)
@@ -521,7 +521,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
         return RegistryError.NetworkError("registry returned {resp.status} for {name}")
     }
 
-    let parsed = json.parse(resp.body) is JsonValue as v else {
+    let parsed = json.decode<JsonValue>(resp.body) is JsonValue as v else {
         return RegistryError.NetworkError("invalid JSON from registry for {name}")
     }
     let arr = parsed.as_array() ?? return RegistryError.NetworkError("expected array from registry for {name}")
@@ -830,7 +830,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 
     mut tmp_file = fs.create(tmp_path)
         catch e => return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
-    ensure fs.remove(tmp_path)
+    ensure fs.remove_file(tmp_path)
 
     mut out = string.new()
     out.push_str("lockfile-version = 1\n\n")
@@ -931,9 +931,9 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
 }
 
 func extract_quoted_value(line: string) -> string {
-    let first = line.find("\"") ?? return ""
+    let first = line.index_of("\"") ?? return ""
     let rest = first + 1
-    let second = line[rest..].find("\"") ?? return ""
+    let second = line[rest..].index_of("\"") ?? return ""
     return line[rest..rest + second].to_string()
 }
 

@@ -3,7 +3,7 @@
 // spawn/channel pipeline, then serves with the convenience server.
 //
 // The spec's manual accept loop (http.listen + linear Responder + ensure)
-// isn't in the checker/stub yet — only listen_and_serve resolves — so the
+// isn't in the checker/stub yet — only http.serve resolves — so the
 // linear-Responder demo lives in FINDINGS rather than here.
 
 import http
@@ -21,7 +21,7 @@ func main() -> void or Error {
         seed_store()
 
         println("listening on {cfg.addr()}")
-        try http.listen_and_serve(cfg.addr(), |req| { route(req) })
+        try http.serve(cfg.addr(), |req| { route(req) })
     }
 }
 

@@ -51,7 +51,7 @@ impl Interpreter {
             "trim_end" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
             }
-            "trim_bounds" => {
+            "trim_indices" => {
                 let guard = s.lock().unwrap();
                 let trimmed = guard.trim();
                 let start = trimmed.as_ptr() as usize - guard.as_ptr() as usize;
@@ -164,23 +164,39 @@ impl Interpreter {
                 let substring: String = sb.chars().skip(start).take(end - start).collect();
                 Ok(Value::String(Arc::new(Mutex::new(substring))))
             }
-            "parse_int" | "parse" => {
-                // `parse<T>` passes T's name as arg 0 (injected at the call
-                // site); `parse_int` and a bare `parse()` have none and mean
-                // integer. Floats have to go through a float parse — reading
-                // "3.5" as an integer just fails (#480).
+            "parse_int" => {
+                let text = s.lock().unwrap().trim().to_string();
+                match text.parse::<i64>() {
+                    Ok(n) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::int(n)],
+                        variant_index: 0, origin: None,
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![parse_error(&text)],
+                        variant_index: 0, origin: None,
+                    }),
+                }
+            }
+            // Generic `parse<T>()`: the type checker injects T's name as arg 0.
+            // Floats need a float parse — reading "3.5" as an integer just
+            // fails (#480).
+            "parse" => {
                 let target = match args.first() {
                     Some(Value::String(t)) => t.lock().unwrap().clone(),
                     _ => "i64".to_string(),
                 };
                 let text = s.lock().unwrap().trim().to_string();
-                let (parsed, what) = if matches!(target.as_str(), "f32" | "f64") {
-                    (text.parse::<f64>().ok().map(|f| {
+                let parsed = if matches!(target.as_str(), "f32" | "f64") {
+                    text.parse::<f64>().ok().map(|f| {
                         let k = FloatKind::from_name(&target).unwrap_or(FloatKind::F64);
                         Value::Float(k.round(f), k)
-                    }), "float")
+                    })
                 } else {
-                    (text.parse::<i64>().ok().map(Value::int), "integer")
+                    text.parse::<i64>().ok().map(Value::int)
                 };
                 match parsed {
                     Some(v) => Ok(Value::Enum {
@@ -192,9 +208,7 @@ impl Interpreter {
                     None => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            format!("invalid {}", what),
-                        )))],
+                        fields: vec![parse_error(&text)],
                         variant_index: 0, origin: None,
                     }),
                 }
@@ -234,7 +248,8 @@ impl Interpreter {
                 }
             }
             "parse_float" => {
-                match s.lock().unwrap().trim().parse::<f64>() {
+                let text = s.lock().unwrap().trim().to_string();
+                match text.parse::<f64>() {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
@@ -244,14 +259,12 @@ impl Interpreter {
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "invalid float".to_string(),
-                        )))],
+                        fields: vec![parse_error(&text)],
                         variant_index: 0, origin: None,
                     }),
                 }
             }
-            "index_of" | "find" => {
+            "index_of" => {
                 let pattern = self.expect_string(&args, 0)?;
                 match s.lock().unwrap().find(&pattern) {
                     Some(idx) => Ok(Value::Enum {
@@ -268,7 +281,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "rfind" => {
+            "last_index_of" => {
                 let pattern = self.expect_string(&args, 0)?;
                 match s.lock().unwrap().rfind(&pattern) {
                     Some(idx) => Ok(Value::Enum {
@@ -409,5 +422,24 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+}
+
+/// Build a `ParseError` variant for a failed `parse_int`/`parse_float`.
+/// Mirrors stdlib/string.rk's `ParseError` (Empty/Invalid/OutOfRange).
+fn parse_error(text: &str) -> Value {
+    let variant = if text.is_empty() {
+        "Empty"
+    } else if text.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '+' || c == '.') {
+        "OutOfRange"
+    } else {
+        "Invalid"
+    };
+    Value::Enum {
+        name: "ParseError".to_string(),
+        variant: variant.to_string(),
+        fields: vec![],
+        variant_index: match variant { "Empty" => 0, "Invalid" => 1, _ => 2 },
+        origin: None,
     }
 }

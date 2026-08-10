@@ -256,7 +256,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // String elements need a real string compare: a heap RaskStr holds a
         // pointer, so equal strings don't match byte-for-byte.
         StdlibEntry::simple("Vec_contains_str", "rask_vec_contains_str", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_dedup", "rask_vec_dedup", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_remove_adjacent_duplicates", "rask_vec_dedup", &[types::I64], None, false),
         // Both return `Option<T>` — NULL for an empty Vec — so the result is
         // wrapped, not dereferenced. `DerefOrString` read through the NULL and
         // handed back a bare value for a destination expecting an option (#412).
@@ -341,6 +341,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("string_last_index_of", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         // `char_at` answers `char?`; the runtime signals out-of-range with -1,
         // which is never a valid scalar.
         StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
@@ -614,6 +615,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("abs", "fabs", &[types::F64], Some(types::F64), false),
         StdlibEntry::simple("f64_powf", "pow", &[types::F64, types::F64], Some(types::F64), false),
         StdlibEntry::simple("f64_powi", "pow", &[types::F64, types::F64], Some(types::F64), false),
+        // is_nan/is_inf/is_finite are f64 methods; reuse the math_is_* C symbols
+        // (runtime/math.c) that used to back the dropped math.is_nan module fn.
+        StdlibEntry::simple("f64_is_nan", "math_is_nan", &[types::F64], Some(types::I8), false),
+        StdlibEntry::simple("f64_is_inf", "math_is_inf", &[types::F64], Some(types::I8), false),
+        StdlibEntry::simple("f64_is_finite", "math_is_finite", &[types::F64], Some(types::I8), false),
 
         // String comparison
         StdlibEntry::simple("string_compare", "rask_string_compare", &[types::I64, types::I64], Some(types::I64), false),
@@ -763,10 +769,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── File instance methods ─────────────────────────────────
         StdlibEntry::simple("File_close", "rask_file_close", &[types::I64], None, false),
-        StdlibEntry::simple("File_read_all", "rask_file_read_all", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("File_read_text", "rask_file_read_all", &[types::I64], Some(types::I64), false),
+        // read_bytes/write_bytes return/take a Vec<u8> pointer directly — a
+        // plain heap pointer never looks negative, so the existing
+        // negative-return-means-error convention (used elsewhere for handles
+        // like TcpConnection) applies cleanly with no out-param plumbing.
+        StdlibEntry::neg_err("File_read_bytes", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("File_write", "rask_file_write", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("File_write_all", "rask_file_write_all", &[types::I64, types::I64], None, false),
+        StdlibEntry::neg_err("File_write_bytes", "rask_file_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_write_text", "rask_file_write", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("File_write_line", "rask_file_write_line", &[types::I64, types::I64], None, false),
 
         // ── Stdlib module calls ─────────────────────────────────
@@ -811,7 +822,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),
         StdlibEntry::simple("Instant_elapsed", "rask_time_Instant_elapsed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Instant_duration_since", "rask_time_Instant_duration_since", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_nanos", "rask_time_Duration_from_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_millis", "rask_time_Duration_from_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_nanos", "rask_time_Duration_as_nanos", &[types::I64], Some(types::I64), false),
@@ -824,7 +834,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Duration_millis", "rask_time_Duration_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_micros", "rask_time_Duration_micros", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_nanos", "rask_time_Duration_nanos", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_from_secs_f64", "rask_time_Duration_from_secs_f64", &[types::F64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_seconds_f64", "rask_time_Duration_from_secs_f64", &[types::F64], Some(types::I64), false),
 
         // ── I/O primitives ─────────────────────────────────────────
         StdlibEntry {
@@ -852,11 +862,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {
-            mir_name: "TcpConnection_read_all", c_name: "rask_net_read_all",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+            mir_name: "TcpListener_local_addr", c_name: "rask_net_local_addr",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("TcpConnection_write_all", "rask_net_write_all", &[types::I64, types::I64], Some(types::I64), false),
+        // read_bytes/write_bytes hand back/take a Vec<u8> pointer directly —
+        // a plain heap pointer is never negative, so the same convention used
+        // for handles (TcpListener.accept, etc.) applies with no out-param.
+        StdlibEntry::neg_err("TcpConnection_read_bytes", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_err("TcpConnection_write_bytes", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "TcpConnection_remote_addr", c_name: "rask_net_remote_addr",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -1174,22 +1188,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
         StdlibEntry {
-            mir_name: "Path_new", c_name: "rask_path_new",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
             mir_name: "Path_from", c_name: "rask_path_new",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "Path_to_string", c_name: "rask_path_to_string",
+            mir_name: "Path_as_string", c_name: "rask_path_to_string",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "Path_join", c_name: "rask_path_join",
+            mir_name: "Path_div", c_name: "rask_path_join",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },

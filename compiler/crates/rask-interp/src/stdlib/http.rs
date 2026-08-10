@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! HTTP module methods (http.*) and Request/Response instance methods.
 //!
-//! Provides `http.listen_and_serve(addr, handler)` for the HTTP server litmus program.
+//! Provides `http.serve(addr, handler)` for the HTTP server litmus program.
 //! Builds on the existing TCP and HTTP request/response infrastructure in net.rs.
 
 use indexmap::IndexMap;
@@ -77,7 +77,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "listen_and_serve" => self.http_listen_and_serve(args),
+            "serve" => self.http_serve(args),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "http".to_string(),
                 method: method.to_string(),
@@ -85,8 +85,8 @@ impl Interpreter {
         }
     }
 
-    /// http.listen_and_serve(addr, handler)
-    fn http_listen_and_serve(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    /// http.serve(addr, handler)
+    fn http_serve(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let addr = self.expect_string(&args, 0)?;
         let handler = args.get(1).cloned().ok_or(RuntimeError::ArityMismatch {
             expected: 2,
@@ -94,7 +94,7 @@ impl Interpreter {
         })?;
 
         let listener = std::net::TcpListener::bind(&addr).map_err(|e| {
-            RuntimeError::Generic(format!("http.listen_and_serve: bind failed: {}", e))
+            RuntimeError::Generic(format!("http.serve: bind failed: {}", e))
         })?;
 
         for stream_result in listener.incoming() {

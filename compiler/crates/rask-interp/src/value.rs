@@ -418,7 +418,7 @@ pub enum ModuleKind {
     Net,    // net.tcp_listen, net.tcp_connect
     Async,  // async.spawn (green task spawner)
     Thread, // thread.Thread, thread.ThreadPool
-    Http,    // http.listen_and_serve, http.get, etc.
+    Http,    // http.serve, http.get, etc.
     Reflect, // std.reflect — compile-time type introspection
 }
 
@@ -1168,7 +1168,7 @@ impl Value {
         }
     }
 
-    /// Extract f64 from Value::Float (for Duration.from_secs_f64).
+    /// Extract f64 from Value::Float (for Duration.seconds_f64).
     pub fn as_f64(&self) -> Result<f64, String> {
         match self {
             Value::Float(f, _) => Ok(*f),

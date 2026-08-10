@@ -21,14 +21,8 @@ extend math {
 
     // Multi-argument
     public func hypot(x: f64, y: f64) -> f64 { }
-    public func clamp(x: f64, min: f64, max: f64) -> f64 { }
 
     // Conversion
     public func to_radians(degrees: f64) -> f64 { }
     public func to_degrees(radians: f64) -> f64 { }
-
-    // Classification
-    public func is_nan(x: f64) -> bool { }
-    public func is_inf(x: f64) -> bool { }
-    public func is_finite(x: f64) -> bool { }
 }

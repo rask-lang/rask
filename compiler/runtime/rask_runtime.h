@@ -413,8 +413,10 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 
 void        rask_file_close(int64_t file);
 void        rask_file_read_all(RaskStr *out, int64_t file);
+int64_t     rask_file_read_bytes(int64_t file);
 void        rask_file_write(int64_t file, const RaskStr *content);
 void        rask_file_write_all(int64_t file, const RaskStr *content);
+int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
 void        rask_file_write_line(int64_t file, const RaskStr *content);
 RaskVec    *rask_file_lines(int64_t file);
 
@@ -453,7 +455,10 @@ void    rask_http_server_close(int64_t server_ptr);
 int64_t rask_net_clone(int64_t fd);
 int64_t rask_net_read_all(int64_t fd, int64_t out_ptr);
 int64_t rask_net_write_all(int64_t fd, int64_t str_ptr);
+int64_t rask_net_read_bytes(int64_t fd);
+int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr);
 void    rask_net_remote_addr(RaskStr *out, int64_t fd);
+void    rask_net_local_addr(RaskStr *out, int64_t fd);
 
 // ─── Filesystem metadata ────────────────────────────────────
 int64_t rask_fs_metadata(int64_t path_ptr);

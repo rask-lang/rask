@@ -50,9 +50,9 @@ test "std.strings/starts_with and ends_with" {
 
 test "std.strings/rfind last occurrence" {
     let s = "hello"
-    assert s.rfind("l")! == 3
-    assert s.rfind("h")! == 0
-    assert s.rfind("o")! == 4
+    assert s.last_index_of("l")! == 3
+    assert s.last_index_of("h")! == 0
+    assert s.last_index_of("o")! == 4
 }
 
 // --- indexed access returns char? / u8? ---

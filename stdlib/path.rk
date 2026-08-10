@@ -5,9 +5,6 @@ public struct Path { }
 
 extend Path {
     /// Create a path from a string.
-    public func new(s: string) -> Path { }
-
-    /// Create a path from a string (alias).
     public func from(s: string) -> Path { }
 
     /// Get the parent directory, if any.
@@ -34,8 +31,9 @@ extend Path {
     /// Whether the path has an extension.
     public func has_extension(self) -> bool { }
 
-    /// Join this path with another segment.
-    public func join(self, other: string) -> Path { }
+    /// Append a component with a separator. Backs the `/` operator —
+    /// there is no `join` method.
+    public func div(self, other: string) -> Path { }
 
     /// Replace the file extension.
     public func with_extension(self, ext: string) -> Path { }
@@ -43,6 +41,6 @@ extend Path {
     /// Replace the file name.
     public func with_file_name(self, name: string) -> Path { }
 
-    /// Convert to a string.
-    public func to_string(self) -> string { }
+    /// Cheap view — Path IS a string.
+    public func as_string(self) -> string { }
 }

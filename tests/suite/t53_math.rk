@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// std.math witnesses. Interp is correct; NATIVE is a KNOWN-FAIL — the whole
-// math module is unlinked in codegen (`Function not found: math_sin`, etc.; the
-// codegen dispatch table only has sqrt/abs/pow, none of which are even in the
-// stub). Tracked in tests/known_divergences.txt; delete that line and this note
-// when native math lands. Do NOT weaken to make native pass.
+// std.math witnesses.
+//
+// is_nan/is_inf/is_finite are f64 methods, not math module functions, and
+// there is no math.clamp — min/max/clamp are prelude functions that work on
+// any Comparable type (#302/#303 rename sweep, std.math/G1-G3).
 
 import math
 
@@ -26,14 +26,22 @@ test "std.math/hypot 3-4-5" {
     assert math.hypot(3.0, 4.0) == 5.0
 }
 
-test "std.math/clamp bounds" {
-    assert math.clamp(5.0, 0.0, 3.0) == 3.0
-    assert math.clamp(-1.0, 0.0, 3.0) == 0.0
-    assert math.clamp(2.0, 0.0, 3.0) == 2.0
+test "prelude clamp bounds (std.math/G3)" {
+    assert clamp(5.0, 0.0, 3.0) == 3.0
+    assert clamp(-1.0, 0.0, 3.0) == 0.0
+    assert clamp(2.0, 0.0, 3.0) == 2.0
 }
 
-test "std.math/is_finite is_inf is_nan" {
-    assert math.is_finite(1.0)
-    assert math.is_inf(1.0) == false
-    assert math.is_nan(1.0) == false
+test "prelude min/max (std.math/G1-G2)" {
+    assert min(5.0, 3.0) == 3.0
+    assert max(5.0, 3.0) == 5.0
+    assert min(2, 7) == 2
+    assert max(2, 7) == 7
+}
+
+test "f64.is_finite/.is_inf/.is_nan (std.math/N1)" {
+    let x = 1.0
+    assert x.is_finite()
+    assert x.is_inf() == false
+    assert x.is_nan() == false
 }
