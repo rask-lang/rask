@@ -339,6 +339,32 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// A field-less **stdlib** struct is a runtime handle, not an aggregate.
+    ///
+    /// The stdlib is full of these: `public struct File { }`, and the same
+    /// shape for `TcpConnection`, `Metadata`, `Instant`, `Random`,
+    /// `ThreadPool`, and the handle types in async.rk and thread.rk. The
+    /// `struct` exists so `extend` has somewhere to hang methods; the value is
+    /// a file descriptor or a pointer. Typed as an aggregate, a local holding
+    /// one is an *address*, so reading a handle out of a `T or E` bound the
+    /// address of the result slot instead of the descriptor in it — which is
+    /// how the native HTTP server accepted connections and then read from a
+    /// made-up fd (#673).
+    ///
+    /// Stdlib only, and the name set is derived from the stub sources rather
+    /// than listed here. A user's field-less struct is a real value with its
+    /// own identity: `struct Bad { }` used as the error side of `i64 or Bad`
+    /// is told apart from the ok side by its MIR type, and collapsing it to
+    /// i64 makes both branches identical.
+    fn struct_or_handle(&self, name: &str, idx: u32, sl: &StructLayout) -> MirType {
+        if sl.fields.is_empty()
+            && rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+        {
+            return MirType::I64;
+        }
+        MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
+    }
+
     pub fn find_struct(&self, name: &str) -> Option<(u32, &StructLayout)> {
         self.struct_layouts
             .iter()
@@ -461,13 +487,6 @@ impl<'a> MirContext<'a> {
                 {
                     return MirType::Ptr;
                 }
-                // Runtime handles (fds, opaque pointers) before the struct
-                // lookup: their stubs declare a field-less struct, and a
-                // struct-typed local makes codegen hand back the address of
-                // the payload instead of the handle in it.
-                if rask_stdlib::registry::is_runtime_handle(name) {
-                    return MirType::I64;
-                }
                 // A nominal newtype has no layout — it is whatever it wraps.
                 if let Some(underlying) = self.nominal_underlying.get(name) {
                     if underlying != name {
@@ -475,13 +494,13 @@ impl<'a> MirContext<'a> {
                     }
                 }
                 if let Some((idx, sl)) = self.find_struct(name) {
-                    MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
+                    self.struct_or_handle(name, idx, sl)
                 } else if let Some((idx, el)) = self.find_enum(name) {
                     MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                 } else if let Some(base) = name.split('<').next() {
                     // Generic type like "Box<i64>" — try base name "Box"
                     if let Some((idx, sl)) = self.find_struct(base) {
-                        MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
+                        self.struct_or_handle(base, idx, sl)
                     } else if let Some((idx, el)) = self.find_enum(base) {
                         MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                     } else {

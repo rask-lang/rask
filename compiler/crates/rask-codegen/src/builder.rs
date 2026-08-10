@@ -4386,153 +4386,10 @@ impl<'a> FunctionBuilder<'a> {
                 if ctx.is_main {
                     Self::emit_main_error_check(builder, value.as_ref(), ctx)?;
                     builder.ins().return_(&[]);
-                } else if let Some(stack_info) = Self::return_stack_info(value.as_ref(), ctx.stack_slot_map) {
-                    // For small aggregate return values (≤8 bytes) in stack slots:
-                    //   - If the function return type is Result/Option, the small value
-                    //     is a component (ok or err), not a Result — must be wrapped.
-                    //   - Otherwise load the scalar and return it directly.
-                    // For larger aggregates, return the stack slot address. The caller
-                    // copies from it immediately via copy_aggregate (the callee stack
-                    // is still accessible at that point on x86-64).
-                    let (local_id, ss, size) = stack_info;
-                    if size <= 8 {
-                        let loaded = builder.ins().stack_load(types::I64, ss, 0);
-                        if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
-                            // Small component in a Result/Option-returning function.
-                            // Wrap it as Ok or Err by checking the local's type.
-                            let slot_size = Self::resolve_type_alloc_size(
-                                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts
-                            ).unwrap_or(16);
-                            let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
-                                StackSlotKind::ExplicitSlot, slot_size, 0,
-                            ));
-                            let local_ty = ctx.locals.iter()
-                                .find(|l| l.id == local_id)
-                                .map(|l| &l.ty);
-                            if Self::is_err_component(ctx.ret_ty, local_ty) {
-                                Self::build_err(builder, ret_ss, loaded);
-                            } else if matches!(ctx.ret_ty, MirType::Option(_)) {
-                                Self::build_some(builder, ret_ss, loaded);
-                            } else {
-                                Self::build_ok(builder, ret_ss, loaded);
-                            }
-                            let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
-                            builder.ins().return_(&[addr]);
-                        } else {
-                            builder.ins().return_(&[loaded]);
-                        }
-                    } else {
-                        // >8-byte aggregate in a stack slot. If the function returns
-                        // Result/Option but this local is a bare ok/err component
-                        // (not an already-wrapped Result), wrap it — otherwise the
-                        // callee hands back the raw payload and the caller reads the
-                        // tag from the payload's first bytes (#347).
-                        let local_ty = ctx.locals.iter()
-                            .find(|l| l.id == local_id)
-                            .map(|l| l.ty.clone());
-                        let already_wrapped = local_ty.as_ref() == Some(ctx.ret_ty);
-                        let needs_wrap = !already_wrapped
-                            && matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_));
-                        if needs_wrap {
-                            let is_err = Self::is_err_component(ctx.ret_ty, local_ty.as_ref());
-                            let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
-                            let slot_size = Self::resolve_type_alloc_size(
-                                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
-                            ).unwrap_or(16);
-                            let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
-                                StackSlotKind::ExplicitSlot, slot_size, 0,
-                            ));
-                            let src = builder.ins().stack_addr(types::I64, ss, 0);
-                            Self::build_wrapped_aggregate(
-                                builder, ret_ss, is_result, if is_err { 1 } else { 0 }, src, size,
-                            );
-                            let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
-                            builder.ins().return_(&[addr]);
-                        } else {
-                            // Return pointer to stack slot data for copy_aggregate
-                            Self::emit_return(builder, value.as_ref(), ctx)?;
-                        }
-                    }
-                } else if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
-                    // Function returns Result/Option but value is a plain scalar
-                    // or non-stack-slotted local (e.g. `return 42` or
-                    // `return DivError {}` from a `i32 or DivError` fn).
-                    // Wrap as Ok/Some — or Err when the value's MIR type matches
-                    // the Result's err side. Without the Err detection, returning
-                    // a struct-typed error from a Result-returning function
-                    // wrapped it as Ok and caused `is X` checks at the call site
-                    // to silently take the wrong branch (#259 family).
-                    let slot_size = Self::resolve_type_alloc_size(ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts)
-                        .unwrap_or(16);
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        slot_size,
-                        0,
-                    ));
-                    let val_ty = value.as_ref().and_then(|v| match v {
-                        MirOperand::Local(id) => ctx.locals.iter()
-                            .find(|l| l.id == *id)
-                            .map(|l| l.ty.clone()),
-                        _ => None,
-                    });
-                    let is_err_value = Self::is_err_component(ctx.ret_ty, val_ty.as_ref());
-
-                    // Aggregate payload (string/struct/...) — `val` is a pointer to
-                    // 16+ bytes. Copy into the payload area instead of storing the
-                    // pointer at offset 8 (which leaves the rest of the slot
-                    // uninitialized).
-                    let inner_branch = if is_err_value {
-                        match ctx.ret_ty {
-                            MirType::Result { err, .. } => Some(err.as_ref()),
-                            _ => None,
-                        }
-                    } else {
-                        match ctx.ret_ty {
-                            MirType::Option(inner) => Some(inner.as_ref()),
-                            MirType::Result { ok, .. } => Some(ok.as_ref()),
-                            _ => None,
-                        }
-                    };
-                    let inner_aggregate = inner_branch.filter(|t| matches!(t,
-                        MirType::String | MirType::Struct(_) | MirType::Enum(_)
-                        | MirType::Tuple(_) | MirType::Result { .. } | MirType::Option(_)
-                    ));
-
-                    // A scalar payload is typed by the payload, not by the
-                    // container — same rule as assigning into an Option slot.
-                    // Lowering at I64 made `return 2.5` from a `f32 or E` build an
-                    // f64, and the f32 read of the payload then picked up the
-                    // double's zero low half (#629).
-                    let payload_ty = match (inner_aggregate, inner_branch) {
-                        (None, Some(inner)) => Self::scalar_payload_store_type(inner)?,
-                        _ => None,
-                    }
-                    .unwrap_or(types::I64);
-                    let val = if let Some(val_op) = value.as_ref() {
-                        Self::lower_operand_typed(builder, val_op, Some(payload_ty), ctx)?
-                    } else {
-                        builder.ins().iconst(types::I64, 0)
-                    };
-
-                    if let Some(inner) = inner_aggregate {
-                        let inner_size = Self::resolve_type_alloc_size(
-                            inner, ctx.struct_layouts, ctx.enum_layouts,
-                        ).unwrap_or(inner.size());
-                        let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
-                        Self::build_wrapped_aggregate(
-                            builder, ss, is_result, if is_err_value { 1 } else { 0 }, val, inner_size,
-                        );
-                    } else if is_err_value {
-                        Self::build_err(builder, ss, val);
-                    } else if matches!(ctx.ret_ty, MirType::Option(_)) {
-                        Self::build_some(builder, ss, val);
-                    } else {
-                        Self::build_ok(builder, ss, val);
-                    }
-                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                    builder.ins().return_(&[addr]);
+                } else if let Some(val) = Self::exit_value(builder, value.as_ref(), ctx)? {
+                    builder.ins().return_(&[val]);
                 } else {
-                    Self::emit_return(builder, value.as_ref(), ctx)?;
+                    builder.ins().return_(&[]);
                 }
             }
 
@@ -4604,56 +4461,40 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminatorKind::CleanupReturn { value, cleanup_chain } => {
                 if !cleanup_chain.is_empty() {
                     if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
-                        // Jump to shared cleanup block, passing return value.
-                        // main is void — never pass a return value.
-                        // `return ()` out of a `void or E` function reaches here
-                        // as a *void-typed local*, not as `None`. Lowered as a
-                        // value it becomes a plain zero, and the shared cleanup
-                        // block returns that as if it were the Result — the caller
-                        // then reads a tag out of address 0. Build the Ok slot
-                        // instead, the same as the no-value case below.
+                        // The shared cleanup block takes the return value as a
+                        // block parameter, so this jump supplies exactly what a
+                        // plain `return` would have returned — wrapping and all.
+                        // main is void, so it passes nothing.
+                        //
+                        // `return ()` out of a `void or E` function arrives here
+                        // as a *void-typed local*, not as `None`, so it takes the
+                        // no-value path deliberately: lowered as a value it
+                        // becomes a plain zero, and the caller reads a Result tag
+                        // out of address 0.
                         let value = value.as_ref().filter(|op| !Self::is_void_operand(op, ctx));
                         if ctx.is_main {
                             builder.ins().jump(shared_block, &[]);
-                        } else if let Some(val_op) = value {
-                            let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
-                            let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
-                            let actual_ty = builder.func.dfg.value_type(val);
-                            let final_val = if actual_ty != expected_ty {
-                                Self::convert_value(builder, val, actual_ty, expected_ty, None)
-                            } else {
-                                val
-                            };
-                            builder.ins().jump(shared_block, &[final_val]);
+                        } else if let Some(val) = Self::exit_value(builder, value, ctx)? {
+                            builder.ins().jump(shared_block, &[val]);
                         } else if matches!(ctx.ret_ty, MirType::Void) {
                             builder.ins().jump(shared_block, &[]);
                         } else {
                             // A bare `return` in a value-returning function, e.g.
-                            // the success exit of a `void or E`. The shared cleanup
-                            // block takes the return value as a block parameter, so
-                            // this jump has to supply one too — several
-                            // cleanup_returns share one block and the ones carrying
-                            // an error do pass it. Jumping with no argument left the
-                            // block signature unsatisfied and Cranelift's verifier
-                            // rejected the function (#463).
+                            // the success exit of a `void or E`. Several
+                            // cleanup_returns share one block and the ones
+                            // carrying an error do pass a value, so jumping with
+                            // no argument left the block signature unsatisfied and
+                            // Cranelift's verifier rejected the function (#463).
                             let placeholder = Self::empty_return_value(builder, ctx)?;
                             builder.ins().jump(shared_block, &[placeholder]);
                         }
                     } else {
                         // Fallback: inline (shouldn't happen with the setup above)
-                        if ctx.is_main {
-                            builder.ins().return_(&[]);
-                        } else {
-                            Self::emit_return(builder, value.as_ref(), ctx)?;
-                        }
+                        Self::emit_plain_return(builder, value.as_ref(), ctx)?;
                     }
                 } else {
                     // Empty cleanup chain — just return directly
-                    if ctx.is_main {
-                        builder.ins().return_(&[]);
-                    } else {
-                        Self::emit_return(builder, value.as_ref(), ctx)?;
-                    }
+                    Self::emit_plain_return(builder, value.as_ref(), ctx)?;
                 }
             }
         }
@@ -4892,24 +4733,206 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    fn emit_return(
+    /// The Cranelift value a non-`main` function hands back for `return v`.
+    ///
+    /// `None` means it returns nothing. Everything about *wrapping* lives here:
+    /// a `T or E` function whose MIR returns a bare ok or err component has to
+    /// build the tagged slot, and which side it is comes from the operand's MIR
+    /// type. Shared by both exits — a plain `return` and a `return` that
+    /// chains through `ensure` cleanup produce the same value, and only the
+    /// last instruction differs (`return_` vs `jump` to the cleanup block).
+    /// Split out because `CleanupReturn` used to skip all of this and pass the
+    /// raw operand: `return content` from a `string or IoError` function with
+    /// an `ensure` in scope handed the caller the bare string pointer, and the
+    /// caller read a Result tag out of the first bytes of the text.
+    fn exit_value(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Option<Value>> {
+        if let Some(stack_info) = Self::return_stack_info(value, ctx.stack_slot_map) {
+            // For small aggregate return values (≤8 bytes) in stack slots:
+            //   - If the function return type is Result/Option, the small value
+            //     is a component (ok or err), not a Result — must be wrapped.
+            //   - Otherwise load the scalar and return it directly.
+            // For larger aggregates, return the stack slot address. The caller
+            // copies from it immediately via copy_aggregate (the callee stack
+            // is still accessible at that point on x86-64).
+            let (local_id, ss, size) = stack_info;
+            if size <= 8 {
+                let loaded = builder.ins().stack_load(types::I64, ss, 0);
+                if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                    // Small component in a Result/Option-returning function.
+                    // Wrap it as Ok or Err by checking the local's type.
+                    let slot_size = Self::resolve_type_alloc_size(
+                        ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts
+                    ).unwrap_or(16);
+                    let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, slot_size, 0,
+                    ));
+                    let local_ty = ctx.locals.iter()
+                        .find(|l| l.id == local_id)
+                        .map(|l| &l.ty);
+                    if Self::is_err_component(ctx.ret_ty, local_ty) {
+                        Self::build_err(builder, ret_ss, loaded);
+                    } else if matches!(ctx.ret_ty, MirType::Option(_)) {
+                        Self::build_some(builder, ret_ss, loaded);
+                    } else {
+                        Self::build_ok(builder, ret_ss, loaded);
+                    }
+                    let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
+                    return Ok(Some(addr));
+                } else {
+                    return Ok(Some(loaded));
+                }
+            } else {
+                // >8-byte aggregate in a stack slot. If the function returns
+                // Result/Option but this local is a bare ok/err component
+                // (not an already-wrapped Result), wrap it — otherwise the
+                // callee hands back the raw payload and the caller reads the
+                // tag from the payload's first bytes (#347).
+                let local_ty = ctx.locals.iter()
+                    .find(|l| l.id == local_id)
+                    .map(|l| l.ty.clone());
+                let already_wrapped = local_ty.as_ref() == Some(ctx.ret_ty);
+                let needs_wrap = !already_wrapped
+                    && matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_));
+                if needs_wrap {
+                    let is_err = Self::is_err_component(ctx.ret_ty, local_ty.as_ref());
+                    let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
+                    let slot_size = Self::resolve_type_alloc_size(
+                        ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
+                    ).unwrap_or(16);
+                    let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, slot_size, 0,
+                    ));
+                    let src = builder.ins().stack_addr(types::I64, ss, 0);
+                    Self::build_wrapped_aggregate(
+                        builder, ret_ss, is_result, if is_err { 1 } else { 0 }, src, size,
+                    );
+                    let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
+                    return Ok(Some(addr));
+                } else {
+                    // Pointer to the stack slot data, for copy_aggregate
+                    return Self::plain_exit_value(builder, value, ctx);
+                }
+            }
+        } else if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+            // Function returns Result/Option but value is a plain scalar
+            // or non-stack-slotted local (e.g. `return 42` or
+            // `return DivError {}` from a `i32 or DivError` fn).
+            // Wrap as Ok/Some — or Err when the value's MIR type matches
+            // the Result's err side. Without the Err detection, returning
+            // a struct-typed error from a Result-returning function
+            // wrapped it as Ok and caused `is X` checks at the call site
+            // to silently take the wrong branch (#259 family).
+            let slot_size = Self::resolve_type_alloc_size(ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts)
+                .unwrap_or(16);
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                slot_size,
+                0,
+            ));
+            let val_ty = value.and_then(|v| match v {
+                MirOperand::Local(id) => ctx.locals.iter()
+                    .find(|l| l.id == *id)
+                    .map(|l| l.ty.clone()),
+                _ => None,
+            });
+            let is_err_value = Self::is_err_component(ctx.ret_ty, val_ty.as_ref());
+
+            // Aggregate payload (string/struct/...) — `val` is a pointer to
+            // 16+ bytes. Copy into the payload area instead of storing the
+            // pointer at offset 8 (which leaves the rest of the slot
+            // uninitialized).
+            let inner_branch = if is_err_value {
+                match ctx.ret_ty {
+                    MirType::Result { err, .. } => Some(err.as_ref()),
+                    _ => None,
+                }
+            } else {
+                match ctx.ret_ty {
+                    MirType::Option(inner) => Some(inner.as_ref()),
+                    MirType::Result { ok, .. } => Some(ok.as_ref()),
+                    _ => None,
+                }
+            };
+            let inner_aggregate = inner_branch.filter(|t| matches!(t,
+                MirType::String | MirType::Struct(_) | MirType::Enum(_)
+                | MirType::Tuple(_) | MirType::Result { .. } | MirType::Option(_)
+            ));
+
+            // A scalar payload is typed by the payload, not by the
+            // container — same rule as assigning into an Option slot.
+            // Lowering at I64 made `return 2.5` from a `f32 or E` build an
+            // f64, and the f32 read of the payload then picked up the
+            // double's zero low half (#629).
+            let payload_ty = match (inner_aggregate, inner_branch) {
+                (None, Some(inner)) => Self::scalar_payload_store_type(inner)?,
+                _ => None,
+            }
+            .unwrap_or(types::I64);
+            let val = if let Some(val_op) = value {
+                Self::lower_operand_typed(builder, val_op, Some(payload_ty), ctx)?
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            };
+
+            if let Some(inner) = inner_aggregate {
+                let inner_size = Self::resolve_type_alloc_size(
+                    inner, ctx.struct_layouts, ctx.enum_layouts,
+                ).unwrap_or(inner.size());
+                let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
+                Self::build_wrapped_aggregate(
+                    builder, ss, is_result, if is_err_value { 1 } else { 0 }, val, inner_size,
+                );
+            } else if is_err_value {
+                Self::build_err(builder, ss, val);
+            } else if matches!(ctx.ret_ty, MirType::Option(_)) {
+                Self::build_some(builder, ss, val);
+            } else {
+                Self::build_ok(builder, ss, val);
+            }
+            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            return Ok(Some(addr));
+        } else {
+            return Self::plain_exit_value(builder, value, ctx);
+        }
+    }
+
+    /// No wrapping to do — convert the operand to the return type, or nothing.
+    fn plain_exit_value(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Option<Value>> {
+        let Some(val_op) = value else { return Ok(None) };
+        let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
+        let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
+        let actual_ty = builder.func.dfg.value_type(val);
+        Ok(Some(if actual_ty != expected_ty {
+            Self::convert_value(builder, val, actual_ty, expected_ty, None)
+        } else {
+            val
+        }))
+    }
+
+    /// Emit the return instruction for a CleanupReturn that has no cleanup
+    /// block to chain through. `main` returns void to C whatever its Rask
+    /// signature says.
+    fn emit_plain_return(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        if let Some(val_op) = value {
-            let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
-            let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
-            let actual_ty = builder.func.dfg.value_type(val);
-            let final_val = if actual_ty != expected_ty {
-                Self::convert_value(builder, val, actual_ty, expected_ty, None)
-            } else {
-                val
-            };
-            builder.ins().return_(&[final_val]);
-        } else {
+        if ctx.is_main {
             builder.ins().return_(&[]);
+            return Ok(());
         }
+        match Self::exit_value(builder, value, ctx)? {
+            Some(val) => builder.ins().return_(&[val]),
+            None => builder.ins().return_(&[]),
+        };
         Ok(())
     }
 

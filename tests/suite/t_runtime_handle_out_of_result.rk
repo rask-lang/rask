@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A runtime handle pulled out of a `T or E` is the handle, not the address of
+// the result slot it came in.
+//
+// `File`, `TcpConnection` and friends are declared `public struct File { }` in
+// the stubs so `extend` has somewhere to hang methods, but the value is a
+// descriptor. Typed as an aggregate, the local bound by `try`/`catch` was an
+// *address*, and every call on it went to the runtime with a pointer where a
+// descriptor belonged: the native HTTP server accepted connections and then
+// read from a made-up fd, answering "malformed request" to everything (#673).
+//
+// A user's field-less struct is the opposite case and must stay an aggregate —
+// `struct Marker { }` on the error side of a result is told apart from the ok
+// side by its type. t_comptime_try covers that direction.
+
+import fs
+
+func write_then_read(path: string) -> string or IoError {
+    mut w = try fs.create(path)
+    w.write("handle round-trip\n")
+    w.close()
+
+    mut f = try fs.open(path)
+    ensure f.close()
+    let content = try f.read_text()
+    return content
+}
+
+test "std.fs — a File out of a `T or E` is the descriptor" {
+    let path = "/tmp/rask_t_runtime_handle.txt"
+    match write_then_read(path) {
+        string as content => assert content == "handle round-trip\n"
+        IoError as e => assert false, "read failed: {e.message()}"
+    }
+    let _ = fs.remove(path)
+}
+
+test "std.fs — reading a file opened for writing is an error, not a crash" {
+    let path = "/tmp/rask_t_runtime_handle_wo.txt"
+    mut w = fs.create(path) catch _ => { assert false, "create failed"; return }
+    let result = w.read_text()
+    w.close()
+    let _ = fs.remove(path)
+    assert result is IoError, "expected a read error on a write-only handle"
+}
