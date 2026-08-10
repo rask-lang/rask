@@ -3453,6 +3453,7 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
         RetCategory::I64 => MirType::I64,
         RetCategory::F64 => MirType::F64,
         RetCategory::String => MirType::String,
+        RetCategory::Char => MirType::Char,
         RetCategory::Ptr => MirType::Ptr,
         RetCategory::Option(inner) => MirType::Option(Box::new(ret_category_to_mir_type(inner))),
         RetCategory::Result { ok, err } => MirType::Result {

@@ -3780,7 +3780,46 @@ impl<'a> MirLowerer<'a> {
             _ => Vec::new(),
         };
         let elem_params = self.elem_closure_param_tys(object, &method);
+        // #270 write-back applies to methods too. A `mutate` param that isn't
+        // passed by pointer already (a Copy scalar, or a stdlib handle like
+        // StringBuilder) is registered in the callee as a `ptr`, so the caller
+        // has to hand over an address. Only the plain-call path did that, so
+        // every `mutate` argument to a *method* passed its value into a
+        // parameter typed as a pointer, and the callee dereferenced it:
+        //
+        //   caller:  Word_render(_3, _1)     // _1 is the 8-byte handle
+        //   callee:  Word_render(self, b: ptr) { _2 = _1.0 }
+        //
+        // which read the handle as the address of one. Natively that was a
+        // segfault as soon as any trait rendered into a builder (#693).
+        //
+        // The qualified name isn't resolved until after the arguments are
+        // lowered, so rebuild the candidate keys in the same priority order the
+        // resolution below uses and take the first one with a signature.
+        let callee_smut: Vec<Option<MirType>> = {
+            let mut keys: Vec<String> = Vec::new();
+            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let Some(prefix) = self
+                .ctx
+                .lookup_raw_type(object.id)
+                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let ExprKind::Ident(recv) = &object.kind {
+                keys.push(format!("{}_{}", recv, method));
+            }
+            keys.iter()
+                .find_map(|k| self.func_sigs.get(k))
+                .map(|s| s.scalar_mutate_params.clone())
+                .unwrap_or_default()
+        };
         for (i, arg) in args.iter().enumerate() {
+            // all_args[0] is the receiver, so callee param i+1 is this argument.
+            let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
@@ -3788,7 +3827,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
             } else {
-                self.lower_expr(&arg.expr)?
+                self.lower_call_arg(&arg.expr, smut)?
             };
             all_args.push(op);
             arg_types.push(ty);

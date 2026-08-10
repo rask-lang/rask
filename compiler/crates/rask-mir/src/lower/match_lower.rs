@@ -343,6 +343,14 @@ impl<'a> MirLowerer<'a> {
                         cases.push((*v as u64, arm_blocks[i]));
                     } else if let ExprKind::Bool(b) = &lit_expr.kind {
                         cases.push((if *b { 1 } else { 0 }, arm_blocks[i]));
+                    } else if let ExprKind::Char(c) = &lit_expr.kind {
+                        // A char switches on its code point, same as an int.
+                        // Without this the arm fell through to the index case
+                        // below and `match c { '&' => … }` compared the code
+                        // point against 0, 1, 2 — so no arm ever matched and
+                        // every char took the wildcard. `c == '&'` was fine,
+                        // which is why this hid for so long (#693).
+                        cases.push((u32::from(*c) as u64, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }

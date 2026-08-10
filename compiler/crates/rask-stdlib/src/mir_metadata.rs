@@ -18,6 +18,11 @@ pub enum RetCategory {
     I64,
     F64,
     String,
+    /// A `char` — 4 bytes, not 8. Folding it into I64 gave `char?` an 8-byte
+    /// payload slot while the rest of the compiler used 4, so a function
+    /// forwarding `char_at`'s result read the payload from the wrong offset
+    /// (#693).
+    Char,
     Ptr,
     Option(Box<RetCategory>),
     Result {
@@ -252,6 +257,7 @@ fn parse_simple_type(s: &str) -> RetCategory {
     match s {
         "" | "()" => RetCategory::Void,
         "bool" => RetCategory::Bool,
+        "char" => RetCategory::Char,
         "string" => RetCategory::String,
         "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "i128" | "u128"
         | "isize" | "usize" => RetCategory::I64,
@@ -288,6 +294,9 @@ fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
     match cat {
         RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::F64 => None,
         RetCategory::String => Some("string".to_string()),
+        // Keep the "char" prefix it had as a Named type, so `char` methods
+        // still resolve on the result of a char-returning stdlib call.
+        RetCategory::Char => Some("char".to_string()),
         RetCategory::Ptr => Some("Ptr".to_string()),
         RetCategory::Named(name) => Some(name.clone()),
         RetCategory::Tuple(_) => None,

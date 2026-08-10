@@ -94,18 +94,18 @@ enum Block {
 // ─── HTML Utilities ─────────────────────────────────────────────────
 
 func html_escape(input: string) -> string {
-    mut builder = string.new()
+    mut builder = StringBuilder.new()
     for ch in input.chars() {
         match ch {
-            '&' => builder.push_str("&amp;")
-            '<' => builder.push_str("&lt;")
-            '>' => builder.push_str("&gt;")
-            '"' => builder.push_str("&quot;")
-            '\'' => builder.push_str("&#39;")
+            '&' => builder.push("&amp;")
+            '<' => builder.push("&lt;")
+            '>' => builder.push("&gt;")
+            '"' => builder.push("&quot;")
+            '\'' => builder.push("&#39;")
             _ => builder.push_char(ch)
         }
     }
-    return builder
+    return builder.build()
 
     // All same char: '-' or '*' or '_', ignoring spaces
     // Returns start number if line matches "N. " pattern, else none
@@ -318,16 +318,16 @@ func parse_inline(text: string) -> Vec<Inline> or MarkdownError {
     return parse_inline_until(mutate scanner, "")
 }
 
-func flush_text(mutate result: Vec<Inline>, mutate text_buf: string) {
+func flush_text(mutate result: Vec<Inline>, mutate text_buf: StringBuilder) {
     if !text_buf.is_empty() {
-        result.push(Inline.Text(text_buf))
-        text_buf = string.new()
+        result.push(Inline.Text(text_buf.build()))
+        text_buf = StringBuilder.new()
     }
 }
 
 func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or MarkdownError {
     mut result = Vec.new()
-    mut text_buf = string.new()
+    mut text_buf = StringBuilder.new()
 
     while !scanner.is_done() {
         // Check for stop sequence
@@ -373,18 +373,18 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
             scanner.consume("![")
             if scanner.scan_until_char(']')? as alt {
                 if !scanner.consume("(") {
-                    text_buf.push_str("![")
-                    text_buf.push_str(alt)
+                    text_buf.push("![")
+                    text_buf.push(alt)
                     text_buf.push_char(']')
                 } else if scanner.scan_until_char(')')? as url {
                     result.push(Inline.Image(url, alt))
                 } else {
-                    text_buf.push_str("![")
-                    text_buf.push_str(alt)
-                    text_buf.push_str("](")
+                    text_buf.push("![")
+                    text_buf.push(alt)
+                    text_buf.push("](")
                 }
             } else {
-                text_buf.push_str("![")
+                text_buf.push("![")
             }
             continue
         }
@@ -400,8 +400,8 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
                         result.push(Inline.Link(url, link_inlines))
                     } else {
                         text_buf.push_char('[')
-                        text_buf.push_str(text_content)
-                        text_buf.push_str("](")
+                        text_buf.push(text_content)
+                        text_buf.push("](")
                     }
                 } else if scanner.matches("[") {
                     scanner.advance()
@@ -410,12 +410,12 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
                         result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
                     } else {
                         text_buf.push_char('[')
-                        text_buf.push_str(text_content)
-                        text_buf.push_str("][")
+                        text_buf.push(text_content)
+                        text_buf.push("][")
                     }
                 } else {
                     text_buf.push_char('[')
-                    text_buf.push_str(text_content)
+                    text_buf.push(text_content)
                     text_buf.push_char(']')
                 }
             } else {
@@ -492,7 +492,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
         // Fenced code block: ```
         if trimmed.starts_with("```") {
             let lang = trimmed[3..].trim().to_string()
-            mut code = string.new()
+            mut code = StringBuilder.new()
             mut first_code_line = true
             i = i + 1
             while i < line_count {
@@ -501,13 +501,13 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     break
                 }
                 if !first_code_line {
-                    code.push_str("\n")
+                    code.push("\n")
                 }
                 first_code_line = false
-                code.push_str(lines[i])
+                code.push(lines[i])
                 i = i + 1
             }
-            blocks.push(Block.CodeBlock(lang, code))
+            blocks.push(Block.CodeBlock(lang, code.build()))
             continue
         }
 
@@ -668,125 +668,125 @@ func join_lines(lines: Vec<string>) -> string {
 // Uses string throughout for efficient HTML assembly.
 
 trait Renderable {
-    func render(self, mutate builder: string, refs: Map<string, string>)
+    func render(self, mutate builder: StringBuilder, refs: Map<string, string>)
 }
 
 // Generic render helper — monomorphized to render_children$Inline and
 // render_children$Block by the compiler.
-func render_children<T: Renderable>(children: Vec<T>, mutate builder: string, refs: Map<string, string>) {
+func render_children<T: Renderable>(children: Vec<T>, mutate builder: StringBuilder, refs: Map<string, string>) {
     for child in children {
         child.render(mutate builder, refs)
     }
 }
 
 extend Inline with Renderable {
-    func render(self, mutate builder: string, refs: Map<string, string>) {
+    func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
-            Text(s) => builder.push_str(html_escape(s))
+            Text(s) => builder.push(html_escape(s))
             Bold(children) => {
-                builder.push_str("<strong>")
+                builder.push("<strong>")
                 render_children(children, mutate builder, refs)
-                builder.push_str("</strong>")
+                builder.push("</strong>")
             }
             Italic(children) => {
-                builder.push_str("<em>")
+                builder.push("<em>")
                 render_children(children, mutate builder, refs)
-                builder.push_str("</em>")
+                builder.push("</em>")
             }
             Code(s) => {
-                builder.push_str("<code>")
-                builder.push_str(html_escape(s))
-                builder.push_str("</code>")
+                builder.push("<code>")
+                builder.push(html_escape(s))
+                builder.push("</code>")
             }
             Link(url, children) => {
-                builder.push_str("<a href=\"")
-                builder.push_str(html_escape(url))
-                builder.push_str("\">")
+                builder.push("<a href=\"")
+                builder.push(html_escape(url))
+                builder.push("\">")
                 render_children(children, mutate builder, refs)
-                builder.push_str("</a>")
+                builder.push("</a>")
             }
             Image(url, alt) => {
-                builder.push_str("<img src=\"")
-                builder.push_str(html_escape(url))
-                builder.push_str("\" alt=\"")
-                builder.push_str(html_escape(alt))
-                builder.push_str("\">")
+                builder.push("<img src=\"")
+                builder.push(html_escape(url))
+                builder.push("\" alt=\"")
+                builder.push(html_escape(alt))
+                builder.push("\">")
             }
             RefLink(id, children) => {
                 let url = refs.get(id) ?? ""
                 if !url.is_empty() {
-                    builder.push_str("<a href=\"")
-                    builder.push_str(html_escape(url))
-                    builder.push_str("\">")
+                    builder.push("<a href=\"")
+                    builder.push(html_escape(url))
+                    builder.push("\">")
                     render_children(children, mutate builder, refs)
-                    builder.push_str("</a>")
+                    builder.push("</a>")
                 } else {
-                    builder.push_str("[")
+                    builder.push("[")
                     render_children(children, mutate builder, refs)
-                    builder.push_str("]")
+                    builder.push("]")
                 }
             }
-            LineBreak => builder.push_str("<br>\n")
+            LineBreak => builder.push("<br>\n")
         }
     }
 }
 
-func render_list_item(item: ListItem, mutate builder: string, refs: Map<string, string>) {
-    builder.push_str("<li>")
+func render_list_item(item: ListItem, mutate builder: StringBuilder, refs: Map<string, string>) {
+    builder.push("<li>")
     render_children(item.content, mutate builder, refs)
     if !item.children.is_empty() {
-        builder.push_str("\n")
+        builder.push("\n")
         render_children(item.children, mutate builder, refs)
     }
-    builder.push_str("</li>\n")
+    builder.push("</li>\n")
 }
 
 extend Block with Renderable {
-    func render(self, mutate builder: string, refs: Map<string, string>) {
+    func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
             Heading(level, inlines) => {
-                builder.push_str("<h{level}>")
+                builder.push("<h{level}>")
                 render_children(inlines, mutate builder, refs)
-                builder.push_str("</h{level}>\n")
+                builder.push("</h{level}>\n")
             }
             Paragraph(inlines) => {
-                builder.push_str("<p>")
+                builder.push("<p>")
                 render_children(inlines, mutate builder, refs)
-                builder.push_str("</p>\n")
+                builder.push("</p>\n")
             }
             CodeBlock(lang, code) => {
                 if !lang.is_empty() {
-                    builder.push_str("<pre><code class=\"language-{lang}\">")
+                    builder.push("<pre><code class=\"language-{lang}\">")
                 } else {
-                    builder.push_str("<pre><code>")
+                    builder.push("<pre><code>")
                 }
-                builder.push_str(html_escape(code))
-                builder.push_str("</code></pre>\n")
+                builder.push(html_escape(code))
+                builder.push("</code></pre>\n")
             }
             Blockquote(blocks) => {
-                builder.push_str("<blockquote>\n")
+                builder.push("<blockquote>\n")
                 render_children(blocks, mutate builder, refs)
-                builder.push_str("</blockquote>\n")
+                builder.push("</blockquote>\n")
             }
             UnorderedList(items) => {
-                builder.push_str("<ul>\n")
+                builder.push("<ul>\n")
                 for item in items {
                     render_list_item(item, mutate builder, refs)
                 }
-                builder.push_str("</ul>\n")
+                builder.push("</ul>\n")
             }
             OrderedList(start, items) => {
                 if start != 1 {
-                    builder.push_str("<ol start=\"{start}\">\n")
+                    builder.push("<ol start=\"{start}\">\n")
                 } else {
-                    builder.push_str("<ol>\n")
+                    builder.push("<ol>\n")
                 }
                 for item in items {
                     render_list_item(item, mutate builder, refs)
                 }
-                builder.push_str("</ol>\n")
+                builder.push("</ol>\n")
             }
-            HorizontalRule => builder.push_str("<hr>\n")
+            HorizontalRule => builder.push("<hr>\n")
         }
     }
 }
@@ -797,16 +797,16 @@ func render_markdown(input: string) -> string or RenderError {
     let refs = parse_references(input)
     let blocks = parse_blocks(input) catch e => return RenderError.Parse(e)
 
-    mut out = string.new()
+    mut out = StringBuilder.new()
     render_children(blocks, mutate out, refs)
-    return out
+    return out.build()
 }
 
 func render_full_page(input: string) -> string or RenderError {
     let body = try render_markdown(input)
 
-    mut out = string.new()
-    out.push_str("""
+    mut out = StringBuilder.new()
+    out.push("""
 <!DOCTYPE html>
 <html>
 <head>
@@ -815,9 +815,9 @@ func render_full_page(input: string) -> string or RenderError {
 </head>
 <body>
 """)
-    out.push_str(body)
-    out.push_str("</body>\n</html>\n")
-    return out
+    out.push(body)
+    out.push("</body>\n</html>\n")
+    return out.build()
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────
