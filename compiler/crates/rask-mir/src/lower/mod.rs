@@ -1459,10 +1459,23 @@ impl<'a> MirLowerer<'a> {
         src_ty: &MirType,
         dst_ty: &MirType,
     ) -> MirOperand {
-        // Every position builds layers the same way — the site is carried so the
-        // set stays enumerable and a new one can't be added without touching
-        // this pass. `CoercionSite::ALL` is what the coverage test iterates.
-        let _ = site;
+        use rask_ast::coercion::CoercionSite;
+
+        // Which positions can put a value on the *error* branch rather than
+        // wrapping it as success. ER9 gives that to `return`: a value whose type
+        // is `E` goes to err, picked by type, and disjointness (ER3) makes it
+        // unambiguous. Elsewhere ER11 means a bare `E` never reaches here for a
+        // non-optional sum — the checker rejected it — so a value that happens to
+        // equal the error type at those positions is the payload, not an error.
+        //
+        // Exhaustive on purpose: a new position has to say which it is.
+        let err_branch_by_type = match site {
+            CoercionSite::Return | CoercionSite::CatchArm => true,
+            CoercionSite::AnnotatedBinding
+            | CoercionSite::Argument
+            | CoercionSite::StructField => false,
+        };
+
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
         if dst_layers.len() <= src_layers.len() {
@@ -1480,9 +1493,11 @@ impl<'a> MirLowerer<'a> {
         // An error value at a Result layer is the err side, not a payload to
         // wrap as Ok. Only the outermost added layer can be the one it belongs
         // to, since the layers below it are the ok branch's own shape.
-        if let Some(WrapLayer::Result { err }) = dst_layers.first() {
-            if src_ty == err {
-                return val;
+        if err_branch_by_type {
+            if let Some(WrapLayer::Result { err }) = dst_layers.first() {
+                if src_ty == err {
+                    return val;
+                }
             }
         }
 

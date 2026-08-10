@@ -642,3 +642,154 @@ pub enum InvalidCastClass {
     /// Fallback: char/other lossy conversion with no obvious form.
     Other,
 }
+
+impl TypeError {
+    /// Rewrite every type this error carries.
+    ///
+    /// Diagnostics print a `Type`, and `Type::Named(id)` carries no name — the
+    /// name lives in the checker's type table. Doing that lookup at each of the
+    /// 126 places an error gets built is discipline nobody keeps, and nobody did:
+    /// the error side of a `T or E` printed as an internal id in at least three
+    /// unrelated messages (#646). One walk, applied once on the way out of the
+    /// checker, covers every site — including the ones not written yet.
+    ///
+    /// Deliberately exhaustive with no catch-all. A new variant that carries a
+    /// type won't compile until it's listed here, which is the only thing that
+    /// keeps this from drifting back.
+    pub(crate) fn map_types(&mut self, f: &dyn Fn(&Type) -> Type) {
+        use TypeError::*;
+        match self {
+            DiscardCopyType { ty, .. }
+            | DiscardResourceType { ty, .. }
+            | ErrorMessageMissing { ty, .. }
+            | InfiniteType { ty, .. }
+            | IntLiteralOutOfRange { ty, .. }
+            | NoSuchField { ty, .. }
+            | NoSuchMethod { ty, .. }
+            | NotCallable { ty, .. }
+            | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+
+            CatchOnOptional { found, .. }
+            | CoalesceOnResult { found, .. }
+            | GuardElseMustDiverge { found, .. }
+            | NotIterable { found, .. }
+            | PresenceTestOnResult { found, .. }
+            | TakeOnNonOptional { found, .. }
+            | TryOnFlatShape { found, .. }
+            | TryOnNonResult { found, .. }
+            | TypePatternNotResult { found, .. } => *found = f(found),
+
+            TryAbsenceIntoResult { return_ty, .. }
+            | TryErrorIntoOptional { return_ty, .. }
+            | TryInNonPropagatingContext { return_ty, .. } => *return_ty = f(return_ty),
+
+            WrapperMethodCut { receiver, .. } => *receiver = f(receiver),
+
+            MissingReturn { expected_type, .. } => *expected_type = f(expected_type),
+
+            TypePatternNotInUnion { union, .. } => *union = f(union),
+
+            LinearInContainer { elem, .. } => *elem = f(elem),
+
+            DuplicateSumVariant { ty, variant, .. } => {
+                *ty = f(ty);
+                *variant = f(variant);
+            }
+
+            IndexTypeMismatch { container, found, .. } => {
+                *container = f(container);
+                *found = f(found);
+            }
+
+            InvalidCast { src_ty, dst_ty, .. } => {
+                *src_ty = f(src_ty);
+                *dst_ty = f(dst_ty);
+            }
+
+            Mismatch { expected, found, .. } => {
+                *expected = f(expected);
+                *found = f(found);
+            }
+
+            NarrowingNeedsPolicy { from, to, .. } => {
+                *from = f(from);
+                *to = f(to);
+            }
+
+            NoAutoWrapOutsideReturn { value, target, .. } => {
+                *value = f(value);
+                *target = f(target);
+            }
+
+            NominalMismatch { expected, found, .. } => {
+                *expected = f(expected);
+                *found = f(found);
+            }
+
+            ResultNotDisjointAtInstantiation { arg, other, .. } => {
+                *arg = f(arg);
+                *other = f(other);
+            }
+
+            // Carry no types.
+            Undefined(..)
+            | UnresolvedType { .. }
+            | ArityMismatch { .. }
+            | UnimplementedStdlibMethod { .. }
+            | NotDisplayable { .. }
+            | UnboundedTypeParamMethod { .. }
+            | CannotInfer { .. }
+            | InvalidTypeString(..)
+            | UnknownTypeName { .. }
+            | SingleLetterTypeName { .. }
+            | TryErrorMismatch { .. }
+            | AmbiguousErrorWrap { .. }
+            | TryOutsideFunction { .. }
+            | TakeOnImmutablePlace { .. }
+            | GenericError(..)
+            | AliasingViolation { .. }
+            | MutateReadOnlyParam { .. }
+            | FrozenContextWrite { .. }
+            | MutateConst { .. }
+            | MutateWithBinding { .. }
+            | StringSliceStored { .. }
+            | VolatileViewStored { .. }
+            | MutateBorrowedSource { .. }
+            | NoAllocViolation { .. }
+            | MissingMutateAnnotation { .. }
+            | MissingOwnAnnotation { .. }
+            | UnexpectedAnnotation { .. }
+            | UnsafeRequired { .. }
+            | TraitObjectSelfReturn { .. }
+            | TraitObjectGenericMethod { .. }
+            | TraitNotSatisfied { .. }
+            | NotSerializable { .. }
+            | StringAddForbidden { .. }
+            | PublicDuckTrait { .. }
+            | PublicInferredError { .. }
+            | NonExhaustiveMatch { .. }
+            | UndefinedName { .. }
+            | UnknownContext { .. }
+            | SignatureRuntimeContext { .. }
+            | SpawnOutsideBlock { .. }
+            | CyclicTypeAlias { .. }
+            | PrivateFieldAccess { .. }
+            | MissingFields { .. }
+            | TypeCalledAsFunction { .. }
+            | PublicMissingAnnotation { .. }
+            | UseAfterDiscard { .. }
+            | ZeroStep { .. }
+            | StepDirectionMismatch { .. }
+            | MessageCoverageMissing { .. }
+            | BareSyncAccess { .. }
+            | MixedDiscriminants { .. }
+            | DiscriminantWithPayload { .. }
+            | DuplicateDiscriminant { .. }
+            | ElseBindingNotResult { .. }
+            | LegacyWrapperConstructor { .. }
+            | LegacyWrapperPattern { .. }
+            | MatchOnOption { .. }
+            | InvalidConvert { .. } => {}
+        }
+    }
+}

@@ -8,9 +8,12 @@
 //! on where it was written rather than what it was. Depth 1 worked in all of
 //! them, which is why it went unnoticed until nested shapes appeared (#701).
 //!
-//! Both the checker and MIR lowering match on `CoercionSite` exhaustively.
-//! Adding a variant here breaks both crates until each has said what it does
-//! with it, which is the only reason a shared list beats a convention.
+//! MIR lowering matches on `CoercionSite` exhaustively to decide whether a value
+//! typed as `E` at that position is an error going to the err branch (ER9, at a
+//! `return`) or a payload going to the success branch (everywhere else, because
+//! ER11 means the checker already rejected a bare `E` there). Adding a variant
+//! breaks that match until it has said which it is — that enforcement is the
+//! only reason a shared list beats a convention.
 
 /// A position where the language coerces a bare `T` into a wrapper shape.
 ///

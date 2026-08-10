@@ -806,6 +806,26 @@ fn error_no_auto_wrap_outside_return() {
     );
 }
 
+// #646: the error side of a `T or E` printed as `<type#N>` instead of the name.
+// The pass that fills type names in was a hand-written match with a catch-all
+// covering 17 of the 33 type-carrying variants, so anything added later fell
+// through. Three different codes in one file, because the original bug was
+// invisible to any single message — `Mismatch` was always correct.
+#[test]
+fn error_type_named_in_diagnostics() {
+    let (failed, out) = compile_error_output("error_type_named_in_diagnostics.rk");
+    assert!(failed, "wrapper-method and flat-try misuse must be rejected: {}", out);
+    assert!(
+        !out.contains("<type#"),
+        "no diagnostic may leak an internal type id: {}", out,
+    );
+    for expected in ["no method `ok` on `i64 or IoError`",
+                     "no method `unwrap_or_else` on `i64 or IoError`",
+                     "`i64? or IoError`"] {
+        assert!(out.contains(expected), "missing {:?} in: {}", expected, out);
+    }
+}
+
 // A struct or enum name in call position used to type-check silently and then
 // die in MIR lowering as "method `next` on receiver of unresolved type".
 // `Name(value)` is the nominal-type constructor (T7); structs have no tuple
