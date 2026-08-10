@@ -58,6 +58,12 @@ typedef struct GreenTask {
     pthread_cond_t  done_cond;
     int             done;
 
+    // O4: set by detach(), checked (under done_lock) wherever the task's
+    // panic would otherwise only surface to a join() that's never coming.
+    int             detached;
+
+    int64_t         task_id;   // ctrl.panic/F1
+
     // Refcount: handle(1) + scheduler(1)
     atomic_int      refcount;
 
@@ -260,6 +266,8 @@ static GreenTask *task_new(rask_poll_fn fn, void *state, int64_t state_size) {
     t->result     = 0;
     t->panic_msg  = NULL;
     t->done       = 0;
+    t->detached   = 0;
+    t->task_id    = rask_next_task_id();
     atomic_init(&t->refcount, 2); // handle + scheduler
     t->io_result  = 0;
     t->io_err     = 0;
@@ -281,6 +289,14 @@ static void task_release(GreenTask *t) {
 static void task_mark_complete(GreenTask *t) {
     pthread_mutex_lock(&t->done_lock);
     t->done = 1;
+    // O4: already detached — no join() is coming to read panic_msg, so
+    // report it now instead of leaking it silently.
+    if (t->detached && t->panic_msg) {
+        fprintf(stderr, "task %lld panic at %s\n",
+                (long long)t->task_id, t->panic_msg);
+        free(t->panic_msg);
+        t->panic_msg = NULL;
+    }
     pthread_cond_broadcast(&t->done_cond);
     pthread_mutex_unlock(&t->done_lock);
 }
@@ -318,6 +334,8 @@ static void io_completion_cb(void *userdata, int64_t result, int err) {
 extern jmp_buf *rask_panic_jmpbuf(void);
 extern void     rask_panic_activate(void);
 extern char    *rask_panic_take_message(void);
+extern int64_t  rask_next_task_id(void);
+extern void     rask_panic_set_task_id(int64_t id);
 
 // ─── Ensure hooks (LIFO cleanup stack) ──────────────────────
 //
@@ -343,6 +361,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
     // Install panic handler for this task invocation
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
+    rask_panic_set_task_id(t->task_id); // F1
 
     int poll_result;
     if (setjmp(*jb) == 0) {
@@ -357,6 +376,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
     }
 
     rask_panic_remove();
+    rask_panic_set_task_id(0);
 
     // Save ensure hook stack back to task before switching away
     t->ensure_stack = rask_ensure_stack_take();
@@ -621,8 +641,21 @@ void rask_green_detach(void *handle) {
     if (!h || !h->task) {
         rask_panic("detach on consumed TaskHandle");
     }
+    GreenTask *t = h->task;
 
-    task_release(h->task); // drop handle's ref
+    pthread_mutex_lock(&t->done_lock);
+    t->detached = 1;
+    // O4: the task may have already panicked and finished before detach()
+    // ran — same "report now, nobody will join" rule applies.
+    if (t->done && t->panic_msg) {
+        fprintf(stderr, "task %lld panic at %s\n",
+                (long long)t->task_id, t->panic_msg);
+        free(t->panic_msg);
+        t->panic_msg = NULL;
+    }
+    pthread_mutex_unlock(&t->done_lock);
+
+    task_release(t); // drop handle's ref
     free(h);
 }
 

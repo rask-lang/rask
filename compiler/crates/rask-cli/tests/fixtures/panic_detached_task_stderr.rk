@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/O4, issue #298: a detached task's panic prints to stderr and the
+// process keeps going. Detach means "I don't need the result," not "hide my
+// bugs" — before this fix the panic just vanished.
+//
+// `doomed`'s ensure fires during its own unwind (U1), sending on `tx` right
+// as the panic happens — that's the synchronization point: once main's
+// `rx.receive()` returns, the task has already panicked and produced its
+// result, so the reaper thread behind `detach()` is a beat away from
+// printing. The `time.sleep` gives it that beat.
+import time
+import time.Duration
+
+func doomed(tx: Sender<i64>) {
+    ensure { let _ = tx.send(1) }
+    panic("boom")
+}
+
+func main() {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        let h: TaskHandle<void> = spawn(own || { doomed(tx) })
+        h.detach()
+        let _ = rx.receive()
+        time.sleep(Duration.from_millis(50))
+    }
+    println("done")
+}

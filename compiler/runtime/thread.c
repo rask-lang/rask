@@ -26,6 +26,8 @@
 extern jmp_buf *rask_panic_jmpbuf(void);
 extern void     rask_panic_activate(void);
 extern char    *rask_panic_take_message(void);
+extern int64_t  rask_next_task_id(void);
+extern void     rask_panic_set_task_id(int64_t id);
 
 // ─── Task state (shared between handle and thread) ─────────
 
@@ -40,6 +42,14 @@ typedef struct {
     atomic_int   cancel_flag;
     char        *panic_msg;     // set on panic, owned by state
     pthread_t    thread;
+
+    // O4: guards `detached` and the decision to print an unjoined panic to
+    // stderr. Only the panic path and detach() ever touch this — the normal
+    // success path never contends on it.
+    pthread_mutex_t report_lock;
+    int              detached;
+
+    int64_t      task_id;        // ctrl.panic/F1
 } RaskTaskState;
 
 struct RaskTaskHandle {
@@ -55,12 +65,16 @@ static RaskTaskState *state_new(void) {
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
     s->panic_msg = NULL;
+    pthread_mutex_init(&s->report_lock, NULL);
+    s->detached = 0;
+    s->task_id = rask_next_task_id();
     return s;
 }
 
 static void state_release(RaskTaskState *s) {
     if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
         if (s->panic_msg) rask_free(s->panic_msg);
+        pthread_mutex_destroy(&s->report_lock);
         rask_free(s);
     }
 }
@@ -86,6 +100,7 @@ static void *task_thread_entry(void *arg) {
     // Install panic handler
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
+    rask_panic_set_task_id(state->task_id); // F1
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
@@ -96,7 +111,21 @@ static void *task_thread_entry(void *arg) {
         state->panic_msg = rask_panic_take_message();
         atomic_store_explicit(&state->status, RASK_TASK_PANICKED,
                               memory_order_release);
+
+        // O4: a detached task's panic must reach stderr — nobody is going to
+        // join this handle and read the message otherwise. F1: task id
+        // prefix, since a runtime task is what's panicking here.
+        pthread_mutex_lock(&state->report_lock);
+        if (state->detached && state->panic_msg) {
+            fprintf(stderr, "task %lld panic at %s\n",
+                    (long long)state->task_id, state->panic_msg);
+            rask_free(state->panic_msg);
+            state->panic_msg = NULL;
+        }
+        pthread_mutex_unlock(&state->report_lock);
     }
+
+    rask_panic_set_task_id(0);
 
     rask_panic_remove();
     current_cancel_flag = NULL;
@@ -159,6 +188,20 @@ void rask_task_detach(RaskTaskHandle *h) {
     }
 
     RaskTaskState *state = h->state;
+
+    pthread_mutex_lock(&state->report_lock);
+    state->detached = 1;
+    // O4: the task may have already panicked and finished before detach()
+    // ran — same "report now, nobody will join" rule applies.
+    if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_PANICKED
+        && state->panic_msg) {
+        fprintf(stderr, "task %lld panic at %s\n",
+                (long long)state->task_id, state->panic_msg);
+        rask_free(state->panic_msg);
+        state->panic_msg = NULL;
+    }
+    pthread_mutex_unlock(&state->report_lock);
+
     pthread_detach(state->thread);
     state_release(state);
     rask_free(h);

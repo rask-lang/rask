@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <setjmp.h>
+#include <stdatomic.h>
 
 #ifdef __linux__
 #include <execinfo.h>
@@ -62,6 +63,24 @@ char *rask_panic_take_message(void) {
     char *msg = panic_ctx.message;
     panic_ctx.message = NULL;
     return msg;
+}
+
+// ─── Task ids (ctrl.panic/F1) ───────────────────────────────
+//
+// One counter shared by both task backends (thread.c OS threads, green.c
+// fibers) so ids stay unique regardless of which spawns which. 0 means
+// "no task" — main never has one. thread.c/green.c set the current thread's
+// id around each task invocation; panic output prepends it when set.
+
+static atomic_llong next_task_id = 1;
+static __thread int64_t tl_task_id = 0;
+
+int64_t rask_next_task_id(void) {
+    return atomic_fetch_add_explicit(&next_task_id, 1, memory_order_relaxed);
+}
+
+void rask_panic_set_task_id(int64_t id) {
+    tl_task_id = id;
 }
 
 // ─── Ensure hooks (LIFO cleanup stack) ─────────────────────
@@ -141,8 +160,14 @@ void rask_ensure_run_all(void) {
             fn(ctx);
         } else {
             char *m = panic_ctx.message;
-            fprintf(stderr, "secondary panic during unwind: %s\n",
-                    m ? m : "(unknown panic)");
+            // F1: task id prefix when a runtime task is active.
+            if (tl_task_id > 0) {
+                fprintf(stderr, "task %lld secondary panic during unwind: %s\n",
+                        (long long)tl_task_id, m ? m : "(unknown panic)");
+            } else {
+                fprintf(stderr, "secondary panic during unwind: %s\n",
+                        m ? m : "(unknown panic)");
+            }
             free(m);
         }
         panic_ctx = saved;

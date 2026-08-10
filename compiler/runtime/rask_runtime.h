@@ -643,6 +643,11 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
+// Task ids (ctrl.panic/F1) — used internally by thread.c/green.c to prefix
+// panic output with "task N" while a runtime task is executing.
+int64_t rask_next_task_id(void);
+void    rask_panic_set_task_id(int64_t id);
+
 // ─── Green scheduler (M:N) ──────────────────────────────────
 // Work-stealing scheduler with io_uring/epoll I/O engine.
 // Tasks are stackless state machines: poll_fn(state, ctx) → 0=READY, 1=PENDING.
