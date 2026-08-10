@@ -7,6 +7,8 @@
 
 Determinism is a property of an execution mode, not a tax on the language. Production builds run at full speed with no determinism overhead. **Sim mode** (`rask test --sim`) makes execution a pure function of a seed: same binary, same seed, same recorded inputs → identical execution, including failures.
 
+This file is the promise. The machine that keeps it — scheduler, virtual clock, fault vocabulary, replay output — is [sim.md](sim.md).
+
 This is the foundation for commitment 3 of [NORTH_STAR.md](../NORTH_STAR.md): no unreproducible failures. Prior art: FoundationDB's simulation, TigerBeetle's VOPR. Rask's design makes this cheaper than it was for them — I/O is stdlib-mediated (no function coloring means every syscall goes through the runtime), tasks run on a runtime-owned scheduler, and user code cannot observe addresses (no storable references).
 
 ## The promise
