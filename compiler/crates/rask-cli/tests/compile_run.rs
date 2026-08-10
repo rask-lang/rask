@@ -310,19 +310,44 @@ fn interp_field_defaults() {
     assert_eq!(stdout, FIELD_DEFAULTS_EXPECTED);
 }
 
-// Field annotations (@rename/@skip/@default) surface through reflect. Reflect-driven
-// `comptime for` runs only under the interpreter, so this path is interp-only.
+// Field annotations (@rename/@skip/@default) surface through reflect (#317:
+// `comptime for` over `reflect.fields<T>()` now unrolls on native too).
+const FIELD_ANNOTATIONS_EXPECTED: &str =
+    "name user_name false false\n\
+     cache_key cache_key true false\n\
+     login_count login_count false true\n\
+     role role false true\n";
+
+#[test]
+fn native_field_annotations() {
+    let (stdout, code) = run_native("field_annotations.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, FIELD_ANNOTATIONS_EXPECTED);
+}
+
 #[test]
 fn interp_field_annotations() {
     let (stdout, code) = run_interp("field_annotations.rk");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        "name user_name false false\n\
-         cache_key cache_key true false\n\
-         login_count login_count false true\n\
-         role role false true\n",
-    );
+    assert_eq!(stdout, FIELD_ANNOTATIONS_EXPECTED);
+}
+
+// CT49: value.(field.name) inside the same unrolled loop, reading the actual
+// field value back rather than just its FieldInfo metadata.
+const DYNAMIC_FIELD_ACCESS_EXPECTED: &str = "x (x) = 1.5\ny (Y) = 2.5\n";
+
+#[test]
+fn native_dynamic_field_access() {
+    let (stdout, code) = run_native("dynamic_field_access.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, DYNAMIC_FIELD_ACCESS_EXPECTED);
+}
+
+#[test]
+fn interp_dynamic_field_access() {
+    let (stdout, code) = run_interp("dynamic_field_access.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, DYNAMIC_FIELD_ACCESS_EXPECTED);
 }
 
 // #370 (field-position error type accepted) + #364 (Result field sized to match

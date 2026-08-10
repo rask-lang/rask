@@ -843,6 +843,27 @@ pub struct MirLowerer<'a> {
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
     catch_frames: Vec<CatchFrame>,
+    /// Active `comptime for` loop-binding names and the field they're currently
+    /// bound to (innermost last, for nesting). `field` here isn't a runtime
+    /// value — `field.name`/`value.(field.name)` splice this directly instead
+    /// of going through the normal local/struct-layout lookup (CT48/CT49).
+    comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
+}
+
+/// One field's compile-time-known metadata inside an unrolled `comptime for
+/// field in reflect.fields<T>()` body (CT48–CT54). Mirrors the interpreter's
+/// FieldInfo shape (rask-interp/src/stdlib/reflect.rs) so native and interp
+/// agree; `is_public` has no source in `FieldLayout` so it defaults to `true`.
+#[derive(Clone)]
+pub(crate) struct ReflectFieldConst {
+    pub(crate) name: String,
+    pub(crate) type_name: String,
+    pub(crate) offset: u32,
+    pub(crate) size: u32,
+    pub(crate) is_public: bool,
+    pub(crate) serial_name: String,
+    pub(crate) is_skipped: bool,
+    pub(crate) has_default: bool,
 }
 
 /// Where a `try` inside a `try { … } catch e => …` block sends its error.
@@ -1981,6 +2002,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
+            comptime_for_bindings: Vec::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -4455,6 +4477,7 @@ mod tests {
                         size: 8,
                         align: 8,
                         attrs: vec![],
+                        has_declared_default: false,
                     }],
                 },
                 VariantLayout {
@@ -4469,6 +4492,7 @@ mod tests {
                         size: 8,
                         align: 8,
                         attrs: vec![],
+                        has_declared_default: false,
                     }],
                 },
             ],
@@ -4607,8 +4631,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![] },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![] },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false },
                     ],
                 },
             ],
