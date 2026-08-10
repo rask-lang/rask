@@ -265,7 +265,10 @@ impl<'a> MirLowerer<'a> {
             }
             return val;
         }
-        self.coerce_into_wrapper(val, val_ty, field_ty)
+        self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::StructField,
+            val, val_ty, field_ty,
+        )
     }
 
     /// Lower an absent optional. `none` and `None` are the same value written
@@ -842,7 +845,10 @@ impl<'a> MirLowerer<'a> {
                             .map(|s| self.ctx.resolve_type_str(s));
                         match declared {
                             Some(dst_ty) => {
-                                let op = self.coerce_into_wrapper(op, &mir_ty, &dst_ty);
+                                let op = self.coerce_into_wrapper(
+                                    rask_ast::coercion::CoercionSite::Argument,
+                                    op, &mir_ty, &dst_ty,
+                                );
                                 (op, mir_ty)
                             }
                             None => (op, mir_ty),

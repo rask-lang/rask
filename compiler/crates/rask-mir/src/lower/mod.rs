@@ -1454,10 +1454,15 @@ impl<'a> MirLowerer<'a> {
     /// `i64? or E` skip the wrap entirely.
     fn coerce_into_wrapper(
         &mut self,
+        site: rask_ast::coercion::CoercionSite,
         val: MirOperand,
         src_ty: &MirType,
         dst_ty: &MirType,
     ) -> MirOperand {
+        // Every position builds layers the same way — the site is carried so the
+        // set stays enumerable and a new one can't be added without touching
+        // this pass. `CoercionSite::ALL` is what the coverage test iterates.
+        let _ = site;
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
         if dst_layers.len() <= src_layers.len() {
@@ -1546,16 +1551,19 @@ impl<'a> MirLowerer<'a> {
         cur_op
     }
 
-    /// Widen a scalar to the type an 8-byte storage slot holds it as: a float
-    /// becomes an `f64`, anything narrower than a word a full-width integer.
-    /// Returns the operand unchanged when it's already that wide.
+    /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
+    /// owns that rule, this just applies it. Returns the operand unchanged when
+    /// it is already that wide.
     fn widen_scalar_payload(&mut self, op: MirOperand, ty: &MirType) -> MirOperand {
-        let target = match ty {
-            MirType::F32 => MirType::F64,
-            MirType::F64 | MirType::I64 | MirType::U64 => return op,
-            t if t.size() < 8 && !t.passed_by_address() => MirType::I64,
-            _ => return op,
+        let is_float = matches!(ty, MirType::F32 | MirType::F64);
+        let target = match rask_mono::abi::payload_repr(is_float, ty.passed_by_address()) {
+            rask_mono::abi::PayloadRepr::InPlace => return op,
+            rask_mono::abi::PayloadRepr::Float64 => MirType::F64,
+            rask_mono::abi::PayloadRepr::IntFullWidth => MirType::I64,
         };
+        if ty == &target || ty.size() >= rask_mono::abi::PAYLOAD_SLOT_BYTES {
+            return op;
+        }
         let tmp = self.builder.alloc_temp(target.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tmp,

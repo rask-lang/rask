@@ -1603,6 +1603,22 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// How deep a wrapper gets is not decided here.
+    ///
+    /// MIR lowering builds the layers, at every position listed in
+    /// `rask_ast::coercion::CoercionSite`, so an assignment that reaches codegen
+    /// should already agree with its destination's depth. The multi-layer
+    /// widener that used to live here is gone — it was the only thing that could
+    /// add a second layer, and it typed the payload by peeling exactly one,
+    /// which is what made `f32??` read back as 0 (#493, #637, #701).
+    ///
+    /// The single-layer wrap below stays as a net for MIR that still builds its
+    /// own slots rather than going through the shared coercion. To re-measure
+    /// what still needs it, put an `eprintln!` in each wrap branch and compile
+    /// `tests/suite/*.rk examples/*.rk benchmarks/*.rk projects/*/*.rk`; as of
+    /// this change only the aggregate branch and the return terminator's Ok/Err
+    /// fire at all, and only from `tiered_store`, `text_editor`,
+    /// `18_resource_types` and `t_try_error_wrap`.
     fn lower_assign(
         builder: &mut ClifFunctionBuilder,
         dst: &LocalId,
@@ -1739,16 +1755,6 @@ impl<'a> FunctionBuilder<'a> {
                 _ => None,
             };
             val = Self::convert_value(builder, val, val_ty, dst_ty, src_mir.as_ref());
-        }
-
-        // #493: an Option destination deeper than its source gains the layers
-        // it's missing, rather than being copied over as if the depths matched.
-        // `const inner: T?? = slot` where `slot: T?` means "the container had
-        // something, and that something is this slot" (type.optionals/OPT28) —
-        // copying the 16 bytes straight across would silently reinterpret the
-        // inner layer as the outer one.
-        if let Some(()) = Self::try_widen_option_depth(builder, dst, &dst_local.ty, rvalue, val, ctx)? {
-            return Ok(());
         }
 
         if needs_copy {
@@ -5125,11 +5131,14 @@ impl<'a> FunctionBuilder<'a> {
     /// bits) is lost. Integers still widen to the full 8-byte slot, which is
     /// value-preserving and leaves no undefined bytes beside them.
     fn scalar_payload_store_type(inner: &MirType) -> CodegenResult<Option<Type>> {
-        if Self::is_boxed_payload(inner) {
-            return Ok(None);
-        }
         let ty = mir_to_cranelift_type(inner)?;
-        Ok(Some(if ty.is_float() { types::F64 } else { types::I64 }))
+        Ok(
+            match rask_mono::abi::payload_repr(ty.is_float(), Self::is_boxed_payload(inner)) {
+                rask_mono::abi::PayloadRepr::InPlace => None,
+                rask_mono::abi::PayloadRepr::Float64 => Some(types::F64),
+                rask_mono::abi::PayloadRepr::IntFullWidth => Some(types::I64),
+            },
+        )
     }
 
     /// The Cranelift type an 8-byte storage slot holds a scalar as.
@@ -5144,114 +5153,14 @@ impl<'a> FunctionBuilder<'a> {
     /// drift: that drift is exactly what made `v.push(2.5)` on a `Vec<f32>` store
     /// 8 bytes and read back 4.
     fn slot_storage_type(inner: &MirType) -> Option<Type> {
-        if Self::is_boxed_payload(inner) {
-            return None;
-        }
         let ty = mir_to_cranelift_type(inner).ok()?;
-        Some(if ty.is_float() { types::F64 } else { ty })
-    }
-
-    /// How many optional layers a MIR type carries.
-    fn option_depth(ty: &MirType) -> usize {
-        match ty {
-            MirType::Option(inner) => 1 + Self::option_depth(inner),
-            _ => 0,
+        match rask_mono::abi::payload_repr(ty.is_float(), Self::is_boxed_payload(inner)) {
+            rask_mono::abi::PayloadRepr::InPlace => None,
+            rask_mono::abi::PayloadRepr::Float64 => Some(types::F64),
+            // Read at the value's own width — the write was full-width and
+            // little-endian put the meaningful bytes first.
+            rask_mono::abi::PayloadRepr::IntFullWidth => Some(ty),
         }
-    }
-
-    /// `ty` peeled back to `depth` optional layers.
-    fn option_type_at_depth(ty: &MirType, depth: usize) -> &MirType {
-        let mut cur = ty;
-        let mut d = Self::option_depth(ty);
-        while d > depth {
-            match cur {
-                MirType::Option(inner) => {
-                    cur = inner;
-                    d -= 1;
-                }
-                _ => break,
-            }
-        }
-        cur
-    }
-
-    /// Optional depth of an rvalue's source, when it can be known statically.
-    /// `None` means "can't tell" — callers leave such assignments alone.
-    fn rvalue_option_depth(rvalue: &MirRValue, ctx: &CodegenCtx) -> Option<usize> {
-        match rvalue {
-            MirRValue::Use(MirOperand::Local(id)) => ctx
-                .locals
-                .iter()
-                .find(|l| l.id == *id)
-                .map(|l| Self::option_depth(&l.ty)),
-            MirRValue::Use(MirOperand::Constant(_)) => Some(0),
-            _ => None,
-        }
-    }
-
-    /// #493: give an Option destination the layers its source is missing.
-    ///
-    /// `const inner: T?? = slot` where `slot: T?` has to gain one layer — the
-    /// outer says the container held something, the inner carries the slot
-    /// (type.optionals/OPT28). Copying the source's bytes straight into the
-    /// destination would read the inner layer's tag as the outer one.
-    ///
-    /// Only fires at depth 2 and beyond; a bare `T` into a `T?` slot is the
-    /// ordinary `wrap_as_some` path below and stays there. A bare `none` is
-    /// already typed at the annotation's depth by MIR, so it arrives with
-    /// matching depth and never widens (OPT29).
-    ///
-    /// Returns `Some(())` when it handled the assignment.
-    fn try_widen_option_depth(
-        builder: &mut ClifFunctionBuilder,
-        dst: &LocalId,
-        dst_ty: &MirType,
-        rvalue: &MirRValue,
-        val: Value,
-        ctx: &CodegenCtx,
-    ) -> CodegenResult<Option<()>> {
-        let dst_depth = Self::option_depth(dst_ty);
-        if dst_depth < 2 {
-            return Ok(None);
-        }
-        // Niche-optimized Option<Handle> has no tag to write (mem.pools).
-        if matches!(dst_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
-            return Ok(None);
-        }
-        let Some(src_depth) = Self::rvalue_option_depth(rvalue, ctx) else {
-            return Ok(None);
-        };
-        if src_depth >= dst_depth {
-            return Ok(None);
-        }
-        let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst).copied() else {
-            return Ok(None);
-        };
-
-        // Build outwards. The innermost added layer takes the value itself
-        // (a scalar when the source carried no layers); every layer above it
-        // wraps the aggregate slot built beneath.
-        let mut payload_ptr: Option<Value> = (src_depth > 0).then_some(val);
-        for depth in (src_depth + 1)..=dst_depth {
-            let size = Self::option_type_at_depth(dst_ty, depth).size() as u32;
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                size,
-                0,
-            ));
-            match payload_ptr {
-                None => Self::build_some(builder, slot, val),
-                Some(ptr) => {
-                    let inner_size = Self::option_type_at_depth(dst_ty, depth - 1).size() as u32;
-                    Self::build_wrapped_aggregate(builder, slot, false, 0, ptr, inner_size);
-                }
-            }
-            payload_ptr = Some(builder.ins().stack_addr(types::I64, slot, 0));
-        }
-
-        let src_ptr = payload_ptr.expect("widening builds at least one layer");
-        Self::copy_aggregate(builder, src_ptr, dst_ss, dst_size);
-        Ok(Some(()))
     }
 
     /// Wrap an aggregate payload (copied from `src_ptr`) into an Option/Result

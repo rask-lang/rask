@@ -291,7 +291,10 @@ impl<'a> MirLowerer<'a> {
                     // unwrapped, the caller reads the value's first word as the
                     // tag (#274, #383).
                     let ret_ty = self.builder.ret_ty().clone();
-                    let final_op = self.coerce_into_wrapper(op, &op_ty, &ret_ty);
+                    let final_op = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Return,
+                        op, &op_ty, &ret_ty,
+                    );
                     Some(final_op)
                 } else {
                     None
@@ -912,7 +915,10 @@ impl<'a> MirLowerer<'a> {
         // needs both layers built here rather than left for codegen to infer from
         // the depth mismatch, which only ever added Option layers and typed the
         // payload one layer too shallow (#637).
-        let init_op = self.coerce_into_wrapper(init_op, &inferred_ty, &var_ty);
+        let init_op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            init_op, &inferred_ty, &var_ty,
+        );
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
