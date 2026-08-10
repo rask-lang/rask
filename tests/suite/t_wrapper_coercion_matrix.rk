@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Wrapping a bare value into `T?` / `T or E`, at every position that coerces.
+//
+// The four positions each used to build the wrapper themselves, so how deep a
+// value could be wrapped depended on where it was written. `return` did one
+// layer plus a hardcoded `T? or E`, a struct field did exactly one, and codegen
+// inferred the rest from the depth mismatch — Option only, payload typed one
+// layer too shallow. Depth 1 worked everywhere, so nothing looked wrong until a
+// second layer showed up: `f32??` read back 0, `i64? or E` returned a bare
+// integer the caller dereferenced, `string??` in a field came back absent.
+//
+// The point of this file is the grid, not any single case: payload kind ×
+// depth × position. A fix that only lands one cell fails the rest (#644, #637,
+// #376, #383).
+
+struct FloatBox {
+    public slot: f32??
+}
+
+struct TextBox {
+    public slot: string??
+}
+
+enum Fault {
+    Bad
+}
+
+extend Fault with ErrorMessage {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func ret_i64_d2() -> i64?? {
+    return 5
+}
+
+func ret_f32_d2() -> f32?? {
+    return 2.5
+}
+
+func ret_string_d2() -> string?? {
+    return "hi"
+}
+
+func ret_flat_result() -> i64? or Fault {
+    return 5
+}
+
+func fails_flat() -> i64? or Fault {
+    return Fault.Bad
+}
+
+func takes_f32_d2(v: f32??) -> f32 {
+    if v? as inner {
+        if inner? as got {
+            return got
+        }
+    }
+    return 0.0
+}
+
+func takes_string_d2(v: string??) -> string {
+    if v? as inner {
+        if inner? as got {
+            return got
+        }
+    }
+    return "absent"
+}
+
+// Two layers deep, at each of the four positions. A scalar payload is the case
+// that breaks: an aggregate is stored by address, so a memcpy composes at any
+// depth and never noticed the bug.
+
+test "type.optionals — a float survives two layers from a return" {
+    if ret_f32_d2()? as inner {
+        if inner? as got {
+            assert got == 2.5
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — a float survives two layers from a binding" {
+    let b: f32?? = 2.5
+    if b? as inner {
+        if inner? as got {
+            assert got == 2.5
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — a float survives two layers through an argument" {
+    assert takes_f32_d2(2.5) == 2.5
+}
+
+test "type.optionals — a float survives two layers in a struct field" {
+    let holder = FloatBox { slot: 2.5 }
+    if holder.slot? as inner {
+        if inner? as got {
+            assert got == 2.5
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+// A string payload is 16 bytes and lands at the payload offset by memcpy. It
+// read back as garbage from a binding and as absent from a field, which is the
+// same missing layer showing two different faces.
+
+test "type.optionals — a string survives two layers from a return" {
+    if ret_string_d2()? as inner {
+        if inner? as got {
+            assert got == "hi"
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — a string survives two layers through an argument" {
+    assert takes_string_d2("hi") == "hi"
+}
+
+test "type.optionals — a string survives two layers in a struct field" {
+    let holder = TextBox { slot: "hi" }
+    if holder.slot? as inner {
+        if inner? as got {
+            assert got == "hi"
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "type.optionals — an integer survives two layers from a return" {
+    if ret_i64_d2()? as inner {
+        if inner? as got {
+            assert got == 5
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+// ER9: `T? or E` is two layers of different kinds. Returning a bare payload
+// needs both — the optional, then the ok side of the result. With neither, the
+// callee handed back the literal and the caller read it as the result's address.
+
+test "type.errors — a bare payload returned from `T? or E` gets both layers" {
+    let got = ret_flat_result() catch _ => {
+        assert false
+        return
+    }
+    if got? as value {
+        assert value == 5
+    } else {
+        assert false
+    }
+}
+
+// Wrapping the ok side must not swallow the error side: an error value at a
+// `T? or E` return is the err branch, not a payload to wrap as Ok.
+
+test "type.errors — the error side of `T? or E` is still reachable" {
+    let outcome = fails_flat() catch _ => none
+    assert outcome is none
+}
