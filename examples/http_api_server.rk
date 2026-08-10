@@ -141,6 +141,6 @@ const db = Shared.new(Database.new())
 func main() -> void or Error {
     using Multitasking {
         println("Server listening on :8080")
-        try http.listen_and_serve("0.0.0.0:8080", handle)
+        try http.serve("0.0.0.0:8080", handle)
     }
 }

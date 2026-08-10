@@ -23,8 +23,8 @@ func main() {}
 
 test "fields come out in declaration order, not alphabetical" {
     let out = json.encode(Person { name: "ann", age: 3 })
-    if out.find("name")? as name_at {
-        if out.find("age")? as age_at {
+    if out.index_of("name")? as name_at {
+        if out.index_of("age")? as age_at {
             assert name_at < age_at
         } else {
             assert false, "age missing from the encoding"
@@ -36,8 +36,8 @@ test "fields come out in declaration order, not alphabetical" {
 
 test "declaration order wins even when it is reverse-alphabetical" {
     let out = json.encode(Reversed { zeta: 1, alpha: 2 })
-    if out.find("zeta")? as zeta_at {
-        if out.find("alpha")? as alpha_at {
+    if out.index_of("zeta")? as zeta_at {
+        if out.index_of("alpha")? as alpha_at {
             assert zeta_at < alpha_at
         } else {
             assert false, "alpha missing from the encoding"

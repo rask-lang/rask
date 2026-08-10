@@ -159,10 +159,13 @@ impl CodeGenerator {
                 ("math_asin", 1), ("math_acos", 1), ("math_atan", 1),
                 ("math_atan2", 2),
                 ("math_exp", 1), ("math_ln", 1), ("math_log2", 1), ("math_log10", 1),
-                ("math_hypot", 2), ("math_clamp", 3),
+                ("math_hypot", 2),
                 ("math_to_radians", 1), ("math_to_degrees", 1),
             ];
-            const MATH_PRED: &[&str] = &["math_is_nan", "math_is_inf", "math_is_finite"];
+            // is_nan/is_inf/is_finite are f64 methods (not math module functions);
+            // their MIR call name is `f64_is_nan` etc. — declared as stdlib
+            // entries in dispatch.rs, which reuse the same `math_is_nan`-family
+            // C symbols runtime/math.c provides.
 
             for (name, arity) in MATH_F64 {
                 let mut sig = self.module.make_signature();
@@ -170,15 +173,6 @@ impl CodeGenerator {
                     sig.params.push(AbiParam::new(types::F64));
                 }
                 sig.returns.push(AbiParam::new(types::F64));
-                let id = self.module
-                    .declare_function(name, Linkage::Import, &sig)
-                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-                self.func_ids.insert((*name).to_string(), id);
-            }
-            for name in MATH_PRED {
-                let mut sig = self.module.make_signature();
-                sig.params.push(AbiParam::new(types::F64));
-                sig.returns.push(AbiParam::new(types::I8));
                 let id = self.module
                     .declare_function(name, Linkage::Import, &sig)
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;

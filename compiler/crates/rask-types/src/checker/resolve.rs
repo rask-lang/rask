@@ -67,7 +67,6 @@ impl TypeChecker {
             method,
             "add" | "sub" | "mul" | "div" | "rem"
             | "bit_and" | "bit_or" | "bit_xor"
-            | "min" | "max"
         )
     }
 
@@ -1496,10 +1495,6 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             "push" | "push_str" => self.unify(ret, &Type::Unit, span),
-            "concat" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
-                self.unify(ret, &Type::String, span)
-            }
             // `string` is Comparable, same as `char`. This had no signature —
             // it only worked because the fallthrough below used to accept any
             // name at all.
@@ -1565,10 +1560,22 @@ impl TypeChecker {
         let io_error_ty = Type::UnresolvedNamed("IoError".to_string());
 
         match method {
-            "read_text" | "read_all" if args.is_empty() => {
+            "read_text" if args.is_empty() => {
                 // Returns string or IoError
                 let result_type = Type::Result {
                     ok: Box::new(Type::String),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "read_bytes" if args.is_empty() => {
+                // Returns Vec<u8> or IoError
+                let bytes_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(Type::U8))],
+                };
+                let result_type = Type::Result {
+                    ok: Box::new(bytes_ty),
                     err: Box::new(io_error_ty),
                 };
                 self.unify(ret, &result_type, span)
@@ -1581,9 +1588,22 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
-            "write_all" | "write_text" if args.len() == 1 => {
-                // write_all/write_text(data: string) -> () or IoError
+            "write_text" if args.len() == 1 => {
+                // write_text(data: string) -> () or IoError
                 self.unify(&args[0], &Type::String, span)?;
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "write_bytes" if args.len() == 1 => {
+                // write_bytes(data: Vec<u8>) -> () or IoError
+                let bytes_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(Type::U8))],
+                };
+                self.unify(&args[0], &bytes_ty, span)?;
                 let result_type = Type::Result {
                     ok: Box::new(Type::Unit),
                     err: Box::new(io_error_ty),
@@ -1727,9 +1747,6 @@ impl TypeChecker {
             ("Instant", "elapsed") if args.is_empty() => {
                 self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
             }
-            ("Instant", "duration_since") if args.len() == 1 => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
             // Duration methods
             ("Duration", "as_seconds_f64") if args.is_empty() => {
                 self.unify(ret, &Type::F64, span)
@@ -1758,7 +1775,16 @@ impl TypeChecker {
             //   instant - duration -> Instant
             ("Instant", "sub") if args.len() == 1 => {
                 let arg = self.ctx.apply(&args[0]);
-                let arg = self.resolve_named(&arg);
+                // The RHS can show up three ways depending on where it came
+                // from: `UnresolvedNamed("Instant")` fresh off a call chain,
+                // `UnresolvedNamed("time.Instant")` off a module-qualified
+                // parameter annotation, or `Named(id)` once an ordinary
+                // variable gets fully resolved. Only the first matched below,
+                // so `end - start` reported "expected Instant, found Instant"
+                // (or "found time.Instant") for the other two. `resolve_named`
+                // strips the module qualifier to a real type; `nameable` turns
+                // that back into the plain name string this match wants.
+                let arg = self.nameable(&self.resolve_named(&arg));
                 match &arg {
                     Type::UnresolvedNamed(n) if n == "Instant" => {
                         self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
@@ -2477,8 +2503,8 @@ impl TypeChecker {
             "sort_by_key" if args.len() == 1 => {
                 self.unify(ret, &Type::Unit, span)
             }
-            // vec.dedup() -> ()
-            "dedup" if args.is_empty() => {
+            // vec.remove_adjacent_duplicates() -> ()
+            "remove_adjacent_duplicates" if args.is_empty() => {
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.filter(predicate) -> Vec<T>
@@ -3141,7 +3167,7 @@ impl TypeChecker {
             // Binary arithmetic → same type
             "add" | "sub" | "mul" | "div" | "rem"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
-            | "min" | "max" if args.len() == 1 => {
+                if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
@@ -3194,7 +3220,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         match method {
             "add" | "sub" | "mul" | "div" | "rem"
-            | "min" | "max" | "pow" | "powf" if args.len() == 1 => {
+            | "pow" | "powf" if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
@@ -3208,6 +3234,9 @@ impl TypeChecker {
                 if args.is_empty() =>
             {
                 self.unify(ret, ty, span)
+            }
+            "is_nan" | "is_inf" | "is_finite" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
             }
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);

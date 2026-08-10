@@ -56,7 +56,7 @@ extend Stdin {
     public func read(self, buf: Vec<u8>) -> i64 or IoError { }
 
     /// Read all remaining bytes.
-    public func read_all(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError { }
 
     /// Read all remaining bytes as UTF-8 string.
     public func read_text(self) -> string or IoError { }
@@ -77,7 +77,7 @@ extend Stdout {
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes, retrying partial writes.
-    public func write_all(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
 
     /// Write a string.
     public func write_text(self, s: string) -> void or IoError { }
@@ -98,7 +98,7 @@ extend Stderr {
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes, retrying partial writes.
-    public func write_all(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
 
     /// Write a string.
     public func write_text(self, s: string) -> void or IoError { }
@@ -124,7 +124,7 @@ extend Buffer {
     public func read(self, buf: Vec<u8>) -> i64 or IoError { }
 
     /// Read all remaining bytes.
-    public func read_all(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError { }
 
     /// Read all as UTF-8 string.
     public func read_text(self) -> string or IoError { }
@@ -133,7 +133,10 @@ extend Buffer {
     public func write(mutate self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes.
-    public func write_all(mutate self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError { }
+
+    /// Write a string.
+    public func write_text(mutate self, s: string) -> void or IoError { }
 
     /// View all written bytes.
     @unimplemented
@@ -152,13 +155,19 @@ public struct File { }
 
 extend File {
     /// Read the entire file contents as bytes.
-    public func read_all(self) -> string or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError { }
 
     /// Read the entire file contents as text.
     public func read_text(self) -> string or IoError { }
 
     /// Write a string to the file.
     public func write(mutate self, data: string) -> void or IoError { }
+
+    /// Write all bytes, retrying partial writes.
+    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError { }
+
+    /// Write a string.
+    public func write_text(mutate self, data: string) -> void or IoError { }
 
     /// Write a string followed by a newline.
     public func write_line(mutate self, data: string) -> void or IoError { }

@@ -567,6 +567,31 @@ int64_t rask_file_read_all(RaskStr *out, int64_t file) {
     return 0;
 }
 
+// Returns a RaskVec<u8>* (cast to int64_t), or -1 if the handle is null.
+int64_t rask_file_read_bytes(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return -1;
+    long start = ftell(f);
+    fseek(f, 0, SEEK_END);
+    long end = ftell(f);
+    fseek(f, start, SEEK_SET);
+    long size = end - start;
+    if (size < 0) size = 0;
+    char *buf = (char *)rask_alloc((int64_t)size + 1);
+    size_t n = fread(buf, 1, (size_t)size, f);
+    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1);
+    rask_free(buf);
+    return (int64_t)(uintptr_t)v;
+}
+
+// Writes a RaskVec<u8> to the file. Returns 0 on success, -1 on a null handle.
+int64_t rask_file_write_bytes(int64_t file, int64_t vec_ptr) {
+    if (!file) return -1;
+    RaskVec *v = (RaskVec *)(uintptr_t)vec_ptr;
+    rask_fwrite_vec(file, v);
+    return 0;
+}
+
 void rask_file_write(int64_t file, const RaskStr *content) {
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return;
@@ -999,11 +1024,64 @@ int64_t rask_net_write_all(int64_t fd, int64_t str_ptr) {
     return 0;
 }
 
+// Read all available data from a TCP connection into a Vec<u8>.
+// Returns the RaskVec* (cast to int64_t), or -1 on error.
+int64_t rask_net_read_bytes(int64_t fd) {
+    char *buf = (char *)rask_alloc(65536);
+    int64_t total = 0;
+    int64_t cap = 65536;
+    for (;;) {
+        ssize_t n = read((int)fd, buf + total, (size_t)(cap - total));
+        if (n <= 0) break;
+        total += n;
+        if (total >= cap) {
+            cap *= 2;
+            buf = (char *)rask_realloc(buf, cap / 2, cap);
+        }
+    }
+    RaskVec *v = rask_vec_from_static(buf, total, 1);
+    rask_free(buf);
+    return (int64_t)(uintptr_t)v;
+}
+
+// Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
+// Vec<u8> elements are contiguous (elem_size 1), so element 0's address is the
+// start of the whole buffer — one write loop, not one syscall per byte.
+int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
+    const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
+    int64_t len = rask_vec_len(v);
+    if (len <= 0) return 0;
+    const char *data = (const char *)rask_vec_get(v, 0);
+    if (!data) return -1;
+    int64_t written = 0;
+    while (written < len) {
+        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
+        if (n < 0) return -1;
+        written += n;
+    }
+    return 0;
+}
+
 // Get the remote address of a TCP connection as "ip:port" string.
 void rask_net_remote_addr(RaskStr *out, int64_t fd) {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
     if (getpeername((int)fd, (struct sockaddr *)&addr, &addrlen) < 0) {
+        rask_string_from(out, "unknown");
+        return;
+    }
+    char ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(addr.sin_port));
+    rask_string_from(out, buf);
+}
+
+// Local address a listener/connection is bound to (TcpListener.local_addr).
+void rask_net_local_addr(RaskStr *out, int64_t fd) {
+    struct sockaddr_in addr;
+    socklen_t addrlen = sizeof(addr);
+    if (getsockname((int)fd, (struct sockaddr *)&addr, &addrlen) < 0) {
         rask_string_from(out, "unknown");
         return;
     }

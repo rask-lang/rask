@@ -641,9 +641,9 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open" | "create" | "canonicalize" | "metadata"
-                | "delete" | "remove" | "remove_dir" | "create_dir" | "create_dir_all"
-                | "rename" | "copy" | "list_dir"
+                | "append_text" | "exists" | "open" | "create" | "absolute_path" | "metadata"
+                | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
+                | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
             ),
             Io => matches!(method, "read_line"),
             Net => matches!(method, "tcp_listen" | "tcp_connect"),
@@ -652,8 +652,7 @@ impl Interpreter {
             Math => matches!(method,
                 "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
                 | "exp" | "ln" | "log2" | "log10"
-                | "hypot" | "clamp" | "to_radians" | "to_degrees"
-                | "is_nan" | "is_inf" | "is_finite"
+                | "hypot" | "to_radians" | "to_degrees"
             ),
             Os | Std => matches!(method,
                 "env" | "env_or" | "set_env" | "remove_env" | "env_vars"
@@ -666,7 +665,7 @@ impl Interpreter {
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "spawn"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
-            Http => matches!(method, "listen_and_serve"),
+            Http => matches!(method, "serve"),
             Env => matches!(method, "var" | "vars"),
             Cli => matches!(method, "args" | "parse"),
             Reflect => false,

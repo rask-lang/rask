@@ -410,29 +410,6 @@ func hex_digit(b: u8) -> i32 {
 struct json {  }
 
 extend json {
-    /// Parse a JSON string into a JsonValue tree. RFC 8259 compliant.
-    public func parse(input: string) -> JsonValue or JsonError {
-        mut parser = JsonParser.new(input)
-        let value = try parser.parse_value()
-        parser.skip_ws()
-        if parser.pos < parser.len {
-            return JsonError.ParseError("trailing content after JSON value")
-        }
-        return value
-    }
-
-    /// Serialize a JsonValue to a compact JSON string.
-    public func stringify(value: JsonValue) -> string {
-        return stringify_value(value)
-    }
-
-    /// Serialize a JsonValue to a pretty-printed JSON string.
-    public func stringify_pretty(value: JsonValue) -> string {
-        mut b = StringBuilder.new()
-        stringify_pretty_inner(value, mutate b, 0)
-        return b.build()
-    }
-
     /// Encode a value as a JSON string.
     /// Compiler-expanded at MIR level for structs via comptime for + reflect.
     public func encode<T: Encode>(value: T) -> string {}

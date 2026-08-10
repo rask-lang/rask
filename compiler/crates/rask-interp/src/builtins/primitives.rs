@@ -74,8 +74,6 @@ impl Interpreter {
             "bit_not" => Ok(Value::Int(!a, kind)),
             "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
             "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
-            "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b), arg_kind(args))) }
-            "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b), arg_kind(args))) }
             // An unsigned receiver holds its bit pattern in the i64 slot, so
             // the top half of u64 prints negative without the width (#517).
             "to_string" | "debug_string" => {
@@ -180,8 +178,6 @@ impl Interpreter {
                 RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
             "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
-            "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
-            "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i128".to_string(),
@@ -236,8 +232,6 @@ impl Interpreter {
             "bit_not" => Ok(Value::Uint128(!a)),
             "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
-            "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
-            "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "u128".to_string(),
@@ -282,8 +276,9 @@ impl Interpreter {
             "ceil" => Ok(Value::Float(k.round(a.ceil()), k)),
             "round" => Ok(Value::Float(k.round(a.round()), k)),
             "sqrt" => Ok(Value::Float(k.round(a.sqrt()), k)),
-            "min" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.min(b)), k)) }
-            "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.max(b)), k)) }
+            "is_nan" => Ok(Value::Bool(a.is_nan())),
+            "is_inf" => Ok(Value::Bool(a.is_infinite())),
+            "is_finite" => Ok(Value::Bool(a.is_finite())),
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(
                 k.format(a),
             )))),

@@ -4,7 +4,7 @@
 // codegen change can't silently break them. The old names are rejected in
 // tests/compile_errors/stdlib_renames.rk.
 //
-// Covers: Duration.as_seconds* / from_secs_f64, Random (from_seed determinism),
+// Covers: Duration.as_seconds* / seconds_f64, Random (from_seed determinism),
 // {:debug} interpolation, fs.read_text/write_text/append_text, time.sleep, and
 // Channel.receive (blocking). Channel.try_receive lives in t31_channels.rk.
 
@@ -24,8 +24,8 @@ test "Duration.as_seconds / as_millis (spec std.time)" {
     assert d.as_millis() == 5000
 }
 
-test "Duration.from_secs_f64 / as_seconds_f64 round-trips" {
-    let d = Duration.from_secs_f64(1.5)
+test "Duration.seconds_f64 / as_seconds_f64 round-trips" {
+    let d = Duration.seconds_f64(1.5)
     assert d.as_seconds_f64() == 1.5
     // whole-second truncation on the integer accessor
     assert d.as_seconds() == 1

@@ -972,7 +972,7 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::None => {}
 
             // A bare name that resolves to a function is a reference to it —
-            // `listen_and_serve(addr, handle)` passes the handler this way.
+            // `http.serve(addr, handle)` passes the handler this way.
             // Treated as a leaf, the function was never marked reachable, so
             // nothing emitted it and MIR lowering reported the name as an
             // unresolved variable.

@@ -35,7 +35,7 @@ extend os {
     public func arch() -> string { }
 
     /// Register a signal handler. Returns a channel receiver for signals.
-    public func on_signal(signals: Vec<Signal>) -> Receiver<Signal> or IoError { }
+    public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError { }
 }
 
 /// I/O configuration for subprocess stdin/stdout/stderr.
@@ -62,7 +62,7 @@ extend Command {
     public func env(self, key: string, value: string) -> Command { }
 
     /// Set the working directory.
-    public func cwd(self, dir: string) -> Command { }
+    public func working_dir(take self, dir: string) -> Command { }
 
     /// Configure stdin.
     public func stdin(self, cfg: Stdio) -> Command { }
@@ -107,11 +107,11 @@ extend Process {
 
     /// Check if the process has exited without blocking.
     @unimplemented
-    public func try_wait(self) -> Option<Output> or IoError { }
+    public func poll(self) -> Option<Output> or IoError { }
 
     /// Get the process ID.
     @unimplemented
-    public func id(self) -> i64 { }
+    public func pid(self) -> i64 { }
 
     /// Write data to the process stdin (requires Stdio.Piped).
     @unimplemented

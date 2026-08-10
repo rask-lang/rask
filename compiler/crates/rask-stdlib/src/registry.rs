@@ -64,14 +64,14 @@ const SIGNED_INT_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "abs", "min", "max", "to_string", "to_float",
+    "abs", "to_string", "to_float",
 ];
 
 const UNSIGNED_INT_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "min", "max", "to_string", "to_float",
+    "to_string", "to_float",
 ];
 
 const I64_METHODS: &[&str] = SIGNED_INT_METHODS;
@@ -80,24 +80,25 @@ const I128_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "abs", "min", "max", "to_string",
+    "abs", "to_string",
 ];
 
 const U128_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "min", "max", "to_string",
+    "to_string",
 ];
 
 const F64_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
     "eq", "lt", "le", "gt", "ge", "compare",
     "abs", "floor", "ceil", "round", "sqrt", "trunc", "fract",
-    "min", "max", "to_string", "to_int",
+    "to_string", "to_int",
     "pow", "powf", "powi",
     "sin", "cos", "tan", "asin", "acos", "atan",
     "ln", "log10", "log2", "exp",
+    "is_nan", "is_inf", "is_finite",
 ];
 
 const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
@@ -111,7 +112,7 @@ const CHAR_METHODS: &[&str] = &[
 
 const STRING_METHODS: &[&str] = &[
     "len", "is_empty", "clone", "starts_with", "ends_with", "contains",
-    "push", "push_str", "trim", "trim_start", "trim_end", "trim_bounds",
+    "push", "push_str", "trim", "trim_start", "trim_end", "trim_indices",
     // No `to_owned`: it's a Rust name with no entry in std.strings and no
     // signature anywhere, so it resolved as a known method whose return type
     // stayed open — MIR gave the temp `i64`, codegen had no string slot to
@@ -120,7 +121,7 @@ const STRING_METHODS: &[&str] = &[
     "to_string", "to_uppercase", "to_lowercase",
     "split", "split_whitespace", "chars", "char_indices", "bytes", "lines",
     "replace", "substring", "parse_int", "parse",
-    "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",
+    "char_at", "byte_at", "parse_float", "index_of", "last_index_of",
     "repeat", "reverse", "eq", "ne",
     "char_count", "is_ascii", "replacen",
 ];
@@ -133,7 +134,7 @@ const VEC_METHODS: &[&str] = &[
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",
     "sort", "sort_by", "any", "all", "find", "position",
-    "dedup", "sum", "min", "max", "count", "take_all",
+    "remove_adjacent_duplicates", "sum", "min", "max", "count", "take_all",
 ];
 
 const MAP_METHODS: &[&str] = &[
@@ -158,15 +159,15 @@ const OPTION_METHODS: &[&str] = &[
 ];
 
 const FILE_METHODS: &[&str] = &[
-    "close", "read_all", "read_text", "write", "write_line",
+    "close", "read_bytes", "read_text", "write", "write_bytes", "write_text", "write_line",
 ];
 
 const METADATA_METHODS: &[&str] = &["size", "accessed", "modified"];
 
-const TCP_LISTENER_METHODS: &[&str] = &["accept", "close", "clone"];
+const TCP_LISTENER_METHODS: &[&str] = &["accept", "local_addr", "close", "clone"];
 
 const TCP_CONNECTION_METHODS: &[&str] = &[
-    "read_all", "write_all", "read_text", "write_text", "remote_addr",
+    "read_bytes", "write_bytes", "read_text", "write_text", "remote_addr",
     "read_http_request", "write_http_response",
     "close", "clone",
 ];
@@ -179,12 +180,12 @@ const DURATION_METHODS: &[&str] = &[
     "as_seconds", "as_millis", "as_micros", "as_nanos", "as_seconds_f32", "as_seconds_f64",
 ];
 
-const INSTANT_METHODS: &[&str] = &["duration_since", "elapsed"];
+const INSTANT_METHODS: &[&str] = &["elapsed"];
 
 const PATH_METHODS: &[&str] = &[
     "parent", "file_name", "extension", "stem", "components",
     "is_absolute", "is_relative", "has_extension",
-    "join", "with_extension", "with_file_name", "to_string",
+    "div", "with_extension", "with_file_name", "as_string",
 ];
 
 const ARGS_METHODS: &[&str] = &[
@@ -225,9 +226,9 @@ const ATOMIC_INT_METHODS: &[&str] = &[
 
 const FS_METHODS: &[&str] = &[
     "read_text", "read_bytes", "read_lines", "write_text", "write_bytes",
-    "append_text", "exists", "open", "create", "canonicalize", "metadata",
-    "remove", "remove_dir", "create_dir", "create_dir_all",
-    "rename", "copy",
+    "append_text", "exists", "open", "create", "absolute_path", "metadata",
+    "remove_file", "remove_dir", "create_dir", "create_dir_all",
+    "rename", "copy", "current_dir", "home_dir",
 ];
 
 const NET_METHODS: &[&str] = &["tcp_listen", "tcp_connect"];
@@ -242,8 +243,7 @@ const TIME_METHODS: &[&str] = &["sleep"];
 const MATH_METHODS: &[&str] = &[
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "exp", "ln", "log2", "log10",
-    "hypot", "clamp", "to_radians", "to_degrees",
-    "is_nan", "is_inf", "is_finite",
+    "hypot", "to_radians", "to_degrees",
 ];
 
 const RANDOM_METHODS: &[&str] = &["f32", "f64", "i64", "bool", "range"];

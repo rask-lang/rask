@@ -14,7 +14,7 @@ extend string {
 
     /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
     @unimplemented
-    public func from_utf8(bytes: Vec<u8>) -> string or utf8_error { }
+    public func from_utf8(bytes: Vec<u8>) -> string or Utf8Error { }
 
     /// From UTF-8 bytes without validation. Unsafe — caller guarantees valid UTF-8.
     public unsafe func from_utf8_unchecked(bytes: Vec<u8>) -> string { }
@@ -22,6 +22,11 @@ extend string {
     /// Single-character string.
     public func from_char(c: char) -> string { }
 
+    // NOTE (#302 rename sweep): spec drops this as a public method — string
+    // interpolation desugars to a `.concat()` chain (rask-desugar's
+    // `concat_chain`), so removing it breaks every `"{x}"` in the language.
+    // Needs the desugar target renamed to a non-public method first; left
+    // in place rather than half-fixing it. See PR notes.
     /// Concatenate two strings. Allocates.
     public func concat(self, other: string) -> string { }
 
@@ -50,10 +55,10 @@ extend string {
     // ── Searching ───────────────────────────────────────────
 
     /// Byte index of first occurrence. none if not found.
-    public func find(self, pat: string) -> usize? { }
+    public func index_of(self, pat: string) -> usize? { }
 
     /// Byte index of last occurrence. none if not found.
-    public func rfind(self, pat: string) -> usize? { }
+    public func last_index_of(self, pat: string) -> usize? { }
 
     /// True if the string contains the substring.
     public func contains(self, pat: string) -> bool { }
@@ -78,7 +83,7 @@ extend string {
     public func trim_end(self) -> string { }
 
     /// Byte indices of trimmed content: (start, end).
-    public func trim_bounds(self) -> (usize, usize) { }
+    public func trim_indices(self) -> (usize, usize) { }
 
     // ── Case conversion ─────────────────────────────────────
 
@@ -135,11 +140,18 @@ extend string {
     // ── Parsing ─────────────────────────────────────────────
 
     /// Parse to integer. Trims whitespace.
-    public func parse_int(self) -> i64 or string { }
+    public func parse_int(self) -> i64 or ParseError { }
 
     /// Parse to floating point. Trims whitespace.
-    public func parse_float(self) -> f64 or string { }
+    public func parse_float(self) -> f64 or ParseError { }
 
+    // NOTE (#302 rename sweep): strings.md says "there is no generic
+    // s.parse()", but it's a real, widely-used, well-tested feature —
+    // t_parse_failure.rk/t_parse_float.rk test it directly, and
+    // validation/*, http_api_server.rk, text_editor.rk, 13_string_operations.rk
+    // all call `.parse<T>()`. Dropping it is a real breaking change across
+    // dozens of call sites, not a rename — left in place, flagging instead
+    // of guessing. See PR notes.
     /// Parse to typed value.
     public func parse<T>(self) -> T or ParseError { }
 
@@ -250,11 +262,56 @@ extend cstring {
     public unsafe func from_ptr(ptr: *u8) -> cstring { }
 
     /// Convert to Rask string. Fails if not valid UTF-8.
-    public func to_string(self) -> string or utf8_error { }
+    public func to_string(self) -> string or Utf8Error { }
 }
 
 extend string {
     /// Convert to null-terminated cstring. Fails if string contains \0.
     @unimplemented
-    public func to_cstring(self) -> cstring or null_byte_error { }
+    public func to_cstring(self) -> cstring or NullByteError { }
+}
+
+// ─── Parsing and encoding errors ───────────────────────────────
+
+/// Why `parse_int`/`parse_float` failed.
+public enum ParseError {
+    Empty        // no digits found
+    Invalid      // non-numeric character
+    OutOfRange   // doesn't fit the target type
+}
+
+extend ParseError {
+    public func message(self) -> string {
+        match self {
+            ParseError.Empty => return "no digits found",
+            ParseError.Invalid => return "non-numeric character",
+            ParseError.OutOfRange => return "value out of range",
+        }
+    }
+}
+
+/// Bytes were not valid UTF-8.
+public enum Utf8Error {
+    InvalidByte(usize)
+}
+
+extend Utf8Error {
+    public func message(self) -> string {
+        match self {
+            Utf8Error.InvalidByte(pos) => return "invalid UTF-8 byte at position {pos}",
+        }
+    }
+}
+
+/// A string meant for C interop contained an embedded null byte.
+public enum NullByteError {
+    FoundAt(usize)
+}
+
+extend NullByteError {
+    public func message(self) -> string {
+        match self {
+            NullByteError.FoundAt(pos) => return "null byte found at position {pos}",
+        }
+    }
 }

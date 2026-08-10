@@ -12,14 +12,14 @@ use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
 impl Interpreter {
-    /// Handle Path type constructor methods (Path.new, Path.from).
+    /// Handle Path type constructor methods (Path.from).
     pub(crate) fn call_path_type_method(
         &self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "new" | "from" => {
+            "from" => {
                 let s = self.expect_string(&args, 0)?;
                 Ok(make_path_value(&s))
             }
@@ -92,7 +92,7 @@ impl Interpreter {
                     .unwrap_or(false);
                 Ok(Value::Bool(has))
             }
-            "join" => {
+            "div" => {
                 let other = self.expect_string(&_args, 0)?;
                 let joined = std_path.join(&other).to_string_lossy().to_string();
                 Ok(make_path_value(&joined))
@@ -107,7 +107,7 @@ impl Interpreter {
                 let new_path = std_path.with_file_name(&name).to_string_lossy().to_string();
                 Ok(make_path_value(&new_path))
             }
-            "to_string" => {
+            "as_string" => {
                 Ok(Value::String(Arc::new(Mutex::new(path_str))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -119,7 +119,7 @@ impl Interpreter {
 }
 
 /// Create a Path struct value from a string.
-fn make_path_value(s: &str) -> Value {
+pub(crate) fn make_path_value(s: &str) -> Value {
     // Normalize separators to forward slash
     let normalized = s.replace('\\', "/");
     // Remove trailing slashes (except root)

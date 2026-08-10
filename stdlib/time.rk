@@ -25,7 +25,7 @@ extend Duration {
     public func nanos(n: i64) -> Duration { }
 
     /// Create a duration from fractional seconds.
-    public func from_secs_f64(secs: f64) -> Duration { }
+    public func seconds_f64(secs: f64) -> Duration { }
 
     /// Create a duration from milliseconds (alias).
     public func from_millis(n: i64) -> Duration { }
@@ -58,9 +58,6 @@ public struct Instant { }
 extend Instant {
     /// Capture the current instant.
     public func now() -> Instant { }
-
-    /// Duration elapsed since another instant.
-    public func duration_since(self, earlier: Instant) -> Duration { }
 
     /// Duration elapsed since this instant was captured.
     public func elapsed(self) -> Duration { }

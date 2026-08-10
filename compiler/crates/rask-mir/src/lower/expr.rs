@@ -203,7 +203,7 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
         "join" if arg_count == 2 => "Vec",
         "values" | "get" | "insert" | "remove" => "Map",
         "sleep" => "time",
-        "read_all" | "write_all" => "TcpConnection",
+        "read_bytes" | "write_bytes" => "TcpConnection",
         "accept" => "TcpListener",
         "detach" => "TaskHandle",
         _ => return None,
@@ -3769,7 +3769,7 @@ impl<'a> MirLowerer<'a> {
         let mut arg_types = Vec::new();
         // The qualified name isn't resolved until after the arguments are
         // lowered, but a closure argument needs its parameter types up front.
-        // A module-style receiver (`http.listen_and_serve(…)`) mangles
+        // A module-style receiver (`http.serve(…)`) mangles
         // predictably, so try that key for the callee's signature.
         let tentative_params: Vec<Option<String>> = match &object.kind {
             ExprKind::Ident(recv) => self
@@ -4548,8 +4548,18 @@ impl<'a> MirLowerer<'a> {
                 | rask_types::Type::F32 | rask_types::Type::F64 | rask_types::Type::Bool
             ))
             .unwrap_or(false);
+        // `Path / "component"` desugars to `.div(...)` same as numeric `/` —
+        // Path's own MIR type looks like a plain string (no aggregate layout
+        // to distinguish it), so without this check it fell into the numeric
+        // fallback below and got compiled as a raw pointer division instead
+        // of a call to `Path_div`.
+        let is_path_receiver = self.ctx.lookup_raw_type(object.id)
+            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+            .as_deref() == Some("Path");
         let skip_binop = if raw_type_is_numeric {
             false
+        } else if is_path_receiver {
+            true
         } else {
             matches!(obj_ty, MirType::String)
             || if let ExprKind::Ident(var_name) = &object.kind {

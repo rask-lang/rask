@@ -230,12 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn fs_copy_returns_u64() {
+    fn fs_copy_returns_void() {
         let bm = BuiltinModules::new();
         let sig = bm.get_method("fs", "copy").unwrap();
         assert_eq!(sig.params, vec![Type::String, Type::String]);
         assert_eq!(sig.ret, Type::Result {
-            ok: Box::new(Type::U64),
+            ok: Box::new(Type::Unit),
             err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
         });
     }
