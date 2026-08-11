@@ -64,7 +64,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | **F1: Always on** | Adversarial scheduling (S2), short reads/writes, and I/O latency (C4). These are legal behavior, not faults — code that breaks on them was already broken |
 | **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
 | **F3: Sim-only tests** | Outside sim, `sim.require` skips the rest of the test and says why, reusing `std.testing/T12`. A fault test never passes vacuously under a plain `rask test` |
-| **F4: Seeded rates** | The seed picks the injection rate, not just the schedule. Each seed draws its own intensity, so a sweep explores calm runs and storms without a second knob |
+| **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
 
@@ -99,7 +99,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | Rule | Description |
 |------|-------------|
 | **R1: Header** | A sim run prints its seed once at the top, whether or not anything fails |
-| **R2: Failure block** | Test name, seed, the panic or assertion (`ctrl.panic/F1`, `F3`), the sim step and virtual time it happened at, the faults injected before it, and the replay line |
+| **R2: Failure block** | Test name, seed, the panic or assertion (`ctrl.panic/F1`, `F3`), the sim step and virtual time it happened at, which resources were sick (F4), the faults injected before it, and the replay line |
 | **R3: Search summary** | Seed search prints how many seeds ran and one replay line per distinct failure |
 
 ```
@@ -108,7 +108,8 @@ sim: seed 8419230744151203, 47 tests
 FAIL: replica catches up after the leader drops
   panic at raft.rk:214:9: index 3 out of bounds (len 3)
   step 4127, virtual time 00:00:12.400
-  faults: latency 210ms on peer c (step 3980), io error on write (step 4102)
+  sick this seed: peer c, fd 3 (data/wal.log)
+  faults: latency 210ms on peer c (step 3980), write failed on fd 3 (step 4102)
   replay: rask test --sim --seed 8419230744151203 -f "replica catches up after the leader drops"
 ```
 
@@ -199,9 +200,13 @@ The cost is that virtual duration measures scheduling steps and clock reads, not
 
 **F3 (`sim.require`, not an attribute):** An attribute would work and was drafted first. It doesn't earn the grammar: `std.testing/T12` already has `skip("reason")`, which is exactly the "this test doesn't apply here" mechanism, and a call reads as the precondition it is. The reader learns the same fact either way, so the version that costs no syntax wins (`NORTH_STAR` commitment 5). The one thing lost is static visibility — the runner can't tell a test is sim-only without starting it — and that costs nothing, because the call aborts on the first line.
 
-**F4 (seeded rates):** A fixed rate would mean a thousand-seed sweep explores a thousand schedules at exactly one intensity — never the calm run where one late failure matters, never the storm where everything fails at once. Drawing the rate from the seed explores severity and ordering together and still leaves one knob, which was the point. Rejected: a per-test rate parameter, which is a second dial that changes what a seed means.
+**F4 (sick resources, not a global rate):** Two earlier drafts asked the wrong question — first a fixed global rate, then a rate drawn from the seed — and both were arguing about a dial that shouldn't exist.
 
-The distribution the rate is drawn from is still unset. That number wants real tests behind it.
+Real failures aren't a percentage sprayed evenly over every operation. One disk is dying. One peer is unreachable. The rest of the machine is fine, which is exactly why the bug is subtle: the code handles a failure, then handles it again, then gets confused because the *same* endpoint keeps failing while its neighbour keeps working. A uniform rate models nothing that has ever happened, and worse, it makes a report say `rate 0.31` — a number the reader must interpret — instead of naming the thing that was broken.
+
+This is the shape FoundationDB's `buggify` gets right, adapted to Rask's outside-in injection. FDB has no intensity dial either: each run activates a random subset of thousands of developer-placed sites. Rask has no such sites at v1, but it does have a natural unit of activation that FDB had to hand-place — the resource handle. Deciding sickness at open is one draw per resource, and it is if anything less machinery than threading a rate through every call.
+
+What this gives up: a true everything-fails storm now needs the draw to pick every resource, which is rare. Acceptable — a program that survives its only disk dying and its only peer vanishing has covered the interesting ground, and `--fault-rate` can be added later as an activation-frequency knob if sweeps show it is needed.
 
 **B2 (refuse, not report):** A mark next to a passing result is only as good as the reader, and the failure mode is nasty and delayed: someone pastes a replay line that doesn't replay and loses an afternoon before suspecting the C. Sim's entire value is that a seed reproduces a failure, so a quiet path where the seed doesn't reproduce it costs more than the coverage it saves.
 
@@ -249,7 +254,8 @@ The cost is order: sim lands after Phase B fibers. The interpreter would have be
 
 ### Open questions
 
-- **Fault rate distribution (F4).** The seed picks the rate; what it picks from is unset. That number wants real tests behind it, not taste.
+- **Sickness probability and per-class failure rates (F4).** The shape is settled; the two numbers behind it — how often a resource is picked sick, how often a sick one fails — want real tests behind them, not taste.
+- **Developer-placed fault sites.** FoundationDB's `buggify` lets the author of a subsystem mark a legal-but-rare path so the simulator can take it on purpose — the knowledge that flushing early *here* is legal lives with whoever wrote it, and no outside-in injector can guess it. A Rask `sim.rarely()` would fit the existing model exactly: false in production (`determinism/D2`), seed-driven under sim. The cost is test-only branches in shipping source, which is a visibility question worth its own discussion rather than a footnote here.
 - **Sealed-set membership (B6).** Which libc symbols count as pure is a list, and lists are where this kind of design rots. `memcpy` is obvious, `qsort` takes a comparator, `strerror` reads a locale. Needs writing down properly, once, with a rule for adding to it.
 
 ### See Also
