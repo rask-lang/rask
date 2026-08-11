@@ -1406,6 +1406,7 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         rvalue: &MirRValue,
         expected_ty: Option<Type>,
+        dst_mir_ty: Option<&MirType>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
         match rvalue {
@@ -1413,7 +1414,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
-            MirRValue::BinaryOp { op, left, right } => Self::lower_binary_op(builder, op, left, right, expected_ty, ctx),
+            MirRValue::BinaryOp { op, left, right } => Self::lower_binary_op(builder, op, left, right, expected_ty, dst_mir_ty, ctx),
 
             MirRValue::UnaryOp { op, operand } => {
                 let val = Self::lower_operand_typed(builder, operand, expected_ty, ctx)?;
@@ -1742,7 +1743,7 @@ impl<'a> FunctionBuilder<'a> {
             container_ty
         };
 
-        let mut val = Self::lower_rvalue(builder, rvalue, Some(dst_ty), ctx)?;
+        let mut val = Self::lower_rvalue(builder, rvalue, Some(dst_ty), Some(&dst_local.ty), ctx)?;
 
         let val_ty = builder.func.dfg.value_type(val);
         if val_ty != dst_ty {
@@ -2470,6 +2471,7 @@ impl<'a> FunctionBuilder<'a> {
         left: &MirOperand,
         right: &MirOperand,
         expected_ty: Option<Type>,
+        dst_mir_ty: Option<&MirType>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
         let is_comparison = matches!(op,
@@ -2535,10 +2537,18 @@ impl<'a> FunctionBuilder<'a> {
         // does; both operands of an arithmetic operator share a type anyway.
         // Reading only the left meant `200 / b` on a `u8` divided signed, and
         // 200 in an i8 is -56, so it answered 0 (#630).
+        // When *both* operands are constants (e.g. `200 + 100`), neither has a
+        // local to read a type from — fall back to the destination's MIR type,
+        // which for arithmetic ops is the same type as the operands. That
+        // fallback doesn't hold for comparisons (destination is always Bool),
+        // so it's skipped there; a bare `200 < 100` has no width-dependent
+        // signedness to get wrong anyway (#328).
         let is_unsigned = Self::operand_mir_type(left, ctx.locals)
             .or_else(|| Self::operand_mir_type(right, ctx.locals))
             .map(|t| t.is_unsigned())
-            .unwrap_or(false);
+            .unwrap_or_else(|| {
+                if is_comparison { false } else { dst_mir_ty.is_some_and(|t| t.is_unsigned()) }
+            });
 
         // Reconcile operand types
         let (lhs_val, rhs_val) = if lhs_ty == rhs_ty {

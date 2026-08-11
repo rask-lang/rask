@@ -1,0 +1,6 @@
+// OV1: literal-only addition in a narrow-width context overflows at the
+// declared width, not at the default i32 (#328).
+func main() {
+    let x: u8 = 200 + 100
+    println(x.to_string())
+}

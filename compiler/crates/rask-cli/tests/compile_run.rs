@@ -1891,11 +1891,29 @@ fn overflow_roundtrip_panics() {
 }
 
 #[test]
+fn overflow_narrow_literal_panics() {
+    // Both operands are bare literals (no local to read a width from) — native
+    // codegen used to default to signed 32-bit arithmetic and wrap silently
+    // instead of checking at the declared u8 width (#328).
+    assert_panics_both("overflow_narrow_literal.rk", "overflow");
+}
+
+#[test]
 fn comptime_overflow_is_compile_error() {
     // CT1: overflow during comptime evaluation fails compilation with a
     // diagnostic (routed through the normal diagnostic path, not swallowed).
     let (ok, output) = compile_only_succeeds("comptime_overflow.rk");
     assert!(!ok, "comptime overflow must fail compilation: {}", output);
+    assert!(output.contains("overflow"), "should report overflow: {}", output);
+}
+
+#[test]
+fn comptime_overflow_narrow_is_compile_error() {
+    // Same CT1 guarantee, but at a width narrower than miri's old i64
+    // fallback (u8's 200 + 100 fits fine at i64, so the old constant loader
+    // never tripped the overflow check at all — #328).
+    let (ok, output) = compile_only_succeeds("comptime_overflow_narrow.rk");
+    assert!(!ok, "narrow-width comptime overflow must fail compilation: {}", output);
     assert!(output.contains("overflow"), "should report overflow: {}", output);
 }
 

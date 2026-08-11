@@ -3,8 +3,8 @@
 //! MIR evaluation loop — execute statements, follow terminators.
 
 use rask_mir::{
-    BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
-    MirTerminator, MirTerminatorKind,
+    BinOp, BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
+    MirTerminator, MirTerminatorKind, MirType,
 };
 
 use crate::intrinsics;
@@ -160,7 +160,8 @@ impl MiriEngine {
     fn eval_stmt(&mut self, stmt: &MirStmt) -> Result<(), MiriError> {
         match &stmt.kind {
             MirStmtKind::Assign { dst, rvalue } => {
-                let value = self.eval_rvalue(rvalue)?;
+                let dst_ty = self.stack.current()?.local_type(*dst).cloned();
+                let value = self.eval_rvalue(rvalue, dst_ty.as_ref())?;
                 self.stack.current_mut()?.set(*dst, value);
             }
 
@@ -315,19 +316,33 @@ impl MiriEngine {
         Ok(())
     }
 
-    /// Evaluate an rvalue.
-    fn eval_rvalue(&mut self, rvalue: &MirRValue) -> Result<MiriValue, MiriError> {
+    /// Evaluate an rvalue. `dst_ty` is the destination local's declared type —
+    /// a bare literal constant (`MirOperand::Constant`) carries no width of
+    /// its own, so a checked `u8` add whose operands are both literals (e.g.
+    /// `200u8 + 100u8`) has nothing else to size itself by (#328).
+    fn eval_rvalue(
+        &mut self,
+        rvalue: &MirRValue,
+        dst_ty: Option<&MirType>,
+    ) -> Result<MiriValue, MiriError> {
         match rvalue {
-            MirRValue::Use(op) => self.resolve_operand(op),
+            MirRValue::Use(op) => self.resolve_operand_typed(op, dst_ty),
 
             MirRValue::BinaryOp { op, left, right } => {
-                let l = self.resolve_operand(left)?;
-                let r = self.resolve_operand(right)?;
+                // A comparison's destination is always `bool` — that's not
+                // the operand width, so it must not be used as one.
+                let is_comparison = matches!(
+                    op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+                );
+                let hint = if is_comparison { None } else { dst_ty };
+                let l = self.resolve_operand_typed(left, hint)?;
+                let r = self.resolve_operand_typed(right, hint)?;
                 intrinsics::eval_binop(*op, &l, &r)
             }
 
             MirRValue::UnaryOp { op, operand } => {
-                let v = self.resolve_operand(operand)?;
+                let v = self.resolve_operand_typed(operand, dst_ty)?;
                 intrinsics::eval_unaryop(*op, &v)
             }
 
@@ -431,9 +446,20 @@ impl MiriEngine {
 
     /// Resolve an operand to a value.
     pub(crate) fn resolve_operand(&self, op: &MirOperand) -> Result<MiriValue, MiriError> {
+        self.resolve_operand_typed(op, None)
+    }
+
+    /// Resolve an operand to a value, sizing a bare int/float constant to
+    /// `expected` when given. A `Local` already carries its real width from
+    /// whatever produced it, so the hint only matters for `Constant`.
+    pub(crate) fn resolve_operand_typed(
+        &self,
+        op: &MirOperand,
+        expected: Option<&MirType>,
+    ) -> Result<MiriValue, MiriError> {
         match op {
             MirOperand::Local(id) => self.stack.current()?.get(*id).cloned(),
-            MirOperand::Constant(c) => Ok(const_to_value(c)),
+            MirOperand::Constant(c) => Ok(const_to_value(c, expected)),
         }
     }
 
@@ -451,11 +477,27 @@ impl MiriEngine {
     }
 }
 
-/// Convert a MIR constant to a MiriValue.
-fn const_to_value(c: &MirConst) -> MiriValue {
+/// Convert a MIR constant to a MiriValue, at `expected`'s width when the
+/// constant is a bare int/float literal with an integer/float destination —
+/// otherwise (mismatched or absent hint) falls back to i64/f64, matching the
+/// prior untyped behavior.
+fn const_to_value(c: &MirConst, expected: Option<&MirType>) -> MiriValue {
     match c {
-        MirConst::Int(v) => MiriValue::I64(*v),
-        MirConst::Float(v) => MiriValue::F64(*v),
+        MirConst::Int(v) => match expected {
+            Some(MirType::I8) => MiriValue::I8(*v as i8),
+            Some(MirType::I16) => MiriValue::I16(*v as i16),
+            Some(MirType::I32) => MiriValue::I32(*v as i32),
+            Some(MirType::I64) => MiriValue::I64(*v),
+            Some(MirType::U8) => MiriValue::U8(*v as u8),
+            Some(MirType::U16) => MiriValue::U16(*v as u16),
+            Some(MirType::U32) => MiriValue::U32(*v as u32),
+            Some(MirType::U64) => MiriValue::U64(*v as u64),
+            _ => MiriValue::I64(*v),
+        },
+        MirConst::Float(v) => match expected {
+            Some(MirType::F32) => MiriValue::F32(*v as f32),
+            _ => MiriValue::F64(*v),
+        },
         MirConst::Bool(v) => MiriValue::Bool(*v),
         MirConst::Char(v) => MiriValue::Char(*v),
         MirConst::String(v) => MiriValue::String(v.clone()),
