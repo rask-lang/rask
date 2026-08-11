@@ -41,7 +41,7 @@ A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
-what you mean with `.wrap<T>()`, `.clamp<T>()`, or `.check<T>()` (CV5–CV9).
+what you mean with `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` (CV5–CV8).
 
 ## Type Conversions
 
@@ -54,9 +54,9 @@ fit.
 |------|------------|---------|-------|
 | **CV1: Lossless** | `i8` → `i32`, `u8` → `i16`, `f32` → `f64`, `i32` → `f64` | `as` | Every source value has an exact representation in the target |
 | **CV1a: Lossless is implicit** | `u32` → `i64` with no cast | implicit | An `as` there tells the reader nothing. `as` is for saying it out loud |
-| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV5–CV9) |
-| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV5–CV9) |
-| **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV5–CV9) |
+| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV5–CV8) |
+| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV5–CV8) |
+| **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV5–CV8) |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
@@ -84,7 +84,7 @@ promises the opposite. Precision loss gets named like any other loss:
 The test is one question: **can every value of the source be represented in the
 target?** If yes, the conversion is implicit — an `as` there would tell the
 reader nothing, and ceremony that informs nobody is a design bug
-(NORTH_STAR commitment 5). If no, it has to name a policy (CV5–CV7), because
+(NORTH_STAR commitment 5). If no, it has to name a policy (CV5–CV8), because
 choosing what to lose is a real decision.
 
 | From → To | Implicit? | Why |
@@ -121,29 +121,28 @@ cannot fail, it isn't.
 
 ### Conversions that can lose something
 
-Five methods on every numeric primitive. The type argument is the target; the
+Four methods on every numeric primitive. The type argument is the target; the
 name is the policy.
 
 | Rule | Form | Yields | Behavior |
 |------|------|--------|----------|
-| **CV5: Convert** | `x.to<T>()` | `T or ConvertError` | Fails if the value doesn't fit |
-| **CV6: Wrap** | `x.wrap<T>()` | `T` | Keeps the low bits. Toward zero from a float; panics on NaN or infinity |
-| **CV7: Clamp** | `x.clamp<T>()` | `T` | Pins to the target's range. NaN → 0 |
-| **CV8: Round** | `x.round<T>()` | `T` | Nearest representable value — the precision policy (`i64` → `f32`, `f64` → `f32`) |
-| **CV9: Check** | `x.check<T>()` | `T?` | `none` if it doesn't fit |
+| **CV5: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
+| **CV6: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
+| **CV7: Clamp** | `x.clamp<T>()` | `T` | Pins to the target's range. From a float: nearest, NaN → 0 |
+| **CV8: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
 
 ```rask
 let count = rows.len().to<i32>()!           // I know it fits — panic if I'm wrong
 self.data.push((value >> 8).wrap<u8>())     // serializing: the low byte
 let pixel = (channel * 255.0).clamp<u8>()   // out of range is expected
 let ratio = total.round<f32>()              // accept the rounding
-let port = field.check<u16>() ?? 80         // handle it
+let tick = seconds.round<i64>()!            // nearest whole, panic on NaN
 ```
 
 **`to` is the default, and it's the one most code wants.** Most conversions in
 real code are a length or a count going into a smaller slot, where the author
 knows it fits. `to<T>()!` says exactly that, and being wrong turns into a panic
-instead of a wrong number. The other four are for when a value that doesn't fit
+instead of a wrong number. The other three are for when a value that doesn't fit
 is expected rather than a bug — and reaching for one of them says so.
 
 `to` yields a result (`type.errors/ER1`), so the whole error vocabulary works on
@@ -156,10 +155,45 @@ let n = value.to<u8>() catch _ => 0         // fall back
 let n = rows.to<i32>()! "row count exceeds i32"
 ```
 
-`check` is the same test in optional shape, for when there is no error to report
-— `none` is the whole story and `??` is the natural next move.
+### What "fails" means
 
-`ConvertError` carries the value and the target, and implements `ErrorMessage`.
+Anything that can fail yields a result; anything total yields the value bare.
+That's the only rule, and it's the same question CV1 asks — can this value be
+represented in the target?
+
+```rask
+public enum ConvertError {
+    OutOfRange   // doesn't fit the target type
+    NotExact     // a float with a fraction, going to an integer
+    NotFinite    // NaN or infinity
+}
+```
+
+`OutOfRange` is spelled to match `ParseError.OutOfRange` (`stdlib/string.rk`),
+which already means exactly this.
+
+`to` from a float is therefore exact-or-fail: `3.0.to<i32>()` gives `3`, and
+`3.7.to<i32>()` fails with `NotExact`. That's the honest reading of "convert if
+it fits", and it replaces the hand-rolled round-trip test — `json.rk` currently
+writes `if i as f64 == n && n >= -9007199254740992.0 && …` to ask the same
+question.
+
+### Float→int has two axes, and `wrap` only has one
+
+Getting an integer out of a float answers two questions: what happens to the
+fraction, and what happens if the result doesn't fit. `wrap` can only speak to
+the second, and on a float even that is meaningless — bit-truncating an IEEE
+pattern into an integer is a reinterpretation nobody wants. So **`wrap` is
+integers-only**, and the two-mechanics wrinkle it used to carry is gone with it.
+
+The fraction is the verb's job: `round` takes the nearest. `floor`, `ceil` and
+`trunc` are the same shape and get added when something needs them — that's the
+openness methods bought over syntax, and there's no reason to spend it up front.
+Toward-zero is deliberately not anyone's default; it's a C artifact, and nearest
+is what people mean.
+
+`clamp` stays the total one. It answers both axes — nearest for the fraction,
+pinned for the range, `0` for NaN — which is why it needs no `!`.
 
 ## `char` Type
 
@@ -272,7 +306,9 @@ mut port: u16 = header.port   // Native u16
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |
 | NaN in comparison | F2 | `NaN == NaN` is `false`, `NaN < x` is `false` |
-| Float-to-int with NaN | CV6 | `.wrap<T>()` panics; `.clamp<T>()` gives 0, `.check<T>()` gives `none`, `.to<T>()` fails |
+| Float-to-int with NaN | CV7/CV8 | `.clamp<T>()` gives 0; `.to<T>()` and `.round<T>()` fail with `NotFinite` |
+| Float with a fraction → int | CV5 | `.to<T>()` fails with `NotExact` — use `.round<T>()` or `.clamp<T>()` |
+| `x.wrap<T>()` on a float | CV6 | Compile error — `wrap` is integers-only |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |
@@ -295,9 +331,9 @@ FIX: If it always fits, say so — being wrong becomes a panic, not a wrong numb
 
      If it might not fit, pick what to do about it:
 
-  let x = big_val.wrap<i8>()     // keep the low bits
-  let x = big_val.clamp<i8>()    // pin to -128..=127
-  let x = big_val.check<i8>()    // i8?, none if it doesn't fit
+  let x = big_val.wrap<i8>()          // keep the low bits
+  let x = big_val.clamp<i8>()         // pin to -128..=127
+  let x = big_val.to<i8>() catch _ => 0
 ```
 
 The order matters. `to<T>()!` goes first because it's what most narrowing code
@@ -350,13 +386,17 @@ FIX: let flag: bool = n != 0
 
 **CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions name what they give up. Consistent with the overflow philosophy in `type.integer-overflow`.
 
-**CV5–CV9 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants four rounding modes crossed with three out-of-range behaviours. Every one of those is a name in a namespace and a line in a table; as syntax, each is a parse rule. `floor<i32>()` and `ceil<i32>()` can be added the day someone needs them.
+**CV5–CV8 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants four rounding modes crossed with three out-of-range behaviours. Every one of those is a name in a namespace and a line in a table; as syntax, each is a parse rule. `floor<i32>()` and `ceil<i32>()` can be added the day someone needs them — and until then they cost nothing, which is why the shipped set is four and not seven.
 
-The float sub-family disappears in the move. There was never a second set of policies for floats — wrapping, clamping and checking mean the same things there, on values that happen to have a fraction. One wrinkle survives it: **`wrap` is bit-truncation on integers and toward-zero on floats.** Same name, two mechanics, both the domain-standard reading of "throw away what doesn't fit."
+The float sub-family disappears in the move. There was never a second set of policies for floats — clamping and converting mean the same things there, on values that happen to have a fraction.
+
+**CV6 (`wrap` is integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word. Restricting `wrap` to integers costs nothing (`bits.rk` is the only real user, and it's all `>>` on unsigned) and removes the family's last piece of overloading.
 
 **CV5 (`to` yields a result).** The common case by a wide margin is a length or a count moving into a smaller slot where the author knows it fits. That deserves the shortest name, and `to` is it. Yielding `T or ConvertError` rather than panicking directly is what lets one method serve every downstream: `!` to assert, `try` to propagate, `catch` to handle. The panic is spelled — one character, at the site, in the marker the language already uses for it — instead of being something you have to know about `to`.
 
-That also settles a question the old design couldn't answer. `truncate to` was the only form that read like "just do it", so it collected every "I know this fits" site in the tree and quietly wrapped them. The policy names now describe cases that are genuinely expected, and the assertion has its own word.
+It also removes the need for a separate optional-shaped member. An earlier draft had `check<T>() -> T?` alongside; once `to` fails rather than panics, `x.to<u8>() catch _ => 0` covers it, and a second spelling of the same test is a member the reader has to disambiguate for nothing.
+
+That settles a question the old design couldn't answer. `truncate to` was the only form that read like "just do it", so it collected every "I know this fits" site in the tree and quietly wrapped them. The policy names now describe cases that are genuinely expected, and the assertion has its own word.
 
 **CH3 (runtime construction returns `T?`):** `char.from_u32(n)` returning `char?` forces handling of invalid code points. The unsafe `char.from_u32_unchecked(n)` exists for performance-critical paths where validity is known.
 
