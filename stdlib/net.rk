@@ -5,15 +5,15 @@ struct net { }
 
 extend net {
     /// Listen for TCP connections on the given address.
-    public func tcp_listen(addr: string) -> TcpListener or Error { }
+    public func tcp_listen(addr: string) -> TcpListener or IoError { }
 
     /// Connect to a remote TCP address. Returns a connection or error.
-    public func tcp_connect(addr: string) -> TcpConnection or Error { }
+    public func tcp_connect(addr: string) -> TcpConnection or IoError { }
 }
 
 extend TcpListener {
     /// Accept an incoming TCP connection.
-    public func accept(self) -> TcpConnection or Error { }
+    public func accept(self) -> TcpConnection or IoError { }
 
     /// Get the local address the listener is bound to.
     public func local_addr(self) -> string { }
@@ -30,25 +30,25 @@ public struct TcpConnection { }
 
 extend TcpConnection {
     /// Read all available data as bytes.
-    public func read_bytes(self) -> Vec<u8> or Error { }
+    public func read_bytes(self) -> Vec<u8> or IoError { }
 
     /// Write bytes to the connection.
-    public func write_bytes(self, data: Vec<u8>) -> void or Error { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
 
     /// Read all available data, decoding as UTF-8 text.
-    public func read_text(self) -> string or Error { }
+    public func read_text(self) -> string or IoError { }
 
     /// Write text to the connection.
-    public func write_text(self, data: string) -> void or Error { }
+    public func write_text(self, data: string) -> void or IoError { }
 
     /// Get the remote address as "ip:port".
     public func remote_addr(self) -> string { }
 
     /// Read an HTTP/1.1 request from the connection.
-    public func read_http_request(self) -> Request or Error { }
+    public func read_http_request(self) -> Request or IoError { }
 
     /// Write an HTTP response to the connection.
-    public func write_http_response(self, response: Response) -> void or Error { }
+    public func write_http_response(self, response: Response) -> void or IoError { }
 
     /// Close the connection.
     public func close(take self) -> void or IoError { }

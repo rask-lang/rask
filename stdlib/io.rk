@@ -27,6 +27,22 @@ extend IoError {
     }
 }
 
+/// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
+/// mirror the Writer trio (specs/stdlib/io.md R1-R3).
+public trait Reader {
+    func read(self, buf: Vec<u8>) -> i64 or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
+}
+
+/// Writable stream: bytes out, `IoError` back. Mirror of Reader (W1-W2, W4;
+/// no `flush` — not every writer buffers).
+public trait Writer {
+    func write(self, data: Vec<u8>) -> i64 or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+}
+
 /// Input/output module functions.
 struct io { }
 
@@ -44,14 +60,14 @@ extend io {
     public func stderr() -> Stderr { }
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
-    public func copy(reader: Reader, writer: Writer) -> i64 or IoError { }
+    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError { }
 }
 
 /// Standard input handle. Implements Reader. Must be consumed via close().
 @resource
 public struct Stdin { }
 
-extend Stdin {
+extend Stdin with Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
     public func read(self, buf: Vec<u8>) -> i64 or IoError { }
 
@@ -60,7 +76,9 @@ extend Stdin {
 
     /// Read all remaining bytes as UTF-8 string.
     public func read_text(self) -> string or IoError { }
+}
 
+extend Stdin {
     /// Read a single line from stdin.
     public func read_line(self) -> string or IoError { }
 
@@ -72,7 +90,7 @@ extend Stdin {
 @resource
 public struct Stdout { }
 
-extend Stdout {
+extend Stdout with Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
@@ -81,7 +99,9 @@ extend Stdout {
 
     /// Write a string.
     public func write_text(self, s: string) -> void or IoError { }
+}
 
+extend Stdout {
     /// Flush buffered output.
     public func flush(self) -> void or IoError { }
 
@@ -93,7 +113,7 @@ extend Stdout {
 @resource
 public struct Stderr { }
 
-extend Stderr {
+extend Stderr with Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
@@ -102,7 +122,9 @@ extend Stderr {
 
     /// Write a string.
     public func write_text(self, s: string) -> void or IoError { }
+}
 
+extend Stderr {
     /// Flush buffered output.
     public func flush(self) -> void or IoError { }
 
@@ -113,13 +135,7 @@ extend Stderr {
 /// In-memory buffer implementing both Reader and Writer. Not linear.
 public struct Buffer { }
 
-extend Buffer {
-    /// Create an empty buffer.
-    public func new() -> Buffer { }
-
-    /// Create a buffer initialized with data.
-    public func from(data: Vec<u8>) -> Buffer { }
-
+extend Buffer with Reader {
     /// Read bytes from the buffer.
     public func read(self, buf: Vec<u8>) -> i64 or IoError { }
 
@@ -128,15 +144,25 @@ extend Buffer {
 
     /// Read all as UTF-8 string.
     public func read_text(self) -> string or IoError { }
+}
 
+extend Buffer with Writer {
     /// Write bytes to the buffer.
-    public func write(mutate self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError { }
 
     /// Write all bytes.
-    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
 
     /// Write a string.
-    public func write_text(mutate self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError { }
+}
+
+extend Buffer {
+    /// Create an empty buffer.
+    public func new() -> Buffer { }
+
+    /// Create a buffer initialized with data.
+    public func from(data: Vec<u8>) -> Buffer { }
 
     /// View all written bytes.
     @unimplemented

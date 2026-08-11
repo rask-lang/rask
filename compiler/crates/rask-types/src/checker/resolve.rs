@@ -1738,7 +1738,7 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let error_ty = Type::UnresolvedNamed("Error".to_string());
+        let error_ty = Type::UnresolvedNamed("IoError".to_string());
         match (type_name, method) {
             // Instant static constructor and instance methods
             ("Instant", "now") if args.is_empty() => {

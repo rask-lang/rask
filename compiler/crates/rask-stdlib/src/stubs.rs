@@ -156,7 +156,7 @@ impl StubRegistry {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
                     | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
-                    | DeclKind::TypeAlias(_) => {
+                    | DeclKind::TypeAlias(_) | DeclKind::Trait(_) => {
                         decls.push(decl);
                     }
                     _ => {}
@@ -198,13 +198,16 @@ impl StubRegistry {
                         DeclKind::Struct(_) | DeclKind::Enum(_) => true,
                         DeclKind::Import(_) => true,
                         DeclKind::TypeAlias(_) => true,
+                        DeclKind::Trait(_) => true,
                         _ => false,
                     }
                 } else {
                     // Files without function bodies still contribute struct/enum
                     // definitions — types must be visible for resolution even when
-                    // their methods aren't implemented yet.
-                    matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_))
+                    // their methods aren't implemented yet. Traits are the same:
+                    // no body to strip, but the type checker still needs them to
+                    // validate `extend T with Trait` conformance (#320).
+                    matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Trait(_))
                 };
                 if dominated {
                     // Strip empty-body methods from Impl blocks so they

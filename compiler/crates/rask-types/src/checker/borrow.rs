@@ -350,6 +350,19 @@ impl TypeChecker {
     pub(super) fn method_mutates_self(&self, var_name: &str, method_name: &str) -> bool {
         let Some(ty) = self.lookup_local(var_name) else { return false };
         let resolved = self.resolve_named(&self.ctx.apply(&ty));
+
+        // `any Trait` values: the trait's own declared self mode is known —
+        // no need for the unresolved-type name heuristic below, which would
+        // flag every trait's `write`/`read` as mutating regardless of how it
+        // was actually declared.
+        if let Type::TraitObject { trait_name } = &resolved {
+            let methods = crate::traits::TraitChecker::new(&self.types).get_trait_methods_public(trait_name);
+            if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
+                return matches!(sig.self_param, SelfParam::Mutate);
+            }
+            return false;
+        }
+
         let type_id = match &resolved {
             Type::Named(id) => Some(*id),
             Type::Generic { base, .. } => Some(*base),
@@ -390,6 +403,17 @@ impl TypeChecker {
         // Try to look up the actual method signature from the variable's type
         if let Some(ty) = self.lookup_local(var_name) {
             let resolved = self.resolve_named(&self.ctx.apply(&ty));
+
+            if let Type::TraitObject { trait_name } = &resolved {
+                let methods = crate::traits::TraitChecker::new(&self.types).get_trait_methods_public(trait_name);
+                if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
+                    return match sig.self_param {
+                        SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,
+                        SelfParam::Value | SelfParam::None => BorrowMode::Shared,
+                    };
+                }
+            }
+
             let type_id = match &resolved {
                 Type::Named(id) => Some(*id),
                 Type::Generic { base, .. } => Some(*base),
