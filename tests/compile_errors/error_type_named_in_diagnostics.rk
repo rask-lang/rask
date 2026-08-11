@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: several messages about the wrapper shapes, all naming the type
+// ERROR: no method `ok` on `i64 or IoError`
+//
+// #646: the error side of a `T or E` printed as an internal id (`i64 or
+// <type#77>`) rather than the name the author wrote. Not one message — whatever
+// formatted the error half of a result. `Mismatch` got it right in the same run,
+// which is what gave it away: the name was always reachable.
+//
+// The cause was that the pass which fills type names in was a hand-written match
+// ending in a catch-all. It covered 17 of the 33 error variants that carry a
+// type, and every variant added after it was written fell through silently. It's
+// an exhaustive walk now, so a new variant won't compile until it's listed.
+//
+// This file exists to keep three *different* error codes honest at once — a
+// single-message test wouldn't have caught the original bug either.
+
+enum IoError {
+    NotFound
+}
+
+extend IoError with ErrorMessage {
+    func message(self) -> string {
+        return "nf"
+    }
+}
+
+func res() -> i64 or IoError {
+    return 2
+}
+
+func flat() -> i64? or IoError {
+    return 2
+}
+
+func main() {
+    // ERROR (E0367): the wrapper shapes have no methods — names the receiver
+    let a = res().ok()
+
+    // ERROR (E0367): same rule, different method
+    let b = res().unwrap_or_else()
+
+    // ERROR (E0362): the flat shape has two ways out — names both halves
+    let c = try flat()
+}

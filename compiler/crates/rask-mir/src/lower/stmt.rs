@@ -294,84 +294,16 @@ impl<'a> MirLowerer<'a> {
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
                     returned_ty = Some(op_ty.clone());
-                    // Auto-wrap a non-Option value into Some(...) when the
-                    // function returns Option<T>. The user-level shorthand
-                    // `func -> User? { return User { ... } }` relies on this;
-                    // without an explicit wrap, codegen returns just the T
-                    // pointer and the caller's Option slot ends up with
-                    // garbage in the tag/payload positions (#274).
+                    // Wrap a bare value into whatever the return type asks for:
+                    // `func -> User? { return User { ... } }` needs one layer,
+                    // `func -> T? or E { return t }` needs two (ER9). Returned
+                    // unwrapped, the caller reads the value's first word as the
+                    // tag (#274, #383).
                     let ret_ty = self.builder.ret_ty().clone();
-                    let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
-                        if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
-                    // ER9: `func -> T? or E { return t }` needs two layers, not
-                    // one. The single wrap above and codegen's Ok-wrap each add
-                    // only one, so a bare T came back with the caller reading
-                    // its first field as the Result tag (#383).
-                    let needs_double_wrap = matches!(&ret_ty, MirType::Result { ok, .. }
-                        if matches!(&**ok, MirType::Option(inner)
-                            if **inner == op_ty
-                                && !matches!(op_ty, MirType::Option(_) | MirType::Result { .. })));
-
-                    let final_op = if needs_double_wrap {
-                        let MirType::Result { ok, .. } = &ret_ty else { unreachable!() };
-                        let opt_ty = (**ok).clone();
-                        let some_local = self.builder.alloc_temp(opt_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: some_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: some_local,
-                            offset: 8,
-                            value: op,
-                            store_size: Some(op_ty.size()),
-                        }));
-
-                        let res_local = self.builder.alloc_temp(ret_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: res_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        // ER15 origin slots stay zero for a success return.
-                        for offset in [8u32, 16] {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: res_local,
-                                offset,
-                                value: MirOperand::Constant(MirConst::Int(0)),
-                                store_size: Some(8),
-                            }));
-                        }
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: res_local,
-                            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-                            value: MirOperand::Local(some_local),
-                            store_size: Some(opt_ty.size()),
-                        }));
-                        MirOperand::Local(res_local)
-                    } else if needs_wrap {
-                        let wrap_local = self.builder.alloc_temp(ret_ty.clone());
-                        // tag = 0 (Some)
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: wrap_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        // payload at offset 8
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: wrap_local,
-                            offset: 8,
-                            value: op,
-                            store_size: Some(op_ty.size()),
-                        }));
-                        MirOperand::Local(wrap_local)
-                    } else {
-                        op
-                    };
+                    let final_op = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Return,
+                        op, &op_ty, &ret_ty,
+                    );
                     Some(final_op)
                 } else {
                     None
@@ -1090,9 +1022,17 @@ impl<'a> MirLowerer<'a> {
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
-        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
+        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
+        // An annotated binding is a coercion site like any other: `let b: T?? = t`
+        // needs both layers built here rather than left for codegen to infer from
+        // the depth mismatch, which only ever added Option layers and typed the
+        // payload one layer too shallow (#637).
+        let init_op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            init_op, &inferred_ty, &var_ty,
+        );
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),

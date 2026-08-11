@@ -570,7 +570,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.locals.insert(clause.binder.clone(), (err_val, err_ty))
         };
-        let (handler_op, _) = self.lower_expr(&clause.body)?;
+        let (handler_op, handler_ty) = self.lower_expr(&clause.body)?;
         if !clause.is_discard() {
             match shadowed {
                 Some(prev) => { self.locals.insert(clause.binder.clone(), prev); }
@@ -579,6 +579,13 @@ impl<'a> MirLowerer<'a> {
         }
         // A diverging handler (`catch e => return …`) already terminated.
         if self.builder.current_block_unterminated() {
+            // `catch _ => 5` on a shape that stays wrapped hands back a bare
+            // payload for a `T?` slot, so the arm is a coercion position like
+            // any other.
+            let handler_op = self.coerce_into_wrapper(
+                rask_ast::coercion::CoercionSite::CatchArm,
+                handler_op, &handler_ty, &ok_ty,
+            );
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: value,
                 rvalue: MirRValue::Use(handler_op),
@@ -603,11 +610,17 @@ impl<'a> MirLowerer<'a> {
                 access: aggregate_payload_access(&payload_ty),
             },
         }));
-        // Assigning a bare payload into an option-typed slot is the wrap —
-        // codegen and the interpreter both read the destination's type.
+        // ER14a: when the shape stays, the payload read out of the operand is a
+        // bare `T` going into a `T?` slot and gains the layer here. This used to
+        // be left to codegen noticing the destination's type, which is the habit
+        // that let four positions drift apart (#701).
+        let payload_op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::CatchArm,
+            MirOperand::Local(payload), &payload_ty, &ok_ty,
+        );
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: value,
-            rvalue: MirRValue::Use(MirOperand::Local(payload)),
+            rvalue: MirRValue::Use(payload_op),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,

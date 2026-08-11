@@ -246,6 +246,12 @@ impl<'a> MirLowerer<'a> {
     /// Returns the operand unchanged when no wrapping is needed — the field
     /// isn't a sum type, the value already has the sum shape, or the option
     /// uses a niche (a `Handle?` is a sentinel, not a tag plus payload).
+    ///
+    /// The layers themselves come from `coerce_into_wrapper`, shared with
+    /// `return` and the annotated bindings. Only the niche `Handle?` is special
+    /// here: a bare `none` at that field has to become the sentinel, because the
+    /// generic `none` lowering builds a tagged option and storing that into the
+    /// field left a tag where the handle belongs (#438).
     fn wrap_sum_field_value(
         &mut self,
         field_ty: Option<&MirType>,
@@ -253,72 +259,16 @@ impl<'a> MirLowerer<'a> {
         val: MirOperand,
     ) -> MirOperand {
         let Some(field_ty) = field_ty else { return val };
-        let (tag_offset, payload_offset, inner) = match field_ty {
-            // A `Handle?` is a sentinel, not a tag plus payload. A handle
-            // stores as itself; `none` has to become the sentinel, because the
-            // generic `none` lowering builds a tagged option and storing that
-            // into the field left a tag where the handle belongs (#438).
-            MirType::Option(inner) if matches!(**inner, MirType::Handle) => {
-                if matches!(val_ty, MirType::Option(_)) {
-                    return MirOperand::Constant(MirConst::Int(
-                        crate::lower::HANDLE_NONE_SENTINEL,
-                    ));
-                }
-                return val;
+        if matches!(field_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+            if matches!(val_ty, MirType::Option(_)) {
+                return MirOperand::Constant(MirConst::Int(crate::lower::HANDLE_NONE_SENTINEL));
             }
-            MirType::Option(inner) => {
-                if matches!(val_ty, MirType::Option(_)) {
-                    return val;
-                }
-                (
-                    rask_mono::abi::OPTION_TAG_OFFSET,
-                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
-                    (**inner).clone(),
-                )
-            }
-            MirType::Result { ok, err } => {
-                // Only the ok side gets wrapped implicitly; an error value at a
-                // field position isn't allowed (ER11).
-                if matches!(val_ty, MirType::Result { .. }) || val_ty == &**err {
-                    return val;
-                }
-                (
-                    rask_mono::abi::RESULT_TAG_OFFSET,
-                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-                    (**ok).clone(),
-                )
-            }
-            _ => return val,
-        };
-
-        let slot = self.builder.alloc_temp(field_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: tag_offset,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: Some(8),
-        }));
-        if payload_offset == rask_mono::abi::RESULT_PAYLOAD_OFFSET {
-            for off in [
-                rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
-                rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
-            ] {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: slot,
-                    offset: off,
-                    value: MirOperand::Constant(MirConst::Int(0)),
-                    store_size: Some(8),
-                }));
-            }
+            return val;
         }
-        let payload_size = inner.size();
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: payload_offset,
-            value: val,
-            store_size: (payload_size > 8).then_some(payload_size),
-        }));
-        MirOperand::Local(slot)
+        self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::StructField,
+            val, val_ty, field_ty,
+        )
     }
 
     /// Lower an absent optional. `none` and `None` are the same value written
@@ -883,7 +833,26 @@ impl<'a> MirLowerer<'a> {
                             *is_own || spawns_closure, &expected, Some(a.expr.id),
                         )?
                     } else {
-                        self.lower_call_arg(&a.expr, smut)?
+                        let (op, mir_ty) = self.lower_call_arg(&a.expr, smut)?;
+                        // A parameter declared `T?` or `T or E` given a bare `T`
+                        // is the same coercion as an annotated binding, so it
+                        // takes the same path. Left to codegen it only ever
+                        // gained Option layers, and typed the payload one layer
+                        // too shallow — an `f32??` parameter arrived as 0 (#637).
+                        let declared = callee_params
+                            .get(i)
+                            .and_then(|o| o.as_ref())
+                            .map(|s| self.ctx.resolve_type_str(s));
+                        match declared {
+                            Some(dst_ty) => {
+                                let op = self.coerce_into_wrapper(
+                                    rask_ast::coercion::CoercionSite::Argument,
+                                    op, &mir_ty, &dst_ty,
+                                );
+                                (op, mir_ty)
+                            }
+                            None => (op, mir_ty),
+                        }
                     };
                     // TR5 boxing happens in lower_expr, at the value — doing
                     // it again here wrapped the box in another box, and the

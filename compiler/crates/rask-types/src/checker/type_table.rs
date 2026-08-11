@@ -762,97 +762,17 @@ impl TypeTable {
         }
     }
 
-    pub fn resolve_error_types(&self, error: TypeError) -> TypeError {
-        match error {
-            TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
-                expected: self.resolve_type_names(&expected),
-                found: self.resolve_type_names(&found),
-                span,
-            },
-            TypeError::NotCallable { ty, span } => TypeError::NotCallable {
-                ty: self.resolve_type_names(&ty),
-                span,
-            },
-            TypeError::NoSuchField { ty, field, span } => TypeError::NoSuchField {
-                ty: self.resolve_type_names(&ty),
-                field,
-                span,
-            },
-            TypeError::NoSuchMethod { ty, method, span } => TypeError::NoSuchMethod {
-                ty: self.resolve_type_names(&ty),
-                method,
-                span,
-            },
-            TypeError::MissingReturn { function_name, expected_type, span } => TypeError::MissingReturn {
-                function_name,
-                expected_type: self.resolve_type_names(&expected_type),
-                span,
-            },
-            TypeError::TryInNonPropagatingContext { return_ty, span } => TypeError::TryInNonPropagatingContext {
-                return_ty: self.resolve_type_names(&return_ty),
-                span,
-            },
-            TypeError::InfiniteType { var, ty, span } => TypeError::InfiniteType {
-                var,
-                ty: self.resolve_type_names(&ty),
-                span,
-            },
-            TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
-                found: self.resolve_type_names(&found),
-                span,
-            },
-            TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {
-                expected: self.resolve_type_names(&expected),
-                found: self.resolve_type_names(&found),
-                nominal_name,
-                span,
-            },
-            TypeError::GuardElseMustDiverge { found, span } => TypeError::GuardElseMustDiverge {
-                found: self.resolve_type_names(&found),
-                span,
-            },
-            TypeError::ResultNotDisjoint { ty, span } => TypeError::ResultNotDisjoint {
-                ty: self.resolve_type_names(&ty),
-                span,
-            },
-            TypeError::ResultNotDisjointAtInstantiation { callee, param, arg, other, span } => {
-                TypeError::ResultNotDisjointAtInstantiation {
-                    callee,
-                    param,
-                    arg: self.resolve_type_names(&arg),
-                    other: self.resolve_type_names(&other),
-                    span,
-                }
-            }
-            TypeError::ErrorMessageMissing { ty, span } => TypeError::ErrorMessageMissing {
-                ty: self.resolve_type_names(&ty),
-                span,
-            },
-            TypeError::DuplicateSumVariant { ty, variant, span } => TypeError::DuplicateSumVariant {
-                ty: self.resolve_type_names(&ty),
-                variant: self.resolve_type_names(&variant),
-                span,
-            },
-            TypeError::LinearInContainer { container, elem, span } => TypeError::LinearInContainer {
-                container,
-                elem: self.resolve_type_names(&elem),
-                span,
-            },
-            TypeError::IndexTypeMismatch { container, found, kind, span } => TypeError::IndexTypeMismatch {
-                container: self.resolve_type_names(&container),
-                found: self.resolve_type_names(&found),
-                kind: match kind {
-                    super::IndexErrorKind::ExpectedHandle(h) => {
-                        super::IndexErrorKind::ExpectedHandle(self.resolve_type_names(&h))
-                    }
-                    super::IndexErrorKind::ExpectedKey(k) => {
-                        super::IndexErrorKind::ExpectedKey(self.resolve_type_names(&k))
-                    }
-                    other => other,
-                },
-                span,
-            },
-            other => other,
-        }
+    /// Fill in the names of every type an error carries.
+    ///
+    /// The walk is `TypeError::map_types`, which is exhaustive. This used to be a
+    /// hand-written match ending in `other => other`: it covered 17 of the 33
+    /// variants that carry a type, and every variant added after it was written
+    /// silently fell through with its names unresolved. That's why the error side
+    /// of a `T or E` printed as an internal id in `WrapperMethodCut`,
+    /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
+    /// (#646).
+    pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
+        error.map_types(&|ty| self.resolve_type_names(ty));
+        error
     }
 }

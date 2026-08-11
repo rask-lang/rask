@@ -22,3 +22,41 @@ pub const OPTION_PAYLOAD_OFFSET: u32 = 8;
 /// handle itself is the value — so `none` is an all-bits-set handle
 /// (index=UINT32_MAX, gen=UINT32_MAX), which no live slot can ever produce.
 pub const HANDLE_NONE_SENTINEL: i64 = -1;
+
+/// A scalar payload occupies the whole slot, whatever its own width.
+pub const PAYLOAD_SLOT_BYTES: u32 = 8;
+
+/// How a payload sits in a wrapper's payload slot.
+///
+/// The float case is the one that bites. A payload read is a plain load of the
+/// slot, so a 4-byte `f32` write and an 8-byte read disagree about which bytes
+/// carry the value — that's #629, and the same mistake reappeared one layer up
+/// when the wrap moved into MIR. Storing floats as `f64` makes the write and the
+/// read agree by construction.
+///
+/// Integers are written full-width and may be read at their own narrower width;
+/// little-endian puts the meaningful bytes first, so both agree.
+///
+/// Kept here beside the offsets because it is the same kind of fact: MIR widens
+/// a value to this on the way in, codegen takes it apart by this on the way out,
+/// and neither gets its own opinion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadRepr {
+    /// Float scalar — occupies the slot as an `f64`.
+    Float64,
+    /// Integer-like scalar — written full-width, read at its own width.
+    IntFullWidth,
+    /// Aggregate — lives at its own address, copied in and out by bytes.
+    InPlace,
+}
+
+/// Classify a payload from the two facts that decide it.
+pub fn payload_repr(is_float: bool, passed_by_address: bool) -> PayloadRepr {
+    if passed_by_address {
+        PayloadRepr::InPlace
+    } else if is_float {
+        PayloadRepr::Float64
+    } else {
+        PayloadRepr::IntFullWidth
+    }
+}

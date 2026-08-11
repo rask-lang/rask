@@ -163,14 +163,13 @@ impl Interpreter {
                 variant_index: 0, origin: None,
             });
         } else if returns_option {
-            match &value {
-                Value::Enum { name, .. } if name == "Option" => Ok(value),
-                _ => Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![value],
-                    variant_index: 0, origin: None,
-                }),
+            // As many layers as the signature declares, not one: `-> T??`
+            // returning a bare `T` got a single Some, and the caller's second
+            // peel found a `T` where it expected an Option and read it as
+            // absent. Same helper the ok side and the arguments use.
+            match func.ret_ty.as_ref() {
+                Some(ret) => Ok(wrap_optional_layers(value, ret)),
+                None => Ok(wrap_optional_layers(value, "T?")),
             }
         } else {
             Ok(value)

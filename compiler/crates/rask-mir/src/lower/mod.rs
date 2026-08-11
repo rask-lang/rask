@@ -123,6 +123,13 @@ struct LoopContext {
     ensure_depth: usize,
 }
 
+/// One wrapper layer of a type, as seen by `coerce_into_wrapper`.
+#[derive(Debug, Clone, PartialEq)]
+enum WrapLayer {
+    Option,
+    Result { err: MirType },
+}
+
 /// Metadata for a comptime-evaluated global constant.
 #[derive(Debug, Clone)]
 pub struct ComptimeGlobalMeta {
@@ -1425,6 +1432,196 @@ impl<'a> MirLowerer<'a> {
                 .map(|l| l.name.clone()),
             _ => None,
         }
+    }
+
+    /// How many wrapper layers a type carries, outermost first.
+    ///
+    /// `i64? or E` is `[Result{err: E}, Option]` over a core of `i64`.
+    fn wrapper_layers(ty: &MirType) -> (Vec<WrapLayer>, &MirType) {
+        let mut layers = Vec::new();
+        let mut cur = ty;
+        loop {
+            match cur {
+                MirType::Option(inner) => {
+                    layers.push(WrapLayer::Option);
+                    cur = inner;
+                }
+                MirType::Result { ok, err } => {
+                    layers.push(WrapLayer::Result {
+                        err: (**err).clone(),
+                    });
+                    cur = ok;
+                }
+                _ => return (layers, cur),
+            }
+        }
+    }
+
+    /// Wrap `val` into the layers `dst_ty` has and `src_ty` doesn't.
+    ///
+    /// Every position that can coerce a bare value into a wrapper goes through
+    /// here: `return`, a `let` with an annotation, a call argument, a struct
+    /// field. Each of those used to carry its own wrap, which is why the depth
+    /// they supported disagreed — `return` did one layer plus a hardcoded
+    /// `T? or E`, a struct field did exactly one, and codegen's widening did
+    /// Option only. Anything at depth 2 landed in whichever gap it happened to
+    /// hit: `f32??` truncated its payload, `i64? or E` returned a bare integer
+    /// the caller dereferenced, `string??` in a field read back as `none`
+    /// (#644, #637, #376, #383).
+    ///
+    /// Layer count is what's compared, never the payload's own type — an `i32`
+    /// literal going into an `i64` payload is still a value that needs wrapping,
+    /// and requiring the types to match exactly is what made `return 5` from an
+    /// `i64? or E` skip the wrap entirely.
+    fn coerce_into_wrapper(
+        &mut self,
+        site: rask_ast::coercion::CoercionSite,
+        val: MirOperand,
+        src_ty: &MirType,
+        dst_ty: &MirType,
+    ) -> MirOperand {
+        use rask_ast::coercion::CoercionSite;
+
+        // Which positions can put a value on the *error* branch rather than
+        // wrapping it as success. ER9 gives that to `return`: a value whose type
+        // is `E` goes to err, picked by type, and disjointness (ER3) makes it
+        // unambiguous. Elsewhere ER11 means a bare `E` never reaches here for a
+        // non-optional sum — the checker rejected it — so a value that happens to
+        // equal the error type at those positions is the payload, not an error.
+        //
+        // Exhaustive on purpose: a new position has to say which it is.
+        let err_branch_by_type = match site {
+            CoercionSite::Return | CoercionSite::CatchArm => true,
+            CoercionSite::AnnotatedBinding
+            | CoercionSite::Argument
+            | CoercionSite::StructField => false,
+        };
+
+        let (dst_layers, _) = Self::wrapper_layers(dst_ty);
+        let (src_layers, _) = Self::wrapper_layers(src_ty);
+        if dst_layers.len() <= src_layers.len() {
+            return val;
+        }
+
+        // A `Handle<T>?` is a niche: the handle is the value and `none` is the
+        // all-ones sentinel, so there's no tag to write.
+        if matches!(dst_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+            return val;
+        }
+
+        let n_add = dst_layers.len() - src_layers.len();
+
+        // An error value at a Result layer is the err side, not a payload to
+        // wrap as Ok. Only the outermost added layer can be the one it belongs
+        // to, since the layers below it are the ok branch's own shape.
+        if err_branch_by_type {
+            if let Some(WrapLayer::Result { err }) = dst_layers.first() {
+                if src_ty == err {
+                    return val;
+                }
+            }
+        }
+
+        // Build inwards-out: the innermost added layer takes the value, each
+        // layer above it takes the slot built beneath.
+        let mut cur_op = val;
+        let mut cur_ty = src_ty.clone();
+        for depth in (0..n_add).rev() {
+            // `dst_layers[depth]` is the layer being added; everything from
+            // there inwards is the type of the slot it builds.
+            let layer_ty = Self::peel_layers(dst_ty, depth);
+            let slot = self.builder.alloc_temp(layer_ty.clone());
+            let (tag_offset, payload_offset, is_result) = match &dst_layers[depth] {
+                WrapLayer::Option => (
+                    rask_mono::abi::OPTION_TAG_OFFSET,
+                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+                    false,
+                ),
+                WrapLayer::Result { .. } => (
+                    rask_mono::abi::RESULT_TAG_OFFSET,
+                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
+                    true,
+                ),
+            };
+            // tag 0 — Some for an Option, Ok for a Result.
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset: tag_offset,
+                value: MirOperand::Constant(MirConst::Int(0)),
+                store_size: Some(8),
+            }));
+            if is_result {
+                // ER15 origin stays zero on the success side.
+                for off in [
+                    rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
+                    rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
+                ] {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: slot,
+                        offset: off,
+                        value: MirOperand::Constant(MirConst::Int(0)),
+                        store_size: Some(8),
+                    }));
+                }
+            }
+            let (payload_op, store_size) = if cur_ty.passed_by_address() {
+                // A wrapper or struct payload lives at its own address; the store
+                // is a memcpy, which is why aggregates never had a depth problem.
+                (cur_op, self.aggregate_alloc_size(&cur_ty))
+            } else {
+                // A scalar payload fills the whole 8-byte slot: floats as f64,
+                // integers full-width. The read side picks the payload apart by
+                // that same rule, so storing a narrow f32 here left the reader
+                // taking 8 bytes of a 4-byte write (#629's rule, one layer up).
+                (self.widen_scalar_payload(cur_op, &cur_ty), 8)
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset: payload_offset,
+                value: payload_op,
+                store_size: Some(store_size),
+            }));
+            cur_op = MirOperand::Local(slot);
+            cur_ty = layer_ty;
+        }
+        cur_op
+    }
+
+    /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
+    /// owns that rule, this just applies it. Returns the operand unchanged when
+    /// it is already that wide.
+    fn widen_scalar_payload(&mut self, op: MirOperand, ty: &MirType) -> MirOperand {
+        let is_float = matches!(ty, MirType::F32 | MirType::F64);
+        let target = match rask_mono::abi::payload_repr(is_float, ty.passed_by_address()) {
+            rask_mono::abi::PayloadRepr::InPlace => return op,
+            rask_mono::abi::PayloadRepr::Float64 => MirType::F64,
+            rask_mono::abi::PayloadRepr::IntFullWidth => MirType::I64,
+        };
+        if ty == &target || ty.size() >= rask_mono::abi::PAYLOAD_SLOT_BYTES {
+            return op;
+        }
+        let tmp = self.builder.alloc_temp(target.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tmp,
+            rvalue: MirRValue::Cast {
+                value: op,
+                target_ty: target,
+            },
+        }));
+        MirOperand::Local(tmp)
+    }
+
+    /// `ty` with `n` of its outermost wrapper layers removed.
+    fn peel_layers(ty: &MirType, n: usize) -> MirType {
+        let mut cur = ty;
+        for _ in 0..n {
+            match cur {
+                MirType::Option(inner) => cur = inner,
+                MirType::Result { ok, .. } => cur = ok,
+                _ => break,
+            }
+        }
+        cur.clone()
     }
 
     /// Current cleanup chain in LIFO order (last-registered ensure runs first).

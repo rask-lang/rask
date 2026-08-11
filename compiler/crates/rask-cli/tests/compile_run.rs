@@ -807,6 +807,50 @@ fn error_keyword_fn_name() {
     );
 }
 
+// ER11: a bare `T` becomes a `T or E` at `return` and nowhere else. The rule was
+// always enforced; the message wasn't — the generic mismatch answered, and its
+// "change this to type `i64 or LoadError`" was what the author had already
+// written (#550, #641, #701). Pins the message and the count: three rejected
+// positions, and the legitimate uses in the same file stay clean.
+#[test]
+fn error_no_auto_wrap_outside_return() {
+    let (failed, out) = compile_error_output("no_auto_wrap_outside_return.rk");
+    assert!(failed, "a bare value at a non-return position must be rejected: {}", out);
+    assert!(
+        out.contains("auto-wrap only fires at `return`"),
+        "should name the rule, not report a bare mismatch: {}", out,
+    );
+    assert!(
+        out.contains("i64 or LoadError"),
+        "should name the error type rather than printing `<type#N>`: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0828").count(), 3,
+        "one per coercion position — binding, argument, field — and nothing for \
+         the wrapped-by-a-call forms or the optional: {}", out,
+    );
+}
+
+// #646: the error side of a `T or E` printed as `<type#N>` instead of the name.
+// The pass that fills type names in was a hand-written match with a catch-all
+// covering 17 of the 33 type-carrying variants, so anything added later fell
+// through. Three different codes in one file, because the original bug was
+// invisible to any single message — `Mismatch` was always correct.
+#[test]
+fn error_type_named_in_diagnostics() {
+    let (failed, out) = compile_error_output("error_type_named_in_diagnostics.rk");
+    assert!(failed, "wrapper-method and flat-try misuse must be rejected: {}", out);
+    assert!(
+        !out.contains("<type#"),
+        "no diagnostic may leak an internal type id: {}", out,
+    );
+    for expected in ["no method `ok` on `i64 or IoError`",
+                     "no method `unwrap_or_else` on `i64 or IoError`",
+                     "`i64? or IoError`"] {
+        assert!(out.contains(expected), "missing {:?} in: {}", expected, out);
+    }
+}
+
 // A struct or enum name in call position used to type-check silently and then
 // die in MIR lowering as "method `next` on receiver of unresolved type".
 // `Name(value)` is the nominal-type constructor (T7); structs have no tuple
