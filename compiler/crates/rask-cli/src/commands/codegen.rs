@@ -274,6 +274,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
+        mutate_self_fns: Some(&typed.mutate_self_fns),
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &all_node_types,
@@ -361,6 +362,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
     let mir_ctx = rask_mir::lower::MirContext {
+        mutate_self_fns: Some(&typed.mutate_self_fns),
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &all_node_types,

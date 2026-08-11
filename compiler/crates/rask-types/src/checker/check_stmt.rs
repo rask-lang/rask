@@ -478,7 +478,7 @@ impl TypeChecker {
 
     /// Validate E5 rules for a top-level expression statement.
     /// Called from check_stmt after type inference.
-    fn check_bare_sync_access(&mut self, expr: &Expr) {
+    pub(super) fn check_bare_sync_access(&mut self, expr: &Expr) {
         // Rule 1: Bare sync access at statement level
         if let Some((ty_name, method, span)) = self.is_sync_access(expr) {
             self.errors.push(TypeError::BareSyncAccess {

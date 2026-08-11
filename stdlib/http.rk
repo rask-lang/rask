@@ -116,7 +116,7 @@ extend Request {
             method: method,
             url: url,
             headers: Headers.new(),
-            body: string.new(),
+            body: "",
         }
     }
 
@@ -375,7 +375,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     let body = if pos < len {
         raw[pos..].to_string()
     } else {
-        string.new()
+        ""
     }
 
     return Request {
@@ -416,24 +416,24 @@ func reason_phrase(status: u16) -> string {
 
 // Format an HTTP/1.1 response into a raw byte string for the wire.
 func format_http_response(resp: Response) -> string {
-    mut out = string.new()
+    mut out = StringBuilder.new()
 
     // Status line
-    out.push_str("HTTP/1.1 ")
-    out.push_str(resp.status.to_string())
-    out.push_str(" ")
-    out.push_str(reason_phrase(resp.status))
-    out.push_str("\r\n")
+    out.push("HTTP/1.1 ")
+    out.push(resp.status.to_string())
+    out.push(" ")
+    out.push(reason_phrase(resp.status))
+    out.push("\r\n")
 
     // Content-Length + end of headers
-    out.push_str("Content-Length: ")
-    out.push_str(resp.body.len().to_string())
-    out.push_str("\r\n\r\n")
+    out.push("Content-Length: ")
+    out.push(resp.body.len().to_string())
+    out.push("\r\n\r\n")
 
     // Body
-    out.push_str(resp.body)
+    out.push(resp.body)
 
-    return out
+    return out.build()
 }
 
 // ─── Socket I/O (C runtime) ─────────────────────────────────────
@@ -500,41 +500,41 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
 
 // Format an HTTP/1.1 request for the wire.
 func format_http_request(req: Request, host: string) -> string {
-    mut out = string.new()
+    mut out = StringBuilder.new()
 
     // Request line
-    out.push_str(req.method.to_string())
-    out.push_str(" ")
-    out.push_str(req.url)
-    out.push_str(" HTTP/1.1\r\n")
+    out.push(req.method.to_string())
+    out.push(" ")
+    out.push(req.url)
+    out.push(" HTTP/1.1\r\n")
 
     // Host header
-    out.push_str("Host: ")
-    out.push_str(host)
-    out.push_str("\r\n")
+    out.push("Host: ")
+    out.push(host)
+    out.push("\r\n")
 
     // User headers
     for (name, value) in req.headers.entries.iter() {
-        out.push_str(name)
-        out.push_str(": ")
-        out.push_str(value)
-        out.push_str("\r\n")
+        out.push(name)
+        out.push(": ")
+        out.push(value)
+        out.push("\r\n")
     }
 
     // Connection: close so the server closes after response
-    out.push_str("Connection: close\r\n")
+    out.push("Connection: close\r\n")
 
     // Content-Length for bodies
     if req.body.len() > 0 {
-        out.push_str("Content-Length: ")
-        out.push_str(req.body.len().to_string())
-        out.push_str("\r\n")
+        out.push("Content-Length: ")
+        out.push(req.body.len().to_string())
+        out.push("\r\n")
     }
 
-    out.push_str("\r\n")
-    out.push_str(req.body)
+    out.push("\r\n")
+    out.push(req.body)
 
-    return out
+    return out.build()
 }
 
 // Parse raw HTTP/1.1 response bytes into a Response.
@@ -607,7 +607,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     let body = if pos < len {
         raw[pos..].to_string()
     } else {
-        string.new()
+        ""
     }
 
     return Response {

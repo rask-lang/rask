@@ -569,13 +569,39 @@ impl TypeChecker {
 
             ExprKind::Block(stmts) => {
                 self.push_scope();
-                for stmt in stmts {
+                // The last statement is the block's value, so when it's an
+                // expression it gets inferred below in value position. Running
+                // check_stmt over it here as well walked it a second time, and
+                // every diagnostic inside it was reported once per walk — twice
+                // for one nesting level, four times for two, since each block's
+                // last statement is itself re-walked by its parent (#695).
+                //
+                // The two walks were never interchangeable: check_stmt sets
+                // in_stmt_expr, which makes a trailing `if` return unit and
+                // leaves its branches unconstrained. Value position is the one
+                // that's right for a block's result, so that's the one kept.
+                let value_stmt_idx = match stmts.last() {
+                    Some(last) if matches!(last.kind, StmtKind::Expr(_)) => Some(stmts.len() - 1),
+                    _ => None,
+                };
+                for (i, stmt) in stmts.iter().enumerate() {
+                    if Some(i) == value_stmt_idx {
+                        break;
+                    }
                     self.check_stmt(stmt);
                     self.solve_constraints();
                 }
                 let result = if let Some(last) = stmts.last() {
                     match &last.kind {
-                        StmtKind::Expr(e) => self.infer_expr(e),
+                        StmtKind::Expr(e) => {
+                            let ty = self.infer_expr(e);
+                            // The rest of what check_stmt would have done for an
+                            // expression statement.
+                            self.check_bare_sync_access(e);
+                            self.clear_expression_borrows();
+                            self.solve_constraints();
+                            ty
+                        }
                         StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
                             Type::Never
                         }

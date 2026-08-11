@@ -41,6 +41,11 @@ pub(crate) struct ViewCreation {
     pub(crate) root: String,
     /// Path as written, for diagnostics (`self.url`).
     pub(crate) display: String,
+    /// The whole slicing expression as written (`self.url.trim()`), so a
+    /// message can quote the user's code rather than a generic slice.
+    pub(crate) slice_expr: String,
+    /// Set for `split`/`lines`/`chars` — a sequence of views, not one.
+    pub(crate) yields_sequence: bool,
     pub(crate) mode: BorrowMode,
     pub(crate) viewed_id: NodeId,
 }
@@ -51,6 +56,8 @@ pub(crate) struct ViewCreation {
 pub(crate) struct PendingViewBinding {
     pub(crate) binding: String,
     pub(crate) display: String,
+    pub(crate) slice_expr: String,
+    pub(crate) yields_sequence: bool,
     pub(crate) source_ty: Type,
     pub(crate) slice_span: Span,
     pub(crate) store_span: Span,
@@ -303,23 +310,81 @@ impl TypeChecker {
         }
     }
 
+    /// Render the slicing expression the way the user wrote it, so the message
+    /// can quote their code instead of a generic `line[i..j]`. Only the shapes
+    /// `detect_view_creation` recognises need to render; anything it can't
+    /// reproduce faithfully falls back to the source path.
+    fn render_slice_expr(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Index { object, index } => {
+                let base = Self::view_source_path(object)?;
+                match Self::render_range(index) {
+                    Some(range) => Some(format!("{}[{}]", base, range)),
+                    None => Some(format!("{}[..]", base)),
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let base = Self::view_source_path(object)?;
+                // Only render arguments that round-trip exactly; a view method
+                // with a complex argument keeps the bare `()` rather than
+                // printing something the user didn't type.
+                let rendered: Option<Vec<String>> =
+                    args.iter().map(|a| Self::render_simple(&a.expr)).collect();
+                match rendered {
+                    Some(parts) => Some(format!("{}.{}({})", base, method, parts.join(", "))),
+                    None => Some(format!("{}.{}(…)", base, method)),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// `0..4`, `start..`, `..n` — only when both ends render exactly.
+    fn render_range(index: &Expr) -> Option<String> {
+        let ExprKind::Range { start, end, .. } = &index.kind else { return None };
+        let lo = match start {
+            Some(e) => Self::render_simple(e)?,
+            None => String::new(),
+        };
+        let hi = match end {
+            Some(e) => Self::render_simple(e)?,
+            None => String::new(),
+        };
+        Some(format!("{}..{}", lo, hi))
+    }
+
+    /// Literals and plain paths only — the pieces that can be reprinted
+    /// verbatim without a source snippet.
+    fn render_simple(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Int(v, _) => Some(v.to_string()),
+            ExprKind::String(s) => Some(format!("{:?}", s)),
+            ExprKind::Char(c) => Some(format!("'{}'", c)),
+            ExprKind::Ident(_) | ExprKind::Field { .. } => Self::view_source_path(expr),
+            _ => None,
+        }
+    }
+
     pub(super) fn detect_view_creation(expr: &Expr) -> Option<ViewCreation> {
         match &expr.kind {
             // Range indexing: source[start..end]
             ExprKind::Index { object, index } => {
                 if matches!(&index.kind, ExprKind::Range { .. }) {
-                    return Self::viewed(object, BorrowMode::Shared);
+                    return Self::viewed(object, expr, BorrowMode::Shared);
                 }
                 None
             }
             // String view methods (trim, split, etc.)
             ExprKind::MethodCall { object, method, .. } => {
-                let view_methods = [
-                    "trim", "trim_start", "trim_end",
-                    "split", "split_whitespace", "lines", "chars",
-                ];
-                if view_methods.contains(&method.as_str()) {
-                    return Self::viewed(object, BorrowMode::Shared);
+                let single_view = ["trim", "trim_start", "trim_end"];
+                let sequence_view = ["split", "split_whitespace", "lines", "chars"];
+                if single_view.contains(&method.as_str()) {
+                    return Self::viewed(object, expr, BorrowMode::Shared);
+                }
+                if sequence_view.contains(&method.as_str()) {
+                    let mut view = Self::viewed(object, expr, BorrowMode::Shared)?;
+                    view.yields_sequence = true;
+                    return Some(view);
                 }
                 None
             }
@@ -327,10 +392,13 @@ impl TypeChecker {
         }
     }
 
-    fn viewed(object: &Expr, mode: BorrowMode) -> Option<ViewCreation> {
+    fn viewed(object: &Expr, whole: &Expr, mode: BorrowMode) -> Option<ViewCreation> {
         let root = Self::root_ident_name(object)?;
+        let display = Self::view_source_path(object).unwrap_or_else(|| root.clone());
         Some(ViewCreation {
-            display: Self::view_source_path(object).unwrap_or_else(|| root.clone()),
+            slice_expr: Self::render_slice_expr(whole).unwrap_or_else(|| display.clone()),
+            yields_sequence: false,
+            display,
             root,
             mode,
             viewed_id: object.id,
@@ -473,6 +541,8 @@ impl TypeChecker {
                     self.pending_view_bindings.push(PendingViewBinding {
                         binding: binding_name.to_string(),
                         display: view.display,
+                        slice_expr: view.slice_expr,
+                        yields_sequence: view.yields_sequence,
                         source_ty: resolved,
                         slice_span: init.span,
                         store_span: stmt_span,
@@ -483,6 +553,8 @@ impl TypeChecker {
                 if matches!(resolved, Type::String) {
                     self.errors.push(TypeError::StringSliceStored {
                         source_var: view.display,
+                        slice_expr: view.slice_expr,
+                        yields_sequence: view.yields_sequence,
                         view_var: binding_name.to_string(),
                         slice_span: init.span,
                         store_span: stmt_span,
@@ -522,6 +594,8 @@ impl TypeChecker {
             if matches!(resolved, Type::String) {
                 self.errors.push(TypeError::StringSliceStored {
                     source_var: pending.display,
+                    slice_expr: pending.slice_expr,
+                    yields_sequence: pending.yields_sequence,
                     view_var: pending.binding,
                     slice_span: pending.slice_span,
                     store_span: pending.store_span,

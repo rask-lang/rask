@@ -185,9 +185,28 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("`string` has no `{method}` — strings are immutable")]
+    StringIsImmutable {
+        method: String,
+        span: Span,
+    },
+    #[error("`string.new()` doesn't exist — an empty string is `\"\"`")]
+    StringNewRemoved {
+        span: Span,
+    },
     #[error("string slices are temporary — cannot store `{view_var}`")]
     StringSliceStored {
         source_var: String,
+        /// The slicing expression as the user wrote it (`line.trim()`,
+        /// `line[0..4]`). The message quotes this — describing the code in
+        /// terms of a `line[i..j]` the program never contained meant the
+        /// reader had to already know that `trim()` returns a slice (#694).
+        slice_expr: String,
+        /// True for the methods that hand back a sequence of views
+        /// (`split`, `lines`, `chars`) rather than one. `.to_string()` is the
+        /// fix for a single view and nonsense for a sequence, so the message
+        /// can't offer the same one for both.
+        yields_sequence: bool,
         view_var: String,
         slice_span: Span,
         store_span: Span,
@@ -752,6 +771,8 @@ impl TypeError {
             | FrozenContextWrite { .. }
             | MutateConst { .. }
             | MutateWithBinding { .. }
+            | StringIsImmutable { .. }
+            | StringNewRemoved { .. }
             | StringSliceStored { .. }
             | VolatileViewStored { .. }
             | MutateBorrowedSource { .. }

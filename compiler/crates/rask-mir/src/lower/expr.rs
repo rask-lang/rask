@@ -491,6 +491,41 @@ impl<'a> MirLowerer<'a> {
     ///   - a chained scalar-mutate param → its pointer, passed through;
     ///   - anything else (a whole Copy var) → the address of a spilled copy, so the
     ///     write-back is discarded (matching `modify_int(x)`).
+    /// Does `<receiver>.<method>()` resolve to something that writes through
+    /// `self`? Uses the receiver's recorded type to build the qualified name, the
+    /// same way dispatch does below.
+    fn receiver_method_mutates(&self, object: &Expr, method: &str) -> bool {
+        let Some(prefix) = self
+            .ctx
+            .lookup_raw_type(object.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+        else {
+            return false;
+        };
+        let base = prefix.split('<').next().unwrap_or(&prefix);
+        self.mutate_self_methods
+            .contains(&format!("{}_{}", base, method))
+    }
+
+    /// Address of a field/index place, as `base` or `base + offset`. `None` when
+    /// the chain isn't a place this can take the address of.
+    fn place_address(&mut self, place: &Expr) -> Option<MirOperand> {
+        let (base, offset, _, _) = self.lower_place_chain(place)?;
+        if offset == 0 {
+            return Some(MirOperand::Local(base));
+        }
+        let tmp = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tmp,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        Some(MirOperand::Local(tmp))
+    }
+
     fn lower_call_arg(
         &mut self,
         arg: &Expr,
@@ -3248,6 +3283,32 @@ impl<'a> MirLowerer<'a> {
 
         let (obj_op, obj_ty) = self.lower_expr(object)?;
 
+        // A receiver reached through a field or index is a *place*, and lowering
+        // it as an expression loads a copy of the aggregate:
+        //
+        //   _3 = _2.0                 // copy of o.inner
+        //   _4 = Inner_bump(_3)       // mutates the copy
+        //   _5 = _2.0                 // reloads the original — unchanged
+        //
+        // So `o.inner.bump()` and `self.lexer.next_token()` mutated something
+        // nobody could see afterwards (#702). Point the receiver at the field's
+        // real storage instead. An aggregate operand is already a pointer to its
+        // bytes, so this doesn't change the representation — only which bytes.
+        // Safe for read-only methods too, and it saves the copy.
+        // Only for methods that actually write through `self`. Doing it for every
+        // aggregate receiver also rewrote read-only calls like
+        // `.map(|r| r.view.clone())`, and clone's lowering wants the value it was
+        // handed, not an address into someone else's storage.
+        let obj_op = match (&object.kind, &obj_ty) {
+            (
+                ExprKind::Field { .. } | ExprKind::Index { .. },
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. },
+            ) if self.receiver_method_mutates(object, method) => {
+                self.place_address(object).unwrap_or(obj_op)
+            }
+            _ => obj_op,
+        };
+
         if let Some(r) = self.try_lower_raw_ptr_method(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
@@ -3809,7 +3870,46 @@ impl<'a> MirLowerer<'a> {
             _ => Vec::new(),
         };
         let elem_params = self.elem_closure_param_tys(object, &method);
+        // #270 write-back applies to methods too. A `mutate` param that isn't
+        // passed by pointer already (a Copy scalar, or a stdlib handle like
+        // StringBuilder) is registered in the callee as a `ptr`, so the caller
+        // has to hand over an address. Only the plain-call path did that, so
+        // every `mutate` argument to a *method* passed its value into a
+        // parameter typed as a pointer, and the callee dereferenced it:
+        //
+        //   caller:  Word_render(_3, _1)     // _1 is the 8-byte handle
+        //   callee:  Word_render(self, b: ptr) { _2 = _1.0 }
+        //
+        // which read the handle as the address of one. Natively that was a
+        // segfault as soon as any trait rendered into a builder (#693).
+        //
+        // The qualified name isn't resolved until after the arguments are
+        // lowered, so rebuild the candidate keys in the same priority order the
+        // resolution below uses and take the first one with a signature.
+        let callee_smut: Vec<Option<MirType>> = {
+            let mut keys: Vec<String> = Vec::new();
+            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let Some(prefix) = self
+                .ctx
+                .lookup_raw_type(object.id)
+                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let ExprKind::Ident(recv) = &object.kind {
+                keys.push(format!("{}_{}", recv, method));
+            }
+            keys.iter()
+                .find_map(|k| self.func_sigs.get(k))
+                .map(|s| s.scalar_mutate_params.clone())
+                .unwrap_or_default()
+        };
         for (i, arg) in args.iter().enumerate() {
+            // all_args[0] is the receiver, so callee param i+1 is this argument.
+            let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
@@ -3817,7 +3917,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
             } else {
-                self.lower_expr(&arg.expr)?
+                self.lower_call_arg(&arg.expr, smut)?
             };
             all_args.push(op);
             arg_types.push(ty);

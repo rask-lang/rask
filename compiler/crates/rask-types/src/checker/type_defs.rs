@@ -285,6 +285,17 @@ pub struct TypedProgram {
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).
     /// Used by the LSP for hover on identifiers that aren't expression nodes.
     pub span_types: HashMap<(usize, usize, u16), Type>,
+    /// GC9: methods whose `self` is mutable, keyed by the method's span.
+    ///
+    /// `mutate self` and `take self` say so in the signature, but a private
+    /// method may omit the mode and have it inferred from the body — so the
+    /// signature alone doesn't answer the question. This is where the answer
+    /// the checker already worked out gets recorded, so MIR lowering can read it
+    /// rather than re-deriving GC9 with a second walker that could drift.
+    ///
+    /// Keyed by span because FnDecl has no NodeId, and spans survive the clone
+    /// monomorphization makes of each generic instantiation.
+    pub mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
     /// T1: method-call spans that resolved to a channel `Sender.send`. Read by
     /// the ownership checker to transfer ownership of the sent value even when
     /// inference leaves the receiver as a type variable in `node_types`.

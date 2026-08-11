@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One mistake should be reported once (#695).
+//
+// A block's last statement is the block's value, so it was type-checked twice:
+// once by the statement loop, once again in value position to get the block's
+// type. Every diagnostic inside it came out once per walk — and because each
+// block's last statement is re-walked by its parent, the count doubled per
+// nesting level. examples/file_copy reported "2 errors" for one mistake, and
+// examples/markdown_renderer reported 27 for 10.
+//
+// Each mistake below is one error. If the count for this file goes up without
+// a new mistake being added, the double-walk is back.
+
+func compare_mismatch() {
+    let plain = "x"
+    let maybe: string? = "y"
+
+    // ERROR: mismatched types — `string` vs `string?`. Reported once.
+    if plain == maybe {
+        println("eq")
+    }
+}
+
+func nested_once() {
+    let plain = "x"
+    let maybe: string? = "y"
+
+    if true {
+        // ERROR: mismatched types. Two block levels deep — used to be 4 copies.
+        if plain == maybe {
+            println("eq")
+        }
+    }
+}
+
+func in_match_arm() {
+    let plain = "x"
+    let maybe: string? = "y"
+
+    match 1 {
+        1 => {
+            // ERROR: mismatched types. Match arms are value blocks too.
+            if plain == maybe {
+                println("eq")
+            }
+        }
+        _ => {}
+    }
+}
+
+func in_else_branch() {
+    let plain = "x"
+    let maybe: string? = "y"
+
+    if false {
+        println("no")
+    } else {
+        // ERROR: mismatched types.
+        if plain == maybe {
+            println("eq")
+        }
+    }
+}

@@ -328,12 +328,21 @@ impl DataflowAnalysis for IntervalAnalysis {
         // Widening only at loop headers would be more precise but needs a block
         // id threaded through the dataflow trait; deferred to #419.
         // Conservative rule: if a bound is moving, push it to infinity.
+        //
+        // Keeping `old`'s bound when a bound isn't moving is the whole point —
+        // the widened result has to contain `old`, or this isn't widening. The
+        // earlier version kept `new`'s bound there, so a block that narrowed
+        // after having been widened produced a *smaller* interval than the one
+        // it replaced. That counts as a change, the block goes back on the
+        // worklist, it widens to infinity again, narrows again — and the
+        // solver never converges. markdown_renderer hung the compiler
+        // outright (#693).
         let mut result = new.clone();
         for (&local, new_iv) in &new.ranges {
             if let Some(old_iv) = old.ranges.get(&local) {
                 if old_iv != new_iv && !old_iv.is_bottom() {
-                    let lo = if new_iv.lo < old_iv.lo { i64::MIN } else { new_iv.lo };
-                    let hi = if new_iv.hi > old_iv.hi { i64::MAX } else { new_iv.hi };
+                    let lo = if new_iv.lo < old_iv.lo { i64::MIN } else { old_iv.lo };
+                    let hi = if new_iv.hi > old_iv.hi { i64::MAX } else { old_iv.hi };
                     result.set(local, Interval::new(lo, hi));
                 }
             }

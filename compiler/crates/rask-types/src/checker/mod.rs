@@ -157,6 +157,11 @@ pub struct TypeChecker {
     pub(super) accumulate_errors: bool,
     /// Types for binding names and parameters, keyed by (span.start, span.end).
     pub(super) span_types: HashMap<(usize, usize, u16), Type>,
+    /// GC9: methods whose `self` is mutable — declared `mutate self`/`take self`,
+    /// or a private method the inference decided writes through self. Keyed by
+    /// the method's span so lowering can look up the answer instead of working
+    /// the rule out a second time.
+    pub(super) mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
     /// CC1: nesting depth of `using Multitasking { }` blocks in current function.
@@ -231,6 +236,7 @@ impl TypeChecker {
             flat_try_sites: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
+            mutate_self_fns: std::collections::HashSet::new(),
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
             multitasking_depth: 0,
@@ -454,6 +460,7 @@ impl TypeChecker {
             fallback_keeps_shape,
             unsafe_ops,
             span_types,
+            mutate_self_fns: self.mutate_self_fns,
             channel_send_sites: self.channel_send_sites,
             inferred_fn_ret,
         };

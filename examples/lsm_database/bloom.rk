@@ -57,14 +57,14 @@ func bloom_hash(key: string, seed: i32) -> usize {
 }
 
 func encode_bloom(filter: BloomFilter) -> string {
-    mut out = ""
+    mut out = StringBuilder.new()
     mut first = true
     for b in filter.bits {
-        if !first { out.push_str(",") }
+        if !first { out.push(",") }
         first = false
-        out.push_str(if b: "1" else: "0")
+        out.push(if b: "1" else: "0")
     }
-    return out
+    return out.build()
 }
 
 func decode_bloom(data: string) -> BloomFilter or SstError {

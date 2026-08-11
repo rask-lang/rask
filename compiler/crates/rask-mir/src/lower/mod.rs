@@ -194,6 +194,16 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
+    /// GC9: spans of methods whose `self` is mutable, from the type checker.
+    /// A declared `mutate self` is visible on the Param, but an *inferred* one
+    /// isn't — this carries the checker's answer so lowering doesn't re-derive
+    /// the rule. Keyed by (span.start, span.end, file_id).
+    ///
+    /// `None` means no type checker ran, which is only legitimate for the
+    /// synthetic lowering units the unit tests hand-build. A real compile that
+    /// arrives without it is a plumbing bug, and `method_mutates_self` says so
+    /// rather than quietly answering "doesn't mutate".
+    pub mutate_self_fns: Option<&'a std::collections::HashSet<(usize, usize, u16)>>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
@@ -322,6 +332,7 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
+            mutate_self_fns: None,
             enum_layouts: &[],
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
@@ -816,6 +827,9 @@ pub struct MirLowerer<'a> {
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
+    /// Methods that write through `self` — declared `mutate self`/`take self`,
+    /// or private ones that assign into self (GC9 infers the mode there).
+    pub(crate) mutate_self_methods: std::collections::HashSet<String>,
     /// For each ensure cleanup block, the receiver variable name and its
     /// resource_id local. Used for consumption cancellation (C1/C2):
     /// if the receiver was consumed before scope exit, skip the ensure.
@@ -2147,6 +2161,12 @@ impl<'a> MirLowerer<'a> {
         // consumption cancellation. When such a method is called on an
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
+        // Methods that write through `self`. A receiver reached through a field
+        // has to be passed as that field's address for these, or the write lands
+        // in a copy — see `place_address` in lower/expr.rs (#702). Declared
+        // `mutate self` counts, and so does a private method that assigns into
+        // self, because type.gradual/GC9 infers the mode from the body there.
+        let mut mutate_self_methods = std::collections::HashSet::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Impl(impl_decl) => {
@@ -2155,6 +2175,10 @@ impl<'a> MirLowerer<'a> {
                             let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
                             take_self_methods.insert(qualified);
                         }
+                        if method_mutates_self(m, ctx) {
+                            mutate_self_methods
+                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
+                        }
                     }
                 }
                 DeclKind::Fn(f) => {
@@ -2162,6 +2186,9 @@ impl<'a> MirLowerer<'a> {
                     // named "Type_method" with a `take self` first parameter.
                     if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                         take_self_methods.insert(f.name.clone());
+                    }
+                    if method_mutates_self(f, ctx) {
+                        mutate_self_methods.insert(f.name.clone());
                     }
                 }
                 _ => {}
@@ -2192,6 +2219,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_taken: None,
             ensure_stack: Vec::new(),
             take_self_methods,
+            mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
             const_slots: HashMap::new(),
@@ -3672,6 +3700,7 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
         RetCategory::I64 => MirType::I64,
         RetCategory::F64 => MirType::F64,
         RetCategory::String => MirType::String,
+        RetCategory::Char => MirType::Char,
         RetCategory::Ptr => MirType::Ptr,
         RetCategory::Option(inner) => MirType::Option(Box::new(ret_category_to_mir_type(inner))),
         RetCategory::Result { ok, err } => MirType::Result {
@@ -3713,6 +3742,37 @@ pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
     let open = s.find('<')?;
     let inner = s[open + 1..].strip_suffix('>')?;
     Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
+}
+
+/// True if this method writes through `self`.
+///
+/// `mutate self` and `take self` are visible right here on the parameter. An
+/// *inferred* mode is not: type.gradual/GC9 lets a private method omit it and
+/// have the compiler decide from the body, and that decision happens in the type
+/// checker. It records the spans it decided for, so this reads the answer rather
+/// than walking the body again — one implementation of GC9, not two that drift.
+fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
+    let Some(p) = f.params.first() else { return false };
+    if p.name != "self" {
+        return false;
+    }
+    // Written in the signature — no need to ask anyone.
+    if p.is_mutate || p.is_take {
+        return true;
+    }
+    match ctx.mutate_self_fns {
+        Some(set) => set.contains(&(f.span.start, f.span.end, f.span.file_id)),
+        // Same test for a synthetic unit the rest of lowering uses: no node
+        // types means nobody ran the checker, so there was no GC9 decision to
+        // record and "doesn't mutate" is the honest answer.
+        None if ctx.node_types.is_empty() => false,
+        None => panic!(
+            "lowering `{}` needs the GC9 self-mode decision but MirContext was \
+             built without `mutate_self_fns`. Only the checker can answer this — \
+             pass `Some(&typed.mutate_self_fns)`.",
+            f.name
+        ),
+    }
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {
@@ -4708,6 +4768,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
@@ -4775,6 +4838,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
@@ -4848,6 +4914,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,

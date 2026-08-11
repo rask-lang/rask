@@ -9,8 +9,9 @@
 // small string optimization for <=15 bytes (S8). No mutation methods (S7).
 
 extend string {
-    /// Create a new empty string.
-    public func new() -> string { }
+    // No `new()`. An empty string is written `""`, and SD5 wants one spelling
+    // for one thing. It only existed to open `mut s = string.new()` followed by
+    // pushes — the Rust `String` habit S7 rules out.
 
     /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
     @unimplemented
@@ -184,10 +185,13 @@ extend string {
 //
 // UTF-8 validity is maintained by construction: push() takes string,
 // push_char() takes char. No raw byte entry point.
+//
+// Field-less on purpose: the buffer lives in the C runtime and this is
+// just the handle to it. A field here makes MIR treat the builder as an
+// aggregate at function boundaries while call sites still pass the
+// handle, so `mutate b: StringBuilder` crashed natively.
 
-public struct StringBuilder {
-    buf: Vec<u8>
-}
+public struct StringBuilder { }
 
 extend StringBuilder {
     /// Create an empty builder.

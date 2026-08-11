@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Arm order with guards, char literals, and more than one catch-all.
+//
+// Two bugs, both native-only:
+//
+// 1. Char literal patterns weren't turned into switch cases. They fell through
+//    to the branch that uses the arm's *index*, so `match c { '&' => … }`
+//    compared the code point against 0, 1, 2 and no arm ever matched. `c == '&'`
+//    worked fine, which is how it stayed hidden.
+//
+// 2. Every catch-all arm overwrote the switch default, so the last one won.
+//    A guarded `_` followed by a plain `_` meant the guarded arm was
+//    unreachable — every value took the fallback (#675).
+
+func classify(c: char) -> string {
+    match c {
+        '+' => return "plus"
+        '-' => return "minus"
+        _ if c.is_digit() => return "digit"
+        _ if c.is_whitespace() => return "space"
+        _ => return "other"
+    }
+}
+
+func first_match(n: i32) -> string {
+    match n {
+        1 => return "one"
+        _ if n > 100 => return "big"
+        _ => return "small"
+    }
+}
+
+// A guarded catch-all as the *last* arm. Its fail branch used to target the
+// switch default, which is this same arm — a block branching at itself.
+// Only the cases that actually match are asserted: the two backends disagree
+// about what a non-exhaustive match does at runtime (the interpreter panics,
+// native falls through) and that's a separate divergence.
+func guard_last(n: i32) -> string {
+    match n {
+        0 => return "zero"
+        _ if n > 10 => return "big"
+        _ => return "neither"
+    }
+}
+
+test "char literal arms match their code points" {
+    assert classify('+') == "plus"
+    assert classify('-') == "minus"
+}
+
+test "a guarded catch-all before a plain one still runs" {
+    assert classify('7') == "digit"
+    assert classify(' ') == "space"
+    assert classify('x') == "other"
+}
+
+test "the first catch-all wins, later arms are the fallback" {
+    assert first_match(1) == "one"
+    assert first_match(500) == "big"
+    assert first_match(5) == "small"
+}
+
+test "a guarded arm in last position doesn't branch at itself" {
+    assert guard_last(0) == "zero"
+    assert guard_last(50) == "big"
+    assert guard_last(3) == "neither"
+}

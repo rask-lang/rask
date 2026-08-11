@@ -221,6 +221,7 @@ fn try_eval_comptime_mir(
 
     let nominal_underlying = std::collections::HashMap::new();
     let mir_ctx = rask_mir::lower::MirContext {
+        mutate_self_fns: Some(&typed.mutate_self_fns),
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &typed.node_types,

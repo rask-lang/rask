@@ -708,14 +708,51 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a shared read lock permits other readers at the same time (conc.sync/R1) — writing back through it would race them")
             }
 
-            StringSliceStored { source_var, view_var, slice_span, store_span } => {
-                Diagnostic::error(format!("string slice `{}` cannot be stored", view_var))
+            StringIsImmutable { method, span } => {
+                // `push` on a builder takes a string, `push_char` takes a char —
+                // point at whichever matches what they were reaching for.
+                let builder_call = match method.as_str() {
+                    "push_char" | "push_byte" => "b.push_char(c)",
+                    _ => "b.push(s)",
+                };
+                Diagnostic::error(format!("`string` has no `{}` — strings are immutable", method))
+                    .with_code("E0331")
+                    .with_primary(*span, "a string can't be modified in place".to_string())
+                    .with_help("build the text in a StringBuilder, then call .build() for the finished string")
+                    .with_fix(format!("mut b = StringBuilder.new()  …  {}  …  let s = b.build()", builder_call))
+                    .with_why("a string is an immutable 16-byte value and every copy shares one buffer, so an in-place write would change copies you never touched. A StringBuilder owns its buffer alone, and build() hands it over without copying [std.strings/S7]")
+            }
+            StringNewRemoved { span } => {
+                Diagnostic::error("`string.new()` doesn't exist — an empty string is `\"\"`")
+                    .with_code("E0331")
+                    .with_primary(*span, "no such constructor".to_string())
+                    .with_help("if this was the start of a string you meant to append to, use a StringBuilder — `string` can't be mutated")
+                    .with_fix("let s = \"\"".to_string())
+                    .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
+            }
+            StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
+                let d = Diagnostic::error(format!(
+                    "`{}` gives {} into `{}`, not {}",
+                    slice_expr,
+                    if *yields_sequence { "views" } else { "a view" },
+                    source_var,
+                    if *yields_sequence { "new strings" } else { "a new string" }
+                ))
                     .with_code("E0324")
-                    .with_primary(*slice_span, format!("`{}[i..j]` is a temporary view", source_var))
-                    .with_secondary(*store_span, format!("`{}` tries to hold the slice across a statement boundary", view_var))
-                    .with_help("use .to_string() to copy the slice, or use string_view indices")
-                    .with_fix(format!("let {} = {}[i..j].to_string()", view_var, source_var))
-                    .with_why("string slices are temporary views into the string's buffer — storing them would create a dangling reference when the source is freed")
+                    .with_primary(*slice_span, format!(
+                        "{} can't outlive the statement",
+                        if *yields_sequence { "these views" } else { "this view" }
+                    ))
+                    .with_secondary(*store_span, format!("`{}` would hold {} past the end of this line", view_var, if *yields_sequence { "them" } else { "it" }))
+                    .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes");
+                if *yields_sequence {
+                    // `.to_string()` on a sequence of views is not a fix, so
+                    // don't offer one — loop over it and copy each piece.
+                    d.with_help("loop over it in place, or copy each piece out with .to_string() as you go")
+                } else {
+                    d.with_help("add .to_string() to copy the bytes out, or keep the byte indices and re-slice where you need them")
+                        .with_fix(format!("let {} = {}.to_string()", view_var, slice_expr))
+                }
             }
 
             VolatileViewStored { source_var, view_var, source_span, store_span } => {

@@ -77,22 +77,23 @@ func write_sstable(
         blocks.push(block_entries)
     }
 
-    mut out = "BLOOM:{encode_bloom(bloom)}\n"
+    mut out = StringBuilder.new()
+    out.push("BLOOM:{encode_bloom(bloom)}\n")
 
     for idx_entry in index {
-        out.push_str("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
+        out.push("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
     }
 
-    out.push_str("---\n")
+    out.push("---\n")
 
     for block in blocks {
         for kv in block {
-            out.push_str(encode_kv(kv))
+            out.push(encode_kv(kv))
         }
-        out.push_str("===\n")
+        out.push("===\n")
     }
 
-    fs.write_text(path, out)
+    fs.write_text(path, out.build())
         catch e => return SstError.WriteFailure("cannot write {path}: {e}")
 
     let min_key = entries[0].key
