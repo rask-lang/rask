@@ -7,6 +7,8 @@
 
 Determinism is a property of an execution mode, not a tax on the language. Production builds run at full speed with no determinism overhead. **Sim mode** (`rask test --sim`) makes execution a pure function of a seed: same binary, same seed, same recorded inputs → identical execution, including failures.
 
+This file is the promise. The machine that keeps it — scheduler, virtual clock, fault vocabulary, replay output — is [sim.md](sim.md).
+
 This is the foundation for commitment 3 of [NORTH_STAR.md](../NORTH_STAR.md): no unreproducible failures. Prior art: FoundationDB's simulation, TigerBeetle's VOPR. Rask's design makes this cheaper than it was for them — I/O is stdlib-mediated (no function coloring means every syscall goes through the runtime), tasks run on a runtime-owned scheduler, and user code cannot observe addresses (no storable references).
 
 ## The promise
@@ -32,7 +34,7 @@ Every source is listed here. A source not listed is a spec bug.
 | **D8: Pool/handle allocation** | Slot and generation assignment | Deterministic function of the operation sequence. Handles are indices, never addresses |
 | **D9: I/O** | Network, disk, file system | Sim substitutes simulated implementations behind the same stdlib surface. Fault injection (partitions, slow disks, torn writes) is driven by the seed |
 | **D10: External inputs** | Env, args, stdin, wall-clock start | Fixed or recorded as part of the sim scenario |
-| **D11: Addresses** | Pointer values leaking into logic | Impossible by construction outside `unsafe` — no storable references, no address-of. Nothing to virtualize |
+| **D11: Addresses** | Pointer values leaking into logic | Impossible by construction outside `unsafe` — no storable references, no address-of. Nothing to virtualize. Holds for Rask code only: linked C can hash or sort by a pointer freely, so sim gives the C side a fixed-base allocator (`sim/B8`) |
 | **D12: Floats** | FP evaluation | Deterministic within one binary on one platform (fixed evaluation, no contraction variance between runs). Cross-platform bit-exactness is **out of scope** — that's Raido's domain (32.32 fixed point) |
 | **D13: OS threads** | `Thread.spawn`, true parallelism | Outside the contract. Sim mode rejects raw thread spawns; `ThreadPool` work is scheduled deterministically like tasks. Production parallelism is nondeterministic by nature — the promise is that sim explores the interleavings, not that production replays them |
 | **D14: FFI / unsafe** | C calls, raw pointers | Outside the contract. The capability metadata (`struct.build`) already tracks which code reaches `ffi`/`unsafe`; sim mode reports or rejects it. Recorded shims are future work |
