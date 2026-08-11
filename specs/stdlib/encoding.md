@@ -280,10 +280,11 @@ func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonErro
     }
 }
 
-// Top-level entry point
-public func encode<T: Encode>(value: T) -> string or JsonError {
+// Top-level entry point. Infallible: E12 requires every serialized field to be
+// Encode, so encode_value can't hit an unsupported type at runtime.
+public func encode<T: Encode>(value: T) -> string {
     mut w = JsonWriter.new()
-    try encode_value(value, mutate w)
+    encode_value(value, mutate w)!
     return w.build()
 }
 ```
