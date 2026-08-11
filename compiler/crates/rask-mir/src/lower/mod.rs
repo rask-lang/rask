@@ -4768,6 +4768,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
@@ -4835,6 +4838,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
@@ -4908,6 +4914,9 @@ mod tests {
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let ctx = MirContext {
+            // No checker in a hand-built lowering unit, so there's no GC9
+            // decision to read. Stated, not defaulted.
+            mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,

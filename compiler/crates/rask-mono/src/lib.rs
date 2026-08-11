@@ -530,6 +530,7 @@ mod tests {
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
+            mutate_self_fns: std::collections::HashSet::new(),
             resolutions: std::collections::HashMap::new(),
             types: rask_types::TypeTable::new(),
             node_types: std::collections::HashMap::new(),
