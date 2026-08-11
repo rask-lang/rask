@@ -20,12 +20,14 @@ If rules are enforced mechanically, two parties don't need a third party to trus
 
 **[GDL](gdl/)** — A schema for describing spatial environments. Regions, entities, things you can interact with. The content format that travels over the protocol.
 
+**[Urd](urd/)** — A state-history engine for applications. Git for live application state: your app's state becomes a deterministic machine over an op log — so sync, undo, branching, replay, and audit are one primitive instead of five features. The piece of the stack a developer can adopt in an afternoon.
+
 **[Midgard](midgard/)** — A virtual world that puts it all together. Independent servers, each running their own world. A sword can't be copied. A currency can't be inflated. A character can travel between servers and bring their things — because both sides can verify everything checks out. It's the most intuitive example, but the model isn't about games.
 
 ---
 
 ## How they connect
 
-Raido makes verification possible. Leden controls who can do what. Allgard defines the rules for cooperation. GDL describes the content. Midgard shows it working.
+Raido makes verification possible. Leden controls who can do what. Allgard defines the rules for cooperation. GDL describes the content. Midgard shows it working. Urd packages the deterministic core as an everyday developer tool — the on-ramp to the rest.
 
 The point isn't any single piece. It's that deterministic computation, capability-based access, and conservation laws together give you decentralised cooperation — without blockchains, without central authorities, without having to trust anyone.
