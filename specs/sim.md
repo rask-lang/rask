@@ -62,16 +62,17 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | Rule | Description |
 |------|-------------|
 | **F1: Always on** | Adversarial scheduling (S2), short reads/writes, and I/O latency (C4). These are legal behavior, not faults — code that breaks on them was already broken |
-| **F2: Opt-in** | `io_error`, `disconnect`, `clock_jump`. A test enables them with `@sim(faults: [io_error])`. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
-| **F3: Sim-only tests** | `@sim` also marks the test sim-only: a normal `rask test` run skips it and says why |
-| **F4: Fixed rates** | Injection probability per class is fixed and documented, not per-test tunable. One knob (the seed), not two |
+| **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
+| **F3: Sim-only tests** | Outside sim, `sim.require` skips the rest of the test and says why, reusing `std.testing/T12`. A fault test never passes vacuously under a plain `rask test` |
+| **F4: Seeded rates** | The seed picks the injection rate, not just the schedule. Each seed draws its own intensity, so a sweep explores calm runs and storms without a second knob |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
 
 <!-- test: skip -->
 ```rask
-@sim(faults: [io_error, disconnect])
 test "replica catches up after the leader drops" {
+    sim.require(faults: [Fault.IoError, Fault.Disconnect])
+
     using Multitasking {
         // ordinary code — nothing here knows it is being simulated
     }
@@ -85,7 +86,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | Rule | Description |
 |------|-------------|
 | **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`) |
-| **B2: Escaping C is marked** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract. The test still runs; its result is marked `unsimulated: ffi` naming the symbol, and `--sim-strict` turns the mark into a refusal (`determinism/D14`) |
+| **B2: Escaping C is refused** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract, so the test does not run under sim. The refusal names the symbol. `--sim-permissive` runs it anyway, marked `unsimulated: ffi` (`determinism/D14`) |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
 | **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
 | **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
@@ -160,8 +161,9 @@ WHY: Falling through to the real call would make the run unreplayable without
 | Busy-wait on `Instant.elapsed()` | Terminates; the step tick advances the clock | C3 |
 | Test spawns and never joins | `TaskHandle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
-| `@sim` test under plain `rask test` | Skipped, reported as sim-only | F3 |
-| Test reaches `unsafe` and passes | Passes, marked `unsimulated: ffi` | B2 |
+| `sim.require` test under plain `rask test` | Skipped at that line, reported as sim-only | F3 |
+| Test reaches sealed C (a hash, a decompress) | Runs, no mark — already deterministic | B6 |
+| Test reaches `pthread_create` through C | Refused, symbol named | B2 |
 | Test writes a file, later test reads it | Second test does not see it — the overlay is per-test | B5 |
 | `--seeds 1000` with a test that fails on all of them | One replay line per distinct failure signature, not 1000 | R3 |
 
@@ -195,7 +197,15 @@ The cost is that virtual duration measures scheduling steps and clock reads, not
 
 **F1 vs F2 (on vs opt-in):** Short reads and adversarial ordering are things a correct program already handles, so turning them on by default costs nothing but finds real bugs the first time someone runs `--sim` over an existing suite. Injected I/O errors are different: turning them on globally would fail every test that opens a file, and a mode that cries wolf on first contact does not get run twice.
 
-**F4 (fixed rates):** A tunable failure rate is a second dial that changes what a seed means. One seed, one execution — keep it.
+**F3 (`sim.require`, not an attribute):** An attribute would work and was drafted first. It doesn't earn the grammar: `std.testing/T12` already has `skip("reason")`, which is exactly the "this test doesn't apply here" mechanism, and a call reads as the precondition it is. The reader learns the same fact either way, so the version that costs no syntax wins (`NORTH_STAR` commitment 5). The one thing lost is static visibility — the runner can't tell a test is sim-only without starting it — and that costs nothing, because the call aborts on the first line.
+
+**F4 (seeded rates):** A fixed rate would mean a thousand-seed sweep explores a thousand schedules at exactly one intensity — never the calm run where one late failure matters, never the storm where everything fails at once. Drawing the rate from the seed explores severity and ordering together and still leaves one knob, which was the point. Rejected: a per-test rate parameter, which is a second dial that changes what a seed means.
+
+The distribution the rate is drawn from is still unset. That number wants real tests behind it.
+
+**B2 (refuse, not report):** A mark next to a passing result is only as good as the reader, and the failure mode is nasty and delayed: someone pastes a replay line that doesn't replay and loses an afternoon before suspecting the C. Sim's entire value is that a seed reproduces a failure, so a quiet path where the seed doesn't reproduce it costs more than the coverage it saves.
+
+Refusing was the expensive option when FFI was one undifferentiated bucket — it would have knocked out every test that touches a hashing library. The tiering below is what made it cheap: refusal now bites only the genuinely uncontainable cases, and `--sim-permissive` is there for the person who has measured that their `pthread_create` doesn't matter.
 
 **B2/B6/B7 (three tiers of C):** The first draft put all of FFI outside the contract, which was lazy. You don't simulate the C — you don't have to. Machine code that only computes is already a pure function of its inputs; zlib decompresses the same buffer to the same bytes on every run of every seed. What breaks determinism is the small set of things C reaches *for*, and every one of them is a named symbol resolved at link time. Sim is already a link-time swap, so the interposition point is the one that already exists.
 
@@ -231,13 +241,16 @@ The consequence is that sim is a sealed world: there is no way to read the machi
 
 **B5 (read-through filesystem):** An empty simulated filesystem is purer and would break every test with a fixture directory. Reads are a recorded external input; treating the real tree as read-only input keeps existing tests working while guaranteeing sim never writes anything.
 
+### Target
+
+Sim is built on the native runtime. Its three interposition points — scheduler, clock, reactor — are the ones `conc.runtime` already specifies, so sim replaces components that have a designed shape rather than inventing parallel ones, and what it finds is what ships.
+
+The cost is order: sim lands after Phase B fibers. The interpreter would have been quicker to make deterministic, since stepping evaluation makes "pick a random runnable task" nearly free, but it spawns OS threads today and so has no seedable scheduler either — and a green scheduler built there would be one nobody ships, verifying orderings the compiled program may not have.
+
 ### Open questions
 
-These are design calls, not implementation gaps:
-
-- **B2 strictness.** Report-and-continue is the default above; the alternative is refusing escaping-C tests outright and making `--sim-permissive` the opt-out. Report-first assumes people will read the mark. Note the tiering (B6, B7) shrinks this to the genuinely-uncontainable cases, which makes refusing cheaper than it looked when FFI was one undifferentiated bucket.
-- **Which backend first.** The sim runtime is described against the native runtime, where the interposition points (scheduler, reactor, timer wheel) already exist as design. The interpreter would be quicker to make deterministic but is not what anyone ships.
-- **Fault rates (F4).** The actual numbers are unset. They want to come from running real tests, not from taste.
+- **Fault rate distribution (F4).** The seed picks the rate; what it picks from is unset. That number wants real tests behind it, not taste.
+- **Sealed-set membership (B6).** Which libc symbols count as pure is a list, and lists are where this kind of design rots. `memcpy` is obvious, `qsort` takes a comparator, `strerror` reads a locale. Needs writing down properly, once, with a rule for adding to it.
 
 ### See Also
 
