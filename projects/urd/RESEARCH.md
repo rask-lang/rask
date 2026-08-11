@@ -52,3 +52,4 @@ Decisions the survey settles:
 - **Migration op ergonomics**: what does writing a state migration actually feel like? Needs a worked example before the format freezes.
 - **Snapshot cadence and pruning policy** — mechanical, but affects the shallow-mode trust model.
 - **Partial replication** (a client that syncs a subtree): deliberately deferred; noting that Leden object capabilities are the likely shape when it comes.
+- **State copy cost**: mutators are state-in/state-out ([EXAMPLE.md](EXAMPLE.md)), but naive copy-per-op is quadratic on large states. The VM arena needs in-place mutation with snapshot-on-demand, or structural sharing. Biggest open implementation risk.
