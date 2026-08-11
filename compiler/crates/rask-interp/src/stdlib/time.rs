@@ -122,14 +122,6 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "duration_since" => {
-                let other_instant = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_instant()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                let duration = instant.duration_since(other_instant);
-                Ok(Value::Duration(duration.as_nanos() as u64))
-            }
             "elapsed" => {
                 let duration = instant.elapsed();
                 Ok(Value::Duration(duration.as_nanos() as u64))
@@ -249,7 +241,7 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 Ok(Value::Duration(n))
             }
-            ("Duration", "from_secs_f64") => {
+            ("Duration", "seconds_f64") => {
                 let secs = args.first()
                     .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
                     .as_f64()

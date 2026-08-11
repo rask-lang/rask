@@ -148,7 +148,7 @@ func is_hr_line(line: string) -> bool {
 }
 
 func ordered_list_start(line: string) -> i32? {
-    let dot_pos = line.find(".") ?? return none
+    let dot_pos = line.index_of(".") ?? return none
     if dot_pos == 0 {
         return none
     }
@@ -282,7 +282,7 @@ func parse_references(input: string) -> Map<string, string> {
             continue
         }
 
-        let close = trimmed.find("]:") ?? continue
+        let close = trimmed.index_of("]:") ?? continue
         let id = trimmed[1..close].to_string().to_lowercase()
         if id.is_empty() {
             continue
@@ -304,7 +304,7 @@ func is_reference_def(line: string) -> bool {
     if !trimmed.starts_with("[") {
         return false
     }
-    let close = trimmed.find("]:") ?? return false
+    let close = trimmed.index_of("]:") ?? return false
     return true
 }
 
@@ -591,7 +591,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
 
                 if ordered_list_start(it)? {
-                    let dot_pos = it.find(".") ?? continue
+                    let dot_pos = it.index_of(".") ?? continue
                     let item_text = it[dot_pos + 2..].to_string()
                     let item_inlines = try parse_inline(item_text)
                     items.push(ListItem {

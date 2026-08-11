@@ -52,6 +52,11 @@ extend Vec<T> {
     /// Remove and return the element at the given index.
     public func remove(mutate self, index: i64) -> T { }
 
+    /// Remove and return the element at the given index by swapping in the
+    /// last element — O(1), does not preserve order.
+    @unimplemented
+    public func remove_unordered(mutate self, index: i64) -> T { }
+
     /// Reserve space for at least `additional` more elements. Panics on OOM.
     @unimplemented
     public func reserve(mutate self, additional: usize) { }
@@ -94,17 +99,14 @@ extend Vec<T> {
     /// Take the first n elements.
     public func take(self, n: usize) -> Vec<T> { }
 
-    /// Keep only elements where f returns true.
-    @unimplemented
-    public func retain(mutate self, f: func(T) -> bool) { }
-
-    /// Remove elements where f returns true, return count removed.
+    /// Remove elements where f returns true, return count removed. No `retain`
+    /// — invert the predicate on this instead.
     @unimplemented
     public func remove_where(mutate self, f: func(T) -> bool) -> usize { }
 
     /// Remove and return elements where f returns true.
     @unimplemented
-    public func drain_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
+    public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
 
     /// True if the vector contains the given value.
     public func contains(self, value: T) -> bool { }
@@ -124,8 +126,9 @@ extend Vec<T> {
     /// Sort by a key extracted from each element.
     public func sort_by_key(mutate self, f: func(T) -> K) { }
 
-    /// Remove consecutive duplicate elements.
-    public func dedup(mutate self) { }
+    /// Remove consecutive duplicate elements. Only runs of equal neighbors
+    /// collapse — sort first for full dedup.
+    public func remove_adjacent_duplicates(mutate self) { }
 
     /// Keep only elements where f returns true.
     public func filter(self, f: func(T) -> bool) -> Vec<T> { }
@@ -253,11 +256,13 @@ extend Map<K, V> {
     /// Modify value for key through a closure.
     public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> { }
 
-    /// Insert default if key absent, return nothing. Panics on alloc failure.
-    public func ensure(mutate self, key: K, f: func() -> V) { }
+    /// Insert default if key absent, no-op if present. Panics on alloc failure.
+    /// Named for what it does — `ensure` is the cleanup keyword.
+    public func insert_if_missing(mutate self, key: K, f: func() -> V) { }
 
-    /// Insert default if key absent, then modify the value. Panics on alloc failure.
-    public func ensure_modify(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R { }
+    /// Insert default if key absent, then modify the value. One hash lookup.
+    /// Panics on alloc failure.
+    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R { }
 
     /// Iterate over (key, value) pairs.
     public func iter(self) -> Iterator<(K, V)> { }

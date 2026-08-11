@@ -213,7 +213,7 @@ impl Interpreter {
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
-            "canonicalize" => {
+            "absolute_path" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::canonicalize(&path) {
                     Ok(p) => Ok(Value::Enum {
@@ -257,7 +257,7 @@ impl Interpreter {
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
-            "delete" | "remove" => {
+            "remove_file" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::remove_file(&path) {
                     Ok(()) => Ok(Value::Enum {
@@ -322,13 +322,35 @@ impl Interpreter {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
                 match std::fs::copy(&from, &to) {
-                    Ok(bytes) => Ok(Value::Enum {
+                    Ok(_bytes) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::int(bytes as i64)],
+                        fields: vec![Value::Unit],
                         variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(io_error_result(&e)),
+                }
+            }
+            "current_dir" => {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                Ok(super::path::make_path_value(&cwd))
+            }
+            "home_dir" => {
+                match std::env::var("HOME") {
+                    Ok(home) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![super::path::make_path_value(&home)],
+                        variant_index: 0, origin: None,
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 0, origin: None,
+                    }),
                 }
             }
             "list_dir" => {
@@ -360,7 +382,7 @@ impl Interpreter {
         }
     }
 
-    /// Handle File instance methods (close, read_all, read_text, write, write_line).
+    /// Handle File instance methods (close, read_bytes, read_text, write, write_line).
     pub(crate) fn call_file_method(
         &mut self,
         file: &Arc<Mutex<Option<std::fs::File>>>,
@@ -380,7 +402,7 @@ impl Interpreter {
                 let _ = file.lock().unwrap().take();
                 Ok(Value::Unit)
             }
-            "read_all" | "read_text" => {
+            "read_text" => {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {
@@ -395,6 +417,31 @@ impl Interpreter {
                         variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(io_error_result(&e)),
+                }
+            }
+            "read_bytes" => {
+                use std::io::Read;
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read from".to_string() }
+                })?;
+                let mut content = Vec::new();
+                match f.read_to_end(&mut content) {
+                    Ok(_) => {
+                        let bytes: Vec<Value> = content.into_iter().map(|b| Value::int(b as i64)).collect();
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Vec(Arc::new(Mutex::new(bytes)))],
+                            variant_index: 0, origin: None,
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0, origin: None,
+                    }),
                 }
             }
             "write" => {
@@ -412,6 +459,59 @@ impl Interpreter {
                         variant_index: 0, origin: None,
                     }),
                     Err(e) => Ok(io_error_result(&e)),
+                }
+            }
+            "write_text" => {
+                use std::io::Write;
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
+                })?;
+                let content = self.expect_string(&args, 0)?;
+                match f.write_all(content.as_bytes()) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                        variant_index: 0, origin: None,
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0, origin: None,
+                    }),
+                }
+            }
+            "write_bytes" => {
+                use std::io::Write;
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
+                })?;
+                let bytes: Vec<u8> = match args.first() {
+                    Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
+                        Value::Int(n, _) => *n as u8,
+                        _ => 0,
+                    }).collect(),
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "File.write_bytes: expected Vec<u8>, got {}",
+                        args.first().map(|v| v.type_name()).unwrap_or("missing")
+                    ))),
+                };
+                match f.write_all(&bytes) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                        variant_index: 0, origin: None,
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0, origin: None,
+                    }),
                 }
             }
             "write_line" => {

@@ -144,7 +144,7 @@ extend SsTable {
         for row in self.rows {
             // Absence-to-error conversion: a '='-less row has no payload to
             // bind, so the exit names the error itself (the old ok_or shape).
-            let eq = row.find("=") ?? return StoreError.Corrupt(self.path, row)
+            let eq = row.index_of("=") ?? return StoreError.Corrupt(self.path, row)
             if row[..eq] == key { return row[eq + 1..].to_string() }
         }
         return none

@@ -15,6 +15,15 @@ use rask_ast::{
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
+/// A bare single-letter name (`T`, `E`, ...) — Rask's convention for an
+/// uninstantiated generic type parameter, same heuristic reachability uses
+/// to tell "still a placeholder" from "a real single-letter type name" (there
+/// are none of the latter in practice).
+fn is_bare_type_param(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+}
+
 /// A range with its ctrl.ranges adapters already peeled off.
 struct AdaptedRange<'e> {
     start: Option<&'e Expr>,
@@ -285,84 +294,16 @@ impl<'a> MirLowerer<'a> {
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
                     returned_ty = Some(op_ty.clone());
-                    // Auto-wrap a non-Option value into Some(...) when the
-                    // function returns Option<T>. The user-level shorthand
-                    // `func -> User? { return User { ... } }` relies on this;
-                    // without an explicit wrap, codegen returns just the T
-                    // pointer and the caller's Option slot ends up with
-                    // garbage in the tag/payload positions (#274).
+                    // Wrap a bare value into whatever the return type asks for:
+                    // `func -> User? { return User { ... } }` needs one layer,
+                    // `func -> T? or E { return t }` needs two (ER9). Returned
+                    // unwrapped, the caller reads the value's first word as the
+                    // tag (#274, #383).
                     let ret_ty = self.builder.ret_ty().clone();
-                    let needs_wrap = matches!(&ret_ty, MirType::Option(inner)
-                        if !matches!(op_ty, MirType::Option(_)) && **inner == op_ty);
-                    // ER9: `func -> T? or E { return t }` needs two layers, not
-                    // one. The single wrap above and codegen's Ok-wrap each add
-                    // only one, so a bare T came back with the caller reading
-                    // its first field as the Result tag (#383).
-                    let needs_double_wrap = matches!(&ret_ty, MirType::Result { ok, .. }
-                        if matches!(&**ok, MirType::Option(inner)
-                            if **inner == op_ty
-                                && !matches!(op_ty, MirType::Option(_) | MirType::Result { .. })));
-
-                    let final_op = if needs_double_wrap {
-                        let MirType::Result { ok, .. } = &ret_ty else { unreachable!() };
-                        let opt_ty = (**ok).clone();
-                        let some_local = self.builder.alloc_temp(opt_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: some_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: some_local,
-                            offset: 8,
-                            value: op,
-                            store_size: Some(op_ty.size()),
-                        }));
-
-                        let res_local = self.builder.alloc_temp(ret_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: res_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        // ER15 origin slots stay zero for a success return.
-                        for offset in [8u32, 16] {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: res_local,
-                                offset,
-                                value: MirOperand::Constant(MirConst::Int(0)),
-                                store_size: Some(8),
-                            }));
-                        }
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: res_local,
-                            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-                            value: MirOperand::Local(some_local),
-                            store_size: Some(opt_ty.size()),
-                        }));
-                        MirOperand::Local(res_local)
-                    } else if needs_wrap {
-                        let wrap_local = self.builder.alloc_temp(ret_ty.clone());
-                        // tag = 0 (Some)
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: wrap_local,
-                            offset: 0,
-                            value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(8),
-                        }));
-                        // payload at offset 8
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: wrap_local,
-                            offset: 8,
-                            value: op,
-                            store_size: Some(op_ty.size()),
-                        }));
-                        MirOperand::Local(wrap_local)
-                    } else {
-                        op
-                    };
+                    let final_op = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Return,
+                        op, &op_ty, &ret_ty,
+                    );
                     Some(final_op)
                 } else {
                     None
@@ -912,13 +853,118 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            // CT48: comptime for — must be unrolled before MIR lowering
-            StmtKind::ComptimeFor { .. } => {
-                Err(LoweringError::InvalidConstruct(
-                    "comptime for must be unrolled at monomorphization time before MIR lowering".into()
-                ))
+            // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
+            // monomorphized function, mono has already substituted T to a
+            // concrete type on `reflect.fields<T>()` — that's what makes this
+            // "per instantiation" without a separate mono-side pass.
+            StmtKind::ComptimeFor { binding, iter, body } => {
+                self.lower_comptime_for(binding, iter, body)
             }
         }
+    }
+
+    /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
+    /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
+    /// and `value.(field.xxx)` inside the body splice as compile-time
+    /// constants (CT49) instead of going through normal local lookup.
+    fn lower_comptime_for(
+        &mut self,
+        binding: &ForBinding,
+        iter: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let name = match binding {
+            ForBinding::Single(name) => name.clone(),
+            ForBinding::Tuple(_) => {
+                return Err(LoweringError::InvalidConstruct(
+                    "comptime for requires a single binding — the iterable is a list of fields, not tuples".into(),
+                ));
+            }
+        };
+
+        let fields = self.reflect_fields_for(iter)?;
+
+        for field in fields {
+            self.comptime_for_bindings.push((name.clone(), field));
+            for stmt in body {
+                self.lower_stmt(stmt)?;
+            }
+            self.comptime_for_bindings.pop();
+        }
+        Ok(())
+    }
+
+    /// CT51: the iterable must be comptime-known. The only form implemented
+    /// so far — matching the interpreter (rask-interp/src/stdlib/reflect.rs)
+    /// — is `reflect.fields<T>()`, T already concrete after mono substitution.
+    fn reflect_fields_for(
+        &self,
+        iter: &Expr,
+    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
+        use rask_ast::decl::field_attrs;
+
+        let unsupported = || {
+            LoweringError::InvalidConstruct(
+                "comptime for requires a comptime-known iterable, e.g. reflect.fields<T>()".into(),
+            )
+        };
+
+        let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
+            return Err(unsupported());
+        };
+        let is_reflect_fields = method == "fields"
+            && matches!(&object.kind, ExprKind::Ident(n) if n == "reflect");
+        if !is_reflect_fields {
+            return Err(unsupported());
+        }
+        let type_name = type_args
+            .as_ref()
+            .and_then(|ta| ta.first())
+            .ok_or_else(unsupported)?;
+
+        let Some((_, layout)) = self.ctx.find_struct(type_name) else {
+            // The uninstantiated generic template gets lowered too (alongside
+            // every real instantiation), with its type params still literal
+            // ("T"). It's never actually run — type.generics/G2 treats an
+            // uninstantiated generic body as a template, not code that has to
+            // fully resolve — so a bare single-letter placeholder unrolls to
+            // nothing instead of hard-erroring the whole compile. A real typo
+            // or a non-struct type still errors.
+            if is_bare_type_param(type_name) {
+                return Ok(Vec::new());
+            }
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.fields<{}>(): not a struct type",
+                type_name
+            )));
+        };
+
+        Ok(layout
+            .fields
+            .iter()
+            .map(|fl| {
+                let type_name = match &fl.ty {
+                    rask_types::Type::Named(id) => self
+                        .ctx
+                        .type_names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}", fl.ty)),
+                    other => format!("{}", other),
+                };
+                super::ReflectFieldConst {
+                    name: fl.name.clone(),
+                    type_name,
+                    offset: fl.offset,
+                    size: fl.size,
+                    is_public: true,
+                    serial_name: field_attrs::serial_name(&fl.attrs, &fl.name),
+                    is_skipped: field_attrs::is_skipped(&fl.attrs),
+                    has_default: fl.has_declared_default
+                        || field_attrs::default_literal(&fl.attrs).is_some(),
+                }
+            })
+            .collect())
     }
 
     /// Try to evaluate a `comptime if` block at compile time.
@@ -976,9 +1022,17 @@ impl<'a> MirLowerer<'a> {
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
-        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
+        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
+        // An annotated binding is a coercion site like any other: `let b: T?? = t`
+        // needs both layers built here rather than left for codegen to infer from
+        // the depth mismatch, which only ever added Option layers and typed the
+        // payload one layer too shallow (#637).
+        let init_op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            init_op, &inferred_ty, &var_ty,
+        );
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),

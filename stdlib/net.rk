@@ -15,8 +15,11 @@ extend TcpListener {
     /// Accept an incoming TCP connection.
     public func accept(self) -> TcpConnection or Error { }
 
+    /// Get the local address the listener is bound to.
+    public func local_addr(self) -> string { }
+
     /// Close the listener.
-    public func close(self) { }
+    public func close(take self) -> void or IoError { }
 
     /// Clone the listener handle.
     public func clone(self) -> TcpListener { }
@@ -26,11 +29,11 @@ extend TcpListener {
 public struct TcpConnection { }
 
 extend TcpConnection {
-    /// Read all available data as a string.
-    public func read_all(self) -> string or Error { }
+    /// Read all available data as bytes.
+    public func read_bytes(self) -> Vec<u8> or Error { }
 
-    /// Write a string to the connection.
-    public func write_all(self, data: string) -> void or Error { }
+    /// Write bytes to the connection.
+    public func write_bytes(self, data: Vec<u8>) -> void or Error { }
 
     /// Read all available data, decoding as UTF-8 text.
     public func read_text(self) -> string or Error { }
@@ -48,7 +51,7 @@ extend TcpConnection {
     public func write_http_response(self, response: Response) -> void or Error { }
 
     /// Close the connection.
-    public func close(self) { }
+    public func close(take self) -> void or IoError { }
 
     /// Clone the connection handle.
     public func clone(self) -> TcpConnection { }

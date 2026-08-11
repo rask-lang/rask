@@ -70,25 +70,6 @@ impl Interpreter {
                 let y = self.expect_float_or_int(&args, 1)?;
                 Ok(Value::Float(x.hypot(y), FloatKind::Untyped))
             }
-            "clamp" => {
-                // Works for both int and float
-                match &args[0] {
-                    Value::Int(x, _) => {
-                        let lo = self.expect_int(&args, 1)?;
-                        let hi = self.expect_int(&args, 2)?;
-                        Ok(Value::int((*x).max(lo).min(hi)))
-                    }
-                    Value::Float(x, _) => {
-                        let lo = self.expect_float_or_int(&args, 1)?;
-                        let hi = self.expect_float_or_int(&args, 2)?;
-                        Ok(Value::Float(x.max(lo).min(hi), FloatKind::Untyped))
-                    }
-                    _ => Err(RuntimeError::TypeError(
-                        "math.clamp: expected numeric type".to_string(),
-                    )),
-                }
-            }
-
             // Conversion
             "to_radians" => {
                 let x = self.expect_float_or_int(&args, 0)?;
@@ -97,20 +78,6 @@ impl Interpreter {
             "to_degrees" => {
                 let x = self.expect_float_or_int(&args, 0)?;
                 Ok(Value::Float(x.to_degrees(), FloatKind::Untyped))
-            }
-
-            // Classification
-            "is_nan" => {
-                let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Bool(x.is_nan()))
-            }
-            "is_inf" => {
-                let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Bool(x.is_infinite()))
-            }
-            "is_finite" => {
-                let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Bool(x.is_finite()))
             }
 
             _ => Err(RuntimeError::NoSuchMethod {

@@ -29,6 +29,35 @@ public func assert(condition: bool, msg: string?) { }
 /// Format values into a string.
 public func format(fmt: string) -> string { }
 
+/// The smaller of two values. Works on any Comparable type — numbers,
+/// strings (lexicographic), custom types. No `.min()` method or
+/// `math.min` — this is the one way (std.math/G1).
+public func min<T: Comparable>(a: T, b: T) -> T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+/// The larger of two values (std.math/G2).
+public func max<T: Comparable>(a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+/// Restrict a value to [lo, hi] (std.math/G3).
+public func clamp<T: Comparable>(value: T, lo: T, hi: T) -> T {
+    if value < lo {
+        return lo
+    }
+    if value > hi {
+        return hi
+    }
+    return value
+}
+
 // ─── Core types ─────────────────────────────────────────────────
 
 /// A byte-index range. Used for source spans, text ranges, slicing.

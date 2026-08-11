@@ -116,7 +116,7 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
     let content = fs.read_text(path)
         catch e => return SstError.ReadFailure("cannot read {path}: {e}")
 
-    let sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
+    let sep_pos = content.index_of("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
     let data = content[sep_pos + 4..].to_string()
 
     mut current_block = 0
@@ -199,7 +199,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
     let content = fs.read_text(path)
         catch e => return SstError.ReadFailure("cannot read {path}: {e}")
 
-    let sep_pos = content.find("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
+    let sep_pos = content.index_of("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
     let data = content[sep_pos + 4..].to_string()
 
     mut entries = Vec.new()
@@ -246,7 +246,7 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         let stem = file[0..file.len() - 4].to_string()
         if !stem.starts_with("L") { continue }
 
-        let underscore = stem.find("_") ?? continue
+        let underscore = stem.index_of("_") ?? continue
         let level = stem[1..underscore].parse_int() is i64 as v else { continue }
         let id = stem[underscore + 1..].parse_int() is i64 as v else { continue }
 

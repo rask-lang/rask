@@ -310,19 +310,44 @@ fn interp_field_defaults() {
     assert_eq!(stdout, FIELD_DEFAULTS_EXPECTED);
 }
 
-// Field annotations (@rename/@skip/@default) surface through reflect. Reflect-driven
-// `comptime for` runs only under the interpreter, so this path is interp-only.
+// Field annotations (@rename/@skip/@default) surface through reflect (#317:
+// `comptime for` over `reflect.fields<T>()` now unrolls on native too).
+const FIELD_ANNOTATIONS_EXPECTED: &str =
+    "name user_name false false\n\
+     cache_key cache_key true false\n\
+     login_count login_count false true\n\
+     role role false true\n";
+
+#[test]
+fn native_field_annotations() {
+    let (stdout, code) = run_native("field_annotations.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, FIELD_ANNOTATIONS_EXPECTED);
+}
+
 #[test]
 fn interp_field_annotations() {
     let (stdout, code) = run_interp("field_annotations.rk");
     assert_eq!(code, 0);
-    assert_eq!(
-        stdout,
-        "name user_name false false\n\
-         cache_key cache_key true false\n\
-         login_count login_count false true\n\
-         role role false true\n",
-    );
+    assert_eq!(stdout, FIELD_ANNOTATIONS_EXPECTED);
+}
+
+// CT49: value.(field.name) inside the same unrolled loop, reading the actual
+// field value back rather than just its FieldInfo metadata.
+const DYNAMIC_FIELD_ACCESS_EXPECTED: &str = "x (x) = 1.5\ny (Y) = 2.5\n";
+
+#[test]
+fn native_dynamic_field_access() {
+    let (stdout, code) = run_native("dynamic_field_access.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, DYNAMIC_FIELD_ACCESS_EXPECTED);
+}
+
+#[test]
+fn interp_dynamic_field_access() {
+    let (stdout, code) = run_interp("dynamic_field_access.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, DYNAMIC_FIELD_ACCESS_EXPECTED);
 }
 
 // #370 (field-position error type accepted) + #364 (Result field sized to match
@@ -780,6 +805,50 @@ fn error_keyword_fn_name() {
         out.contains("`check` is a keyword"),
         "should name the keyword: {}", out,
     );
+}
+
+// ER11: a bare `T` becomes a `T or E` at `return` and nowhere else. The rule was
+// always enforced; the message wasn't — the generic mismatch answered, and its
+// "change this to type `i64 or LoadError`" was what the author had already
+// written (#550, #641, #701). Pins the message and the count: three rejected
+// positions, and the legitimate uses in the same file stay clean.
+#[test]
+fn error_no_auto_wrap_outside_return() {
+    let (failed, out) = compile_error_output("no_auto_wrap_outside_return.rk");
+    assert!(failed, "a bare value at a non-return position must be rejected: {}", out);
+    assert!(
+        out.contains("auto-wrap only fires at `return`"),
+        "should name the rule, not report a bare mismatch: {}", out,
+    );
+    assert!(
+        out.contains("i64 or LoadError"),
+        "should name the error type rather than printing `<type#N>`: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0828").count(), 3,
+        "one per coercion position — binding, argument, field — and nothing for \
+         the wrapped-by-a-call forms or the optional: {}", out,
+    );
+}
+
+// #646: the error side of a `T or E` printed as `<type#N>` instead of the name.
+// The pass that fills type names in was a hand-written match with a catch-all
+// covering 17 of the 33 type-carrying variants, so anything added later fell
+// through. Three different codes in one file, because the original bug was
+// invisible to any single message — `Mismatch` was always correct.
+#[test]
+fn error_type_named_in_diagnostics() {
+    let (failed, out) = compile_error_output("error_type_named_in_diagnostics.rk");
+    assert!(failed, "wrapper-method and flat-try misuse must be rejected: {}", out);
+    assert!(
+        !out.contains("<type#"),
+        "no diagnostic may leak an internal type id: {}", out,
+    );
+    for expected in ["no method `ok` on `i64 or IoError`",
+                     "no method `unwrap_or_else` on `i64 or IoError`",
+                     "`i64? or IoError`"] {
+        assert!(out.contains(expected), "missing {:?} in: {}", expected, out);
+    }
 }
 
 // A struct or enum name in call position used to type-check silently and then

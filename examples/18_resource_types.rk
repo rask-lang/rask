@@ -131,7 +131,7 @@ func demonstrate_file_resources() -> void or IoError {
     mut file = try fs.create("test.txt")
     ensure {
         file.close()
-        fs.remove("test.txt")  // Clean up the file after use
+        fs.remove_file("test.txt")  // Clean up the file after use
     }
     // Use the file
     let content = try file.read_text()

@@ -699,18 +699,19 @@ FIX: Newtype it and implement message():
 
 **Auto-wrap outside return [ER11]:**
 ```
-ERROR [type.errors/ER11]: cannot assign value of type `i32` to `i32 or MyError`
+error[E0828]: a `i32` doesn't become a `i32 or MyError` here — auto-wrap only fires at `return`
    |
 3  |  let r: i32 or MyError = 5
-   |                            ^ auto-wrap only fires at `return`
-
-WHY: Construction at assignment hides the branch choice. Only `return`
-     triggers auto-wrap for T or E — elsewhere the value must already
-     have the union type (typically from a function call).
-
-FIX: Construct via a function that returns T or E, or use
-     explicit branch construction helpers.
+   |         ^^^^^^^^^^^^^^^^^^ this is a `i32`, and nothing wraps it
+    = fix: get the value from something that already returns `i32 or MyError` — a call,
+           or a small `func` whose `return` does the wrapping
+    = why: at a `return` the branch is obvious from the signature; at an assignment it
+           isn't, so the choice between the success and error branch is written rather
+           than inferred. Optionals are exempt — a `T?` widens anywhere, because `none`
+           is the only other branch [type.errors/ER11]
 ```
+
+The same message covers all three non-return positions — binding, argument, field.
 
 **Bare value after `catch` [ER14]:**
 ```

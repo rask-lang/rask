@@ -23,6 +23,8 @@ extern "C" func rask_dirent_name(entry: *u8) -> *u8
 extern "C" func rask_stat_size(path: *u8) -> i64
 extern "C" func rask_stat_mtime(path: *u8) -> i64
 extern "C" func rask_stat_atime(path: *u8) -> i64
+extern "C" func getcwd(buf: *u8, size: u64) -> *u8
+extern "C" func getenv(name: *u8) -> *u8
 
 /// File system operations.
 struct fs { }
@@ -117,7 +119,7 @@ extend fs {
     }
 
     /// Return the canonical, absolute form of a path.
-    public func canonicalize(path: string) -> string or IoError {
+    public func absolute_path(path: string) -> string or IoError {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe realpath(path.as_c_str(), buf)
         if unsafe result.is_null() {
@@ -130,8 +132,8 @@ extend fs {
         return s
     }
 
-    /// Copy a file from one path to another. Returns bytes copied.
-    public func copy(from: string, to: string) -> u64 or IoError {
+    /// Copy a file from one path to another.
+    public func copy(from: string, to: string) -> void or IoError {
         let src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
         if unsafe src.is_null() {
             return IoError.Other("could not open source file")
@@ -142,17 +144,15 @@ extend fs {
             return IoError.Other("could not open destination file")
         }
         let buf = unsafe rask_alloc(8192)
-        mut total: u64 = 0
         loop {
             let n = unsafe fread(buf, 1, 8192, src)
             if n == 0 { break }
             unsafe fwrite(buf, 1, n, dst)
-            total = total + n
         }
         unsafe rask_free(buf)
         unsafe fclose(src)
         unsafe fclose(dst)
-        return total
+        return
     }
 
     /// Rename a file or directory.
@@ -165,7 +165,7 @@ extend fs {
     }
 
     /// Remove a file.
-    public func remove(path: string) -> void or IoError {
+    public func remove_file(path: string) -> void or IoError {
         let r = unsafe rask_libc_remove(path.as_c_str())
         if r != 0 {
             return IoError.Other("could not remove")
@@ -225,6 +225,31 @@ extend fs {
 
     /// Get metadata for a file or directory.
     public func metadata(path: string) -> Metadata or IoError { }
+
+    /// Current working directory.
+    public func current_dir() -> Path {
+        let buf = unsafe rask_alloc(4096)
+        let result = unsafe getcwd(buf, 4096)
+        if unsafe result.is_null() {
+            unsafe rask_free(buf)
+            return Path.from(".")
+        }
+        let len = unsafe strlen(buf)
+        let s = unsafe string.from_raw(buf, len as usize)
+        unsafe rask_free(buf)
+        return Path.from(s)
+    }
+
+    /// User home directory. none if unknown.
+    public func home_dir() -> Path? {
+        let ptr = unsafe getenv("HOME\0".as_ptr())
+        if unsafe ptr.is_null() {
+            return none
+        }
+        let len = unsafe strlen(ptr)
+        let s = unsafe string.from_raw(ptr, len as usize)
+        return Path.from(s)
+    }
 }
 
 /// File metadata: size, access time, modification time.

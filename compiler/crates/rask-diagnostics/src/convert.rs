@@ -590,6 +590,21 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
             }
 
+            NoAutoWrapOutsideReturn { value, target, span } => {
+                Diagnostic::error(format!(
+                    "a `{}` doesn't become a `{}` here — auto-wrap only fires at `return`",
+                    value, target
+                ))
+                    .with_code("E0828")
+                    .with_primary(*span, format!("this is a `{}`, and nothing wraps it", value))
+                    .with_fix(format!(
+                        "get the value from something that already returns `{}` — a call, or a \
+                         small `func` whose `return` does the wrapping",
+                        target
+                    ))
+                    .with_why("at a `return` the branch is obvious from the signature; at an assignment it isn't, so the choice between the success and error branch is written rather than inferred. Optionals are exempt — a `T?` widens anywhere, because `none` is the only other branch [type.errors/ER11]")
+            }
+
             TakeOnNonOptional { found, span } => {
                 Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
                     .with_code("E0365")

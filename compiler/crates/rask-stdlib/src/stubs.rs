@@ -651,7 +651,7 @@ mod tests {
         let expected = [
             "new", "with_capacity", "len", "is_empty", "capacity", "is_bounded",
             "insert", "remove", "clear", "get", "get_clone", "contains_key",
-            "read", "modify", "ensure", "ensure_modify",
+            "read", "modify", "insert_if_missing", "modify_with_default",
             "iter", "keys", "values", "freeze",
         ];
         for method in &expected {
@@ -727,7 +727,7 @@ mod tests {
     #[test]
     fn file_read_discoverable() {
         let reg = StubRegistry::load();
-        assert!(reg.has_method("File", "read_all"), "File missing method: read_all");
+        assert!(reg.has_method("File", "read_bytes"), "File missing method: read_bytes");
         assert!(reg.has_method("File", "read_text"), "File missing method: read_text");
     }
 

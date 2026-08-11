@@ -159,7 +159,7 @@ impl Interpreter {
 
             // --- Signals ---
             #[cfg(not(target_arch = "wasm32"))]
-            "on_signal" => {
+            "signals" => {
                 // SG2: returns Receiver<Signal> via channel
                 // Signal handling uses a self-pipe: the C signal handler writes to a pipe,
                 // a background thread reads the pipe and sends to the channel.
@@ -297,7 +297,7 @@ impl Interpreter {
                     Err(RuntimeError::TypeError("args() expects a Vec<string>".into()))
                 }
             }
-            "cwd" => {
+            "working_dir" => {
                 let dir = self.expect_string(&extra_args, 0)?;
                 let mut new_fields = fields.clone();
                 new_fields.insert("cwd".to_string(), Value::Enum {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Routing. `route` times the request, runs the middleware chain, dispatches
 // on (method, path), and collapses the handler's `Response or ApiError` into
-// one Response. It's the `func(Request) -> Response` that listen_and_serve
+// one Response. It's the `func(Request) -> Response` that http.serve
 // wants (http.md S4).
 
 import http

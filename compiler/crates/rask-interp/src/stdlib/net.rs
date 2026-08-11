@@ -97,7 +97,7 @@ impl Interpreter {
             }
             "close" => {
                 if listener.lock().unwrap().is_none() {
-                    return Ok(Value::Unit);
+                    return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(listener) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
@@ -106,7 +106,17 @@ impl Interpreter {
                         .map_err(|msg| RuntimeError::Panic(msg))?;
                 }
                 let _ = listener.lock().unwrap().take();
-                Ok(Value::Unit)
+                Ok(make_result_ok(Value::Unit))
+            }
+            "local_addr" => {
+                let guard = listener.lock().unwrap();
+                let l = guard.as_ref().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "TcpListener".to_string(), operation: "get address of".to_string() }
+                })?;
+                match l.local_addr() {
+                    Ok(addr) => Ok(Value::String(Arc::new(Mutex::new(addr.to_string())))),
+                    Err(e) => Ok(make_result_err(&e.to_string())),
+                }
             }
             "clone" => Ok(Value::TcpListener(Arc::clone(listener))),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -124,7 +134,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "read_all" | "read_text" => {
+            "read_text" => {
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
@@ -135,13 +145,47 @@ impl Interpreter {
                     Err(e) => Ok(make_result_err(&e.to_string())),
                 }
             }
-            "write_all" | "write_text" => {
+            "read_bytes" => {
+                let mut guard = stream.lock().unwrap();
+                let s = guard.as_mut().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
+                })?;
+                let mut buf = Vec::new();
+                match s.read_to_end(&mut buf) {
+                    Ok(_) => {
+                        let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
+                        Ok(make_result_ok(Value::Vec(Arc::new(Mutex::new(bytes)))))
+                    }
+                    Err(e) => Ok(make_result_err(&e.to_string())),
+                }
+            }
+            "write_text" => {
                 let data = self.expect_string(&args, 0)?;
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
                 match s.write_all(data.as_bytes()).and_then(|_| s.flush()) {
+                    Ok(()) => Ok(make_result_ok(Value::Unit)),
+                    Err(e) => Ok(make_result_err(&e.to_string())),
+                }
+            }
+            "write_bytes" => {
+                let bytes: Vec<u8> = match args.first() {
+                    Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
+                        Value::Int(n, _) => *n as u8,
+                        _ => 0,
+                    }).collect(),
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "TcpConnection.write_bytes: expected Vec<u8>, got {}",
+                        args.first().map(|v| v.type_name()).unwrap_or("missing")
+                    ))),
+                };
+                let mut guard = stream.lock().unwrap();
+                let s = guard.as_mut().ok_or_else(|| {
+                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
+                })?;
+                match s.write_all(&bytes).and_then(|_| s.flush()) {
                     Ok(()) => Ok(make_result_ok(Value::Unit)),
                     Err(e) => Ok(make_result_err(&e.to_string())),
                 }
@@ -167,7 +211,7 @@ impl Interpreter {
             }
             "close" => {
                 if stream.lock().unwrap().is_none() {
-                    return Ok(Value::Unit);
+                    return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(stream) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
@@ -176,7 +220,7 @@ impl Interpreter {
                         .map_err(|msg| RuntimeError::Panic(msg))?;
                 }
                 let _ = stream.lock().unwrap().take();
-                Ok(Value::Unit)
+                Ok(make_result_ok(Value::Unit))
             }
             "clone" => Ok(Value::TcpConnection(Arc::clone(stream))),
             _ => Err(RuntimeError::NoSuchMethod {

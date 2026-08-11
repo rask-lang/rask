@@ -5,7 +5,7 @@
 // ── Bit operations on integer types (B1) ────────────────────────────
 
 // Methods defined via extend on each integer type.
-// popcount, leading_zeros, trailing_zeros, leading_ones, trailing_ones,
+// count_ones, count_zeros, leading_zeros, trailing_zeros, leading_ones, trailing_ones,
 // reverse_bits, rotate_left, rotate_right, swap_bytes
 // are built-in methods on all integer types — registered in builtins.
 
@@ -14,24 +14,6 @@
 // to_be, to_le, from_be, from_le are methods on integer types.
 // to_be_bytes, to_le_bytes, to_ne_bytes produce byte arrays.
 // T.from_be_bytes, T.from_le_bytes, T.from_ne_bytes parse them.
-
-// ── Network byte order aliases (B4) ─────────────────────────────────
-
-struct bits { }
-
-extend bits {
-    /// Host to network byte order (u16).
-    public func hton_u16(x: u16) -> u16 { return x.to_be() }
-
-    /// Host to network byte order (u32).
-    public func hton_u32(x: u32) -> u32 { return x.to_be() }
-
-    /// Network to host byte order (u16).
-    public func ntoh_u16(x: u16) -> u16 { return u16.from_be(x) }
-
-    /// Network to host byte order (u32).
-    public func ntoh_u32(x: u32) -> u32 { return u32.from_be(x) }
-}
 
 // ── Binary parsing (P1-P4) ──────────────────────────────────────────
 

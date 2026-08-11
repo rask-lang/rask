@@ -203,7 +203,7 @@ fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static st
         "join" if arg_count == 2 => "Vec",
         "values" | "get" | "insert" | "remove" => "Map",
         "sleep" => "time",
-        "read_all" | "write_all" => "TcpConnection",
+        "read_bytes" | "write_bytes" => "TcpConnection",
         "accept" => "TcpListener",
         "detach" => "TaskHandle",
         _ => return None,
@@ -246,6 +246,12 @@ impl<'a> MirLowerer<'a> {
     /// Returns the operand unchanged when no wrapping is needed — the field
     /// isn't a sum type, the value already has the sum shape, or the option
     /// uses a niche (a `Handle?` is a sentinel, not a tag plus payload).
+    ///
+    /// The layers themselves come from `coerce_into_wrapper`, shared with
+    /// `return` and the annotated bindings. Only the niche `Handle?` is special
+    /// here: a bare `none` at that field has to become the sentinel, because the
+    /// generic `none` lowering builds a tagged option and storing that into the
+    /// field left a tag where the handle belongs (#438).
     fn wrap_sum_field_value(
         &mut self,
         field_ty: Option<&MirType>,
@@ -253,72 +259,16 @@ impl<'a> MirLowerer<'a> {
         val: MirOperand,
     ) -> MirOperand {
         let Some(field_ty) = field_ty else { return val };
-        let (tag_offset, payload_offset, inner) = match field_ty {
-            // A `Handle?` is a sentinel, not a tag plus payload. A handle
-            // stores as itself; `none` has to become the sentinel, because the
-            // generic `none` lowering builds a tagged option and storing that
-            // into the field left a tag where the handle belongs (#438).
-            MirType::Option(inner) if matches!(**inner, MirType::Handle) => {
-                if matches!(val_ty, MirType::Option(_)) {
-                    return MirOperand::Constant(MirConst::Int(
-                        crate::lower::HANDLE_NONE_SENTINEL,
-                    ));
-                }
-                return val;
+        if matches!(field_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+            if matches!(val_ty, MirType::Option(_)) {
+                return MirOperand::Constant(MirConst::Int(crate::lower::HANDLE_NONE_SENTINEL));
             }
-            MirType::Option(inner) => {
-                if matches!(val_ty, MirType::Option(_)) {
-                    return val;
-                }
-                (
-                    rask_mono::abi::OPTION_TAG_OFFSET,
-                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
-                    (**inner).clone(),
-                )
-            }
-            MirType::Result { ok, err } => {
-                // Only the ok side gets wrapped implicitly; an error value at a
-                // field position isn't allowed (ER11).
-                if matches!(val_ty, MirType::Result { .. }) || val_ty == &**err {
-                    return val;
-                }
-                (
-                    rask_mono::abi::RESULT_TAG_OFFSET,
-                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-                    (**ok).clone(),
-                )
-            }
-            _ => return val,
-        };
-
-        let slot = self.builder.alloc_temp(field_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: tag_offset,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: Some(8),
-        }));
-        if payload_offset == rask_mono::abi::RESULT_PAYLOAD_OFFSET {
-            for off in [
-                rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
-                rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
-            ] {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: slot,
-                    offset: off,
-                    value: MirOperand::Constant(MirConst::Int(0)),
-                    store_size: Some(8),
-                }));
-            }
+            return val;
         }
-        let payload_size = inner.size();
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: payload_offset,
-            value: val,
-            store_size: (payload_size > 8).then_some(payload_size),
-        }));
-        MirOperand::Local(slot)
+        self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::StructField,
+            val, val_ty, field_ty,
+        )
     }
 
     /// Lower an absent optional. `none` and `None` are the same value written
@@ -918,7 +868,26 @@ impl<'a> MirLowerer<'a> {
                             *is_own || spawns_closure, &expected, Some(a.expr.id),
                         )?
                     } else {
-                        self.lower_call_arg(&a.expr, smut)?
+                        let (op, mir_ty) = self.lower_call_arg(&a.expr, smut)?;
+                        // A parameter declared `T?` or `T or E` given a bare `T`
+                        // is the same coercion as an annotated binding, so it
+                        // takes the same path. Left to codegen it only ever
+                        // gained Option layers, and typed the payload one layer
+                        // too shallow — an `f32??` parameter arrived as 0 (#637).
+                        let declared = callee_params
+                            .get(i)
+                            .and_then(|o| o.as_ref())
+                            .map(|s| self.ctx.resolve_type_str(s));
+                        match declared {
+                            Some(dst_ty) => {
+                                let op = self.coerce_into_wrapper(
+                                    rask_ast::coercion::CoercionSite::Argument,
+                                    op, &mir_ty, &dst_ty,
+                                );
+                                (op, mir_ty)
+                            }
+                            None => (op, mir_ty),
+                        }
                     };
                     // TR5 boxing happens in lower_expr, at the value — doing
                     // it again here wrapped the box in another box, and the
@@ -1265,6 +1234,16 @@ impl<'a> MirLowerer<'a> {
 
             // Field access
             ExprKind::Field { object, field } => {
+                // CT49: inside an unrolled `comptime for field in reflect.fields<T>()`
+                // body, `field` isn't a runtime value — it never got a local — so
+                // `field.name`/`field.serial_name`/... splice the loop's current
+                // FieldInfo directly instead of going through object lowering.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(op) = self.comptime_field_const(name, field) {
+                        return Ok(op);
+                    }
+                }
+
                 // Primitive type constants: i64.MAX, i32.MIN, etc.
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(val) = primitive_type_constant(name, field) {
@@ -1497,12 +1476,22 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Dynamic field access: value.(expr) — should be resolved by comptime before MIR
+            // Dynamic field access: value.(expr) — CT49 resolves this to a
+            // direct field access once `expr` is comptime-known. The only
+            // source of a comptime-known name today is the loop binding of
+            // an enclosing `comptime for` (`value.(field.name)`, CT53).
             ExprKind::DynamicField { object, field_expr } => {
-                let _ = (object, field_expr);
-                Err(LoweringError::InvalidConstruct(
-                    "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
-                ))
+                let Some(name) = self.resolve_comptime_field_name(field_expr) else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
+                    ));
+                };
+                let synthetic = Expr {
+                    id: rask_ast::NodeId::DUMMY,
+                    span: expr.span,
+                    kind: ExprKind::Field { object: object.clone(), field: name },
+                };
+                self.lower_expr(&synthetic)
             }
 
             // Index access
@@ -3169,8 +3158,48 @@ impl<'a> MirLowerer<'a> {
     }
 
     // =================================================================
-    // Control flow lowering
+    // comptime for (CT48–CT54)
     // =================================================================
+
+    /// `object.field` where `object` is an active `comptime for` binding —
+    /// splice the loop's current FieldInfo member as a constant. Returns
+    /// `None` for anything else (not that binding, or not a FieldInfo member),
+    /// so the caller falls through to ordinary field-access lowering.
+    fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
+        let fc = self
+            .comptime_for_bindings
+            .iter()
+            .rev()
+            .find(|(name, _)| name == object_name)?
+            .1
+            .clone();
+        Some(match field {
+            "name" => (MirOperand::Constant(MirConst::String(fc.name)), MirType::String),
+            "type_name" => (MirOperand::Constant(MirConst::String(fc.type_name)), MirType::String),
+            "serial_name" => (MirOperand::Constant(MirConst::String(fc.serial_name)), MirType::String),
+            "offset" => (MirOperand::Constant(MirConst::Int(fc.offset as i64)), MirType::U64),
+            "size" => (MirOperand::Constant(MirConst::Int(fc.size as i64)), MirType::U64),
+            "is_public" => (MirOperand::Constant(MirConst::Bool(fc.is_public)), MirType::Bool),
+            "is_skipped" => (MirOperand::Constant(MirConst::Bool(fc.is_skipped)), MirType::Bool),
+            "has_default" => (MirOperand::Constant(MirConst::Bool(fc.has_default)), MirType::Bool),
+            _ => return None,
+        })
+    }
+
+    /// CT53: the expression in `value.(expr)` must be comptime-known. The
+    /// only source implemented so far is a `comptime for` loop binding's
+    /// string-valued FieldInfo members (`field.name`, `.serial_name`, `.type_name`).
+    fn resolve_comptime_field_name(&self, expr: &Expr) -> Option<String> {
+        let ExprKind::Field { object, field } = &expr.kind else { return None };
+        let ExprKind::Ident(name) = &object.kind else { return None };
+        let (_, fc) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)?;
+        match field.as_str() {
+            "name" => Some(fc.name.clone()),
+            "serial_name" => Some(fc.serial_name.clone()),
+            "type_name" => Some(fc.type_name.clone()),
+            _ => None,
+        }
+    }
 
     /// If expression lowering (spec L1).
     ///
@@ -3830,7 +3859,7 @@ impl<'a> MirLowerer<'a> {
         let mut arg_types = Vec::new();
         // The qualified name isn't resolved until after the arguments are
         // lowered, but a closure argument needs its parameter types up front.
-        // A module-style receiver (`http.listen_and_serve(…)`) mangles
+        // A module-style receiver (`http.serve(…)`) mangles
         // predictably, so try that key for the callee's signature.
         let tentative_params: Vec<Option<String>> = match &object.kind {
             ExprKind::Ident(recv) => self
@@ -4648,8 +4677,18 @@ impl<'a> MirLowerer<'a> {
                 | rask_types::Type::F32 | rask_types::Type::F64 | rask_types::Type::Bool
             ))
             .unwrap_or(false);
+        // `Path / "component"` desugars to `.div(...)` same as numeric `/` —
+        // Path's own MIR type looks like a plain string (no aggregate layout
+        // to distinguish it), so without this check it fell into the numeric
+        // fallback below and got compiled as a raw pointer division instead
+        // of a call to `Path_div`.
+        let is_path_receiver = self.ctx.lookup_raw_type(object.id)
+            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+            .as_deref() == Some("Path");
         let skip_binop = if raw_type_is_numeric {
             false
+        } else if is_path_receiver {
+            true
         } else {
             matches!(obj_ty, MirType::String)
             || if let ExprKind::Ident(var_name) = &object.kind {

@@ -3,10 +3,10 @@
 // `.iter()`. Every one of these used to give a pointer-shaped number on native
 // while the interpreter was right.
 
-test "string.find answers with a position" {
-    assert "hello world".find("world") ?? 999 == 6
-    assert "hello".find("zzz") ?? 999 == 999
-    assert "aaa".find("a") ?? 999 == 0
+test "string.index_of answers with a position" {
+    assert "hello world".index_of("world") ?? 999 == 6
+    assert "hello".index_of("zzz") ?? 999 == 999
+    assert "aaa".index_of("a") ?? 999 == 0
 }
 
 test "Vec.first and Vec.last answer with an element" {

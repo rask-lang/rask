@@ -74,8 +74,8 @@ func compact_sstables(
         return CompactionError.OutputFailure("failed to write merged SSTable")
     }
 
-    fs.remove(a.path)
-    fs.remove(b.path)
+    fs.remove_file(a.path)
+    fs.remove_file(b.path)
 
     return meta
 }

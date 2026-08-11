@@ -5,7 +5,7 @@
 // Two gaps: reachability treated a bare name as a leaf so the function was
 // never emitted, and lowering had no way to turn a function into the closure
 // shape callers invoke through. The flagship passes its handler this way —
-// `http.listen_and_serve(addr, handle)`.
+// `http.serve(addr, handle)`.
 
 func double(x: i64) -> i64 {
     return x * 2

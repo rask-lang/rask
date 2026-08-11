@@ -62,4 +62,64 @@ func old_file_lines(f: File) {
     }
 }
 
+// fs.remove → fs.remove_file
+func old_fs_remove() {
+    let _ = fs.remove("/tmp/x")        // ERROR: no method `remove` (renamed to `remove_file`)
+}
+
+// fs.canonicalize → fs.absolute_path
+func old_fs_canonicalize() {
+    let _ = fs.canonicalize("/tmp/x")  // ERROR: no method `canonicalize` (renamed to `absolute_path`)
+}
+
+// string.rfind → string.last_index_of
+func old_rfind(s: string) {
+    let _ = s.rfind("x")               // ERROR: no method `rfind` (renamed to `last_index_of`)
+}
+
+// string.trim_bounds → string.trim_indices
+func old_trim_bounds(s: string) {
+    let _ = s.trim_bounds()            // ERROR: no method `trim_bounds` (renamed to `trim_indices`)
+}
+
+// Map.ensure → Map.insert_if_missing
+func old_map_ensure(m: Map<string, i64>) {
+    m.ensure("k", || 0)                // ERROR: no method `ensure` (renamed to `insert_if_missing`)
+}
+
+// Vec.dedup → Vec.remove_adjacent_duplicates
+func old_vec_dedup(v: Vec<i64>) {
+    v.dedup()                          // ERROR: no method `dedup` (renamed to `remove_adjacent_duplicates`)
+}
+
+// Duration.from_secs_f64 → Duration.seconds_f64
+func old_from_secs_f64() -> Duration {
+    return Duration.from_secs_f64(1.5) // ERROR: no method `from_secs_f64` (renamed to `seconds_f64`)
+}
+
+// Instant.duration_since dropped — only the `-` operator remains.
+func old_instant_duration_since(a: Instant, b: Instant) -> Duration {
+    return a.duration_since(b)         // ERROR: no method `duration_since` on Instant (use `a - b`)
+}
+
+// os.Command.cwd → os.Command.working_dir
+func old_command_cwd() -> Command {
+    return Command.new("ls").cwd("/tmp")  // ERROR: no method `cwd` (renamed to `working_dir`)
+}
+
+// Path.new dropped — only Path.from remains.
+func old_path_new() -> Path {
+    return Path.new("/tmp")            // ERROR: no method `new` on Path (renamed to `from`)
+}
+
+// Path.join dropped — only the `/` operator remains.
+func old_path_join(p: Path) -> Path {
+    return p.join("x")                 // ERROR: no method `join` on Path (use the `/` operator)
+}
+
+// math.clamp dropped — only the prelude `clamp` function remains.
+func old_math_clamp() -> f64 {
+    return math.clamp(1.0, 0.0, 2.0)   // ERROR: no method `clamp` on math (use prelude `clamp(...)`)
+}
+
 func main() {}

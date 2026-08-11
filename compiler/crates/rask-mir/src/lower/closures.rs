@@ -15,13 +15,13 @@ use rask_ast::{
 
 impl<'a> MirLowerer<'a> {
     /// A named function used as a value (`apply(double, 21)`, or the handler
-    /// `http.listen_and_serve` takes). Callers invoke it through
+    /// `http.serve` takes). Callers invoke it through
     /// `closure_call`, which passes an environment pointer first, but a
     /// top-level function has no such parameter — so wrap it in one that does
     /// and hand back a closure with an empty environment.
     ///
     /// Without this, lowering treated the bare name as a variable lookup and
-    /// gave up: the flagship's `listen_and_serve("0.0.0.0:8080", handle)`
+    /// gave up: the flagship's `http.serve("0.0.0.0:8080", handle)`
     /// failed native compilation with "unresolved variable `handle`" while the
     /// interpreter ran it.
     ///

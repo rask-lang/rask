@@ -454,7 +454,7 @@ impl Interpreter {
                     variant_index: 0, origin: None,
                 })
             }
-            "dedup" => {
+            "remove_adjacent_duplicates" => {
                 let mut vec = v.lock().unwrap();
                 vec.dedup_by(|a, b| Self::value_eq(a, b));
                 Ok(Value::Unit)
@@ -1132,7 +1132,7 @@ impl Interpreter {
                 let cloned: MapData = m.lock().unwrap().clone();
                 Ok(Value::Map(Arc::new(Mutex::new(cloned))))
             }
-            "ensure" => {
+            "insert_if_missing" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
                     expected: 2,
@@ -1148,7 +1148,7 @@ impl Interpreter {
 
                 Ok(Value::Unit)
             }
-            "ensure_modify" => {
+            "modify_with_default" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
                     expected: 3,

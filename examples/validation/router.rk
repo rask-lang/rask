@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Routing. `route` times the request, runs the middleware chain, dispatches
 // on (method, path), and collapses the handler's `Response or ApiError` into
-// one Response. It's the `func(Request) -> Response` that listen_and_serve
+// one Response. It's the `func(Request) -> Response` that http.serve
 // wants (http.md S4).
 
 import http
@@ -68,12 +68,12 @@ func dispatch(req: Request) -> Response or ApiError {
 
 func task_id(path: string) -> TaskId or ApiError {
     let n = try segment_id(path, "/tasks/")
-    return TaskId { value: n }
+    return TaskId(n)
 }
 
 func user_id(path: string) -> UserId or ApiError {
     let n = try segment_id(path, "/users/")
-    return UserId { value: n }
+    return UserId(n)
 }
 
 func segment_id(path: string, prefix: string) -> u64 or ApiError {

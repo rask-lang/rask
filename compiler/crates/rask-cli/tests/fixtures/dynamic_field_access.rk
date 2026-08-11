@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CT48-CT54: comptime for over reflect.fields<T>(), reading each field's
+// runtime value back through value.(field.name) (dynamic field access).
+
+import std.reflect
+
+struct Point {
+    public x: f64
+    @rename("Y")
+    public y: f64
+    @skip
+    public hidden: i64
+}
+
+func main() {
+    let value = Point { x: 1.5, y: 2.5, hidden: 99 }
+    comptime for field in reflect.fields<Point>() {
+        comptime if !field.is_skipped {
+            println("{field.name} ({field.serial_name}) = {value.(field.name)}")
+        }
+    }
+}

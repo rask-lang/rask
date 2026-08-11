@@ -136,7 +136,7 @@ extend Request {
 
     // URL path before '?'.
     public func path(self) -> string {
-        let qpos = self.url.find("?") ?? return self.url
+        let qpos = self.url.index_of("?") ?? return self.url
         return self.url[0..qpos].to_string()
     }
 
@@ -151,7 +151,7 @@ extend Request {
     // hands back, which are views into `self.url`.
     public func query_params(self) -> Map<string, string> {
         mut result = Map<string, string>.new()
-        let qpos = self.url.find("?")
+        let qpos = self.url.index_of("?")
         if qpos? as qp {
             let query = self.url[qp + 1..].to_string()
             for pair in query.split("&") {
@@ -159,7 +159,7 @@ extend Request {
                 if item.is_empty() {
                     continue
                 }
-                let eq = item.find("=")
+                let eq = item.index_of("=")
                 if eq? as eqpos {
                     let key = item[0..eqpos].to_string()
                     let value = item[eqpos + 1..].to_string()
@@ -257,6 +257,10 @@ extend Response {
 
     public func is_server_error(self) -> bool {
         return self.status >= 500 && self.status <= 599
+    }
+
+    public func is_error(self) -> bool {
+        return self.status >= 400 && self.status <= 599
     }
 }
 
@@ -472,7 +476,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     // Split host+port from path at first /
     mut host_port = rest
     mut path = "/"
-    let slash = rest.find("/")
+    let slash = rest.index_of("/")
     if slash? as pos {
         host_port = rest[0..pos].to_string()
         path = rest[pos..].to_string()
@@ -481,7 +485,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     // Split host from port at last :
     mut host = host_port
     mut port = "80"
-    let colon = host_port.find(":")
+    let colon = host_port.index_of(":")
     if colon? as cpos {
         host = host_port[0..cpos].to_string()
         port = host_port[cpos + 1..].to_string()
@@ -681,12 +685,6 @@ struct HttpServer {
 }
 
 extend HttpServer {
-    public func listen(addr: string) -> HttpServer or HttpError {
-        let listener = net.tcp_listen(addr)
-            catch _ => return HttpError.ConnectionFailed("failed to bind {addr}")
-        return HttpServer { listener: listener, addr: addr }
-    }
-
     public func accept(self) -> (Request, Responder) or HttpError {
         let conn = self.listener.accept() catch _ => return HttpError.Io("accept failed")
         let raw = read_raw(conn as i64, 65536)
@@ -701,8 +699,9 @@ extend HttpServer {
     }
 
 
-    public func close(take self) {
+    public func close(take self) -> void or IoError {
         // Listener cleanup handled by drop
+        return
     }
 }
 
@@ -729,22 +728,17 @@ extend http {
     /// with `ensure server.close()`. Each accepted request yields a linear
     /// `Responder` that must send exactly one response.
     public func listen(addr: string) -> HttpServer or HttpError {
-        return HttpServer.listen(addr)
+        let listener = net.tcp_listen(addr)
+            catch _ => return HttpError.ConnectionFailed("failed to bind {addr}")
+        return HttpServer { listener: listener, addr: addr }
     }
 
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).
-    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError {
-        return http.listen_and_serve(addr, handler)
-    }
-
-    /// One-line HTTP server. Spawns a green task per request.
-    /// Requires an active `using Multitasking { ... }` scope in the process
-    /// (transitively reaches `spawn`).
-    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> void or HttpError
+    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError
     {
-        mut server = HttpServer.listen(addr) catch _ => return HttpError.Io("listen failed")
+        mut server = http.listen(addr) catch _ => return HttpError.Io("listen failed")
         ensure server.close()
         loop {
             // A failed accept drops this connection, not the server.
