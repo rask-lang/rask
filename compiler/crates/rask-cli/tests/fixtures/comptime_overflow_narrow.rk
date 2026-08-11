@@ -1,0 +1,5 @@
+// CT1: comptime evaluation must check overflow at the destination's declared
+// width, not always at i64 — the miri constant loader used to drop a bare
+// literal's width entirely (#328).
+const G: u8 = comptime { 200u8 + 100u8 }
+func main() { println(G.to_string()) }
