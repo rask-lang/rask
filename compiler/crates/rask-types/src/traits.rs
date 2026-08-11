@@ -727,6 +727,12 @@ impl<'a> TraitChecker<'a> {
             Type::Named(id) => Some(*id),
             // A generic instantiation carries the base type's methods.
             Type::Generic { base, .. } => Some(*base),
+            // A name that hasn't been resolved to `Named` yet (e.g. a stdlib
+            // function's return type, parsed lazily from its stub string)
+            // still names a registered struct/enum — look it up by name
+            // rather than reporting it methodless.
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
             _ => None,
         };
         match id.and_then(|id| self.types.get(id)) {

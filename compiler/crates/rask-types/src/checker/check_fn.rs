@@ -317,11 +317,19 @@ impl TypeChecker {
                     return;
                 }
                 // Placeholders and specials that legitimately stay unresolved.
-                // `Iterator` is special-cased in resolve.rs; the rest are
-                // stdlib names with no registration yet (#320).
+                // `Iterator` is special-cased in resolve.rs. `InsertError` is
+                // spec'd (mem.pools/PL8) but not registered yet — `try_insert`
+                // still returns `Handle<T>?` pending that type (#352). Reader,
+                // Writer, and ParseError are now real registered names (#320)
+                // and no longer need whitelisting. Bare `Error` stays: several
+                // flagship examples write `-> void or Error` expecting the
+                // `any Error` catch-all, but `any Error`/ER32 auto-boxing isn't
+                // implemented yet (`Error` isn't a registered trait either) —
+                // rejecting the bare form now would break those examples ahead
+                // of that landing. Tracked in #708.
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Error" | "Iterator" | "Reader" | "Writer" | "ParseError" | "InsertError")
+                    || matches!(name, "Iterator" | "InsertError" | "Error")
                 {
                     return;
                 }

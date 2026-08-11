@@ -656,7 +656,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 
 // Parse HTTP/1.1 request from a TCP connection.
 // Shadows the dispatch entry for TcpConnection_read_http_request.
-func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
+func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
     let raw = read_raw(conn_fd, 65536)
     let request = try parse_http_request(raw)
 
@@ -669,7 +669,7 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
 
 // Write HTTP/1.1 response to a TCP connection.
 // Shadows the dispatch entry for TcpConnection_write_http_response.
-func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Error {
+func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or HttpError {
     let resp = resp_ptr as Response
     let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
