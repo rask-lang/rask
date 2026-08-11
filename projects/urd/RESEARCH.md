@@ -34,7 +34,11 @@ Decisions the survey settles:
 
 1. **Log entry** = `{parent_hash, machine_hash, op {name, version, args, recorded_effects}, server_time, seq}`, with a state hash published every N entries. Hash-chained; `verify` re-runs and checks.
 2. **Ops are named mutators with typed args** (intent, not diffs). Effects — time, randomness, external data — are recorded fields in the op, stamped by the server at append. Nothing else crosses into the VM.
-3. **Machine versioning via content addressing.** Bytecode lives in the CAS; entries pin their machine hash; replay uses the pinned version; upgrades are explicit migration ops. This is the anti-Temporal design and it falls out of infrastructure we already need.
+3. **Machine versioning via content addressing.** Bytecode lives in the CAS; entries pin their machine hash; replay uses the pinned version. Two upgrade paths, because demanding a migration ceremony for a typo fix would be miserable:
+   - **Compatible upgrade** (the common case): `urd upgrade` replays the full log with the new bytecode. If every state hash matches, the new machine is *proven* behavior-identical and the machine ref just advances — no migration op, no ceremony. Typo fixes, refactors, new read functions, new op types all land this way. This is Temporal's "replay testing" mitigation, built in and mandatory instead of optional and manual.
+   - **Migration op** (the rare case): the state shape actually changes, or replay diverges. Old state in, new state out, recorded in the log, verifiable like everything else.
+
+   Pinning is unchanged either way — history always knows which bytecode wrote it. The strictness lives in the chain; the ergonomics live in the tool.
 4. **Reads are machine functions** run against current state, ABCI-Query style: allowed to be nondeterministic in formatting, never logged, never part of agreement. Plus whole-state export for small apps and debugging.
 5. **Storage engine is boring**: append-only segment files + CAS + refs, git's loose/packed lifecycle. No custom B-tree, no embedded SQL engine.
 6. **Compaction and shallow mode from v1**, because history growth killed or nearly killed everyone who ignored it.

@@ -69,7 +69,9 @@ Deliberately small. A log store, VM hosting, refs, a three-message protocol (hel
 
 ## Designed for merge, not shipped with it
 
-Merge is a headline feature — just not day 1. The v1 log format carries what merge needs so it can land later without a migration:
+**There is no automatic merge in v1, and that's a decision, not a gap.** Concurrent edits on two branches do not converge on their own. Every project that promises automatic convergence spends its entire complexity budget there — Automerge needed a ground-up rewrite to make it viable, ElectricSQL's first system died of the resulting scope. Urd v1 takes total order per branch instead, which is the model production sync engines (Linear-class apps, Replicache/Zero) actually ship.
+
+Merge is still a headline feature — just not day 1, and when it lands it's *rebase*, not CRDT-style convergence: the machine defines what a conflict means, Urd never guesses. The v1 log format carries what merge needs so it can land later without a migration:
 
 - Ops record **intent**, not state diffs.
 - Every fork keeps its ancestor point.
