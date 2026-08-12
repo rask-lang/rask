@@ -38,6 +38,9 @@ pub struct CodeGenerator {
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
+    /// Per-concrete-type drop glue, generated once and shared across every
+    /// vtable that boxes the same type behind a different trait.
+    drop_glue_fns: HashMap<String, cranelift_module::FuncId>,
     /// Collected debug info per function (debug builds only)
     debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
     /// Line map for converting byte offsets to line:col (debug builds)
@@ -78,6 +81,7 @@ impl CodeGenerator {
             fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            drop_glue_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
@@ -125,6 +129,7 @@ impl CodeGenerator {
             fn_param_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            drop_glue_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
@@ -1020,10 +1025,17 @@ impl CodeGenerator {
             bytes[0..8].copy_from_slice(&(vt.concrete_size as i64).to_le_bytes());
             // Write align at offset 8
             bytes[8..16].copy_from_slice(&(vt.concrete_align as i64).to_le_bytes());
-            // Drop fn at offset 16 stays null (0) — trivial drop for now
+            // Drop fn at offset 16 stays null for a genuinely trivial type —
+            // only types with a refcounted (string) field need one (#366).
 
             let mut desc = DataDescription::new();
             desc.define(bytes.into_boxed_slice());
+
+            if !vt.drop_string_offsets.is_empty() {
+                let drop_func_id = self.get_or_create_drop_glue(&vt.concrete_type, &vt.drop_string_offsets)?;
+                let func_ref = self.module.declare_func_in_data(drop_func_id, &mut desc);
+                desc.write_function_addr(crate::vtable::VTABLE_DROP_OFFSET, func_ref);
+            }
 
             // Write function pointer relocations for each method
             for method in &vt.methods {
@@ -1045,6 +1057,64 @@ impl CodeGenerator {
             self.vtable_data.insert(vt.data_name.clone(), data_id);
         }
         Ok(())
+    }
+
+    /// Build (or reuse) the drop-glue function for a concrete type behind a
+    /// trait object: `fn(data_ptr: i64)` that releases each of its string
+    /// fields, at the byte offsets `collect_string_field_offsets` found.
+    /// This is what `TraitDrop` calls through the vtable's drop slot before
+    /// freeing the boxed allocation itself (#366).
+    fn get_or_create_drop_glue(
+        &mut self,
+        concrete_type: &str,
+        string_offsets: &[u32],
+    ) -> CodegenResult<cranelift_module::FuncId> {
+        if let Some(&func_id) = self.drop_glue_fns.get(concrete_type) {
+            return Ok(func_id);
+        }
+
+        let free_id = *self.func_ids.get("rask_string_free")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
+
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+
+        let name = format!(".dropglue.{}", concrete_type);
+        let func_id = self.module
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.ctx.clear();
+        self.ctx.func.signature = sig;
+
+        let free_ref = self.module.declare_func_in_func(free_id, &mut self.ctx.func);
+
+        let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
+        let mut fb = cranelift::prelude::FunctionBuilder::new(&mut self.ctx.func, &mut fn_builder_ctx);
+
+        let entry = fb.create_block();
+        fb.append_block_params_for_function_params(entry);
+        fb.switch_to_block(entry);
+        fb.seal_block(entry);
+
+        let data_ptr = fb.block_params(entry)[0];
+        for &offset in string_offsets {
+            let field_ptr = if offset == 0 {
+                data_ptr
+            } else {
+                fb.ins().iadd_imm(data_ptr, offset as i64)
+            };
+            fb.ins().call(free_ref, &[field_ptr]);
+        }
+        fb.ins().return_(&[]);
+        fb.finalize();
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+
+        self.drop_glue_fns.insert(concrete_type.to_string(), func_id);
+        Ok(func_id)
     }
 
     /// Generate code for a single MIR function.

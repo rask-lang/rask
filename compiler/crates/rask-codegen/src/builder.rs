@@ -912,16 +912,22 @@ impl<'a> FunctionBuilder<'a> {
 
                 builder.ins().brif(is_null, free_block, &[], drop_block, &[]);
 
-                // Drop block: call drop_fn(data_ptr), then fall through to free
+                // Drop block: call drop_fn(data_ptr), then fall through to free.
+                // Its only predecessor is the brif above, already emitted —
+                // safe to seal right away, matching every other conditional
+                // block pair in this file (bounds checks, tag comparisons, …).
                 builder.switch_to_block(drop_block);
+                builder.seal_block(drop_block);
                 let mut drop_sig = Signature::new(isa::CallConv::SystemV);
                 drop_sig.params.push(AbiParam::new(types::I64));
                 let sig_ref = builder.import_signature(drop_sig);
                 builder.ins().call_indirect(sig_ref, drop_fn, &[data_ptr]);
                 builder.ins().jump(free_block, &[]);
 
-                // Free block: rask_free(data_ptr)
+                // Free block: rask_free(data_ptr). Both predecessors (the
+                // brif's null arm and drop_block's jump) are already emitted.
                 builder.switch_to_block(free_block);
+                builder.seal_block(free_block);
                 let free_ref = ctx.func_refs.get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[data_ptr]);

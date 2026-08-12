@@ -8,7 +8,8 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_mono::MonoProgram;
-use std::collections::HashMap;
+use rask_types::Type;
+use std::collections::{HashMap, HashSet};
 
 /// Module-level constant names in declaration order — the order their init
 /// thunks have to run in, since a later const can read an earlier one.
@@ -352,7 +353,6 @@ fn collect_vtables(
     trait_methods: &HashMap<String, Vec<String>>,
     mono: &MonoProgram,
 ) -> Vec<rask_codegen::vtable::VTableInfo> {
-    use std::collections::HashSet;
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
 
@@ -382,6 +382,11 @@ fn collect_vtables(
                             .map(|s| s.align)
                             .unwrap_or(8);
 
+                        let mut visited = HashSet::new();
+                        let drop_string_offsets = collect_string_field_offsets(
+                            concrete_type, 0, &mono.struct_layouts, &mut visited,
+                        );
+
                         vtables.push(rask_codegen::vtable::VTableInfo {
                             data_name: vtable_name.clone(),
                             concrete_type: concrete_type.clone(),
@@ -389,6 +394,7 @@ fn collect_vtables(
                             concrete_size: *concrete_size,
                             concrete_align,
                             methods: vt_methods,
+                            drop_string_offsets,
                         });
                     }
                 }
@@ -396,6 +402,40 @@ fn collect_vtables(
         }
     }
     vtables
+}
+
+/// Byte offsets of string fields inside `type_name`, found by walking its
+/// struct layout recursively (a nested struct's own string fields land at
+/// their offset plus the parent field's offset). These are exactly the
+/// fields a trait-object drop needs to release (#366) — strings are the
+/// only refcounted type today, so this is what "non-trivial drop" means.
+/// `visited` guards against an (invalid, but not yet rejected elsewhere)
+/// self-referential struct looping forever.
+fn collect_string_field_offsets(
+    type_name: &str,
+    base_offset: u32,
+    struct_layouts: &[rask_mono::StructLayout],
+    visited: &mut HashSet<String>,
+) -> Vec<u32> {
+    if !visited.insert(type_name.to_string()) {
+        return Vec::new();
+    }
+    let Some(layout) = struct_layouts.iter().find(|s| s.name == type_name) else {
+        return Vec::new();
+    };
+    let mut offsets = Vec::new();
+    for field in &layout.fields {
+        match &field.ty {
+            Type::String => offsets.push(base_offset + field.offset),
+            Type::UnresolvedNamed(name) => {
+                offsets.extend(collect_string_field_offsets(
+                    name, base_offset + field.offset, struct_layouts, visited,
+                ));
+            }
+            _ => {}
+        }
+    }
+    offsets
 }
 
 /// Transform test declarations into compilable functions, returning
