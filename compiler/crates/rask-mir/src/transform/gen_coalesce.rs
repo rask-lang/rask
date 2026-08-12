@@ -71,11 +71,22 @@ fn coalesce_function(func: &mut MirFunction) {
 
 /// Propagate validated checks across block boundaries.
 ///
-/// Process blocks in entry-first order. For each block, compute the incoming
-/// checked set from predecessors:
-/// - Single predecessor via Goto: inherit exit state
-/// - Multiple predecessors: intersect exit states (only pairs valid in ALL predecessors)
-/// - Loop back-edges (target ≤ source in RPO): ignored (CF3: fresh check per iteration)
+/// Single incremental pass in entry-first block order (each forward predecessor
+/// has a lower index than its successor, so by the time we reach a block every
+/// forward predecessor's real exit state — reflecting any reuse it already did —
+/// is on hand):
+/// - Single predecessor via Goto: inherit its exit state
+/// - Multiple predecessors: keep a (pool, handle) pair only where every
+///   predecessor landed on the *same* result local (#368) — two predecessors
+///   that each ran their own independent check store the pair in different
+///   locals, and only one of those locals is actually defined on any given
+///   incoming path, so reusing either at the merge reads an undefined value.
+///   Requiring the identical local is what still lets the common
+///   check-before-branch pattern coalesce: both arms just alias the
+///   dominating check's local, so they agree.
+/// - Loop back-edges (target ≤ source in block order): ignored (CF3: fresh
+///   check per iteration). Keeping block order (rather than the dominator
+///   tree) for this is deliberate — the incremental pass below depends on it.
 fn cross_block_coalesce(
     func: &mut MirFunction,
     pool_locals: &HashSet<LocalId>,
@@ -85,66 +96,26 @@ fn cross_block_coalesce(
         return;
     }
 
-    // Forward-edge predecessors only — CF3 wants a fresh check each loop
-    // iteration, so loop back-edges must not propagate validated pairs. The
-    // shared helper drops them via block order. Keeping block order (rather
-    // than the dominator tree) is deliberate: the single-pass propagation below
-    // depends on it, and the cross-block merge is frozen pending #368.
     let predecessors = cfg::forward_predecessors(func);
-
-    // Compute exit state for each block (simulate without modifying)
     let mut exit_states: HashMap<BlockId, CheckedMap> = HashMap::new();
-    for block in func.blocks.iter() {
-        let exit = compute_block_exit_state(&block.statements, pool_locals, aggregate_results);
-        exit_states.insert(block.id, exit);
-    }
 
-    // Process blocks in order (entry-first), applying incoming state
     for block_idx in 0..func.blocks.len() {
         let bid = func.blocks[block_idx].id;
-        let preds = match predecessors.get(&bid) {
-            Some(p) => p.clone(),
-            None => continue, // Entry block or unreachable — no propagation
+        let incoming = match predecessors.get(&bid) {
+            Some(preds) => intersect_predecessor_states(preds, &exit_states),
+            None => CheckedMap::new(), // Entry block or unreachable — no propagation
         };
 
-        // Compute incoming checked set from predecessors
-        let incoming = intersect_predecessor_states(&preds, &exit_states);
-        if incoming.is_empty() {
-            continue;
-        }
-
-        // Apply incoming state to this block's statements
         let stmts = &mut func.blocks[block_idx].statements;
-        apply_incoming_checks(stmts, &incoming, pool_locals, aggregate_results);
+        let live = apply_incoming_checks(stmts, &incoming, pool_locals, aggregate_results);
+        exit_states.insert(bid, live);
     }
-}
-
-/// Compute the set of validated (pool, handle) pairs at the exit of a block.
-fn compute_block_exit_state(
-    stmts: &[MirStmt],
-    pool_locals: &HashSet<LocalId>,
-    aggregate_results: &HashSet<LocalId>,
-) -> CheckedMap {
-    let mut checked: CheckedMap = HashMap::new();
-
-    for stmt in stmts {
-        process_invalidations(stmt, &mut checked, pool_locals);
-
-        if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
-            // Aggregate results are never offered for cross-block reuse (#402).
-            if aggregate_results.contains(dst) {
-                continue;
-            }
-            checked.entry((*pool, *handle)).or_insert(*dst);
-        }
-        // Coalesced accesses (Assign from a checked local) also carry forward
-    }
-
-    checked
 }
 
 /// Intersect exit states from all predecessors. Only keep (pool, handle) pairs
-/// that are validated in ALL predecessors.
+/// that every predecessor validated into the *same* result local — a pair
+/// resolving to different locals means at least one predecessor's local is
+/// undefined on the other's path, so it can't be reused at the merge (#368).
 fn intersect_predecessor_states(
     preds: &[BlockId],
     exit_states: &HashMap<BlockId, CheckedMap>,
@@ -157,20 +128,24 @@ fn intersect_predecessor_states(
 
     let mut result = first;
     for state in iter {
-        result.retain(|key, _| state.contains_key(key));
+        result.retain(|key, dst| state.get(key) == Some(dst));
     }
     result
 }
 
 /// Apply incoming checked pairs to a block's statements: if a PoolCheckedAccess
 /// at the start of the block checks a pair already validated by incoming state,
-/// replace it with an Assign (reuse the predecessor's result local).
+/// replace it with an Assign (reuse the predecessor's result local). Returns
+/// the resulting live map — the block's real exit state — for successors to
+/// use. A reused pair keeps mapping to the predecessor's local (not the
+/// Assign's own `dst`), since that's what still holds the value on every path
+/// that reaches this block.
 fn apply_incoming_checks(
     stmts: &mut [MirStmt],
     incoming: &CheckedMap,
     pool_locals: &HashSet<LocalId>,
     aggregate_results: &HashSet<LocalId>,
-) {
+) -> CheckedMap {
     let mut live = incoming.clone();
 
     for stmt in stmts.iter_mut() {
@@ -196,6 +171,8 @@ fn apply_incoming_checks(
             }
         }
     }
+
+    live
 }
 
 /// Process invalidations from a statement, updating the checked map.
@@ -329,6 +306,14 @@ mod tests {
 
     fn is_pool_checked(stmt: &MirStmt) -> bool {
         matches!(&stmt.kind, MirStmtKind::PoolCheckedAccess { .. })
+    }
+
+    /// The local a coalesced `Assign` reuses.
+    fn coalesced_source(stmt: &MirStmt) -> LocalId {
+        match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(id)), .. } => *id,
+            other => panic!("expected a coalesced Assign, got {other:?}"),
+        }
     }
 
     #[test]
@@ -555,8 +540,71 @@ mod tests {
         // Block 1, 2: coalesced from Block 0's propagation
         assert!(is_coalesced(&f.blocks[1].statements[0]));
         assert!(is_coalesced(&f.blocks[2].statements[0]));
-        // Block 3: both predecessors (1, 2) have validated — coalesced
+        // Block 3: both predecessors (1, 2) have validated — coalesced, and
+        // reusing Block 0's local (2) specifically, not either branch-local
+        // copy (3, 4) — only Block 0's local is defined on every incoming path.
         assert!(is_coalesced(&f.blocks[3].statements[0]));
+        assert_eq!(coalesced_source(&f.blocks[3].statements[0]), local(2));
+    }
+
+    #[test]
+    fn cross_block_divergent_predecessor_checks_not_coalesced() {
+        // Block 0: no pool access; branch to 1/2
+        // Block 1: pool[h] — own check, result in t0
+        // Block 2: pool[h] — own check, result in t1
+        // Block 3: pool[h] — predecessors validated the pair into DIFFERENT
+        // locals (t0 vs t1). Reusing either would read an undefined value on
+        // the path through the other predecessor, so Block 3 must keep its
+        // own check (#368 — this used to reuse Block 1's local unconditionally
+        // and crash codegen on the Block 2 path).
+        let mut f = MirFunction {
+            name: "test".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(4), name: Some("t2".into()), ty: MirType::I64, is_param: false },
+            ],
+            blocks: vec![
+                MirBlock {
+                    id: BlockId(0),
+                    statements: vec![],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Constant(crate::MirConst::Bool(true)),
+                        then_block: BlockId(1),
+                        else_block: BlockId(2),
+                    }),
+                },
+                MirBlock {
+                    id: BlockId(1),
+                    statements: vec![pool_access(2, 0, 1)],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) }),
+                },
+                MirBlock {
+                    id: BlockId(2),
+                    statements: vec![pool_access(3, 0, 1)],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) }),
+                },
+                MirBlock {
+                    id: BlockId(3),
+                    statements: vec![pool_access(4, 0, 1)],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+                },
+            ],
+            entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+        coalesce_function(&mut f);
+        // Block 1, 2: each has a single predecessor (Block 0) with no prior
+        // check — both keep their own real check.
+        assert!(is_pool_checked(&f.blocks[1].statements[0]));
+        assert!(is_pool_checked(&f.blocks[2].statements[0]));
+        // Block 3: predecessors disagree on the result local — must NOT coalesce.
+        assert!(is_pool_checked(&f.blocks[3].statements[0]));
     }
 
     #[test]
