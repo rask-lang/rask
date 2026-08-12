@@ -21,11 +21,7 @@ use crate::{
 
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 pub fn insert_rc_ops(func: &mut MirFunction) {
-    let string_locals: Vec<LocalId> = func.locals.iter()
-        .chain(func.params.iter())
-        .filter(|l| l.ty == MirType::String)
-        .map(|l| l.id)
-        .collect();
+    let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
     if string_locals.is_empty() {
         return;
@@ -241,6 +237,48 @@ mod tests {
 
     fn count_rc_dec(stmts: &[MirStmt]) -> usize {
         stmts.iter().filter(|s| matches!(&s.kind, MirStmtKind::RcDec { .. })).count()
+    }
+
+    /// A string parameter gets exactly one RcDec. `add_param` registers a
+    /// parameter in both `params` and `locals`, and this pass used to walk the
+    /// two lists back to back — so every string parameter was visited twice and
+    /// got two decs for one inc. `self.last = title` then freed the caller's
+    /// buffer, and the field pointed at memory the next allocation reused
+    /// (#698).
+    #[test]
+    fn string_param_gets_one_dec_not_two() {
+        let param = MirLocal {
+            id: local(1),
+            name: Some("title".into()),
+            ty: MirType::String,
+            is_param: true,
+        };
+        let mut f = MirFunction {
+            name: "put".to_string(),
+            params: vec![param.clone()],
+            ret_ty: MirType::Void,
+            locals: vec![
+                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true },
+                param,
+            ],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![MirStmt::dummy(MirStmtKind::Store {
+                    addr: local(0),
+                    offset: 0,
+                    value: MirOperand::Local(local(1)),
+                    store_size: Some(16),
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+            entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+        insert_rc_ops(&mut f);
+        let stmts = &f.blocks[0].statements;
+        assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
+        assert_eq!(count_rc_dec(stmts), 1, "one dec for the param: {stmts:?}");
     }
 
     #[test]

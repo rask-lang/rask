@@ -389,6 +389,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
+    let mut mir_functions = Vec::new();
     for mono_fn in &mono.functions {
         if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
             if f.body.is_empty()
@@ -400,15 +401,27 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         match rask_mir::lower::MirLowerer::lower_function_named(
             &mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)
         ) {
-            Ok(mir_fns) => {
-                for func in &mir_fns {
-                    eprintln!("{}", func);
-                }
-            }
+            Ok(mir_fns) => mir_functions.extend(mir_fns),
             Err(e) => {
                 eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
             }
         }
+    }
+
+    // Run what compile runs, so the dump is the MIR codegen sees. Printing the
+    // raw lowering output hid every bug that lives in a pass: refcount
+    // insertion, inlining, bounds-check elimination and generation coalescing
+    // are all invisible before this point.
+    for func in &mut mir_functions {
+        rask_mir::transform::ssa::construct(func);
+    }
+    let _ = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
+    for func in &mut mir_functions {
+        rask_mir::transform::ssa::destruct(func);
+    }
+
+    for func in &mir_functions {
+        eprintln!("{}", func);
     }
 }
 

@@ -2636,3 +2636,23 @@ catchall(3) = some error
         assert_eq!(stdout, expected, "{}: wrong match arm ran", mode);
     }
 }
+
+// ─── Regression: issue #698 ─────────────────────────────────
+//
+// `self.last = title` in a `mutate self` method freed the caller's string. The
+// RC pass walked `locals` chained with `params`, and a parameter lives in both
+// lists, so every string parameter got two RcDecs for one RcInc. The field kept
+// pointing at the freed buffer, and the next allocation — the println
+// interpolation — wrote over it: the read-back string contained the format
+// string's own prefix.
+#[test]
+fn a_string_stored_into_a_field_outlives_the_call() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "string_field_store_lifetime.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "id=1 back=[verify the milestone] len=20\n",
+            "{}: stored string did not survive the call", mode
+        );
+    }
+}
