@@ -60,6 +60,19 @@ Deliberate attempt to break the design (ergonomics, learning curve, Raido fit). 
 - **Learning curve is the biggest adoption risk, priced consciously.** The programming model is Convex's (transactional mutators + reads) — which proves devs accept the model *in their own language*. Urd asks machine authors to learn Raido. Tiered exposure softens it (client devs never leave TS; agents write machines well — small strict deterministic languages are LLM-friendly), and SQL proves devs learn a language when the payoff is structural. The payoff (replay, fork, verify) must carry the demo, or the language tax wins.
 - **Kept after challenge**: the explicit `fx` parameter on every mutator, unused or not. Mild noise, but effects-visible-in-the-signature is Rask's transparency principle applied to Urd; ambient context would be more ergonomic and less honest.
 
+## Does Urd need Raido, or a transaction DSL?
+
+Raised after the store split: what remains VM-side reads like "stored procedures for a deterministic database," and Urd uses none of Raido's headline features — no serializable VM state (ops are fresh short-lived executions), no coroutines, no externs beyond tables. What it uses: determinism, static types, fuel, content-addressing, sandbox. What it misses: lambdas, attributes.
+
+A bespoke transaction DSL is the wrong fix — transaction logic always grows into a general-purpose language (PL/SQL, Solidity), and with Raido itself unbuilt, the real question is which spec to build, not reuse-vs-new. The proposed answer is to make Raido's own "verification-first, scripting-capable" seam literal:
+
+- **Raido Core** — pure deterministic functions over structs/enums, static types, fuel, content-addressing, sandbox. Lambdas and attributes land here. This *is* the transaction language.
+- **Raido Script** — coroutines, externs, serializable VM state, layered on top for games/GDL.
+
+Urd depends on Core only — no load-time profile subsetting, the layering is the profile. Keeping one language preserves the federation payoff: an Urd mutator and an Allgard verifiable transform are the same kind of object, a content-addressed Core function. Restructuring Raido is a Raido-side decision; recorded here, not made here.
+
+Side effect on positioning: "a database where transactions are deterministic and history is branchable" is a clearer pitch than "git for live state" — *database* is a category developers already adopt.
+
 ## Open questions
 
 - **Rejected ops**: server validates preconditions before append — but is a rejection recorded (auditable, replayable offline queues) or dropped (cleaner log)? Leaning recorded-but-outside-the-chain; needs a design round with the offline story.
