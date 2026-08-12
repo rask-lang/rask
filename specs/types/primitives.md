@@ -53,7 +53,7 @@ fit.
 | Rule | Conversion | Allowed | Notes |
 |------|------------|---------|-------|
 | **CV1: Lossless** | `i8` → `i32`, `u8` → `i16`, `f32` → `f64`, `i32` → `f64` | `as` | Every source value has an exact representation in the target |
-| **CV1a: Lossless is implicit** | `u32` → `i64` with no cast | implicit | An `as` there tells the reader nothing. `as` is for saying it out loud |
+| **CV1a: Lossless int→int is implicit** | `u32` → `i64` with no cast | implicit | An int→int conversion needs no `as` when **every** value of the source fits the target. `as` is for saying it out loud |
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
@@ -100,6 +100,13 @@ choosing what to lose is a real decision.
 
 Unsigned → signed needs the target *strictly* wider; same-signedness only needs
 it no narrower; signed → unsigned never coerces.
+
+**Int→float is never implicit, even when it's exact.** `i32` → `f64` loses
+nothing and `as` allows it, but it still needs the `as`. Nothing is lost and
+something still changed: equality stops being reliable, `NaN` becomes reachable,
+and every later operation on that value is float arithmetic. CV1a is about
+conversions the reader can safely not think about, and a change of number kind
+isn't one — the loss test says yes, the *did anything change* test says no.
 
 **Positions, not arithmetic.** CV1a applies where a value fills a typed slot:
 assignment, argument, return, struct field. It is **not** operator promotion —
@@ -150,8 +157,14 @@ resolve to `to`.
 **`to` is the default, and it's the one most code wants.** Most conversions in
 real code are a length or a count going into a smaller slot, where the author
 knows it fits. `to<T>()!` says exactly that, and being wrong turns into a panic
-instead of a wrong number. The other three are for when a value that doesn't fit
+instead of a wrong number. The other five are for when a value that doesn't fit
 is expected rather than a bug — and reaching for one of them says so.
+
+Each method is defined only where its policy means something. `wrap` and `clamp`
+are integer→integer; `floor` and `ceil` are float→integer; `round` is int→float,
+float→float, or float→integer — never int→int, where there is nothing to round.
+Anywhere else is a compile error rather than a no-op, so a method that reads as
+if it did something always did.
 
 `to` yields a result (`type.errors/ER1`), so the whole error vocabulary works on
 it without inventing anything: `!` panics with the reason (ER15), `try`
@@ -331,6 +344,9 @@ mut port: u16 = header.port   // Native u16
 | Float-to-int with NaN | CV11/CV14 | `.to<T>()` and `.round<T>()` fail with `NotFinite` |
 | Float with a fraction → int | CV11 | `.to<T>()` fails with `NotExact` — use `.round<T>()` |
 | `x.wrap<T>()` or `x.clamp<T>()` on a float | CV12/CV13 | Compile error — both are integers-only |
+| `x.round<T>()` int→int | CV14 | Compile error — nothing to round; use `to`/`wrap`/`clamp` |
+| `f64` → `f32` overflowing the range | CV14 | `.round<f32>()` gives ±infinity (IEEE), no failure |
+| `let x: f64 = my_i32` | CV1a | Compile error — int→float is never implicit; write `my_i32 as f64` |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |
