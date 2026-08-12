@@ -47,6 +47,19 @@ Decisions the survey settles:
 9. **Offline writes (v1.5) reuse the Replicache rebase model** — speculative ops client-side, rebase on server order — with one implementation instead of two, once Raido runs in wasm.
 10. **State lives in the host store, not the VM — from day 1.** Raido is for logic and scripts, not storage; it was sized for many tiny short-lived scripts, not one immortal gigabyte-scale state. So Urd follows the Cosmos pattern outright: a deterministic hash-tree keyed store in the Rask host (pools and handles doing what they're for), exposed to machines as typed `@table` accessors — the one blessed extern API. The store mutates in place and hashes incrementally; its merkle root is the state hash. State hashes always cover the **canonical encoding**, never anyone's memory layout — which is what lets store implementations evolve without invalidating logs, and makes optional-field additions hash-neutral (canonical encoding omits None — the weak-schema tactic, mechanized).
 
+## Stress test findings
+
+Deliberate attempt to break the design (ergonomics, learning curve, Raido fit). What survived is above; what needs work:
+
+- **Raido has no closures, the example assumes lambdas.** `scan().filter(|t| !t.done)` doesn't exist in Raido as specced (function references only). Either Raido grows *capture-free* lambdas — cheap, since no captured state means no arena hazard, which was the reason closures were cut — or reads use named predicate functions and get noticeably clunkier. Raido design call, flagged, not made here.
+- **Migration typing is underdesigned.** `old.todos.scan()` needs the previous schema's row type in scope. Synthesized from the old chunk's metadata, hand-redeclared, or imported version-pinned — each has real costs. Own design round before the migration format freezes.
+- **Deletion vs. the immutable log.** "Delete my account" meets hash-pinned history — the classic event-sourcing GDPR trap. Compaction helps the main branch; forks pin old history. Likely answer is crypto-shredding (per-subject field encryption, delete the key); v1 needs at least a stated position.
+- **Long migrations vs. fuel.** A migration over a huge table inside one log entry either needs unbounded fuel (server stalls; replay re-pays the cost) or chunked, checkpointed migration execution. Undesigned.
+- **An "Urd profile" of Raido should be written down**: no coroutines in mutators (atomicity), zero externs beyond the table API, which stdlib modules load. Raido's host-controlled stdlib already precedents this; make it explicit.
+- **Fixed-point needs a canonical wire encoding.** 32.32 numbers crossing the JSON boundary must round-trip identically for every client, or hash agreement breaks on the quietest possible detail.
+- **Learning curve is the biggest adoption risk, priced consciously.** The programming model is Convex's (transactional mutators + reads) — which proves devs accept the model *in their own language*. Urd asks machine authors to learn Raido. Tiered exposure softens it (client devs never leave TS; agents write machines well — small strict deterministic languages are LLM-friendly), and SQL proves devs learn a language when the payoff is structural. The payoff (replay, fork, verify) must carry the demo, or the language tax wins.
+- **Kept after challenge**: the explicit `fx` parameter on every mutator, unused or not. Mild noise, but effects-visible-in-the-signature is Rask's transparency principle applied to Urd; ambient context would be more ergonomic and less honest.
+
 ## Open questions
 
 - **Rejected ops**: server validates preconditions before append — but is a rejection recorded (auditable, replayable offline queues) or dropped (cleaner log)? Leaning recorded-but-outside-the-chain; needs a design round with the offline story.
