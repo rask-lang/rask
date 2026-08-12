@@ -13,12 +13,22 @@
 //! ownership to something else, so dropping the original name would
 //! double-free. A plain move to another local (`dst = Use(src)`, or merging
 //! through a `Phi`) is not an escape — it's the same value under a new name,
-//! so tracking follows the new name instead (every local typed as a trait
-//! object is a drop candidate, not just `TraitBox` destinations; a moved-from
-//! name is excluded so only the name still holding the value at its death
-//! gets dropped). What's left (created, only ever read through `TraitCall`,
-//! never hands off ownership) gets a `TraitDrop` before the function returns
-//! and before each loop back-edge it's still alive at.
+//! so tracking follows the new name instead (a moved-from name is excluded
+//! so only the name still holding the value at its death gets dropped). What's
+//! left (created, only ever read through `TraitCall`, never hands off
+//! ownership) gets a `TraitDrop` before the function returns and before each
+//! loop back-edge it's still alive at.
+//!
+//! Tracking starts from `TraitBox` destinations only — not every local typed
+//! as a trait object. Reading one back out of existing storage (a struct
+//! field, a `Vec` element, an `Option` payload) produces a local with the
+//! same type but not fresh ownership: it's the same heap pointer the
+//! container still holds, so a temp created by `r.inner.handle()` and
+//! another by `run(r.inner)` right after are two aliases of the one box, not
+//! two owners. Treating both as droppable-because-typed double-freed it
+//! (`tests/suite/t62_trait_object_positions.rk`'s struct-field test). Only
+//! `TraitBox`, and whatever a chain of moves/phis carries forward from it, is
+//! a fresh allocation this pass may decide to free.
 //!
 //! Unlike the closure pass, this doesn't refine call-argument escapes with
 //! per-callee borrow info — any appearance as a call/method argument counts
@@ -47,24 +57,7 @@ pub fn insert_trait_drops(fns: &mut [MirFunction]) {
 }
 
 fn insert_for_function(func: &mut MirFunction) {
-    // SSA renaming (loop variables especially) leaves the pre-rename local
-    // declaration behind in `func.locals` even once nothing in the CFG
-    // defines it anymore. Filtering by declared type alone picked those
-    // stale entries up as "droppable", and inserting a `TraitDrop` for a
-    // local nothing ever writes reads garbage — Cranelift's verifier caught
-    // it as a block-argument mismatch. Requiring an actual definition site
-    // keeps this to locals that are live in the CFG being examined.
-    let types: HashMap<LocalId, &MirType> = func.locals.iter().map(|l| (l.id, &l.ty)).collect();
-    let mut trait_locals: HashSet<LocalId> = HashSet::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            if let Some(id) = crate::analysis::uses::stmt_def(stmt) {
-                if matches!(types.get(&id), Some(MirType::TraitObject { .. })) {
-                    trait_locals.insert(id);
-                }
-            }
-        }
-    }
+    let trait_locals = collect_fresh_trait_locals(func);
     if trait_locals.is_empty() {
         return;
     }
@@ -81,6 +74,63 @@ fn insert_for_function(func: &mut MirFunction) {
     }
 
     insert_drops(func, &droppable);
+}
+
+/// Locals that hold a fresh trait-object allocation: `TraitBox` destinations,
+/// plus anything a chain of plain moves or `Phi` merges carries forward from
+/// one. A local typed as a trait object but reached only through a `Field`
+/// read, a container access, or a call/method return is deliberately left
+/// out — see the module doc for why aliasing one of those as "droppable"
+/// double-frees.
+fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
+    // SSA renaming (loop variables especially) can leave a pre-rename local
+    // declaration behind in `func.locals` even once nothing in the CFG
+    // defines it anymore, so start from actual definition sites, not the
+    // declared list — a `TraitDrop` for a local nothing ever writes reads
+    // garbage (Cranelift's verifier catches it as a block-argument mismatch).
+    let mut fresh: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let MirStmtKind::TraitBox { dst, .. } = &stmt.kind {
+                fresh.insert(*dst);
+            }
+        }
+    }
+    if fresh.is_empty() {
+        return fresh;
+    }
+
+    // Propagate through moves and phi-merges to a fixed point: `_4 = _3`
+    // (real lowering copies a `TraitBox` result into the source-named local
+    // before first use) or a multi-hop chain both carry the same fresh
+    // allocation to a new name.
+    loop {
+        let mut added = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                        if fresh.contains(src) && !fresh.contains(dst) =>
+                    {
+                        fresh.insert(*dst);
+                        added = true;
+                    }
+                    MirStmtKind::Phi { dst, args } if !fresh.contains(dst) => {
+                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(id) if fresh.contains(id))) {
+                            fresh.insert(*dst);
+                            added = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+
+    fresh
 }
 
 /// A trait object escapes if it's returned, stored, or passed as a call or
@@ -204,15 +254,15 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
             }
             MirTerminatorKind::Goto { target } => {
                 collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, *target, &func.blocks, &defined_in_block,
+                    &mut drops_to_insert, block_idx, block.id, *target, &func.blocks, &dom, &defined_in_block,
                 );
             }
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, *then_block, &func.blocks, &defined_in_block,
+                    &mut drops_to_insert, block_idx, block.id, *then_block, &func.blocks, &dom, &defined_in_block,
                 );
                 collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, *else_block, &func.blocks, &defined_in_block,
+                    &mut drops_to_insert, block_idx, block.id, *else_block, &func.blocks, &dom, &defined_in_block,
                 );
             }
             _ => {}
@@ -229,17 +279,27 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
 fn collect_backedge_drops(
     out: &mut Vec<(usize, Vec<LocalId>)>,
     block_idx: usize,
+    source: BlockId,
     target: BlockId,
     blocks: &[MirBlock],
+    dom: &crate::analysis::dominators::DominatorTree,
     defined_in_block: &HashMap<LocalId, usize>,
 ) {
-    let Some(target_idx) = blocks.iter().position(|b| b.id == target) else { return };
-    if target_idx > block_idx {
-        return; // forward edge, not a loop back-edge
+    // A genuine loop back-edge is one whose target dominates its source —
+    // every path to `source` passes through `target` first, i.e. `target`
+    // is the loop header. Block *index* order isn't a safe proxy for this:
+    // `assert`'s desugared success/failure blocks get allocated (and so
+    // numbered) before the main computation that jumps to them, which
+    // looked exactly like a back-edge under an index check and produced a
+    // double-drop (drop at the "back-edge", drop again at the real return).
+    if !dom.dominates(target, source) {
+        return;
     }
-    // Back-edge: drop trait objects defined between the target and here (the loop body).
+    // Drop trait objects whose definition is inside the loop — dominated by
+    // its header. Using block-index range here would have the same
+    // false-positive risk as above.
     let to_drop: Vec<LocalId> = defined_in_block.iter()
-        .filter(|(_, &cidx)| cidx >= target_idx && cidx <= block_idx)
+        .filter(|(_, &def_idx)| dom.dominates(target, blocks[def_idx].id))
         .map(|(&id, _)| id)
         .collect();
     if !to_drop.is_empty() {
@@ -439,5 +499,101 @@ mod tests {
         insert_trait_drops(std::slice::from_mut(&mut f));
         assert!(has_trait_drop(&f.blocks[2].statements, local(1)), "back-edge block should drop the loop-local trait object");
         assert!(!has_trait_drop(&f.blocks[2].statements, local(0)), "moved-from name should not be dropped");
+    }
+
+    /// Reproduces the shape `assert`'s desugaring produces: the success and
+    /// failure blocks are allocated (and so numbered) before the block that
+    /// computes the condition and branches to them. A block-index check for
+    /// "is this a back-edge" sees block 1 as jumped-to from a higher-numbered
+    /// block 2 and mistakes it for a loop, inserting a second `TraitDrop` at
+    /// block 2 on top of the one already correctly placed at block 1's
+    /// return — a double free (#366 follow-up: this exact shape crashed
+    /// `tests/suite/t11_traits.rk`'s "trait object dispatch" test in CI).
+    #[test]
+    fn assert_style_branch_to_lower_numbered_blocks_is_not_a_back_edge() {
+        // block 0: entry — TraitBox local 0 (moved to local 1), goto 2
+        // block 1: success — TraitDrop already placed here, return
+        // (no block 1 predecessor other than block 2 — not a loop header)
+        // block 2: TraitCall, branch to 1 (success) or 1 (success, for simplicity)
+        let mut f = make_fn(
+            vec![trait_local(0), trait_local(1)],
+            vec![
+                MirBlock {
+                    id: block_id(0),
+                    statements: vec![],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: block_id(2) }),
+                },
+                MirBlock {
+                    id: block_id(1),
+                    statements: vec![],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+                },
+                MirBlock {
+                    id: block_id(2),
+                    statements: vec![
+                        trait_box(local(0)),
+                        MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local(1),
+                            rvalue: MirRValue::Use(MirOperand::Local(local(0))),
+                        }),
+                        trait_call(local(1)),
+                    ],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(local(50)),
+                        then_block: block_id(1),
+                        else_block: block_id(1),
+                    }),
+                },
+            ],
+        );
+        insert_trait_drops(std::slice::from_mut(&mut f));
+        assert!(has_trait_drop(&f.blocks[1].statements, local(1)), "the return block should get the drop");
+        assert!(!has_trait_drop(&f.blocks[2].statements, local(1)), "the branch is not a back-edge — no second drop here");
+    }
+
+    /// Reproduces `tests/suite/t62_trait_object_positions.rk`'s struct-field
+    /// test: reading a trait object back out of a container (here, a struct
+    /// field) twice produces two locals of the same type aliasing one heap
+    /// box. Treating either as a fresh, droppable allocation — as a plain
+    /// "is this local typed as a trait object" check would — drops the same
+    /// pointer twice.
+    #[test]
+    fn field_read_trait_object_is_not_tracked_as_fresh() {
+        let mut f = make_fn(
+            vec![trait_local(0), trait_local(1)],
+            vec![MirBlock {
+                id: block_id(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(0),
+                        rvalue: MirRValue::Field {
+                            base: MirOperand::Local(local(2)),
+                            field_index: 0,
+                            byte_offset: Some(0),
+                            access: crate::FieldAccess::Sized(16),
+                        },
+                    }),
+                    trait_call(local(0)),
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(1),
+                        rvalue: MirRValue::Field {
+                            base: MirOperand::Local(local(2)),
+                            field_index: 0,
+                            byte_offset: Some(0),
+                            access: crate::FieldAccess::Sized(16),
+                        },
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: crate::FunctionRef::internal("run".into()),
+                        args: vec![MirOperand::Local(local(1))],
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_trait_drops(std::slice::from_mut(&mut f));
+        assert!(!has_trait_drop(&f.blocks[0].statements, local(0)), "a field read is a borrow, not a fresh allocation");
+        assert!(!has_trait_drop(&f.blocks[0].statements, local(1)), "same here — this pass must not touch the struct's own field");
     }
 }
