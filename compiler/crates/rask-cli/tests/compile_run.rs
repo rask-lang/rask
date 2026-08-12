@@ -2610,3 +2610,29 @@ fn primitive_methods_agree_on_both_backends() {
     assert!(native_out.contains("int abs 42\n"), "got: {}", native_out);
     assert!(native_out.contains("to_int 3\n"), "got: {}", native_out);
 }
+
+// ─── Regression: issue #677 ─────────────────────────────────
+//
+// `match r { i64 as v => …, MyErr.Bad(m) => …, MyErr.Worse => … }` on a
+// `i64 or MyErr` keyed every arm off the outer Ok/Err tag, so `Bad`'s variant
+// tag 0 collided with the Ok arm and `Worse`'s tag 1 collided with Err — the
+// error side always ran whichever arm the jump table kept last. The error
+// variants get their own switch inside the Err branch now.
+#[test]
+fn match_over_result_with_enum_error_picks_the_right_variant() {
+    let expected = "\
+describe(0) = ok 42
+describe(1) = bad oops
+describe(2) = other
+describe(3) = coded 7 seven
+catchall(0) = fine 42
+catchall(1) = some error
+catchall(2) = worse!
+catchall(3) = some error
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "match_result_enum_variants.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}: wrong match arm ran", mode);
+    }
+}

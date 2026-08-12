@@ -297,6 +297,37 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             });
 
+        // Arms that name a variant of the error enum, by arm index. A `T or E`
+        // match keys its switch on Ok vs Err, so a variant tag can't share that
+        // switch: in `match r { i64 as v => …, MyErr.Bad(m) => …, MyErr.Worse => … }`
+        // `Bad`'s variant tag 0 collided with the Ok arm's tag 0 and `Worse`'s
+        // tag 1 collided with Err, so the error always ran whichever arm the
+        // jump table kept (#677). These get a second switch inside the Err
+        // branch instead.
+        let err_variant_tags: Vec<Option<u64>> = if is_result_or_option {
+            let err_layout_id = err_payload_ty.as_ref().and_then(|t| match t {
+                MirType::Enum(crate::types::EnumLayoutId { id, .. }) => Some(*id),
+                _ => None,
+            });
+            arms.iter()
+                .map(|arm| {
+                    let id = err_layout_id?;
+                    // `MyErr.Bad` and a bare `Bad` name the same variant.
+                    let name = pattern_name(&arm.pattern)?;
+                    let bare = name.rsplit('.').next().unwrap_or(name);
+                    let layout = self.ctx.enum_layouts.get(id as usize)?;
+                    layout
+                        .variants
+                        .iter()
+                        .find(|v| v.name == bare)
+                        .map(|v| v.tag as u64)
+                })
+                .collect()
+        } else {
+            vec![None; arms.len()]
+        };
+        let two_level = err_variant_tags.iter().any(|t| t.is_some());
+
         let switch_val = if has_tag {
             let tag_local = self.emit_option_tag(&scrutinee_op, is_niche);
             MirOperand::Local(tag_local)
@@ -326,6 +357,10 @@ impl<'a> MirLowerer<'a> {
         let mut default_claimed = false;
 
         for (i, arm) in arms.iter().enumerate() {
+            // Error-variant arms belong to the inner switch, built below.
+            if two_level && err_variant_tags[i].is_some() {
+                continue;
+            }
             match &arm.pattern {
                 Pattern::Wildcard => {
                     if !default_claimed {
@@ -398,11 +433,74 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-            value: switch_val,
-            cases,
-            default: default_block,
-        }));
+        // Where an error-variant arm reads its payload from: the address of the
+        // error enum sitting in the Result's payload slot.
+        let mut err_value_local: Option<crate::LocalId> = None;
+
+        if two_level {
+            // Outer switch: Ok goes to the one arm that names the success side,
+            // Err goes to a block that switches again on the variant tag.
+            let mut ok_target = None;
+            let mut err_catchall = None;
+            for (i, arm) in arms.iter().enumerate() {
+                if err_variant_tags[i].is_some() {
+                    continue;
+                }
+                let name = match &arm.pattern {
+                    Pattern::TypePat { ty_name, .. } => ty_name.as_str(),
+                    Pattern::Ident(n) => n.as_str(),
+                    _ => continue,
+                };
+                // An arm naming the error type itself (`MyErr as e`) catches
+                // every variant the inner switch doesn't list.
+                if self.pattern_is_err_side(name, &scrutinee_ty) {
+                    err_catchall.get_or_insert(arm_blocks[i]);
+                } else {
+                    ok_target.get_or_insert(arm_blocks[i]);
+                }
+            }
+            let err_dispatch = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                value: switch_val,
+                cases: vec![(0, ok_target.unwrap_or(default_block)), (1, err_dispatch)],
+                default: default_block,
+            }));
+
+            self.builder.switch_to_block(err_dispatch);
+            let err_ty = err_payload_ty
+                .clone()
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/match_lower:err_enum"));
+            let err_local = self.builder.alloc_temp(err_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: err_local,
+                rvalue: MirRValue::Field {
+                    base: scrutinee_op.clone(),
+                    field_index: 0,
+                    // An enum payload is an aggregate, so this hands back its
+                    // address rather than loading a word.
+                    byte_offset: None,
+                    access: FieldAccess::Word,
+                },
+            }));
+            err_value_local = Some(err_local);
+            let inner_tag = self.emit_option_tag(&MirOperand::Local(err_local), false);
+            let inner_cases: Vec<(u64, BlockId)> = err_variant_tags
+                .iter()
+                .enumerate()
+                .filter_map(|(i, tag)| tag.map(|t| (t, arm_blocks[i])))
+                .collect();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                value: MirOperand::Local(inner_tag),
+                cases: inner_cases,
+                default: err_catchall.unwrap_or(default_block),
+            }));
+        } else {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                value: switch_val,
+                cases,
+                default: default_block,
+            }));
+        }
 
         let mut result_ty = MirType::Void;
         let result_local = self.builder.alloc_temp(MirType::I64);
@@ -415,19 +513,34 @@ impl<'a> MirLowerer<'a> {
                     // enum prefix so the layout lookup matches the variant's
                     // bare name (same as the Pattern::Struct path below).
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
+                    // An error-variant arm reads out of the error enum, whose
+                    // address err_dispatch computed; everything else reads out
+                    // of the scrutinee.
+                    let enum_layout_id = if err_variant_tags[i].is_some() {
+                        match &err_payload_ty {
+                            Some(MirType::Enum(crate::types::EnumLayoutId { id, .. })) => Some(*id),
+                            _ => None,
+                        }
+                    } else if let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &scrutinee_ty {
+                        Some(*id)
+                    } else {
+                        None
+                    };
+                    let payload_base = match (err_variant_tags[i], err_value_local) {
+                        (Some(_), Some(l)) => MirOperand::Local(l),
+                        _ => scrutinee_op.clone(),
+                    };
                     // (mir type, absolute byte offset within the enum, field size)
                     let variant_fields: Option<Vec<(MirType, u32, u32)>> =
-                        if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
-                            self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
+                        enum_layout_id.and_then(|idx| {
+                            self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
                                 layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
                                     v.fields.iter().map(|f| {
                                         (self.ctx.type_to_mir(&f.ty), v.payload_offset + f.offset, f.size)
                                     }).collect()
                                 })
                             })
-                        } else {
-                            None
-                        };
+                        });
 
                     for (j, field_pat) in fields.iter().enumerate() {
                         if let Pattern::Ident(binding) = field_pat {
@@ -457,7 +570,7 @@ impl<'a> MirLowerer<'a> {
                                 MirRValue::Use(scrutinee_op.clone())
                             } else {
                                 MirRValue::Field {
-                                    base: scrutinee_op.clone(),
+                                    base: payload_base.clone(),
                                     field_index: j as u32,
                                     byte_offset: field_loc.map(|(off, _)| off),
                                     access: field_loc.map_or(FieldAccess::Word, |(_, sz)| {
@@ -471,17 +584,15 @@ impl<'a> MirLowerer<'a> {
                             }));
                             let prefix = self.mir_type_name(&field_ty)
                                 .or_else(|| {
-                                    if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
-                                        self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
+                                    enum_layout_id.and_then(|idx| {
+                                        self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
                                             layout.variants.iter().find(|v| v.name == variant_name).and_then(|v| {
                                                 v.fields.get(j).and_then(|f| {
                                                     super::MirContext::type_prefix(&f.ty, self.ctx.type_names)
                                                 })
                                             })
                                         })
-                                    } else {
-                                        None
-                                    }
+                                    })
                                 })
                                 .or_else(|| {
                                     let payload_mir = match (&scrutinee_ty, name.as_str()) {
@@ -500,8 +611,25 @@ impl<'a> MirLowerer<'a> {
                     }
                 } else if let Pattern::Struct { name, fields, .. } = &arm.pattern {
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
-                    if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
-                        if let Some(layout) = self.ctx.enum_layouts.get(*idx as usize) {
+                    // Same split as the tuple-variant arm above: an error
+                    // variant's fields live in the error enum, reached through
+                    // the address err_dispatch computed.
+                    let enum_layout_id = if err_variant_tags[i].is_some() {
+                        match &err_payload_ty {
+                            Some(MirType::Enum(crate::types::EnumLayoutId { id, .. })) => Some(*id),
+                            _ => None,
+                        }
+                    } else if let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &scrutinee_ty {
+                        Some(*id)
+                    } else {
+                        None
+                    };
+                    let payload_base = match (err_variant_tags[i], err_value_local) {
+                        (Some(_), Some(l)) => MirOperand::Local(l),
+                        _ => scrutinee_op.clone(),
+                    };
+                    if let Some(idx) = enum_layout_id {
+                        if let Some(layout) = self.ctx.enum_layouts.get(idx as usize) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == variant_name) {
                                 for (field_name, field_pat) in fields {
                                     if let Pattern::Ident(binding) = field_pat {
@@ -515,7 +643,7 @@ impl<'a> MirLowerer<'a> {
                                             );
                                             // Exact offset/size so codegen doesn't guess the variant.
                                             let rvalue = MirRValue::Field {
-                                                base: scrutinee_op.clone(),
+                                                base: payload_base.clone(),
                                                 field_index: field_idx as u32,
                                                 byte_offset: Some(variant.payload_offset + field_layout.offset),
                                                 access: FieldAccess::for_field(&field_ty, field_layout.size),
