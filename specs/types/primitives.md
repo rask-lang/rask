@@ -41,29 +41,50 @@ A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
-what you mean with `truncate to`, `saturate to`, or `convert to T?` (CV5–CV7).
+what you mean with `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` (CV11–CV16).
 
 ## Type Conversions
 
+One question decides everything: **can every value of the source be represented
+in the target?** If yes the conversion is free — implicit, or `as` when you want
+to say it out loud. If no, you have to say what happens to the values that don't
+fit.
+
 | Rule | Conversion | Allowed | Notes |
 |------|------------|---------|-------|
-| **CV1: Widening** | `i8` → `i32`, `u8` → `i16`, `i32` → `f64` | `as` | Lossless: int→int value-preserving widening, int→float, `f32`→`f64` |
-| **CV1a: Widening is implicit** | `u32` → `i64` with no cast | implicit | An int→int conversion needs no `as` when **every** value of the source fits the target. `as` is for saying it out loud |
-| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Use explicit operations below |
-| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Use explicit operations below |
-| **CV4: Float→Int** | Any float→int | ❌ via `as` | Use explicit operations below. Int→float goes via `as` (CV1) — it rounds but never wraps or corrupts |
+| **CV1: Lossless** | `i8` → `i32`, `u8` → `i16`, `f32` → `f64`, `i32` → `f64` | `as` | Every source value has an exact representation in the target |
+| **CV1a: Lossless int→int is implicit** | `u32` → `i64` with no cast | implicit | An int→int conversion needs no `as` when **every** value of the source fits the target. `as` is for saying it out loud |
+| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
 let x: i8 = big_val as i8           // CV2: ERROR, narrowing
 ```
 
+### CV1: which int→float casts are lossless
+
+`as` promises nothing was lost, so it covers int→float only where the float holds
+every source value exactly:
+
+| Target | Sources |
+|---|---|
+| `f64` | `i8` `i16` `i32` `u8` `u16` `u32` |
+| `f32` | `i8` `i16` `u8` `u16` |
+
+`i64 as f32` is a compile error. Past 2^24 an `f32` can only land on multiples of
+128, so a billion-scale count comes back wrong by hundreds — the same silent
+precision loss the overflow rules exist to prevent, riding the one operator that
+promises the opposite. Precision loss gets named like any other loss:
+`total.round<f32>()`.
+
 ### CV1a: which conversions are implicit
 
 The test is one question: **can every value of the source be represented in the
 target?** If yes, the conversion is implicit — an `as` there would tell the
 reader nothing, and ceremony that informs nobody is a design bug
-(NORTH_STAR commitment 5). If no, it has to name a policy (CV5–CV7), because
+(NORTH_STAR commitment 5). If no, it has to name a policy (CV11–CV16), because
 choosing what to lose is a real decision.
 
 | From → To | Implicit? | Why |
@@ -79,6 +100,13 @@ choosing what to lose is a real decision.
 
 Unsigned → signed needs the target *strictly* wider; same-signedness only needs
 it no narrower; signed → unsigned never coerces.
+
+**Int→float is never implicit, even when it's exact.** `i32` → `f64` loses
+nothing and `as` allows it, but it still needs the `as`. Nothing is lost and
+something still changed: equality stops being reliable, `NaN` becomes reachable,
+and every later operation on that value is float arithmetic. CV1a is about
+conversions the reader can safely not think about, and a change of number kind
+isn't one — the loss test says yes, the *did anything change* test says no.
 
 **Positions, not arithmetic.** CV1a applies where a value fills a typed slot:
 assignment, argument, return, struct field. It is **not** operator promotion —
@@ -98,21 +126,109 @@ value that doesn't fit can never quietly become a wrong number, so the only
 question left is whether the conversion is worth writing down — and when it
 cannot fail, it isn't.
 
-**Lossy conversions — explicit operations:**
+### Conversions that can lose something
 
-| Rule | Operation | Behavior |
-|------|-----------|----------|
-| **CV5: Truncate** | `truncate to T` | Wrapping/bitwise truncation |
-| **CV6: Saturate** | `saturate to T` | Clamp to target range |
-| **CV7: Checked convert** | `convert to T?` | `T?`, `none` if out of range. The `?` on the target is required — it says the conversion is partial |
+Six methods on every numeric primitive. The type argument is the target; the
+name is the policy.
 
-**Float to int:**
+| Rule | Form | Yields | Behavior |
+|------|------|--------|----------|
+| **CV11: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
+| **CV12: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
+| **CV13: Clamp** | `x.clamp<T>()` | `T` | **Integers only.** Pins to the target's range |
+| **CV14: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
+| **CV15: Floor** | `x.floor<T>()` | `T or ConvertError` | **Float source, integer target.** Toward negative infinity |
+| **CV16: Ceil** | `x.ceil<T>()` | `T or ConvertError` | **Float source, integer target.** Toward positive infinity |
 
-| Rule | Operation | Behavior |
-|------|-----------|----------|
-| **CV8: Float truncate** | `float to int T` | Truncate toward zero, panic on NaN/infinity |
-| **CV9: Float saturate** | `float to int T (saturating)` | Clamp to T.MIN/T.MAX, NaN → 0 |
-| **CV10: Checked float to int** | `float to int T?` | `T?`, `none` on out-of-range, NaN or infinity |
+```rask
+let count = rows.len().to<i32>()!           // I know it fits — panic if I'm wrong
+self.data.push((value >> 8).wrap<u8>())     // serializing: the low byte
+let level = raw.clamp<u8>()                 // out of range is expected
+let ratio = total.round<f32>()              // accept the rounding
+let cell = (pos / cell_size).floor<i32>()!  // grid index
+```
+
+CV5–CV10 are deleted. They were the phrase-verb family — `truncate to T`,
+`saturate to T`, `convert to T?`, and the three `float to int` forms. The
+methods above are new rules with new numbers, not renamed ones: an old
+diagnostic or commit citing CV5 meant `truncate to`, and must not silently
+resolve to `to`.
+
+**`to` is the default, and it's the one most code wants.** Most conversions in
+real code are a length or a count going into a smaller slot, where the author
+knows it fits. `to<T>()!` says exactly that, and being wrong turns into a panic
+instead of a wrong number. The other five are for when a value that doesn't fit
+is expected rather than a bug — and reaching for one of them says so.
+
+Each method is defined only where its policy means something. `wrap` and `clamp`
+are integer→integer; `floor` and `ceil` are float→integer; `round` is int→float,
+float→float, or float→integer — never int→int, where there is nothing to round.
+Anywhere else is a compile error rather than a no-op, so a method that reads as
+if it did something always did.
+
+`to` yields a result (`type.errors/ER1`), so the whole error vocabulary works on
+it without inventing anything: `!` panics with the reason (ER15), `try`
+propagates it, `catch e =>` handles it, and `! "msg"` replaces the panic message.
+
+```rask
+let n = try text_len.to<u16>()              // propagate to the caller
+let n = value.to<u8>() catch _ => 0         // fall back
+let n = rows.to<i32>()! "row count exceeds i32"
+```
+
+### What "fails" means
+
+Anything that can fail yields a result; anything total yields the value bare.
+That's the only rule, and it's the same question CV1 asks — can this value be
+represented in the target?
+
+```rask
+public enum ConvertError {
+    OutOfRange   // doesn't fit the target type
+    NotExact     // a float with a fraction, going to an integer
+    NotFinite    // NaN or infinity
+}
+```
+
+`OutOfRange` is spelled to match `ParseError.OutOfRange` (`stdlib/string.rk`),
+which already means exactly this.
+
+`to` from a float is therefore exact-or-fail: `3.0.to<i32>()` gives `3`, and
+`3.7.to<i32>()` fails with `NotExact`. That's the honest reading of "convert if
+it fits", and it replaces the hand-rolled round-trip test — `json.rk` currently
+writes `if i as f64 == n && n >= -9007199254740992.0 && …` to ask the same
+question.
+
+### Float→int
+
+Getting an integer out of a float answers two questions: what happens to the
+fraction, and what happens if the result doesn't fit. The verb answers the first,
+the return type answers the second — every float→int conversion can fail, so
+every one of them yields a result and nothing is decided quietly.
+
+| | fraction | doesn't fit, NaN, infinity |
+|---|---|---|
+| `x.to<i32>()` | must be none — else `NotExact` | fails |
+| `x.round<i32>()` | nearest | fails |
+| `x.floor<i32>()` | toward −∞ | fails |
+| `x.ceil<i32>()` | toward +∞ | fails |
+
+These are the same names `f64` already carries for its float→float versions
+(`.floor()`, `.ceil()`, `.round()`). The type argument is what makes it a
+conversion: `x.floor()` is an `f64`, `x.floor<i32>()` is an `i32` that can fail.
+
+There is no toward-zero member. That mode — C's `(int)` cast, Rust's `as` — is
+`floor` for positives and `ceil` for negatives, so it only differs from `floor`
+below zero, and "truncate" is the word people mis-predict: most read it as floor
+and get `-2` from `-2.7`. Anyone who genuinely wants magnitude-shrinking can say
+which direction they mean for their sign.
+
+`wrap` and `clamp` are integers-only, because on a float neither one means
+anything you'd want. Bit-truncating an IEEE pattern into an integer is a
+reinterpretation nobody asks for, and toward-zero isn't wrapping at all — it's a
+rounding mode wearing the wrong word. `clamp` could be defined, but it would have
+to pick a fraction policy silently to stay total, and it's the one member whose
+name couldn't say which it picked.
 
 ## `char` Type
 
@@ -225,8 +341,14 @@ mut port: u16 = header.port   // Native u16
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |
 | NaN in comparison | F2 | `NaN == NaN` is `false`, `NaN < x` is `false` |
-| Float-to-int with NaN | CV8 | Panics (use CV9 or CV10 for safe alternatives) |
+| Float-to-int with NaN | CV11/CV14 | `.to<T>()` and `.round<T>()` fail with `NotFinite` |
+| Float with a fraction → int | CV11 | `.to<T>()` fails with `NotExact` — use `.round<T>()` |
+| `x.wrap<T>()` or `x.clamp<T>()` on a float | CV12/CV13 | Compile error — both are integers-only |
+| `x.round<T>()` int→int | CV14 | Compile error — nothing to round; use `to`/`wrap`/`clamp` |
+| `f64` → `f32` overflowing the range | CV14 | `.round<f32>()` gives ±infinity (IEEE), no failure |
+| `let x: f64 = my_i32` | CV1a | Compile error — int→float is never implicit; write `my_i32 as f64` |
 | Narrowing via `as` | CV2 | Compile error |
+| `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |
 
 ## Error Messages
@@ -236,15 +358,38 @@ mut port: u16 = header.port   // Native u16
 ERROR [type.primitives/CV2]: cannot narrow i32 to i8 with `as`
    |
 5  |  let x: i8 = big_val as i8
-   |                 ^^^^^^^^^^^^^ narrowing conversion not allowed
+   |              ^^^^^^^^^^^^^ an i32 doesn't always fit in an i8
 
-WHY: `as` only permits lossless widening. Narrowing may lose data.
+WHY: `as` is for conversions that can't lose anything. This one can, so it has
+     to say what happens to a value that doesn't fit.
 
-FIX: Use an explicit conversion:
+FIX: If it always fits, say so — being wrong becomes a panic, not a wrong number:
 
-  let x: i8 = big_val truncate to i8    // wraps
-  let x: i8 = big_val saturate to i8    // clamps
-  let x = big_val convert to i8?        // i8?
+  let x = big_val.to<i8>()!
+
+     If it might not fit, pick what to do about it:
+
+  let x = big_val.wrap<i8>()          // keep the low bits
+  let x = big_val.clamp<i8>()         // pin to -128..=127
+  let x = big_val.to<i8>() catch _ => 0
+```
+
+The order matters. `to<T>()!` goes first because it's what most narrowing code
+means, and a suggestion list that opens with `wrap` teaches people to reach for
+bit-truncation when what they meant was "this fits" — silently wrong at the one
+moment they were asserting couldn't happen.
+
+**Inexact int→float via `as` [CV1]:**
+```
+ERROR [type.primitives/CV1]: cannot convert i64 to f32 with `as`
+   |
+7  |  let ratio = total as f32
+   |              ^^^^^^^^^^^^ an f32 can't hold every i64 exactly
+
+WHY: past 2^24 an f32 only lands on multiples of 128, so a billion-scale count
+     comes back wrong by hundreds. `as` promises nothing was lost.
+
+FIX: let ratio = total.round<f32>()   // nearest f32, rounding accepted
 ```
 
 **Direct u32-to-char cast [CH5]:**
@@ -277,19 +422,23 @@ FIX: let flag: bool = n != 0
 
 **P5 (char as dedicated type):** A dedicated `char` type guarantees validity at the type level. Without it, every function taking a "character" would need runtime validation. The compiler knows the value is always a valid Unicode scalar, enabling better optimization and clearer APIs (`c.is_alphabetic()` makes sense on a char, not on an arbitrary `u32`).
 
-**CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions use named operations (`truncate`, `saturate`, `convert`) that document intent. Consistent with the overflow philosophy in `type.integer-overflow`.
+**CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions name what they give up. Consistent with the overflow philosophy in `type.integer-overflow`.
 
-**CV7/CV10 (the `?` moved from `try` to the target type).** These used to be spelled `try convert to T` and `try float to int T`. That was a second meaning for `try`: not "an error may leave this function" (`type.errors/ER16`) but "hand me an optional instead of failing". Nothing propagates — the result is `T?`, an *absence*, which is `?` territory rather than `try`'s.
+**CV11–CV16 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants a rounding mode crossed with an out-of-range behaviour. Every combination is a name in a namespace and a line in a table; as syntax, each is a parse rule. Adding `floor` and `ceil` cost one row each, which is the argument working.
 
-Writing the `?` on the target says the same thing in the marker the language already uses for it, and says it where the reader is looking for the result type:
+The float sub-family disappears in the move. There was never a second set of policies for floats — converting means the same thing there, on values that happen to have a fraction.
 
-<!-- test: skip -->
-```rask
-let x = big_val convert to i8?          // i8? — none if it doesn't fit
-let n = (x convert to i64?) ?? return MyError.OutOfRange
-```
+**CV12/CV13 (`wrap` and `clamp` are integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word.
 
-The old spelling put two unrelated `try`s in that second line. `truncate to` and `saturate to` are total, so a `?` on *their* target is a type error — the `?` is what marks a conversion as partial.
+`clamp` went the same way for a different reason. It could be defined on floats, but to stay total it would have to pick a fraction policy silently, and it's the one member whose name can't say which — `(pos / cell).clamp<i32>()` gives 3 from 2.99 under nearest and 2 under toward-zero, with nothing at the site to tell you. The case that justified keeping it was colour quantization, `(channel * 255.0).clamp<u8>()`, and no such code exists in the tree: the single float→int site is `json.rk` asking whether a float is a whole number, which is `to`. A member kept for a hypothetical is a member the reader still has to learn. It comes back as one line the day something needs it.
+
+Both restrictions leave float→int with exactly two entries, `to` and `round`, both fallible, each naming its fraction policy. Nothing about a float conversion is decided quietly.
+
+**CV11 (`to` yields a result).** The common case by a wide margin is a length or a count moving into a smaller slot where the author knows it fits. That deserves the shortest name, and `to` is it. Yielding `T or ConvertError` rather than panicking directly is what lets one method serve every downstream: `!` to assert, `try` to propagate, `catch` to handle. The panic is spelled — one character, at the site, in the marker the language already uses for it — instead of being something you have to know about `to`.
+
+It also removes the need for a separate optional-shaped member. An earlier draft had `check<T>() -> T?` alongside; once `to` fails rather than panics, `x.to<u8>() catch _ => 0` covers it, and a second spelling of the same test is a member the reader has to disambiguate for nothing.
+
+That settles a question the old design couldn't answer. `truncate to` was the only form that read like "just do it", so it collected every "I know this fits" site in the tree and quietly wrapped them. The policy names now describe cases that are genuinely expected, and the assertion has its own word.
 
 **CH3 (runtime construction returns `T?`):** `char.from_u32(n)` returning `char?` forces handling of invalid code points. The unsafe `char.from_u32_unchecked(n)` exists for performance-critical paths where validity is known.
 
