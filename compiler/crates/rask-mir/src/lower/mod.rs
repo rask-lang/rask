@@ -3662,6 +3662,24 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         return ret_category_to_mir_type(&meta.ret_category);
     }
 
+    // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
+    // knows each one's shape. Without this they all fell through to i64, so
+    // `x.floor().to_string()` picked i64_to_string and printed a truncated
+    // integer (#687).
+    if let Some(name) = func_name.strip_prefix("f64_") {
+        if let Some(m) = rask_stdlib::float_methods::lookup(name) {
+            use rask_stdlib::FloatSig;
+            return match m.sig {
+                FloatSig::Unary | FloatSig::BinaryFloat | FloatSig::BinaryInt => MirType::F64,
+                FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
+                FloatSig::ToString => MirType::String,
+                FloatSig::ToInt => MirType::I64,
+                // Ordering is an enum; leave it to the caller's own typing.
+                FloatSig::Compare => MirType::I64,
+            };
+        }
+    }
+
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
@@ -3794,6 +3812,13 @@ fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {
         MirType::String => Some("string"),
         MirType::Bool => Some("bool"),
         MirType::Char => Some("char"),
+        // Integer receivers were missing here, so a method on a computed
+        // integer — `(0 - n).abs()`, where no local carries the type — reached
+        // the end of the dispatch chain with nothing and failed lowering.
+        // Widths mangle to their own prefix; codegen has i64_* entries and
+        // narrower widths ride in i64 slots.
+        MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 => Some("i64"),
+        MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => Some("u64"),
         // Ptr is too generic — user-defined types become Ptr in MIR,
         // so local_type_prefix or type-checker lookup should provide the name.
         MirType::Ptr => None,

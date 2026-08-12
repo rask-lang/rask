@@ -263,6 +263,7 @@ impl Interpreter {
             "div" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a / b), k)) }
             "neg" => Ok(Value::Float(k.round(-a), k)),
             "eq" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a == b)) }
+            "ne" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a != b)) }
             "lt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a > b)) }

@@ -3239,40 +3239,47 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        match method {
-            "add" | "sub" | "mul" | "div" | "rem"
-            | "pow" | "powf" if args.len() == 1 => {
+        use rask_stdlib::FloatSig;
+
+        let no_such = || TypeError::NoSuchMethod {
+            ty: ty.clone(),
+            method: method.to_string(),
+            span,
+        };
+        let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
+
+        // Arity comes from the signature shape; a call with the wrong count
+        // isn't this method.
+        let wants_arg = matches!(
+            entry.sig,
+            FloatSig::BinaryFloat | FloatSig::BinaryInt | FloatSig::Comparison | FloatSig::Compare
+        );
+        if wants_arg != (args.len() == 1) {
+            return Err(no_such());
+        }
+
+        match entry.sig {
+            FloatSig::Unary => self.unify(ret, ty, span),
+            FloatSig::BinaryFloat => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
-            "powi" if args.len() == 1 => {
+            FloatSig::BinaryInt => {
                 let _ = self.unify(&args[0], &Type::I32, span);
                 self.unify(ret, ty, span)
             }
-            "neg" | "abs" | "floor" | "ceil" | "round" | "sqrt"
-            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-            | "ln" | "log10" | "log2" | "exp" | "trunc" | "fract"
-                if args.is_empty() =>
-            {
-                self.unify(ret, ty, span)
-            }
-            "is_nan" | "is_inf" | "is_finite" if args.is_empty() => {
+            FloatSig::Predicate | FloatSig::Comparison => {
+                if entry.sig == FloatSig::Comparison {
+                    let _ = self.unify(&args[0], ty, span);
+                }
                 self.unify(ret, &Type::Bool, span)
             }
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::Bool, span)
-            }
-            "compare" if args.len() == 1 => {
+            FloatSig::Compare => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
             }
-            "to_int" if args.is_empty() => self.unify(ret, &Type::I64, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: ty.clone(),
-                method: method.to_string(),
-                span,
-            }),
+            FloatSig::ToString => self.unify(ret, &Type::String, span),
+            FloatSig::ToInt => self.unify(ret, &Type::I64, span),
         }
     }
 }

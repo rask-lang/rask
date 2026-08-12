@@ -1,0 +1,46 @@
+// Every primitive method both backends must agree on. Native codegen used to
+// be missing most of the f64 family (#687) — the checker accepted `x.floor()`,
+// the interpreter ran it, and codegen died with "Function not found: f64_floor".
+// A method registered in rask-stdlib but absent from the dispatch table shows
+// up here as a compile failure instead of in someone's program.
+
+func main() {
+    let x = 3.75
+    println("floor {x.floor()}")
+    println("ceil {x.ceil()}")
+    println("round {x.round()}")
+    println("trunc {x.trunc()}")
+    println("sqrt {(4.0).sqrt()}")
+    println("abs {(0.0 - x).abs()}")
+    println("pow {x.powf(2.0)}")
+    println("powi {x.powi(2)}")
+    println("exp {(0.0).exp()}")
+    println("ln {(1.0).ln()}")
+    println("log2 {(8.0).log2()}")
+    println("log10 {(100.0).log10()}")
+    println("sin {(0.0).sin()}")
+    println("cos {(0.0).cos()}")
+    println("tan {(0.0).tan()}")
+    println("asin {(0.0).asin()}")
+    println("acos {(1.0).acos()}")
+    println("atan {(0.0).atan()}")
+    println("is_nan {x.is_nan()}")
+    println("is_inf {x.is_inf()}")
+    println("is_finite {x.is_finite()}")
+    println("to_int {x.to_int()}")
+    println("to_string {x.to_string()}")
+    println("rem {(7.5) % (2.0)}")
+
+    let n = -42
+    println("int abs {n.abs()}")
+    println("int computed abs {(0 - 7).abs()}")
+    println("int to_float {n.to_float()}")
+    println("int to_string {n.to_string()}")
+
+    let c = 'q'
+    println("char upper {c.to_uppercase()}")
+    println("char is_alpha {c.is_alphabetic()}")
+    println("char len_utf8 {c.len_utf8()}")
+
+    println("bool {(1 < 2).to_string()}")
+}

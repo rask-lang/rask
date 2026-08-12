@@ -349,6 +349,38 @@ impl<'a> MirLowerer<'a> {
         MirOperand::Local(dst)
     }
 
+    /// `x.to_int()` on a float and `n.to_float()` on an integer — a single
+    /// convert instruction, not a runtime call. Dispatching them by name sent
+    /// codegen looking for `f64_to_int`/`i64_to_float`, which no backend has:
+    /// the float side died with "Function not found" and the integer side never
+    /// even resolved a type prefix.
+    fn try_lower_numeric_conversion(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Option<TypedOperand> {
+        if !args.is_empty() {
+            return None;
+        }
+        let target = match method {
+            "to_int" if matches!(obj_ty, MirType::F32 | MirType::F64) => MirType::I64,
+            "to_float" if matches!(
+                obj_ty,
+                MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            ) => MirType::F64,
+            _ => return None,
+        };
+        let dst = self.builder.alloc_temp(target.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: target.clone() },
+        }));
+        Some((MirOperand::Local(dst), target))
+    }
+
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
@@ -3974,6 +4006,14 @@ impl<'a> MirLowerer<'a> {
         if let Some(handled) = self.try_lower_result_option_method(
             expr, object, method.as_str(), args, &obj_op, &obj_ty,
         )? {
+            return Ok(handled);
+        }
+
+        // `to_int` / `to_float` are one machine instruction, so lower them to a
+        // Cast instead of hunting for a `f64_to_int` symbol that never existed.
+        if let Some(handled) =
+            self.try_lower_numeric_conversion(method.as_str(), args, &obj_op, &obj_ty)
+        {
             return Ok(handled);
         }
 

@@ -6,6 +6,7 @@
 
 mod builtins;
 pub mod types;
+pub mod float_methods;
 pub mod registry;
 pub mod stubs;
 pub mod modules;
@@ -23,6 +24,7 @@ pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,
     StdlibLayer, type_layer, module_layer,
 };
+pub use float_methods::{FloatMethod, FloatSig, FLOAT_METHODS};
 
 /// Information about a built-in function for the resolver
 #[derive(Debug, Clone)]

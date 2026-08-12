@@ -1386,6 +1386,7 @@ dependencies = [
  "rask-ast",
  "rask-mir",
  "rask-mono",
+ "rask-stdlib",
  "rask-types",
  "target-lexicon",
 ]

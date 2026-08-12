@@ -90,16 +90,13 @@ const U128_METHODS: &[&str] = &[
     "to_string",
 ];
 
-const F64_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "neg",
-    "eq", "lt", "le", "gt", "ge", "compare",
-    "abs", "floor", "ceil", "round", "sqrt", "trunc", "fract",
-    "to_string", "to_int",
-    "pow", "powf", "powi",
-    "sin", "cos", "tan", "asin", "acos", "atan",
-    "ln", "log10", "log2", "exp",
-    "is_nan", "is_inf", "is_finite",
-];
+/// Float methods come from `float_methods::FLOAT_METHODS` — the checker,
+/// interpreter and codegen read that same table, so this list can't drift
+/// from what f64 actually answers to.
+fn f64_methods() -> &'static [&'static str] {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(crate::float_methods::method_names).as_slice()
+}
 
 const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
@@ -292,7 +289,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "u8" | "u16" | "u32" | "u64" => UNSIGNED_INT_METHODS,
         "i128" => I128_METHODS,
         "u128" => U128_METHODS,
-        "f64" => F64_METHODS,
+        "f64" => f64_methods(),
         "bool" => BOOL_METHODS,
         "char" => CHAR_METHODS,
         "string" => STRING_METHODS,

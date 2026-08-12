@@ -2586,3 +2586,27 @@ fn package_diagnostic_names_the_right_file() {
         "the interpolation error should also name the second file:\n{combined}"
     );
 }
+
+// ─── Regression: issue #687 ─────────────────────────────────
+//
+// The f64 method set lived in four hand-maintained lists — checker, interpreter,
+// codegen dispatch, drift registry — and they disagreed. `x.floor()` passed the
+// checker, ran on the interpreter, and failed native codegen with "Function not
+// found: f64_floor". They all read rask_stdlib::FLOAT_METHODS now; this test
+// runs the whole primitive surface through both backends and compares.
+#[test]
+fn primitive_methods_agree_on_both_backends() {
+    let (interp_out, interp_err, interp_code) = run_capture("--interp", "primitive_methods.rk");
+    assert_eq!(interp_code, 0, "interp failed: {}", interp_err);
+    let (native_out, native_err, native_code) = run_capture("--native", "primitive_methods.rk");
+    assert_eq!(native_code, 0, "native failed: {}", native_err);
+    assert_eq!(
+        interp_out, native_out,
+        "primitive method results diverge between backends"
+    );
+    // Spot-check a few values so a backend that agrees by both being wrong
+    // still fails.
+    assert!(native_out.contains("floor 3\n"), "got: {}", native_out);
+    assert!(native_out.contains("int abs 42\n"), "got: {}", native_out);
+    assert!(native_out.contains("to_int 3\n"), "got: {}", native_out);
+}
