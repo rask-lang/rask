@@ -27,9 +27,15 @@ Like SQLite and Postgres are two shapes of one idea:
 
 ## Architecture split
 
-The engine is written in Rask. The machines run on Raido.
+The engine is written in Rask. The machines run on Raido. **State lives in neither** — it lives in Urd's store.
 
-Same division of labor as Midgard: Rask builds the host — log storage, networking, snapshot store, CLI. Raido runs the logic that must be replayable. Transition code executes on the deterministic VM, so determinism isn't a discipline the user has to maintain — the VM can't be nondeterministic. Effects (time, randomness, external data) enter only as recorded fields inside ops.
+Raido is for logic and scripts, not storage, so the split is three-way:
+
+- **Rask (the engine)**: log storage, networking, snapshots, CLI — and the **state store**: a deterministic hash-tree keyed store with specced iteration order, mutated in place, hashed incrementally. Its merkle root is the state hash. This is where pools and handles earn their keep.
+- **Raido (the machines)**: transition logic only. The VM stays tiny and true to its purpose. Determinism isn't a discipline the user maintains — the VM can't be nondeterministic.
+- **The store API is the one set of externs Urd registers** — typed table access derived from the machine's own struct declarations. Every other extern door stays welded shut. Effects (time, randomness, external data) enter only as recorded fields inside ops.
+
+Same division of labor CometBFT proved at scale: thin deterministic logic layer, merkleized store underneath.
 
 ## Host API sketch
 
