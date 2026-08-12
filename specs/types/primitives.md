@@ -41,7 +41,7 @@ A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
-what you mean with `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` (CV5–CV8).
+what you mean with `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` (CV11–CV16).
 
 ## Type Conversions
 
@@ -54,9 +54,9 @@ fit.
 |------|------------|---------|-------|
 | **CV1: Lossless** | `i8` → `i32`, `u8` → `i16`, `f32` → `f64`, `i32` → `f64` | `as` | Every source value has an exact representation in the target |
 | **CV1a: Lossless is implicit** | `u32` → `i64` with no cast | implicit | An `as` there tells the reader nothing. `as` is for saying it out loud |
-| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV5–CV8) |
-| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV5–CV8) |
-| **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV5–CV8) |
+| **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
@@ -84,7 +84,7 @@ promises the opposite. Precision loss gets named like any other loss:
 The test is one question: **can every value of the source be represented in the
 target?** If yes, the conversion is implicit — an `as` there would tell the
 reader nothing, and ceremony that informs nobody is a design bug
-(NORTH_STAR commitment 5). If no, it has to name a policy (CV5–CV8), because
+(NORTH_STAR commitment 5). If no, it has to name a policy (CV11–CV16), because
 choosing what to lose is a real decision.
 
 | From → To | Implicit? | Why |
@@ -121,23 +121,31 @@ cannot fail, it isn't.
 
 ### Conversions that can lose something
 
-Four methods on every numeric primitive. The type argument is the target; the
+Six methods on every numeric primitive. The type argument is the target; the
 name is the policy.
 
 | Rule | Form | Yields | Behavior |
 |------|------|--------|----------|
-| **CV5: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
-| **CV6: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
-| **CV7: Clamp** | `x.clamp<T>()` | `T` | **Integers only.** Pins to the target's range |
-| **CV8: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
+| **CV11: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
+| **CV12: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
+| **CV13: Clamp** | `x.clamp<T>()` | `T` | **Integers only.** Pins to the target's range |
+| **CV14: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
+| **CV15: Floor** | `x.floor<T>()` | `T or ConvertError` | **Float source, integer target.** Toward negative infinity |
+| **CV16: Ceil** | `x.ceil<T>()` | `T or ConvertError` | **Float source, integer target.** Toward positive infinity |
 
 ```rask
 let count = rows.len().to<i32>()!           // I know it fits — panic if I'm wrong
 self.data.push((value >> 8).wrap<u8>())     // serializing: the low byte
 let level = raw.clamp<u8>()                 // out of range is expected
 let ratio = total.round<f32>()              // accept the rounding
-let tick = seconds.round<i64>()!            // nearest whole, panic on NaN
+let cell = (pos / cell_size).floor<i32>()!  // grid index
 ```
+
+CV5–CV10 are deleted. They were the phrase-verb family — `truncate to T`,
+`saturate to T`, `convert to T?`, and the three `float to int` forms. The
+methods above are new rules with new numbers, not renamed ones: an old
+diagnostic or commit citing CV5 meant `truncate to`, and must not silently
+resolve to `to`.
 
 **`to` is the default, and it's the one most code wants.** Most conversions in
 real code are a length or a count going into a smaller slot, where the author
@@ -178,7 +186,7 @@ it fits", and it replaces the hand-rolled round-trip test — `json.rk` currentl
 writes `if i as f64 == n && n >= -9007199254740992.0 && …` to ask the same
 question.
 
-### Float→int is `to` and `round`, and nothing else
+### Float→int
 
 Getting an integer out of a float answers two questions: what happens to the
 fraction, and what happens if the result doesn't fit. The verb answers the first,
@@ -189,6 +197,18 @@ every one of them yields a result and nothing is decided quietly.
 |---|---|---|
 | `x.to<i32>()` | must be none — else `NotExact` | fails |
 | `x.round<i32>()` | nearest | fails |
+| `x.floor<i32>()` | toward −∞ | fails |
+| `x.ceil<i32>()` | toward +∞ | fails |
+
+These are the same names `f64` already carries for its float→float versions
+(`.floor()`, `.ceil()`, `.round()`). The type argument is what makes it a
+conversion: `x.floor()` is an `f64`, `x.floor<i32>()` is an `i32` that can fail.
+
+There is no toward-zero member. That mode — C's `(int)` cast, Rust's `as` — is
+`floor` for positives and `ceil` for negatives, so it only differs from `floor`
+below zero, and "truncate" is the word people mis-predict: most read it as floor
+and get `-2` from `-2.7`. Anyone who genuinely wants magnitude-shrinking can say
+which direction they mean for their sign.
 
 `wrap` and `clamp` are integers-only, because on a float neither one means
 anything you'd want. Bit-truncating an IEEE pattern into an integer is a
@@ -196,11 +216,6 @@ reinterpretation nobody asks for, and toward-zero isn't wrapping at all — it's
 rounding mode wearing the wrong word. `clamp` could be defined, but it would have
 to pick a fraction policy silently to stay total, and it's the one member whose
 name couldn't say which it picked.
-
-`floor`, `ceil` and `trunc` are the same shape as `round` and get added when
-something needs them — that's the openness methods bought over syntax, and
-there's no reason to spend it up front. Toward-zero is deliberately not anyone's
-default; it's a C artifact, and nearest is what people mean.
 
 ## `char` Type
 
@@ -313,9 +328,9 @@ mut port: u16 = header.port   // Native u16
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |
 | NaN in comparison | F2 | `NaN == NaN` is `false`, `NaN < x` is `false` |
-| Float-to-int with NaN | CV5/CV8 | `.to<T>()` and `.round<T>()` fail with `NotFinite` |
-| Float with a fraction → int | CV5 | `.to<T>()` fails with `NotExact` — use `.round<T>()` |
-| `x.wrap<T>()` or `x.clamp<T>()` on a float | CV6/CV7 | Compile error — both are integers-only |
+| Float-to-int with NaN | CV11/CV14 | `.to<T>()` and `.round<T>()` fail with `NotFinite` |
+| Float with a fraction → int | CV11 | `.to<T>()` fails with `NotExact` — use `.round<T>()` |
+| `x.wrap<T>()` or `x.clamp<T>()` on a float | CV12/CV13 | Compile error — both are integers-only |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |
@@ -393,17 +408,17 @@ FIX: let flag: bool = n != 0
 
 **CV1–CV4 (as = lossless only):** `as` being lossless-only means you can read `x as i64` and know nothing was lost. Lossy conversions name what they give up. Consistent with the overflow philosophy in `type.integer-overflow`.
 
-**CV5–CV8 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants four rounding modes crossed with three out-of-range behaviours. Every one of those is a name in a namespace and a line in a table; as syntax, each is a parse rule. `floor<i32>()` and `ceil<i32>()` can be added the day someone needs them — and until then they cost nothing, which is why the shipped set is four and not seven.
+**CV11–CV16 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants a rounding mode crossed with an out-of-range behaviour. Every combination is a name in a namespace and a line in a table; as syntax, each is a parse rule. Adding `floor` and `ceil` cost one row each, which is the argument working.
 
 The float sub-family disappears in the move. There was never a second set of policies for floats — converting means the same thing there, on values that happen to have a fraction.
 
-**CV6/CV7 (`wrap` and `clamp` are integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word.
+**CV12/CV13 (`wrap` and `clamp` are integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word.
 
 `clamp` went the same way for a different reason. It could be defined on floats, but to stay total it would have to pick a fraction policy silently, and it's the one member whose name can't say which — `(pos / cell).clamp<i32>()` gives 3 from 2.99 under nearest and 2 under toward-zero, with nothing at the site to tell you. The case that justified keeping it was colour quantization, `(channel * 255.0).clamp<u8>()`, and no such code exists in the tree: the single float→int site is `json.rk` asking whether a float is a whole number, which is `to`. A member kept for a hypothetical is a member the reader still has to learn. It comes back as one line the day something needs it.
 
 Both restrictions leave float→int with exactly two entries, `to` and `round`, both fallible, each naming its fraction policy. Nothing about a float conversion is decided quietly.
 
-**CV5 (`to` yields a result).** The common case by a wide margin is a length or a count moving into a smaller slot where the author knows it fits. That deserves the shortest name, and `to` is it. Yielding `T or ConvertError` rather than panicking directly is what lets one method serve every downstream: `!` to assert, `try` to propagate, `catch` to handle. The panic is spelled — one character, at the site, in the marker the language already uses for it — instead of being something you have to know about `to`.
+**CV11 (`to` yields a result).** The common case by a wide margin is a length or a count moving into a smaller slot where the author knows it fits. That deserves the shortest name, and `to` is it. Yielding `T or ConvertError` rather than panicking directly is what lets one method serve every downstream: `!` to assert, `try` to propagate, `catch` to handle. The panic is spelled — one character, at the site, in the marker the language already uses for it — instead of being something you have to know about `to`.
 
 It also removes the need for a separate optional-shaped member. An earlier draft had `check<T>() -> T?` alongside; once `to` fails rather than panics, `x.to<u8>() catch _ => 0` covers it, and a second spelling of the same test is a member the reader has to disambiguate for nothing.
 

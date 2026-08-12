@@ -152,7 +152,7 @@ type alias Bytes = Vec<u8>                   // transparent alias
 ```
 
 - Tuples: `(a, b)`, arity ≥ 2. Unions `A | B` appear only in error position.
-- Conversions: `as` is lossless only — including int→float, so `i64 as f32` is an error. Anything that can lose something names a policy: `x.to<u8>()!` (the common one — exact or it fails, `!` panics), `x.wrap<u8>()` (low bits), `x.clamp<u8>()` (pin to range) — both integers-only — and `x.round<T>()`. `to` yields `T or ConvertError`, so `try` and `catch` work on it too. Float→int is `to` (exact or fail) and `round` (nearest), both fallible (`type.primitives`).
+- Conversions: `as` is lossless only — including int→float, so `i64 as f32` is an error. Anything that can lose something names a policy: `x.to<u8>()!` (the common one — exact or it fails, `!` panics), `x.wrap<u8>()` (low bits), `x.clamp<u8>()` (pin to range) — both integers-only — and `x.round<T>()`. `to` yields `T or ConvertError`, so `try` and `catch` work on it too. Float→int is `to` (no fraction allowed), `round`, `floor` and `ceil` — all fallible, no toward-zero mode (`type.primitives`).
 - Integer overflow **panics in all builds**. Opt out per-value with `Wrapping<T>`/`Saturating<T>` from `num` (`type.integer-overflow`).
 - Floats are not Hashable/Comparable — structs containing `f64` can't be Map keys or `sort()`ed without a custom conformance (HA4/CO4).
 
