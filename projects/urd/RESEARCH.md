@@ -74,6 +74,21 @@ The discipline that survives: plain `@op` mutators never yield — atomic, compl
 
 Side effect on positioning: "a database where transactions are deterministic and history is branchable" is a clearer pitch than "git for live state" — *database* is a category developers already adopt.
 
+## Emergent capabilities
+
+None of these were design goals; each falls out of combining Raido's properties (determinism, serializable state, content-addressed code, fuel, sandbox, coroutines, typed exports). Kept here as the v2+ idea shelf — the pitch stays the v1 pitch.
+
+- **Repro packs** (determinism + fuel): `urd repro <seq>` emits snapshot + ops; any production incident replays to the exact instruction on any machine. "Cannot reproduce" stops existing.
+- **Fuel-diff in `urd upgrade`** (determinism + fuel): compatible-upgrade replay reports exact per-op cost deltas — flake-free performance regression gate.
+- **Replay-canary** (fork + replay + diff): run yesterday's real ops against a candidate machine, diff hashes and results. Production history as regression suite; the strongest single dev-facing feature on this list.
+- **Mobile frozen computation** (serializable coroutines + content addressing): a suspended workflow is bytecode-hash + state — it can move servers mid-flight over Leden. Same primitive as a Midgard NPC crossing domains; the database and the game share one mechanism.
+- **Verifiable hosting** (log + machine hash + state hashes): tampering by the host is detectable — certificate transparency for application state. Self-host on untrusted infra.
+- **Attestation cache** (machine hash, input hash → output hash): verify once, gossip the result; federated memoization. Allgard's transform verification as an everyday optimization.
+- **Type identity by hash** (content-addressed typed exports): schema compatibility is hash equality; clients cache generated bindings by chunk hash. No version negotiation.
+- **Database-per-user** (~1KB VM, no ambient authority): thousands of live machines per node; each user gets their own log, branches, workflows. The architecture local-first sync actually wants, at hashmap-entry cost.
+- **`urd fuzz`** (DST turned inward): random op sequences against user-declared invariants, counterexamples shrunk by replaying log prefixes. Property-based testing with perfect repro, for every app on Urd.
+- **Agent fork-propose-merge**: an AI agent works on a fork of the database; the human diffs and merges. Auditable agent actions with two existing verbs.
+
 ## Open questions
 
 - **Rejected ops**: server validates preconditions before append — but is a rejection recorded (auditable, replayable offline queues) or dropped (cleaner log)? Leaning recorded-but-outside-the-chain; needs a design round with the offline story.
