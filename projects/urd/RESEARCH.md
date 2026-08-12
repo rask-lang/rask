@@ -45,6 +45,7 @@ Decisions the survey settles:
 7. **Desync tooling is a feature**: periodic state hashes, and a report that binary-searches the log for the first divergent entry.
 8. **DST harness for the engine before features.**
 9. **Offline writes (v1.5) reuse the Replicache rebase model** — speculative ops client-side, rebase on server order — with one implementation instead of two, once Raido runs in wasm.
+10. **State hashes cover the canonical encoding of the state, never VM memory.** Raido was sized for many tiny short-lived scripts, not one immortal gigabyte-scale state; if that ceiling bites, the escape is the Cosmos pattern — state moves out of the VM into a deterministic hash-tree store the host provides as the one blessed extern API. Hashing the logical encoding (not arena bytes) is what makes that swap invisible: existing logs and hashes stay valid because they only ever promised "this logical state." v1 keeps state in-VM; this rule keeps that choice reversible.
 
 ## Open questions
 
@@ -52,4 +53,4 @@ Decisions the survey settles:
 - **Migration op ergonomics**: what does writing a state migration actually feel like? Needs a worked example before the format freezes.
 - **Snapshot cadence and pruning policy** — mechanical, but affects the shallow-mode trust model.
 - **Partial replication** (a client that syncs a subtree): deliberately deferred; noting that Leden object capabilities are the likely shape when it comes.
-- **State copy cost**: mutators are state-in/state-out ([EXAMPLE.md](EXAMPLE.md)), but naive copy-per-op is quadratic on large states. The VM arena needs in-place mutation with snapshot-on-demand, or structural sharing. Biggest open implementation risk.
+- **State copy cost / VM scale**: mutators are state-in/state-out ([EXAMPLE.md](EXAMPLE.md)), but naive copy-per-op is quadratic on large states — and Raido's arena, whole-VM snapshots, and unindexed reads were all sized for NPC-brain workloads, not year-lived app states. Two paths: grow the VM (bigger arenas, copy-on-write snapshots), or keep Raido tiny and move state into a host-side deterministic hash-tree store (design point 10 keeps both open). Prototype decides; biggest open implementation risk.
