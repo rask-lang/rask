@@ -8,7 +8,7 @@ The smallest program that exercises the whole surface: ops with arguments, rejec
 
 ## The machine
 
-`todo.rd` — a Raido script. Mutators are exported functions prefixed `op_`, reads prefixed `read_`. State goes in, state comes out; rejection is an ordinary `error()`.
+`todo.rd` — a Raido script. Mutators and reads are registered with `@op`/`@read` annotations — the annotation's string is the stable wire name, decoupled from the function name so refactors don't break clients. State goes in, state comes out; rejection is an ordinary `error()`.
 
 ```raido
 struct Todo {
@@ -32,13 +32,15 @@ func init() -> State {
     return State { items: [] }
 }
 
-func op_add(s: State, title: string, fx: Fx) -> State or string {
+@op("add")
+func add_todo(s: State, title: string, fx: Fx) -> State or string {
     if title.is_empty(): error("title can't be empty")
     s.items.push(Todo { id: fx.seq, title: title, done: false, created_at: fx.time })
     return s
 }
 
-func op_toggle(s: State, id: int, fx: Fx) -> State or string {
+@op("toggle")
+func toggle_todo(s: State, id: int, fx: Fx) -> State or string {
     for item in s.items {
         if item.id == id {
             item.done = !item.done
@@ -48,16 +50,19 @@ func op_toggle(s: State, id: int, fx: Fx) -> State or string {
     error("no todo with id {id}")
 }
 
-func op_clear_done(s: State, fx: Fx) -> State or string {
+@op("clear_done")
+func clear_done(s: State, fx: Fx) -> State or string {
     s.items = s.items.filter(|t| !t.done)
     return s
 }
 
-func read_active(s: State) -> array<Todo> {
+@read("active")
+func active_todos(s: State) -> array<Todo> {
     return s.items.filter(|t| !t.done)
 }
 
-func read_count(s: State) -> int {
+@read("count")
+func todo_count(s: State) -> int {
     return s.items.len()
 }
 ```
@@ -74,11 +79,11 @@ $ urd serve todo.urd --listen :4444        # or embed the library
 A client appends ops; a rejected op (empty title, unknown id) returns the error and never enters the log.
 
 ```
-$ urd append todo.urd main op_add '{"title": "buy milk"}'
+$ urd append todo.urd main add '{"title": "buy milk"}'
 seq 1  state a3f2c9…
-$ urd append todo.urd main op_add '{"title": "write spec"}'
+$ urd append todo.urd main add '{"title": "write spec"}'
 seq 2  state 77b01d…
-$ urd append todo.urd main op_toggle '{"id": 1}'
+$ urd append todo.urd main toggle '{"id": 1}'
 seq 3  state c04e11…
 ```
 
@@ -86,9 +91,9 @@ The log now reads like a git history of state:
 
 ```
 $ urd log todo.urd main
-seq 3  c04e11…  op_toggle {id: 1}         machine 9d41aa…
-seq 2  77b01d…  op_add {title: "write spec"}
-seq 1  a3f2c9…  op_add {title: "buy milk"}
+seq 3  c04e11…  toggle {id: 1}            machine 9d41aa…
+seq 2  77b01d…  add {title: "write spec"}
+seq 1  a3f2c9…  add {title: "buy milk"}
 ```
 
 History is data:
@@ -106,14 +111,14 @@ const db = await urd.connect("ws://localhost:4444/todo");
 const main = db.branch("main");
 
 main.subscribe((state) => render(state));          // hello -> snapshot, then op-stream
-await main.append("op_add", { title: "buy milk" }); // rejection -> thrown error
+await main.append("add", { title: "buy milk" });   // rejection -> thrown error
 ```
 
 The client speaks the three-message protocol and holds a local replica for instant reads. It does not run the machine in v1 — writes go to the server (README: server-authoritative).
 
 ## Evolution, episode 1: compatible upgrade
 
-Add a `read_stats` function and rename a local variable. State shape unchanged.
+Add a `@read("stats")` function and rename `add_todo` to `create_todo` — the wire name `add` is pinned by the annotation, so clients don't notice. State shape unchanged.
 
 ```
 $ urd upgrade todo.urd todo.rd
@@ -151,8 +156,9 @@ The migration is a log entry like any other: replayable, hash-checked, pinned to
 
 Friction found by writing the example — this is the point of the exercise:
 
-1. **Clients need the op schema.** `op_add` takes `{title: string}` — the TS client has to know that. Raido chunks already carry typed exports, so `urd schema todo.urd` can emit the op/read signatures mechanically. A typed-client generator can sit on top as a separate tool. Without this, every client hand-mirrors the machine and drifts.
-2. **Rejection-as-error settles the open question for v1.** A mutator's `error()` means the op is refused and never appended — no tombstones in the chain. Recorded rejections only become interesting with offline queues (v1.5), where a queued op can be rejected long after the client moved on. Revisit then, not now.
+1. **Clients need the op schema.** `add` takes `{title: string}` — the TS client has to know that. Raido chunks already carry typed exports, so `urd schema todo.urd` can emit the op/read signatures mechanically. A typed-client generator can sit on top as a separate tool. Without this, every client hand-mirrors the machine and drifts.
+2. **Rejection-as-error settles the open question for v1 — and it's the reversible choice.** A mutator's `error()` means the op is refused and never appended — no tombstones in the chain. Recording rejections later is purely additive (a side-log; the hash chain never changes), whereas starting with in-chain rejections could never be undone. Recorded rejections only become interesting with offline queues (v1.5). Revisit then, not now.
 3. **State-in/state-out has a copy question.** Functional signatures read well and suit verification, but naive copy-per-op is quadratic pain on big states. The VM arena needs either in-place mutation with snapshot-on-demand or structural sharing. This is the biggest open implementation risk found here — filed as an open question in [RESEARCH.md](RESEARCH.md).
 4. **The `Fx` struct is the entire determinism boundary** and deserves its own spec rule: what's in it (seq, time, later: append-time randomness seed), what can never be in it (anything the server can't record).
 5. **`urd append` from the CLI wants JSON args**, which means op arguments need a canonical JSON encoding anyway — the same encoding the wire protocol and the log can use. One encoding, three consumers.
+6. **`@op`/`@read` registration needs a small Raido addition**: attributes on exported functions, carried in the chunk format. Worth it — the annotation is a fixed registry (unregistered functions aren't reachable, a typo'd name is a load error, and the wire name survives refactors, which keeps renames on the compatible-upgrade path). Fallback if Raido shouldn't grow attributes: a manifest constant mapping wire names to export names, validated against the export table at load. Same guarantees, two sources of truth.
