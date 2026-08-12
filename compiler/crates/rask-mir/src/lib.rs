@@ -21,9 +21,11 @@ mod types;
 
 pub mod hidden_params;
 pub mod lower;
+mod trait_drop;
 
 pub use builder::BlockBuilder;
 pub use closures::optimize_all_closures;
+pub use trait_drop::insert_trait_drops;
 pub use transform::clone_elision::elide_clones;
 pub use transform::gen_coalesce::coalesce_generation_checks;
 pub use transform::string_append::optimize_string_concat;

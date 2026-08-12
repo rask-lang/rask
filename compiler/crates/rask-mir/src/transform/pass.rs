@@ -92,6 +92,7 @@ impl PassManager {
         // Cross-function passes (sequential) — PC2
         pm.add(ClosureOptimizationPass);
         pm.add(InliningPass);
+        pm.add(TraitDropInsertionPass);
         // Per-function passes — run after inlining for wider optimization window (IN5)
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
@@ -115,6 +116,16 @@ impl MirPass for ClosureOptimizationPass {
     fn name(&self) -> &str { "closure_optimization" }
     fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_all_closures(fns);
+    }
+}
+
+/// Insert `TraitDrop` for trait objects that don't escape their function (#366).
+pub struct TraitDropInsertionPass;
+
+impl MirPass for TraitDropInsertionPass {
+    fn name(&self) -> &str { "trait_drop_insertion" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::insert_trait_drops(fns);
     }
 }
 
