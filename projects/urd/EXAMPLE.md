@@ -118,11 +118,11 @@ Add a `@read("stats")` function and rename `add_todo` to `create_todo` — the w
 
 ```
 $ urd upgrade todo.urd todo.rd
-replaying 3 ops against machine 5c77e0… : 3/3 state hashes match
+schema unchanged: new machine reads current state
 machine ref advanced 9d41aa… -> 5c77e0…
 ```
 
-Proven behavior-identical, no ceremony. New entries pin the new hash; old entries keep theirs.
+A static canonical-encoding check, milliseconds regardless of history size — old entries stay pinned to the old bytecode, so nothing about the past needs re-proving. New entries pin the new hash. `urd upgrade --replay` additionally re-runs history against the new machine (CI paranoia mode, and where per-op fuel-diff reporting lives).
 
 ## Evolution, episode 2: extending the schema
 
