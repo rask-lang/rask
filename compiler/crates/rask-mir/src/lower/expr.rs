@@ -4034,59 +4034,77 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id)
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
         };
-        let qualified_name = recorded_prefix
-            .or(user_type_prefix)
-            .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.type_prefix.clone())
-            } else {
-                None
-            })
-            // Field access on struct: resolve field type from struct layout
-            .or_else(|| {
-                if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
-                    if let ExprKind::Ident(var_name) = &inner_obj.kind {
-                        if let Some((local_id, _)) = self.locals.get(var_name) {
-                            let local_ty = self.builder.local_type(*local_id);
-                            if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
-                                if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
-                                    if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
-                                        return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
-                                    }
-                                }
-                            }
-                        }
+        // The chain, as named steps rather than one `or_else` run. Step 0 is the
+        // checker's answer; everything after it is a guess that #425 exists to
+        // delete, and a step can only come out once the tally says nothing
+        // reaches it (`RASK_TRACE_DISPATCH=1`).
+        let mut prefix_of: Option<String> = None;
+        let mut answered_by: &'static str = "9_unresolved";
+        macro_rules! step {
+            ($name:expr, $e:expr) => {
+                if prefix_of.is_none() {
+                    let candidate: Option<String> = $e;
+                    if candidate.is_some() {
+                        answered_by = $name;
+                        prefix_of = candidate;
                     }
-                    None
-                } else {
-                    None
                 }
-            })
-            // Resolved receiver type is authoritative when that stdlib
-            // type declares the method (checked against the stub API).
-            .or_else(|| type_prefix_of_receiver().filter(|p| {
-                let base = p.split('<').next().unwrap_or(p).trim();
-                rask_stdlib::mir_metadata::type_has_method(base, &method)
-            }))
-            // Unambiguous stub method → its sole defining type.
-            .or_else(|| rask_stdlib::mir_metadata::unique_method_prefix(&method)
-                .map(|s| s.to_string()))
-            // Disambiguation policy for method names shared across (or
-            // absent from) stub types, used only when the receiver type
-            // is unresolved. A resolved receiver above always wins.
-            .or_else(|| ambiguous_method_prefix(&method, all_args.len())
-                .map(|s| s.to_string()))
-            // Last resort: resolved type even if the stub doesn't list
-            // the method (user types, monomorphized aggregates), then
-            // the MIR type (catches F64, String, etc.).
-            .or_else(type_prefix_of_receiver)
-            .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
-            // A Struct/Enum MIR type carries a layout whose name is the type —
-            // resolve it directly. Catches receivers the checker left untyped
-            // but MIR typed concretely: a pool-element `with` binding, a Handle
-            // deref, a `self`-typed receiver.
-            .or_else(|| self.mir_aggregate_prefix(&obj_ty))
-            // parse<T> always belongs to string (structural, not type-prefix related)
-            .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
+            };
+        }
+
+        // 0: what dispatch actually resolved to.
+        step!("0_checker_recorded", recorded_prefix);
+        // 1: a user struct/enum from the type checker.
+        step!("1_user_type", user_type_prefix);
+        // 2: a tracked local's own prefix.
+        step!("2_local_meta", if let ExprKind::Ident(var_name) = &object.kind {
+            self.meta(var_name).and_then(|m| m.type_prefix.clone())
+        } else {
+            None
+        });
+        // 3: a struct field's declared type, read off the layout.
+        step!("3_field_layout", {
+            if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
+                if let ExprKind::Ident(var_name) = &inner_obj.kind {
+                    if let Some((local_id, _)) = self.locals.get(var_name) {
+                        let local_ty = self.builder.local_type(*local_id);
+                        if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
+                            self.ctx.struct_layouts.get(id as usize)
+                                .and_then(|layout| layout.fields.iter().find(|f| f.name == *field_name))
+                                .and_then(|fl| super::MirContext::type_prefix(&fl.ty, self.ctx.type_names))
+                        } else { None }
+                    } else { None }
+                } else { None }
+            } else { None }
+        });
+        // 4: the resolved receiver type, when that stdlib type declares the
+        // method (checked against the stub API).
+        step!("4_receiver_declares", type_prefix_of_receiver().filter(|p| {
+            let base = p.split('<').next().unwrap_or(p).trim();
+            rask_stdlib::mir_metadata::type_has_method(base, &method)
+        }));
+        // 5: an unambiguous stub method → its sole defining type.
+        step!("5_unique_stub_method",
+            rask_stdlib::mir_metadata::unique_method_prefix(&method).map(|s| s.to_string()));
+        // 6: the name→type policy table. The only step that can answer *wrongly*
+        // rather than not at all, so it's first out.
+        step!("6_name_policy",
+            ambiguous_method_prefix(&method, all_args.len()).map(|s| s.to_string()));
+        // 7: the resolved type even if no stub lists the method (user types,
+        // monomorphized aggregates), then the MIR type (F64, String, …).
+        step!("7_receiver_type", type_prefix_of_receiver());
+        step!("7_mir_type", super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()));
+        // 8: a Struct/Enum MIR type carries a layout whose name is the type.
+        // Catches receivers the checker left untyped but MIR typed concretely:
+        // a pool-element `with` binding, a Handle deref, a `self` receiver.
+        step!("8_mir_aggregate", self.mir_aggregate_prefix(&obj_ty));
+        // parse<T> always belongs to string — structural, not a type prefix.
+        step!("8_parse_prefix",
+            if method.starts_with("parse_") { Some("string".to_string()) } else { None });
+
+        crate::dispatch_trace::record(answered_by, &method);
+
+        let qualified_name = prefix_of
             .map(|prefix| {
                 // Strip generic params from the prefix before mangling:
                 // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the

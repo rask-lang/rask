@@ -147,6 +147,8 @@ fn lower_to_mir(
         rask_mir::transform::ssa::construct(func);
     }
 
+    rask_mir::dispatch_trace::report();
+
     let pipeline_result = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 
     // De-SSA: lower phi nodes to copies before codegen.
