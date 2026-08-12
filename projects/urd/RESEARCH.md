@@ -28,6 +28,8 @@ What already exists, what each system learned the hard way, and what Urd takes f
 
 **SQLite** — the packaging model: one file, embedded library, zero config, and a server (in our case) as a second shape of the same core. Nothing to add; just do that.
 
+**Raido's actual competitor class** — deterministic + serializable + metered VMs exist, but only where consensus paid for them: EVM (gas, state hashing, 256-bit words, welded to Ethereum), CosmWasm (deterministic wasm mutators over a host KV store — independently converged on Urd's exact store split), Move (typed, resource-safe, chained to Aptos/Sui), and Agoric's xsnap (Moddable XS JavaScript made deterministic, with resumable heap snapshots — validators compare snapshot hashes). Starlark proves tooling wants hermetic embedded logic but has no state, types, or fuel; the Lua family has neither determinism nor snapshots. Nobody ships the neutral embeddable as a product — the niche is empty because outside consensus nobody needed bit-exactness until replay, sync, and agent auditing. One scar worth keeping: xsnap's heap snapshots diverged across gcc versions (agoric-sdk #7829) — the precise failure design point 10 (hash canonical encoding, never memory) exists to prevent.
+
 ## Design implications
 
 Decisions the survey settles:
@@ -51,7 +53,7 @@ Decisions the survey settles:
 
 Deliberate attempt to break the design (ergonomics, learning curve, Raido fit). What survived is above; what needs work:
 
-- **Raido has no closures, the example assumes lambdas.** `scan().filter(|t| !t.done)` doesn't exist in Raido as specced (function references only). Either Raido grows *capture-free* lambdas — cheap, since no captured state means no arena hazard, which was the reason closures were cut — or reads use named predicate functions and get noticeably clunkier. Raido design call, flagged, not made here.
+- **Raido has no closures, the example assumes lambdas.** `scan().filter(|t| !t.done)` doesn't exist in Raido as specced (function references only). Capture-free lambdas are trivial to add (parser sugar: hidden top-level function + function ref; no arena or serialization impact) — but they only cover constant predicates. The bread-and-butter case captures an op argument (`filter(|t| t.list == list_id)`), which is a closure, and users hit that wall on day one. The right fix isn't closures: it's **filters-as-data in the store API** (`todos.where(list: list_id)`) — typed predicate values instead of code, which handles the parameterized 90% case *and* is the only shape secondary indexes can ever accelerate. Capture-free lambdas + `where()` + explicit context-passing as escape hatch; full closures stay cut unless the prototype proves otherwise.
 - **Migration typing is underdesigned.** `old.todos.scan()` needs the previous schema's row type in scope. Synthesized from the old chunk's metadata, hand-redeclared, or imported version-pinned — each has real costs. Own design round before the migration format freezes.
 - **Deletion vs. the immutable log.** "Delete my account" meets hash-pinned history — the classic event-sourcing GDPR trap. Compaction helps the main branch; forks pin old history. Likely answer is crypto-shredding (per-subject field encryption, delete the key); v1 needs at least a stated position.
 - **Long migrations vs. fuel.** ~~Undesigned~~ — resolved by coroutines (see the Raido section below): a migration yields every N rows, each resume is its own log entry, serialized VM state between chunks. Bounded fuel per chunk, no server stall, exact replay.
