@@ -72,6 +72,8 @@ A bespoke transaction DSL is the wrong fix — transaction logic always grows in
 
 The discipline that survives: plain `@op` mutators never yield — atomic, complete-or-reject. Coroutines enter only as distinct constructs (`@migrate`, `@workflow`) with their own log-entry semantics. Raido stays whole; Urd v1 uses the verification half, Urd v2 reaches into the scripting half. One language, one content-addressed function object shared with Allgard's verifiable transforms.
 
+One more breadcrumb for the merge design round: user-defined merge semantics must be deterministic functions, so **merge handlers will be Raido functions** — the feature we deferred hardest lands on the same VM when it comes.
+
 Side effect on positioning: "a database where transactions are deterministic and history is branchable" is a clearer pitch than "git for live state" — *database* is a category developers already adopt.
 
 ## Emergent capabilities
