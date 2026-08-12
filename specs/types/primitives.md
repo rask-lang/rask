@@ -128,13 +128,13 @@ name is the policy.
 |------|------|--------|----------|
 | **CV5: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
 | **CV6: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
-| **CV7: Clamp** | `x.clamp<T>()` | `T` | Pins to the target's range. From a float: nearest, NaN → 0 |
+| **CV7: Clamp** | `x.clamp<T>()` | `T` | **Integers only.** Pins to the target's range |
 | **CV8: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
 
 ```rask
 let count = rows.len().to<i32>()!           // I know it fits — panic if I'm wrong
 self.data.push((value >> 8).wrap<u8>())     // serializing: the low byte
-let pixel = (channel * 255.0).clamp<u8>()   // out of range is expected
+let level = raw.clamp<u8>()                 // out of range is expected
 let ratio = total.round<f32>()              // accept the rounding
 let tick = seconds.round<i64>()!            // nearest whole, panic on NaN
 ```
@@ -178,22 +178,29 @@ it fits", and it replaces the hand-rolled round-trip test — `json.rk` currentl
 writes `if i as f64 == n && n >= -9007199254740992.0 && …` to ask the same
 question.
 
-### Float→int has two axes, and `wrap` only has one
+### Float→int is `to` and `round`, and nothing else
 
 Getting an integer out of a float answers two questions: what happens to the
-fraction, and what happens if the result doesn't fit. `wrap` can only speak to
-the second, and on a float even that is meaningless — bit-truncating an IEEE
-pattern into an integer is a reinterpretation nobody wants. So **`wrap` is
-integers-only**, and the two-mechanics wrinkle it used to carry is gone with it.
+fraction, and what happens if the result doesn't fit. The verb answers the first,
+the return type answers the second — every float→int conversion can fail, so
+every one of them yields a result and nothing is decided quietly.
 
-The fraction is the verb's job: `round` takes the nearest. `floor`, `ceil` and
-`trunc` are the same shape and get added when something needs them — that's the
-openness methods bought over syntax, and there's no reason to spend it up front.
-Toward-zero is deliberately not anyone's default; it's a C artifact, and nearest
-is what people mean.
+| | fraction | doesn't fit, NaN, infinity |
+|---|---|---|
+| `x.to<i32>()` | must be none — else `NotExact` | fails |
+| `x.round<i32>()` | nearest | fails |
 
-`clamp` stays the total one. It answers both axes — nearest for the fraction,
-pinned for the range, `0` for NaN — which is why it needs no `!`.
+`wrap` and `clamp` are integers-only, because on a float neither one means
+anything you'd want. Bit-truncating an IEEE pattern into an integer is a
+reinterpretation nobody asks for, and toward-zero isn't wrapping at all — it's a
+rounding mode wearing the wrong word. `clamp` could be defined, but it would have
+to pick a fraction policy silently to stay total, and it's the one member whose
+name couldn't say which it picked.
+
+`floor`, `ceil` and `trunc` are the same shape as `round` and get added when
+something needs them — that's the openness methods bought over syntax, and
+there's no reason to spend it up front. Toward-zero is deliberately not anyone's
+default; it's a C artifact, and nearest is what people mean.
 
 ## `char` Type
 
@@ -306,9 +313,9 @@ mut port: u16 = header.port   // Native u16
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |
 | NaN in comparison | F2 | `NaN == NaN` is `false`, `NaN < x` is `false` |
-| Float-to-int with NaN | CV7/CV8 | `.clamp<T>()` gives 0; `.to<T>()` and `.round<T>()` fail with `NotFinite` |
-| Float with a fraction → int | CV5 | `.to<T>()` fails with `NotExact` — use `.round<T>()` or `.clamp<T>()` |
-| `x.wrap<T>()` on a float | CV6 | Compile error — `wrap` is integers-only |
+| Float-to-int with NaN | CV5/CV8 | `.to<T>()` and `.round<T>()` fail with `NotFinite` |
+| Float with a fraction → int | CV5 | `.to<T>()` fails with `NotExact` — use `.round<T>()` |
+| `x.wrap<T>()` or `x.clamp<T>()` on a float | CV6/CV7 | Compile error — both are integers-only |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |
@@ -388,9 +395,13 @@ FIX: let flag: bool = n != 0
 
 **CV5–CV8 (methods, not syntax).** These were once phrase verbs — `x truncate to u8`, `x saturate to u8`, and a separate `x float to int T (saturating)` for floats, with a parenthesized modifier that existed nowhere else in the language. Methods replace all of it, for a reason that isn't token count: **the policy set is open and grammar can't be.** Float→int alone wants four rounding modes crossed with three out-of-range behaviours. Every one of those is a name in a namespace and a line in a table; as syntax, each is a parse rule. `floor<i32>()` and `ceil<i32>()` can be added the day someone needs them — and until then they cost nothing, which is why the shipped set is four and not seven.
 
-The float sub-family disappears in the move. There was never a second set of policies for floats — clamping and converting mean the same things there, on values that happen to have a fraction.
+The float sub-family disappears in the move. There was never a second set of policies for floats — converting means the same thing there, on values that happen to have a fraction.
 
-**CV6 (`wrap` is integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word. Restricting `wrap` to integers costs nothing (`bits.rk` is the only real user, and it's all `>>` on unsigned) and removes the family's last piece of overloading.
+**CV6/CV7 (`wrap` and `clamp` are integers-only).** An earlier draft had `wrap` mean bit-truncation on integers and toward-zero on floats — one name, two mechanics, defended as both being the domain-standard reading of "throw away what doesn't fit". It doesn't survive the question *what would a float actually wrap?* Bit-truncating an IEEE pattern into an integer is a reinterpretation nobody wants, and toward-zero isn't wrapping at all — it's a rounding mode wearing the wrong word.
+
+`clamp` went the same way for a different reason. It could be defined on floats, but to stay total it would have to pick a fraction policy silently, and it's the one member whose name can't say which — `(pos / cell).clamp<i32>()` gives 3 from 2.99 under nearest and 2 under toward-zero, with nothing at the site to tell you. The case that justified keeping it was colour quantization, `(channel * 255.0).clamp<u8>()`, and no such code exists in the tree: the single float→int site is `json.rk` asking whether a float is a whole number, which is `to`. A member kept for a hypothetical is a member the reader still has to learn. It comes back as one line the day something needs it.
+
+Both restrictions leave float→int with exactly two entries, `to` and `round`, both fallible, each naming its fraction policy. Nothing about a float conversion is decided quietly.
 
 **CV5 (`to` yields a result).** The common case by a wide margin is a length or a count moving into a smaller slot where the author knows it fits. That deserves the shortest name, and `to` is it. Yielding `T or ConvertError` rather than panicking directly is what lets one method serve every downstream: `!` to assert, `try` to propagate, `catch` to handle. The panic is spelled — one character, at the site, in the marker the language already uses for it — instead of being something you have to know about `to`.
 
