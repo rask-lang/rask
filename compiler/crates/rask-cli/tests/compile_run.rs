@@ -2696,3 +2696,79 @@ plain 1 2 3
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// ─── IEEE 754 conformance (type.primitives/F1) ──────────────────────
+//
+// The expected values here are what IEEE 754-2019 requires, not what the
+// compiler happened to print when this was written. Clause references are in
+// the fixture. Two bugs were live when it was first run: `Vec<f64>.sort()`
+// compared bit patterns as integers, and `f64.compare()` answered Equal for
+// every unordered or signed-zero pair natively.
+#[test]
+fn ieee754_requirements_hold_on_both_backends() {
+    // 5.11 — every NaN compares unordered with everything, itself included, so
+    // all four ordered predicates are false and `!=` is true.
+    let unordered = "\
+nan_lt false
+nan_gt false
+nan_le false
+nan_ge false
+nan_eq_self false
+nan_ne_self true
+nan_is_nan true
+negzero_eq_zero true
+";
+    // 5.10 — totalOrder separates -0 from +0 by sign and places NaN at an end,
+    // where 5.11 leaves it unordered. This is what `compare()` implements.
+    let total_order = "\
+totalorder_negzero Less
+totalorder_zero_negzero Greater
+totalorder_nan_vs_one Greater
+totalorder_one_vs_nan Less
+";
+    // 6.1 — infinity arithmetic is exact; 7.1 makes inf-inf and 0*inf invalid.
+    let infinities = "\
+inf_is_inf true
+inf_plus_inf inf
+inf_minus_inf_is_nan true
+zero_times_inf_is_nan true
+one_over_zero inf
+one_over_negzero -inf
+one_over_inf 0
+inf_is_not_finite false
+";
+    // 6.2 — a NaN operand delivers a NaN.
+    // 6.3 — (-0)+(-0) = -0, (-0)+(+0) = +0, (-0)*(+0) = -0, sqrt(-0) = -0.
+    //       Observed through 1/x, which is the only way to see a zero's sign.
+    let signs = "\
+nan_plus_one_is_nan true
+nan_times_zero_is_nan true
+negzero_plus_negzero -inf
+negzero_plus_zero inf
+negzero_times_zero -inf
+sqrt_negzero -inf
+sqrt_neg_one_is_nan true
+sqrt_inf inf
+";
+    // 5.9 — roundToIntegral passes NaN and infinity through unchanged.
+    let round_to_integral = "\
+floor_nan_is_nan true
+ceil_nan_is_nan true
+trunc_nan_is_nan true
+floor_inf inf
+ceil_inf inf
+trunc_inf inf
+";
+    // 5.10 applied: sorting keeps every element and puts the NaN at the end.
+    let sorting = "sorted -2.5 1 3 NaN\n";
+
+    let expected = format!(
+        "{unordered}{total_order}{infinities}{signs}{round_to_integral}{sorting}"
+    );
+
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "ieee754_conformance.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}: IEEE 754 conformance", mode);
+    }
+}

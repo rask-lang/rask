@@ -390,14 +390,17 @@ void rask_vec_sort_f64(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
 }
 
-// compare(a, b) on f64 — same total order, as an Ordering tag (-1/0/1 maps to
-// Less/Equal/Greater).
+// compare(a, b) on f64 — the same total order, returning an Ordering *tag*.
+//
+// Less=0, Equal=1, Greater=2, from rask_stdlib::ORDERING_VARIANTS. Not -1/0/1:
+// the value feeds a match on Ordering variants, and a C-style sign would match
+// no arm at all.
 int64_t rask_f64_compare_total(double a, double b) {
     uint64_t ka = rask_f64_order_key(a);
     uint64_t kb = rask_f64_order_key(b);
-    if (ka < kb) return -1;
-    if (ka > kb) return 1;
-    return 0;
+    if (ka < kb) return 0;  /* Less */
+    if (ka > kb) return 2;  /* Greater */
+    return 1;               /* Equal */
 }
 
 // sort_by(vec, comparator) — in-place sort with a closure comparator.

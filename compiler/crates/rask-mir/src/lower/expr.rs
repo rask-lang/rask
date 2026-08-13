@@ -4947,6 +4947,21 @@ impl<'a> MirLowerer<'a> {
         if method != "compare" || args.len() != 1 {
             return Ok(None);
         }
+        // Floats can't use the `<`/`>` chain below. Those operators are IEEE, so
+        // NaN answers false to both and lands on Equal, and -0 vs +0 compares
+        // equal — but `compare` is the *total* order (type.operators/ORD3),
+        // where -0 < +0 and NaN sorts to an end. One call to the runtime's
+        // total-order comparator instead.
+        if matches!(obj_ty, MirType::F32 | MirType::F64) {
+            let (rhs, _) = self.lower_expr(&args[0].expr)?;
+            let result = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: FunctionRef::internal("f64_compare".to_string()),
+                args: vec![obj_op.clone(), rhs],
+            }));
+            return Ok(Some((MirOperand::Local(result), MirType::I64)));
+        }
         let scalar = matches!(
             obj_ty,
             MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
