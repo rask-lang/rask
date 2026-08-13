@@ -148,6 +148,46 @@ The staleness branch is gone — not hidden, gone: `target` became `none` at the
 moment the target died. The stale-handle state that pools detect at access
 simply never exists.
 
+### Runtime safety
+
+Handles are runtime-checked: the stale state exists, `pool[h]` detects it and
+panics, `get(h)?` asks the reader to remember to be careful. Edges move death
+into the type: an edge to something that can die is `Edge<T>?`, it becomes
+`none` when the target dies, and the compiler forces the branch. Reads cannot
+panic — there is no stale state left to detect.
+
+What remains at runtime, exhaustively:
+
+- `!` on a none edge — explicit, same as any optional.
+- Aliased `with` scopes — two edges resolving to the same node: pointer compare
+  at scope open, panic on duplicate. Pools' W3 rule verbatim, same cost.
+- Non-optional edges (`owner: Edge<Player>`, no `?`) need a declared delete
+  policy, and it's the database trio: **cascade** (delete propagates to the
+  holder), **restrict** (the *delete* fails — error or panic at the one delete
+  site, not scattered across reads), or disallow non-optional edges entirely.
+
+### No context clauses
+
+`using Pool<T>` auto-resolution (`mem.context`) exists because a handle is a
+detached reference — a naked integer, useless without its pool, so the pool
+must be smuggled into every function that touches one. An edge is never
+detached: it's reachable only through a borrowed node, and deref is a plain
+pointer that needs no container to resolve. Traversal functions take a node
+borrow and nothing else:
+
+<!-- test: skip -->
+```rask
+func damage(e: Entity, amount: i32) {    // no using clause
+    if e.target? as t { t.health -= amount }
+}
+```
+
+Still needed: the graph in hand for structural ops (`insert`/`delete`, like
+pools), `with` blocks for multi-statement access (it's a box), and one rule in
+exchange — a borrowed node counts as a borrow of the graph, so `delete` while
+any node borrow is live is a compile error. That rule is what makes checkless
+borrows sound; it's Vec's "no push while an element is borrowed", same shape.
+
 ## What it costs — honestly
 
 The bookkeeping is conserved, not eliminated. Handles pay at every read
