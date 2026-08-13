@@ -319,6 +319,5 @@ one new scope concept this design asks for.
    discipline the five don't cover") is met — *relational* access, edges fixed
    at delete, is not exclusive/identity/read-heavy/locked/linear. This doc does
    not propose adding it; it establishes that the seat exists and what sitting
-   in it would cost. Next step, if any: write the litmus programs (doubly-linked
-   list, text editor undo tree, game-loop targeting) both ways and compare —
-   per METRICS, not per taste.
+   in it would cost. The litmus comparison — three programs both ways, scored
+   per METRICS — is in [fourth-option-litmus.md](fourth-option-litmus.md).
