@@ -320,13 +320,8 @@ impl<'a> MirLowerer<'a> {
                     self.inline_return_taken =
                         Some(returned_ty.unwrap_or(MirType::Void));
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
-                } else if self.ensure_stack.is_empty() {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
                 } else {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                        value,
-                        cleanup_chain: self.cleanup_chain(),
-                    }));
+                    self.terminate_return(value);
                 }
                 Ok(())
             }
@@ -1936,63 +1931,35 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
+        // The writeback the body owes its collection. `continue` and `break` pay it
+        // through the blocks below; a `return` or a `try` that propagates pays it
+        // from here, because neither passes through a block (#650).
+        let writeback = super::MutateWriteback::new(
+            collection,
+            idx,
+            binding_local,
+            map_value_local,
+        );
+        if wb_block.is_some() {
+            self.mutate_writebacks.push(writeback);
+        }
         for stmt in body {
             self.lower_stmt(stmt)?;
+        }
+        if wb_block.is_some() {
+            self.mutate_writebacks.pop();
         }
         self.close_loop_body(ensure_depth, continue_target);
 
         // Writeback blocks for `for mutate`
-        // LP13: Vec uses Vec_set(vec, idx, elem), Map uses Map_set(map, key, value)
         if let Some(wb) = wb_block {
             self.builder.switch_to_block(wb);
-            if let Some(val_local) = map_value_local {
-                // Map writeback: Map_set(collection, key, value)
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(binding_local), // key (field 0)
-                        MirOperand::Local(val_local),     // value (field 1)
-                    ],
-                }));
-            } else {
-                // Vec writeback: Vec_set(collection, idx, elem)
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(binding_local),
-                    ],
-                }));
-            }
+            self.emit_one_mutate_writeback(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
         }
         if let Some(break_wb) = break_wb_block {
             self.builder.switch_to_block(break_wb);
-            if let Some(val_local) = map_value_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(binding_local),
-                        MirOperand::Local(val_local),
-                    ],
-                }));
-            } else {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(binding_local),
-                    ],
-                }));
-            }
+            self.emit_one_mutate_writeback(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
         }
 

@@ -261,36 +261,12 @@ impl Interpreter {
                             let item = v.lock().unwrap()[i].clone();
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    // Write back before breaking
-                                    if let ForBinding::Single(name) = binding {
-                                        if let Some(val) = self.env.get(name) {
-                                            let val = val.clone();
-                                            v.lock().unwrap()[i] = val;
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    // Write back before continuing
-                                    if let ForBinding::Single(name) = binding {
-                                        if let Some(val) = self.env.get(name) {
-                                            let val = val.clone();
-                                            v.lock().unwrap()[i] = val;
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            // Write back the (possibly mutated) value
+                            let outcome = self.exec_stmts(body);
+                            // Write back however the body ended. It used to be
+                            // written three times — once each for break, continue
+                            // and falling off the end — and the fourth way out was
+                            // missing, so `return item` inside the body handed back
+                            // the new value and left the collection unchanged (#650).
                             if let ForBinding::Single(name) = binding {
                                 if let Some(val) = self.env.get(name) {
                                     let val = val.clone();
@@ -298,6 +274,12 @@ impl Interpreter {
                                 }
                             }
                             self.env.pop_scope();
+                            match outcome {
+                                Ok(_) => {}
+                                Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                                Err(diag) if continues_here(&diag.error, loop_label) => continue,
+                                Err(e) => return Err(e),
+                            }
                         }
                         Ok(Value::Unit)
                     }

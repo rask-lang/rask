@@ -953,6 +953,15 @@ pub struct MirLowerer<'a> {
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
     ensure_stack: Vec<BlockId>,
+    /// `for mutate` bodies currently being lowered, innermost last.
+    ///
+    /// `for mutate x in v` writes the binding back into the collection at the end
+    /// of each iteration, and `continue`/`break` reach that through dedicated
+    /// writeback blocks. Leaving the body by returning doesn't go through any
+    /// block, so the iteration's write was simply dropped — `return item` handed
+    /// back the new value and left the collection unchanged (#650). Every function
+    /// exit point drains this first, the same way it drains `ensure_stack`.
+    mutate_writebacks: Vec<MutateWriteback>,
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
@@ -1338,6 +1347,60 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
         })?;
         Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
+    }
+
+    /// Write every open `for mutate` binding back into its collection, innermost
+    /// first. Call this at any point that leaves the body without passing through
+    /// the loop's own writeback blocks — which means every function exit.
+    pub(crate) fn emit_mutate_writebacks(&mut self) {
+        for wb in self.mutate_writebacks.clone().into_iter().rev() {
+            self.emit_one_mutate_writeback(&wb);
+        }
+    }
+
+    /// LP13: a Vec element goes back by index, a Map entry by key.
+    pub(crate) fn emit_one_mutate_writeback(&mut self, wb: &MutateWriteback) {
+        let (func, args) = match wb.map_value {
+            Some(value) => (
+                "Map_set",
+                vec![
+                    MirOperand::Local(wb.collection),
+                    MirOperand::Local(wb.binding),
+                    MirOperand::Local(value),
+                ],
+            ),
+            None => (
+                "Vec_set",
+                vec![
+                    MirOperand::Local(wb.collection),
+                    MirOperand::Local(wb.index),
+                    MirOperand::Local(wb.binding),
+                ],
+            ),
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(func.to_string()),
+            args,
+        }));
+    }
+
+    /// Terminate the current block as a function return.
+    ///
+    /// One place, because there are four of them — `return`, `try`'s error path
+    /// (twice), and the implicit tail — and each one has to run the same exits:
+    /// pending `for mutate` writebacks, then the ensure chain.
+    pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
+        self.emit_mutate_writebacks();
+        if self.ensure_stack.is_empty() {
+            self.builder
+                .terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
+        } else {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                value,
+                cleanup_chain: self.cleanup_chain(),
+            }));
+        }
     }
 
     /// An operand as a local, spilling a constant into a temp when it isn't one.
@@ -2390,6 +2453,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_target: None,
             inline_return_taken: None,
             ensure_stack: Vec::new(),
+            mutate_writebacks: Vec::new(),
             take_self_methods,
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
@@ -4038,6 +4102,30 @@ fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirTyp
     match op {
         B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge | B::And | B::Or => MirType::Bool,
         _ => operand_ty.clone(),
+    }
+}
+
+/// What it takes to put a `for mutate` binding back where it came from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MutateWriteback {
+    /// The Vec or Map being iterated.
+    collection: LocalId,
+    /// Loop index, for a Vec. Ignored for a Map, which writes back by key.
+    index: LocalId,
+    /// The loop binding — the element for a Vec, the key for a Map.
+    binding: LocalId,
+    /// A Map's value binding. `Some` means this is a Map iteration.
+    map_value: Option<LocalId>,
+}
+
+impl MutateWriteback {
+    pub(crate) fn new(
+        collection: LocalId,
+        index: LocalId,
+        binding: LocalId,
+        map_value: Option<LocalId>,
+    ) -> Self {
+        Self { collection, index, binding, map_value }
     }
 }
 

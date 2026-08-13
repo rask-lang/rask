@@ -2925,6 +2925,26 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// `for mutate` writes back however the body ends.
+//
+// `continue` and `break` reached the writeback through dedicated blocks; leaving
+// by returning didn't go through anything, so that iteration's write was dropped
+// — `return item` handed back the new value and left the collection untouched.
+// `try` propagating out of the body is a return too (#650).
+#[test]
+fn a_return_out_of_for_mutate_still_writes_back() {
+    let expected = concat!(
+        "return: 101 101 2\n",
+        "break: 101 101 2\n",
+        "try: nope 101 2\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "for_mutate_return_writeback.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 // Pool elements that aren't structs, read and written.
 //
 // `pool[h]` on a scalar didn't produce a wrong answer — it killed native codegen
