@@ -1,0 +1,58 @@
+// Reading and writing a Pool element that isn't a struct.
+//
+// `pool[h]` on a scalar killed native codegen outright — not a wrong answer, a
+// Cranelift panic: "declared type of variable var10 doesn't match type of value
+// v13" (#719). `PoolCheckedAccess` meant "address or value, work it out from the
+// destination's declared type", codegen picked address every time, and a scalar
+// destination was declared with the scalar's type.
+//
+// `pool[h] = v` was a different bug in the same corner: with no field to write,
+// it never reached the pool branch at all and landed on `Vec_set(pool, handle, v)`
+// — a handle used as a position, and a handle is `index:32 | generation:32`, so
+// the store went far outside the arena.
+//
+// Struct elements were always fine, and are here so they stay that way.
+struct Ent {
+    public hp: i64
+    public name: string
+}
+
+func main() {
+    // i64
+    mut ints: Pool<i64> = Pool.new()
+    let a = ints.insert(42)
+    let b = ints.insert(-7)
+    println("{ints[a]} {ints[b]}")
+    ints[a] = 100
+    println("{ints[a]} {ints[b]}")
+
+    // f64 — a width the old path would have got wrong even if it hadn't crashed
+    mut floats: Pool<f64> = Pool.new()
+    let c = floats.insert(2.5)
+    println("{floats[c]}")
+    floats[c] = -0.75
+    println("{floats[c]}")
+
+    // bool
+    mut flags: Pool<bool> = Pool.new()
+    let d = flags.insert(true)
+    println("{flags[d]}")
+    flags[d] = false
+    println("{flags[d]}")
+
+    // string
+    mut names: Pool<string> = Pool.new()
+    let e = names.insert("alpha")
+    println("{names[e]}")
+
+    // struct element, with and without a field path — the path that already worked
+    mut ents: Pool<Ent> = Pool.new()
+    let f = ents.insert(Ent { hp: 10, name: "one" })
+    println("{ents[f].hp} {ents[f].name}")
+    ents[f].hp = 55
+    println("{ents[f].hp} {ents[f].name}")
+
+    // arithmetic straight off a scalar read
+    println("{ints[a] + ints[b]}")
+    println("{floats[c] * 4.0}")
+}

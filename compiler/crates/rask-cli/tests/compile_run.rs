@@ -2925,6 +2925,30 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// Pool elements that aren't structs, read and written.
+//
+// `pool[h]` on a scalar didn't produce a wrong answer — it killed native codegen
+// with a Cranelift panic, because `PoolCheckedAccess` meant "address or value,
+// work it out from the destination's type" and codegen always picked address.
+// `pool[h] = v` with no field to write missed the pool branch entirely and became
+// `Vec_set(pool, handle, v)`, using a packed handle as a position (#719).
+#[test]
+fn a_pool_element_can_be_a_scalar() {
+    let expected = concat!(
+        "42 -7\n", "100 -7\n",
+        "2.5\n", "-0.75\n",
+        "true\n", "false\n",
+        "alpha\n",
+        "10 one\n", "55 one\n",
+        "93\n", "-3\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "pool_scalar_element.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 // A program type reusing a stdlib type's name keeps its own method.
 //
 // rask#258 was this on native. It came back on the interpreter once the

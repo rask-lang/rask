@@ -1340,6 +1340,49 @@ impl<'a> MirLowerer<'a> {
         Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
     }
 
+    /// An operand as a local, spilling a constant into a temp when it isn't one.
+    pub(crate) fn as_local(&mut self, op: MirOperand) -> LocalId {
+        match op {
+            MirOperand::Local(id) => id,
+            _ => {
+                let tmp = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: tmp,
+                    rvalue: MirRValue::Use(op),
+                }));
+                tmp
+            }
+        }
+    }
+
+    /// The generation-checked address of `pool[handle]`'s data.
+    ///
+    /// `PoolCheckedAccess` means one thing: the destination holds the slot's
+    /// address. Reading a scalar element out of it is a separate, visible load.
+    /// It used to mean "address or value, work out which from the destination's
+    /// declared type", and codegen picked address every time — which for a scalar
+    /// read is a Cranelift panic, not a wrong answer (#719).
+    ///
+    /// `as_ty` is how the destination local is declared. An aggregate is declared
+    /// with its own type — that representation already *is* an address, and
+    /// declaring it `Ptr` instead loses the type for everything downstream, which
+    /// printed a `Pool<string>` element as its address. Anything that only stores
+    /// through the local, or loads a scalar out of it, uses `Ptr`.
+    pub(crate) fn pool_slot_addr(
+        &mut self,
+        pool: LocalId,
+        handle: LocalId,
+        as_ty: MirType,
+    ) -> LocalId {
+        let slot_addr = self.builder.alloc_temp(as_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
+            dst: slot_addr,
+            pool,
+            handle,
+        }));
+        slot_addr
+    }
+
     /// True when `object[..]` indexes a `Pool`. Decides both the
     /// `PoolCheckedAccess` lowering and whether a `with` binding aliases the slot
     /// — they have to agree, so they read the same answer.

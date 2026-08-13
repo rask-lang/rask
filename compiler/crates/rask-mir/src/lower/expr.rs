@@ -1659,35 +1659,36 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         result_ty
                     };
-                    let pool_local = match obj_op {
-                        MirOperand::Local(id) => id,
-                        _ => {
-                            let tmp = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: tmp,
-                                rvalue: MirRValue::Use(obj_op),
-                            }));
-                            tmp
-                        }
-                    };
-                    let handle_local = match idx_op {
-                        MirOperand::Local(id) => id,
-                        _ => {
-                            let tmp = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: tmp,
-                                rvalue: MirRValue::Use(idx_op),
-                            }));
-                            tmp
-                        }
-                    };
-                    let result_local = self.builder.alloc_temp(result_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-                        dst: result_local,
-                        pool: pool_local,
-                        handle: handle_local,
+                    let pool_local = self.as_local(obj_op);
+                    let handle_local = self.as_local(idx_op);
+                    // `PoolCheckedAccess` hands back the slot's address, always —
+                    // that's what the write path needs (`pool[h].field = v`
+                    // projects a store onto it) and what an aggregate read wants
+                    // anyway, since an aggregate local *is* an address.
+                    //
+                    // A scalar read needs the value, and it says so here with a
+                    // load rather than leaving codegen to work out which of the
+                    // two a given destination meant. It used to declare the
+                    // destination with the element's own type and let codegen
+                    // store an address into it, which is a Cranelift panic
+                    // outright: "declared type of variable var10 doesn't match
+                    // type of value v13" (#719).
+                    if result_ty.passed_by_address() {
+                        let slot = self.pool_slot_addr(
+                            pool_local,
+                            handle_local,
+                            result_ty.clone(),
+                        );
+                        return Ok((MirOperand::Local(slot), result_ty));
+                    }
+                    let slot_addr =
+                        self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
+                    let value_local = self.builder.alloc_temp(result_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: value_local,
+                        rvalue: MirRValue::Deref(MirOperand::Local(slot_addr)),
                     }));
-                    return Ok((MirOperand::Local(result_local), result_ty));
+                    return Ok((MirOperand::Local(value_local), result_ty));
                 }
 
                 let index_name = type_prefix
