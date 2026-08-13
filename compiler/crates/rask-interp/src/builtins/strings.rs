@@ -151,17 +151,37 @@ impl Interpreter {
             // Unicode scalars, not bytes — `len` is the byte count.
             "char_count" => Ok(Value::int(s.lock().unwrap().chars().count() as i64)),
             "is_ascii" => Ok(Value::Bool(s.lock().unwrap().is_ascii())),
+            // Byte offsets, like every other index in the string API —
+            // `index_of`, `last_index_of` and `byte_at` all hand you bytes, and
+            // `len` is a byte count. Counting chars here instead only agreed
+            // with native on ASCII: `s.substring(0, s.last_index_of("/"))` cut
+            // in the wrong place the moment the string held a multi-byte
+            // character, and the JSON parser's own slicing came out short.
+            //
+            // Out-of-range clamps rather than panicking, matching
+            // `rask_string_substr`.
             "substring" => {
                 let sb = s.lock().unwrap();
-                let start = self.expect_int(&args, 0)? as usize;
+                let len = sb.len();
+                let start = (self.expect_int(&args, 0)? as usize).min(len);
                 let end = args
                     .get(1)
                     .map(|v| match v {
-                        Value::Int(i, _) => *i as usize,
-                        _ => sb.len(),
+                        Value::Int(i, _) => (*i as usize).min(len),
+                        _ => len,
                     })
-                    .unwrap_or(sb.len());
-                let substring: String = sb.chars().skip(start).take(end - start).collect();
+                    .unwrap_or(len)
+                    .max(start);
+                let substring = sb
+                    .get(start..end)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        // A boundary inside a character. Native slices the raw
+                        // bytes and hands back a string that isn't valid UTF-8;
+                        // Rust won't, so take the bytes and replace what can't
+                        // be decoded rather than diverging by panicking.
+                        String::from_utf8_lossy(&sb.as_bytes()[start..end]).into_owned()
+                    });
                 Ok(Value::String(Arc::new(Mutex::new(substring))))
             }
             "parse_int" => {

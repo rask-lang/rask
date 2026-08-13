@@ -28,7 +28,28 @@ use crate::value::{ModuleKind, Value};
 
 impl Interpreter {
     /// Dispatch a module method call to the appropriate stdlib handler.
+    ///
+    /// A method the Rust layer doesn't implement falls back to the module's Rask
+    /// body in `stdlib/*.rk`, the same way value methods do — so migrating a
+    /// module to Rask needs no change here. The order matters and it's this way
+    /// round on purpose: these modules are the OS-facing ones, and their Rask
+    /// bodies are `extern "C"` calls through raw pointers that the interpreter
+    /// can't evaluate (#696). Where both exist, Rust is the runnable one.
     pub(crate) fn call_module_method(
+        &mut self,
+        module: &ModuleKind,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match self.dispatch_module_method(module, method, args.clone()) {
+            Err(RuntimeError::NoSuchMethod { .. }) => {
+                self.call_rask_static(module.name(), method, args)
+            }
+            other => other,
+        }
+    }
+
+    fn dispatch_module_method(
         &mut self,
         module: &ModuleKind,
         method: &str,

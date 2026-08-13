@@ -272,7 +272,13 @@ let csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.substring(start, end)` | `string` | Extract chars from start (inclusive) to end (exclusive), allocates |
+| `s.substring(start, end)` | `string` | Bytes from start (inclusive) to end (exclusive), allocates. Out-of-range clamps |
+
+Indices are byte offsets, like everything else here: `len` is a byte count, and
+`index_of` / `last_index_of` / `byte_at` all hand you byte offsets, so their
+results feed straight back into `substring`. Counting characters instead would
+make an index mean one thing coming out and another going in — and it hides an
+O(n) scan behind what looks like a slice.
 
 ## Parsing
 

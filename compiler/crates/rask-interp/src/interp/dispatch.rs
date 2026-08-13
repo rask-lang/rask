@@ -552,6 +552,30 @@ impl Interpreter {
         all.extend(args);
         self.call_function(&func, all).map_err(|d| d.error)
     }
+
+    /// Call a Rask `extend`-block function that takes no `self` —
+    /// `json.parse(text)`, and anything else where the Rust layer wants the
+    /// Rask body rather than a second copy of it.
+    pub(crate) fn call_rask_static(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let Some(func) = self
+            .methods
+            .get(type_name)
+            .and_then(|ms| ms.get(method))
+            .cloned()
+            .filter(|f| !f.body.is_empty())
+        else {
+            return Err(RuntimeError::NoSuchMethod {
+                ty: type_name.to_string(),
+                method: method.to_string(),
+            });
+        };
+        self.call_function(&func, args).map_err(|d| d.error)
+    }
     /// Helper to extract an i128 from args.
     pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
         match args.get(idx) {
@@ -735,9 +759,11 @@ impl Interpreter {
                 "env" | "env_or" | "set_env" | "remove_env" | "env_vars"
                 | "args" | "exit" | "pid" | "platform" | "arch"
             ),
+            // No "parse": the grammar is `json.parse` in stdlib/json.rk now, and
+            // the Rust parser here is only still reachable through the typed
+            // `decode`, where the shape comes from a struct declaration.
             Json => matches!(method,
-                "parse" | "stringify" | "stringify_pretty"
-                | "encode" | "encode_pretty" | "to_value" | "decode"
+                "encode" | "encode_pretty" | "to_value" | "decode"
             ),
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "spawn"),

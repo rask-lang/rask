@@ -248,13 +248,25 @@ extend JsonParser {
         }
 
         mut b = StringBuilder.new()
+        // Unescaped bytes are copied as a run. Reading each one and rebuilding
+        // it as a char instead re-encoded every multi-byte UTF-8 sequence, so a
+        // literal "café" in the input came back as "cafÃ©" — byte 0xC3 became
+        // the character U+00C3, which is two bytes again.
+        mut run_start = self.pos
 
         while self.pos < self.len {
-            let byte = self.advance()
+            let byte = self.peek()
+            if byte == 34 || byte == 92 {
+                if self.pos > run_start {
+                    b.push(self.input.substring(run_start, self.pos))
+                }
+            }
             if byte == 34 {
+                self.pos = self.pos + 1
                 return b.build()
             }
             if byte == 92 {
+                self.pos = self.pos + 1
                 if self.pos >= self.len {
                     return JsonError.ParseError("unterminated escape sequence")
                 }
@@ -281,9 +293,10 @@ extend JsonParser {
                 } else {
                     return JsonError.ParseError("invalid escape character")
                 }
+                run_start = self.pos
                 continue
             }
-            b.push_char(char.from_u32(byte as u32) ?? '\u{0}')
+            self.pos = self.pos + 1
         }
 
         return JsonError.ParseError("unterminated string")
@@ -434,6 +447,25 @@ extend json {
     @native("rask_json_decode")
     public func decode<T: Decode>(str: string) -> T or JsonError {}
 
+    /// The untyped path: `json.decode<JsonValue>(text)` lowers to this call.
+    ///
+    /// Not public — std.json has one verb pair (`decode`/`encode`) and `parse`
+    /// isn't part of it. This is the body behind the untyped half of `decode`,
+    /// and it's the JsonParser above, so the whole grammar lives in one place
+    /// rather than once here and once in the C runtime.
+    func parse(text: string) -> JsonValue or JsonError {
+        mut p = JsonParser.new(text)
+        let value = try p.parse_value()
+        // A valid document is one value and nothing after it. "1 2" and
+        // "{} garbage" are not JSON, and reading only the first value would
+        // accept them silently.
+        p.skip_ws()
+        if p.pos < p.len {
+            return JsonError.ParseError("unexpected content after the JSON value at position {p.pos}")
+        }
+        return value
+    }
+
     /// Convert a typed value to a JsonValue tree.
     @unimplemented
     public func to_value<T: Encode>(value: T) -> JsonValue {}
@@ -498,33 +530,46 @@ func write_value(value: JsonValue, mutate out: StringBuilder) {
 }
 
 /// The quoted, escaped form of `s`, appended to `out`.
+///
+/// Bytes that need no escaping — which is nearly all of them — are copied as a
+/// run. Emitting each one as its own char re-encoded every multi-byte UTF-8
+/// sequence: `json.encode("café")` produced `"cafÃ©"`, because byte 0xC3 became
+/// the character U+00C3 and went back out as two bytes.
 func write_escaped(s: string, mutate out: StringBuilder) {
     out.push_char('"')
+    mut run_start: usize = 0
     mut i: usize = 0
     while i < s.len() {
         let byte = s.byte_at(i) ?? 0
-        if byte == 34 {
-            out.push("\\\"")
-        } else if byte == 92 {
-            out.push("\\\\")
-        } else if byte == 10 {
-            out.push("\\n")
-        } else if byte == 13 {
-            out.push("\\r")
-        } else if byte == 9 {
-            out.push("\\t")
-        } else if byte == 8 {
-            out.push("\\b")
-        } else if byte == 12 {
-            out.push("\\f")
-        } else if byte < 32 {
-            out.push("\\u00")
-            out.push_char(hex_char(byte / 16))
-            out.push_char(hex_char(byte % 16))
-        } else {
-            out.push_char(char.from_u32(byte as u32) ?? '\u{0}')
+        if byte == 34 || byte == 92 || byte < 32 {
+            if i > run_start {
+                out.push(s.substring(run_start, i))
+            }
+            if byte == 34 {
+                out.push("\\\"")
+            } else if byte == 92 {
+                out.push("\\\\")
+            } else if byte == 10 {
+                out.push("\\n")
+            } else if byte == 13 {
+                out.push("\\r")
+            } else if byte == 9 {
+                out.push("\\t")
+            } else if byte == 8 {
+                out.push("\\b")
+            } else if byte == 12 {
+                out.push("\\f")
+            } else {
+                out.push("\\u00")
+                out.push_char(hex_char(byte / 16))
+                out.push_char(hex_char(byte % 16))
+            }
+            run_start = i + 1
         }
         i = i + 1
+    }
+    if s.len() > run_start {
+        out.push(s.substring(run_start, s.len()))
     }
     out.push_char('"')
 }

@@ -171,15 +171,27 @@ fn all_registered_type_methods_implemented() {
     }
 }
 
+// Every registered module method has to have *an* implementation the
+// interpreter can reach. Two count: Rust dispatch in `stdlib/`, or a Rask body
+// in `stdlib/*.rk`, which `call_module_method` falls back to. It used to demand
+// Rust, which was right when Rust was the only answer — `json.parse` is Rask now
+// and that's the whole point of moving it.
 #[test]
 fn all_registered_module_methods_implemented() {
+    let stubs = rask_stdlib::StubRegistry::load();
     let mut interp = Interpreter::new();
     for &module in rask_stdlib::registry::REGISTERED_MODULES {
         let kind = module_kind(module);
         for &method in rask_stdlib::registry::module_method_names(module) {
+            let in_rust = interp.has_module_dispatch(&kind, method);
+            let in_rask = stubs
+                .lookup_method(module, method)
+                .map(|m| m.has_body)
+                .unwrap_or(false);
             assert!(
-                interp.has_module_dispatch(&kind, method),
-                "{module}.{method} registered in rask-stdlib but interpreter returns NoSuchMethod"
+                in_rust || in_rask,
+                "{module}.{method} is registered in rask-stdlib with no implementation \
+                 either side: no Rust dispatch in rask-interp, no Rask body in stdlib/{module}.rk"
             );
         }
     }

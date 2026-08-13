@@ -230,9 +230,12 @@ const FS_METHODS: &[&str] = &[
 
 const NET_METHODS: &[&str] = &["tcp_listen", "tcp_connect"];
 
+// No "stringify"/"stringify_pretty": std.json has one verb pair and no
+// parse/stringify family, so they were never declared in stdlib/json.rk and
+// nothing could call them. `parse` is the untyped half of `decode`, written in
+// Rask.
 const JSON_METHODS: &[&str] = &[
-    "parse", "stringify", "stringify_pretty",
-    "encode", "encode_pretty", "to_value", "decode",
+    "parse", "encode", "encode_pretty", "to_value", "decode",
 ];
 
 const TIME_METHODS: &[&str] = &["sleep"];

@@ -808,7 +808,17 @@ impl Interpreter {
                                 .first()
                                 .map(|p| p.name != "self")
                                 .unwrap_or(true);
-                            if is_static && has_body {
+                            // A stdlib module goes through module dispatch below,
+                            // which falls back to this same Rask body when it has
+                            // no implementation of its own. Jumping the queue here
+                            // took the Rask body even when the Rust one was the
+                            // only runnable version: `fs.read_text` is `extern "C"`
+                            // calls through raw pointers (#696), which a tree
+                            // walker can't execute, so it started failing with
+                            // `undefined function fopen` and took grep_clone and
+                            // markdown_renderer with it.
+                            let is_module = ModuleKind::from_name(name).is_some();
+                            if is_static && has_body && !is_module {
                                 let arg_vals: Vec<Value> = args
                                     .iter()
                                     .map(|a| self.eval_expr(&a.expr))

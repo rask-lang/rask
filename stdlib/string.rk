@@ -116,7 +116,9 @@ extend string {
 
     // ── Substring extraction ────────────────────────────────
 
-    /// Extract chars from start (inclusive) to end (exclusive). Allocates.
+    /// Bytes from start (inclusive) to end (exclusive). Allocates.
+    /// Byte offsets, so `index_of`/`last_index_of`/`byte_at` results feed
+    /// straight in. Out-of-range clamps.
     @native("rask_string_substr")
     public func substring(self, start: usize, end: usize) -> string { }
 
