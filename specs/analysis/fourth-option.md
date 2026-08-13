@@ -279,6 +279,38 @@ doesn't justify taxing every traversal. Graphs that need to serialize walk
 themselves through Encode like everything else; `mem.relocatable` stays a
 keys-only feature.
 
+### Eager or lazy: the unlink's timing is implementation-free
+
+Edge-vs-key is two choices, only one of them forced. The *semantics* — checked
+key or self-nulling edge — is user-visible and must be picked per reference.
+The *timing* of the unlink is not observable in single-threaded code: a reader
+cannot distinguish "nulled eagerly at delete" from "nulled lazily before I
+looked." That freedom admits a hybrid:
+
+**Tombstone delete + deferred unlink.** `delete` marks the node dead and
+returns — O(1), a handle-remove's cost. A read of a not-yet-healed edge checks
+one flag in the target's header (same cache line as the data it was about to
+load), sees dead, self-nulls — after which that edge is a plain pointer again.
+Remaining unlinks amortize onto later graph operations or an explicit
+`graph.flush_deletes()`; memory is reused when the backlink list drains.
+Observationally identical to eager edges: a node or `none`, never a panic,
+never a stale value.
+
+The impossibility theorem, stated exactly: **every incoming edge must either
+be individually written to `none` (sometime), or checked at every read
+(forever).** Zero fixup writes and zero read checks over the same window
+can't coexist. Everything else is sliding along that frontier — eager unlink
+(checkless reads, O(degree) delete), lazy (O(1) delete, one-flag reads until
+healed), per-field policy in the schema. Prior art for the lazy end is RCU
+("readers proceed checklessly, reclamation deferred") and epoch-based
+reclamation.
+
+The lazy variant also dissolves the litmus's TC regression: eager `delete`
+hides degree-proportional work, while lazy `delete` is cheap and says so, and
+the O(degree) work runs at a `flush_deletes()` you can see and place. Cost
+transparency is preserved at call sites; what becomes invisible is mechanism,
+not cost.
+
 ### Open
 
 The partition pattern — collect refs into a local Vec, then mutate through

@@ -188,6 +188,37 @@ chasing, honestly slower than a generation bump.
 | **CS** | — | schema is per-struct, inverse checking module-local | No whole-program analysis; CS unaffected |
 | **IF** | ECS-standard | **no language has relational memory** | The seat is genuinely empty (fourth-option.md prior art) |
 
+## Human factors
+
+Edges match the untrained mental model: "the target died, so the field is
+empty" is how people describe object graphs before any language teaches them
+otherwise. Handles are the trained model — reference-as-ticket, redeemed at
+an arena — and the training is what every ECS tutorial exists to do. The
+structural difference: handle correctness is a *global* property (who removed
+what since this handle was stored? which pool is in scope?), edge correctness
+is a *schema* property (this field is a live node or `none`, says its type).
+
+Three honest intuition costs on the edge side:
+
+- **Spooky writes** — deleting X mutates other nodes' fields. New reasoning
+  class; mitigated by being schema-declared (a field changes only when its
+  target dies), and the handle alternative is latent staleness, which is
+  spookier.
+- **Reparent magic** — `n.parent = p` moving `n` between children lists is
+  obvious to database people, one lesson for everyone else.
+- **The locals restriction** — stashing edges in an outside `Vec` is a
+  compile error pointing at delete-locked scopes or keys. On-brand for Rask,
+  but it's where friction lives.
+
+Day-one surface: handles cost `Pool`, `Handle`, `using` contexts, the
+get-dance, and staleness-as-panic; edges cost `Edge?` plus schema clauses
+that announce themselves where they're used. In the litmus programs *and*
+the current example corpus (game_loop's `player` is a root edge; the other
+flagships barely touch pools), effectively 100% of handle uses are topology —
+none would need a `Key`. So handles can leave the day-one page entirely;
+`Key<T>` retreats to the boundary chapter (save files, cross-task queues,
+plugins), where `WeakHandle` lives today.
+
 ## Verdict
 
 Edges dominate handles on the workloads pools were designed for — read-mostly
