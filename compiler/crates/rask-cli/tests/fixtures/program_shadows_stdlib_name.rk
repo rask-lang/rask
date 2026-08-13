@@ -1,0 +1,33 @@
+// A program type may reuse a stdlib type's name, and its own method has to win.
+//
+// rask#258 was this on native: `JsonError_message` named two bodies and
+// monomorphization kept the last declaration, so `mine.message()` ran the stdlib
+// enum's `match self` against a struct. It came back on the interpreter for the
+// same reason once the interpreter started running `stdlib/*.rk` too —
+// registration is last-writer-wins, and the stdlib was being registered last.
+struct JsonError {
+  detail: string
+}
+
+extend JsonError {
+  func message(self) -> string {
+    return "user: {self.detail}"
+  }
+}
+
+struct IoError {
+  path: string
+}
+
+extend IoError {
+  func message(self) -> string {
+    return "io: {self.path}"
+  }
+}
+
+func main() {
+  let e = JsonError { detail: "boom" }
+  println(e.message())
+  let f = IoError { path: "/tmp/x" }
+  println(f.message())
+}

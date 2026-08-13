@@ -83,12 +83,17 @@ fn exit_code_reporting_signals(status: &process::ExitStatus) -> i32 {
 /// answered `none` natively (#688) while the interpreter got it right, and the
 /// rest of the Path family segfaulted. Handing the same source to both backends
 /// is what makes "written in Rask" mean one implementation.
+/// The stdlib goes first and the program second, because registration is
+/// last-writer-wins and the program has to be the last writer. A program may
+/// reuse a stdlib type's name (rask#258) — `struct JsonError` over stdlib's
+/// `enum JsonError` — and with the program first, the stdlib's `message` body
+/// overwrote the user's and ran `match self` against a struct.
 fn decls_with_rask_stdlib(decls: &[rask_ast::decl::Decl]) -> Vec<rask_ast::decl::Decl> {
     let t = std::time::Instant::now();
-    let mut all = decls.to_vec();
     let stdlib = rask_stdlib::StubRegistry::compilable_decls();
     let n = stdlib.len();
-    all.extend(stdlib);
+    let mut all = stdlib;
+    all.extend(decls.to_vec());
     if std::env::var_os("RASK_TIME_STDLIB").is_some() {
         eprintln!("[stdlib] {} decls in {:?}", n, t.elapsed());
     }

@@ -2925,6 +2925,24 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// A program type reusing a stdlib type's name keeps its own method.
+//
+// rask#258 was this on native. It came back on the interpreter once the
+// interpreter started running `stdlib/*.rk` as well: registration is
+// last-writer-wins and the stdlib was going in last, so the stdlib enum's
+// `message` overwrote the user struct's and ran `match self` against it.
+// tests/suite/t56_shadowed_type_names.rk covers it too, but only
+// tests/differential.sh runs that, and this needs to fail under `cargo test`.
+#[test]
+fn a_program_type_may_reuse_a_stdlib_name() {
+    let expected = "user: boom\nio: /tmp/x\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "program_shadows_stdlib_name.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 // `.clone()` where the receiver's type isn't known yet.
 //
 // The checker's `clone` arm short-circuits: a clone returns its receiver's type,
