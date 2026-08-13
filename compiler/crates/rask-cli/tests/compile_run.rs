@@ -2779,21 +2779,19 @@ trunc_inf inf
 // to come from an eleven-step chain: the checker's recorded answer, then eight
 // steps of guessing — a struct field's layout, the sole stdlib type declaring
 // the method, a name-to-type policy table ("a two-argument `join` means Vec"),
-// the MIR type, a layout name. Those six are deleted. The three that remain all
-// read recorded data:
+// the MIR type, a layout name. Seven are deleted. Two remain, both authoritative:
 //
 //   0_checker_recorded  what dispatch resolved to
-//   1_user_type         the checker's node type for the receiver
-//   2_local_meta        a MIR-synthesized local's recorded type — a `.lock()`
-//                       guard has no checker node at all, so lowering records
-//                       its type where it creates the local
+//   1_synthetic_local   a local MIR itself invented — a `store.lock().put(x)`
+//                       guard has no checker node at all, so lowering writes
+//                       its type down where it creates the local
 //
 // This test is what makes the deletion safe to keep: if a receiver starts
 // reaching a step that no longer exists, it fails lowering instead, and if
 // someone adds a guessing step back, the assert names it.
 #[test]
 fn method_dispatch_never_falls_back_to_guessing() {
-    const ALLOWED: &[&str] = &["0_checker_recorded", "1_user_type", "2_local_meta"];
+    const ALLOWED: &[&str] = &["0_checker_recorded", "1_synthetic_local"];
     // Between them: primitives and floats, enums behind a `T or E`, a `.lock()`
     // guard receiver, a multi-parameter generic with a trait bound, a comptime
     // block, a slice receiver, and collections.

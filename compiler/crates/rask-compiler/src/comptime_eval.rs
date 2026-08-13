@@ -203,7 +203,13 @@ fn try_eval_comptime_mir(
     let empty_packages = std::collections::HashSet::new();
     let empty_coercions = HashMap::new();
     let empty_rewrites = HashMap::new();
-        let empty_targets = HashMap::new();
+    // The checker's resolved dispatch targets, including the ones the
+    // monomorphizer carried onto instantiated bodies. This used to be an empty
+    // map — added to make an unrelated change compile (40c8f96), not chosen —
+    // so a comptime block lowered with dispatch blanked out while the same code
+    // lowered by the main pipeline had it. `arr.push(…)` inside `comptime { }`
+    // was the one call in the whole corpus that still needed a fallback (#425).
+    let comptime_call_targets = mono.all_call_targets(typed);
     let empty_resource_types = std::collections::HashSet::new();
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
         .enumerate()
@@ -239,7 +245,7 @@ fn try_eval_comptime_mir(
         error_wraps: &typed.error_wraps,
         fallback_keeps_shape: &typed.fallback_keeps_shape,
         call_rewrites: &empty_rewrites,
-        call_targets: &empty_targets,
+        call_targets: &comptime_call_targets,
         resource_types: &empty_resource_types,
         nominal_underlying: &nominal_underlying,
         const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),

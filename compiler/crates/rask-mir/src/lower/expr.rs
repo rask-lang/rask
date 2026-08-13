@@ -3942,28 +3942,6 @@ impl<'a> MirLowerer<'a> {
             arg_types.push(ty);
         }
 
-        // Qualify method name with receiver type to avoid dispatch
-        // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
-        // Priority: user-defined struct/enum from type checker first
-        // (`extend E { func get(self) }` would otherwise be shadowed by
-        // the hardcoded Map.get fallback below). Skip stdlib types
-        // (Option, Result, ...) so their methods stay on the existing
-        // dispatch path.
-        let user_type_prefix = self.ctx.lookup_raw_type(object.id)
-            .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .filter(|prefix| {
-                let base = prefix.split('<').next().unwrap_or(prefix);
-                self.ctx.find_struct(base).is_some()
-                    || self.ctx.find_enum(base).is_some()
-                    // A nominal newtype has no layout of its own, but its
-                    // `extend` methods are registered under its own name. Left
-                    // out, `Label("hey").shout()` on a `type Label = string`
-                    // mangled to `string_shout`, which doesn't exist (#445).
-                    || (self.is_transparent_newtype(base)
-                        && self.func_sigs.contains_key(&format!("{}_{}", base, method)))
-            });
-
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -4008,15 +3986,19 @@ impl<'a> MirLowerer<'a> {
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
         // method-name table. Priority:
-        //   0. what dispatch resolved to (CALL6) — the checker's own answer
-        //   1. the checker's node type for the receiver, for a user struct/enum
-        //   2. a MIR-synthesized local's recorded type — a `.lock()` guard has
-        //      no checker node at all, so lowering records its type where it
-        //      creates it, and reads it back here
+        // Two sources, both authoritative:
         //
-        // All three read recorded data. None of them guesses from the method's
-        // name, which is what the six deleted steps did.
-        // `RASK_TRACE_DISPATCH=1` tallies which one answered.
+        //   0. what dispatch resolved to (CALL6) — the checker's own answer,
+        //      which covers everything the checker saw.
+        //   1. a MIR-synthesized local's recorded type. A `store.lock().put(x)`
+        //      guard is invented *here*, during lowering — the checker never saw
+        //      that node, so there can be no record of it. Lowering writes the
+        //      guard's type down where it creates the local and reads it back.
+        //
+        // Neither guesses from the method's name, which is what the seven
+        // deleted steps did. `RASK_TRACE_DISPATCH=1` tallies which one answered:
+        // over 914 method calls across the examples, suite, fixtures and
+        // compile-error cases, 912 come from the checker and 2 are lock guards.
         let mut prefix_of: Option<String> = None;
         let mut answered_by: &'static str = "9_unresolved";
         macro_rules! step {
@@ -4031,24 +4013,19 @@ impl<'a> MirLowerer<'a> {
             };
         }
 
-        // 0: what dispatch actually resolved to.
         step!("0_checker_recorded", recorded_prefix);
-        // 1: a user struct/enum from the type checker.
-        step!("1_user_type", user_type_prefix);
-        // 2: a tracked local's own prefix.
-        step!("2_local_meta", if let ExprKind::Ident(var_name) = &object.kind {
+        step!("1_synthetic_local", if let ExprKind::Ident(var_name) = &object.kind {
             self.meta(var_name).and_then(|m| m.type_prefix.clone())
         } else {
             None
         });
-        // Nothing else. Six more steps used to follow — a struct field's declared
-        // type read off the layout, the receiver type when the stub declared the
-        // method, the method's sole defining stdlib type, a name-to-type policy
-        // table, the MIR type, and a struct/enum layout name. All six were dead
-        // across every example, suite file, fixture and compile-error case (909
-        // method calls) once the checker's answer covered primitives, literal
-        // receivers, slices and multi-parameter generics, so they are gone. The
-        // tally above is how that was established and how it stays true.
+        // Nothing else. Seven more steps used to follow: the checker's node type
+        // for the receiver, a struct field's declared type read off the layout,
+        // the receiver type when a stub declared the method, the method's sole
+        // defining stdlib type, a name-to-type policy table, the MIR type, and a
+        // struct/enum layout name. All seven are gone — each went dead once the
+        // real gap behind it closed, and the tally above is how that was
+        // established and how it stays true.
         //
         // A receiver that resolves to nothing now fails lowering with the method
         // named, which is the same trade `fallback::i64_fallback` makes: a
