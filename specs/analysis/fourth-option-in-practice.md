@@ -26,7 +26,7 @@ struct Entity {
     health: i32
     damage: i32
     target: Edge<Entity>?                  // nulls when the target dies
-    body: Edge<Body> on_delete(cascade)    // owns its physics body: they die together
+    body: Edge<Body>? on_delete(cascade)   // owns its physics body: they die together
     squad: Edges<Entity>                   // M:N — deleted members drop out
 }
 
@@ -99,7 +99,6 @@ not there.
 | Operation | Cost | vs C with raw pointers |
 |---|---|---|
 | Follow an `Edge<T>?` | the `?` test you wrote; + one header-flag load until the edge heals | 1.0× steady-state; ~1 extra predictable branch transiently |
-| Follow a non-optional `Edge<T>` | plain deref, nothing ever | 1.0× |
 | Assign an edge | pointer store + backlink relink (~4–8 stores) | ~4× a raw store — but the C/handle program does this relinking by hand as visible code |
 | `delete` | O(1) tombstone | cheaper than free() |
 | `flush_deletes()` | O(pending fixups), each edge pays once | the same work manual unlinking would do, batched |

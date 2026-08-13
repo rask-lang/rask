@@ -322,11 +322,11 @@ are literally `none`. In lazy mode the unwrap gains a hidden second step:
 non-none pointer → load the target's header flag → if dead, self-heal to
 `none` and take the none branch. No new syntax, no new concept — the "might
 not be there" the programmer already acknowledged by writing `?` is the only
-place the runtime needs. One consequence falls out: **lazy applies to
-optional edges only.** A non-optional `Edge<T>` (cascade/restrict) has no `?`
-site to hide a check in, so its policy resolves eagerly at delete. The type
-honestly states whether a death is observable, and only observable-death
-edges ever carry the transient check.
+place the runtime needs. (An earlier draft carved out non-optional edges as
+eager-only; the adversarial pass then killed non-optional edges entirely —
+they can't be constructed under cycles — so every edge has a `?` site and
+lazy covers the whole model uniformly. See
+[fourth-option-adversarial.md](fourth-option-adversarial.md), A4.)
 
 ### Open
 
