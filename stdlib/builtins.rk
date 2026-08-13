@@ -1,32 +1,41 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 /// Print a value followed by a newline to stdout.
+@native
 public func println(msg: string) { }
 
 /// Print a value to stdout without a trailing newline.
+@native
 public func print(msg: string) { }
 
 /// Abort execution with an error message.
+@native
 public func panic(msg: string) { }
 
 /// Mark unfinished code. Panics with "not yet implemented" at runtime.
 /// Returns `!` (Never) so it works in any type context.
+@native
 public func todo(msg: string?) { }
 
 /// Mark code that should never be reached. Panics if executed.
 /// Returns `!` (Never) so it works in any type context.
+@native
 public func unreachable(msg: string?) { }
 
 /// Print a value followed by a newline to stderr.
+@native
 public func eprintln(msg: string) { }
 
 /// Print a value to stderr without a trailing newline.
+@native
 public func eprint(msg: string) { }
 
 /// Assert a condition is true. Panics with message if false.
+@native
 public func assert(condition: bool, msg: string?) { }
 
 /// Format values into a string.
+@native
 public func format(fmt: string) -> string { }
 
 /// The smaller of two values. Works on any Comparable type — numbers,

@@ -7,6 +7,7 @@ public struct Thread { }
 
 extend Thread {
     /// Spawn an OS thread. Returns a handle that must be joined or detached.
+    @native("rask_closure_spawn")
     public func spawn(f: func() -> T) -> ThreadHandle<T> { }
 }
 
@@ -15,9 +16,11 @@ public struct ThreadHandle<T> { }
 
 extend ThreadHandle<T> {
     /// Wait for the thread to finish and return its result.
+    @native("rask_task_join_simple")
     public func join(take self) -> T or JoinError { }
 
     /// Detach the thread (fire-and-forget).
+    @native("rask_task_detach")
     public func detach(take self) { }
 }
 
@@ -28,5 +31,6 @@ public struct ThreadPool { }
 
 extend ThreadPool {
     /// Spawn work on the thread pool. Returns a handle.
+    @native("rask_threadpool_spawn")
     public func spawn(f: func() -> T) -> ThreadHandle<T> { }
 }

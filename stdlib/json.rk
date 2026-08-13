@@ -412,12 +412,14 @@ struct json {  }
 extend json {
     /// Encode a value as a JSON string.
     /// Compiler-expanded at MIR level for structs via comptime for + reflect.
+    @native("rask_json_encode")
     public func encode<T: Encode>(value: T) -> string {}
 
     /// Decode a JSON string into a typed value.
     /// Compiler-expanded: the call site describes T to the decoder, which
     /// fills the value in one pass. Missing required fields, wrong types, and
     /// malformed input all come back as JsonError.
+    @native("rask_json_decode")
     public func decode<T: Decode>(str: string) -> T or JsonError {}
 
     /// Convert a typed value to a JsonValue tree.

@@ -62,6 +62,26 @@ pub struct MethodStub {
     /// sees at their call site rather than `Function not found: Vec_reserve`
     /// out of codegen.
     pub unimplemented: bool,
+    /// Declared `@native` — the body isn't here, it's in the backends.
+    ///
+    /// This is the boundary of the language's blessed core, written down. An
+    /// empty body used to mean four different things with nothing to tell them
+    /// apart: implemented in the C runtime via the dispatch table, implemented
+    /// as a bare symbol, resolved entirely at compile time, or not implemented
+    /// at all. A reader of `stdlib/char.rk` couldn't tell which, and neither
+    /// could a test — which is how `f64.floor()` shipped working on the
+    /// interpreter and missing from codegen (#687).
+    ///
+    /// `Some(symbol)` names the implementation; `Some("")` means `@native` with
+    /// no symbol given, for the ones resolved by another route.
+    pub native: Option<std::string::String>,
+    /// The stub has a Rask body — the implementation is right here, and both
+    /// backends run it. The registry couldn't answer this before, which meant
+    /// nothing could distinguish "written in Rask" from "declared only".
+    pub has_body: bool,
+    /// Declared `comptime func` — evaluated by the comptime engine, so the
+    /// keyword already says where the body lives. `Vec.freeze` is one.
+    pub is_comptime: bool,
     /// Trait bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
     /// checker builds module signatures from these stubs, and without the bound
@@ -419,6 +439,18 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         source_file: format!("stdlib/{}", filename),
         span,
         unimplemented: f.attrs.iter().any(|a| a == "unimplemented"),
+        has_body: !f.body.is_empty(),
+        is_comptime: f.is_comptime,
+        native: f.attrs.iter().find_map(|a| {
+            if a == "native" {
+                return Some(std::string::String::new());
+            }
+            // `@native("rask_char_is_ascii")` reaches here as the attribute
+            // text with its parens, which the parser preserved.
+            a.strip_prefix("native(\"")
+                .and_then(|rest| rest.strip_suffix("\")"))
+                .map(|sym| sym.to_string())
+        }),
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.clone())))
             .collect(),
@@ -792,5 +824,51 @@ mod tests {
             let m = reg.lookup_method(ty, method).unwrap();
             assert!(m.takes_self, "{}.{} should take self", ty, method);
         }
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    /// Every stdlib function says where its body lives.
+    ///
+    /// Four answers are legitimate: a Rask body right here, `comptime func`
+    /// (the comptime engine evaluates it, so the keyword is the marker),
+    /// `@native` (the backends implement it), or `@unimplemented` (nothing does,
+    /// and calling it is an error the user sees at the call site). A fifth state
+    /// — an empty body with no marker — used to be the majority, and it meant
+    /// any of those with nothing to tell them apart. That's how `f64.floor()` came to work on
+    /// the interpreter and be missing from codegen (#687), and how three
+    /// implementations of `Path` came to disagree (#688).
+    ///
+    /// The list below is what remains unmarked. It shrinks; it must not grow.
+    #[test]
+    fn every_stdlib_function_says_where_its_body_lives() {
+        let reg = StubRegistry::load();
+        let mut unmarked: Vec<String> = Vec::new();
+        for type_name in reg.type_names() {
+            let Some(t) = reg.get_type(&type_name) else { continue };
+            for m in &t.methods {
+                if m.unimplemented || m.native.is_some() {
+                    continue;
+                }
+                // A method with a Rask body is its own answer. The registry
+                // doesn't carry bodies, so `has_body` stands in for it.
+                if m.has_body || m.is_comptime {
+                    continue;
+                }
+                unmarked.push(format!("{}.{}", type_name, m.name));
+            }
+        }
+        unmarked.sort();
+        assert!(
+            unmarked.is_empty(),
+            "{} stdlib functions have an empty body and no marker. Every one has to \
+             say where its body lives — `@native(\"symbol\")`, `@unimplemented`, \
+             `comptime func`, or a Rask body:\n  {}",
+            unmarked.len(),
+            unmarked.join("\n  ")
+        );
     }
 }

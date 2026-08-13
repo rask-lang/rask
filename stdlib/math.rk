@@ -5,24 +5,38 @@ struct math { }
 
 extend math {
     // Trigonometric
+    @native
     public func sin(x: f64) -> f64 { }
+    @native
     public func cos(x: f64) -> f64 { }
+    @native
     public func tan(x: f64) -> f64 { }
+    @native
     public func asin(x: f64) -> f64 { }
+    @native
     public func acos(x: f64) -> f64 { }
+    @native
     public func atan(x: f64) -> f64 { }
+    @native
     public func atan2(y: f64, x: f64) -> f64 { }
 
     // Exponential and logarithmic
+    @native
     public func exp(x: f64) -> f64 { }
+    @native
     public func ln(x: f64) -> f64 { }
+    @native
     public func log2(x: f64) -> f64 { }
+    @native
     public func log10(x: f64) -> f64 { }
 
     // Multi-argument
+    @native
     public func hypot(x: f64, y: f64) -> f64 { }
 
     // Conversion
+    @native
     public func to_radians(degrees: f64) -> f64 { }
+    @native
     public func to_degrees(radians: f64) -> f64 { }
 }
