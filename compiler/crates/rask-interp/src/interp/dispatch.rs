@@ -243,7 +243,58 @@ impl Interpreter {
         }
     }
 
+    /// A method call on a value.
+    ///
+    /// The Rust implementations below cover the primitive layer. When none of
+    /// them recognises the method, the answer is a Rask implementation — from
+    /// `stdlib/*.rk` or from user code — rather than an error. Those Rust arms
+    /// used to be walls: `JsonValue.to_string`, written in Rask and working
+    /// natively, was unreachable on the interpreter however the source read
+    /// (#689). One fallback here covers every type, so migrating a module to
+    /// Rask needs no interpreter change at all.
     pub(super) fn call_method(
+        &mut self,
+        receiver: Value,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match self.call_primitive_method(receiver.clone(), method, args.clone()) {
+            Err(RuntimeError::NoSuchMethod { ty, method: m }) => {
+                match Self::nominal_type_name(&receiver) {
+                    // Report the primitive layer's error, not the lookup's — it
+                    // names the receiver type the user wrote.
+                    Some(name) => self
+                        .call_rask_method(&name, method, receiver, args)
+                        .map_err(|e| match e {
+                            RuntimeError::NoSuchMethod { .. } => {
+                                RuntimeError::NoSuchMethod { ty, method: m }
+                            }
+                            other => other,
+                        }),
+                    None => Err(RuntimeError::NoSuchMethod { ty, method: m }),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// The nominal type a value belongs to, for looking up its Rask methods.
+    /// `Value::type_name` answers "struct"/"enum", which no method table is
+    /// keyed by.
+    fn nominal_type_name(v: &Value) -> Option<String> {
+        Some(match v {
+            Value::Struct(s) => s.lock().unwrap().name.clone(),
+            Value::Enum { name, .. } => name.clone(),
+            Value::Duration(_) => "Duration".to_string(),
+            Value::Instant(_) => "Instant".to_string(),
+            Value::File(_) => "File".to_string(),
+            Value::TcpListener(_) => "TcpListener".to_string(),
+            Value::TcpConnection(_) => "TcpConnection".to_string(),
+            _ => return None,
+        })
+    }
+
+    fn call_primitive_method(
         &mut self,
         receiver: Value,
         method: &str,
@@ -311,18 +362,7 @@ impl Interpreter {
                 self.call_stderr_method(method, args)
             }
             Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
-                match self.call_json_value_method(variant, fields, method) {
-                    // The Rust layer implements the primitives; anything it
-                    // doesn't know is the Rask implementation's, in
-                    // `stdlib/json.rk`. It used to error here — a wall rather
-                    // than a fallback — so `JsonValue.to_string`, written in
-                    // Rask and working natively, was unreachable on the
-                    // interpreter (#689).
-                    Err(RuntimeError::NoSuchMethod { .. }) => {
-                        self.call_rask_method("JsonValue", method, receiver.clone(), args)
-                    }
-                    other => other,
-                }
+                self.call_json_value_method(variant, fields, method)
             }
             Value::Enum { name, variant, fields, .. } if name == "JsonError" => {
                 self.call_json_error_method(variant, fields, method)
