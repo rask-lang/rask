@@ -2656,3 +2656,20 @@ fn a_string_stored_into_a_field_outlives_the_call() {
         );
     }
 }
+
+// ─── Regression: a negative literal takes its type from context ─────
+//
+// `-2.5` is `(2.5).neg()` after desugaring, so the expected type reached the
+// call and not the literal inside it. With nothing else to go on the literal
+// defaulted to f64, and `let x: f32 = -2.5` was a type error while `2.5` was
+// fine. The `neg` constraint deferred on the literal receiver and used to be
+// dropped in silence, which is why this surfaced only once deferred method
+// calls started being retried and reported (#425).
+#[test]
+fn a_negative_literal_takes_its_type_from_context() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "negative_literal_context.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "1 -1 -5 -2.5\n", "{}", mode);
+    }
+}

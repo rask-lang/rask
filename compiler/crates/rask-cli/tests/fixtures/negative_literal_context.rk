@@ -1,0 +1,7 @@
+func pos_f32() -> f32 { return 1.0 }
+func neg_f32() -> f32 { return -1.0 }
+func main() {
+  let a: i8 = -5
+  let b: f32 = -2.5
+  println("{pos_f32()} {neg_f32()} {a} {b}")
+}

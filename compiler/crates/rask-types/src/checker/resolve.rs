@@ -79,6 +79,11 @@ impl TypeChecker {
         Self::is_homogeneous_arithmetic(method) || Self::is_homogeneous_comparison(method)
     }
 
+    /// Zero-argument operators whose result has the receiver's type.
+    fn is_result_preserving_unary(method: &str) -> bool {
+        matches!(method, "neg" | "abs" | "bit_not")
+    }
+
     /// A concrete number. Deliberately excludes nominal types with operator
     /// impls: `5 + meters` should still be rejected, not quietly given the
     /// newtype's type.
@@ -509,6 +514,20 @@ impl TypeChecker {
                 // to `n`, so the result type stayed open forever and the binding
                 // it fed got reported as un-inferrable. Take the type from the
                 // argument — that's where the operand's type actually is (#630).
+                // A result-preserving operator with no argument — `-1.0` is
+                // `(1.0).neg()` after desugaring. There's no argument to take a
+                // type from, but the result has the receiver's type by
+                // definition, so tying them together lets the *call site* settle
+                // both: `let x: f32 = -2.5` makes the literal f32. Without this
+                // the literal defaulted to f64 before the annotation was
+                // consulted, and every negative float literal in an f32 position
+                // was a type error while the positive one was fine.
+                if self.ctx.literal_vars.contains_key(id)
+                    && args.is_empty()
+                    && Self::is_result_preserving_unary(&method)
+                {
+                    return self.unify(&ret, &ty, span);
+                }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
                 {

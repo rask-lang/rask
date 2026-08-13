@@ -147,21 +147,25 @@ impl TypeChecker {
     /// Re-solve method calls that deferred on an unresolved receiver, after
     /// literal defaults have given that receiver a type.
     ///
-    /// Strictly additive: any error this would raise was already dropped
-    /// silently when the constraint was discarded, so errors from the retry are
-    /// rolled back. What survives is the resolution itself — the result type
-    /// unified, and the dispatch target recorded for MIR.
+    /// Errors are reported. These calls used to be dropped in silence, so a
+    /// method that doesn't exist on the type the literal defaulted to was
+    /// accepted here and failed later — in MIR lowering, in codegen, or not at
+    /// all.
     pub(super) fn retry_deferred_methods(&mut self) {
         let deferred = std::mem::take(&mut self.deferred_methods);
         if deferred.is_empty() {
             return;
         }
-        let errors_before = self.errors.len();
         for constraint in deferred {
-            let _ = self.solve_constraint(constraint);
+            match self.solve_constraint(constraint) {
+                Ok(_) => {}
+                Err(e) => self.errors.push(e),
+            }
         }
-        // Anything still unresolvable was already not an error before this ran.
-        self.errors.truncate(errors_before);
+        // A retry can re-defer (a receiver that is still open has nothing left
+        // to wait for). Those were silently dropped before this existed, and
+        // reporting them is a separate question from reporting a real
+        // no-such-method — leave them.
         self.ctx.constraints.clear();
     }
 
