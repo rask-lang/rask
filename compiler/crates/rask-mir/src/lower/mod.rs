@@ -191,6 +191,134 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
     )
 }
 
+/// Empty tables, for the fields a caller doesn't have. `'static`, so they
+/// satisfy any `MirContext<'a>`.
+mod empty {
+    use super::*;
+    use std::sync::OnceLock;
+
+    macro_rules! empty_of {
+        ($name:ident, $ty:ty) => {
+            pub fn $name() -> &'static $ty {
+                static V: OnceLock<$ty> = OnceLock::new();
+                V.get_or_init(Default::default)
+            }
+        };
+    }
+    empty_of!(strings, std::collections::HashSet<String>);
+    empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
+    empty_of!(node_names, HashMap<NodeId, String>);
+    empty_of!(str_map, HashMap<String, String>);
+}
+
+impl<'a> MirContext<'a> {
+    /// A context from the checker's and monomorphizer's output.
+    ///
+    /// Six call sites used to build this struct field by field — 21 fields each,
+    /// across two crates — and they drifted. The comptime evaluator passed an
+    /// empty `call_targets` for two months, because an unrelated commit needed
+    /// the struct to compile and an empty map was the quickest way there; the
+    /// effect was a `comptime { }` block lowering with method dispatch blanked
+    /// out while the same code lowered by the main pipeline had it (#425, #727).
+    ///
+    /// The five tables that come straight off `TypedProgram` are read here, so
+    /// they can't be forgotten or blanked. `node_types` and `call_targets` stay
+    /// explicit: the real pipeline passes versions merged with the
+    /// monomorphizer's instantiated bodies, and silently taking the unmerged
+    /// ones off `typed` would lose every generic instantiation.
+    ///
+    /// Everything else defaults to empty, with a `with_*` to set it. A new field
+    /// is one edit here, and no call site can miss it.
+    pub fn new(
+        typed: &'a rask_types::TypedProgram,
+        struct_layouts: &'a [StructLayout],
+        enum_layouts: &'a [EnumLayout],
+        node_types: &'a HashMap<NodeId, Type>,
+        call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+        type_names: &'a HashMap<rask_types::TypeId, String>,
+    ) -> Self {
+        Self {
+            struct_layouts,
+            enum_layouts,
+            node_types,
+            call_targets,
+            type_names,
+            // Straight off the checker — never optional.
+            mutate_self_fns: Some(&typed.mutate_self_fns),
+            trait_coercions: &typed.trait_coercions,
+            error_wraps: &typed.error_wraps,
+            fallback_keeps_shape: &typed.fallback_keeps_shape,
+            inferred_fn_ret: &typed.inferred_fn_ret,
+            // Defaults; the `with_*` below set the ones a caller has.
+            comptime_globals: empty::comptime_globals(),
+            extern_funcs: empty::strings(),
+            package_modules: empty::strings(),
+            line_map: None,
+            source_file: None,
+            trait_methods: HashMap::new(),
+            call_rewrites: empty::node_names(),
+            resource_types: empty::strings(),
+            nominal_underlying: empty::str_map(),
+            comptime_interp: None,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_comptime_globals(
+        mut self,
+        globals: &'a HashMap<String, ComptimeGlobalMeta>,
+    ) -> Self {
+        self.comptime_globals = globals;
+        self
+    }
+
+    pub fn with_extern_funcs(mut self, funcs: &'a std::collections::HashSet<String>) -> Self {
+        self.extern_funcs = funcs;
+        self
+    }
+
+    pub fn with_package_modules(
+        mut self,
+        modules: &'a std::collections::HashSet<String>,
+    ) -> Self {
+        self.package_modules = modules;
+        self
+    }
+
+    pub fn with_source(mut self, path: &'a str, line_map: Option<&'a LineMap>) -> Self {
+        self.source_file = Some(path);
+        self.line_map = line_map;
+        self
+    }
+
+    pub fn with_trait_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
+        self.trait_methods = methods;
+        self
+    }
+
+    pub fn with_call_rewrites(mut self, rewrites: &'a HashMap<NodeId, String>) -> Self {
+        self.call_rewrites = rewrites;
+        self
+    }
+
+    pub fn with_resource_types(mut self, types: &'a std::collections::HashSet<String>) -> Self {
+        self.resource_types = types;
+        self
+    }
+
+    pub fn with_nominal_underlying(mut self, map: &'a HashMap<String, String>) -> Self {
+        self.nominal_underlying = map;
+        self
+    }
+
+    pub fn with_comptime_interp(mut self, interp: rask_comptime::ComptimeInterpreter) -> Self {
+        self.comptime_interp = Some(std::cell::RefCell::new(interp));
+        self
+    }
+}
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],

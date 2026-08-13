@@ -237,7 +237,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
-    let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
         .enumerate()
@@ -265,7 +264,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
     mir_interp.inject_cfg(&cfg);
     mir_interp.register_functions(&decls);
-    let empty_packages = std::collections::HashSet::new();
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
@@ -273,31 +271,25 @@ pub fn cmd_mir(path: &str, format: Format) {
     let all_call_targets = mono.all_call_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
-    let mir_ctx = rask_mir::lower::MirContext {
-        mutate_self_fns: Some(&typed.mutate_self_fns),
-        struct_layouts: &mono.struct_layouts,
-        enum_layouts: &mono.enum_layouts,
-        node_types: &all_node_types,
-        type_names: &type_names,
-        comptime_globals: &comptime_globals,
-        extern_funcs: &extern_funcs,
-        package_modules: &empty_packages,
-        trait_methods,
-        line_map: line_map.as_ref(),
-        source_file: Some(path),
-        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
-        comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
-        trait_coercions: &typed.trait_coercions,
-        call_rewrites: &mono.call_rewrites,
-        call_targets: &all_call_targets,
-        error_wraps: &all_error_wraps,
-        fallback_keeps_shape: &all_fallback_keeps_shape,
-        resource_types: &empty_resource_types,
-        nominal_underlying: &nominal_underlying,
-        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        inferred_fn_ret: &typed.inferred_fn_ret,
-    };
+    let mut mir_ctx = rask_mir::lower::MirContext::new(
+        &typed,
+        &mono.struct_layouts,
+        &mono.enum_layouts,
+        &all_node_types,
+        &all_call_targets,
+        &type_names,
+    )
+        .with_comptime_globals(&comptime_globals)
+        .with_extern_funcs(&extern_funcs)
+        .with_trait_methods(trait_methods)
+        .with_call_rewrites(&mono.call_rewrites)
+        .with_nominal_underlying(&nominal_underlying);
+    mir_ctx.line_map = line_map.as_ref();
+    mir_ctx.source_file = Some(path);
+    mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
+    mir_ctx.error_wraps = &all_error_wraps;
+    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
+    let mir_ctx = mir_ctx;
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
@@ -350,7 +342,6 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let type_names = super::compile::build_type_names(&typed);
     let trait_methods = super::compile::build_trait_methods(&typed);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
-    let empty_resource_types = std::collections::HashSet::new();
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
 
@@ -361,31 +352,25 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let all_call_targets = mono.all_call_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
-    let mir_ctx = rask_mir::lower::MirContext {
-        mutate_self_fns: Some(&typed.mutate_self_fns),
-        struct_layouts: &mono.struct_layouts,
-        enum_layouts: &mono.enum_layouts,
-        node_types: &all_node_types,
-        type_names: &type_names,
-        comptime_globals: &comptime_globals,
-        extern_funcs: &extern_funcs,
-        package_modules: &package_modules,
-        trait_methods: trait_methods.clone(),
-        line_map: line_map.as_ref(),
-        source_file: Some(path),
-        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
-        comptime_interp: None,
-        trait_coercions: &typed.trait_coercions,
-        call_rewrites: &mono.call_rewrites,
-        call_targets: &all_call_targets,
-        error_wraps: &all_error_wraps,
-        fallback_keeps_shape: &all_fallback_keeps_shape,
-        resource_types: &empty_resource_types,
-        nominal_underlying: &nominal_underlying,
-        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        inferred_fn_ret: &typed.inferred_fn_ret,
-    };
+    let mut mir_ctx = rask_mir::lower::MirContext::new(
+        &typed,
+        &mono.struct_layouts,
+        &mono.enum_layouts,
+        &all_node_types,
+        &all_call_targets,
+        &type_names,
+    )
+        .with_comptime_globals(&comptime_globals)
+        .with_extern_funcs(&extern_funcs)
+        .with_package_modules(&package_modules)
+        .with_trait_methods(trait_methods.clone())
+        .with_call_rewrites(&mono.call_rewrites)
+        .with_nominal_underlying(&nominal_underlying);
+    mir_ctx.line_map = line_map.as_ref();
+    mir_ctx.source_file = Some(path);
+    mir_ctx.error_wraps = &all_error_wraps;
+    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
+    let mir_ctx = mir_ctx;
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
