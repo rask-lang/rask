@@ -726,7 +726,8 @@ impl<'a> MirContext<'a> {
 
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names),
+            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
+                .or_else(|| primitive_method_prefix(recv).map(str::to_string)),
             rask_types::Callee::Free(_) => None,
         }
     }
@@ -3804,6 +3805,27 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// The method-name prefix for a primitive receiver.
+///
+/// The checker records `Callee::Method { recv }` for every non-inference
+/// receiver, primitives included, but `type_prefix` answers `None` for them — so
+/// `x.floor()` skipped the recorded answer and re-derived the same prefix from
+/// its MIR type further down the chain. This is the one mapping both ends use,
+/// so they can't disagree about it.
+///
+/// Narrow widths mangle to their widest sibling: codegen has `i64_*` / `u64_*`
+/// entries and narrower values ride in the same slots.
+pub fn primitive_method_prefix(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::F32 | Type::F64 => Some("f64"),
+        Type::Bool => Some("bool"),
+        Type::Char => Some("char"),
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        _ => None,
+    }
 }
 
 fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {

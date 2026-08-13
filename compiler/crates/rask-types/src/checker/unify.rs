@@ -108,8 +108,22 @@ impl TypeChecker {
                         });
                     }
                 }
-                TypeConstraint::HasMethod { ty, method, span, .. } => {
+                TypeConstraint::HasMethod { ty, method, args, ret, span, call_node } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    // A receiver that's still an inference variable is usually an
+                    // unsuffixed literal waiting on `apply_literal_defaults`,
+                    // which runs after all solving. Dropping the constraint here
+                    // means the call is never resolved against the type the
+                    // literal ends up with: `let x = 3.75` then `x.floor()`
+                    // recorded no dispatch target, so MIR had to re-derive the
+                    // receiver from its own type further down the chain (#425).
+                    // Keep it and retry once defaults have landed.
+                    if matches!(resolved, Type::Var(_)) {
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty, method, args, ret, span, call_node,
+                        });
+                        continue;
+                    }
                     // Skip operator methods on primitive types — these are
                     // desugared from +, *, etc. and resolved at the MIR level.
                     if !Self::is_placeholder_type(&resolved)
@@ -128,6 +142,27 @@ impl TypeChecker {
                 _ => {}
             }
         }
+    }
+
+    /// Re-solve method calls that deferred on an unresolved receiver, after
+    /// literal defaults have given that receiver a type.
+    ///
+    /// Strictly additive: any error this would raise was already dropped
+    /// silently when the constraint was discarded, so errors from the retry are
+    /// rolled back. What survives is the resolution itself — the result type
+    /// unified, and the dispatch target recorded for MIR.
+    pub(super) fn retry_deferred_methods(&mut self) {
+        let deferred = std::mem::take(&mut self.deferred_methods);
+        if deferred.is_empty() {
+            return;
+        }
+        let errors_before = self.errors.len();
+        for constraint in deferred {
+            let _ = self.solve_constraint(constraint);
+        }
+        // Anything still unresolvable was already not an error before this ran.
+        self.errors.truncate(errors_before);
+        self.ctx.constraints.clear();
     }
 
     /// Types that legitimately stay unresolved (generic params, placeholders).
