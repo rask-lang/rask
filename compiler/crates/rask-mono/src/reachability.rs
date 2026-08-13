@@ -617,6 +617,16 @@ impl<'a> Monomorphizer<'a> {
             .unwrap_or_default()
     }
 
+    /// The name of the type the checker gave a node, if it has one.
+    fn arg_type_name(&self, id: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        let ty = self
+            .instantiated_node_types
+            .get(&id)
+            .or_else(|| typed.node_types.get(&id))?;
+        rask_types::receiver_name(ty, &typed.types)
+    }
+
     /// Add a (name, type_args) pair to queue if not already seen
     fn enqueue(&mut self, name: String, type_args: Vec<Type>) {
         let key = (name.clone(), type_args.clone());
@@ -722,6 +732,28 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::MethodCall { object, method, args, type_args: written_type_args, .. } => {
                 let type_args = self.type_args_at(expr.id);
+
+                // `json.encode(v)` where v is a JsonValue is `v.to_string()` —
+                // the encoder is in stdlib/json.rk, in Rask. The name of that
+                // body is decided here, by the pass that compiles it, and MIR
+                // reads the rewrite. Naming it in lowering instead is how
+                // `json.encode` on a JsonValue came out of codegen as
+                // `Function not found: JsonValue_to_string`: nothing had
+                // queued the body, because the pass that queues bodies never
+                // heard the name.
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "json")
+                    && method == "encode"
+                    && args.len() == 1
+                    && self.arg_type_name(args[0].expr.id).as_deref() == Some("JsonValue")
+                {
+                    let body = "JsonValue_to_string".to_string();
+                    self.call_rewrites.insert(expr.id, body.clone());
+                    self.enqueue(body, Vec::new());
+                    for arg in args {
+                        self.visit_expr(&arg.expr);
+                    }
+                    return;
+                }
 
                 // CALL6 already picked the receiver type. Use it rather than
                 // widening to every method sharing the bare name — that pulled

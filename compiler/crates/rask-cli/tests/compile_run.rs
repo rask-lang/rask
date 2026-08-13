@@ -2910,3 +2910,27 @@ fn json_value_encodes_the_same_on_both_backends() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// One encoder, with no help from the call site.
+//
+// The fixture above calls `v.to_string()` itself, which is what made the
+// encoder reachable — so it passed while `json.encode` on its own was broken.
+// Two bugs hid behind that:
+//
+//   native — `Function not found: JsonValue_to_string`. Lowering named the
+//   body; reachability, the pass that decides what gets compiled, never heard
+//   the name. Reachability names it now and lowering reads the answer.
+//
+//   interp — right output, wrong code. `json.encode` ran a Rust encoder inside
+//   rask-interp, a second implementation of this same output, and the two
+//   disagreed on Map key order: the Rust one walks the insertion-ordered
+//   backing store while native walks seeded order (determinism/D7).
+#[test]
+fn json_encode_uses_the_rask_encoder_on_both_backends() {
+    let expected = concat!(r#"["a\"b",1,2.5,false,null,[7]]"#, "\n");
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_encode_one_encoder.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

@@ -19,10 +19,26 @@ use crate::value::{FloatKind, MapData, MapKey, Value};
 impl Interpreter {
     /// Handle json module methods.
     pub(crate) fn call_json_method(
-        &self,
+        &mut self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // A JsonValue already has a Rask encoder, and native runs it. Running
+        // the Rust one below instead put two encoders behind one call, and they
+        // disagreed: the Rust one walks the insertion-ordered backing store, so
+        // interp printed object keys in insertion order while native printed
+        // seeded order (determinism/D7). Same source both backends now; the
+        // Rust path is for what has no Rask version — a struct, encoded by
+        // reflection.
+        if matches!(method, "encode" | "stringify") {
+            if let Some(Value::Enum { name, .. }) = args.first() {
+                if name == "JsonValue" {
+                    let recv = args[0].clone();
+                    return self.call_rask_method("JsonValue", "to_string", recv, vec![]);
+                }
+            }
+        }
+
         match method {
             "parse" => {
                 let input = self.expect_string(&args, 0)?;

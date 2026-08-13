@@ -1,0 +1,22 @@
+// json.encode on a JsonValue, with nothing in the program naming the encoder.
+//
+// That's the whole point of the fixture: the earlier fixture calls
+// `v.to_string()` itself, which is what made the encoder reachable, which is
+// what hid the bug. Native failed here with `Function not found:
+// JsonValue_to_string` — MIR named a body that nothing had queued for
+// compilation. And the interpreter got the right answer from the *wrong* code:
+// its own Rust encoder, a second implementation of this same output.
+import json
+
+func main() {
+  mut arr = Vec.new()
+  arr.push(JsonValue.String("a\"b"))
+  arr.push(JsonValue.Number(1.0))
+  arr.push(JsonValue.Number(2.5))
+  arr.push(JsonValue.Bool(false))
+  arr.push(JsonValue.Null)
+  mut inner = Vec.new()
+  inner.push(JsonValue.Number(7.0))
+  arr.push(JsonValue.Array(inner))
+  println(json.encode(JsonValue.Array(arr)))
+}

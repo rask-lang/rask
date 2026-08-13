@@ -3622,11 +3622,29 @@ impl<'a> MirLowerer<'a> {
                             // `JsonValue.to_string`. Falling through to
                             // `json_encode_i64` printed the enum's own address
                             // (#689).
+                            //
+                            // Which body that is, is reachability's call, not
+                            // ours: it recorded the name here and compiled the
+                            // body because of the record. Naming it here instead
+                            // meant codegen looked up a `JsonValue_to_string`
+                            // nobody had queued.
                             if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
+                                let body = self
+                                    .ctx
+                                    .call_rewrites
+                                    .get(&expr.id)
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        LoweringError::InvalidConstruct(
+                                            "json.encode on a JsonValue, but reachability \
+                                             queued no encoder for it"
+                                                .to_string(),
+                                        )
+                                    })?;
                                 let dst = self.builder.alloc_temp(MirType::String);
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(dst),
-                                    func: FunctionRef::internal("JsonValue_to_string".to_string()),
+                                    func: FunctionRef::internal(body),
                                     args: vec![arg_op],
                                 }));
                                 return Ok(Some((MirOperand::Local(dst), MirType::String)));
