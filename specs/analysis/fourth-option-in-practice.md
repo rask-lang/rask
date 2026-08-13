@@ -151,9 +151,19 @@ reuse until edges heal or flush runs.
 
 If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
 
-- `mem.context` — context clauses exist mostly to smuggle pools to detached
-  handles; traversal needs none of it. The feature shrinks to allocators or
-  goes entirely.
+- `mem.context` — resolved after inventory: `using` is two features in one
+  keyword, and only one loses its user. The block form (`using Multitasking { }`,
+  `using ThreadPool { }`) is the concurrency capability system — sim (S6) and
+  testing (T17–T19) build on it — untouched, stays. The signature form
+  (`func f() using X`) had two clients: `Pool<T>` dies with handles, and
+  `Allocator` survives (the arena story WHY_RASK sells by name; the
+  alternative is Zig's explicit-allocator ceremony). So the signature form
+  keeps exactly one context type and shrinks from "how shared data flows" to
+  "how allocators flow." Bonus retirement: `frozen` needs no graph
+  equivalent — a plain (non-`mutate`) graph parameter is already read-only
+  under ordinary parameter modes; only the delete-locked middle tier (writes
+  yes, deletes no) needs one new annotation. CC1–CC3, named/unnamed/frozen
+  variants, and handle auto-resolution all go; `using` becomes one sentence.
 - `comp.gen-coalesce` — the generation-check elimination pass has nothing to
   eliminate. Deleted machinery, not ported machinery.
 - Pool's hidden `Arc<Mutex>` threading — replaced by scoped parallel
