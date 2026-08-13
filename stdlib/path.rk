@@ -1,46 +1,165 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-/// A filesystem path.
-public struct Path { }
+// Paths are string manipulation, so they're written in Rask rather than twice in
+// two backends. They used to be: 46 lines of declarations here, 192 lines of C
+// in runtime/path.c, and 184 lines of Rust in the interpreter — three
+// implementations of the same pure function, which disagreed. `parent()` always
+// answered none natively (#688) and the whole family segfaulted on a path with
+// an extension. One implementation can't disagree with itself.
+
+/// A filesystem path. Thin wrapper over a string — `as_string` is free.
+public struct Path {
+    value: string
+}
 
 extend Path {
     /// Create a path from a string.
-    public func from(s: string) -> Path { }
+    public func from(s: string) -> Path {
+        return Path { value: s }
+    }
 
-    /// Get the parent directory, if any.
-    public func parent(self) -> Option<Path> { }
+    /// Cheap view — Path IS a string.
+    public func as_string(self) -> string {
+        return self.value
+    }
 
-    /// Get the file name component.
-    public func file_name(self) -> Option<string> { }
+    /// Whether the path starts at the root.
+    public func is_absolute(self) -> bool {
+        return self.value.starts_with("/")
+    }
 
-    /// Get the file extension.
-    public func extension(self) -> Option<string> { }
+    /// Whether the path is relative. The exact complement of `is_absolute`.
+    public func is_relative(self) -> bool {
+        return !self.is_absolute()
+    }
 
-    /// Get the file stem (name without extension).
-    public func stem(self) -> Option<string> { }
+    /// The parent directory, if any. `/` and a bare name have none.
+    public func parent(self) -> Path? {
+        if self.value.last_index_of("/")? as cut {
+            // "/etc" → "/", not "". The root keeps its slash.
+            if cut == 0 {
+                if self.value.len() == 1 {
+                    return none
+                }
+                return Path { value: "/" }
+            }
+            return Path { value: self.value.substring(0, cut) }
+        }
+        return none
+    }
 
-    /// Get the path components as strings.
-    public func components(self) -> Vec<string> { }
+    /// The final component, if any.
+    public func file_name(self) -> string? {
+        if self.value.is_empty() {
+            return none
+        }
+        // A trailing slash means the path names a directory, and the component
+        // before it is still the name: "/a/b/" is "b".
+        mut end = self.value.len()
+        if self.value.ends_with("/") {
+            end = end - 1
+            if end == 0 {
+                return none
+            }
+        }
+        let head = self.value.substring(0, end)
+        if head.last_index_of("/")? as cut {
+            let name = head.substring(cut + 1, end)
+            if name.is_empty() {
+                return none
+            }
+            return name
+        }
+        return head
+    }
 
-    /// Whether the path is absolute.
-    public func is_absolute(self) -> bool { }
+    /// The extension, without the dot. A leading-dot name is not an extension —
+    /// ".bashrc" has none, "a.tar.gz" has "gz".
+    public func extension(self) -> string? {
+        if self.file_name()? as name {
+            if name.last_index_of(".")? as dot {
+                if dot == 0 {
+                    return none
+                }
+                let ext = name.substring(dot + 1, name.len())
+                if ext.is_empty() {
+                    return none
+                }
+                return ext
+            }
+        }
+        return none
+    }
 
-    /// Whether the path is relative.
-    public func is_relative(self) -> bool { }
+    /// The file name with its extension removed.
+    public func stem(self) -> string? {
+        if self.file_name()? as name {
+            if name.last_index_of(".")? as dot {
+                if dot == 0 {
+                    return name
+                }
+                return name.substring(0, dot)
+            }
+            return name
+        }
+        return none
+    }
 
     /// Whether the path has an extension.
-    public func has_extension(self) -> bool { }
+    public func has_extension(self) -> bool {
+        if self.extension()? as _e {
+            return true
+        }
+        return false
+    }
 
     /// Append a component with a separator. Backs the `/` operator —
     /// there is no `join` method.
-    public func div(self, other: string) -> Path { }
+    public func div(self, other: string) -> Path {
+        // An absolute right side replaces the left, the way every path library
+        // resolves it.
+        if other.starts_with("/") {
+            return Path { value: other }
+        }
+        if self.value.is_empty() {
+            return Path { value: other }
+        }
+        if self.value.ends_with("/") {
+            return Path { value: "{self.value}{other}" }
+        }
+        return Path { value: "{self.value}/{other}" }
+    }
 
-    /// Replace the file extension.
-    public func with_extension(self, ext: string) -> Path { }
+    /// Replace the extension. Adds one when there isn't one already.
+    public func with_extension(self, ext: string) -> Path {
+        if self.stem()? as base {
+            let dir = self.parent()
+            let named = if ext.is_empty() { base } else { "{base}.{ext}" }
+            if dir? as d {
+                return d / named
+            }
+            return Path { value: named }
+        }
+        return self.clone()
+    }
 
-    /// Replace the file name.
-    public func with_file_name(self, name: string) -> Path { }
+    /// Replace the final component.
+    public func with_file_name(self, name: string) -> Path {
+        if self.parent()? as d {
+            return d / name
+        }
+        return Path { value: name }
+    }
 
-    /// Cheap view — Path IS a string.
-    public func as_string(self) -> string { }
+    /// The components, with separators dropped. An absolute path's leading "/"
+    /// is not a component.
+    public func components(self) -> Vec<string> {
+        mut out = Vec.new()
+        for part in self.value.split("/") {
+            if !part.is_empty() {
+                out.push(part.to_string())
+            }
+        }
+        return out
+    }
 }

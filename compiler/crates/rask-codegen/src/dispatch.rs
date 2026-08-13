@@ -1198,55 +1198,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Path operations ──────────────────────────────────
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
-        StdlibEntry {
-            mir_name: "Path_from", c_name: "rask_path_new",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_as_string", c_name: "rask_path_to_string",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_div", c_name: "rask_path_join",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_with_extension", c_name: "rask_path_with_extension",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_with_file_name", c_name: "rask_path_with_file_name",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_parent", c_name: "rask_path_parent",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_file_name", c_name: "rask_path_file_name",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_extension", c_name: "rask_path_extension",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_stem", c_name: "rask_path_stem",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry::simple("Path_is_absolute", "rask_path_is_absolute", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_is_relative", "rask_path_is_relative", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_has_extension", "rask_path_has_extension", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_components", "rask_path_components", &[types::I64], Some(types::I64), false),
 
         // ── Raw pointer operations ────────────────────────────
         StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64, types::I64], Some(types::I64), false),

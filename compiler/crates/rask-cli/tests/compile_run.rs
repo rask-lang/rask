@@ -2856,3 +2856,34 @@ fn a_channel_pair_gets_its_types_from_the_constructor() {
         assert_eq!(stdout, "first 7\nsecond 9\n", "{}", mode);
     }
 }
+
+// ─── Regression: issue #688, and Path as one implementation ─────────
+//
+// Path's methods live in stdlib/path.rk as ordinary Rask. Native compiles that
+// source; the interpreter is now handed the same declarations instead of running
+// its own Rust copy. There is one implementation, so the backends can't disagree
+// — which they did: `parent()` always answered none natively, and a path with an
+// extension segfaulted.
+#[test]
+fn path_behaves_the_same_on_both_backends() {
+    let expected = "\
+[/usr/local/lib/thing.txt] parent=/usr/local/lib name=thing.txt stem=thing ext=txt abs=true n=4
+[relative/path.tar.gz] parent=relative name=path.tar.gz stem=path.tar ext=gz abs=false n=2
+[bare] parent=- name=bare stem=bare ext=- abs=false n=1
+[/] parent=- name=- stem=- ext=- abs=true n=0
+[/etc] parent=/ name=etc stem=etc ext=- abs=true n=1
+[] parent=- name=- stem=- ext=- abs=false n=0
+[.bashrc] parent=- name=.bashrc stem=.bashrc ext=- abs=false n=1
+[/a/b/] parent=/a/b name=b stem=b ext=- abs=true n=2
+[a.] parent=- name=a. stem=a ext=- abs=false n=1
+with_ext: /x/y.md
+with_ext none: /x/y.md
+with_name: /x/z.md
+div abs: /abs
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "path_one_implementation.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

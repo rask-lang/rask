@@ -145,6 +145,20 @@ fn all_registered_type_methods_implemented() {
         }
         let dummy = dummy_value(type_name);
         let skip = codegen_only_methods(type_name);
+        // A type written in Rask is implemented once, in `stdlib/*.rk`, and both
+        // backends run that source. A Rust implementation here would be a second
+        // one — so for these the assertion is inverted.
+        if rask_stdlib::registry::is_rask_implemented(type_name) {
+            for &method in rask_stdlib::registry::type_method_names(type_name) {
+                assert!(
+                    !interp.has_method_dispatch(dummy.clone(), method),
+                    "{type_name}.{method} is implemented in stdlib/*.rk, but the \
+                     interpreter also has a Rust implementation — that's the two \
+                     implementations this is meant to prevent"
+                );
+            }
+            continue;
+        }
         for &method in rask_stdlib::registry::type_method_names(type_name) {
             if skip.contains(&method) {
                 continue;

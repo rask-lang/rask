@@ -260,10 +260,6 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 self.call_metadata_method(&guard.fields, method)
             }
-            Value::Struct(ref s) if s.lock().unwrap().name == "Path" => {
-                let guard = s.lock().unwrap();
-                self.call_path_instance_method(&guard.fields, method, args)
-            }
             Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
                 let guard = s.lock().unwrap();
                 self.call_args_method(&guard.fields, method, args)

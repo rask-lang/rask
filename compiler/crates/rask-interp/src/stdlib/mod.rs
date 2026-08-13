@@ -155,7 +155,6 @@ impl Interpreter {
         match type_name {
             "Instant" | "Duration" => self.call_time_type_method(type_name, method, args),
             "Timer" => self.call_timer_type_method(method, args),
-            "Path" => self.call_path_type_method(method, args),
             "f32x8" => self.call_simd_type_method(method, args),
             "Random" => self.call_rng_type_method(method, args),
             "StringBuilder" => self.call_string_builder_type_method(method, args),

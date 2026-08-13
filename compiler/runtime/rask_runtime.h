@@ -236,25 +236,12 @@ void        rask_char_debug(RaskStr *out, int32_t codepoint);
 // thread-local RaskStr (Some). Codegen copies immediately.
 
 // Constructors / conversions (out-param)
-void    rask_path_new(RaskStr *out, const RaskStr *s);
-void    rask_path_to_string(RaskStr *out, const RaskStr *s);
-void    rask_path_join(RaskStr *out, const RaskStr *self, const RaskStr *other);
-void    rask_path_with_extension(RaskStr *out, const RaskStr *self, const RaskStr *ext);
-void    rask_path_with_file_name(RaskStr *out, const RaskStr *self, const RaskStr *name);
 
 // Option-returning (NULL→None, &buf→Some)
-int64_t rask_path_parent(int64_t path_ptr);
-int64_t rask_path_file_name(int64_t path_ptr);
-int64_t rask_path_extension(int64_t path_ptr);
-int64_t rask_path_stem(int64_t path_ptr);
 
 // Bool-returning
-int64_t rask_path_is_absolute(int64_t path_ptr);
-int64_t rask_path_is_relative(int64_t path_ptr);
-int64_t rask_path_has_extension(int64_t path_ptr);
 
 // Vec<string>-returning
-int64_t rask_path_components(int64_t path_ptr);
 
 // Char predicates — operate on Unicode codepoints (i32).
 int64_t rask_char_is_digit(int32_t c);

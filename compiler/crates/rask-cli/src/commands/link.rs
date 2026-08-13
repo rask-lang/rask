@@ -21,7 +21,6 @@ const PORTABLE_SOURCES: &[&str] = &[
     "bench.c",
     "test.c",
     "ptr.c",
-    "path.c",
     "math.c",
     "json.c",
 ];
