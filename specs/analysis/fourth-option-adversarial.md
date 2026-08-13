@@ -41,6 +41,33 @@ declaration (the schema names the co-owned graphs) and it is exactly how
 databases already work: foreign keys live *inside* one database, not across
 two. The rule pays twice — see A9.
 
+**Thought through against the concurrency model** (channels, green tasks,
+threads): the rule costs almost nothing real, because pools.md already
+blesses exactly one cross-task architecture — "share handles, not data; the
+pool stays in one thread; commands flow back to it." The world was already
+single-owner with channels feeding it; messages carry `Key<T>` or domain IDs
+instead of handles. Independent subsystems under separate Mutexes stay legal
+so long as no edges span them; separate locks on *edge-connected* graphs are
+what's forbidden — and that case was never safely lockable under handles
+either (two pools with cross-handles under two locks tear the same way,
+silently). The rule doesn't restrict concurrency; it names which concurrency
+was fictional.
+
+Two findings out of that think-through, both adopted:
+
+- **Parallel iteration is a three-tier contract.** (1) Per-node parallel:
+  chunked, mutate your chunk, follow no edges — movement systems. (2) Frozen
+  parallel: follow anything, write nothing — render, queries. (3) Everything
+  else sequential — combat follows edges *and* writes, and is sequential
+  today anyway. Tier 3 racing is not an edge problem (handles race across
+  chunks identically); the contract makes the phase discipline every ECS
+  relies on compiler-checkable.
+- **Healing is suppressed in shared-read contexts.** A self-healing read
+  *writes*. Under `Shared`'s reader lock or any frozen context, readers race
+  on the heal — so there, a read of a tombstoned edge returns `none` without
+  the write-back. Healing is an optimization, skippable exactly where it's
+  unsafe.
+
 ## A3 — Node literals in flight: an edge into a stack value
 
 `w.entities.insert(Entity { target: w.player, ... })` — the literal exists on
@@ -72,6 +99,16 @@ can heal lazily. `cascade`/`restrict` policies attach to optional edges
 unchanged. Cost owned honestly: "an Entity always has a Body" leaves the type
 system (it was unenforceable at construction anyway); a future transactional
 multi-insert could win it back.
+
+**Syntax consequence:** with only one edge form left, the `?` on every edge
+declaration is redundant — there is no non-optional edge to distinguish it
+from, so `Edge<Entity>?` is ceremony. The earlier no-sugar verdict rested on
+that distinction existing; it's dead, so the declaration-site word form now
+earns its rent: `target: one Entity`, `squad: many Entity`,
+`parent: one Entity inverse of children` — ER multiplicities read aloud, with
+the maybe still surfacing at use sites through the ordinary `?` operators.
+Recommendation flipped to yes; final spelling belongs to the `mem.graph`
+draft.
 
 ## A5 — Ordered edge containers: removal is O(n) backlink fixups
 
@@ -110,14 +147,16 @@ the spec: no reads, no inserts, no flush → tombstones hold memory, exactly as
 dead pool slots hold theirs today. Games flush per frame; servers flush per
 request; the failure mode is a leak-shaped curve, never unsoundness.
 
-## A8 — The snapshot pattern regresses (recorded, not fixed)
+## A8 — The snapshot pattern (reframed: a handle-shaped habit, not a need)
 
-`pool.snapshot()` is a shallow O(n) memcpy because handles are integers.
-A graph snapshot must translate pointers: O(n + edges) with fixup logic.
-The render-thread double-buffer pattern gets slower and more complex.
-**Regression recorded.** Mitigation is a pattern, not a mechanism: extract
-POD render data instead of snapshotting the world — arguably better
-engineering anyway, but the easy thing pools offered is gone.
+`pool.snapshot()` is a shallow O(n) memcpy because handles are integers; a
+graph snapshot must translate pointers, O(n + edges). First recorded as a
+regression — reframed on review: copy-the-world was never the *need*, it was
+the pattern handles made cheap, so it leaves with them. The underlying need
+(render while simulating) has native answers: frozen parallel phases (A2's
+tier 2) and extracting POD render data — which is what engines do at scale
+anyway. Honest footnote: a program that insists on copy-the-world pays the
+O(n + edges) translation.
 
 ## A9 — Schema closure: who is allowed to point at Entity?
 
