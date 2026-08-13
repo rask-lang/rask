@@ -103,6 +103,8 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
+void     rask_vec_sort_f64(RaskVec *v);
+int64_t  rask_f64_compare_total(double a, double b);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);

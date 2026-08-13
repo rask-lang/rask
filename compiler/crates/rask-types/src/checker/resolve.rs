@@ -1101,7 +1101,7 @@ impl TypeChecker {
                 }
                 "compare" if args.len() == 1 => {
                     self.unify(&args[0], &Type::Bool, span)?;
-                    self.unify(&ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                    self.unify(&ret, &self.ordering_type(), span)
                 }
                 "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
@@ -1458,7 +1458,7 @@ impl TypeChecker {
             }
             "compare" if args.len() == 1 => {
                 self.unify(&args[0], &Type::Char, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             // CH3: runtime construction returns `char?` — `none` on invalid scalar.
             "from_u32" if args.len() == 1 => {
@@ -1540,7 +1540,7 @@ impl TypeChecker {
             // name at all.
             "compare" if args.len() == 1 => {
                 self.unify(&args[0], &Type::String, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             // A method `string` doesn't have is an error here, the way it
             // already was for `char`. Answering `Ok(false)` accepted any name
@@ -2944,7 +2944,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let val_ty = Self::atomic_value_type(type_name);
         let self_ty = Type::UnresolvedNamed(type_name.to_string());
-        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+        let ordering_ty = self.ordering_type();
 
         match method {
             // ── Construction ────────────────────────────────
@@ -3221,7 +3221,7 @@ impl TypeChecker {
             }
             "compare" if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
             // std.bits B1 — bit inspection and permutation. All of these answer
@@ -3295,7 +3295,7 @@ impl TypeChecker {
             }
             FloatSig::Compare => {
                 let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),

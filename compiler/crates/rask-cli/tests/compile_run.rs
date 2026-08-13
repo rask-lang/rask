@@ -2673,3 +2673,26 @@ fn a_negative_literal_takes_its_type_from_context() {
         assert_eq!(stdout, "1 -1 -5 -2.5\n", "{}", mode);
     }
 }
+
+// ─── Regression: float total order (type.operators/ORD3) ────────────
+//
+// `rask_vec_sort` compared every element as int64_t whatever the Vec held. A
+// negative float's bit pattern orders backwards against another negative, so
+// `[-1.5, -2.5]` sorted to `[-1.5, -2.5]` natively and `[-2.5, -1.5]` on the
+// interpreter. Positive floats order correctly as integers, which is why a Vec
+// of positives sorted fine and hid this.
+#[test]
+fn floats_sort_by_the_total_order() {
+    let expected = "\
+sorted -2.5 -1.5 0 3
+nan<1 false
+nan>1 false
+nan==nan false
+plain 1 2 3
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "float_total_order.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

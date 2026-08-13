@@ -54,6 +54,18 @@ impl TypeChecker {
         }
     }
 
+    /// The `Ordering` enum, resolved to its registered type where possible.
+    ///
+    /// Nine places built `UnresolvedNamed("Ordering")` by hand, and an
+    /// unresolved name slips past checks that key on a real type: `Ordering`
+    /// doesn't implement `Displayable`, so `println("{a.compare(b)}")` is an
+    /// error — but only `string.compare` was caught, because its return type
+    /// comes from a stub and resolves. `(1).compare(2)` sailed through and
+    /// printed the raw tag natively against `Ordering.Less` on the interpreter.
+    pub(super) fn ordering_type(&self) -> Type {
+        self.resolve_named(&Type::UnresolvedNamed("Ordering".to_string()))
+    }
+
     pub(super) fn resolve_named(&self, ty: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(name) => {

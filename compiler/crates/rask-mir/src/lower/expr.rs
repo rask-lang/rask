@@ -242,6 +242,15 @@ impl<'a> MirLowerer<'a> {
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
+    /// Does this Vec receiver hold floats? Picks the sort that uses the float
+    /// total order rather than an integer compare over the bit patterns.
+    fn vec_elem_is_float(&self, object: &Expr) -> bool {
+        Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .map_or(false, |ty| matches!(ty, MirType::F64 | MirType::F32))
+    }
+
     /// Wrap a plain value for a struct field declared `T?` or `T or E`.
     /// Returns the operand unchanged when no wrapping is needed — the field
     /// isn't a sum type, the value already has the sum shape, or the option
@@ -4429,6 +4438,10 @@ impl<'a> MirLowerer<'a> {
             } else {
                 ("Vec_join_i64".to_string(), all_args)
             }
+        } else if qualified_name == "Vec_sort" && self.vec_elem_is_float(object) {
+            // The default sort compares elements as integers, which puts
+            // -1.5 before -2.5 and a NaN wherever its sign bit lands.
+            ("Vec_sort_f64".to_string(), all_args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.

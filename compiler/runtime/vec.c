@@ -360,6 +360,46 @@ void rask_vec_sort(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
 }
 
+// sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
+//
+// The default sort compares elements as int64_t whatever they hold. For floats
+// that is wrong twice over: a negative float's bit pattern orders backwards
+// against another negative (-1.5 sorted before -2.5), and a NaN lands wherever
+// its sign bit puts it. Both were silent — positive floats happen to order
+// correctly as integers, so a Vec of positives sorted fine and hid it.
+//
+// The transform is the standard IEEE totalOrder key: for a negative value flip
+// every bit, for a non-negative one set only the sign bit. Ascending unsigned
+// order over the result is ascending float order, with -NaN first and +NaN last.
+static uint64_t rask_f64_order_key(double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    return (bits & 0x8000000000000000ULL) ? ~bits : (bits | 0x8000000000000000ULL);
+}
+
+static int rask_f64_compare(const void *a, const void *b) {
+    uint64_t ka = rask_f64_order_key(*(const double *)a);
+    uint64_t kb = rask_f64_order_key(*(const double *)b);
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+}
+
+void rask_vec_sort_f64(RaskVec *v) {
+    if (!v || v->len <= 1) return;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
+}
+
+// compare(a, b) on f64 — same total order, as an Ordering tag (-1/0/1 maps to
+// Less/Equal/Greater).
+int64_t rask_f64_compare_total(double a, double b) {
+    uint64_t ka = rask_f64_order_key(a);
+    uint64_t kb = rask_f64_order_key(b);
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+}
+
 // sort_by(vec, comparator) — in-place sort with a closure comparator.
 //
 // `comparator` is a Rask closure block, not a bare function pointer: the code
