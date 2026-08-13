@@ -151,19 +151,25 @@ reuse until edges heal or flush runs.
 
 If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
 
-- `mem.context` — resolved after inventory: `using` is two features in one
-  keyword, and only one loses its user. The block form (`using Multitasking { }`,
-  `using ThreadPool { }`) is the concurrency capability system — sim (S6) and
-  testing (T17–T19) build on it — untouched, stays. The signature form
-  (`func f() using X`) had two clients: `Pool<T>` dies with handles, and
-  `Allocator` survives (the arena story WHY_RASK sells by name; the
-  alternative is Zig's explicit-allocator ceremony). So the signature form
-  keeps exactly one context type and shrinks from "how shared data flows" to
-  "how allocators flow." Bonus retirement: `frozen` needs no graph
-  equivalent — a plain (non-`mutate`) graph parameter is already read-only
-  under ordinary parameter modes; only the delete-locked middle tier (writes
-  yes, deletes no) needs one new annotation. CC1–CC3, named/unnamed/frozen
-  variants, and handle auto-resolution all go; `using` becomes one sentence.
+- `mem.context` — retires whole. `using` is two features in one keyword: the
+  block form (`using Multitasking { }`, `using ThreadPool { }`) is the
+  concurrency capability system — sim (S6) and testing (T17–T19) build on
+  it — and stays. The signature form (`func f() using X`) had two clients:
+  `Pool<T>` dies with handles, and `Allocator`, its last passenger, moves to
+  the block form too — `using Arena(64.kb) { ... }` installs a task-ambient
+  allocator, the same block-only/no-signature-propagation shape Multitasking
+  already has. The hidden-parameter mechanism leaves the language entirely:
+  nothing invisible flows through signatures anymore. The arena block *is* a
+  region (allocations die at block end, no-escape is the analysis Rask
+  already runs everywhere), rhyming with the delete-locked scope. Leftover
+  cases have better homes: "this function demands an allocator" is
+  principle-5 metadata plus a no-global-alloc build profile; two allocators
+  at once is the explicit allocator-as-value form (AL8), visible where it
+  should be. Bonus retirement: `frozen` needs no graph equivalent — a plain
+  (non-`mutate`) graph parameter is already read-only under ordinary
+  parameter modes; only the delete-locked middle tier (writes yes, deletes
+  no) needs one new annotation. What remains to teach: `using X { }` opens a
+  capability scope. One sentence.
 - `comp.gen-coalesce` — the generation-check elimination pass has nothing to
   eliminate. Deleted machinery, not ported machinery.
 - Pool's hidden `Arc<Mutex>` threading — replaced by scoped parallel
