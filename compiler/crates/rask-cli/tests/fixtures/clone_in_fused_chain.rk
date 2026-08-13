@@ -1,0 +1,31 @@
+// `.clone()` on a value whose type inference hasn't settled yet.
+//
+// A closure parameter in a fused iterator chain gets its type from the chain's
+// element type, so when the body is checked, `r` is still an inference variable.
+// The checker's `clone` arm answered right there — unify receiver with result,
+// done — before the code that files a deferred constraint for an unresolved
+// receiver, so nothing ever came back to record which type this clone dispatches
+// on. Lowering then had no answer and failed with `method `clone` on receiver of
+// unresolved type`. Any other method works, because any other method goes
+// through the deferred path.
+struct View {
+  public id: u64
+  public title: string
+}
+
+struct Ranked {
+  public rank: i64
+  public view: View
+}
+
+func rows() -> Vec<Ranked> {
+  mut v = Vec.new()
+  v.push(Ranked { rank: 3, view: View { id: 1, title: "one" } })
+  v.push(Ranked { rank: 2, view: View { id: 2, title: "two" } })
+  return v
+}
+
+func main() {
+  let views = rows().iter().map(|r| r.view.clone()).collect()
+  println("{views.len()} {views[0].title} {views[1].id}")
+}

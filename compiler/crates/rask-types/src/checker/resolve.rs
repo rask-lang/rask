@@ -478,7 +478,36 @@ impl TypeChecker {
         }
 
         if method == "clone" && args.is_empty() {
-            return self.unify(&ty, &ret, span);
+            let progress = self.unify(&ty, &ret, span)?;
+            // A clone's result is its receiver's type, so unifying settles both.
+            // But this arm answers before the `Var` handling further down, which
+            // is what normally files a deferred constraint and records the
+            // dispatch target once inference settles — so an unresolved receiver
+            // got no target and nothing came back to give it one. That's why
+            // `.map(|r| r.view.clone())` in a fused iterator chain type-checked
+            // and then left MIR with nothing to dispatch on: the closure's
+            // parameter type isn't known until the chain's element type is
+            // (#425). Record it here when unifying settled the type, hand it to
+            // the post-defaulting retry when it didn't.
+            if matches!(ty, Type::Var(_)) {
+                let settled = self.ctx.apply(&ty);
+                if matches!(settled, Type::Var(_) | Type::Error) {
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty,
+                        method,
+                        args,
+                        ret,
+                        span,
+                        call_node,
+                    });
+                } else if let Some(node) = call_node {
+                    self.call_targets.insert(
+                        node,
+                        Callee::Method { recv: settled, method: method.clone() },
+                    );
+                }
+            }
+            return Ok(progress);
         }
 
         // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have

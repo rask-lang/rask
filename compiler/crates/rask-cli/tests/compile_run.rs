@@ -2925,6 +2925,26 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// `.clone()` where the receiver's type isn't known yet.
+//
+// The checker's `clone` arm short-circuits: a clone returns its receiver's type,
+// so unifying the two settles inference and it answers there. That's before the
+// code that files a deferred constraint for a still-unresolved receiver, so an
+// unresolved one got no dispatch target and nothing came back to give it one.
+// A closure parameter in a fused iterator chain is exactly that case — its type
+// comes from the chain's element type — and lowering failed with `method `clone`
+// on receiver of unresolved type`. Every other method works, because every other
+// method goes through the deferred path.
+#[test]
+fn clone_dispatches_when_the_receiver_type_arrives_late() {
+    let expected = "2 one 2\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "clone_in_fused_chain.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 #[test]
 fn json_encode_uses_the_rask_encoder_on_both_backends() {
     let expected = concat!(r#"["a\"b",1,2.5,false,null,[7]]"#, "\n");
