@@ -232,7 +232,10 @@ Walking every pool use case in the specs and examples:
 | ECS relationships (`entity.body`, `target`, `children`) | Edges — cross-graph works; delete touches both graphs, like a foreign key across tables |
 | Observer lists, in-world caches, event nodes | Edges, when the holder lives in the graph |
 | Iterate-and-delete loops | Graph iteration, same shape as pools |
-| References serialized out (save files, network) | Keys — checked at redemption |
+| Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Edges<Line>` on the owner; entries drop at delete |
+| Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Edge<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
+| Chunked parallel iteration (game_loop's aspirational `spawn` over handle chunks) | Scoped parallel iteration under a delete-locked scope — disjoint node sets, no keys, and none of the `Arc<Mutex>` pools currently smuggle in for cross-task `using` |
+| References serialized out (save files, network) | Keys — though the validation flagship's actual escaping identity is `TaskId`, a user-level ID redeemed through the `by_id` index, not a `Handle`. Even the web-service case prefers domain keys + a maintained index |
 | References held by unsynchronized concurrent holders | Keys |
 
 What's left of `Pool` after edges take topology is small: a registry that hands
@@ -310,6 +313,20 @@ hides degree-proportional work, while lazy `delete` is cheap and says so, and
 the O(degree) work runs at a `flush_deletes()` you can see and place. Cost
 transparency is preserved at call sites; what becomes invisible is mechanism,
 not cost.
+
+**Decided: lazy is the default; eager is the per-graph policy option.**
+
+**Where the lazy check lives: inside `?`.** In eager mode, `e.target? as t`
+is exactly the optional unwrap — one none-test, nothing else; unlinked edges
+are literally `none`. In lazy mode the unwrap gains a hidden second step:
+non-none pointer → load the target's header flag → if dead, self-heal to
+`none` and take the none branch. No new syntax, no new concept — the "might
+not be there" the programmer already acknowledged by writing `?` is the only
+place the runtime needs. One consequence falls out: **lazy applies to
+optional edges only.** A non-optional `Edge<T>` (cascade/restrict) has no `?`
+site to hide a check in, so its policy resolves eagerly at delete. The type
+honestly states whether a death is observable, and only observable-death
+edges ever carry the transient check.
 
 ### Open
 
