@@ -1403,6 +1403,49 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.
+    ///
+    /// `Owned<T>` is the only box whose slot holds a pointer to a value the
+    /// program otherwise treats as a plain `T` (OW5) — the rest of the family is
+    /// opaque, reached through `with`. So it's the only one where a store or a
+    /// read has to cross the boundary.
+    pub(crate) fn owned_payload(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
+        let (name, args) = self.generic_head(ty)?;
+        if name != "Owned" {
+            return None;
+        }
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
+            _ => None,
+        }
+    }
+
+    /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
+    ///
+    /// A scalar needs no box: it already fits the 8-byte slot, and a scalar can't
+    /// make a type recursive, so `Owned<i64>` staying transparent costs nothing.
+    /// An aggregate is the case that matters, and its pointer is also its
+    /// representation, so nothing downstream has to know it moved.
+    pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
+        if !val_ty.passed_by_address() {
+            return val;
+        }
+        let size = val_ty.size() as i64;
+        let heap = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(heap),
+            func: FunctionRef::internal("rask_alloc".to_string()),
+            args: vec![MirOperand::Constant(MirConst::Int(size))],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: heap,
+            offset: 0,
+            value: val,
+            store_size: Some(size as u32),
+        }));
+        MirOperand::Local(heap)
+    }
+
     /// An operand as a local, spilling a constant into a temp when it isn't one.
     pub(crate) fn as_local(&mut self, op: MirOperand) -> LocalId {
         match op {

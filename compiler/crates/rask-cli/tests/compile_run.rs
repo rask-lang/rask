@@ -2925,6 +2925,26 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// `Owned<T>` actually allocates, so a recursive type works.
+//
+// `own` was a no-op — the keyword left no trace in the AST outside closures, and
+// nothing downstream boxed anything. Layout gives an `Owned<T>` slot 8 bytes, so a
+// 16-byte enum stored into a payload declared `Owned<Tree>` wrote across the next
+// payload, and the recursive read used the first child's tag as an address (#705).
+#[test]
+fn a_recursive_type_can_be_built_with_owned() {
+    let expected = concat!(
+        "total=15 (expect 15)\n",
+        "depth=3 (expect 3)\n",
+        "wrapped=5 (expect 5)\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "owned_recursive_enum.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 // `for mutate` writes back however the body ends.
 //
 // `continue` and `break` reached the writeback through dedicated blocks; leaving

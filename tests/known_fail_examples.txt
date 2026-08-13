@@ -66,10 +66,6 @@
                          # descriptor (os error 9)" and native "unexpected end of
                          # file" — native's runtime hands back a bare failure flag and
                          # the adapter turns every one into IoError.UnexpectedEof.
-cli_calculator.rk        # interp runs a scripted session fine (exit 0, correct answers);
-                         # native SIGSEGV (139) right after the banner, before the first
-                         # result. Gate-runnable now that .stdin exists — this is a real
-                         # native bug, not a harness gap. #675
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # both exit 1

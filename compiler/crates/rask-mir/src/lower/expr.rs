@@ -1938,6 +1938,14 @@ impl<'a> MirLowerer<'a> {
                     let val_op = self.wrap_sum_field_value(
                         field_mir_ty.as_ref(), &val_ty, val_op,
                     );
+                    // A field declared `Owned<T>` given a `T` goes on the heap —
+                    // same boundary as an enum payload declared `Owned<T>` (#705).
+                    let val_op = match field_layout
+                        .and_then(|f| self.owned_payload(&f.ty))
+                    {
+                        Some(_) => self.box_into_owned(val_op, &val_ty),
+                        None => val_op,
+                    };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
@@ -3505,11 +3513,22 @@ impl<'a> MirLowerer<'a> {
 
                             // Store payload fields
                             for (i, arg) in args.iter().enumerate() {
-                                let (val, _) = self.lower_expr(&arg.expr)?;
+                                let (val, val_ty) = self.lower_expr(&arg.expr)?;
                                 let (offset, field_size) = if i < fields.len() {
                                     (payload_offset + fields[i].offset, fields[i].size)
                                 } else {
                                     (payload_offset + (i as u32 * 8), 8)
+                                };
+                                // A payload declared `Owned<T>` is a pointer slot,
+                                // and the value arriving is a `T` — OW5 lets a `T`
+                                // stand where `Owned<T>` is asked for. Put it on the
+                                // heap and store the pointer. Storing the value
+                                // instead wrote 16 bytes of enum into an 8-byte slot,
+                                // clobbering the next payload, and the recursive read
+                                // came back as a tag used for an address (#705).
+                                let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
+                                    Some(_) => self.box_into_owned(val, &val_ty),
+                                    None => val,
                                 };
                                 // Aggregate payloads (string = 16 bytes, embedded
                                 // structs) must copy the full value. Without store_size
