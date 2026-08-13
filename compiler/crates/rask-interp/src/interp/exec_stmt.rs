@@ -299,47 +299,12 @@ impl Interpreter {
                                 let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key.clone(), val])));
                                 self.define_for_binding(binding, pair);
                             }
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    // Write back before breaking
-                                    if let ForBinding::Tuple(names) = binding {
-                                        if names.len() >= 2 {
-                                            if let Some(v) = self.env.get(&names[1]).cloned() {
-                                                let mut guard = map_arc.lock().unwrap();
-                                                if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
-                                                    *slot = v;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    if let ForBinding::Tuple(names) = binding {
-                                        if names.len() >= 2 {
-                                            if let Some(v) = self.env.get(&names[1]).cloned() {
-                                                let mut guard = map_arc.lock().unwrap();
-                                                if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
-                                                    *slot = v;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            // Write back value
+                            let outcome = self.exec_stmts(body);
+                            // However the body ended — see the Vec arm above (#650).
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
                                     if let Some(v) = self.env.get(&names[1]).cloned() {
-                                        let mut guard = m.lock().unwrap();
+                                        let mut guard = map_arc.lock().unwrap();
                                         if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
                                             *slot = v;
                                         }
@@ -347,6 +312,12 @@ impl Interpreter {
                                 }
                             }
                             self.env.pop_scope();
+                            match outcome {
+                                Ok(_) => {}
+                                Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                                Err(diag) if continues_here(&diag.error, loop_label) => continue,
+                                Err(e) => return Err(e),
+                            }
                         }
                         Ok(Value::Unit)
                     }
@@ -378,46 +349,12 @@ impl Interpreter {
                             } else {
                                 self.define_for_binding(binding, handle.clone());
                             }
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    if let ForBinding::Tuple(names) = binding {
-                                        if names.len() >= 2 {
-                                            if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
-                                                let mut pool = pool_arc.lock().unwrap();
-                                                if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
-                                                    *slot = Some(v);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    if let ForBinding::Tuple(names) = binding {
-                                        if names.len() >= 2 {
-                                            if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
-                                                let mut pool = pool_arc.lock().unwrap();
-                                                if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
-                                                    *slot = Some(v);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            // Write back
+                            let outcome = self.exec_stmts(body);
+                            // However the body ended — see the Vec arm above (#650).
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
                                     if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
-                                        let mut pool = p.lock().unwrap();
+                                        let mut pool = pool_arc.lock().unwrap();
                                         if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
                                             *slot = Some(v);
                                         }
@@ -425,6 +362,12 @@ impl Interpreter {
                                 }
                             }
                             self.env.pop_scope();
+                            match outcome {
+                                Ok(_) => {}
+                                Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                                Err(diag) if continues_here(&diag.error, loop_label) => continue,
+                                Err(e) => return Err(e),
+                            }
                         }
                         Ok(Value::Unit)
                     }
