@@ -84,8 +84,14 @@ fn exit_code_reporting_signals(status: &process::ExitStatus) -> i32 {
 /// rest of the Path family segfaulted. Handing the same source to both backends
 /// is what makes "written in Rask" mean one implementation.
 fn decls_with_rask_stdlib(decls: &[rask_ast::decl::Decl]) -> Vec<rask_ast::decl::Decl> {
+    let t = std::time::Instant::now();
     let mut all = decls.to_vec();
-    all.extend(rask_stdlib::StubRegistry::compilable_decls());
+    let stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    let n = stdlib.len();
+    all.extend(stdlib);
+    if std::env::var_os("RASK_TIME_STDLIB").is_some() {
+        eprintln!("[stdlib] {} decls in {:?}", n, t.elapsed());
+    }
     all
 }
 
