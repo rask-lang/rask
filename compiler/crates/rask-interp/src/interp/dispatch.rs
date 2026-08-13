@@ -311,7 +311,18 @@ impl Interpreter {
                 self.call_stderr_method(method, args)
             }
             Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
-                self.call_json_value_method(variant, fields, method)
+                match self.call_json_value_method(variant, fields, method) {
+                    // The Rust layer implements the primitives; anything it
+                    // doesn't know is the Rask implementation's, in
+                    // `stdlib/json.rk`. It used to error here — a wall rather
+                    // than a fallback — so `JsonValue.to_string`, written in
+                    // Rask and working natively, was unreachable on the
+                    // interpreter (#689).
+                    Err(RuntimeError::NoSuchMethod { .. }) => {
+                        self.call_rask_method("JsonValue", method, receiver.clone(), args)
+                    }
+                    other => other,
+                }
             }
             Value::Enum { name, variant, fields, .. } if name == "JsonError" => {
                 self.call_json_error_method(variant, fields, method)
@@ -471,6 +482,36 @@ impl Interpreter {
         }
     }
 
+
+    /// Call a method whose body is Rask, from `stdlib/*.rk` or user code.
+    ///
+    /// The Rust implementations in `stdlib/` cover the primitive layer. When one
+    /// doesn't recognise a method, the answer is the Rask implementation rather
+    /// than an error — that's what makes a module written in Rask reachable from
+    /// the interpreter instead of shadowed by its Rust twin.
+    pub(crate) fn call_rask_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        receiver: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let Some(func) = self
+            .methods
+            .get(type_name)
+            .and_then(|ms| ms.get(method))
+            .cloned()
+            .filter(|f| !f.body.is_empty())
+        else {
+            return Err(RuntimeError::NoSuchMethod {
+                ty: type_name.to_string(),
+                method: method.to_string(),
+            });
+        };
+        let mut all = vec![receiver];
+        all.extend(args);
+        self.call_function(&func, all).map_err(|d| d.error)
+    }
     /// Helper to extract an i128 from args.
     pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
         match args.get(idx) {

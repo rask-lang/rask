@@ -3617,6 +3617,21 @@ impl<'a> MirLowerer<'a> {
                                 return self.lower_json_encode_vec(arg_op, elem_ty, elem_mir).map(Some);
                             }
 
+                            // A JsonValue has a Rask encoder — `stringify_value`
+                            // in stdlib/json.rk, reached through
+                            // `JsonValue.to_string`. Falling through to
+                            // `json_encode_i64` printed the enum's own address
+                            // (#689).
+                            if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
+                                let dst = self.builder.alloc_temp(MirType::String);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: Some(dst),
+                                    func: FunctionRef::internal("JsonValue_to_string".to_string()),
+                                    args: vec![arg_op],
+                                }));
+                                return Ok(Some((MirOperand::Local(dst), MirType::String)));
+                            }
+
                             // Non-struct: string or integer
                             let helper = if matches!(arg_ty, MirType::String) {
                                 "json_encode_string"

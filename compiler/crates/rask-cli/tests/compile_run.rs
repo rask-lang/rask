@@ -2887,3 +2887,26 @@ div abs: /abs
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// ─── Regression: issue #689 ─────────────────────────────────
+//
+// `json.encode(v)` on a JsonValue printed `140728691896880` natively — the
+// enum's address, because MIR sent anything that wasn't a struct, a Vec or a
+// string to `json_encode_i64`. stdlib/json.rk had a complete Rask encoder that
+// nothing called. `JsonValue` implements `Displayable` through it now, and
+// `json.encode` routes a JsonValue there, so both backends run the same code.
+#[test]
+fn json_value_encodes_the_same_on_both_backends() {
+    // Raw string: the JSON text itself contains quotes and a backslash escape.
+    let expected = concat!(
+        r#"str: "he\"llo""#, "\n",
+        "num: 42.5\n",
+        "arr: [1,true,null]\n",
+        r#"interp: "he\"llo""#, "\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_value_encoding.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
