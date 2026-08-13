@@ -222,6 +222,70 @@ a fourth option for *durable identity* provably doesn't.
 Concurrency is unchanged from pools: delete-unlink is a multi-node write, so a
 graph is single-task or behind `Mutex`, exactly like `Pool` today.
 
+## The use-case census, and Pool folding into Graph
+
+Walking every pool use case in the specs and examples:
+
+| Use case today | Lands on |
+|---|---|
+| Graphs, trees with parent pointers, linked lists | Edges |
+| ECS relationships (`entity.body`, `target`, `children`) | Edges — cross-graph works; delete touches both graphs, like a foreign key across tables |
+| Observer lists, in-world caches, event nodes | Edges, when the holder lives in the graph |
+| Iterate-and-delete loops | Graph iteration, same shape as pools |
+| References serialized out (save files, network) | Keys — checked at redemption |
+| References held by unsynchronized concurrent holders | Keys |
+
+What's left of `Pool` after edges take topology is small: a registry that hands
+out checked keys. That doesn't earn a separate box. **Direction (decided): Pool
+folds into Graph.** One box, two reference kinds — `Edge<T>` inside (checkless,
+fixed at delete), `Key<T>` escaping (a Copy value, Send, storable anywhere,
+redeemed via `graph.get(k)?`). `Key` is today's `Handle` with its honest name;
+a keys-only graph with no edge fields is today's `Pool`. Box count shrinks by
+one.
+
+### The boundary theorem, poked
+
+First draft of the limit said: anything escaping in *time* (queues, logs) or
+*space* (other tasks) must be a checked key. Poked at, that's too strong. The
+delete-witness model reaches further than scopes:
+
+- **Time escapes can stay in the model** by living in the graph. An event
+  node holding `who: Edge<Entity>?` gets fixed at delete like any other edge —
+  processing the event later reads `none`, no generation, no panic path. The
+  queue being *data in the world* is enough.
+- **Even cross-task holders could in principle be fixed**: a registered root
+  behind a `Mutex` that delete locks and walks — QPointer's registry, done
+  soundly. Declined, but for cost (every delete locks every registered root;
+  contention), not impossibility.
+
+What actually forces a checked key is narrower: **references the delete cannot
+reach** — bytes already serialized outside the process, and holders outside the
+synchronization domain. Inside the process, key-vs-fixable-root is a tradeoff:
+a key is 12 bytes, Copy, Send, zero coordination; a fixable root demands
+registration and locking at delete. Keys stay the right *default* for escape
+because coordination-free is worth more than checkless — but they're only
+*forced* at the process/sync boundary. (Coarser checks exist too — one
+graph-wide version stamp invalidating all keys on any delete — same category,
+cheaper, blunter. And "linear keys that delete must collect back" just makes
+death wait for the name, which is RESTRICT wearing ownership's coat.)
+
+### Representation (decided)
+
+Edges compile to raw pointers. An index representation (base + index, still
+checkless — index reuse is safe without generations because stale edges can't
+exist) would keep pools' serialization/mmap story, at one add per hop paid
+everywhere. Declined: the relocatability story is narrow in practice and
+doesn't justify taxing every traversal. Graphs that need to serialize walk
+themselves through Encode like everything else; `mem.relocatable` stays a
+keys-only feature.
+
+### Open
+
+The partition pattern — collect refs into a local Vec, then mutate through
+them — needs a scope where deletes are locked but field writes are allowed.
+`frozen` is too strong (forbids writes). A weaker delete-locked tier is the
+one new scope concept this design asks for.
+
 ## Alternatives weighed and set aside
 
 - **Scoped regions with deferred delete** (arena row): open a region, traverse
@@ -244,11 +308,13 @@ graph is single-task or behind `Mutex`, exactly like `Pool` today.
 2. It's uniquely available to Rask. Enumerable incoming references require
    banning storable references, which Rask already did. Rust would need to
    become a different language to take this seat; Rask needs one new box.
-3. It does not abolish handles; it demotes them. Intra-structure topology
+3. It does not abolish checked keys; it demotes and renames them. Topology
    (linked lists, trees with parent pointers, graphs, ECS relationships) moves
-   to edges: faster reads, no staleness state, no generation ceremony. Durable
-   identity — anything that escapes the structure or outlives a scope — keeps
-   pools, because keys-that-may-be-stale must be checked, in any universe.
+   to edges: faster reads, no staleness state, no generation ceremony. What
+   forces a check is only the reference the delete cannot reach — serialized
+   bytes, unsynchronized concurrent holders — and those redeem a `Key<T>`
+   through `get(k)?`. Pool folds into Graph as the keys-only case (see census
+   above).
 4. The box-family bar (`mem.boxes` appendix: "box six needs a scoped access
    discipline the five don't cover") is met — *relational* access, edges fixed
    at delete, is not exclusive/identity/read-heavy/locked/linear. This doc does
