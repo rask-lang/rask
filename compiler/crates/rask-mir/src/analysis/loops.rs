@@ -169,6 +169,23 @@ mod tests {
         assert!(loops.is_empty());
     }
 
+    // Irreducible: entry branches straight into both sides of a 1<->2 cycle,
+    // so neither block dominates the other and there's no single back edge
+    // (H dominates B) to find. Dominator-based natural loops miss this cycle
+    // entirely — see dataflow::widening_points for the RPO-based check that
+    // catches it anyway, which the interval solver's convergence relies on.
+    #[test]
+    fn irreducible_cycle_has_no_natural_loop() {
+        let func = make_fn(vec![
+            MirBlock { id: block(0), statements: vec![], terminator: term_branch(1, 2) },
+            MirBlock { id: block(1), statements: vec![], terminator: term_goto(2) },
+            MirBlock { id: block(2), statements: vec![], terminator: term_goto(1) },
+        ]);
+        let dom = DominatorTree::build(&func);
+        let loops = detect_loops(&func, &dom);
+        assert!(loops.is_empty(), "dominance-based detection can't see an irreducible cycle");
+    }
+
     // Nested loops: 0 → 1 → 2 → {2, 1, 3}
     #[test]
     fn nested_loops() {

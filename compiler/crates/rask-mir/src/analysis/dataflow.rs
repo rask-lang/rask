@@ -44,7 +44,12 @@ pub trait DataflowAnalysis {
 
     /// Optional widening operator for non-finite lattices.
     /// Default is identity (no widening) — fine for finite lattices like liveness.
-    fn widen(&self, _old: &Self::Domain, new: &Self::Domain) -> Self::Domain {
+    ///
+    /// `is_widening_point` is true only for blocks that need widening to
+    /// guarantee convergence (see `widening_points`) — an analysis that only
+    /// needs to widen at loop headers can gate on it instead of widening on
+    /// every call.
+    fn widen(&self, _is_widening_point: bool, _old: &Self::Domain, new: &Self::Domain) -> Self::Domain {
         new.clone()
     }
 
@@ -111,6 +116,39 @@ impl<D: Clone> DataflowResults<D> {
     }
 }
 
+/// Blocks that need widening to guarantee convergence on infinite lattices —
+/// any block reached by a "retreating" edge, one whose target's reverse-
+/// postorder position is at or before its source's.
+///
+/// Every cycle in a CFG contains at least one retreating edge relative to
+/// any DFS-derived RPO — a standard fact about DFS spanning trees that holds
+/// regardless of whether the CFG is reducible. Dominator-based natural loops
+/// (`analysis::loops::detect_loops`) miss cycles in irreducible CFGs (a loop
+/// entered from two different places at once, so no single block dominates
+/// the whole cycle); this catches those too, so gating widening to these
+/// blocks is always sound, never just at "real" loop headers.
+pub fn widening_points(func: &MirFunction, dom_tree: &DominatorTree) -> HashSet<BlockId> {
+    let rpo_index: HashMap<BlockId, usize> = dom_tree
+        .rpo_order()
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| (b, i))
+        .collect();
+
+    let mut points = HashSet::new();
+    for block in &func.blocks {
+        let Some(&from) = rpo_index.get(&block.id) else { continue };
+        for succ in cfg::successors(&block.terminator) {
+            if let Some(&to) = rpo_index.get(&succ) {
+                if to <= from {
+                    points.insert(succ);
+                }
+            }
+        }
+    }
+    points
+}
+
 /// Solve a dataflow analysis to a fixed point.
 ///
 /// Uses RPO worklist for forward, reverse RPO for backward.
@@ -121,6 +159,7 @@ pub fn solve<A: DataflowAnalysis>(
 ) -> DataflowResults<A::Domain> {
     let rpo = dom_tree.rpo_order();
     let bottom = analysis.bottom();
+    let widen_points = widening_points(func, dom_tree);
 
     let mut entry: HashMap<BlockId, A::Domain> = HashMap::new();
     let mut exit: HashMap<BlockId, A::Domain> = HashMap::new();
@@ -194,7 +233,7 @@ pub fn solve<A: DataflowAnalysis>(
 
                 entry.insert(block_id, new_entry.clone());
                 let new_exit = analysis.transfer_block(block, &new_entry);
-                let new_exit = analysis.widen(&exit[&block_id], &new_exit);
+                let new_exit = analysis.widen(widen_points.contains(&block_id), &exit[&block_id], &new_exit);
 
                 if new_exit != exit[&block_id] {
                     exit.insert(block_id, new_exit);
@@ -227,7 +266,7 @@ pub fn solve<A: DataflowAnalysis>(
 
                 exit.insert(block_id, new_exit.clone());
                 let new_entry = analysis.transfer_block(block, &new_exit);
-                let new_entry = analysis.widen(&entry[&block_id], &new_entry);
+                let new_entry = analysis.widen(widen_points.contains(&block_id), &entry[&block_id], &new_entry);
 
                 if new_entry != entry[&block_id] {
                     entry.insert(block_id, new_entry);
@@ -281,6 +320,14 @@ mod tests {
         MirTerminator::dummy(MirTerminatorKind::Return { value: None })
     }
 
+    fn term_branch(then_b: u32, else_b: u32) -> MirTerminator {
+        MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Constant(MirConst::Bool(true)),
+            then_block: block(then_b),
+            else_block: block(else_b),
+        })
+    }
+
     /// Trivial forward analysis: count blocks visited
     struct BlockCountAnalysis;
 
@@ -328,5 +375,73 @@ mod tests {
         let results = solve(&func, &BlockCountAnalysis, &dom);
         // Block 3 joins max(2, 2) = 2, then +1 = 3
         assert_eq!(results.exit[&block(3)], 3);
+    }
+
+    #[test]
+    fn widening_points_empty_without_a_cycle() {
+        // Linear chain and a diamond both have no back edges.
+        let func = make_fn(vec![
+            MirBlock { id: block(0), statements: vec![], terminator: term_branch(1, 2) },
+            MirBlock { id: block(1), statements: vec![], terminator: term_goto(3) },
+            MirBlock { id: block(2), statements: vec![], terminator: term_goto(3) },
+            MirBlock { id: block(3), statements: vec![], terminator: term_ret() },
+        ]);
+        let dom = DominatorTree::build(&func);
+        assert!(widening_points(&func, &dom).is_empty());
+    }
+
+    #[test]
+    fn widening_points_finds_reducible_loop_header() {
+        // 0 -> 1 -> {1, 2}: block 1 is the loop header, reached by the 1->1 back edge.
+        let func = make_fn(vec![
+            MirBlock { id: block(0), statements: vec![], terminator: term_goto(1) },
+            MirBlock { id: block(1), statements: vec![], terminator: term_branch(1, 2) },
+            MirBlock { id: block(2), statements: vec![], terminator: term_ret() },
+        ]);
+        let dom = DominatorTree::build(&func);
+        let points = widening_points(&func, &dom);
+        assert_eq!(points, HashSet::from([block(1)]));
+    }
+
+    #[test]
+    fn widening_points_finds_nested_loop_headers() {
+        // 0 -> 1 -> 2 -> {2, 1, 3}: inner header 2, outer header 1.
+        let func = make_fn(vec![
+            MirBlock { id: block(0), statements: vec![], terminator: term_goto(1) },
+            MirBlock { id: block(1), statements: vec![], terminator: term_goto(2) },
+            MirBlock {
+                id: block(2),
+                statements: vec![],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Switch {
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    cases: vec![(0, block(2)), (1, block(1))],
+                    default: block(3),
+                }),
+            },
+            MirBlock { id: block(3), statements: vec![], terminator: term_ret() },
+        ]);
+        let dom = DominatorTree::build(&func);
+        let points = widening_points(&func, &dom);
+        assert_eq!(points, HashSet::from([block(1), block(2)]));
+    }
+
+    #[test]
+    fn widening_points_catches_irreducible_cycle() {
+        // entry branches straight into BOTH sides of a 1<->2 cycle, so neither
+        // block dominates the other — a dominator-based natural-loop header
+        // (analysis::loops::detect_loops) finds no loop here at all. This is
+        // exactly the case the RPO-retreating-edge check exists to catch: miss
+        // it and the interval solver's widen() never fires on this cycle, so a
+        // moving bound keeps changing forever and the fixpoint never converges.
+        let func = make_fn(vec![
+            MirBlock { id: block(0), statements: vec![], terminator: term_branch(1, 2) },
+            MirBlock { id: block(1), statements: vec![], terminator: term_goto(2) },
+            MirBlock { id: block(2), statements: vec![], terminator: term_goto(1) },
+        ]);
+        let dom = DominatorTree::build(&func);
+        assert!(
+            !widening_points(&func, &dom).is_empty(),
+            "must widen somewhere on the 1<->2 cycle or the solver can't converge"
+        );
     }
 }
