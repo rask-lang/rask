@@ -187,28 +187,6 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
     Some((MirOperand::Constant(MirConst::Int(val)), ty))
 }
 
-/// Disambiguation policy for method names that are shared across stdlib types
-/// (e.g. `get`, `map`, `find`) or absent from the stub API (iterator terminals
-/// like `collect`). Used ONLY when the type checker leaves the receiver type
-/// unresolved — a resolved receiver type always takes precedence. This is a
-/// deliberate policy choice (e.g. bare `.get()` means `Map`, since `Vec` uses
-/// index syntax), not a lookup table for well-typed calls: adding or renaming
-/// an unambiguous stdlib method needs no edit here.
-fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static str> {
-    Some(match method {
-        "contains" | "substr" | "reverse" | "index_of"
-        | "push_str" | "push_char" | "compare" | "as_ptr" => "string",
-        "remove_at" | "to_vec" | "map" | "filter" | "collect"
-        | "find" | "for_each" => "Vec",
-        "join" if arg_count == 2 => "Vec",
-        "values" | "get" | "insert" | "remove" => "Map",
-        "sleep" => "time",
-        "read_bytes" | "write_bytes" => "TcpConnection",
-        "accept" => "TcpListener",
-        "detach" => "TaskHandle",
-        _ => return None,
-    })
-}
 
 impl<'a> MirLowerer<'a> {
     /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
@@ -4030,23 +4008,15 @@ impl<'a> MirLowerer<'a> {
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
         // method-name table. Priority:
-        //   0. the receiver dispatch resolved to (CALL6), when MIR confirms it
-        //   1. user struct/enum from the type checker
-        //   2. tracked local/field type (LocalMeta, struct layout)
-        //   3. resolved receiver type, when that stdlib type actually
-        //      declares the method (validated against the stub API)
-        //   4. the method's sole defining stdlib type, when unambiguous
-        //   5. disambiguation policy for shared/absent names on
-        //      receivers the checker left unresolved
-        //   6. resolved type / MIR type as a last resort
-        let type_prefix_of_receiver = || {
-            self.ctx.lookup_raw_type(object.id)
-                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-        };
-        // The chain, as named steps rather than one `or_else` run. Step 0 is the
-        // checker's answer; everything after it is a guess that #425 exists to
-        // delete, and a step can only come out once the tally says nothing
-        // reaches it (`RASK_TRACE_DISPATCH=1`).
+        //   0. what dispatch resolved to (CALL6) — the checker's own answer
+        //   1. the checker's node type for the receiver, for a user struct/enum
+        //   2. a MIR-synthesized local's recorded type — a `.lock()` guard has
+        //      no checker node at all, so lowering records its type where it
+        //      creates it, and reads it back here
+        //
+        // All three read recorded data. None of them guesses from the method's
+        // name, which is what the six deleted steps did.
+        // `RASK_TRACE_DISPATCH=1` tallies which one answered.
         let mut prefix_of: Option<String> = None;
         let mut answered_by: &'static str = "9_unresolved";
         macro_rules! step {
@@ -4071,45 +4041,18 @@ impl<'a> MirLowerer<'a> {
         } else {
             None
         });
-        // 3: a struct field's declared type, read off the layout.
-        step!("3_field_layout", {
-            if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
-                if let ExprKind::Ident(var_name) = &inner_obj.kind {
-                    if let Some((local_id, _)) = self.locals.get(var_name) {
-                        let local_ty = self.builder.local_type(*local_id);
-                        if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
-                            self.ctx.struct_layouts.get(id as usize)
-                                .and_then(|layout| layout.fields.iter().find(|f| f.name == *field_name))
-                                .and_then(|fl| super::MirContext::type_prefix(&fl.ty, self.ctx.type_names))
-                        } else { None }
-                    } else { None }
-                } else { None }
-            } else { None }
-        });
-        // 4: the resolved receiver type, when that stdlib type declares the
-        // method (checked against the stub API).
-        step!("4_receiver_declares", type_prefix_of_receiver().filter(|p| {
-            let base = p.split('<').next().unwrap_or(p).trim();
-            rask_stdlib::mir_metadata::type_has_method(base, &method)
-        }));
-        // 5: an unambiguous stub method → its sole defining type.
-        step!("5_unique_stub_method",
-            rask_stdlib::mir_metadata::unique_method_prefix(&method).map(|s| s.to_string()));
-        // 6: the name→type policy table. The only step that can answer *wrongly*
-        // rather than not at all, so it's first out.
-        step!("6_name_policy",
-            ambiguous_method_prefix(&method, all_args.len()).map(|s| s.to_string()));
-        // 7: the resolved type even if no stub lists the method (user types,
-        // monomorphized aggregates), then the MIR type (F64, String, …).
-        step!("7_receiver_type", type_prefix_of_receiver());
-        step!("7_mir_type", super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()));
-        // 8: a Struct/Enum MIR type carries a layout whose name is the type.
-        // Catches receivers the checker left untyped but MIR typed concretely:
-        // a pool-element `with` binding, a Handle deref, a `self` receiver.
-        step!("8_mir_aggregate", self.mir_aggregate_prefix(&obj_ty));
-        // parse<T> always belongs to string — structural, not a type prefix.
-        step!("8_parse_prefix",
-            if method.starts_with("parse_") { Some("string".to_string()) } else { None });
+        // Nothing else. Six more steps used to follow — a struct field's declared
+        // type read off the layout, the receiver type when the stub declared the
+        // method, the method's sole defining stdlib type, a name-to-type policy
+        // table, the MIR type, and a struct/enum layout name. All six were dead
+        // across every example, suite file, fixture and compile-error case (909
+        // method calls) once the checker's answer covered primitives, literal
+        // receivers, slices and multi-parameter generics, so they are gone. The
+        // tally above is how that was established and how it stays true.
+        //
+        // A receiver that resolves to nothing now fails lowering with the method
+        // named, which is the same trade `fallback::i64_fallback` makes: a
+        // missing answer reported beats a wrong one emitted.
 
         crate::dispatch_trace::record(answered_by, &method);
 

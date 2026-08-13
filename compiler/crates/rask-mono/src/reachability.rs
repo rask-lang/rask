@@ -315,7 +315,7 @@ impl<'a> Monomorphizer<'a> {
         let Some(typed) = self.typed else { return };
         for (&new_id, &old_id) in origins {
             if let Some(ty) = typed.node_types.get(&old_id) {
-                if let Some(concrete) = Self::concretize(ty, type_args) {
+                if let Some(concrete) = Self::concretize(ty, type_args, &bindings) {
                     self.instantiated_node_types.insert(new_id, concrete);
                 }
             }
@@ -323,7 +323,7 @@ impl<'a> Monomorphizer<'a> {
                 let carried = match callee {
                     rask_types::Callee::Free(sym) => Some(rask_types::Callee::Free(*sym)),
                     rask_types::Callee::Method { recv, method } => {
-                        Self::concretize(recv, type_args).map(|recv| {
+                        Self::concretize(recv, type_args, &bindings).map(|recv| {
                             rask_types::Callee::Method { recv, method: method.clone() }
                         })
                     }
@@ -355,7 +355,7 @@ impl<'a> Monomorphizer<'a> {
                 return (*bound).clone();
             }
         }
-        Self::concretize(ty, type_args).unwrap_or_else(|| ty.clone())
+        Self::concretize(ty, type_args, bindings).unwrap_or_else(|| ty.clone())
     }
 
     /// A recorded type with this instantiation's arguments substituted in, or
@@ -363,15 +363,27 @@ impl<'a> Monomorphizer<'a> {
     ///
     /// Single-letter uppercase names are type parameters (type.gradual/PC3), so
     /// they're the marker for "this came from the generic and wasn't resolved".
-    fn concretize(ty: &Type, type_args: &[Type]) -> Option<Type> {
+    fn concretize(
+        ty: &Type,
+        type_args: &[Type],
+        bindings: &HashMap<&str, &Type>,
+    ) -> Option<Type> {
         fn is_type_param(name: &str) -> bool {
             let mut chars = name.chars();
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }
         match ty {
-            // The common case by far: the receiver is the type parameter
-            // itself, and a single-argument instantiation pins it.
+            // The receiver is the type parameter itself. Bind by name, which is
+            // the only thing that says *which* parameter it is: this used to be
+            // positional and gave up whenever a function had more than one, so
+            // `describe_all<T: Describable, U: Describable>` carried no dispatch
+            // target for either `first.describe()` or `second.describe()` and
+            // lowering fell back to guessing (#425).
             Type::UnresolvedNamed(name) if is_type_param(name) => {
+                if let Some(bound) = bindings.get(name.as_str()) {
+                    return Some((*bound).clone());
+                }
+                // No name list available — a single argument still pins it.
                 if type_args.len() == 1 { Some(type_args[0].clone()) } else { None }
             }
             Type::UnresolvedGeneric { name, args } => {
@@ -382,7 +394,7 @@ impl<'a> Monomorphizer<'a> {
                 // came through concrete.
                 for arg in args {
                     if let rask_types::GenericArg::Type(inner) = arg {
-                        Self::concretize(inner, type_args)?;
+                        Self::concretize(inner, type_args, bindings)?;
                     }
                 }
                 Some(ty.clone())

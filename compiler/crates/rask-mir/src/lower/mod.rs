@@ -727,7 +727,7 @@ impl<'a> MirContext<'a> {
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
-                .or_else(|| primitive_method_prefix(recv).map(str::to_string)),
+                .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
             rask_types::Callee::Free(_) => None,
         }
     }
@@ -3807,46 +3807,34 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
     None
 }
 
-/// The method-name prefix for a primitive receiver.
+/// The method-name prefix for a receiver with no nominal name of its own.
 ///
 /// The checker records `Callee::Method { recv }` for every non-inference
-/// receiver, primitives included, but `type_prefix` answers `None` for them — so
+/// receiver, these included, but `type_prefix` answers `None` for them — so
 /// `x.floor()` skipped the recorded answer and re-derived the same prefix from
 /// its MIR type further down the chain. This is the one mapping both ends use,
 /// so they can't disagree about it.
 ///
-/// Narrow widths mangle to their widest sibling: codegen has `i64_*` / `u64_*`
-/// entries and narrower values ride in the same slots.
-pub fn primitive_method_prefix(ty: &Type) -> Option<&'static str> {
+/// Narrow integer widths mangle to their widest sibling: codegen has `i64_*` /
+/// `u64_*` entries and narrower values ride in the same slots. That has to
+/// become per-width when `std.bits` lands — `(0 as i32).count_zeros()` is 32,
+/// not 64, so those methods can't share one symbol.
+pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::F32 | Type::F64 => Some("f64"),
         Type::Bool => Some("bool"),
         Type::Char => Some("char"),
         Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
         Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        // A slice dispatches like the container it came from: `parts[2..]
+        // .join(" ")` is `Vec_join`. Without this the call fell through to the
+        // name-policy table, which guesses "a two-argument `join` means Vec" —
+        // right here, and only by luck.
+        Type::Slice(_) | Type::Array { .. } => Some("Vec"),
         _ => None,
     }
 }
 
-fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {
-    match ty {
-        MirType::F64 | MirType::F32 => Some("f64"),
-        MirType::String => Some("string"),
-        MirType::Bool => Some("bool"),
-        MirType::Char => Some("char"),
-        // Integer receivers were missing here, so a method on a computed
-        // integer — `(0 - n).abs()`, where no local carries the type — reached
-        // the end of the dispatch chain with nothing and failed lowering.
-        // Widths mangle to their own prefix; codegen has i64_* entries and
-        // narrower widths ride in i64 slots.
-        MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 => Some("i64"),
-        MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => Some("u64"),
-        // Ptr is too generic — user-defined types become Ptr in MIR,
-        // so local_type_prefix or type-checker lookup should provide the name.
-        MirType::Ptr => None,
-        _ => None,
-    }
-}
 
 /// Extract type prefix from a type annotation string.
 ///

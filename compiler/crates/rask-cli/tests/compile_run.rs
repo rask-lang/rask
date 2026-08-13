@@ -2772,3 +2772,89 @@ trunc_inf inf
         assert_eq!(stdout, expected, "{}: IEEE 754 conformance", mode);
     }
 }
+
+// ─── #425: dispatch comes from the checker, not from guessing ────────
+//
+// MIR mangles a method call to `{Type}_{method}`, and the receiver's type used
+// to come from an eleven-step chain: the checker's recorded answer, then eight
+// steps of guessing — a struct field's layout, the sole stdlib type declaring
+// the method, a name-to-type policy table ("a two-argument `join` means Vec"),
+// the MIR type, a layout name. Those six are deleted. The three that remain all
+// read recorded data:
+//
+//   0_checker_recorded  what dispatch resolved to
+//   1_user_type         the checker's node type for the receiver
+//   2_local_meta        a MIR-synthesized local's recorded type — a `.lock()`
+//                       guard has no checker node at all, so lowering records
+//                       its type where it creates the local
+//
+// This test is what makes the deletion safe to keep: if a receiver starts
+// reaching a step that no longer exists, it fails lowering instead, and if
+// someone adds a guessing step back, the assert names it.
+#[test]
+fn method_dispatch_never_falls_back_to_guessing() {
+    const ALLOWED: &[&str] = &["0_checker_recorded", "1_user_type", "2_local_meta"];
+    // Between them: primitives and floats, enums behind a `T or E`, a `.lock()`
+    // guard receiver, a multi-parameter generic with a trait bound, a comptime
+    // block, a slice receiver, and collections.
+    let files: &[&str] = &[
+        "primitive_methods.rk",
+        "ieee754_conformance.rk",
+        "float_total_order.rk",
+        "match_result_enum_variants.rk",
+        "string_field_store_lifetime.rk",
+        "negative_literal_context.rk",
+    ];
+
+    let rask = rask_binary();
+    let mut seen: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for name in files {
+        let out = Command::new(&rask)
+            .arg("compile")
+            .arg(fixture(name))
+            .arg("-o")
+            .arg(std::env::temp_dir().join(format!("rask_disp_{}", next_tmp_id())))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("RASK_TRACE_DISPATCH", "1")
+            .output()
+            .expect("failed to run rask compile");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        for line in stderr.lines() {
+            let Some(rest) = line.strip_prefix("[dispatch]   ") else { continue };
+            let Some((step, tail)) = rest.split_once(": ") else { continue };
+            seen.entry(step.to_string())
+                .or_default()
+                .push(format!("{name}: {tail}"));
+        }
+    }
+
+    assert!(
+        !seen.is_empty(),
+        "no dispatch steps recorded at all — the tally or the trace flag broke, \
+         which would make this test pass for the wrong reason"
+    );
+    let unexpected: Vec<_> = seen
+        .iter()
+        .filter(|(step, _)| !ALLOWED.contains(&step.as_str()))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "a method call resolved its receiver by guessing: {unexpected:#?}"
+    );
+}
+
+// ─── Regression: a channel pair's bindings have types ────────────────
+//
+// `Channel.buffered(n)` without an explicit `<T>` was claimed by the
+// stub-registry route to resolve_runtime_method, which has no constructor for
+// it, so the call got no return type. `mut (tx, rx) = Channel.buffered(4)` left
+// both bindings as free type variables, and `tx.clone().send(x)` failed lowering
+// outright: "method `send` on receiver of unresolved type".
+#[test]
+fn a_channel_pair_gets_its_types_from_the_constructor() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "channel_pair_types.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "first 7\nsecond 9\n", "{}", mode);
+    }
+}

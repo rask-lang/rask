@@ -17,6 +17,12 @@ use std::collections::BTreeMap;
 
 thread_local! {
     static TALLY: RefCell<BTreeMap<&'static str, Vec<String>>> = RefCell::new(BTreeMap::new());
+    static FORCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turn tallying on for this thread without an env var, for tests.
+pub fn force_on() {
+    FORCED.with(|f| f.set(true));
 }
 
 /// True when tracing is on. Checked before building the method-name string.
@@ -25,8 +31,11 @@ pub fn enabled() -> bool {
 }
 
 /// Record that `step` resolved the receiver for a call to `method`.
+///
+/// Tallying is on when `RASK_TRACE_DISPATCH` is set, or when a test asks for it
+/// via `force_on` — a test can't set a process-wide env var safely.
 pub fn record(step: &'static str, method: &str) {
-    if !enabled() {
+    if !enabled() && !FORCED.with(|f| f.get()) {
         return;
     }
     TALLY.with(|t| {
@@ -61,4 +70,16 @@ pub fn report() {
             );
         }
     });
+}
+
+/// Steps that resolved at least one call, for a test to assert against.
+pub fn steps_used() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = TALLY.with(|t| t.borrow().keys().copied().collect());
+    v.sort_unstable();
+    v
+}
+
+/// Forget the tally. Between test cases.
+pub fn reset() {
+    TALLY.with(|t| t.borrow_mut().clear());
 }

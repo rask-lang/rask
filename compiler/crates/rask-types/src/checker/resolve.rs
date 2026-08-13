@@ -526,7 +526,17 @@ impl TypeChecker {
                     && args.is_empty()
                     && Self::is_result_preserving_unary(&method)
                 {
-                    return self.unify(&ret, &ty, span);
+                    let progress = self.unify(&ret, &ty, span)?;
+                    // Tying the two together settles the *type*, but the
+                    // receiver is still a literal variable, so there's no
+                    // concrete type to record a dispatch target against. Hand it
+                    // to the post-defaulting retry, which has one — otherwise
+                    // `n.abs()` type-checks and MIR still has to guess its
+                    // receiver (#425).
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty, method, args, ret, span, call_node,
+                    });
+                    return Ok(progress);
                 }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
@@ -902,6 +912,19 @@ impl TypeChecker {
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
+            }
+            // `Channel.buffered(n)` / `.unbuffered()` with no explicit `<T>`.
+            // `Channel` is declared in async.rk, so the stub-registry arm below
+            // claimed it and routed it to resolve_runtime_method, which has no
+            // constructor for it — the call got no return type at all.
+            // `mut (tx, rx) = Channel.buffered(4)` therefore left both bindings
+            // as free type variables (`let probe: i64 = tx` type-checked), and
+            // every `send`/`receive`/`clone` on them had to be resolved by MIR
+            // guessing from the method name (#425). The concurrency resolver
+            // mints a fresh inner type when it gets no args, which is what's
+            // wanted: the element type is pinned by the first `send`.
+            Type::UnresolvedNamed(name) if name == "Channel" => {
+                self.resolve_concurrency_generic_method("Channel", &[], &method, &args, &ret, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
             Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
