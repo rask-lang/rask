@@ -25,9 +25,11 @@ struct Entity {
     name: string
     health: i32
     damage: i32
-    target: Edge<Entity>?                  // nulls when the target dies
-    body: Edge<Body>? on_delete(cascade)   // owns its physics body: they die together
-    squad: Edges<Entity>                   // M:N — deleted members drop out
+    target: Edge<Entity>?         // optional: nulls when the target dies
+    squad: Edges<Entity>          // M:N — deleted members drop out
+
+    @cascade
+    body: Edge<Body>              // required: built in a batch, dies with the entity
 }
 
 struct Body {

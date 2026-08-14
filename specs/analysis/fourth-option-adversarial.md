@@ -41,6 +41,13 @@ declaration (the schema names the co-owned graphs) and it is exactly how
 databases already work: foreign keys live *inside* one database, not across
 two. The rule pays twice — see A9.
 
+**Superseded as a concurrency answer.** The ownership rule stands for
+soundness (edges connect co-owned graphs), but "wrap the root in a lock" was
+a patch, and one global lock is the design Go beats. The real answer is
+staged structural mutation — no lock on the hot path at all — worked out in
+[fourth-option-concurrency.md](fourth-option-concurrency.md). What follows is
+the original reasoning, kept because its two adopted rules survive.
+
 **Thought through against the concurrency model** (channels, green tasks,
 threads): the rule costs almost nothing real, because pools.md already
 blesses exactly one cross-task architecture — "share handles, not data; the
@@ -100,15 +107,30 @@ unchanged. Cost owned honestly: "an Entity always has a Body" leaves the type
 system (it was unenforceable at construction anyway); a future transactional
 multi-insert could win it back.
 
-**Syntax consequence:** with only one edge form left, the `?` on every edge
-declaration is redundant — there is no non-optional edge to distinguish it
-from, so `Edge<Entity>?` is ceremony. The earlier no-sugar verdict rested on
-that distinction existing; it's dead, so the declaration-site word form now
-earns its rent: `target: one Entity`, `squad: many Entity`,
-`parent: one Entity inverse of children` — ER multiplicities read aloud, with
-the maybe still surfacing at use sites through the ordinary `?` operators.
-Recommendation flipped to yes; final spelling belongs to the `mem.graph`
-draft.
+**Reversed by batches.** See
+[fourth-option-concurrency.md](fourth-option-concurrency.md): a staged batch
+gives a required cycle a legal transient state, with constraints checked at
+apply — the database's deferred-constraint mechanism. `Edge<T>` and
+`Edge<T>?` both live, and the distinction is meaningful (required edges never
+need a `?` at use sites). The word-form syntax briefly proposed here
+(`one Entity` / `many Entity` / `inverse of children`) is **withdrawn** — it
+put English prose in a type position and invented keywords that don't look
+like types, against every existing Rask convention. Relations use type-shaped
+names and the annotation style the language already has:
+
+<!-- test: skip -->
+```rask
+struct SceneNode {
+    name: string
+    children: Edges<SceneNode>
+
+    @inverse(children)
+    parent: Edge<SceneNode>?
+
+    @cascade
+    body: Edge<Body>
+}
+```
 
 ## A5 — Ordered edge containers: removal is O(n) backlink fixups
 
