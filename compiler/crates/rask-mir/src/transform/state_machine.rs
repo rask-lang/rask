@@ -91,7 +91,7 @@ pub fn transform(func: &MirFunction) -> Option<StateMachineResult> {
         return None;
     }
 
-    let linear = linearize(func);
+    let linear = linearize(func)?;
 
     let yield_indices = find_yield_indices(&linear);
     if yield_indices.is_empty() {
@@ -131,30 +131,47 @@ pub fn transform(func: &MirFunction) -> Option<StateMachineResult> {
 // ── Linearization ───────────────────────────────────────────────────
 
 /// Flatten a function's blocks into a linear statement sequence.
-/// Spawn closures have simple linear structure — follow Goto chains,
-/// stop at branches.
-fn linearize(func: &MirFunction) -> Vec<MirStmt> {
+///
+/// Only succeeds for functions that are *actually* linear: a chain of
+/// Gotos from the entry block ending in a single Return, with no other
+/// block in the function left over. Anything else — an `if`, a loop, a
+/// `match`, multiple return points — means the function has real control
+/// flow this pass doesn't model, and returns None rather than silently
+/// dropping the blocks it can't reach by following Gotos (#369).
+fn linearize(func: &MirFunction) -> Option<Vec<MirStmt>> {
     let mut result = Vec::new();
     let mut visited = HashSet::new();
-    let mut current = Some(func.entry_block);
+    let mut current = func.entry_block;
 
-    while let Some(block_id) = current {
-        if !visited.insert(block_id) {
-            break;
+    loop {
+        if !visited.insert(current) {
+            // Goto cycle — a loop in the spawn body. Not linear.
+            return None;
         }
 
-        let block = &func.blocks[block_id.0 as usize];
+        let block = &func.blocks[current.0 as usize];
         for stmt in &block.statements {
             result.push(stmt.clone());
         }
 
-        current = match &block.terminator.kind {
-            MirTerminatorKind::Goto { target } => Some(*target),
-            _ => None,
-        };
+        match &block.terminator.kind {
+            MirTerminatorKind::Goto { target } => current = *target,
+            MirTerminatorKind::Return { .. } => break,
+            // Branch, Switch, Unreachable, CleanupReturn: real control flow
+            // this linear walk can't represent.
+            _ => return None,
+        }
     }
 
-    result
+    if visited.len() != func.blocks.len() {
+        // Some blocks were never reached by the Goto chain — they're only
+        // reachable through control flow we didn't walk (the other side of
+        // a branch, a loop body, ...). Reporting only the blocks we did
+        // walk would silently drop the rest.
+        return None;
+    }
+
+    Some(result)
 }
 
 fn find_yield_indices(stmts: &[MirStmt]) -> Vec<usize> {
@@ -861,6 +878,60 @@ mod tests {
             "should have capture stores");
         let (env_off, _state_off) = result.capture_stores[0];
         assert_eq!(env_off, 0, "capture env offset should be 0");
+    }
+
+    /// #369: a spawn body with a branch (an `if`) around a yield point used
+    /// to have its tail silently dropped by `linearize`'s Goto-only walk —
+    /// `transform` would then build a poll function missing everything past
+    /// the branch. It must now refuse the transform entirely instead.
+    #[test]
+    fn branch_around_yield_point_does_not_transform() {
+        let mut builder = BlockBuilder::new("test__spawn_0".to_string(), MirType::Void);
+        let _env = builder.add_param("__env".to_string(), MirType::Ptr);
+
+        let then_block = builder.create_block();
+        let join_block = builder.create_block();
+
+        // if cond { sleep(...) }
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("work_before".to_string()),
+            args: vec![],
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Constant(MirConst::Bool(true)),
+            then_block,
+            else_block: join_block,
+        }));
+
+        builder.switch_to_block(then_block);
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
+            args: vec![MirOperand::Constant(MirConst::Int(1_000_000))],
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: join_block }));
+
+        // Statement after the branch — this is what used to get dropped.
+        builder.switch_to_block(join_block);
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("cleanup_after".to_string()),
+            args: vec![],
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+
+        let func = builder.finish();
+
+        assert!(has_yield_points(&func), "sleep call should register as a yield point");
+        assert!(
+            linearize(&func).is_none(),
+            "a branching spawn body must not linearize to a partial statement list"
+        );
+        assert!(
+            transform(&func).is_none(),
+            "transform must decline rather than build a poll fn missing the post-branch cleanup"
+        );
     }
 
     #[test]
