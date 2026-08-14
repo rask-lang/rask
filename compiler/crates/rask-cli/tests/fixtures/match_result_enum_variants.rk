@@ -1,0 +1,50 @@
+enum MyErr {
+    Bad(string),
+    Worse,
+    Coded(i64, string),
+}
+
+extend MyErr {
+    func message(self) -> string {
+        return "myerr"
+    }
+}
+
+func doit(mode: i64) -> i64 or MyErr {
+    if mode == 1 {
+        return MyErr.Bad("oops")
+    }
+    if mode == 2 {
+        return MyErr.Worse
+    }
+    if mode == 3 {
+        return MyErr.Coded(7, "seven")
+    }
+    return 42
+}
+
+func describe(mode: i64) -> string {
+    match doit(mode) {
+        i64 as val => return "ok {val}",
+        MyErr.Bad(msg) => return "bad {msg}",
+        MyErr.Coded(code, text) => return "coded {code} {text}",
+        _ => return "other",
+    }
+}
+
+func with_catchall(mode: i64) -> string {
+    match doit(mode) {
+        MyErr.Worse => return "worse!",
+        MyErr as e => return "some error",
+        i64 as val => return "fine {val}",
+    }
+}
+
+func main() {
+    for m in 0..4 {
+        println("describe({m}) = {describe(m)}")
+    }
+    for m in 0..4 {
+        println("catchall({m}) = {with_catchall(m)}")
+    }
+}

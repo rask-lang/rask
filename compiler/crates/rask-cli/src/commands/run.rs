@@ -73,6 +73,33 @@ fn exit_code_reporting_signals(status: &process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
+/// The declarations the interpreter runs: the program's, plus the stdlib modules
+/// that are written in Rask.
+///
+/// Native compiles `stdlib/*.rk` including its bodies (`compilable_decls`); the
+/// interpreter used to ignore that source entirely and run hand-written Rust
+/// from `rask-interp/src/stdlib/` instead. So a module written in Rask still had
+/// two implementations, one per backend, and they disagreed — `Path.parent()`
+/// answered `none` natively (#688) while the interpreter got it right, and the
+/// rest of the Path family segfaulted. Handing the same source to both backends
+/// is what makes "written in Rask" mean one implementation.
+/// The stdlib goes first and the program second, because registration is
+/// last-writer-wins and the program has to be the last writer. A program may
+/// reuse a stdlib type's name (rask#258) — `struct JsonError` over stdlib's
+/// `enum JsonError` — and with the program first, the stdlib's `message` body
+/// overwrote the user's and ran `match self` against a struct.
+fn decls_with_rask_stdlib(decls: &[rask_ast::decl::Decl]) -> Vec<rask_ast::decl::Decl> {
+    let t = std::time::Instant::now();
+    let stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    let n = stdlib.len();
+    let mut all = stdlib;
+    all.extend(decls.to_vec());
+    if std::env::var_os("RASK_TIME_STDLIB").is_some() {
+        eprintln!("[stdlib] {} decls in {:?}", n, t.elapsed());
+    }
+    all
+}
+
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
@@ -89,7 +116,8 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
-    match interp.run(&result.decls) {
+    let all = decls_with_rask_stdlib(&result.decls);
+    match interp.run(&all) {
         Ok(_) => {}
         Err(diag) if matches!(diag.error, rask_interp::RuntimeError::Exit(..)) => {
             if let rask_interp::RuntimeError::Exit(code) = diag.error {
@@ -339,7 +367,8 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
         interp.register_packages(&result.package_names);
     }
 
-    let test_results = interp.run_tests(&result.decls, filter.as_deref());
+    let all = decls_with_rask_stdlib(&result.decls);
+    let test_results = interp.run_tests(&all, filter.as_deref());
 
     // Render in the same format as native (JSON-per-line, then summarize).
     let mut json_lines = String::new();
@@ -805,7 +834,8 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
-    let results = interp.run_benchmarks(&result.decls, filter.as_deref());
+    let all = decls_with_rask_stdlib(&result.decls);
+    let results = interp.run_benchmarks(&all, filter.as_deref());
 
     if results.is_empty() {
         if format == Format::Human {

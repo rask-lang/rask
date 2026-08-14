@@ -19,34 +19,38 @@ use crate::value::{FloatKind, MapData, MapKey, Value};
 impl Interpreter {
     /// Handle json module methods.
     pub(crate) fn call_json_method(
-        &self,
+        &mut self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        match method {
-            "parse" => {
-                let input = self.expect_string(&args, 0)?;
-                match parse_json(&input) {
-                    Ok(value) => Ok(make_result_ok(value)),
-                    Err(e) => Ok(make_result_err(JsonErrKind::Parse, &e)),
+        // A JsonValue already has a Rask encoder, and native runs it. Running
+        // the Rust one below instead put two encoders behind one call, and they
+        // disagreed: the Rust one walks the insertion-ordered backing store, so
+        // interp printed object keys in insertion order while native printed
+        // seeded order (determinism/D7). Same source both backends now; the
+        // Rust path is for what has no Rask version — a struct, encoded by
+        // reflection.
+        if matches!(method, "encode" | "encode_pretty") {
+            if let Some(Value::Enum { name, .. }) = args.first() {
+                if name == "JsonValue" {
+                    let recv = args[0].clone();
+                    let body = if method == "encode_pretty" {
+                        "to_string_pretty"
+                    } else {
+                        "to_string"
+                    };
+                    return self.call_rask_method("JsonValue", body, recv, vec![]);
                 }
             }
-            "stringify" => {
-                let value = args
-                    .into_iter()
-                    .next()
-                    .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let s = stringify_value(&value, false, 0);
-                Ok(Value::String(Arc::new(Mutex::new(s))))
-            }
-            "stringify_pretty" => {
-                let value = args
-                    .into_iter()
-                    .next()
-                    .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let s = stringify_value(&value, true, 0);
-                Ok(Value::String(Arc::new(Mutex::new(s))))
-            }
+        }
+
+        // `json.parse`, `json.stringify` and `json.stringify_pretty` used to be
+        // handled here. std.json has one verb pair and no parse/stringify family
+        // (specs/stdlib/json.md), so nothing could call them from Rask; the
+        // untyped path is `json.parse` in stdlib/json.rk, which both backends
+        // run. What's left below needs a struct declaration to work from, which
+        // is why it's still Rust.
+        match method {
             "encode" => {
                 // Encode a struct to JSON string
                 let value = args
@@ -83,6 +87,15 @@ impl Interpreter {
                 }
                 let type_name = self.expect_string(&args, 0)?;
                 let input = self.expect_string(&args, 1)?;
+                // The untyped path is a Rask function — `json.parse` in
+                // stdlib/json.rk, which is also what native calls. Its
+                // JsonParser is the grammar; the Rust one below is only still
+                // here for the typed path, where the target's fields come from
+                // struct declarations rather than from the text.
+                if type_name == "JsonValue" {
+                    let text = Value::String(Arc::new(Mutex::new(input)));
+                    return self.call_rask_static("json", "parse", vec![text]);
+                }
                 let parsed = match parse_json(&input) {
                     Ok(v) => v,
                     Err(e) => return Ok(make_result_err(JsonErrKind::Parse, &e)),

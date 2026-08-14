@@ -190,19 +190,52 @@ test "std.json — the target can be a list at the top level" {
 
 // The untyped path (std.json/J4) — same verb, JsonValue as the target.
 //
-// Deliberately weak on native: round-tripping through json.encode(JsonValue),
-// or reading the tree back with .as_object()/.as_array(), both produce wrong
-// answers on native only (compiler-generated decode<JsonValue>/encode<JsonValue>
-// — filed as #689). Neither is this rename sweep's to fix; this only checks
-// decode<JsonValue> produced *something* non-null on both backends. Interp
-// remains the full witness — see the interp-only assertions if you need to
-// verify actual field values.
+// This used to assert only "not null", because native got it wrong both ways:
+// decode<JsonValue> handed back a pointer from the C parser instead of a
+// JsonValue, and encode<JsonValue> printed that pointer's value (#689). Both
+// halves run the Rask code in stdlib/json.rk now — one parser, one encoder, both
+// backends — so the tree can be read and round-tripped for real.
 test "std.json — decoding to JsonValue gives the untyped tree" {
     let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => {
         assert false
         return
     }
     assert v.is_null() == false
+    let obj = v.as_object() ?? Map.new()
+    let list = (obj.get("k") ?? JsonValue.Null).as_array() ?? Vec.new()
+    assert list.len() == 2
+    assert list[0].as_number() ?? 0.0 == 1.0
+    assert list[1].as_number() ?? 0.0 == 2.0
+    assert json.encode(v) == "{{\"k\":[1,2]}}"
+}
+
+// Non-ASCII text through both halves. `write_escaped` used to rebuild each byte
+// as a char, so every multi-byte sequence got encoded twice: "café" came out
+// "cafÃ©". The parser had the same bug reading literal UTF-8 back in.
+test "std.json — non-ASCII survives a decode/encode round-trip" {
+    let escaped = json.decode<JsonValue>("[\"caf\\u00e9\"]") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(escaped) == "[\"café\"]"
+
+    let literal = json.decode<JsonValue>("[\"naïve 日本語\"]") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(literal) == "[\"naïve 日本語\"]"
+
+    // Control characters stay escaped, and a real backslash stays doubled.
+    assert json.encode(JsonValue.String("a\tb\\c")) == "\"a\\tb\\\\c\""
+}
+
+// One value per document (J4). Reading only the first would accept "1 2".
+test "std.json — trailing content after the value is a parse error" {
+    let v = json.decode<JsonValue>("1 2") catch e => {
+        assert e.message().contains("parse error")
+        return
+    }
+    assert false
 }
 
 test "std.json — escapes and unicode survive a decode" {

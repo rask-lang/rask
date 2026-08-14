@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic struct whose type parameter no field uses (#671).
+//
+// Native used to die before the first test reported — no panic message, just a
+// dead test binary — while interp ran it. Nothing derived is called here; a bare
+// construct-and-read was enough. It passes on both backends now, so this pins it
+// rather than leaving a fixed bug with no test.
+
+struct Tagged<T> {
+    public id: i64
+    public label: string
+}
+
+struct Pair<K, V> {
+    public n: i64
+}
+
+test "type.generics — an unused type parameter constructs and reads" {
+    let a: Tagged<i64> = Tagged { id: 1, label: "x" }
+    assert a.id == 1
+    assert a.label == "x"
+}
+
+test "type.generics — two unused parameters" {
+    let p: Pair<i64, string> = Pair { n: 5 }
+    assert p.n == 5
+}
+
+test "type.generics — two instantiations of the same unused parameter" {
+    let a: Tagged<i64> = Tagged { id: 1, label: "one" }
+    let b: Tagged<string> = Tagged { id: 2, label: "two" }
+    assert a.id + b.id == 3
+    assert b.label == "two"
+}
+
+test "type.generics — an unused parameter inside a Vec" {
+    mut v: Vec<Tagged<string>> = Vec.new()
+    v.push(Tagged { id: 2, label: "y" })
+    v.push(Tagged { id: 3, label: "z" })
+    assert v.len() == 2
+    assert v[0].id == 2
+    assert v[1].label == "z"
+}

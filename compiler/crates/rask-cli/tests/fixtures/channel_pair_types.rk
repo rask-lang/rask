@@ -1,0 +1,19 @@
+// `Channel.buffered(n)` written without an explicit `<T>` got no return type at
+// all, so `mut (tx, rx) = Channel.buffered(4)` left both bindings as free type
+// variables. Methods on them were resolved by MIR guessing from the method name,
+// and `tx.clone().send(x)` — one hop further from the binding — couldn't be
+// guessed at all: "method `send` on receiver of unresolved type".
+func main() {
+    using Multitasking {
+        mut (tx, rx) = Channel.buffered(4)
+        let sender = tx.clone()
+        let _ = sender.send(7)
+        let _ = tx.send(9)
+        if rx.receive()? as first {
+            println("first {first}")
+        }
+        if rx.receive()? as second {
+            println("second {second}")
+        }
+    }
+}

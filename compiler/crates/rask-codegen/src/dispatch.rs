@@ -242,6 +242,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
+        // Vec<f64> needs the float total order — the default compares elements
+        // as int64_t, which orders negatives backwards (type.operators/ORD3).
+        StdlibEntry::simple("Vec_sort_f64", "rask_vec_sort_f64", &[types::I64], None, false),
+        StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
         StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
@@ -609,17 +613,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── Math operations ────────────────────────────────────
-        StdlibEntry::simple("sqrt", "sqrt", &[types::F64], Some(types::F64), false),
-        StdlibEntry::simple("f64_sqrt", "sqrt", &[types::F64], Some(types::F64), false),
+        // i64.abs() (std.math/N2) — libc's llabs, no wrapper needed.
+        StdlibEntry::simple("i64_abs", "llabs", &[types::I64], Some(types::I64), false),
+        // The f64_* method entries are generated below from
+        // rask_stdlib::FLOAT_METHODS. f32 keeps its own single-precision entry.
         StdlibEntry::simple("f32_sqrt", "sqrtf", &[types::F32], Some(types::F32), false),
-        StdlibEntry::simple("abs", "fabs", &[types::F64], Some(types::F64), false),
-        StdlibEntry::simple("f64_powf", "pow", &[types::F64, types::F64], Some(types::F64), false),
-        StdlibEntry::simple("f64_powi", "pow", &[types::F64, types::F64], Some(types::F64), false),
-        // is_nan/is_inf/is_finite are f64 methods; reuse the math_is_* C symbols
-        // (runtime/math.c) that used to back the dropped math.is_nan module fn.
-        StdlibEntry::simple("f64_is_nan", "math_is_nan", &[types::F64], Some(types::I8), false),
-        StdlibEntry::simple("f64_is_inf", "math_is_inf", &[types::F64], Some(types::I8), false),
-        StdlibEntry::simple("f64_is_finite", "math_is_finite", &[types::F64], Some(types::I8), false),
 
         // String comparison
         StdlibEntry::simple("string_compare", "rask_string_compare", &[types::I64, types::I64], Some(types::I64), false),
@@ -1200,55 +1198,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Path operations ──────────────────────────────────
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
-        StdlibEntry {
-            mir_name: "Path_from", c_name: "rask_path_new",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_as_string", c_name: "rask_path_to_string",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_div", c_name: "rask_path_join",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_with_extension", c_name: "rask_path_with_extension",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_with_file_name", c_name: "rask_path_with_file_name",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Path_parent", c_name: "rask_path_parent",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_file_name", c_name: "rask_path_file_name",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_extension", c_name: "rask_path_extension",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Path_stem", c_name: "rask_path_stem",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry::simple("Path_is_absolute", "rask_path_is_absolute", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_is_relative", "rask_path_is_relative", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_has_extension", "rask_path_has_extension", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Path_components", "rask_path_components", &[types::I64], Some(types::I64), false),
 
         // ── Raw pointer operations ────────────────────────────
         StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64, types::I64], Some(types::I64), false),
@@ -1326,6 +1275,36 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
     entries.push(StdlibEntry::simple("compiler_fence", "rask_compiler_fence", &[types::I64], None, false));
+
+    // ── f64 methods ─────────────────────────────────────────
+    // Generated from rask_stdlib::FLOAT_METHODS so the set codegen can call
+    // is exactly the set the checker accepts. Arithmetic and comparisons
+    // carry no C symbol — codegen emits instructions for those.
+    for m in rask_stdlib::FLOAT_METHODS {
+        use rask_stdlib::FloatSig;
+        let Some(c_symbol) = m.c_symbol else { continue };
+        let mir_name = leak_str(&format!("f64_{}", m.name));
+        let entry = match m.sig {
+            FloatSig::Unary => {
+                StdlibEntry::simple(mir_name, c_symbol, &[types::F64], Some(types::F64), false)
+            }
+            // powi's exponent reaches the call already converted to f64 —
+            // there's one `pow` in libm.
+            FloatSig::BinaryFloat | FloatSig::BinaryInt => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::F64, types::F64], Some(types::F64), false,
+            ),
+            // bool is i8 in the Rask ABI.
+            FloatSig::Predicate => {
+                StdlibEntry::simple(mir_name, c_symbol, &[types::F64], Some(types::I8), false)
+            }
+            // f64_to_string is declared by hand above, next to the other
+            // primitives' to_string entries.
+            FloatSig::ToString => continue,
+            // No C symbol, so unreachable — the `else` above skipped them.
+            FloatSig::Comparison | FloatSig::Compare | FloatSig::ToInt => continue,
+        };
+        entries.push(entry);
+    }
 
     // ── SIMD vector operations ──────────────────────────────
     // Float vector types: f32x4, f32x8, f64x2, f64x4
@@ -1426,4 +1405,42 @@ pub fn panicking_functions() -> HashSet<String> {
         .filter(|e| e.can_panic)
         .map(|e| e.mir_name.to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every float method the checker accepts and MIR lowers to a call has to
+    /// be callable natively. This is the test that would have caught #687:
+    /// `x.floor()` type-checked, ran on the interpreter, and died in codegen.
+    #[test]
+    fn every_float_method_with_a_c_symbol_is_dispatchable() {
+        let names: HashSet<&str> = stdlib_entries().iter().map(|e| e.mir_name).collect();
+        for m in rask_stdlib::FLOAT_METHODS {
+            if m.c_symbol.is_none() {
+                continue;
+            }
+            let mir_name = format!("f64_{}", m.name);
+            assert!(
+                names.contains(mir_name.as_str()),
+                "f64.{}() lowers to `{mir_name}` but codegen has no dispatch entry",
+                m.name
+            );
+        }
+    }
+
+    /// Two entries with the same MIR name means the second silently wins, and
+    /// the calling convention of the first is lost.
+    #[test]
+    fn dispatch_names_are_unique() {
+        let mut seen = HashSet::new();
+        for entry in stdlib_entries() {
+            assert!(
+                seen.insert(entry.mir_name),
+                "duplicate dispatch entry for `{}`",
+                entry.mir_name
+            );
+        }
+    }
 }

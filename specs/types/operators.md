@@ -96,7 +96,7 @@ trait Equal {
 |------|-------------|
 | **ORD1: Comparable trait** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
 | **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type with Comparable` |
-| **ORD3: Float exclusion** | `f32`/`f64` don't implement `Comparable` (NaN breaks totality); use `.total_cmp()` |
+| **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 
 <!-- test: skip -->
 ```rask
@@ -116,7 +116,7 @@ enum Ordering { Less, Equal, Greater }
 | Integers | Yes | Yes | Natural ordering |
 | `bool` | Yes | Yes | `false < true` |
 | `char` | Yes | Yes | Unicode scalar order |
-| `f32`, `f64` | Yes* | No | *NaN breaks reflexivity |
+| `f32`, `f64` | Yes* | Yes** | *NaN breaks reflexivity for `==`. **`compare()` is total (NaN sorts last); the operators stay IEEE |
 | Structs | Derive | Derive | All fields must implement |
 | Enums | Derive | Derive | Variant order, then payload |
 
@@ -129,10 +129,13 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 | Case | Rule | Behavior |
 |------|------|----------|
 | `NaN == NaN` | EQ3 | `false` (IEEE 754) |
-| `NaN < 1.0` | ORD3 | Compile error (floats don't implement `Comparable`) |
+| `NaN < 1.0` | ORD3 | `false` — the operator is IEEE |
+| `NaN > 1.0` | ORD3 | `false` — IEEE, *not* derived from `compare()` |
+| `NaN.compare(1.0)` | ORD3 | `Greater` — the total order puts a positive NaN last |
+| `[3.0, NaN, 1.0].sort()` | ORD3 | `[1.0, 3.0, NaN]` — total order, no lost elements. A *negative* NaN sorts first, ahead of `-inf`, per IEEE totalOrder |
 | Shift exceeding bit width | BW2 | Panic |
 | Comparison chaining | P2 | Compile error |
-| Struct with float field | ORD2 | Cannot auto-derive `Comparable`; implement manually with `.total_cmp()` |
+| Struct with float field | ORD2 | Auto-derives — the float field compares by the total order |
 
 ---
 
@@ -142,7 +145,11 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 
 **EQ3 (float semantics):** IEEE 754 compliance means `NaN == NaN` is false, breaking reflexivity. Rather than silently deviating from IEEE or forbidding equality on floats, we provide `.total_eq()` and `.total_cmp()` as explicit opt-ins for total ordering.
 
-**ORD3 (float exclusion):** Excluding floats from `Comparable` prevents subtle sorting bugs. If you need to sort floats, `.total_cmp()` makes the choice explicit.
+**ORD3 (float ordering):** Floats were originally excluded from `Comparable` on the grounds that NaN breaks totality, with a `.total_cmp()` opt-in for sorting. That reading traded one subtle bug for a louder one: `Vec<f64>.sort()`, `min`, `max` and every `T: Comparable` helper stopped working on the most numeric type in the language, and the workaround was a method name nobody would guess.
+
+Splitting the two questions costs nothing and answers both. The **operators** are IEEE — `NaN < 1.0` and `NaN > 1.0` are both `false`, which is what `F1` promises and what anyone reading `a < b` expects of floats. **`compare()` is a total order** — IEEE totalOrder, so a positive NaN sorts last and a negative NaN first — which is what a sort needs to terminate with every element still present. This is the one place where ORD1's "operators derive from `compare()`" doesn't hold, and it's deliberate: the alternative is a `>` that answers `true` for NaN, which no float user wants.
+
+`==` stays IEEE per `EQ3`, so `NaN.compare(NaN)` is `Equal` while `NaN == NaN` is `false`. That inconsistency is inherent to IEEE, not to this rule — it's the reason `total_cmp` exists in other languages as a separate method. Rask puts it in `compare()` because `compare()` has exactly one job here: order things for a sort.
 
 **P2 (no chaining):** Chained comparisons (`a < b < c`) are ambiguous in most languages. Requiring `&&` is explicit and matches user expectation.
 

@@ -81,14 +81,25 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 - `src/debug_info.rs` — DWARF debug info
 - Struct layout bug: check `layouts.rs` and `rask-mono` layout computation
 
-### rask-interp — Tree-walking interpreter (primary execution backend)
+### rask-interp — Tree-walking interpreter (the reference backend)
+
+Native is what ships (`rask run` compiles); this is the reference for *what the
+answer should be*. Its value is that it shares nothing below the AST — a bug in
+MIR lowering or in a MIR pass is invisible to anything built on MIR, and two of
+the four divergences fixed in #687/#688/#677/#698 lived exactly there.
+
 - `src/interp/` — interpreter core (expression/statement evaluation)
-- `src/stdlib/` — runtime implementations of stdlib functions
+- `src/stdlib/` — Rust implementations of the primitive layer. Shrinking: a
+  module written in Rask has its implementation in `stdlib/*.rk` instead, and a
+  Rust copy here would be the second one (see `RASK_IMPLEMENTED_TYPES`).
 - `src/value.rs` — runtime Value type
 - `src/env.rs` — variable environment / scope stack
 - `src/builtins/` — built-in function implementations
 - `src/resource.rs` — linear resource tracking at runtime
-- New stdlib function: add runtime impl in `stdlib/`, register in `rask-stdlib/src/stubs.rs`
+- New stdlib function: **write it in Rask** in `stdlib/*.rk` if it can be — both
+  backends run that source, so there's nothing to disagree. Only reach for a
+  Rust implementation here when the operation needs the machine or the OS, and
+  then mark the declaration `@native("symbol")`.
 
 ### rask-stdlib — Stdlib type definitions and stubs
 - `src/stubs.rs` — function signatures for all stdlib functions (type checker reads these)
@@ -96,7 +107,10 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 - `src/builtins.rs` — built-in operator/method registrations
 - `src/registry.rs` — type registry for stdlib lookups
 - `src/mir_metadata.rs` — MIR-level metadata for stdlib functions (used by codegen)
-- New stdlib function: add signature in `stubs.rs`, runtime in `rask-interp/src/stdlib/`
+- New stdlib function: the declaration goes in `stdlib/*.rk`, and it must say
+  where its body lives — a Rask body, `comptime func`, `@native("symbol")`, or
+  `@unimplemented`. A hollow declaration with no marker fails
+  `every_stdlib_function_says_where_its_body_lives`.
 
 ### rask-diagnostics — Error formatting
 - `src/lib.rs` — Diagnostic, Label, LabelStyle types

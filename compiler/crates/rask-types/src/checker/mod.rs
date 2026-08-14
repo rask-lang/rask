@@ -176,6 +176,9 @@ pub struct TypeChecker {
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
     pub(super) pending_int_literals: Vec<(i64, bool, Type, rask_ast::Span)>,
+    /// Method calls whose receiver was still an inference variable when solving
+    /// finished — retried after literal defaults land (`retry_deferred_methods`).
+    pub(super) deferred_methods: Vec<TypeConstraint>,
     /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
@@ -242,6 +245,7 @@ impl TypeChecker {
             multitasking_depth: 0,
             pending_casts: Vec::new(),
             pending_int_literals: Vec::new(),
+            deferred_methods: Vec::new(),
             pending_index: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
@@ -354,6 +358,10 @@ impl TypeChecker {
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
+
+        // A method call that deferred on an unsuffixed literal receiver can be
+        // resolved now that the literal has a type.
+        self.retry_deferred_methods();
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();

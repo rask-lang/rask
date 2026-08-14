@@ -191,6 +191,134 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
     )
 }
 
+/// Empty tables, for the fields a caller doesn't have. `'static`, so they
+/// satisfy any `MirContext<'a>`.
+mod empty {
+    use super::*;
+    use std::sync::OnceLock;
+
+    macro_rules! empty_of {
+        ($name:ident, $ty:ty) => {
+            pub fn $name() -> &'static $ty {
+                static V: OnceLock<$ty> = OnceLock::new();
+                V.get_or_init(Default::default)
+            }
+        };
+    }
+    empty_of!(strings, std::collections::HashSet<String>);
+    empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
+    empty_of!(node_names, HashMap<NodeId, String>);
+    empty_of!(str_map, HashMap<String, String>);
+}
+
+impl<'a> MirContext<'a> {
+    /// A context from the checker's and monomorphizer's output.
+    ///
+    /// Six call sites used to build this struct field by field — 21 fields each,
+    /// across two crates — and they drifted. The comptime evaluator passed an
+    /// empty `call_targets` for two months, because an unrelated commit needed
+    /// the struct to compile and an empty map was the quickest way there; the
+    /// effect was a `comptime { }` block lowering with method dispatch blanked
+    /// out while the same code lowered by the main pipeline had it (#425, #727).
+    ///
+    /// The five tables that come straight off `TypedProgram` are read here, so
+    /// they can't be forgotten or blanked. `node_types` and `call_targets` stay
+    /// explicit: the real pipeline passes versions merged with the
+    /// monomorphizer's instantiated bodies, and silently taking the unmerged
+    /// ones off `typed` would lose every generic instantiation.
+    ///
+    /// Everything else defaults to empty, with a `with_*` to set it. A new field
+    /// is one edit here, and no call site can miss it.
+    pub fn new(
+        typed: &'a rask_types::TypedProgram,
+        struct_layouts: &'a [StructLayout],
+        enum_layouts: &'a [EnumLayout],
+        node_types: &'a HashMap<NodeId, Type>,
+        call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+        type_names: &'a HashMap<rask_types::TypeId, String>,
+    ) -> Self {
+        Self {
+            struct_layouts,
+            enum_layouts,
+            node_types,
+            call_targets,
+            type_names,
+            // Straight off the checker — never optional.
+            mutate_self_fns: Some(&typed.mutate_self_fns),
+            trait_coercions: &typed.trait_coercions,
+            error_wraps: &typed.error_wraps,
+            fallback_keeps_shape: &typed.fallback_keeps_shape,
+            inferred_fn_ret: &typed.inferred_fn_ret,
+            // Defaults; the `with_*` below set the ones a caller has.
+            comptime_globals: empty::comptime_globals(),
+            extern_funcs: empty::strings(),
+            package_modules: empty::strings(),
+            line_map: None,
+            source_file: None,
+            trait_methods: HashMap::new(),
+            call_rewrites: empty::node_names(),
+            resource_types: empty::strings(),
+            nominal_underlying: empty::str_map(),
+            comptime_interp: None,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
+            const_slot_types: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_comptime_globals(
+        mut self,
+        globals: &'a HashMap<String, ComptimeGlobalMeta>,
+    ) -> Self {
+        self.comptime_globals = globals;
+        self
+    }
+
+    pub fn with_extern_funcs(mut self, funcs: &'a std::collections::HashSet<String>) -> Self {
+        self.extern_funcs = funcs;
+        self
+    }
+
+    pub fn with_package_modules(
+        mut self,
+        modules: &'a std::collections::HashSet<String>,
+    ) -> Self {
+        self.package_modules = modules;
+        self
+    }
+
+    pub fn with_source(mut self, path: &'a str, line_map: Option<&'a LineMap>) -> Self {
+        self.source_file = Some(path);
+        self.line_map = line_map;
+        self
+    }
+
+    pub fn with_trait_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
+        self.trait_methods = methods;
+        self
+    }
+
+    pub fn with_call_rewrites(mut self, rewrites: &'a HashMap<NodeId, String>) -> Self {
+        self.call_rewrites = rewrites;
+        self
+    }
+
+    pub fn with_resource_types(mut self, types: &'a std::collections::HashSet<String>) -> Self {
+        self.resource_types = types;
+        self
+    }
+
+    pub fn with_nominal_underlying(mut self, map: &'a HashMap<String, String>) -> Self {
+        self.nominal_underlying = map;
+        self
+    }
+
+    pub fn with_comptime_interp(mut self, interp: rask_comptime::ComptimeInterpreter) -> Self {
+        self.comptime_interp = Some(std::cell::RefCell::new(interp));
+        self
+    }
+}
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
@@ -726,7 +854,8 @@ impl<'a> MirContext<'a> {
 
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names),
+            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
+                .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
             rask_types::Callee::Free(_) => None,
         }
     }
@@ -824,6 +953,15 @@ pub struct MirLowerer<'a> {
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
     ensure_stack: Vec<BlockId>,
+    /// `for mutate` bodies currently being lowered, innermost last.
+    ///
+    /// `for mutate x in v` writes the binding back into the collection at the end
+    /// of each iteration, and `continue`/`break` reach that through dedicated
+    /// writeback blocks. Leaving the body by returning doesn't go through any
+    /// block, so the iteration's write was simply dropped — `return item` handed
+    /// back the new value and left the collection unchanged (#650). Every function
+    /// exit point drains this first, the same way it drains `ensure_stack`.
+    mutate_writebacks: Vec<MutateWriteback>,
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
@@ -1209,6 +1347,146 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
         })?;
         Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
+    }
+
+    /// Write every open `for mutate` binding back into its collection, innermost
+    /// first. Call this at any point that leaves the body without passing through
+    /// the loop's own writeback blocks — which means every function exit.
+    pub(crate) fn emit_mutate_writebacks(&mut self) {
+        for wb in self.mutate_writebacks.clone().into_iter().rev() {
+            self.emit_one_mutate_writeback(&wb);
+        }
+    }
+
+    /// LP13: a Vec element goes back by index, a Map entry by key.
+    pub(crate) fn emit_one_mutate_writeback(&mut self, wb: &MutateWriteback) {
+        let (func, args) = match wb.map_value {
+            Some(value) => (
+                "Map_set",
+                vec![
+                    MirOperand::Local(wb.collection),
+                    MirOperand::Local(wb.binding),
+                    MirOperand::Local(value),
+                ],
+            ),
+            None => (
+                "Vec_set",
+                vec![
+                    MirOperand::Local(wb.collection),
+                    MirOperand::Local(wb.index),
+                    MirOperand::Local(wb.binding),
+                ],
+            ),
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(func.to_string()),
+            args,
+        }));
+    }
+
+    /// Terminate the current block as a function return.
+    ///
+    /// One place, because there are four of them — `return`, `try`'s error path
+    /// (twice), and the implicit tail — and each one has to run the same exits:
+    /// pending `for mutate` writebacks, then the ensure chain.
+    pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
+        self.emit_mutate_writebacks();
+        if self.ensure_stack.is_empty() {
+            self.builder
+                .terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
+        } else {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
+                value,
+                cleanup_chain: self.cleanup_chain(),
+            }));
+        }
+    }
+
+    /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.
+    ///
+    /// `Owned<T>` is the only box whose slot holds a pointer to a value the
+    /// program otherwise treats as a plain `T` (OW5) — the rest of the family is
+    /// opaque, reached through `with`. So it's the only one where a store or a
+    /// read has to cross the boundary.
+    pub(crate) fn owned_payload(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
+        let (name, args) = self.generic_head(ty)?;
+        if name != "Owned" {
+            return None;
+        }
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
+            _ => None,
+        }
+    }
+
+    /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
+    ///
+    /// A scalar needs no box: it already fits the 8-byte slot, and a scalar can't
+    /// make a type recursive, so `Owned<i64>` staying transparent costs nothing.
+    /// An aggregate is the case that matters, and its pointer is also its
+    /// representation, so nothing downstream has to know it moved.
+    pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
+        if !val_ty.passed_by_address() {
+            return val;
+        }
+        let size = val_ty.size() as i64;
+        let heap = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(heap),
+            func: FunctionRef::internal("rask_alloc".to_string()),
+            args: vec![MirOperand::Constant(MirConst::Int(size))],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: heap,
+            offset: 0,
+            value: val,
+            store_size: Some(size as u32),
+        }));
+        MirOperand::Local(heap)
+    }
+
+    /// An operand as a local, spilling a constant into a temp when it isn't one.
+    pub(crate) fn as_local(&mut self, op: MirOperand) -> LocalId {
+        match op {
+            MirOperand::Local(id) => id,
+            _ => {
+                let tmp = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: tmp,
+                    rvalue: MirRValue::Use(op),
+                }));
+                tmp
+            }
+        }
+    }
+
+    /// The generation-checked address of `pool[handle]`'s data.
+    ///
+    /// `PoolCheckedAccess` means one thing: the destination holds the slot's
+    /// address. Reading a scalar element out of it is a separate, visible load.
+    /// It used to mean "address or value, work out which from the destination's
+    /// declared type", and codegen picked address every time — which for a scalar
+    /// read is a Cranelift panic, not a wrong answer (#719).
+    ///
+    /// `as_ty` is how the destination local is declared. An aggregate is declared
+    /// with its own type — that representation already *is* an address, and
+    /// declaring it `Ptr` instead loses the type for everything downstream, which
+    /// printed a `Pool<string>` element as its address. Anything that only stores
+    /// through the local, or loads a scalar out of it, uses `Ptr`.
+    pub(crate) fn pool_slot_addr(
+        &mut self,
+        pool: LocalId,
+        handle: LocalId,
+        as_ty: MirType,
+    ) -> LocalId {
+        let slot_addr = self.builder.alloc_temp(as_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
+            dst: slot_addr,
+            pool,
+            handle,
+        }));
+        slot_addr
     }
 
     /// True when `object[..]` indexes a `Pool`. Decides both the
@@ -2218,6 +2496,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_target: None,
             inline_return_taken: None,
             ensure_stack: Vec::new(),
+            mutate_writebacks: Vec::new(),
             take_self_methods,
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
@@ -3662,6 +3941,24 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         return ret_category_to_mir_type(&meta.ret_category);
     }
 
+    // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
+    // knows each one's shape. Without this they all fell through to i64, so
+    // `x.floor().to_string()` picked i64_to_string and printed a truncated
+    // integer (#687).
+    if let Some(name) = func_name.strip_prefix("f64_") {
+        if let Some(m) = rask_stdlib::float_methods::lookup(name) {
+            use rask_stdlib::FloatSig;
+            return match m.sig {
+                FloatSig::Unary | FloatSig::BinaryFloat | FloatSig::BinaryInt => MirType::F64,
+                FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
+                FloatSig::ToString => MirType::String,
+                FloatSig::ToInt => MirType::I64,
+                // Ordering is an enum; leave it to the caller's own typing.
+                FloatSig::Compare => MirType::I64,
+            };
+        }
+    }
+
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
@@ -3788,18 +4085,34 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
     None
 }
 
-fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {
+/// The method-name prefix for a receiver with no nominal name of its own.
+///
+/// The checker records `Callee::Method { recv }` for every non-inference
+/// receiver, these included, but `type_prefix` answers `None` for them — so
+/// `x.floor()` skipped the recorded answer and re-derived the same prefix from
+/// its MIR type further down the chain. This is the one mapping both ends use,
+/// so they can't disagree about it.
+///
+/// Narrow integer widths mangle to their widest sibling: codegen has `i64_*` /
+/// `u64_*` entries and narrower values ride in the same slots. That has to
+/// become per-width when `std.bits` lands — `(0 as i32).count_zeros()` is 32,
+/// not 64, so those methods can't share one symbol.
+pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
     match ty {
-        MirType::F64 | MirType::F32 => Some("f64"),
-        MirType::String => Some("string"),
-        MirType::Bool => Some("bool"),
-        MirType::Char => Some("char"),
-        // Ptr is too generic — user-defined types become Ptr in MIR,
-        // so local_type_prefix or type-checker lookup should provide the name.
-        MirType::Ptr => None,
+        Type::F32 | Type::F64 => Some("f64"),
+        Type::Bool => Some("bool"),
+        Type::Char => Some("char"),
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        // A slice dispatches like the container it came from: `parts[2..]
+        // .join(" ")` is `Vec_join`. Without this the call fell through to the
+        // name-policy table, which guesses "a two-argument `join` means Vec" —
+        // right here, and only by luck.
+        Type::Slice(_) | Type::Array { .. } => Some("Vec"),
         _ => None,
     }
 }
+
 
 /// Extract type prefix from a type annotation string.
 ///
@@ -3832,6 +4145,30 @@ fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirTyp
     match op {
         B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge | B::And | B::Or => MirType::Bool,
         _ => operand_ty.clone(),
+    }
+}
+
+/// What it takes to put a `for mutate` binding back where it came from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MutateWriteback {
+    /// The Vec or Map being iterated.
+    collection: LocalId,
+    /// Loop index, for a Vec. Ignored for a Map, which writes back by key.
+    index: LocalId,
+    /// The loop binding — the element for a Vec, the key for a Map.
+    binding: LocalId,
+    /// A Map's value binding. `Some` means this is a Map iteration.
+    map_value: Option<LocalId>,
+}
+
+impl MutateWriteback {
+    pub(crate) fn new(
+        collection: LocalId,
+        index: LocalId,
+        binding: LocalId,
+        map_value: Option<LocalId>,
+    ) -> Self {
+        Self { collection, index, binding, map_value }
     }
 }
 

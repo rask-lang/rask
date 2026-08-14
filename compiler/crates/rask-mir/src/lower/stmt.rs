@@ -320,13 +320,8 @@ impl<'a> MirLowerer<'a> {
                     self.inline_return_taken =
                         Some(returned_ty.unwrap_or(MirType::Void));
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
-                } else if self.ensure_stack.is_empty() {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
                 } else {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                        value,
-                        cleanup_chain: self.cleanup_chain(),
-                    }));
+                    self.terminate_return(value);
                 }
                 Ok(())
             }
@@ -429,23 +424,40 @@ impl<'a> MirLowerer<'a> {
                             // check comes along, which is what a write through a
                             // stale handle should hit.
                             if self.index_object_is_pool(coll) {
-                                let (base_op, base_ty) = self.lower_expr(index_base)?;
-                                if let Some((offset, fsize)) = self.field_path_offset_ty(&base_ty, &path) {
-                                    let base_local = match base_op {
-                                        MirOperand::Local(id) => id,
-                                        _ => {
-                                            let tmp = self.builder.alloc_temp(base_ty);
-                                            self.builder.push_stmt(MirStmt::dummy(
-                                                MirStmtKind::Assign {
-                                                    dst: tmp,
-                                                    rvalue: MirRValue::Use(base_op),
-                                                },
-                                            ));
-                                            tmp
-                                        }
-                                    };
+                                // Ask for the slot's address rather than lowering
+                                // `pool[h]` as an expression: for a scalar element
+                                // that reads the *value*, and storing through 42
+                                // is a segfault. Reading and writing want
+                                // different things from the same syntax, so the
+                                // write says which.
+                                let elem_ty = self
+                                    .ctx
+                                    .lookup_raw_type(index_base.id)
+                                    .map(|t| self.ctx.type_to_mir(t))
+                                    .or_else(|| self.collection_elem_of_expr(coll));
+                                let (coll_op, _) = self.lower_expr(coll)?;
+                                let (idx_op, _) = self.lower_expr(idx)?;
+                                let pool_local = self.as_local(coll_op);
+                                let handle_local = self.as_local(idx_op);
+                                let slot_addr = self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
+                                // An empty path is the whole element — offset 0,
+                                // its own width. `field_path_offset_ty` answers
+                                // for a field path and had nothing to say here, so
+                                // a scalar `pool[h] = v` fell out of this branch
+                                // entirely and landed on `Vec_set(pool, handle, v)`
+                                // — a handle used as an index, which is
+                                // `index:32 | generation:32` and lands far out of
+                                // range.
+                                let store = elem_ty.as_ref().and_then(|ty| {
+                                    if path.is_empty() {
+                                        Some((0u32, ty.size() as u32))
+                                    } else {
+                                        self.field_path_offset_ty(ty, &path)
+                                    }
+                                });
+                                if let Some((offset, fsize)) = store {
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                        addr: base_local,
+                                        addr: slot_addr,
                                         offset,
                                         value: val_op,
                                         store_size: Some(fsize),
@@ -525,6 +537,36 @@ impl<'a> MirLowerer<'a> {
                     }
                     // Index assignment: a[i] = val
                     ExprKind::Index { object, index } => {
+                        // A pool index is a handle, not a position. Falling through
+                        // to `Vec_set(pool, handle, v)` below used it as one, and a
+                        // handle is `index:32 | generation:32` — so the store landed
+                        // far outside the arena and `pool[h] = 7` segfaulted for any
+                        // element type with no field to write (#719). The field-path
+                        // case above already routed pools correctly; a bare element
+                        // never reached it.
+                        if self.index_object_is_pool(object) {
+                            let elem_ty = self
+                                .ctx
+                                .lookup_raw_type(target.id)
+                                .map(|t| self.ctx.type_to_mir(t))
+                                .or_else(|| self.collection_elem_of_expr(object));
+                            if let Some(elem_ty) = elem_ty {
+                                let (pool_op, _) = self.lower_expr(object)?;
+                                let (handle_op, _) = self.lower_expr(index)?;
+                                let pool_local = self.as_local(pool_op);
+                                let handle_local = self.as_local(handle_op);
+                                let slot_addr =
+                                    self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: slot_addr,
+                                    offset: 0,
+                                    value: val_op,
+                                    store_size: Some(elem_ty.size() as u32),
+                                }));
+                                return Ok(());
+                            }
+                        }
+
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let (idx_op, _) = self.lower_expr(index)?;
 
@@ -1889,63 +1931,35 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
+        // The writeback the body owes its collection. `continue` and `break` pay it
+        // through the blocks below; a `return` or a `try` that propagates pays it
+        // from here, because neither passes through a block (#650).
+        let writeback = super::MutateWriteback::new(
+            collection,
+            idx,
+            binding_local,
+            map_value_local,
+        );
+        if wb_block.is_some() {
+            self.mutate_writebacks.push(writeback);
+        }
         for stmt in body {
             self.lower_stmt(stmt)?;
+        }
+        if wb_block.is_some() {
+            self.mutate_writebacks.pop();
         }
         self.close_loop_body(ensure_depth, continue_target);
 
         // Writeback blocks for `for mutate`
-        // LP13: Vec uses Vec_set(vec, idx, elem), Map uses Map_set(map, key, value)
         if let Some(wb) = wb_block {
             self.builder.switch_to_block(wb);
-            if let Some(val_local) = map_value_local {
-                // Map writeback: Map_set(collection, key, value)
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(binding_local), // key (field 0)
-                        MirOperand::Local(val_local),     // value (field 1)
-                    ],
-                }));
-            } else {
-                // Vec writeback: Vec_set(collection, idx, elem)
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(binding_local),
-                    ],
-                }));
-            }
+            self.emit_one_mutate_writeback(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
         }
         if let Some(break_wb) = break_wb_block {
             self.builder.switch_to_block(break_wb);
-            if let Some(val_local) = map_value_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(binding_local),
-                        MirOperand::Local(val_local),
-                    ],
-                }));
-            } else {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(binding_local),
-                    ],
-                }));
-            }
+            self.emit_one_mutate_writeback(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
         }
 

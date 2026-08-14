@@ -90,16 +90,13 @@ const U128_METHODS: &[&str] = &[
     "to_string",
 ];
 
-const F64_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "neg",
-    "eq", "lt", "le", "gt", "ge", "compare",
-    "abs", "floor", "ceil", "round", "sqrt", "trunc", "fract",
-    "to_string", "to_int",
-    "pow", "powf", "powi",
-    "sin", "cos", "tan", "asin", "acos", "atan",
-    "ln", "log10", "log2", "exp",
-    "is_nan", "is_inf", "is_finite",
-];
+/// Float methods come from `float_methods::FLOAT_METHODS` — the checker,
+/// interpreter and codegen read that same table, so this list can't drift
+/// from what f64 actually answers to.
+fn f64_methods() -> &'static [&'static str] {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(crate::float_methods::method_names).as_slice()
+}
 
 const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
@@ -233,9 +230,12 @@ const FS_METHODS: &[&str] = &[
 
 const NET_METHODS: &[&str] = &["tcp_listen", "tcp_connect"];
 
+// No "stringify"/"stringify_pretty": std.json has one verb pair and no
+// parse/stringify family, so they were never declared in stdlib/json.rk and
+// nothing could call them. `parse` is the untyped half of `decode`, written in
+// Rask.
 const JSON_METHODS: &[&str] = &[
-    "parse", "stringify", "stringify_pretty",
-    "encode", "encode_pretty", "to_value", "decode",
+    "parse", "encode", "encode_pretty", "to_value", "decode",
 ];
 
 const TIME_METHODS: &[&str] = &["sleep"];
@@ -285,6 +285,24 @@ pub const REGISTERED_MODULES: &[&str] = &[
     "fs", "net", "json", "time", "math", "random", "os", "io", "cli",
 ];
 
+/// Types whose methods are written in Rask, in `stdlib/*.rk`, rather than
+/// natively in each backend.
+///
+/// Both backends run that source — native through `compilable_decls`, the
+/// interpreter through the same — so there is one implementation and it can't
+/// disagree with itself. A Rust implementation in `rask-interp/src/stdlib/` for
+/// one of these would be a *second* one, which is what the drift test checks.
+///
+/// `Path` was the first: 46 lines of declarations, 192 lines of C and 184 lines
+/// of Rust, for pure string manipulation that the two backends got different
+/// answers from (#688).
+pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path"];
+
+/// True when this type's methods live in Rask rather than in the backends.
+pub fn is_rask_implemented(type_name: &str) -> bool {
+    RASK_IMPLEMENTED_TYPES.contains(&type_name)
+}
+
 /// Get implemented method names for a type.
 pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
     match type_name {
@@ -292,7 +310,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "u8" | "u16" | "u32" | "u64" => UNSIGNED_INT_METHODS,
         "i128" => I128_METHODS,
         "u128" => U128_METHODS,
-        "f64" => F64_METHODS,
+        "f64" => f64_methods(),
         "bool" => BOOL_METHODS,
         "char" => CHAR_METHODS,
         "string" => STRING_METHODS,

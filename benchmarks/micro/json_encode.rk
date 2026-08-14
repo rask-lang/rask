@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Benchmark: JSON encoding through the Rask encoder in stdlib/json.rk.
+//
+// The encoder is Rask now, not C (#689) — so this measures the language on a
+// realistic string-building workload. If it's slow, that's a compiler finding,
+// not a reason to go back to a C implementation.
+
+import json
+
+func build_object(n: i64) -> JsonValue {
+    mut items = Vec.new()
+    for i in 0..n {
+        mut fields = Map.new()
+        fields.insert("id", JsonValue.Number(i.to_float()))
+        fields.insert("name", JsonValue.String("record number {i}"))
+        fields.insert("active", JsonValue.Bool(true))
+        fields.insert("score", JsonValue.Number(0.5))
+        items.push(JsonValue.Object(fields))
+    }
+    return JsonValue.Array(items)
+}
+
+benchmark "json encode 100 objects" {
+    let doc = build_object(100)
+    json.encode(doc)
+}
+
+benchmark "json encode 1000 objects" {
+    let doc = build_object(1000)
+    json.encode(doc)
+}
+
+benchmark "json build only 1000 objects" {
+    build_object(1000)
+}

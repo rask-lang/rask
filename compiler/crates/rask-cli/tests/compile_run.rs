@@ -2586,3 +2586,482 @@ fn package_diagnostic_names_the_right_file() {
         "the interpolation error should also name the second file:\n{combined}"
     );
 }
+
+// ─── Regression: issue #687 ─────────────────────────────────
+//
+// The f64 method set lived in four hand-maintained lists — checker, interpreter,
+// codegen dispatch, drift registry — and they disagreed. `x.floor()` passed the
+// checker, ran on the interpreter, and failed native codegen with "Function not
+// found: f64_floor". They all read rask_stdlib::FLOAT_METHODS now; this test
+// runs the whole primitive surface through both backends and compares.
+#[test]
+fn primitive_methods_agree_on_both_backends() {
+    let (interp_out, interp_err, interp_code) = run_capture("--interp", "primitive_methods.rk");
+    assert_eq!(interp_code, 0, "interp failed: {}", interp_err);
+    let (native_out, native_err, native_code) = run_capture("--native", "primitive_methods.rk");
+    assert_eq!(native_code, 0, "native failed: {}", native_err);
+    assert_eq!(
+        interp_out, native_out,
+        "primitive method results diverge between backends"
+    );
+    // Spot-check a few values so a backend that agrees by both being wrong
+    // still fails.
+    assert!(native_out.contains("floor 3\n"), "got: {}", native_out);
+    assert!(native_out.contains("int abs 42\n"), "got: {}", native_out);
+    assert!(native_out.contains("to_int 3\n"), "got: {}", native_out);
+}
+
+// ─── Regression: issue #677 ─────────────────────────────────
+//
+// `match r { i64 as v => …, MyErr.Bad(m) => …, MyErr.Worse => … }` on a
+// `i64 or MyErr` keyed every arm off the outer Ok/Err tag, so `Bad`'s variant
+// tag 0 collided with the Ok arm and `Worse`'s tag 1 collided with Err — the
+// error side always ran whichever arm the jump table kept last. The error
+// variants get their own switch inside the Err branch now.
+#[test]
+fn match_over_result_with_enum_error_picks_the_right_variant() {
+    let expected = "\
+describe(0) = ok 42
+describe(1) = bad oops
+describe(2) = other
+describe(3) = coded 7 seven
+catchall(0) = fine 42
+catchall(1) = some error
+catchall(2) = worse!
+catchall(3) = some error
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "match_result_enum_variants.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}: wrong match arm ran", mode);
+    }
+}
+
+// ─── Regression: issue #698 ─────────────────────────────────
+//
+// `self.last = title` in a `mutate self` method freed the caller's string. The
+// RC pass walked `locals` chained with `params`, and a parameter lives in both
+// lists, so every string parameter got two RcDecs for one RcInc. The field kept
+// pointing at the freed buffer, and the next allocation — the println
+// interpolation — wrote over it: the read-back string contained the format
+// string's own prefix.
+#[test]
+fn a_string_stored_into_a_field_outlives_the_call() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "string_field_store_lifetime.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "id=1 back=[verify the milestone] len=20\n",
+            "{}: stored string did not survive the call", mode
+        );
+    }
+}
+
+// ─── Regression: a negative literal takes its type from context ─────
+//
+// `-2.5` is `(2.5).neg()` after desugaring, so the expected type reached the
+// call and not the literal inside it. With nothing else to go on the literal
+// defaulted to f64, and `let x: f32 = -2.5` was a type error while `2.5` was
+// fine. The `neg` constraint deferred on the literal receiver and used to be
+// dropped in silence, which is why this surfaced only once deferred method
+// calls started being retried and reported (#425).
+#[test]
+fn a_negative_literal_takes_its_type_from_context() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "negative_literal_context.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "1 -1 -5 -2.5\n", "{}", mode);
+    }
+}
+
+// ─── Regression: float total order (type.operators/ORD3) ────────────
+//
+// `rask_vec_sort` compared every element as int64_t whatever the Vec held. A
+// negative float's bit pattern orders backwards against another negative, so
+// `[-1.5, -2.5]` sorted to `[-1.5, -2.5]` natively and `[-2.5, -1.5]` on the
+// interpreter. Positive floats order correctly as integers, which is why a Vec
+// of positives sorted fine and hid this.
+#[test]
+fn floats_sort_by_the_total_order() {
+    let expected = "\
+sorted -2.5 -1.5 0 3
+nan<1 false
+nan>1 false
+nan==nan false
+plain 1 2 3
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "float_total_order.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// ─── IEEE 754 conformance (type.primitives/F1) ──────────────────────
+//
+// The expected values here are what IEEE 754-2019 requires, not what the
+// compiler happened to print when this was written. Clause references are in
+// the fixture. Two bugs were live when it was first run: `Vec<f64>.sort()`
+// compared bit patterns as integers, and `f64.compare()` answered Equal for
+// every unordered or signed-zero pair natively.
+#[test]
+fn ieee754_requirements_hold_on_both_backends() {
+    // 5.11 — every NaN compares unordered with everything, itself included, so
+    // all four ordered predicates are false and `!=` is true.
+    let unordered = "\
+nan_lt false
+nan_gt false
+nan_le false
+nan_ge false
+nan_eq_self false
+nan_ne_self true
+nan_is_nan true
+negzero_eq_zero true
+";
+    // 5.10 — totalOrder separates -0 from +0 by sign and places NaN at an end,
+    // where 5.11 leaves it unordered. This is what `compare()` implements.
+    let total_order = "\
+totalorder_negzero Less
+totalorder_zero_negzero Greater
+totalorder_nan_vs_one Greater
+totalorder_one_vs_nan Less
+";
+    // 6.1 — infinity arithmetic is exact; 7.1 makes inf-inf and 0*inf invalid.
+    let infinities = "\
+inf_is_inf true
+inf_plus_inf inf
+inf_minus_inf_is_nan true
+zero_times_inf_is_nan true
+one_over_zero inf
+one_over_negzero -inf
+one_over_inf 0
+inf_is_not_finite false
+";
+    // 6.2 — a NaN operand delivers a NaN.
+    // 6.3 — (-0)+(-0) = -0, (-0)+(+0) = +0, (-0)*(+0) = -0, sqrt(-0) = -0.
+    //       Observed through 1/x, which is the only way to see a zero's sign.
+    let signs = "\
+nan_plus_one_is_nan true
+nan_times_zero_is_nan true
+negzero_plus_negzero -inf
+negzero_plus_zero inf
+negzero_times_zero -inf
+sqrt_negzero -inf
+sqrt_neg_one_is_nan true
+sqrt_inf inf
+";
+    // 5.9 — roundToIntegral passes NaN and infinity through unchanged.
+    let round_to_integral = "\
+floor_nan_is_nan true
+ceil_nan_is_nan true
+trunc_nan_is_nan true
+floor_inf inf
+ceil_inf inf
+trunc_inf inf
+";
+    // 5.10 applied: sorting keeps every element and puts the NaN at the end.
+    let sorting = "sorted -2.5 1 3 NaN\n";
+
+    let expected = format!(
+        "{unordered}{total_order}{infinities}{signs}{round_to_integral}{sorting}"
+    );
+
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "ieee754_conformance.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}: IEEE 754 conformance", mode);
+    }
+}
+
+// ─── #425: dispatch comes from the checker, not from guessing ────────
+//
+// MIR mangles a method call to `{Type}_{method}`, and the receiver's type used
+// to come from an eleven-step chain: the checker's recorded answer, then eight
+// steps of guessing — a struct field's layout, the sole stdlib type declaring
+// the method, a name-to-type policy table ("a two-argument `join` means Vec"),
+// the MIR type, a layout name. Seven are deleted. Two remain, both authoritative:
+//
+//   0_checker_recorded  what dispatch resolved to
+//   1_synthetic_local   a local MIR itself invented — a `store.lock().put(x)`
+//                       guard has no checker node at all, so lowering writes
+//                       its type down where it creates the local
+//
+// This test is what makes the deletion safe to keep: if a receiver starts
+// reaching a step that no longer exists, it fails lowering instead, and if
+// someone adds a guessing step back, the assert names it.
+#[test]
+fn method_dispatch_never_falls_back_to_guessing() {
+    const ALLOWED: &[&str] = &["0_checker_recorded", "1_synthetic_local"];
+    // Between them: primitives and floats, enums behind a `T or E`, a `.lock()`
+    // guard receiver, a multi-parameter generic with a trait bound, a comptime
+    // block, a slice receiver, and collections.
+    let files: &[&str] = &[
+        "primitive_methods.rk",
+        "ieee754_conformance.rk",
+        "float_total_order.rk",
+        "match_result_enum_variants.rk",
+        "string_field_store_lifetime.rk",
+        "negative_literal_context.rk",
+    ];
+
+    let rask = rask_binary();
+    let mut seen: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for name in files {
+        let out = Command::new(&rask)
+            .arg("compile")
+            .arg(fixture(name))
+            .arg("-o")
+            .arg(std::env::temp_dir().join(format!("rask_disp_{}", next_tmp_id())))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("RASK_TRACE_DISPATCH", "1")
+            .output()
+            .expect("failed to run rask compile");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        for line in stderr.lines() {
+            let Some(rest) = line.strip_prefix("[dispatch]   ") else { continue };
+            let Some((step, tail)) = rest.split_once(": ") else { continue };
+            seen.entry(step.to_string())
+                .or_default()
+                .push(format!("{name}: {tail}"));
+        }
+    }
+
+    assert!(
+        !seen.is_empty(),
+        "no dispatch steps recorded at all — the tally or the trace flag broke, \
+         which would make this test pass for the wrong reason"
+    );
+    let unexpected: Vec<_> = seen
+        .iter()
+        .filter(|(step, _)| !ALLOWED.contains(&step.as_str()))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "a method call resolved its receiver by guessing: {unexpected:#?}"
+    );
+}
+
+// ─── Regression: a channel pair's bindings have types ────────────────
+//
+// `Channel.buffered(n)` without an explicit `<T>` was claimed by the
+// stub-registry route to resolve_runtime_method, which has no constructor for
+// it, so the call got no return type. `mut (tx, rx) = Channel.buffered(4)` left
+// both bindings as free type variables, and `tx.clone().send(x)` failed lowering
+// outright: "method `send` on receiver of unresolved type".
+#[test]
+fn a_channel_pair_gets_its_types_from_the_constructor() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "channel_pair_types.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, "first 7\nsecond 9\n", "{}", mode);
+    }
+}
+
+// ─── Regression: issue #688, and Path as one implementation ─────────
+//
+// Path's methods live in stdlib/path.rk as ordinary Rask. Native compiles that
+// source; the interpreter is now handed the same declarations instead of running
+// its own Rust copy. There is one implementation, so the backends can't disagree
+// — which they did: `parent()` always answered none natively, and a path with an
+// extension segfaulted.
+#[test]
+fn path_behaves_the_same_on_both_backends() {
+    let expected = "\
+[/usr/local/lib/thing.txt] parent=/usr/local/lib name=thing.txt stem=thing ext=txt abs=true n=4
+[relative/path.tar.gz] parent=relative name=path.tar.gz stem=path.tar ext=gz abs=false n=2
+[bare] parent=- name=bare stem=bare ext=- abs=false n=1
+[/] parent=- name=- stem=- ext=- abs=true n=0
+[/etc] parent=/ name=etc stem=etc ext=- abs=true n=1
+[] parent=- name=- stem=- ext=- abs=false n=0
+[.bashrc] parent=- name=.bashrc stem=.bashrc ext=- abs=false n=1
+[/a/b/] parent=/a/b name=b stem=b ext=- abs=true n=2
+[a.] parent=- name=a. stem=a ext=- abs=false n=1
+with_ext: /x/y.md
+with_ext none: /x/y.md
+with_name: /x/z.md
+div abs: /abs
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "path_one_implementation.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// ─── Regression: issue #689 ─────────────────────────────────
+//
+// `json.encode(v)` on a JsonValue printed `140728691896880` natively — the
+// enum's address, because MIR sent anything that wasn't a struct, a Vec or a
+// string to `json_encode_i64`. stdlib/json.rk had a complete Rask encoder that
+// nothing called. `JsonValue` implements `Displayable` through it now, and
+// `json.encode` routes a JsonValue there, so both backends run the same code.
+#[test]
+fn json_value_encodes_the_same_on_both_backends() {
+    // Raw string: the JSON text itself contains quotes and a backslash escape.
+    let expected = concat!(
+        r#"str: "he\"llo""#, "\n",
+        "num: 42.5\n",
+        "arr: [1,true,null]\n",
+        r#"interp: "he\"llo""#, "\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_value_encoding.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// One encoder, with no help from the call site.
+//
+// The fixture above calls `v.to_string()` itself, which is what made the
+// encoder reachable — so it passed while `json.encode` on its own was broken.
+// Two bugs hid behind that:
+//
+//   native — `Function not found: JsonValue_to_string`. Lowering named the
+//   body; reachability, the pass that decides what gets compiled, never heard
+//   the name. Reachability names it now and lowering reads the answer.
+//
+//   interp — right output, wrong code. `json.encode` ran a Rust encoder inside
+//   rask-interp, a second implementation of this same output, and the two
+//   disagreed on Map key order: the Rust one walks the insertion-ordered
+//   backing store while native walks seeded order (determinism/D7).
+// `json.encode_pretty` exists at all, and runs the Rask printer on both backends.
+//
+// It's in specs/stdlib/json.md and both backends had a pretty printer, but nothing
+// declared it in `extend json`, so no program could call it (#736). Routed the way
+// `encode` is: reachability names the Rask body, lowering reads the name, and the
+// interpreter calls the same body instead of its own Rust copy.
+#[test]
+fn json_encode_pretty_indents_the_same_on_both_backends() {
+    let expected = concat!(
+        "[\n",
+        "  {\n",
+        "    \"list\": [\n",
+        "      1,\n",
+        "      \"two\"\n",
+        "    ]\n",
+        "  },\n",
+        "  null,\n",
+        "  true\n",
+        "]\n",
+        "[]\n",
+        "2.5\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_encode_pretty.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `Owned<T>` actually allocates, so a recursive type works.
+//
+// `own` was a no-op — the keyword left no trace in the AST outside closures, and
+// nothing downstream boxed anything. Layout gives an `Owned<T>` slot 8 bytes, so a
+// 16-byte enum stored into a payload declared `Owned<Tree>` wrote across the next
+// payload, and the recursive read used the first child's tag as an address (#705).
+#[test]
+fn a_recursive_type_can_be_built_with_owned() {
+    let expected = concat!(
+        "total=15 (expect 15)\n",
+        "depth=3 (expect 3)\n",
+        "wrapped=5 (expect 5)\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "owned_recursive_enum.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `for mutate` writes back however the body ends.
+//
+// `continue` and `break` reached the writeback through dedicated blocks; leaving
+// by returning didn't go through anything, so that iteration's write was dropped
+// — `return item` handed back the new value and left the collection untouched.
+// `try` propagating out of the body is a return too (#650).
+#[test]
+fn a_return_out_of_for_mutate_still_writes_back() {
+    let expected = concat!(
+        "return: 101 101 2\n",
+        "break: 101 101 2\n",
+        "try: nope 101 2\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "for_mutate_return_writeback.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// Pool elements that aren't structs, read and written.
+//
+// `pool[h]` on a scalar didn't produce a wrong answer — it killed native codegen
+// with a Cranelift panic, because `PoolCheckedAccess` meant "address or value,
+// work it out from the destination's type" and codegen always picked address.
+// `pool[h] = v` with no field to write missed the pool branch entirely and became
+// `Vec_set(pool, handle, v)`, using a packed handle as a position (#719).
+#[test]
+fn a_pool_element_can_be_a_scalar() {
+    let expected = concat!(
+        "42 -7\n", "100 -7\n",
+        "2.5\n", "-0.75\n",
+        "true\n", "false\n",
+        "alpha\n",
+        "10 one\n", "55 one\n",
+        "93\n", "-3\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "pool_scalar_element.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// A program type reusing a stdlib type's name keeps its own method.
+//
+// rask#258 was this on native. It came back on the interpreter once the
+// interpreter started running `stdlib/*.rk` as well: registration is
+// last-writer-wins and the stdlib was going in last, so the stdlib enum's
+// `message` overwrote the user struct's and ran `match self` against it.
+// tests/suite/t56_shadowed_type_names.rk covers it too, but only
+// tests/differential.sh runs that, and this needs to fail under `cargo test`.
+#[test]
+fn a_program_type_may_reuse_a_stdlib_name() {
+    let expected = "user: boom\nio: /tmp/x\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "program_shadows_stdlib_name.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `.clone()` where the receiver's type isn't known yet.
+//
+// The checker's `clone` arm short-circuits: a clone returns its receiver's type,
+// so unifying the two settles inference and it answers there. That's before the
+// code that files a deferred constraint for a still-unresolved receiver, so an
+// unresolved one got no dispatch target and nothing came back to give it one.
+// A closure parameter in a fused iterator chain is exactly that case — its type
+// comes from the chain's element type — and lowering failed with `method `clone`
+// on receiver of unresolved type`. Every other method works, because every other
+// method goes through the deferred path.
+#[test]
+fn clone_dispatches_when_the_receiver_type_arrives_late() {
+    let expected = "2 one 2\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "clone_in_fused_chain.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+#[test]
+fn json_encode_uses_the_rask_encoder_on_both_backends() {
+    let expected = concat!(r#"["a\"b",1,2.5,false,null,[7]]"#, "\n");
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_encode_one_encoder.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

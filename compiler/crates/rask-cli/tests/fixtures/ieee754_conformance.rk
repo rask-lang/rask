@@ -1,0 +1,101 @@
+// IEEE 754 conformance — `type.primitives/F1` claims full compliance, so this
+// checks the parts of the standard a language can actually get wrong, on both
+// backends, against the answers IEEE requires rather than against whatever the
+// compiler currently prints.
+//
+// Clause references are to IEEE 754-2019.
+//
+//   5.11 comparison predicates — "Every NaN shall compare unordered with
+//        everything, including itself." Four mutually exclusive relations
+//        exist: less than, equal, greater than, unordered; the last arises
+//        whenever an operand is NaN. `x == x` being false is the portable NaN
+//        test, so `!=` must answer true there.
+//   5.10 totalOrder — a total order over all canonical members. It separates
+//        -0 and +0 by sign (-0 < +0) even though they compare equal under 5.11,
+//        and it places NaN at an end rather than leaving it unordered. This is
+//        what `compare()` implements (type.operators/ORD3); the operators stay
+//        5.11.
+//   6.1  infinity arithmetic — exact, signalling nothing except the invalid
+//        operations in 7.1: inf - inf and 0 * inf are invalid and give NaN,
+//        while inf + inf is just inf.
+//   6.2  NaN propagation — an operation with a NaN operand delivers a NaN.
+//   6.3  the sign bit — (-0) + (-0) = -0, (-0) + (+0) = +0, (-0) * (+0) = -0,
+//        and sqrt(-0) = -0, the one case where a "negative" square root is
+//        defined. 1/x distinguishes the two zeros, which is how this file
+//        observes a sign that printing would hide.
+//   5.9  roundToIntegral — floor/ceil/trunc of a NaN is a NaN, and of an
+//        infinity is that infinity.
+
+func ord_name(o: Ordering) -> string {
+    match o {
+        Ordering.Less => return "Less",
+        Ordering.Greater => return "Greater",
+        _ => return "Equal",
+    }
+}
+
+func main() {
+    let nan = f64.NAN
+    let inf = f64.INFINITY
+    let one = 1.0
+    let neg_zero = (0.0).neg()
+
+    // ── 5.11: every NaN compares unordered with everything, itself included
+    println("nan_lt {nan < one}")
+    println("nan_gt {nan > one}")
+    println("nan_le {nan <= one}")
+    println("nan_ge {nan >= one}")
+    println("nan_eq_self {nan == nan}")
+    println("nan_ne_self {nan != nan}")
+    println("nan_is_nan {nan.is_nan()}")
+
+    // ── 5.11: the two zeros compare equal
+    println("negzero_eq_zero {neg_zero == 0.0}")
+
+    // ── 5.10: totalOrder separates them by sign, and orders NaN
+    println("totalorder_negzero {ord_name(neg_zero.compare(0.0))}")
+    println("totalorder_zero_negzero {ord_name((0.0).compare(neg_zero))}")
+    println("totalorder_nan_vs_one {ord_name(nan.compare(one))}")
+    println("totalorder_one_vs_nan {ord_name(one.compare(nan))}")
+
+    // ── 6.1: infinity arithmetic, and the two invalid operations from 7.1
+    println("inf_is_inf {inf.is_inf()}")
+    println("inf_plus_inf {inf + inf}")
+    println("inf_minus_inf_is_nan {(inf - inf).is_nan()}")
+    println("zero_times_inf_is_nan {(0.0 * inf).is_nan()}")
+    println("one_over_zero {1.0 / 0.0}")
+    println("one_over_negzero {1.0 / neg_zero}")
+    println("one_over_inf {1.0 / inf}")
+    println("inf_is_not_finite {inf.is_finite()}")
+
+    // ── 6.2: a NaN operand delivers a NaN
+    println("nan_plus_one_is_nan {(nan + 1.0).is_nan()}")
+    println("nan_times_zero_is_nan {(nan * 0.0).is_nan()}")
+
+    // ── 6.3: the sign of a zero result, observed through 1/x
+    println("negzero_plus_negzero {1.0 / (neg_zero + neg_zero)}")
+    println("negzero_plus_zero {1.0 / (neg_zero + 0.0)}")
+    println("negzero_times_zero {1.0 / (neg_zero * 0.0)}")
+    println("sqrt_negzero {1.0 / neg_zero.sqrt()}")
+    println("sqrt_neg_one_is_nan {(0.0 - 1.0).sqrt().is_nan()}")
+    println("sqrt_inf {inf.sqrt()}")
+
+    // ── 5.9: roundToIntegral on the non-finite values
+    println("floor_nan_is_nan {nan.floor().is_nan()}")
+    println("ceil_nan_is_nan {nan.ceil().is_nan()}")
+    println("trunc_nan_is_nan {nan.trunc().is_nan()}")
+    println("floor_inf {inf.floor()}")
+    println("ceil_inf {inf.ceil()}")
+    println("trunc_inf {inf.trunc()}")
+
+    // ── 5.10 applied: a sort keyed on the total order keeps every element and
+    // puts the NaN at the end. Under 5.11 comparisons a NaN is unordered with
+    // everything, so a sort built on `<` stalls wherever it sits.
+    mut v = Vec.new()
+    v.push(3.0)
+    v.push(nan)
+    v.push(0.0 - 2.5)
+    v.push(1.0)
+    v.sort()
+    println("sorted {v[0]} {v[1]} {v[2]} {v[3]}")
+}

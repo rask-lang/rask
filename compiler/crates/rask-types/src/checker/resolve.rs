@@ -79,6 +79,11 @@ impl TypeChecker {
         Self::is_homogeneous_arithmetic(method) || Self::is_homogeneous_comparison(method)
     }
 
+    /// Zero-argument operators whose result has the receiver's type.
+    fn is_result_preserving_unary(method: &str) -> bool {
+        matches!(method, "neg" | "abs" | "bit_not")
+    }
+
     /// A concrete number. Deliberately excludes nominal types with operator
     /// impls: `5 + meters` should still be rejected, not quietly given the
     /// newtype's type.
@@ -473,7 +478,36 @@ impl TypeChecker {
         }
 
         if method == "clone" && args.is_empty() {
-            return self.unify(&ty, &ret, span);
+            let progress = self.unify(&ty, &ret, span)?;
+            // A clone's result is its receiver's type, so unifying settles both.
+            // But this arm answers before the `Var` handling further down, which
+            // is what normally files a deferred constraint and records the
+            // dispatch target once inference settles — so an unresolved receiver
+            // got no target and nothing came back to give it one. That's why
+            // `.map(|r| r.view.clone())` in a fused iterator chain type-checked
+            // and then left MIR with nothing to dispatch on: the closure's
+            // parameter type isn't known until the chain's element type is
+            // (#425). Record it here when unifying settled the type, hand it to
+            // the post-defaulting retry when it didn't.
+            if matches!(ty, Type::Var(_)) {
+                let settled = self.ctx.apply(&ty);
+                if matches!(settled, Type::Var(_) | Type::Error) {
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty,
+                        method,
+                        args,
+                        ret,
+                        span,
+                        call_node,
+                    });
+                } else if let Some(node) = call_node {
+                    self.call_targets.insert(
+                        node,
+                        Callee::Method { recv: settled, method: method.clone() },
+                    );
+                }
+            }
+            return Ok(progress);
         }
 
         // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have
@@ -509,6 +543,30 @@ impl TypeChecker {
                 // to `n`, so the result type stayed open forever and the binding
                 // it fed got reported as un-inferrable. Take the type from the
                 // argument — that's where the operand's type actually is (#630).
+                // A result-preserving operator with no argument — `-1.0` is
+                // `(1.0).neg()` after desugaring. There's no argument to take a
+                // type from, but the result has the receiver's type by
+                // definition, so tying them together lets the *call site* settle
+                // both: `let x: f32 = -2.5` makes the literal f32. Without this
+                // the literal defaulted to f64 before the annotation was
+                // consulted, and every negative float literal in an f32 position
+                // was a type error while the positive one was fine.
+                if self.ctx.literal_vars.contains_key(id)
+                    && args.is_empty()
+                    && Self::is_result_preserving_unary(&method)
+                {
+                    let progress = self.unify(&ret, &ty, span)?;
+                    // Tying the two together settles the *type*, but the
+                    // receiver is still a literal variable, so there's no
+                    // concrete type to record a dispatch target against. Hand it
+                    // to the post-defaulting retry, which has one — otherwise
+                    // `n.abs()` type-checks and MIR still has to guess its
+                    // receiver (#425).
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty, method, args, ret, span, call_node,
+                    });
+                    return Ok(progress);
+                }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
                 {
@@ -884,6 +942,19 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
+            // `Channel.buffered(n)` / `.unbuffered()` with no explicit `<T>`.
+            // `Channel` is declared in async.rk, so the stub-registry arm below
+            // claimed it and routed it to resolve_runtime_method, which has no
+            // constructor for it — the call got no return type at all.
+            // `mut (tx, rx) = Channel.buffered(4)` therefore left both bindings
+            // as free type variables (`let probe: i64 = tx` type-checked), and
+            // every `send`/`receive`/`clone` on them had to be resolved by MIR
+            // guessing from the method name (#425). The concurrency resolver
+            // mints a fresh inner type when it gets no args, which is what's
+            // wanted: the element type is pinned by the first `send`.
+            Type::UnresolvedNamed(name) if name == "Channel" => {
+                self.resolve_concurrency_generic_method("Channel", &[], &method, &args, &ret, span)
+            }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
             Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some()
@@ -1082,7 +1153,7 @@ impl TypeChecker {
                 }
                 "compare" if args.len() == 1 => {
                     self.unify(&args[0], &Type::Bool, span)?;
-                    self.unify(&ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                    self.unify(&ret, &self.ordering_type(), span)
                 }
                 "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
@@ -1439,7 +1510,7 @@ impl TypeChecker {
             }
             "compare" if args.len() == 1 => {
                 self.unify(&args[0], &Type::Char, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             // CH3: runtime construction returns `char?` — `none` on invalid scalar.
             "from_u32" if args.len() == 1 => {
@@ -1521,7 +1592,7 @@ impl TypeChecker {
             // name at all.
             "compare" if args.len() == 1 => {
                 self.unify(&args[0], &Type::String, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             // A method `string` doesn't have is an error here, the way it
             // already was for `char`. Answering `Ok(false)` accepted any name
@@ -2925,7 +2996,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let val_ty = Self::atomic_value_type(type_name);
         let self_ty = Type::UnresolvedNamed(type_name.to_string());
-        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+        let ordering_ty = self.ordering_type();
 
         match method {
             // ── Construction ────────────────────────────────
@@ -3202,7 +3273,7 @@ impl TypeChecker {
             }
             "compare" if args.len() == 1 => {
                 let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
+                self.unify(ret, &self.ordering_type(), span)
             }
             "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
             // std.bits B1 — bit inspection and permutation. All of these answer
@@ -3239,40 +3310,47 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        match method {
-            "add" | "sub" | "mul" | "div" | "rem"
-            | "pow" | "powf" if args.len() == 1 => {
+        use rask_stdlib::FloatSig;
+
+        let no_such = || TypeError::NoSuchMethod {
+            ty: ty.clone(),
+            method: method.to_string(),
+            span,
+        };
+        let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
+
+        // Arity comes from the signature shape; a call with the wrong count
+        // isn't this method.
+        let wants_arg = matches!(
+            entry.sig,
+            FloatSig::BinaryFloat | FloatSig::BinaryInt | FloatSig::Comparison | FloatSig::Compare
+        );
+        if wants_arg != (args.len() == 1) {
+            return Err(no_such());
+        }
+
+        match entry.sig {
+            FloatSig::Unary => self.unify(ret, ty, span),
+            FloatSig::BinaryFloat => {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
-            "powi" if args.len() == 1 => {
+            FloatSig::BinaryInt => {
                 let _ = self.unify(&args[0], &Type::I32, span);
                 self.unify(ret, ty, span)
             }
-            "neg" | "abs" | "floor" | "ceil" | "round" | "sqrt"
-            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-            | "ln" | "log10" | "log2" | "exp" | "trunc" | "fract"
-                if args.is_empty() =>
-            {
-                self.unify(ret, ty, span)
-            }
-            "is_nan" | "is_inf" | "is_finite" if args.is_empty() => {
+            FloatSig::Predicate | FloatSig::Comparison => {
+                if entry.sig == FloatSig::Comparison {
+                    let _ = self.unify(&args[0], ty, span);
+                }
                 self.unify(ret, &Type::Bool, span)
             }
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+            FloatSig::Compare => {
                 let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::Bool, span)
+                self.unify(ret, &self.ordering_type(), span)
             }
-            "compare" if args.len() == 1 => {
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::UnresolvedNamed("Ordering".to_string()), span)
-            }
-            "to_int" if args.is_empty() => self.unify(ret, &Type::I64, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: ty.clone(),
-                method: method.to_string(),
-                span,
-            }),
+            FloatSig::ToString => self.unify(ret, &Type::String, span),
+            FloatSig::ToInt => self.unify(ret, &Type::I64, span),
         }
     }
 }

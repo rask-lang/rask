@@ -360,7 +360,11 @@ impl Interpreter {
             (Value::Int(a, _), Value::Int(b, _)) => Some(a.cmp(b)),
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
-            (Value::Float(a, _), Value::Float(b, _)) => a.partial_cmp(b),
+            // The float total order (type.operators/ORD3): NaN sorts last rather
+            // than comparing Equal to everything, which left a NaN in a Vec
+            // stopping the sort wherever it happened to sit. The comparison
+            // *operators* stay IEEE — that's `call_float_method`, not this.
+            (Value::Float(a, _), Value::Float(b, _)) => Some(a.total_cmp(b)),
             // `s <= s` hands the same Arc in twice; locking it a second time
             // deadlocks, so answer from identity first.
             (Value::String(a), Value::String(b)) => {

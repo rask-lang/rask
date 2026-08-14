@@ -6,18 +6,23 @@ struct random { }
 
 extend random {
     /// Generate a random signed 64-bit integer.
+    @native("rask_random_i64")
     public func i64() -> i64 { }
 
     /// Generate a random f64 in [0, 1).
+    @native("rask_random_f64")
     public func f64() -> f64 { }
 
     /// Generate a random f32 in [0, 1).
+    @native("rask_random_f32")
     public func f32() -> f64 { }
 
     /// Generate a random boolean.
+    @native("rask_random_bool")
     public func bool() -> bool { }
 
     /// Generate a random integer in [low, high).
+    @native("rask_random_range")
     public func range(low: i64, high: i64) -> i64 { }
 }
 
@@ -26,32 +31,42 @@ public struct Random { }
 
 extend Random {
     /// Create a new RNG with a random seed.
+    @native("rask_rng_new")
     public func new() -> Random { }
 
     /// Create an RNG with a specific seed (deterministic).
+    @native("rask_rng_from_seed")
     public func from_seed(seed: i64) -> Random { }
 
     /// Generate a random unsigned 64-bit integer.
+    @native("rask_rng_u64")
     public func u64(mutate self) -> i64 { }
 
     /// Generate a random signed 64-bit integer.
+    @native("rask_rng_i64")
     public func i64(mutate self) -> i64 { }
 
     /// Generate a random f64 in [0, 1).
+    @native("rask_rng_f64")
     public func f64(mutate self) -> f64 { }
 
     /// Generate a random f32 in [0, 1).
+    @native("rask_rng_f32")
     public func f32(mutate self) -> f64 { }
 
     /// Generate a random boolean.
+    @native("rask_rng_bool")
     public func bool(mutate self) -> bool { }
 
     /// Generate a random integer in [low, high).
+    @native("rask_rng_range")
     public func range(mutate self, low: i64, high: i64) -> i64 { }
 
     /// Shuffle a vector in place.
+    @native
     public func shuffle(mutate self, vec: Vec<T>) { }
 
     /// Pick a random element from a vector.
+    @native
     public func choice(mutate self, vec: Vec<T>) -> Option<T> { }
 }

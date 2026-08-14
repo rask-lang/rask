@@ -1,0 +1,19 @@
+// json.encode on a JsonValue printed the enum's own address natively (#689): MIR
+// routed anything that wasn't a struct, a Vec or a string to `json_encode_i64`.
+// The encoder was in stdlib/json.rk all along, in Rask, unreached —
+// `stringify_value` and the escape and number helpers under it.
+import json
+
+func main() {
+  let v = JsonValue.String("he\"llo")
+  println("str: {v.to_string()}")
+  let n = JsonValue.Number(42.5)
+  println("num: {n.to_string()}")
+  mut arr = Vec.new()
+  arr.push(JsonValue.Number(1.0))
+  arr.push(JsonValue.Bool(true))
+  arr.push(JsonValue.Null)
+  let a = JsonValue.Array(arr)
+  println("arr: {a.to_string()}")
+  println("interp: {v}")
+}

@@ -34,11 +34,8 @@ const ESCAPE_FUNCTIONS: &[&str] = &[
 pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
     let mut escaped = HashSet::new();
 
-    let string_locals: HashSet<LocalId> = func.locals.iter()
-        .chain(func.params.iter())
-        .filter(|l| l.ty == MirType::String)
-        .map(|l| l.id)
-        .collect();
+    let string_locals: HashSet<LocalId> =
+        func.locals_of_type(&MirType::String).into_iter().collect();
 
     if string_locals.is_empty() {
         return escaped;

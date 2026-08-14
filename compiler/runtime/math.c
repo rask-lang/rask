@@ -29,6 +29,9 @@ double math_log10(double x) { return log10(x); }
 // Multi-argument
 double math_hypot(double x, double y) { return hypot(x, y); }
 
+// f64.fract() — the signed fractional part. No libm symbol for it.
+double math_fract(double x) { return x - trunc(x); }
+
 double math_clamp(double x, double min, double max) {
     // NaN propagates rather than collapsing to a bound.
     if (isnan(x)) return x;

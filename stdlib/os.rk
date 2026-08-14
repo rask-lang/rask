@@ -5,36 +5,47 @@ struct os { }
 
 extend os {
     /// Get an environment variable by name.
+    @native("rask_os_env")
     public func env(name: string) -> Option<string> { }
 
     /// Get an environment variable or a default value.
+    @native("rask_os_env_or")
     public func env_or(name: string, default: string) -> string { }
 
     /// Set an environment variable.
+    @native
     public func set_env(name: string, value: string) { }
 
     /// Remove an environment variable.
+    @native
     public func remove_env(name: string) { }
 
     /// Get all environment variables as key-value pairs.
+    @native("rask_os_env_vars")
     public func env_vars() -> Vec<(string, string)> { }
 
     /// Get command-line arguments.
+    @native
     public func args() -> Vec<string> { }
 
     /// Exit the process with a status code.
+    @native
     public func exit(code: i64) { }
 
     /// Get the current process ID.
+    @native("rask_os_pid")
     public func pid() -> i64 { }
 
     /// Get the operating system name.
+    @native
     public func platform() -> string { }
 
     /// Get the CPU architecture.
+    @native
     public func arch() -> string { }
 
     /// Register a signal handler. Returns a channel receiver for signals.
+    @native
     public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError { }
 }
 
@@ -50,33 +61,43 @@ public struct Command { }
 
 extend Command {
     /// Create a new command for the given program.
+    @native
     public func new(program: string) -> Command { }
 
     /// Add a single argument.
+    @native
     public func arg(self, arg: string) -> Command { }
 
     /// Add multiple arguments.
+    @native
     public func args(self, args: Vec<string>) -> Command { }
 
     /// Set an environment variable for the child process.
+    @native("rask_os_env")
     public func env(self, key: string, value: string) -> Command { }
 
     /// Set the working directory.
+    @native
     public func working_dir(take self, dir: string) -> Command { }
 
     /// Configure stdin.
+    @native
     public func stdin(self, cfg: Stdio) -> Command { }
 
     /// Configure stdout.
+    @native
     public func stdout(self, cfg: Stdio) -> Command { }
 
     /// Configure stderr.
+    @native
     public func stderr(self, cfg: Stdio) -> Command { }
 
     /// Run command to completion and capture output.
+    @native
     public func run(self) -> Output or IoError { }
 
     /// Spawn command as a background process.
+    @native("rask_green_closure_spawn")
     public func spawn(self) -> Process or IoError { }
 }
 
@@ -89,6 +110,7 @@ public struct Output {
 
 extend Output {
     /// Check if the process exited successfully (status == 0).
+    @native
     public func success(self) -> bool { }
 }
 

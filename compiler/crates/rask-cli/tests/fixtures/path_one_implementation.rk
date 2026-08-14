@@ -1,0 +1,39 @@
+// Path is written in Rask, in stdlib/path.rk, and both backends run that source.
+// It used to be three implementations of pure string manipulation — 46 lines of
+// declarations, 192 lines of C, 184 lines of Rust — which disagreed: `parent()`
+// answered none natively (#688) and this whole file segfaulted.
+//
+// The edge cases are the ones the three versions differed on: a root path, a
+// trailing slash, a leading-dot name, a trailing dot, an empty path.
+import path
+
+func opt(v: string?) -> string {
+  if v? as x { return x }
+  return "-"
+}
+
+func popt(v: Path?) -> string {
+  if v? as x { return x.as_string() }
+  return "-"
+}
+
+func probe(s: string) {
+  let p = Path.from(s)
+  println("[{s}] parent={popt(p.parent())} name={opt(p.file_name())} stem={opt(p.stem())} ext={opt(p.extension())} abs={p.is_absolute()} n={p.components().len()}")
+}
+
+func main() {
+  probe("/usr/local/lib/thing.txt")
+  probe("relative/path.tar.gz")
+  probe("bare")
+  probe("/")
+  probe("/etc")
+  probe("")
+  probe(".bashrc")
+  probe("/a/b/")
+  probe("a.")
+  println("with_ext: {Path.from(\"/x/y.txt\").with_extension(\"md\").as_string()}")
+  println("with_ext none: {Path.from(\"/x/y\").with_extension(\"md\").as_string()}")
+  println("with_name: {Path.from(\"/x/y.txt\").with_file_name(\"z.md\").as_string()}")
+  println("div abs: {(Path.from(\"/x\") / \"/abs\").as_string()}")
+}

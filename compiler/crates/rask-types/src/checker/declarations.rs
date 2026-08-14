@@ -688,7 +688,7 @@ impl TypeChecker {
                     if !methods.iter().any(|m| m.name == "compare")
                         && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
                     {
-                        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+                        let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
                             name: "compare".to_string(),
@@ -794,7 +794,7 @@ impl TypeChecker {
                     if !methods.iter().any(|m| m.name == "compare")
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "compare"))
                     {
-                        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+                        let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
                             name: "compare".to_string(),

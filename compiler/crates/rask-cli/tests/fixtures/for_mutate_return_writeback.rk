@@ -1,0 +1,72 @@
+// `for mutate x in v` writes the binding back at the end of each iteration.
+// `continue` and `break` reach that through dedicated writeback blocks; leaving
+// by returning didn't go through anything, so that iteration's write was dropped
+// (#650). `try` propagating out of the body is a return too, and had the same
+// hole.
+
+func bump_first(mutate v: Vec<i64>) -> i64 {
+  for mutate item in v {
+    item = item + 100
+    return item
+  }
+  return -1
+}
+
+func bump_first_break(mutate v: Vec<i64>) -> i64 {
+  mut saw = -1
+  for mutate item in v {
+    item = item + 100
+    saw = item
+    break
+  }
+  return saw
+}
+
+enum Nope {
+  Bad(string)
+}
+
+extend Nope {
+  func message(self) -> string {
+    match self {
+      Nope.Bad(m) => return m
+    }
+  }
+}
+
+func fails() -> i64 or Nope {
+  return Nope.Bad("nope")
+}
+
+// `try` inside the body propagates by returning.
+func bump_then_try(mutate v: Vec<i64>) -> i64 or Nope {
+  for mutate item in v {
+    item = item + 100
+    let n = try fails()
+    return n
+  }
+  return -1
+}
+
+func main() {
+  mut a: Vec<i64> = Vec.new()
+  a.push(1)
+  a.push(2)
+  let ra = bump_first(mutate a)
+  println("return: {ra} {a[0]} {a[1]}")
+
+  mut b: Vec<i64> = Vec.new()
+  b.push(1)
+  b.push(2)
+  let rb = bump_first_break(mutate b)
+  println("break: {rb} {b[0]} {b[1]}")
+
+  mut c: Vec<i64> = Vec.new()
+  c.push(1)
+  c.push(2)
+  let rc = bump_then_try(mutate c) catch e => {
+    println("try: {e.message()} {c[0]} {c[1]}")
+    return
+  }
+  println("try: unreachable {rc}")
+}

@@ -243,7 +243,58 @@ impl Interpreter {
         }
     }
 
+    /// A method call on a value.
+    ///
+    /// The Rust implementations below cover the primitive layer. When none of
+    /// them recognises the method, the answer is a Rask implementation — from
+    /// `stdlib/*.rk` or from user code — rather than an error. Those Rust arms
+    /// used to be walls: `JsonValue.to_string`, written in Rask and working
+    /// natively, was unreachable on the interpreter however the source read
+    /// (#689). One fallback here covers every type, so migrating a module to
+    /// Rask needs no interpreter change at all.
     pub(super) fn call_method(
+        &mut self,
+        receiver: Value,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match self.call_primitive_method(receiver.clone(), method, args.clone()) {
+            Err(RuntimeError::NoSuchMethod { ty, method: m }) => {
+                match Self::nominal_type_name(&receiver) {
+                    // Report the primitive layer's error, not the lookup's — it
+                    // names the receiver type the user wrote.
+                    Some(name) => self
+                        .call_rask_method(&name, method, receiver, args)
+                        .map_err(|e| match e {
+                            RuntimeError::NoSuchMethod { .. } => {
+                                RuntimeError::NoSuchMethod { ty, method: m }
+                            }
+                            other => other,
+                        }),
+                    None => Err(RuntimeError::NoSuchMethod { ty, method: m }),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// The nominal type a value belongs to, for looking up its Rask methods.
+    /// `Value::type_name` answers "struct"/"enum", which no method table is
+    /// keyed by.
+    fn nominal_type_name(v: &Value) -> Option<String> {
+        Some(match v {
+            Value::Struct(s) => s.lock().unwrap().name.clone(),
+            Value::Enum { name, .. } => name.clone(),
+            Value::Duration(_) => "Duration".to_string(),
+            Value::Instant(_) => "Instant".to_string(),
+            Value::File(_) => "File".to_string(),
+            Value::TcpListener(_) => "TcpListener".to_string(),
+            Value::TcpConnection(_) => "TcpConnection".to_string(),
+            _ => return None,
+        })
+    }
+
+    fn call_primitive_method(
         &mut self,
         receiver: Value,
         method: &str,
@@ -259,10 +310,6 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "Metadata" => {
                 let guard = s.lock().unwrap();
                 self.call_metadata_method(&guard.fields, method)
-            }
-            Value::Struct(ref s) if s.lock().unwrap().name == "Path" => {
-                let guard = s.lock().unwrap();
-                self.call_path_instance_method(&guard.fields, method, args)
             }
             Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
                 let guard = s.lock().unwrap();
@@ -475,6 +522,60 @@ impl Interpreter {
         }
     }
 
+
+    /// Call a method whose body is Rask, from `stdlib/*.rk` or user code.
+    ///
+    /// The Rust implementations in `stdlib/` cover the primitive layer. When one
+    /// doesn't recognise a method, the answer is the Rask implementation rather
+    /// than an error — that's what makes a module written in Rask reachable from
+    /// the interpreter instead of shadowed by its Rust twin.
+    pub(crate) fn call_rask_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        receiver: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let Some(func) = self
+            .methods
+            .get(type_name)
+            .and_then(|ms| ms.get(method))
+            .cloned()
+            .filter(|f| !f.body.is_empty())
+        else {
+            return Err(RuntimeError::NoSuchMethod {
+                ty: type_name.to_string(),
+                method: method.to_string(),
+            });
+        };
+        let mut all = vec![receiver];
+        all.extend(args);
+        self.call_function(&func, all).map_err(|d| d.error)
+    }
+
+    /// Call a Rask `extend`-block function that takes no `self` —
+    /// `json.parse(text)`, and anything else where the Rust layer wants the
+    /// Rask body rather than a second copy of it.
+    pub(crate) fn call_rask_static(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let Some(func) = self
+            .methods
+            .get(type_name)
+            .and_then(|ms| ms.get(method))
+            .cloned()
+            .filter(|f| !f.body.is_empty())
+        else {
+            return Err(RuntimeError::NoSuchMethod {
+                ty: type_name.to_string(),
+                method: method.to_string(),
+            });
+        };
+        self.call_function(&func, args).map_err(|d| d.error)
+    }
     /// Helper to extract an i128 from args.
     pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
         match args.get(idx) {
@@ -658,9 +759,11 @@ impl Interpreter {
                 "env" | "env_or" | "set_env" | "remove_env" | "env_vars"
                 | "args" | "exit" | "pid" | "platform" | "arch"
             ),
+            // No "parse": the grammar is `json.parse` in stdlib/json.rk now, and
+            // the Rust parser here is only still reachable through the typed
+            // `decode`, where the shape comes from a struct declaration.
             Json => matches!(method,
-                "parse" | "stringify" | "stringify_pretty"
-                | "encode" | "encode_pretty" | "to_value" | "decode"
+                "encode" | "encode_pretty" | "to_value" | "decode"
             ),
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "spawn"),

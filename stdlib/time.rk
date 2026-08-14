@@ -5,6 +5,7 @@ struct time { }
 
 extend time {
     /// Sleep for the given duration.
+    @native("rask_sleep_ns")
     public func sleep(duration: Duration) -> void or SysError { }
 }
 
@@ -13,42 +14,55 @@ public struct Duration { }
 
 extend Duration {
     /// Create a duration from whole seconds.
+    @native("rask_time_Duration_seconds")
     public func seconds(n: i64) -> Duration { }
 
     /// Create a duration from milliseconds.
+    @native("rask_time_Duration_millis")
     public func millis(n: i64) -> Duration { }
 
     /// Create a duration from microseconds.
+    @native("rask_time_Duration_micros")
     public func micros(n: i64) -> Duration { }
 
     /// Create a duration from nanoseconds.
+    @native("rask_time_Duration_nanos")
     public func nanos(n: i64) -> Duration { }
 
     /// Create a duration from fractional seconds.
+    @native("rask_time_Duration_from_secs_f64")
     public func seconds_f64(secs: f64) -> Duration { }
 
     /// Create a duration from milliseconds (alias).
+    @native("rask_time_Duration_from_millis")
     public func from_millis(n: i64) -> Duration { }
 
     /// Create a duration from nanoseconds (alias).
+    @native("rask_time_Duration_from_nanos")
     public func from_nanos(n: i64) -> Duration { }
 
     /// Whole seconds in this duration.
+    @native("rask_time_Duration_as_secs")
     public func as_seconds(self) -> u64 { }
 
     /// Whole milliseconds in this duration.
+    @native("rask_time_Duration_as_millis")
     public func as_millis(self) -> u64 { }
 
     /// Whole microseconds in this duration.
+    @native("rask_time_Duration_as_micros")
     public func as_micros(self) -> u64 { }
 
     /// Nanoseconds in this duration.
+    @native("rask_time_Duration_as_nanos")
     public func as_nanos(self) -> u64 { }
 
     /// Duration as f32 seconds.
+    @native("rask_time_Duration_as_secs_f32")
     public func as_seconds_f32(self) -> f64 { }
 
     /// Duration as f64 seconds.
+    @native("rask_time_Duration_as_secs_f64")
     public func as_seconds_f64(self) -> f64 { }
 }
 
@@ -57,9 +71,11 @@ public struct Instant { }
 
 extend Instant {
     /// Capture the current instant.
+    @native("rask_time_Instant_now")
     public func now() -> Instant { }
 
     /// Duration elapsed since this instant was captured.
+    @native("rask_time_Instant_elapsed")
     public func elapsed(self) -> Duration { }
 }
 
@@ -69,6 +85,7 @@ public struct SystemTime { }
 
 extend SystemTime {
     /// Capture the current wall-clock time.
+    @native
     public func now() -> SystemTime { }
 
     /// The UNIX epoch: 1970-01-01 00:00:00 UTC.
@@ -96,9 +113,11 @@ extend SystemTime {
     public func unix_nanos(self) -> i128 { }
 
     /// Duration since an earlier point. Fails if the clock went backward.
+    @native
     public func duration_since(self, earlier: SystemTime) -> Duration or TimeError { }
 
     /// Duration since this time was captured. Fails if the clock went backward.
+    @native
     public func elapsed(self) -> Duration or TimeError { }
 }
 
@@ -121,9 +140,11 @@ public struct Timer { }
 extend Timer {
     /// Create a one-shot timer that fires after the given duration.
     /// Returns a Receiver that will receive () when the timer fires.
+    @native
     public func after(duration: Duration) -> Receiver<void> { }
 
     /// Create a periodic timer that fires at the given interval.
     /// Returns a Receiver that receives () on each tick.
+    @native
     public func interval(duration: Duration) -> Receiver<void> { }
 }

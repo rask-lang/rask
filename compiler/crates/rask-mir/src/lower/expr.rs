@@ -187,28 +187,6 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
     Some((MirOperand::Constant(MirConst::Int(val)), ty))
 }
 
-/// Disambiguation policy for method names that are shared across stdlib types
-/// (e.g. `get`, `map`, `find`) or absent from the stub API (iterator terminals
-/// like `collect`). Used ONLY when the type checker leaves the receiver type
-/// unresolved — a resolved receiver type always takes precedence. This is a
-/// deliberate policy choice (e.g. bare `.get()` means `Map`, since `Vec` uses
-/// index syntax), not a lookup table for well-typed calls: adding or renaming
-/// an unambiguous stdlib method needs no edit here.
-fn ambiguous_method_prefix(method: &str, arg_count: usize) -> Option<&'static str> {
-    Some(match method {
-        "contains" | "substr" | "reverse" | "index_of"
-        | "push_str" | "push_char" | "compare" | "as_ptr" => "string",
-        "remove_at" | "to_vec" | "map" | "filter" | "collect"
-        | "find" | "for_each" => "Vec",
-        "join" if arg_count == 2 => "Vec",
-        "values" | "get" | "insert" | "remove" => "Map",
-        "sleep" => "time",
-        "read_bytes" | "write_bytes" => "TcpConnection",
-        "accept" => "TcpListener",
-        "detach" => "TaskHandle",
-        _ => return None,
-    })
-}
 
 impl<'a> MirLowerer<'a> {
     /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
@@ -240,6 +218,15 @@ impl<'a> MirLowerer<'a> {
             .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
             .map_or(false, |ty| matches!(ty, MirType::String))
+    }
+
+    /// Does this Vec receiver hold floats? Picks the sort that uses the float
+    /// total order rather than an integer compare over the bit patterns.
+    fn vec_elem_is_float(&self, object: &Expr) -> bool {
+        Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .map_or(false, |ty| matches!(ty, MirType::F64 | MirType::F32))
     }
 
     /// Wrap a plain value for a struct field declared `T?` or `T or E`.
@@ -347,6 +334,38 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Cast { value: op, target_ty: want.clone() },
         }));
         MirOperand::Local(dst)
+    }
+
+    /// `x.to_int()` on a float and `n.to_float()` on an integer — a single
+    /// convert instruction, not a runtime call. Dispatching them by name sent
+    /// codegen looking for `f64_to_int`/`i64_to_float`, which no backend has:
+    /// the float side died with "Function not found" and the integer side never
+    /// even resolved a type prefix.
+    fn try_lower_numeric_conversion(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Option<TypedOperand> {
+        if !args.is_empty() {
+            return None;
+        }
+        let target = match method {
+            "to_int" if matches!(obj_ty, MirType::F32 | MirType::F64) => MirType::I64,
+            "to_float" if matches!(
+                obj_ty,
+                MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            ) => MirType::F64,
+            _ => return None,
+        };
+        let dst = self.builder.alloc_temp(target.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: target.clone() },
+        }));
+        Some((MirOperand::Local(dst), target))
     }
 
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
@@ -1640,35 +1659,36 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         result_ty
                     };
-                    let pool_local = match obj_op {
-                        MirOperand::Local(id) => id,
-                        _ => {
-                            let tmp = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: tmp,
-                                rvalue: MirRValue::Use(obj_op),
-                            }));
-                            tmp
-                        }
-                    };
-                    let handle_local = match idx_op {
-                        MirOperand::Local(id) => id,
-                        _ => {
-                            let tmp = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: tmp,
-                                rvalue: MirRValue::Use(idx_op),
-                            }));
-                            tmp
-                        }
-                    };
-                    let result_local = self.builder.alloc_temp(result_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-                        dst: result_local,
-                        pool: pool_local,
-                        handle: handle_local,
+                    let pool_local = self.as_local(obj_op);
+                    let handle_local = self.as_local(idx_op);
+                    // `PoolCheckedAccess` hands back the slot's address, always —
+                    // that's what the write path needs (`pool[h].field = v`
+                    // projects a store onto it) and what an aggregate read wants
+                    // anyway, since an aggregate local *is* an address.
+                    //
+                    // A scalar read needs the value, and it says so here with a
+                    // load rather than leaving codegen to work out which of the
+                    // two a given destination meant. It used to declare the
+                    // destination with the element's own type and let codegen
+                    // store an address into it, which is a Cranelift panic
+                    // outright: "declared type of variable var10 doesn't match
+                    // type of value v13" (#719).
+                    if result_ty.passed_by_address() {
+                        let slot = self.pool_slot_addr(
+                            pool_local,
+                            handle_local,
+                            result_ty.clone(),
+                        );
+                        return Ok((MirOperand::Local(slot), result_ty));
+                    }
+                    let slot_addr =
+                        self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
+                    let value_local = self.builder.alloc_temp(result_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: value_local,
+                        rvalue: MirRValue::Deref(MirOperand::Local(slot_addr)),
                     }));
-                    return Ok((MirOperand::Local(result_local), result_ty));
+                    return Ok((MirOperand::Local(value_local), result_ty));
                 }
 
                 let index_name = type_prefix
@@ -1918,6 +1938,14 @@ impl<'a> MirLowerer<'a> {
                     let val_op = self.wrap_sum_field_value(
                         field_mir_ty.as_ref(), &val_ty, val_op,
                     );
+                    // A field declared `Owned<T>` given a `T` goes on the heap —
+                    // same boundary as an enum payload declared `Owned<T>` (#705).
+                    let val_op = match field_layout
+                        .and_then(|f| self.owned_payload(&f.ty))
+                    {
+                        Some(_) => self.box_into_owned(val_op, &val_ty),
+                        None => val_op,
+                    };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset,
@@ -3485,11 +3513,22 @@ impl<'a> MirLowerer<'a> {
 
                             // Store payload fields
                             for (i, arg) in args.iter().enumerate() {
-                                let (val, _) = self.lower_expr(&arg.expr)?;
+                                let (val, val_ty) = self.lower_expr(&arg.expr)?;
                                 let (offset, field_size) = if i < fields.len() {
                                     (payload_offset + fields[i].offset, fields[i].size)
                                 } else {
                                     (payload_offset + (i as u32 * 8), 8)
+                                };
+                                // A payload declared `Owned<T>` is a pointer slot,
+                                // and the value arriving is a `T` — OW5 lets a `T`
+                                // stand where `Owned<T>` is asked for. Put it on the
+                                // heap and store the pointer. Storing the value
+                                // instead wrote 16 bytes of enum into an 8-byte slot,
+                                // clobbering the next payload, and the recursive read
+                                // came back as a tag used for an address (#705).
+                                let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
+                                    Some(_) => self.box_into_owned(val, &val_ty),
+                                    None => val,
                                 };
                                 // Aggregate payloads (string = 16 bytes, embedded
                                 // structs) must copy the full value. Without store_size
@@ -3533,7 +3572,13 @@ impl<'a> MirLowerer<'a> {
                         }
 
                         // json.encode — expand struct/vec/primitive serialization at MIR level
-                        if name == "json" && method == "encode" && args.len() == 1 {
+                        // `encode_pretty` differs only in which Rask body
+                        // reachability names for a JsonValue; the struct and Vec
+                        // paths below are shared.
+                        if name == "json"
+                            && matches!(method.as_str(), "encode" | "encode_pretty")
+                            && args.len() == 1
+                        {
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
                             if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
@@ -3596,6 +3641,39 @@ impl<'a> MirLowerer<'a> {
                                     .or(elem_from_sig)
                                     .or_else(|| self.vec_elem_of_expr(&args[0].expr));
                                 return self.lower_json_encode_vec(arg_op, elem_ty, elem_mir).map(Some);
+                            }
+
+                            // A JsonValue has a Rask encoder — `stringify_value`
+                            // in stdlib/json.rk, reached through
+                            // `JsonValue.to_string`. Falling through to
+                            // `json_encode_i64` printed the enum's own address
+                            // (#689).
+                            //
+                            // Which body that is, is reachability's call, not
+                            // ours: it recorded the name here and compiled the
+                            // body because of the record. Naming it here instead
+                            // meant codegen looked up a `JsonValue_to_string`
+                            // nobody had queued.
+                            if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
+                                let body = self
+                                    .ctx
+                                    .call_rewrites
+                                    .get(&expr.id)
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        LoweringError::InvalidConstruct(
+                                            "json.encode on a JsonValue, but reachability \
+                                             queued no encoder for it"
+                                                .to_string(),
+                                        )
+                                    })?;
+                                let dst = self.builder.alloc_temp(MirType::String);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: Some(dst),
+                                    func: FunctionRef::internal(body),
+                                    args: vec![arg_op],
+                                }));
+                                return Ok(Some((MirOperand::Local(dst), MirType::String)));
                             }
 
                             // Non-struct: string or integer
@@ -3923,28 +4001,6 @@ impl<'a> MirLowerer<'a> {
             arg_types.push(ty);
         }
 
-        // Qualify method name with receiver type to avoid dispatch
-        // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
-        // Priority: user-defined struct/enum from type checker first
-        // (`extend E { func get(self) }` would otherwise be shadowed by
-        // the hardcoded Map.get fallback below). Skip stdlib types
-        // (Option, Result, ...) so their methods stay on the existing
-        // dispatch path.
-        let user_type_prefix = self.ctx.lookup_raw_type(object.id)
-            .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .filter(|prefix| {
-                let base = prefix.split('<').next().unwrap_or(prefix);
-                self.ctx.find_struct(base).is_some()
-                    || self.ctx.find_enum(base).is_some()
-                    // A nominal newtype has no layout of its own, but its
-                    // `extend` methods are registered under its own name. Left
-                    // out, `Label("hey").shout()` on a `type Label = string`
-                    // mangled to `string_shout`, which doesn't exist (#445).
-                    || (self.is_transparent_newtype(base)
-                        && self.func_sigs.contains_key(&format!("{}_{}", base, method)))
-            });
-
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -3977,76 +4033,66 @@ impl<'a> MirLowerer<'a> {
             return Ok(handled);
         }
 
+        // `to_int` / `to_float` are one machine instruction, so lower them to a
+        // Cast instead of hunting for a `f64_to_int` symbol that never existed.
+        if let Some(handled) =
+            self.try_lower_numeric_conversion(method.as_str(), args, &obj_op, &obj_ty)
+        {
+            return Ok(handled);
+        }
+
         // Resolve the receiver's stdlib type prefix, then mangle to
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
         // method-name table. Priority:
-        //   0. the receiver dispatch resolved to (CALL6), when MIR confirms it
-        //   1. user struct/enum from the type checker
-        //   2. tracked local/field type (LocalMeta, struct layout)
-        //   3. resolved receiver type, when that stdlib type actually
-        //      declares the method (validated against the stub API)
-        //   4. the method's sole defining stdlib type, when unambiguous
-        //   5. disambiguation policy for shared/absent names on
-        //      receivers the checker left unresolved
-        //   6. resolved type / MIR type as a last resort
-        let type_prefix_of_receiver = || {
-            self.ctx.lookup_raw_type(object.id)
-                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-        };
-        let qualified_name = recorded_prefix
-            .or(user_type_prefix)
-            .or_else(|| if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name).and_then(|m| m.type_prefix.clone())
-            } else {
-                None
-            })
-            // Field access on struct: resolve field type from struct layout
-            .or_else(|| {
-                if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
-                    if let ExprKind::Ident(var_name) = &inner_obj.kind {
-                        if let Some((local_id, _)) = self.locals.get(var_name) {
-                            let local_ty = self.builder.local_type(*local_id);
-                            if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
-                                if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
-                                    if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
-                                        return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
-                                    }
-                                }
-                            }
-                        }
+        // Two sources, both authoritative:
+        //
+        //   0. what dispatch resolved to (CALL6) — the checker's own answer,
+        //      which covers everything the checker saw.
+        //   1. a MIR-synthesized local's recorded type. A `store.lock().put(x)`
+        //      guard is invented *here*, during lowering — the checker never saw
+        //      that node, so there can be no record of it. Lowering writes the
+        //      guard's type down where it creates the local and reads it back.
+        //
+        // Neither guesses from the method's name, which is what the seven
+        // deleted steps did. `RASK_TRACE_DISPATCH=1` tallies which one answered:
+        // over 914 method calls across the examples, suite, fixtures and
+        // compile-error cases, 912 come from the checker and 2 are lock guards.
+        let mut prefix_of: Option<String> = None;
+        let mut answered_by: &'static str = "9_unresolved";
+        macro_rules! step {
+            ($name:expr, $e:expr) => {
+                if prefix_of.is_none() {
+                    let candidate: Option<String> = $e;
+                    if candidate.is_some() {
+                        answered_by = $name;
+                        prefix_of = candidate;
                     }
-                    None
-                } else {
-                    None
                 }
-            })
-            // Resolved receiver type is authoritative when that stdlib
-            // type declares the method (checked against the stub API).
-            .or_else(|| type_prefix_of_receiver().filter(|p| {
-                let base = p.split('<').next().unwrap_or(p).trim();
-                rask_stdlib::mir_metadata::type_has_method(base, &method)
-            }))
-            // Unambiguous stub method → its sole defining type.
-            .or_else(|| rask_stdlib::mir_metadata::unique_method_prefix(&method)
-                .map(|s| s.to_string()))
-            // Disambiguation policy for method names shared across (or
-            // absent from) stub types, used only when the receiver type
-            // is unresolved. A resolved receiver above always wins.
-            .or_else(|| ambiguous_method_prefix(&method, all_args.len())
-                .map(|s| s.to_string()))
-            // Last resort: resolved type even if the stub doesn't list
-            // the method (user types, monomorphized aggregates), then
-            // the MIR type (catches F64, String, etc.).
-            .or_else(type_prefix_of_receiver)
-            .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
-            // A Struct/Enum MIR type carries a layout whose name is the type —
-            // resolve it directly. Catches receivers the checker left untyped
-            // but MIR typed concretely: a pool-element `with` binding, a Handle
-            // deref, a `self`-typed receiver.
-            .or_else(|| self.mir_aggregate_prefix(&obj_ty))
-            // parse<T> always belongs to string (structural, not type-prefix related)
-            .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
+            };
+        }
+
+        step!("0_checker_recorded", recorded_prefix);
+        step!("1_synthetic_local", if let ExprKind::Ident(var_name) = &object.kind {
+            self.meta(var_name).and_then(|m| m.type_prefix.clone())
+        } else {
+            None
+        });
+        // Nothing else. Seven more steps used to follow: the checker's node type
+        // for the receiver, a struct field's declared type read off the layout,
+        // the receiver type when a stub declared the method, the method's sole
+        // defining stdlib type, a name-to-type policy table, the MIR type, and a
+        // struct/enum layout name. All seven are gone — each went dead once the
+        // real gap behind it closed, and the tally above is how that was
+        // established and how it stays true.
+        //
+        // A receiver that resolves to nothing now fails lowering with the method
+        // named, which is the same trade `fallback::i64_fallback` makes: a
+        // missing answer reported beats a wrong one emitted.
+
+        crate::dispatch_trace::record(answered_by, &method);
+
+        let qualified_name = prefix_of
             .map(|prefix| {
                 // Strip generic params from the prefix before mangling:
                 // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
@@ -4371,6 +4417,10 @@ impl<'a> MirLowerer<'a> {
             } else {
                 ("Vec_join_i64".to_string(), all_args)
             }
+        } else if qualified_name == "Vec_sort" && self.vec_elem_is_float(object) {
+            // The default sort compares elements as integers, which puts
+            // -1.5 before -2.5 and a NaN wherever its sign bit lands.
+            ("Vec_sort_f64".to_string(), all_args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
@@ -4875,6 +4925,21 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Option<TypedOperand>, LoweringError> {
         if method != "compare" || args.len() != 1 {
             return Ok(None);
+        }
+        // Floats can't use the `<`/`>` chain below. Those operators are IEEE, so
+        // NaN answers false to both and lands on Equal, and -0 vs +0 compares
+        // equal — but `compare` is the *total* order (type.operators/ORD3),
+        // where -0 < +0 and NaN sorts to an end. One call to the runtime's
+        // total-order comparator instead.
+        if matches!(obj_ty, MirType::F32 | MirType::F64) {
+            let (rhs, _) = self.lower_expr(&args[0].expr)?;
+            let result = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: FunctionRef::internal("f64_compare".to_string()),
+                args: vec![obj_op.clone(), rhs],
+            }));
+            return Ok(Some((MirOperand::Local(result), MirType::I64)));
         }
         let scalar = matches!(
             obj_ty,

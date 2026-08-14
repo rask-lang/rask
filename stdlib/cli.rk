@@ -5,9 +5,11 @@ struct cli { }
 
 extend cli {
     /// Get command-line arguments as a list of strings.
+    @native("rask_cli_args")
     public func args() -> Vec<string> { }
 
     /// Parse command-line arguments into a structured Args object.
+    @native("rask_args_parse")
     public func parse() -> Args { }
 }
 
@@ -16,17 +18,22 @@ public struct Args { }
 
 extend Args {
     /// Check if a flag was passed (long or short form).
+    @native("rask_args_flag")
     public func flag(self, long: string, short: string) -> bool { }
 
     /// Get an option value by long or short name.
+    @native("rask_args_option")
     public func option(self, long: string, short: string) -> Option<string> { }
 
     /// Get an option value or a default.
+    @native("rask_args_option_or")
     public func option_or(self, long: string, short: string, default: string) -> string { }
 
     /// Get positional arguments (after flags/options).
+    @native("rask_args_positional")
     public func positional(self) -> Vec<string> { }
 
     /// Get the program name (argv[0]).
+    @native("rask_args_program")
     public func program(self) -> string { }
 }

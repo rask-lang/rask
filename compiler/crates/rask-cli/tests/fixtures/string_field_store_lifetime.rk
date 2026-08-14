@@ -1,0 +1,21 @@
+struct Store {
+    last: string
+}
+
+extend Store {
+    func put(mutate self, title: string) -> u64 {
+        self.last = title
+        return 1
+    }
+    func get_last(self) -> string {
+        return self.last
+    }
+}
+
+const store = Mutex.new(Store { last: "" })
+
+func main() {
+    let id = store.lock().put("verify the milestone")
+    let back = store.lock().get_last()
+    println("id={id} back=[{back}] len={back.len()}")
+}

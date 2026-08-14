@@ -263,13 +263,16 @@ impl Interpreter {
             "div" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a / b), k)) }
             "neg" => Ok(Value::Float(k.round(-a), k)),
             "eq" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a == b)) }
+            "ne" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a != b)) }
             "lt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a >= b)) }
+            // ORD3: `compare` is the total order, so a sort keyed on it
+            // terminates with every element present. `<`/`>` stay IEEE below.
             "compare" => {
                 let b = self.expect_float(args, 0)?;
-                Ok(ordering_value(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)))
+                Ok(ordering_value(a.total_cmp(&b)))
             }
             "abs" => Ok(Value::Float(k.round(a.abs()), k)),
             "floor" => Ok(Value::Float(k.round(a.floor()), k)),

@@ -217,16 +217,7 @@ impl<'a> MirLowerer<'a> {
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: None,
             }));
-            if self.ensure_stack.is_empty() {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                    value: Some(MirOperand::Local(ret_none)),
-                }));
-            } else {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                    value: Some(MirOperand::Local(ret_none)),
-                    cleanup_chain: self.cleanup_chain(),
-                }));
-            }
+            self.terminate_return(Some(MirOperand::Local(ret_none)));
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
         }
 
@@ -317,16 +308,7 @@ impl<'a> MirLowerer<'a> {
             value: MirOperand::Local(err_val),
             store_size: err_store_size,
         }));
-        if self.ensure_stack.is_empty() {
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                value: Some(MirOperand::Local(ret_result)),
-            }));
-        } else {
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
-                value: Some(MirOperand::Local(ret_result)),
-                cleanup_chain: self.cleanup_chain(),
-            }));
-        }
+        self.terminate_return(Some(MirOperand::Local(ret_result)));
 
         self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block)
     }

@@ -198,13 +198,12 @@ fn try_eval_comptime_mir(
         span: Span::new(0, 0),
     };
 
-    let empty_comptime = HashMap::new();
-    let empty_externs = std::collections::HashSet::new();
-    let empty_packages = std::collections::HashSet::new();
-    let empty_coercions = HashMap::new();
-    let empty_rewrites = HashMap::new();
-        let empty_targets = HashMap::new();
-    let empty_resource_types = std::collections::HashSet::new();
+    // Everything else defaults to empty via MirContext::new, which is what a
+    // comptime block wants: no package modules, no extern functions, no
+    // comptime globals of its own. Before the constructor existed this was 21
+    // fields written by hand, and `call_targets` had silently become an empty
+    // map (#425, #727).
+    let comptime_call_targets = mono.all_call_targets(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
         .enumerate()
         .map(|(i, def)| {
@@ -219,32 +218,14 @@ fn try_eval_comptime_mir(
         })
         .collect();
 
-    let nominal_underlying = std::collections::HashMap::new();
-    let mir_ctx = rask_mir::lower::MirContext {
-        mutate_self_fns: Some(&typed.mutate_self_fns),
-        struct_layouts: &mono.struct_layouts,
-        enum_layouts: &mono.enum_layouts,
-        node_types: &typed.node_types,
-        type_names: &type_names,
-        comptime_globals: &empty_comptime,
-        extern_funcs: &empty_externs,
-        package_modules: &empty_packages,
-        trait_methods: HashMap::new(),
-        line_map: None,
-        source_file: None,
-        shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-        shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
-        comptime_interp: None,
-        trait_coercions: &empty_coercions,
-        error_wraps: &typed.error_wraps,
-        fallback_keeps_shape: &typed.fallback_keeps_shape,
-        call_rewrites: &empty_rewrites,
-        call_targets: &empty_targets,
-        resource_types: &empty_resource_types,
-        nominal_underlying: &nominal_underlying,
-        const_slot_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        inferred_fn_ret: &typed.inferred_fn_ret,
-    };
+    let mir_ctx = rask_mir::lower::MirContext::new(
+        typed,
+        &mono.struct_layouts,
+        &mono.enum_layouts,
+        &typed.node_types,
+        &comptime_call_targets,
+        &type_names,
+    );
 
     let mir_fn = rask_mir::lower::MirLowerer::lower_function(&synth_decl, decls, &mir_ctx)
         .ok()?
