@@ -776,6 +776,10 @@ int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
 int64_t rask_recver_close_i64(int64_t rx);
 
+// Round-robin starting offset for a native `select` with num_arms arms
+// (conc.select/P1) — see rask-mir's lower_select.
+int64_t rask_select_rotate(int64_t num_arms);
+
 // ─── Async I/O (dual-path: green task or blocking) ──────────
 // Inside a green task, these submit async ops and return PENDING.
 // Outside a green task, they fall back to blocking syscalls.
