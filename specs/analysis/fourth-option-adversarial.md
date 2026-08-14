@@ -271,13 +271,14 @@ type's annotation turns `graph.delete(n)` into an operation that returns an
 error you must handle. Action at a distance, and it adds an error path to
 code whose author never opted into one.
 
-**Recommendation: ship the default alone.** Set-to-`none` is intuitive to the
+**Decided: ship the default alone.** Set-to-`none` is intuitive to the
 point of invisibility — the thing died, so the reference is empty — and it
 carries every litmus program and the flagship. Composition-by-value covers
 most ownership. Cascade and restrict should wait for a real program that
 demands them, and when they arrive they need direction-explicit names, not
-SQL's, plus a visible call site for cascade. Same discipline already applied
-to `NodeId` and `@lazy`: don't ship the speculative half.
+SQL's, plus a visible call site — `delete_cascade(n)` as its own operation, so
+the code says a subtree may go, not just the schema. Same discipline already
+applied to `NodeId` and `@lazy`: don't ship the speculative half.
 
 ## Design deltas adopted from this pass
 

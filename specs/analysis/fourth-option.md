@@ -28,6 +28,42 @@ local, any array, any thread. Rask already bans storing references outside
 declared fields, so they're all findable. The restriction handles were built
 on is exactly what makes handles replaceable.
 
+## Where the exploration stands
+
+Seven documents; this one is the entry point. The decisions, consolidated —
+a spec draft starts here.
+
+**The shape**
+
+| | Decided |
+|---|---|
+| Types | `Graph<T>` (where nodes live), `Edge<T>` (one reference). No plural type — `Vec<Edge<T>>` and `Map<K, Edge<T>>` are edge-aware underneath |
+| Reference semantics | An edge goes `none` when its target dies. That's the whole model |
+| Representation | Raw pointers. `mem.relocatable` stays keys-only |
+| Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. Not locals (block-scoped borrows instead) |
+| Unlink timing | **Eager** at the apply point. `@lazy` deferred |
+| Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site |
+| Ownership | Composition by value (`Entity { body: Body }`), not a policy |
+| Concurrency | Staged structural mutation, no lock on the hot path. Three parallel tiers: per-node, frozen, staged |
+| Atomicity | Batches — validate then apply, no rollback. Also how required-edge cycles get built |
+| Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
+| Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
+| Pool / Handle | Pool folds into Graph; `Handle` becomes boundary-only, if it's needed at all |
+
+**Deferred on purpose:** `@lazy`, cascade/restrict, `NodeId`. Each failed the
+"does a real program demand this yet?" test. That the core keeps surviving
+scrutiny while the accessories keep failing it is itself a signal.
+
+**Unsolved:** index backlinks surviving a `Map` rehash. First thing a spec
+draft must answer.
+
+**Companion documents:** [litmus](fourth-option-litmus.md) (three programs
+both ways, scored) · [in practice](fourth-option-in-practice.md) (worked
+example, costs, what it retires) · [adversarial](fourth-option-adversarial.md)
+(16 attacks) · [concurrency](fourth-option-concurrency.md) ·
+[escapes](fourth-option-escapes.md) · [verification](fourth-option-verification.md)
+(soundness, strictly-better, the flagship).
+
 ---
 
 The question: Rask and Hylo attack the same problem — memory safety without GC, RC,
