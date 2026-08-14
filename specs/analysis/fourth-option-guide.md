@@ -198,6 +198,41 @@ subexpression?" — that a syntax tree never asks.
 
 Reach for a graph when that question has an answer other than "nobody."
 
+### Why not have the compiler prove a graph is owned?
+
+The obvious unification: one mechanism, and where the compiler can prove at
+most one edge ever points at a node, drop the back-pointer and the fixup.
+Three reasons that doesn't work, and they compound.
+
+**The proof is whole-program.** "At most one edge points at any `Expr`" isn't
+a property of the schema — `a.left = c` and `b.left = c` use one field and
+produce two references. Establishing uniqueness means tracking every
+assignment everywhere, which is exactly the analysis METRICS lists as an
+auto-fail (`CS`: no whole-program analysis, compile time must stay linear).
+
+**Silent elision would make struct size optimizer-dependent.** If the
+back-pointer appears or vanishes based on what an analysis managed to prove,
+then a node's memory layout changes when unrelated code in another module
+changes. That breaks the predictability principle outright — you're supposed
+to be able to read layout off the page.
+
+**And what you'd have proven is linearity.** Follow the logic: if a node
+genuinely has one owner, then deleting it happens *through* that owner, so
+the owner already has the field in hand and no back-pointer was ever needed
+to find it. That's not a graph with an optimization applied — that is
+`drop(ptr)` on an `Owned<T>`, exactly. The proof obligation *is*
+`Owned<T>`'s contract.
+
+So the two aren't one mechanism and its special case; they're two contracts,
+and the cost difference **is** the contract. `Owned<T>` says "exactly one
+owner, consumed exactly once," gets checked at compile time, and is rewarded
+with zero bookkeeping. A graph says "an unknown number of referrers," and
+pays back-pointers to answer at runtime what linearity answers statically.
+
+The same reasoning explains why Rask has `const` rather than "mutable that
+the optimizer noticed was never written." Declaring the stronger fact buys
+the guarantee. Inferring it silently buys unpredictability.
+
 ## When to use a graph
 
 Reach for one when **things reference each other and can be deleted**. That
