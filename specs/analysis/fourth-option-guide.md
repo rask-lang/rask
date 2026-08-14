@@ -167,6 +167,37 @@ if store.by_id.get(id)? as t {
 
 Delete the task and the map entry goes with it. No orphaned index rows.
 
+## The ownership ladder
+
+Three ways to hold data, each costing more than the last. Pick the cheapest
+one that fits — that's the whole decision.
+
+| Rung | Use when | Cost |
+|---|---|---|
+| **Plain field** — `Entity { body: Body }` | Owned by exactly one thing, fixed size, nothing else references it | Nothing. It's inline |
+| **`Owned<T>`** — `Expr { left: Owned<Expr> }` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
+| **`Graph<T>` + `Edge<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
+
+The question that decides it: **does anything else point at this?** If not, you
+never needed a graph — nothing can be left dangling by a delete, so there's
+nothing to fix, and paying for back-pointers buys you nothing.
+
+### `Owned<T>` keeps its job
+
+Graphs don't replace it, and the reason is sharper than cost. **An `Owned<T>`
+can leave.** It's a value: return it from a function, store it in a struct,
+move it into a channel. A parser writes `func parse_expr() -> Owned<Expr>`
+and hands the tree back to its caller. A graph node can't be returned at all —
+edges live inside the graph's world.
+
+So for an AST: `Owned<T>` wins on every axis. It's movable, it's roughly half
+the memory (no back-pointer per child), the delete is free (drop the root,
+the tree goes), and linearity already guarantees exactly-once consumption. A
+graph would add bookkeeping for a question — "who else points at this
+subexpression?" — that a syntax tree never asks.
+
+Reach for a graph when that question has an answer other than "nobody."
+
 ## When to use a graph
 
 Reach for one when **things reference each other and can be deleted**. That

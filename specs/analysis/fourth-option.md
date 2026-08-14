@@ -49,6 +49,7 @@ a spec draft starts here.
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
 | Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
 | Pool / Handle | Pool folds into Graph; `Handle` becomes boundary-only, if it's needed at all |
+| `Owned<T>` | **Kept.** Different rung of the ownership ladder — exclusively-owned heap data that nothing else references, and unlike a node it can be returned and moved. An AST wants it: movable, half the memory, free delete |
 
 **Deferred on purpose:** `@lazy`, cascade/restrict, `NodeId`. Each failed the
 "does a real program demand this yet?" test. That the core keeps surviving
