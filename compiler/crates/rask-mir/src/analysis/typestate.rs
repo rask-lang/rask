@@ -576,7 +576,7 @@ impl DataflowAnalysis for TypestateAnalysis {
         state
     }
 
-    fn widen(&self, old: &TypestateDomain, new: &TypestateDomain) -> TypestateDomain {
+    fn widen(&self, _is_widening_point: bool, old: &TypestateDomain, new: &TypestateDomain) -> TypestateDomain {
         // FN4: At loop headers, widen Fresh/Valid back to Unknown to ensure convergence.
         // Detect widening need: if a handle went from Unknown→Valid or Unknown→Fresh,
         // that could cycle. Conservatively: if new differs from old and old was Unknown,

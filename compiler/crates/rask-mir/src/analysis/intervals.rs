@@ -6,8 +6,8 @@
 //! Used by bounds check elimination to prove indices are in-bounds.
 //!
 //! Design: lazy evaluation (IV1) — only runs on functions with indexing ops.
-//! Per-function, no interprocedural (IV7). Widening currently runs at every
-//! block; gating it to loop headers (IV5) is deferred — see #419.
+//! Per-function, no interprocedural (IV7). Widening is gated to loop headers
+//! (IV5) via the dataflow framework's `is_widening_point` flag (#419).
 
 use std::collections::{HashMap, HashSet};
 
@@ -322,11 +322,15 @@ impl DataflowAnalysis for IntervalAnalysis {
         state
     }
 
-    fn widen(&self, old: &IntervalDomain, new: &IntervalDomain) -> IntervalDomain {
-        // The framework calls widen(old_exit, new_exit) for every block — it has
-        // no block context — so this widens everywhere, not just at loop headers.
-        // Widening only at loop headers would be more precise but needs a block
-        // id threaded through the dataflow trait; deferred to #419.
+    fn widen(&self, is_widening_point: bool, old: &IntervalDomain, new: &IntervalDomain) -> IntervalDomain {
+        // Only widen at blocks the framework flags as needing it (loop headers,
+        // plus anything a dominator-only check would miss on an irreducible
+        // CFG — see `dataflow::widening_points`). Every other block keeps the
+        // precise interval it computed, instead of blowing up to infinity just
+        // because it happened to get revisited during the fixpoint iteration.
+        if !is_widening_point {
+            return new.clone();
+        }
         // Conservative rule: if a bound is moving, push it to infinity.
         //
         // Keeping `old`'s bound when a bound isn't moving is the whole point —
@@ -917,6 +921,43 @@ mod tests {
             source_file: None,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
+    }
+
+    #[test]
+    fn widen_leaves_non_widening_blocks_untouched() {
+        // A block that isn't flagged as a widening point keeps the interval
+        // it computed, even if that differs from what it had before — the
+        // "stale but revisited" case a non-loop merge point hits during
+        // fixpoint iteration. Only is_widening_point=true triggers the
+        // push-to-infinity rule.
+        let (analysis, _) = IntervalAnalysis::from_function(&{
+            let func = MirFunction {
+                name: "t".into(),
+                params: vec![],
+                ret_ty: MirType::Void,
+                locals: vec![int_local(0, "x")],
+                blocks: vec![MirBlock {
+                    id: block(0),
+                    statements: vec![call_vec_get(1, 2, 0)],
+                    terminator: term_ret(),
+                }],
+                entry_block: block(0),
+                is_extern_c: false,
+                source_file: None,
+            };
+            func
+        }).unwrap();
+
+        let mut old = IntervalDomain::new();
+        old.set(local(0), Interval::new(0, 5));
+        let mut new = IntervalDomain::new();
+        new.set(local(0), Interval::new(0, 10));
+
+        let not_widened = analysis.widen(false, &old, &new);
+        assert_eq!(not_widened.get(local(0)), Interval::new(0, 10), "non-widening block keeps its computed interval");
+
+        let widened = analysis.widen(true, &old, &new);
+        assert_eq!(widened.get(local(0)), Interval::new(0, i64::MAX), "widening point pushes the moving bound to infinity");
     }
 
     #[test]
