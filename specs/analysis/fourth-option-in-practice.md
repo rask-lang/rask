@@ -115,6 +115,40 @@ Worst cases, named: high-fan-in nodes deleted at high frequency pay
 O(degree) at flush (eager pays it inside `delete`); lazy mode delays memory
 reuse until edges heal or flush runs.
 
+### What an edge write actually costs
+
+`a.target = b` is not one store. Counting an intrusive doubly-linked
+back-list:
+
+| | Stores |
+|---|---|
+| The pointer itself (`a.target = b`) | 1 |
+| Unlink `a` from the **old** target's incoming list | ~2–3 (plus loads) |
+| Link `a` into `b`'s incoming list | ~3 |
+
+So ~4 when setting a `none` edge, ~7 when rewiring a live one, all to hot
+nearby memory — the node's own inline link fields, the target's list head,
+and one neighbor. Call it 2–5ns.
+
+When the relation declares an inverse, those stores **are** the data
+structure — a tree's sibling links, a list's `prev`/`next`. The hand-written
+version writes exactly the same stores (and is where the classic
+forgot-one-direction bug lives). No separate backlink storage exists at all.
+
+Non-edge writes have no barrier whatsoever. Scalars, values, and everything
+that isn't a declared relation compile to a plain store, which is most of a
+Rask program.
+
+**The crossover, stated plainly.** Handles make the write cheap (one integer
+store) and the read expensive (a check, forever). Edges make the write cost
+~4–7 stores and the read free. Set a target once and read it 60×/second for
+ten seconds: handles pay ~600 checks (~1.2µs), edges pay one write (~5ns)
+and 600 free reads. Reads dominate by orders of magnitude in every real
+graph workload, which is why this trade is favorable — but it is a trade. A
+workload that rewires references constantly and reads them rarely is the
+shape where handles genuinely win, and the honest guidance is to say so
+rather than pretend the write is free.
+
 ## What it enables beyond the replacement
 
 - **Cycle-safe serialization.** The encoder knows the schema, so `Encode` on
