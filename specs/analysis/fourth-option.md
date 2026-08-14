@@ -339,7 +339,37 @@ the O(degree) work runs at a `flush_deletes()` you can see and place. Cost
 transparency is preserved at call sites; what becomes invisible is mechanism,
 not cost.
 
-**Decided: lazy is the default; eager is the per-graph policy option.**
+**Decided (revised): eager is the default; `@lazy` is a per-relation policy
+for high-fan-in hubs.** The first draft made lazy the default to answer
+"delete is O(degree), a handle remove is O(1)". Staging (see
+[fourth-option-concurrency.md](fourth-option-concurrency.md)) already
+answers that: structural ops defer to a visible apply point regardless, so
+the cost sits at a line you wrote either way, and lazy's justification
+mostly evaporates. What's left of it is narrow — lazy skips fixups for
+edges nobody ever reads again — and it is paid for dearly:
+
+| | Eager unlink | Lazy unlink |
+|---|---|---|
+| Read an edge | pure deref; **nothing to check, ever** | one header-flag load until healed |
+| Memory | freed at apply | pinned until every incoming edge heals or flush runs |
+| Machinery | none | tombstone flags, heal-on-read, amortized heal-on-insert, flush, heal suppression under shared reads |
+| Total fixup work | one write per incoming edge | fewer if edges are never re-read; the same otherwise |
+
+Eager keeps the model's headline claim literally true — a dead pointer does
+not exist, so following one needs no check. Lazy makes that claim
+"eventually true, with a transient check," which is a real weakening of the
+central promise for a benefit most schemas never collect: ordinary in-degree
+is 1–5, so eager's per-delete work is a handful of stores.
+
+Lazy survives as an opt-in for the pathological shape it was invented for:
+a hub with 100k incoming edges, where walking the list at apply is a genuine
+pause and most of those edges will never be read again. `@lazy` on that
+relation trades pure reads for a distributed fixup. Two modes, and the
+default is the simple one.
+
+(Unrelated to node deletion: ordered edge *containers* still tombstone and
+compact entries — A5 — which is local list maintenance, not node
+reclamation.)
 
 **Where the lazy check lives: inside `?`.** In eager mode, `e.target? as t`
 is exactly the optional unwrap — one none-test, nothing else; unlinked edges

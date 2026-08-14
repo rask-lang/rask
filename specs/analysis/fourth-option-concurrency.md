@@ -142,7 +142,15 @@ A stable world that allocates a lot and deletes nothing costs **zero** here,
 forever, while a tracing collector keeps re-scanning it. That's an inversion
 of the cost model, not a variant of it.
 
-And the dial GC doesn't have: **the flush is optional.** In lazy mode,
+**Two orthogonal axes, previously conflated.** *Staging* is the concurrency
+mechanism: structural ops enqueue and apply at the join. *Eager vs lazy* is
+what happens at the apply: walk every incoming edge now (freeing the node),
+or tombstone and let readers heal. Staging is what makes the cost visible and
+schedulable; laziness is a separate bet about work you might avoid. With the
+default now eager (see fourth-option.md), the burst is the apply itself,
+bounded by `deletes × in-degree`, and lazy is the escape hatch for hubs.
+
+And the dial GC doesn't have: **the flush is optional under `@lazy`.** In lazy mode,
 heal-on-read means each reader fixes its own edge as it goes — the fixup work
 distributes across readers naturally, and `flush_deletes()` exists to reclaim
 memory promptly, not to keep the program correct. So the burst can be
