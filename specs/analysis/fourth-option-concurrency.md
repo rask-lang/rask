@@ -112,6 +112,50 @@ sets don't conflict), healing amortizes K per insert, and flush points are
 chosen by the programmer. Games flush per frame; a delete-storm frame can
 spread its apply across two.
 
+### "Isn't that just a GC pause?"
+
+The fair version of the objection: deferred work accumulates and gets paid in
+a batch, so the delete you wrote isn't where the cost lands. That is exactly
+GC's shape, and three points concede cleanly:
+
+- **The shape is the same.** Deferred batch, latency spike, cost displaced
+  from the line that caused it.
+- **Backlink maintenance is a write barrier.** Edge assignment costs ~4–8
+  stores instead of 1 — structurally what a generational GC's write barrier
+  does to every pointer write. Owned.
+- **A hub node is a real pause.** Deleting a node with 100k incoming edges
+  walks 100k scattered writes. Comparable to tracing 100k objects.
+
+Where the analogy breaks — and these are the properties that make GC
+unacceptable for systems work, all absent here:
+
+| | Tracing GC | Flush |
+|---|---|---|
+| Cost scales with | what you **keep** (live set) | what you **destroyed** (your deletes × in-degree) |
+| Predictability | heap biography, collector heuristics, allocation rate | computable from this frame's own deletes and the schema's fan |
+| Who schedules it | the runtime | a line you wrote |
+| Determinism | no (timing-dependent) | yes — same input, same cost, which `sim` mode requires |
+| Mutator interruption | stop-the-world or concurrent barriers | runs at a phase join you already have; parallelizable across disjoint fixup sets |
+| What the work *is* | bookkeeping the program never asked for | the exact pointer updates the manual program writes by hand |
+
+A stable world that allocates a lot and deletes nothing costs **zero** here,
+forever, while a tracing collector keeps re-scanning it. That's an inversion
+of the cost model, not a variant of it.
+
+And the dial GC doesn't have: **the flush is optional.** In lazy mode,
+heal-on-read means each reader fixes its own edge as it goes — the fixup work
+distributes across readers naturally, and `flush_deletes()` exists to reclaim
+memory promptly, not to keep the program correct. So the burst can be
+dialed out entirely, trading memory for smoothness; or dialed the other way
+with eager mode, which pays at each delete and has no batch at all. For hub
+nodes specifically, lazy-only is the right policy: never walk the 100k list,
+let the readers who actually show up pay for themselves.
+
+Failure mode differs accordingly: skipping flushes holds memory (a
+leak-shaped curve), it never produces an unscheduled pause. The honest
+category for this mechanism isn't "collector" — it's the ECS command buffer
+every engine already applies at stage boundaries.
+
 ## The batch is the transaction — minus rollback
 
 Should Rask have transactions? The useful half, yes; the expensive half, no.
