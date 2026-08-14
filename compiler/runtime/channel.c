@@ -486,6 +486,22 @@ int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr) {
     return rask_channel_try_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
 }
 
+// Round-robin starting offset for a native `select` (conc.select/P1): a
+// plain `select` must not let one busy channel starve the rest. A real
+// per-poll shuffle costs more than the fairness needs, so a shared counter
+// rotating through the arms is enough — every select call advances it, so
+// no single arm keeps the first probe slot forever. `select_priority`
+// skips this and always probes in listed order.
+static atomic_ullong rask_select_counter = 0;
+
+int64_t rask_select_rotate(int64_t num_arms) {
+    if (num_arms <= 0) {
+        return 0;
+    }
+    unsigned long long n = atomic_fetch_add_explicit(&rask_select_counter, 1, memory_order_relaxed);
+    return (int64_t)(n % (unsigned long long)num_arms);
+}
+
 // ─── Async channel ops (yield-based for green tasks) ─────────
 //
 // Try non-blocking send/recv. If would block, yield and retry.

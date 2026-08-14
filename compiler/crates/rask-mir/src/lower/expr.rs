@@ -2996,7 +2996,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Select (channel multiplexing)
-            ExprKind::Select { arms, .. } => self.lower_select(arms),
+            ExprKind::Select { arms, is_priority } => self.lower_select(arms, *is_priority),
 
             // Assert
             ExprKind::Assert { condition, message } => {

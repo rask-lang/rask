@@ -89,3 +89,58 @@ test "select blocks until a spawned producer sends" {
         h.join()
     }
 }
+
+test "CL2 — a closed channel is skipped, the others keep firing" {
+    let (tx1, rx1) = Channel<i64>.buffered(4)
+    let (tx2, rx2) = Channel<i64>.buffered(4)
+    tx1.close()!
+    let _ = tx2.send(42)
+    let got = select {
+        rx1 -> v: v,
+        rx2 -> v: v,
+    }
+    assert got == 42
+}
+
+// P1 — a plain select picks uniformly among ready arms so one busy channel
+// can't starve the rest (native used to always fire arm 0; #541). Both
+// channels stay ready for the whole run, so a starved arm would read 0 here.
+test "P1 — a plain select doesn't starve a permanently-ready arm" {
+    let (tx1, rx1) = Channel<i64>.buffered(200)
+    let (tx2, rx2) = Channel<i64>.buffered(200)
+    for i in 0..60 {
+        let a: i64 = i
+        tx1.send(a)!
+        tx2.send(a + 1000)!
+    }
+    mut arm2_count = 0
+    for i in 0..120 {
+        let got = select {
+            rx1 -> v: v,
+            rx2 -> v: v,
+        }
+        if got >= 1000 { arm2_count = arm2_count + 1 }
+    }
+    assert arm2_count == 60
+}
+
+// select_priority keeps listed order — the opt-in this issue's fairness
+// change must not touch.
+test "select_priority still starves a later arm behind a busy earlier one" {
+    let (tx1, rx1) = Channel<i64>.buffered(200)
+    let (tx2, rx2) = Channel<i64>.buffered(200)
+    for i in 0..60 {
+        let a: i64 = i
+        tx1.send(a)!
+        tx2.send(a + 1000)!
+    }
+    mut arm2_count = 0
+    for i in 0..60 {
+        let got = select_priority {
+            rx1 -> v: v,
+            rx2 -> v: v,
+        }
+        if got >= 1000 { arm2_count = arm2_count + 1 }
+    }
+    assert arm2_count == 0
+}

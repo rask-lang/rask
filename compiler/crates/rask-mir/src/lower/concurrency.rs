@@ -400,6 +400,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_select(
         &mut self,
         arms: &[rask_ast::expr::SelectArm],
+        is_priority: bool,
     ) -> Result<TypedOperand, LoweringError> {
         use rask_ast::expr::SelectArmKind;
 
@@ -443,16 +444,23 @@ impl<'a> MirLowerer<'a> {
 
         let merge_block = self.builder.create_block();
         let poll_block = self.builder.create_block();
+        let landing_block = self.builder.create_block();
         let arm_blocks: Vec<crate::BlockId> =
             arms.iter().map(|_| self.builder.create_block()).collect();
-        // One probe block per arm plus the "nothing was ready" landing.
         let probe_blocks: Vec<crate::BlockId> =
-            (0..=probes.len()).map(|_| self.builder.create_block()).collect();
+            (0..probes.len()).map(|_| self.builder.create_block()).collect();
+        // One "move to the next arm in the cycle, or stop" block per probe —
+        // see the rotation comment below.
+        let advance_blocks: Vec<crate::BlockId> =
+            (0..probes.len()).map(|_| self.builder.create_block()).collect();
 
         // Tracks whether any channel could still deliver. Reset every round so
         // a channel closing mid-wait is noticed.
         let any_open = self.builder.alloc_temp(MirType::Bool);
         let result_local = self.builder.alloc_temp(MirType::I64);
+        // How many arms this round has probed — the cycle stops once every
+        // arm's had exactly one turn, wherever it started.
+        let visited = self.builder.alloc_temp(MirType::I64);
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: poll_block }));
         self.builder.switch_to_block(poll_block);
@@ -460,13 +468,42 @@ impl<'a> MirLowerer<'a> {
             dst: any_open,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: probe_blocks[0],
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: visited,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
         }));
+
+        // conc.select/P1: a plain `select` picks uniformly among the ready arms
+        // so one busy channel can't starve the rest. A full shuffle every poll
+        // is more than that guarantee needs — starting the probe cycle at a
+        // rotating offset removes the starvation for the cost of one runtime
+        // counter bump. `select_priority` keeps listed order, so it always
+        // starts at arm 0.
+        if probes.is_empty() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: landing_block,
+            }));
+        } else if is_priority || probes.len() == 1 {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: probe_blocks[0],
+            }));
+        } else {
+            let start = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(start),
+                func: FunctionRef::internal("rask_select_rotate".to_string()),
+                args: vec![MirOperand::Constant(MirConst::Int(probes.len() as i64))],
+            }));
+            let cases = (0..probes.len()).map(|i| (i as u64, probe_blocks[i])).collect();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                value: MirOperand::Local(start),
+                cases,
+                default: probe_blocks[0],
+            }));
+        }
 
         for (p, probe) in probes.iter().enumerate() {
             self.builder.switch_to_block(probe_blocks[p]);
-            let next = probe_blocks[p + 1];
             let (status, arm_idx) = match probe {
                 Probe::Recv { rx, buf, .. } => {
                     let addr = self.builder.alloc_temp(MirType::Ptr);
@@ -525,7 +562,7 @@ impl<'a> MirLowerer<'a> {
             let mark_open = self.builder.create_block();
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                 cond: MirOperand::Local(closed),
-                then_block: next,
+                then_block: advance_blocks[p],
                 else_block: mark_open,
             }));
             self.builder.switch_to_block(mark_open);
@@ -533,11 +570,43 @@ impl<'a> MirLowerer<'a> {
                 dst: any_open,
                 rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
             }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: next }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: advance_blocks[p] }));
+
+            // Count this arm as checked; once every arm's had its turn this
+            // round, land — otherwise carry on to the next arm in the cycle
+            // (wrapping past the end, since the cycle can start anywhere).
+            self.builder.switch_to_block(advance_blocks[p]);
+            let new_visited = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: new_visited,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Add,
+                    left: MirOperand::Local(visited),
+                    right: MirOperand::Constant(MirConst::Int(1)),
+                },
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: visited,
+                rvalue: MirRValue::Use(MirOperand::Local(new_visited)),
+            }));
+            let done = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: done,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(new_visited),
+                    right: MirOperand::Constant(MirConst::Int(probes.len() as i64)),
+                },
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(done),
+                then_block: landing_block,
+                else_block: probe_blocks[(p + 1) % probes.len()],
+            }));
         }
 
         // Nothing fired this round.
-        self.builder.switch_to_block(probe_blocks[probes.len()]);
+        self.builder.switch_to_block(landing_block);
         if let Some(idx) = default_arm {
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: arm_blocks[idx],
