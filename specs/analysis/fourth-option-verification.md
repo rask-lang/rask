@@ -28,7 +28,8 @@ Soundness = three invariants, and every operation must preserve all three.
 
 The load-bearing structural facts, each already decided:
 
-1. **Enumerability.** Edges live only in node fields (locals are block-scoped
+1. **Enumerability.** Edges live only where the graph transitively owns them
+   — nodes, values inside nodes, graph-owned containers (locals are block-scoped
    borrows), so the incoming list is complete by construction. This is where
    the no-storable-references ban is spent.
 2. **No user code during fixup.** Rask has no destructors. A delete's unlink
@@ -173,7 +174,7 @@ func task_is_blocked(t: Task) -> bool {
 | **UCC** (web services, 30% weight) | 1.0 — expressible | 1.0 | Both express it; edges express it *correctly by default* |
 | **PI** | flat costs | delete now O(deps), not O(1) | Small loss |
 | **RO** (list endpoint, read-dominated) | generation check per dep per view | plain deref | Edges faster on the hot path this service actually runs |
-| **RS** | `Pool`, `Handle`, `using frozen`, the get-dance | `Edges<T>`, a root index | Fewer, and the store's `using frozen` helpers lose their reason to exist |
+| **RS** | `Pool`, `Handle`, `using frozen`, the get-dance | `Edge<T>`, a root index | Fewer, and the store's `using frozen` helpers lose their reason to exist |
 
 **Sharpest finding:** the escaping identity in this program is already
 `TaskId` — a domain id redeemed through `by_id`. No `Handle` ever crosses the

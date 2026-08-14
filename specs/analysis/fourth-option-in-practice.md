@@ -5,22 +5,24 @@
 
 # The Fourth Option in Practice
 
-What programs look like if `Graph` + `Edge` lands (lazy default, per
+What programs look like if `Graph` + `Edge` lands (eager default, per
 [fourth-option.md](fourth-option.md)). Syntax is placeholder throughout.
 
-## The three types
+## The two types
 
-They map one-to-one onto what exists today. That's the whole vocabulary.
+Originally three — `Edge<T>` and `Edges<T>` differed by one character, which
+is unreadable and makes a typo compile. **`Edges<T>` is deleted.** The plural
+never needed its own type: put edges in the collections that already exist.
 
 | Today | Proposed | What it is |
 |---|---|---|
 | `Pool<Task>` | `Graph<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
 | `Handle<Task>` in a field | `Edge<Task>?` | **one reference** to a thing that lives in a graph |
-| `Vec<Handle<Task>>` | `Edges<Task>` | **many references** — a list of them |
+| `Vec<Handle<Task>>` | `Vec<Edge<Task>>` | **many references** — an ordinary Vec |
 
 Read as a database, which is where the model comes from: `Graph<Task>` is the
-tasks table, `Edge<User>?` is a foreign key column pointing at one row,
-`Edges<Task>` is a many-to-many.
+tasks table, `Edge<User>?` is a foreign key column pointing at one row, and a
+`Vec<Edge<Task>>` is the many side.
 
 <!-- test: skip -->
 ```rask
@@ -34,17 +36,59 @@ struct Store { tasks: Pool<Task>, users: Pool<User> }
 // Proposed — same shape, different guarantee
 struct Task {
     assignee: Edge<User>?            // one, maybe
-    deps: Edges<Task>                // several
+    deps: Vec<Edge<Task>>            // several
 }
 struct Store { tasks: Graph<Task>, users: Graph<User> }
 ```
 
+`Vec<Edge<T>>` and `Map<K, Edge<T>>` work because the compiler knows the
+element type is an edge and uses the tombstone-and-compact representation
+A5 already specified — the container is edge-aware underneath, ordinary at
+the source level. One reference concept, and collections stay collections.
+
 The difference is entirely in what happens when a target dies:
 
 - `Edge<User>?` becomes `none` — automatically, at the delete.
-- `Edges<Task>` loses that entry — the list gets shorter.
+- an entry in `Vec<Edge<Task>>` disappears — the list gets shorter.
 - With handles, both keep pointing at a dead thing, and every reader has to
   check. (Missing that check is [#740](https://github.com/rask-lang/rask/issues/740).)
+
+### Do you have to thread the graph through everything?
+
+Less than today, and visibly instead of invisibly.
+
+- **Reading and traversing needs nothing.** A function takes the node:
+  `func damage(e: Entity, amount: i32)`. The edge is reachable from `e`, and
+  dereferencing it is a pointer hop — no container required.
+- **Structural operations need the graph**, as an ordinary parameter:
+  `func kill(mutate w: World, e: Entity)`. Insert and delete have to name
+  where they're inserting into and deleting from.
+
+Compare today, where even a *read-only helper* needs the pool, because a
+handle is a detached integer that means nothing without it. In the flagship
+store, five helpers carry `using frozen Pool<Task>` for exactly that reason —
+`rank_of`, `id_of`, `matches_filter`, `task_is_blocked`, `to_view`. All five
+take a plain `Task` under edges and need no context at all. None of the
+mutating functions gain a parameter, because they're already methods on the
+store.
+
+So the count goes down: hidden context clauses disappear, and the graph shows
+up as a normal argument exactly where the code actually mutates structure.
+
+### How it maps to languages you know
+
+| Coming from | An `Edge<T>?` is… |
+|---|---|
+| SQL | a foreign key with `ON DELETE SET NULL`. Precisely this, and where the model came from |
+| Java / C# / Python | a normal object reference — except it goes null when someone deletes the object, instead of keeping it alive |
+| Go | a pointer that becomes nil when the object is deleted, with no GC involved |
+| Rust | a `Weak<T>` that's already upgraded — no check, because dangling can't happen. (The real Rust options are `slotmap`, which is handles, or `Rc`/`Weak`, which is refcounting) |
+| C++ / Qt | `QPointer<T>` — auto-nulls when the target is destroyed. Closest existing thing in a systems language, but library-level and QObject-only |
+| Swift / Obj-C | a zeroing weak reference — same observable behaviour, but implemented on top of ARC, so death is refcount-driven |
+| ECS (flecs, Bevy) | an entity relationship with an `OnDelete` policy |
+
+The one-sentence version for each: **the reference doesn't keep the thing
+alive, and it doesn't dangle — it empties.**
 
 **Why "graph" and not "pool"?** A pool is a bag of things you hold tickets
 for; it knows nothing about how its contents relate. This container has to
@@ -52,7 +96,7 @@ know the relationships — that's what lets it fix them when something dies.
 Things plus the connections between them is a graph. (Working name; the
 concept is settled, the spelling isn't.)
 
-Everything else in this document is consequences of those three lines.
+Everything else in this document is consequences of those two types.
 
 ## A world, end to end
 
@@ -72,7 +116,7 @@ struct Entity {
     health: i32
     damage: i32
     target: Edge<Entity>?         // optional: nulls when the target dies
-    squad: Edges<Entity>          // M:N — deleted members drop out
+    squad: Vec<Edge<Entity>>      // M:N — deleted members drop out
 
     @cascade
     body: Edge<Body>              // required: built in a batch, dies with the entity
@@ -97,7 +141,7 @@ func spawn_enemy(mutate w: World, name: string, x: f32, y: f32) {
         name: name, health: 20, damage: 5,
         target: w.player,          // cross-references the root edge, fine
         body: body,                // cross-graph edge — a foreign key
-        squad: Edges.new(),
+        squad: Vec.new(),
     })
     w.by_name.insert(name, e)
 }

@@ -28,7 +28,7 @@ transitively owns.
 <!-- test: skip -->
 ```rask
 struct Inventory {                 // not a node — a plain value
-    items: Edges<Item>
+    items: Vec<Edge<Item>>
     favorite: Edge<Item>?
 }
 

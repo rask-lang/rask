@@ -123,7 +123,7 @@ Edges, with the 1:N inverse and a cascade policy in the schema:
 ```rask
 struct SceneNode {
     name: string
-    children: Edges<SceneNode> on_delete(cascade)
+    children: Vec<Edge<SceneNode>>   // @cascade
     parent: Edge<SceneNode>? inverse(children)
 }
 
@@ -234,7 +234,7 @@ on the graph's owning struct — L1's head/tail, L3's selection) and the
 restated limit that unlink preserves referential integrity, not domain
 invariants — splices stay yours.
 
-If this moves forward, the next artifact is a `mem.graph` spec draft: `Edges<T>`
+If this moves forward, the next artifact is a `mem.graph` spec draft: edge-list
 API, inverse multiplicities (1:1, 1:N, M:N), `on_delete` policies
 (`set_none` default, `cascade`, `restrict`), root-edge registration, and the
 delete-locked scope tier.

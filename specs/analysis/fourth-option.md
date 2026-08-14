@@ -100,7 +100,7 @@ handles, nodes refer to each other with **edges**, declared in the schema.
 struct Entity {
     health: i32,
     target: Edge<Entity>?,           // becomes none when the target is deleted
-    children: Edges<Entity>,         // edge list; deleted nodes drop out
+    children: Vec<Edge<Entity>>,     // edge list; deleted nodes drop out
     parent: Edge<Entity>? inverse(children),   // compiler-maintained inverse
 }
 ```
@@ -257,7 +257,7 @@ Walking every pool use case in the specs and examples:
 | ECS relationships (`entity.body`, `target`, `children`) | Edges — cross-graph works; delete touches both graphs, like a foreign key across tables |
 | Observer lists, in-world caches, event nodes | Edges, when the holder lives in the graph |
 | Iterate-and-delete loops | Graph iteration, same shape as pools |
-| Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Edges<Line>` on the owner; entries drop at delete |
+| Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Vec<Edge<Line>>` on the owner; entries drop at delete |
 | Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Edge<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
 | Chunked parallel iteration (game_loop's aspirational `spawn` over handle chunks) | Scoped parallel iteration under a delete-locked scope — disjoint node sets, no keys, and none of the `Arc<Mutex>` pools currently smuggle in for cross-task `using` |
 | References serialized out (save files, network) | Keys — though the validation flagship's actual escaping identity is `TaskId`, a user-level ID redeemed through the `by_id` index, not a `Handle`. Even the web-service case prefers domain keys + a maintained index |

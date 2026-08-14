@@ -122,7 +122,7 @@ names and the annotation style the language already has:
 ```rask
 struct SceneNode {
     name: string
-    children: Edges<SceneNode>
+    children: Vec<Edge<SceneNode>>
 
     @inverse(children)
     parent: Edge<SceneNode>?
@@ -134,7 +134,7 @@ struct SceneNode {
 
 ## A5 — Ordered edge containers: removal is O(n) backlink fixups
 
-If `Edges<T>` is a Vec of pointers with backlinks carrying indexes,
+If an edge list is a Vec of pointers with backlinks carrying indexes,
 swap-remove keeps deletes O(1) — but *ordered* containers (text_editor's
 `line_order`) can't swap-remove, and a shift invalidates every subsequent
 entry's backlink index: O(n) fixups per removal.
@@ -219,7 +219,7 @@ sync-domain rule pays twice.
 
 ## Design deltas adopted from this pass
 
-1. All edges are optional (`Edge<T>?`, `Edges<T>`); non-optional edges
+1. All edges are optional (`Edge<T>?`); non-optional edges
    deleted from the sketch. Lazy healing now covers every edge uniformly.
 2. Sync-domain rule: edges connect only co-owned graphs; locks wrap the
    ownership root or nothing.
