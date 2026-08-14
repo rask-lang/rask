@@ -85,6 +85,33 @@ strictly more parallel than what exists today, and the structure that makes
 it safe (phases with a join) is the structure high-performance ECS engines
 already impose by convention — here it's checked instead of documented.
 
+### Is the apply a bottleneck? (back of envelope)
+
+Spawn/despawn-heavy frame: 100k entities, 10k structural ops, 8 workers.
+
+*Enqueue* is a push to a per-task Vec — ~5ns, 10k ops spread over 8 threads,
+call it microseconds. Not the issue.
+
+*Apply* is the fixup walk: only **deletes** cost anything (nothing points at
+a newly inserted node yet). 10k deletes at average in-degree ~3 is ~30k
+scattered pointer writes; at 20–50ns each when the holders are cold, roughly
+0.6–1.5ms. Real, in a 16ms frame.
+
+Compared against handles, honestly: those 10k removes are O(1) generation
+bumps, ~50µs — handles win the *delete*. But the handle program then pays a
+generation check on every follow of a stored handle, every frame, dead or
+not (200k follows ≈ 400µs/frame, forever), plus the same scattered write when
+it lazily clears a stale handle. Total work is lower for edges; the
+difference is **shape**: edges concentrate it in a burst, handles smear it.
+
+So the claim narrows honestly: staged edges are more parallel than pools on
+reads and field writes (which dominate every real workload), and the apply is
+a **latency/jitter** concern, not a throughput one. Three mitigations, all
+already in the design: apply is internally parallelizable (disjoint fixup
+sets don't conflict), healing amortizes K per insert, and flush points are
+chosen by the programmer. Games flush per frame; a delete-storm frame can
+spread its apply across two.
+
 ## The batch is the transaction — minus rollback
 
 Should Rask have transactions? The useful half, yes; the expensive half, no.

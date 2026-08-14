@@ -5,6 +5,31 @@
 
 # The Fourth Option
 
+## The whole idea, plainly
+
+When you delete something, everything pointing at it is set to `none` — right
+then, automatically. Dead pointers don't linger, so following a pointer needs
+no check: it's either `none` or it's alive. That's the model.
+
+It works because each node keeps a small list of who's pointing at it, so a
+delete can find them all and fix them. Databases have done this for fifty
+years — it's `ON DELETE SET NULL`.
+
+Every other memory model answers the same question differently: *when a value
+dies, who finds out?* A garbage collector finds out later, by scanning.
+Refcounting finds out immediately, by counting. Rust's compiler finds out
+before the program runs, by proving. Handles make the *reader* find out, by
+checking a ticket number at every use. This model makes the *pointers* find
+out, at the moment of death.
+
+Only Rask can take it: to fix every pointer at a node, you have to be able to
+find every pointer at that node. C and Rust can't — a pointer can hide in any
+local, any array, any thread. Rask already bans storing references outside
+declared fields, so they're all findable. The restriction handles were built
+on is exactly what makes handles replaceable.
+
+---
+
 The question: Rask and Hylo attack the same problem — memory safety without GC, RC,
 or lifetime annotations. The known answers are lifetimes (Rust), no-references-at-all
 (Hylo), and checked handles (Rask, Vale). Is there a fourth answer, and specifically:
