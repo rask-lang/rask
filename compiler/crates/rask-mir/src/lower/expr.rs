@@ -3572,7 +3572,13 @@ impl<'a> MirLowerer<'a> {
                         }
 
                         // json.encode — expand struct/vec/primitive serialization at MIR level
-                        if name == "json" && method == "encode" && args.len() == 1 {
+                        // `encode_pretty` differs only in which Rask body
+                        // reachability names for a JsonValue; the struct and Vec
+                        // paths below are shared.
+                        if name == "json"
+                            && matches!(method.as_str(), "encode" | "encode_pretty")
+                            && args.len() == 1
+                        {
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
                             if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {

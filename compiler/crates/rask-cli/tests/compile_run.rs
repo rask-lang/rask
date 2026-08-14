@@ -2925,6 +2925,35 @@ fn json_value_encodes_the_same_on_both_backends() {
 //   rask-interp, a second implementation of this same output, and the two
 //   disagreed on Map key order: the Rust one walks the insertion-ordered
 //   backing store while native walks seeded order (determinism/D7).
+// `json.encode_pretty` exists at all, and runs the Rask printer on both backends.
+//
+// It's in specs/stdlib/json.md and both backends had a pretty printer, but nothing
+// declared it in `extend json`, so no program could call it (#736). Routed the way
+// `encode` is: reachability names the Rask body, lowering reads the name, and the
+// interpreter calls the same body instead of its own Rust copy.
+#[test]
+fn json_encode_pretty_indents_the_same_on_both_backends() {
+    let expected = concat!(
+        "[\n",
+        "  {\n",
+        "    \"list\": [\n",
+        "      1,\n",
+        "      \"two\"\n",
+        "    ]\n",
+        "  },\n",
+        "  null,\n",
+        "  true\n",
+        "]\n",
+        "[]\n",
+        "2.5\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "json_encode_pretty.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
 // `Owned<T>` actually allocates, so a recursive type works.
 //
 // `own` was a no-op — the keyword left no trace in the AST outside closures, and

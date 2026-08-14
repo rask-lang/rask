@@ -30,11 +30,16 @@ impl Interpreter {
         // seeded order (determinism/D7). Same source both backends now; the
         // Rust path is for what has no Rask version — a struct, encoded by
         // reflection.
-        if method == "encode" {
+        if matches!(method, "encode" | "encode_pretty") {
             if let Some(Value::Enum { name, .. }) = args.first() {
                 if name == "JsonValue" {
                     let recv = args[0].clone();
-                    return self.call_rask_method("JsonValue", "to_string", recv, vec![]);
+                    let body = if method == "encode_pretty" {
+                        "to_string_pretty"
+                    } else {
+                        "to_string"
+                    };
+                    return self.call_rask_method("JsonValue", body, recv, vec![]);
                 }
             }
         }

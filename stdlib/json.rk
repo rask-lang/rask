@@ -88,6 +88,15 @@ extend JsonValue with Displayable {
     }
 }
 
+extend JsonValue {
+    /// Indented form. `json.encode_pretty` on a JsonValue lands here.
+    public func to_string_pretty(self) -> string {
+        mut out = StringBuilder.new()
+        stringify_pretty_inner(self, mutate out, 0)
+        return out.build()
+    }
+}
+
 // ─── Parser internals ────────────────────────────────────────────
 
 struct JsonParser {
@@ -465,6 +474,10 @@ extend json {
         }
         return value
     }
+
+    /// Encode a value as an indented JSON string.
+    @native("rask_json_encode_pretty")
+    public func encode_pretty<T: Encode>(value: T) -> string {}
 
     /// Convert a typed value to a JsonValue tree.
     @unimplemented

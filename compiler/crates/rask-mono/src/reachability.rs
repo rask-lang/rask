@@ -742,11 +742,15 @@ impl<'a> Monomorphizer<'a> {
                 // queued the body, because the pass that queues bodies never
                 // heard the name.
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "json")
-                    && method == "encode"
+                    && matches!(method.as_str(), "encode" | "encode_pretty")
                     && args.len() == 1
                     && self.arg_type_name(args[0].expr.id).as_deref() == Some("JsonValue")
                 {
-                    let body = "JsonValue_to_string".to_string();
+                    let body = if method == "encode_pretty" {
+                        "JsonValue_to_string_pretty".to_string()
+                    } else {
+                        "JsonValue_to_string".to_string()
+                    };
                     self.call_rewrites.insert(expr.id, body.clone());
                     self.enqueue(body, Vec::new());
                     for arg in args {

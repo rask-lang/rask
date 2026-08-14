@@ -1,0 +1,20 @@
+// `json.encode_pretty` is in the spec and both backends had a pretty printer, but
+// nothing declared it, so no program could call it (#736). The printer is
+// `stringify_pretty_inner` in stdlib/json.rk — same body both backends, reached
+// the same way `encode` reaches the compact one.
+import json
+
+func main() {
+  mut inner = Vec.new()
+  inner.push(JsonValue.Number(1.0))
+  inner.push(JsonValue.String("two"))
+  mut fields = Map.new()
+  fields.insert("list", JsonValue.Array(inner))
+  mut outer = Vec.new()
+  outer.push(JsonValue.Object(fields))
+  outer.push(JsonValue.Null)
+  outer.push(JsonValue.Bool(true))
+  println(json.encode_pretty(JsonValue.Array(outer)))
+  println(json.encode_pretty(JsonValue.Array(Vec.new())))
+  println(json.encode_pretty(JsonValue.Number(2.5)))
+}
