@@ -171,12 +171,22 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
                 | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
                 _ => {
-                    // Look up user-defined types from the layout cache
+                    // Look up user-defined types from the layout cache first — a user
+                    // struct can be named the same as a builtin container (e.g. `Wide`),
+                    // and its real, cached size must win over the builtin guess below.
                     if let Some(&cached) = cache.get(name.as_str()) {
                         cached
                     } else if is_typevar_name(name) {
                         // Unsubstituted type parameter — pointer-sized fallback,
                         // silent because mono always picks a concrete size on real call sites.
+                        (8, 8)
+                    } else if matches!(name.as_str(),
+                        // Generic containers/boxes written without their type args (e.g. a
+                        // type alias target like `type Counts = Map`) arrive here as a bare
+                        // name instead of `UnresolvedGeneric` — same opaque-pointer types as
+                        // the `UnresolvedGeneric` arm above, just missing their `<...>`.
+                        "Vec" | "Wide" | "Map" | "Handle" | "Pool"
+                        | "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
@@ -679,6 +689,27 @@ mod tests {
     /// Shorthand: type_size_align with empty cache (for primitive tests)
     fn tsa(ty: &Type) -> (u32, u32) {
         type_size_align(ty, &empty_cache())
+    }
+
+    #[test]
+    fn bare_generic_container_name_is_pointer_sized() {
+        // `type Counts = Map` stores the alias target as the raw string "Map",
+        // so it reaches type_size_align as UnresolvedNamed rather than
+        // UnresolvedGeneric. It must resolve like the generic form does (#545),
+        // not fall into the unknown-type warning path.
+        assert_eq!(tsa(&Type::UnresolvedNamed("Map".to_string())), (8, 8));
+        assert_eq!(tsa(&Type::UnresolvedNamed("Vec".to_string())), (8, 8));
+        assert_eq!(tsa(&Type::UnresolvedNamed("Mutex".to_string())), (8, 8));
+    }
+
+    #[test]
+    fn user_type_named_like_a_builtin_container_uses_its_own_cached_size() {
+        // A user struct can share a name with a builtin container (e.g. `Wide`,
+        // also the name of the SIMD-vector generic). Its real cached layout
+        // must win over the builtin bare-name guess above.
+        let mut cache = LayoutCache::new();
+        cache.insert("Wide".to_string(), (24, 8));
+        assert_eq!(type_size_align(&Type::UnresolvedNamed("Wide".to_string()), &cache), (24, 8));
     }
 
     #[test]
