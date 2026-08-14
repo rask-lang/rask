@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `substring` takes byte offsets, and a cut inside a character panics (#735).
+//
+// Native used to slice the raw bytes and hand back a `string` holding a lone 0xC3
+// — not valid UTF-8, in a type the spec says is validated. The interpreter
+// replaced the undecodable tail instead, so the two disagreed as well. Both panic
+// now: the caller asked for something that doesn't exist, and returning a nearby
+// slice they didn't ask for hides the bug.
+
+test "std.strings — byte offsets on a boundary slice normally" {
+    let s = "caf\u{e9}"
+    assert s.len() == 5
+    assert s.substring(0, 3) == "caf"
+    assert s.substring(0, 5) == s
+    assert s.substring(3, 5) == "\u{e9}"
+}
+
+test "std.strings — out of range clamps, it doesn't panic" {
+    let s = "abc"
+    assert s.substring(0, 99) == "abc"
+    assert s.substring(2, 1) == ""
+    assert s.substring(9, 12) == ""
+}
+
+test "std.strings — offsets from the API feed straight back in" {
+    let path = "/etc/caf\u{e9}/conf"
+    let cut = path.last_index_of("/") ?? 0
+    assert path.substring(0, cut) == "/etc/caf\u{e9}"
+    assert path.substring(cut + 1, path.len()) == "conf"
+}
+
+test "std.strings — a boundary walk finds every safe cut" {
+    let s = "na\u{ef}ve"
+    // 6 bytes for 5 characters: the i-diaeresis is two.
+    assert s.len() == 6
+    assert s.char_count() == 5
+    // Every offset that starts a character is a legal cut.
+    assert s.substring(0, 2) == "na"
+    assert s.substring(2, 4) == "\u{ef}"
+    assert s.substring(4, 6) == "ve"
+    assert s.substring(0, 6) == s
+}

@@ -389,12 +389,32 @@ void rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b) {
     }
 }
 
+/* True when byte `i` of a UTF-8 string starts a character. Continuation bytes
+   are 0b10xxxxxx; anything else begins one, and the end of the string counts. */
+static int str_is_char_boundary(const char *d, int64_t len, int64_t i) {
+    if (i == 0 || i == len) return 1;
+    return ((unsigned char)d[i] & 0xC0) != 0x80;
+}
+
 void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
     int64_t slen = str_len(s);
+    /* Out of range clamps — there's no ambiguity about what was meant. */
     if (start < 0) start = 0;
     if (end > slen) end = slen;
     if (start >= end) { rask_string_new(out); return; }
-    str_make(out, str_data(s) + start, end - start);
+    /* A cut inside a character is a different matter: it would hand back a
+       `string` that isn't valid UTF-8, which the type says can't exist. The
+       caller asked for something that doesn't exist, so say so rather than
+       returning a nearby slice they didn't ask for. */
+    const char *d = str_data(s);
+    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
+        rask_panic_fmt(
+            "substring(%lld, %lld) cuts a character in half - "
+            "these are byte offsets, and one of them lands inside a multi-byte "
+            "character. `char_indices()` gives offsets that don't.",
+            (long long)start, (long long)end);
+    }
+    str_make(out, d + start, end - start);
 }
 
 void rask_string_to_lowercase(RaskStr *out, const RaskStr *s) {

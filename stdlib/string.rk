@@ -118,7 +118,7 @@ extend string {
 
     /// Bytes from start (inclusive) to end (exclusive). Allocates.
     /// Byte offsets, so `index_of`/`last_index_of`/`byte_at` results feed
-    /// straight in. Out-of-range clamps.
+    /// straight in. Out of range clamps; an offset inside a character panics.
     @native("rask_string_substr")
     public func substring(self, start: usize, end: usize) -> string { }
 

@@ -172,16 +172,18 @@ impl Interpreter {
                     })
                     .unwrap_or(len)
                     .max(start);
-                let substring = sb
-                    .get(start..end)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        // A boundary inside a character. Native slices the raw
-                        // bytes and hands back a string that isn't valid UTF-8;
-                        // Rust won't, so take the bytes and replace what can't
-                        // be decoded rather than diverging by panicking.
-                        String::from_utf8_lossy(&sb.as_bytes()[start..end]).into_owned()
-                    });
+                // A cut inside a character would be a `string` that isn't valid
+                // UTF-8, which the type says can't exist. The caller asked for
+                // something that doesn't exist, so say so rather than handing back
+                // a nearby slice they didn't ask for (#735).
+                let Some(substring) = sb.get(start..end).map(str::to_string) else {
+                    return Err(RuntimeError::Panic(format!(
+                        "substring({}, {}) cuts a character in half - these are \
+                         byte offsets, and one of them lands inside a multi-byte \
+                         character. `char_indices()` gives offsets that don't.",
+                        start, end
+                    )));
+                };
                 Ok(Value::String(Arc::new(Mutex::new(substring))))
             }
             "parse_int" => {
