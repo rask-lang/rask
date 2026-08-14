@@ -8,6 +8,52 @@
 What programs look like if `Graph` + `Edge` lands (lazy default, per
 [fourth-option.md](fourth-option.md)). Syntax is placeholder throughout.
 
+## The three types
+
+They map one-to-one onto what exists today. That's the whole vocabulary.
+
+| Today | Proposed | What it is |
+|---|---|---|
+| `Pool<Task>` | `Graph<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
+| `Handle<Task>` in a field | `Edge<Task>?` | **one reference** to a thing that lives in a graph |
+| `Vec<Handle<Task>>` | `Edges<Task>` | **many references** — a list of them |
+
+Read as a database, which is where the model comes from: `Graph<Task>` is the
+tasks table, `Edge<User>?` is a foreign key column pointing at one row,
+`Edges<Task>` is a many-to-many.
+
+<!-- test: skip -->
+```rask
+// Today
+struct Task {
+    assignee: Handle<User>?          // one, maybe
+    deps: Vec<Handle<Task>>          // several
+}
+struct Store { tasks: Pool<Task>, users: Pool<User> }
+
+// Proposed — same shape, different guarantee
+struct Task {
+    assignee: Edge<User>?            // one, maybe
+    deps: Edges<Task>                // several
+}
+struct Store { tasks: Graph<Task>, users: Graph<User> }
+```
+
+The difference is entirely in what happens when a target dies:
+
+- `Edge<User>?` becomes `none` — automatically, at the delete.
+- `Edges<Task>` loses that entry — the list gets shorter.
+- With handles, both keep pointing at a dead thing, and every reader has to
+  check. (Missing that check is [#740](https://github.com/rask-lang/rask/issues/740).)
+
+**Why "graph" and not "pool"?** A pool is a bag of things you hold tickets
+for; it knows nothing about how its contents relate. This container has to
+know the relationships — that's what lets it fix them when something dies.
+Things plus the connections between them is a graph. (Working name; the
+concept is settled, the spelling isn't.)
+
+Everything else in this document is consequences of those three lines.
+
 ## A world, end to end
 
 The data model reads like an ER diagram — because it is one:
