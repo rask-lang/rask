@@ -217,6 +217,68 @@ sync-domain rule pays twice.
   complexity is plausibly flat. Survives as a schedule risk, not a design
   flaw.
 
+## A16 — The on-delete policies are the worst-designed part
+
+Asked directly whether `cascade`/`restrict` are constraining or unintuitive.
+They are, in three separate ways, and the default is innocent of all of them.
+
+**The direction is ambiguous, and this document already got it wrong.** Given:
+
+<!-- test: skip -->
+```rask
+@cascade
+body: Edge<Body>
+```
+
+does deleting the *entity* delete the body, or does deleting the *body* delete
+the entity? SQL is unambiguous — `ON DELETE CASCADE` on a foreign key means
+"when the referenced row dies, delete this row," i.e. body → entity. But the
+in-practice doc wrote exactly this field and commented it "dies with the
+entity," which is the **opposite** direction. If the person designing the
+feature reverses it inside his own worked example, the notation is wrong, not
+the reader.
+
+The two intents are genuinely different and both are wanted:
+
+| Intent | Meaning | SQL analogue |
+|---|---|---|
+| **Ownership** | deleting *me* deletes the target | none on this column — SQL models it from the other side |
+| **Existence dependency** | deleting the *target* deletes me | `ON DELETE CASCADE` |
+
+Ownership is the far more common intent in the game/ECS code this design
+targets, and it's the one the foreign-key mechanism expresses *least*
+naturally.
+
+**Ownership mostly shouldn't be an edge at all.** A node can hold a plain
+value: `Entity { body: Body }` composes by value, and deleting the entity
+deletes the body with zero policy, zero annotation, and zero fixups. The only
+reason to make an owned thing a separate node is that others must reference
+it, or it lives in its own graph for layout reasons (the ECS motivation).
+That shrinks the ownership-cascade case to something much rarer than it first
+appears.
+
+**Cascade hides unbounded cost — a worse transparency violation than the
+fixup walk.** `graph.delete(n)` looks like one deletion; with a cascade
+declared three types away it can remove an arbitrarily large reachable set.
+The O(in-degree) fixup this design has been careful to make visible is
+bounded and local by comparison. Anyone who has run a `DELETE` in SQL and
+watched ten thousand rows disappear knows the failure mode. The call site
+should say it: `delete_cascading(n)` as a distinct operation, so the reader
+of the *code* — not the reader of the schema — sees that a subtree may go.
+
+**Restrict makes an ordinary delete fallible at a distance.** Some other
+type's annotation turns `graph.delete(n)` into an operation that returns an
+error you must handle. Action at a distance, and it adds an error path to
+code whose author never opted into one.
+
+**Recommendation: ship the default alone.** Set-to-`none` is intuitive to the
+point of invisibility — the thing died, so the reference is empty — and it
+carries every litmus program and the flagship. Composition-by-value covers
+most ownership. Cascade and restrict should wait for a real program that
+demands them, and when they arrive they need direction-explicit names, not
+SQL's, plus a visible call site for cascade. Same discipline already applied
+to `NodeId` and `@lazy`: don't ship the speculative half.
+
 ## Design deltas adopted from this pass
 
 1. All edges are optional (`Edge<T>?`); non-optional edges

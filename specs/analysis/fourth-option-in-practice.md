@@ -106,7 +106,6 @@ The data model reads like an ER diagram — because it is one:
 ```rask
 struct World {
     entities: Graph<Entity>
-    bodies: Graph<Body>
     player: Edge<Entity>?                  // root edge: nulls itself if the player dies
     by_name: Map<string, Edge<Entity>>     // root index: entry drops at delete
 }
@@ -115,11 +114,9 @@ struct Entity {
     name: string
     health: i32
     damage: i32
-    target: Edge<Entity>?         // optional: nulls when the target dies
+    target: Edge<Entity>?         // nulls when the target dies
     squad: Vec<Edge<Entity>>      // M:N — deleted members drop out
-
-    @cascade
-    body: Edge<Body>              // required: built in a batch, dies with the entity
+    body: Body                    // owned by value — dies with the entity, no policy needed
 }
 
 struct Body {
@@ -136,11 +133,10 @@ problem:
 <!-- test: skip -->
 ```rask
 func spawn_enemy(mutate w: World, name: string, x: f32, y: f32) {
-    let body = w.bodies.insert(Body { x: x, y: y, vx: 0.0, vy: 0.0 })
     let e = w.entities.insert(Entity {
         name: name, health: 20, damage: 5,
         target: w.player,          // cross-references the root edge, fine
-        body: body,                // cross-graph edge — a foreign key
+        body: Body { x: x, y: y, vx: 0.0, vy: 0.0 },
         squad: Vec.new(),
     })
     w.by_name.insert(name, e)
@@ -162,20 +158,26 @@ func combat_round(mutate w: World) {
 }
 
 func frame(mutate w: World, dt: f32) {
-    for b in w.bodies {
-        b.x += b.vx * dt
-        b.y += b.vy * dt
+    for e in w.entities {
+        e.body.x += e.body.vx * dt
+        e.body.y += e.body.vy * dt
     }
     combat_round(mutate w)
     w.entities.flush_deletes()     // the O(degree) fixup work, at a line you can see
 }
 ```
 
-When an entity dies: its `body` cascades (physics entry gone), every other
+When an entity dies: its `body` goes with it (owned by value), every other
 entity's `target` at it reads `none` from then on, it drops out of every
 `squad` list, `by_name` loses its entry, and `player` nulls if it was the
 player. All of that is the schema executing, not code someone remembered to
-write.
+write. Note that no delete *policy* appears anywhere — the set-to-`none`
+default and ordinary composition carry the whole example (see A16).
+
+(Splitting `Body` into its own `Graph<Body>` for cache locality — the usual
+ECS reason — is the one shape that *would* need an ownership policy, since
+the entity would then reference its body rather than contain it. That policy
+is deliberately deferred; see A16.)
 
 ### What's absent, measured against game_loop.rk
 
