@@ -151,6 +151,17 @@ rather than pretend the write is free.
 
 ## What it enables beyond the replacement
 
+- **The layout is yours to optimize.** A live node can move: walk its incoming
+  list and write the new address instead of `none` — the delete walk with a
+  different value. So a graph can defragment its arena, or sort nodes into
+  traversal order so a hot loop walks contiguous memory. Pools cannot do this
+  at all: a handle's index *is* its identity, and `mem.pools/PL9`'s guarantee
+  that handles survive growth is the very property that forbids moving a live
+  element. This is a structural capability gain, not a tradeoff, and it lands
+  in exactly the workloads pools were designed for. **Explicit only** —
+  `graph.compact()` is a call you write. A runtime that relocates on its own
+  schedule is a moving collector, which is the thing this design exists to
+  avoid.
 - **Cycle-safe serialization.** The encoder knows the schema, so `Encode` on
   a whole graph can emit stable node ids and reconstruct cycles — the thing
   serde-style tree encoders fundamentally can't. Graphs-with-cycles become

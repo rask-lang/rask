@@ -228,6 +228,13 @@ property that forbids compaction. A graph can defragment its arena, or sort
 nodes into traversal order so a hot loop walks contiguous memory — an
 optimization that matters exactly in the workloads pools were designed for.
 
+**Decided: compaction is explicit, never automatic.** `graph.compact()` is a
+call the programmer writes, at a point they choose. A runtime that relocates
+nodes on its own schedule is a moving collector — unpredictable pauses
+decided by something other than the program — which is precisely what this
+design exists to avoid. The capability is layout *control*, not layout
+management.
+
 Two honest limits. Moving nodes **between graphs** is not free in the same
 way: separate arenas mean the bytes are copied, and any incoming edge from the
 old graph must be severed or converted (a cross-sync-domain edge is barred by
