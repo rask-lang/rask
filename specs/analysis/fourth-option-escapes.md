@@ -176,6 +176,67 @@ demonstrates the need, which is the more disciplined order.
   scoped access with `with`.
 - **Sending a live reference to another task.** Gone, and it was never real.
 
+## Moving edges, and moving nodes
+
+"Transfer ownership of an edge without copying" splits into two questions,
+because **an edge doesn't own anything** — the graph owns the node; an edge is
+a tracked non-owning reference. So there is no ownership in an edge to
+transfer, but there are two real operations underneath the question.
+
+### Moving an edge between holders
+
+Rebinding which field holds a reference — `a.target` becomes `b.target`,
+with `a` left holding nothing.
+
+Written as copy-then-clear, that's link into the target's list for `b`, then
+unlink `a`: roughly 7–10 stores. A genuine *move* is cheaper, because the
+target's incoming list never needs to grow or shrink — the same backlink entry
+just changes which slot owns it, so only the entry's neighbours and the two
+holder slots get written: ~4–5 stores. Worth its own form:
+
+<!-- test: skip -->
+```rask
+b.target = take a.target      // move: a.target becomes none, list unchanged
+b.target = a.target             // copy: two edges, two backlinks
+```
+
+This matches `take` everywhere else in Rask, and the saving is real but
+modest — a constant factor on an already-cheap operation, not a new
+capability.
+
+### Moving a node — the capability that was hiding here
+
+The deeper question: can a *node* move without its references breaking?
+
+Yes, and it falls out of machinery that already exists. Relocating a node
+means walking its incoming list and writing the **new address** into each
+edge — the identical walk a delete does, with a different value written.
+O(in-degree), no new mechanism.
+
+That unlocks something handles structurally cannot do:
+
+| | `Pool` + `Handle` | `Graph` + `Edge` |
+|---|---|---|
+| Node identity is | the slot index | the node itself |
+| Can a live node change slots? | **No** — the index *is* the handle; moving it invalidates every handle | Yes — incoming edges are rewritten to the new address |
+| Arena compaction | impossible without an indirection table (which reintroduces a per-access hop) | possible |
+| Reordering for locality (hot nodes contiguous) | impossible | possible |
+
+Pools freeze layout by construction: `mem.pools/PL9` guarantees handles
+survive *growth* precisely because the index never changes, which is the same
+property that forbids compaction. A graph can defragment its arena, or sort
+nodes into traversal order so a hot loop walks contiguous memory — an
+optimization that matters exactly in the workloads pools were designed for.
+
+Two honest limits. Moving nodes **between graphs** is not free in the same
+way: separate arenas mean the bytes are copied, and any incoming edge from the
+old graph must be severed or converted (a cross-sync-domain edge is barred by
+the ownership rule anyway). And relocation must respect open borrows —
+moving a node someone holds is the same compile error as deleting one.
+
+Nested `Owned<T>` fields ride along correctly: moving a node moves the owning
+pointer, not the heap value it points at.
+
 ## Verdict
 
 The escape hole is smaller than it appeared, and most of it closes with a rule
