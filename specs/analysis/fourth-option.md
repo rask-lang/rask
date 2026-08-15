@@ -90,26 +90,70 @@ which is the honest counterexample; it buys that with a garbage collector.
 
 ### Open questions
 
-**Unsolved mechanisms** — no worked design yet; a spec draft has to answer
-these first:
+Each was checked with three questions — *is it legal, is it needed, can an
+existing mechanism do it?* Three of the four dissolved.
 
-1. **Index backlinks across a `Map` rehash.** A `Map<K, Link<T>>` moves its
-   entries when it grows. The backlink has to find the entry again. Probably
-   means the backlink carries the key rather than a slot address, but that's
-   a guess, not a design.
-2. **The delete-locked scope.** Named repeatedly (collect nodes into a local
-   `Vec`, then work through them), never specified. What opens it, what's
-   forbidden inside, how it interacts with `mutate` parameters.
-3. **Batch semantics.** Validate-then-apply is decided; the details aren't.
-   What exactly is validated, what a rejection returns, whether batches
-   nest, what happens on panic inside one.
-4. **Root link registration.** Links on the owning struct (a list's
-   `head`/`tail`, an editor's selection) are load-bearing in the litmus
-   programs and have no stated registration rule.
+**1. Index backlinks across a `Map` rehash — dissolved.**
+A `Map<K, Link<T>>` moves its entries when it grows, so a backlink pointing
+at a map slot breaks. But the whole construction is avoidable: **an index
+belongs to the store, not beside it.** Declare the key and the store
+maintains its own index:
+
+<!-- test: skip -->
+```rask
+tasks: Store<Task> @key(id)        // instead of a separate Map<TaskId, Link<Task>>
+
+if tasks.by_id(id)? as t { … }
+```
+
+Delete then removes the node and its index entry in one internal operation —
+no backlink crosses a structure boundary, and rehashing is the store's own
+business. This is what databases do: an index is part of the table, not an
+object next to it. Wrinkle to spec: `cache.rk` keys on a *computed* value
+(`cache_key(sst_id, block_id)`), so keys can't be restricted to plain fields.
+
+**2. The delete-locked scope — probably subsumed by batches.**
+The need: collect node references into a local `Vec`, then work through
+them, without a delete invalidating one mid-loop. But inside a staged batch,
+deletes are *enqueued and applied at the end* — so no node dies while the
+batch runs, and references stay valid for its duration by construction. The
+batch already is the scope. What still needs stating: whether an ordinary
+`for` over a store implies one.
+
+**3. Batch semantics — still open, and genuinely needs answers.**
+Validate-then-apply is decided; these aren't: what exactly gets validated
+(required links satisfied, restrict violations, nothing else?), what a
+rejection returns (`void or BatchError` naming the first violation), whether
+batches nest (probably flatten into the outermost), and what a panic inside
+one does (nothing applies — the enqueued ops are dropped, which is the one
+place Rask gets rollback for free, because nothing had mutated yet).
+
+**4. Root link registration — dissolved, it's static.**
+"Root link" means a link stored on the struct that *owns* the store rather
+than inside a node — a list's `head`/`tail`, an editor's `selected`, a
+world's `player`:
+
+<!-- test: skip -->
+```rask
+struct World {
+    entities: Store<Entity>
+    player: Link<Entity>?          // beside the store, not inside a node
+}
+```
+
+Deleting the player has to null that field, so the fixup walk must reach it.
+No runtime registration is needed: the compiler knows at `World`'s module
+that this field targets that store — the same schema closure that answers
+"who can point at `Entity`?" (A9) — so the fixup for root fields is emitted
+statically, like any other known link.
 
 **Specified nowhere yet, but no obvious difficulty:** iteration guarantees
 over a store (the `PF1`–`PF4` equivalents), the diagnostics for every new
 error path, and what `mem.relocatable` becomes when it's keys-only.
+
+**Not a conflict after all:** `mem.boxes`' closed-family rule is about the set
+*growing* — it bars users from adding boxes. Merging `Cell` and `Mutex` into
+`Shared` shrinks it, which the rule doesn't speak to.
 
 **Untested, not unsolved:**
 
