@@ -49,43 +49,38 @@ language's designer has to ask what separates two of its types, no user will
 choose correctly, and the ones who guess right will have guessed. This moves
 the merge below from "recommended" to "indicated."
 
-## The one real merge: `Shared` + `Mutex`
+## The first merge: `Shared` + `Mutex`
 
-They are the same concept: a box that many tasks reach, holding one value,
-serialized by a lock. The split is a *performance* distinction — many-readers
-versus exclusive — and asking a user to pick a **type** based on their
-expected read/write ratio is asking them to make a benchmarking decision at
+They are the same concept: a box holding one value, reached by several
+accessors, serialized by a lock. The split is a *performance* distinction —
+many-readers versus one-at-a-time — and asking a user to pick a **type** from
+their expected read/write ratio is asking for a benchmarking decision at
 declaration time, before the program exists.
 
 Merge into one, with the discipline in the methods:
 
 <!-- test: skip -->
 ```rask
-let config: Shared<Config> = Shared.new(cfg)
-
 let t = config.read().timeout          // shared access
 with config.write() as c {             // exclusive access
     c.retries = 5
 }
 ```
 
-`Mutex<T>` disappears; `with mutex as v` becomes `with x.write() as v`. Write-
-heavy workloads pay a small cost over a plain mutex, and if that ever matters
-it's an annotation on the declaration, not a different type in the language.
+`Mutex<T>` disappears as a type and survives as a strategy name. The question
+"which lock type?" stops existing.
 
-**Net: two names become one, and the question "which lock type?" stops
-existing.**
+(This turns out to be the *first* merge, not the only one — `Cell` folds in
+the same way, worked out below. Three types become one.)
 
 ## Two merges that look right and aren't
 
-**`Cell` into the lock family.** Tempting: `Cell` is a one-value box for one
-task, `Shared` is a one-value box for many tasks, so let the compiler notice
-whether it crosses a task boundary and pick the representation.
-
-It breaks on function signatures. `func bump(c: Cell<i32>)` — is that one
-locked or not? The answer depends on the caller, so the type needs a sharing
-parameter and every signature carries it. That trades two familiar names for
-a new generic dimension across the whole language. Worse deal.
+**`Cell` into the lock family — reversed later in this document.** The
+original objection was that `func bump(c: Cell<i32>)` would need a sharing
+parameter carried by every signature. That objection doesn't survive once the
+strategy parameter exists for locks anyway; see
+[what `Cell` really is](#what-owned-and-cell-really-are). Left here because
+the reasoning that changed is worth seeing.
 
 **`Store` into `Vec`.** Also tempting: a `Store` with no links declared is
 nearly a `Vec`. But the guarantees are opposite — `Vec` gives contiguity and
@@ -160,14 +155,15 @@ got the same treatment.
 
 <!-- test: skip -->
 ```rask
-let config = Shared.new(cfg)          // default: many readers at once
-let queue  = Shared.mutex(q)          // opt-in: plain lock, write-heavy
+let counter = Shared.new(0)           // default: task-local, no lock at all
+let config  = Shared.readers(cfg)     // opt-in: many tasks, concurrent reads
+let queue   = Shared.mutex(q)         // opt-in: many tasks, one at a time
 ```
 
-Everyone writes `Shared.new` and never learns the other exists. The person who
-has measured a contended write path goes looking and finds `mutex`. The
+Everyone writes `Shared.new` and never learns the others exist until they send
+one across a task boundary — at which point a compile error names them. The
 distinction stops being a fork in the road every user must take and becomes a
-thing you seek out.
+thing the compiler points at when it becomes relevant.
 
 (An earlier draft added `Shared.atomic` here too. That's since been rejected —
 see below: atomics need an API that doesn't look like locking, so they keep
@@ -209,8 +205,9 @@ trace would be magic, which is the thing to avoid.
 
 <!-- test: skip -->
 ```rask
-let config: Shared<Config> = Shared.new(cfg)              // default: concurrent readers
-let queue:  Shared<Queue, Mutex> = Shared.mutex(q)        // opt-in: one at a time
+let counter: Shared<i64> = Shared.new(0)                    // default: task-local
+let config:  Shared<Config, Readers> = Shared.readers(cfg)  // many tasks, concurrent reads
+let queue:   Shared<Queue, Mutex> = Shared.mutex(q)         // many tasks, one at a time
 ```
 
 `Mutex` stays as the **strategy** name — it's the word people already know for
@@ -219,8 +216,8 @@ though the type doesn't. (An earlier draft called it `Exclusive`, which is
 both non-standard and misleading: a plain mutex covers reads *and* writes, so
 "exclusive" describes the locking, not what you're allowed to do.)
 
-Write the bare `Shared<Config>` and you get the default; write the parameter
-and you've said it out loud. Constructor and annotation agree, and either one
+Write the bare `Shared<i64>` and you get the task-local default; write the
+parameter and you've said it out loud. Constructor and annotation agree, and either one
 alone is enough for a reader to know what they have.
 
 ### Accessing
@@ -251,9 +248,9 @@ you're reading or writing. Under the unified type you always say, at every use
 site. Read/write intent becomes visible in code that currently hides it.
 
 **Uniformity is the point:** `read()` under the `Mutex` strategy takes the
-exclusive lock. It's slower than the default variant would be there, never
-wrong. Code written against `Shared<T>` compiles and behaves correctly against
-every strategy, which is what makes the parameter safe to default.
+exclusive lock — slower than `Readers` would be there, never wrong. Code
+written generically over the strategy compiles and behaves correctly against
+all three, which is what makes the parameter safe to default.
 
 ## `Atomic` earns its own type after all
 
@@ -379,12 +376,16 @@ exchange, read-versus-write intent becomes visible at every use site, which
 
 ## Recommendation
 
-- **Merge `Shared` and `Mutex`** into one type, with the lock strategy as a
-  defaulted type parameter (`Shared<T>` / `Shared<T, Mutex>`) and a matching
-  constructor. Removes a question users can't answer at declaration time, and
-  lets one signature accept every variant. `Mutex` survives as the strategy
-  name so the familiar word isn't lost. Contradicts `mem.boxes`' closed-family
-  listing, so it's a deliberate change.
+- **Merge `Cell`, `Shared` and `Mutex`** into one type with the access
+  discipline as a defaulted type parameter — `Shared<T>` (task-local, no
+  lock), `Shared<T, Readers>`, `Shared<T, Mutex>`. Three names become one;
+  `Cell` and `Mutex` survive as strategies so the familiar words aren't lost.
+  Removes a question users can't answer at declaration time, and makes
+  sending a task-local value a compile error rather than a race. Contradicts
+  `mem.boxes`' closed-family listing, so it's a deliberate change.
+- **Take `Owned<T>` out of the storage question.** It answers "stack or
+  heap?", which is orthogonal to every other axis — mixing it in is part of
+  why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
   (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
   into `Shared` would have dressed a one-instruction operation in lock
