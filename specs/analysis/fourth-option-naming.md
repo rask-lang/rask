@@ -154,42 +154,87 @@ many of.
 
 Nothing survives all three cleanly except `Pool`, which is the finding.
 
+### `Pool` is out too — it means the opposite of what this is
+
+The case for `Pool` rested on familiarity and migration cost. Both are worth
+nothing: nobody uses Rask yet, and the entire corpus is this repo's own
+examples. With that crutch gone, the remaining connotation is fatal.
+
+**A pool is a supply of interchangeable things.** Thread pool, connection
+pool, object pool — you ask for *a* connection, not *that* connection, and
+the whole point is that you don't care which one you get. Identity is exactly
+what a pool doesn't have.
+
+This container is the opposite: every instance has a stable identity, is
+referenced individually, and is deleted individually. A newcomer's only prior
+is from other languages, where "pool" teaches interchangeability — so the
+name doesn't fail to teach, it teaches something false. That's worse than
+neutral, and it's a bug the current design already inherited.
+
 ### What that suggests
 
-The candidates that *teach* (`Roster`, `Ledger`, `Web`, `Colony`) all teach by
-analogy to one domain, and then read wrong in the other two. That's not bad
-luck — it's what happens when a general container gets a specific name. The
-same objection that killed `Graph` and `Table` kills each of them at the
-schema where their analogy doesn't hold.
+Every candidate that *teaches* does so by analogy to one domain, then reads
+wrong in the others — that's what happens when a general container gets a
+specific name, and it's the same objection that killed `Graph`, `Table` and
+the rest. So: **only the reference has to teach.** `Link<T>` carries the
+lesson. The container needs to say "many of these live here, each one its own
+thing" — accurately, in any domain — and then get out of the way.
 
-So the pair criterion needs qualifying: **the two names should not fight each
-other, but only the reference has to teach.** `Link<T>` carries the whole
-lesson — it links, it unlinks when the target dies. The container just needs
-to say "many of these live here" without lying, and stay out of the way.
+That rules out the evocative names (overfit), `Pool` (teaches the opposite),
+and leaves the plain ones. Cold-read again, on the survivors:
 
-By that standard the choice is between the neutral options:
+| Candidate | `<Task>` | `<Entity>` | `<Line>` | Notes |
+|---|---|---|---|---|
+| **`Store`** | good | good | good | plain, accurate, reads naturally everywhere. Common in user code — but so is `Map`; shadowing is a general issue, not a reason to pick a worse name |
+| `Registry` | good | good | good | the most precise word — things register, get identity, deregister — but long in hot-path declarations |
+| `Roll` | ok | ok | odd | short and correct (a roll of members) — collides with rotate/dice |
+| `Bank` | ok | ok | ok | neutral, faintly financial |
 
-- **`Pool<T>`** — already learned, already in every existing program, honest
-  about the job. Its only sin is being uninformative, which is now the
-  requirement rather than the flaw. The object-pool connotation is worth one
-  sentence in the docs.
-- **`Roster<T>`** — the most accurate neutral word available: current
-  members, by identity, joining and leaving. Costs a rename everywhere and
-  reads oddly for non-membership data.
+**Recommendation: `Store<T>` + `Link<T>`.**
 
-Current lean: **`Pool<T>` + `Link<T>`**, arrived at from the opposite
-direction than before — not because the container's name should be familiar,
-but because every evocative alternative turned out to overfit one domain.
+<!-- test: skip -->
+```rask
+struct World {
+    entities: Store<Entity>
+    player: Link<Entity>?
+}
 
-Still genuinely open. The strongest argument against `Pool` is that it names
-the old model's ticket-and-recycle mental image, and someone learning
-`Link<T>` on top of `Pool<T>` may import the wrong intuitions.
+struct Tracker {
+    tasks: Store<Task>
+    by_id: Map<TaskId, Link<Task>>
+}
+```
+
+It says what it is, in every domain, and claims nothing false. `Registry<T>`
+is the runner-up and the more precise word if the extra five characters don't
+grate.
+
+### Reconsidering the wrapper-free option
+
+With no installed base, "that's a bigger language change" also loses most of
+its force. So the radical option is worth re-listing rather than parking:
+
+<!-- test: skip -->
+```rask
+node struct Task { ... }
+
+struct Project {
+    lead: Task?              // a Task lives in a store, so this is a link
+    deps: Vec<Task>
+}
+```
+
+Cleanest possible use sites — no wrapper anywhere. The objection that stands
+on its own merits is cost-hiding: a field that looks like a plain value
+carries a back-pointer, which is a real transparency cost. The objection that
+doesn't stand any more is "too big a change."
 
 ## Recommendation so far
 
-`Link<T>?` for the reference — decided. Container leaning `Pool<T>`, on the
-finding that every evocative candidate overfits one domain and reads wrong in
-the others. `Roster<T>` is the one alternative still worth a second look.
+`Link<T>?` for the reference — decided. Container: **`Store<T>`**, with
+`Registry<T>` the runner-up. `Pool` is rejected outright — it names a supply
+of interchangeable things, which is the opposite of a container built on
+stable identity.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
