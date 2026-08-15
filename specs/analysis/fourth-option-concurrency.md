@@ -194,7 +194,7 @@ Three consequences:
 1. **Non-optional edges come back.** A4 killed them because a required cycle
    has no legal first member. Inside a batch there *is* a legal transient
    state, and constraints are checked at apply — deferred constraints,
-   exactly the database mechanism. `Edge<T>` (required) and `Edge<T>?`
+   exactly the database mechanism. `Link<T>` (required) and `Link<T>?`
    (optional) both exist again, and the distinction is meaningful: required
    edges never need a `?` at use sites.
 2. **One mechanism, three jobs.** The batch is the concurrency primitive

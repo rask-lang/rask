@@ -30,14 +30,14 @@ on is exactly what makes handles replaceable.
 
 ## Where the exploration stands
 
-Seven documents; this one is the entry point. The decisions, consolidated —
+Ten documents; this one is the entry point. The decisions, consolidated —
 a spec draft starts here.
 
 **The shape**
 
 | | Decided |
 |---|---|
-| Types | `Graph<T>` (where nodes live), `Edge<T>` (one reference). No plural type — `Vec<Edge<T>>` and `Map<K, Edge<T>>` are edge-aware underneath |
+| Types | `Store<T>` (where nodes live), `Link<T>` (one reference). No plural type — `Vec<Link<T>>` and `Map<K, Link<T>>` are edge-aware underneath |
 | Reference semantics | An edge goes `none` when its target dies. That's the whole model |
 | Representation | Raw pointers. `mem.relocatable` stays keys-only |
 | Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. Not locals (block-scoped borrows instead) |
@@ -48,8 +48,8 @@ a spec draft starts here.
 | Atomicity | Batches — validate then apply, no rollback. Also how required-edge cycles get built |
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
 | Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
-| Pool / Handle | Pool folds into Graph; `Handle` becomes boundary-only, if it's needed at all |
-| `Owned<T>` | **Kept.** Different rung of the ownership ladder — exclusively-owned heap data that nothing else references, and unlike a node it can be returned and moved. An AST wants it: movable, half the memory, free delete |
+| Pool / Handle | Pool folds into `Store<T>`; `Handle` becomes boundary-only, if it's needed at all |
+| `Heap<T>` | **Kept.** Different rung of the ownership ladder — exclusively-owned heap data that nothing else references, and unlike a node it can be returned and moved. An AST wants it: movable, half the memory, free delete |
 
 **Deferred on purpose:** `@lazy`, cascade/restrict, `NodeId`. Each failed the
 "does a real program demand this yet?" test. That the core keeps surviving
@@ -65,9 +65,9 @@ No — it shrinks it by one, and stratifies what's left.
 | `Pool` → `Store` | renamed, not added |
 | `Handle` → `Link` | renamed, not added |
 | `WeakHandle` | **deleted** — its whole job was surviving a stale reference, and stale references stop existing |
-| `Owned<T>` | kept, with a sharper boundary (exclusively-owned heap data, and unlike a node it can be returned) |
-| `Cell<T>` | kept. Solves a different problem — one mutable value shared across closures, which aren't store-owned, so a `Link` can't live there |
-| `Shared`, `Mutex`, `Atomic` | untouched; concurrency, not storage |
+| `Owned` → `Heap<T>` | renamed. Same job, sharper boundary: exclusively-owned heap data, and unlike a node it can be returned |
+| `Cell<T>`, `Mutex<T>` | **folded into `Shared<T>`** as strategies — see [consolidation](storage-type-consolidation.md) |
+| `Atomic<T>` | kept, own API, but reclassified out of the storage question |
 
 Also gone, though they aren't types: `using Pool<T>` context clauses,
 `frozen`, and the generation-coalescing compiler pass.
@@ -77,21 +77,16 @@ Also gone, though they aren't types: `using Pool<T>` context clauses,
 - **Day one:** `Vec`, `Map`, `string`, `T?`, `T or E`. Unchanged by any of
   this.
 - **When things reference each other and can be deleted:** `Store` + `Link`.
-- **When data is recursive and exclusively owned:** `Owned<T>`.
-- **When closures share one mutable value:** `Cell<T>`.
-- **When you go concurrent:** `Shared`, `Mutex`, `Atomic`.
+- **When several accessors share one mutable value:** `Shared<T>`, plus a
+  strategy (`Readers` / `Mutex`) if it crosses tasks.
+- **Orthogonal, not part of the sequence:** `Heap<T>` when data is recursive
+  or large; `Atomic<T>` for a measured contended counter.
 
-Seven memory types total, and no stratum is entered until a program needs it.
+Five memory types total, and no stratum is entered until a program needs it.
 For comparison: Rust reaches for `Box`, `Rc`, `Arc`, `RefCell`, `Cell`,
 `Mutex`, `RwLock`, `Weak` — more types, and the selection is harder because
 several combine (`Arc<Mutex<T>>`, `Rc<RefCell<T>>`). Go has almost none,
 which is the honest counterexample; it buys that with a garbage collector.
-
-The one overlap worth revisiting sometime, unrelated to this exploration:
-`Shared<T>` and `Mutex<T>` are two names for locking, split on a performance
-distinction (many-readers vs exclusive). A single type with `read`/`write`
-would cover both at some cost to write-heavy paths. Out of scope here; noted
-so it isn't lost.
 
 **Unsolved:** index backlinks surviving a `Map` rehash. First thing a spec
 draft must answer.
@@ -166,7 +161,7 @@ now they can all be found.
 
 ## The sketch: edges instead of handles
 
-A graph-shaped box (working name `Graph<T>`; naming comes last). Nodes live in
+A graph-shaped box (working name `Store<T>`; naming comes last). Nodes live in
 it like they live in a pool — it owns their memory. The difference: instead of
 handles, nodes refer to each other with **edges**, declared in the schema.
 
@@ -174,15 +169,15 @@ handles, nodes refer to each other with **edges**, declared in the schema.
 ```rask
 struct Entity {
     health: i32,
-    target: Edge<Entity>?,           // becomes none when the target is deleted
-    children: Vec<Edge<Entity>>,     // edge list; deleted nodes drop out
-    parent: Edge<Entity>? inverse(children),   // compiler-maintained inverse
+    target: Link<Entity>?,           // becomes none when the target is deleted
+    children: Vec<Link<Entity>>,     // edge list; deleted nodes drop out
+    parent: Link<Entity>? inverse(children),   // compiler-maintained inverse
 }
 ```
 
 The rules that make it work, all reusing existing machinery:
 
-1. **Edges live only in node fields.** An `Edge<T>` can be stored in a field of
+1. **Edges live only in node fields.** An `Link<T>` can be stored in a field of
    a node in the same graph, nowhere else. Locals hold block-scoped borrows, as
    everywhere in Rask. This is what keeps incoming references enumerable.
 
@@ -194,7 +189,7 @@ The rules that make it work, all reusing existing machinery:
    `children`'s. The memory the mechanism needs is memory those structures
    already carry by hand today.
 
-3. **Delete unlinks.** `graph.delete(n)` walks n's incoming edges (enumerable,
+3. **Delete unlinks.** `store.delete(n)` walks n's incoming edges (enumerable,
    via backlinks), sets each `Edge?` to `none` or removes it from its `Edges`
    list, unregisters n's outgoing backlinks, frees the node, returns it owned
    (so `@resource` fields follow `mem.linear`, same as `pool.remove`). O(degree),
@@ -212,7 +207,7 @@ The rules that make it work, all reusing existing machinery:
 5. **Delete respects open borrows.** Deleting while a local borrows a node is
    the existing W2c-shaped compile error. Worklist algorithms that need node
    identity in local collections get it from the frozen discipline: inside
-   `using frozen Graph<T>` no deletes can happen, so raw node refs in a local
+   `using frozen Store<T>` no deletes can happen, so raw node refs in a local
    `Vec` are valid for the whole scope by construction — regions falling out of
    a rule (`PF5`) that already exists.
 
@@ -237,7 +232,7 @@ With edges:
 
 <!-- test: skip -->
 ```rask
-struct Entity { health: i32, target: Edge<Entity>? }
+struct Entity { health: i32, target: Link<Entity>? }
 
 if e.target? as t {
     t.health -= damage             // no check exists to elide
@@ -252,7 +247,7 @@ simply never exists.
 
 Handles are runtime-checked: the stale state exists, `pool[h]` detects it and
 panics, `get(h)?` asks the reader to remember to be careful. Edges move death
-into the type: an edge to something that can die is `Edge<T>?`, it becomes
+into the type: an edge to something that can die is `Link<T>?`, it becomes
 `none` when the target dies, and the compiler forces the branch. Reads cannot
 panic — there is no stale state left to detect.
 
@@ -261,7 +256,7 @@ What remains at runtime, exhaustively:
 - `!` on a none edge — explicit, same as any optional.
 - Aliased `with` scopes — two edges resolving to the same node: pointer compare
   at scope open, panic on duplicate. Pools' W3 rule verbatim, same cost.
-- Non-optional edges (`owner: Edge<Player>`, no `?`) need a declared delete
+- Non-optional edges (`owner: Link<Player>`, no `?`) need a declared delete
   policy, and it's the database trio: **cascade** (delete propagates to the
   holder), **restrict** (the *delete* fails — error or panic at the one delete
   site, not scattered across reads), or disallow non-optional edges entirely.
@@ -332,17 +327,17 @@ Walking every pool use case in the specs and examples:
 | ECS relationships (`entity.body`, `target`, `children`) | Edges — cross-graph works; delete touches both graphs, like a foreign key across tables |
 | Observer lists, in-world caches, event nodes | Edges, when the holder lives in the graph |
 | Iterate-and-delete loops | Graph iteration, same shape as pools |
-| Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Vec<Edge<Line>>` on the owner; entries drop at delete |
-| Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Edge<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
+| Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Vec<Link<Line>>` on the owner; entries drop at delete |
+| Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Link<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
 | Chunked parallel iteration (game_loop's aspirational `spawn` over handle chunks) | Scoped parallel iteration under a delete-locked scope — disjoint node sets, no keys, and none of the `Arc<Mutex>` pools currently smuggle in for cross-task `using` |
 | References serialized out (save files, network) | Keys — though the validation flagship's actual escaping identity is `TaskId`, a user-level ID redeemed through the `by_id` index, not a `Handle`. Even the web-service case prefers domain keys + a maintained index |
 | References held by unsynchronized concurrent holders | Keys |
 
 What's left of `Pool` after edges take topology is small: a registry that hands
 out checked keys. That doesn't earn a separate box. **Direction (decided): Pool
-folds into Graph.** One box, two reference kinds — `Edge<T>` inside (checkless,
+folds into Graph.** One box, two reference kinds — `Link<T>` inside (checkless,
 fixed at delete), `Key<T>` escaping (a Copy value, Send, storable anywhere,
-redeemed via `graph.get(k)?`). `Key` is today's `Handle` with its honest name;
+redeemed via `store.get(k)?`). `Key` is today's `Handle` with its honest name;
 a keys-only graph with no edge fields is today's `Pool`. Box count shrinks by
 one.
 
@@ -353,7 +348,7 @@ First draft of the limit said: anything escaping in *time* (queues, logs) or
 delete-witness model reaches further than scopes:
 
 - **Time escapes can stay in the model** by living in the graph. An event
-  node holding `who: Edge<Entity>?` gets fixed at delete like any other edge —
+  node holding `who: Link<Entity>?` gets fixed at delete like any other edge —
   processing the event later reads `none`, no generation, no panic path. The
   queue being *data in the world* is enough.
 - **Even cross-task holders could in principle be fixed**: a registered root
@@ -395,7 +390,7 @@ returns — O(1), a handle-remove's cost. A read of a not-yet-healed edge checks
 one flag in the target's header (same cache line as the data it was about to
 load), sees dead, self-nulls — after which that edge is a plain pointer again.
 Remaining unlinks amortize onto later graph operations or an explicit
-`graph.flush_deletes()`; memory is reused when the backlink list drains.
+`store.flush_deletes()`; memory is reused when the backlink list drains.
 Observationally identical to eager edges: a node or `none`, never a panic,
 never a stale value.
 

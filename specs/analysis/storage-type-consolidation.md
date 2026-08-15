@@ -20,7 +20,7 @@ questions:
 | plain field | one | this value | — |
 | `Vec` / `Map` | many | this scope | no |
 | `Store` + `Link` | many | this scope | **yes** |
-| `Owned<T>` | one | movable, exclusive | no |
+| `Heap<T>` | one | movable, exclusive | no |
 | `Cell<T>` | one | closures, one task | no |
 | `Mutex<T>` | any | many tasks | no |
 | `Shared<T>` | any | many tasks | no |
@@ -88,9 +88,9 @@ moves its elements on `push`; `Store` gives stable addresses and never moves
 them. Merging means one of those promises is broken, and both are load-bearing
 (contiguity for iteration speed, stability for links).
 
-`Owned` into `Store` fails on cost, argued in
+`Heap` into `Store` fails on cost, argued in
 [the guide](fourth-option-guide.md): a store node carries a back-pointer per
-reference, an AST doesn't need one, and `Owned` can be returned from a
+reference, an AST doesn't need one, and a `Heap<T>` can be returned from a
 function where a node can't.
 
 ## `Atomic` isn't a storage type at all
@@ -131,7 +131,7 @@ Two orthogonal questions sit *outside* this list, which is why mixing them in
 made it unchooseable:
 
 - **Does it need to be on the heap** (recursive, or large and moved often)?
-  → wrap it in `Owned<T>`. Independent of every answer above.
+  → wrap it in `Heap<T>`. Independent of every answer above.
 - **Is this a contended counter or flag you've measured?** → `Atomic<T>`.
   A concurrency primitive, not a storage choice.
 
@@ -286,12 +286,12 @@ grounds, not because it answers "where does my data live." It belongs with
 SIMD and inline assembly: documented under concurrency, reached for after
 measuring, absent from the five questions below.
 
-## What `Owned` and `Cell` really are
+## What `Heap` (was `Owned`) and `Cell` really are
 
 Both were sitting in the storage table under false pretenses, and stripping
 each to its essential job moves one out and folds the other in.
 
-### `Owned<T>` is heap indirection, not a sharing type
+### `Heap<T>` is heap indirection, not a sharing type
 
 Its job, plainly: **put this value on the heap.** That's the whole thing. It
 exists for two reasons and neither is about who can reach the data —
@@ -301,19 +301,20 @@ exists for two reasons and neither is about who can reach the data —
 - a large value moves in one pointer instead of a memcpy.
 
 The linearity — consumed exactly once — isn't its purpose, it's how Rask makes
-it safe without a destructor. Answering "who can reach this?" for an `Owned`
+it safe without a destructor. Answering "who can reach this?" for it
 is trivial: exactly one thing, the owner. It never varies, so it isn't a
 question.
 
-So `Owned` belongs with `Atomic` in the reclassified pile: a real type, doing
+So it belongs with `Atomic` in the reclassified pile: a real type, doing
 real work, but answering **"stack or heap?"** rather than "where does my data
 live and who sees it?". It should leave the storage decision table for the
 same reason `Atomic` did — it's an orthogonal axis, and mixing axes is what
 made the table unchooseable.
 
-Rust calls this `Box`, and the name is honest about it: a box you put a thing
-in. `Owned` names the linearity instead of the indirection, which may be
-naming the mechanism over the purpose — worth revisiting, out of scope here.
+The old name, `Owned`, named the linearity instead of the indirection —
+naming the mechanism over the purpose, and worse, naming a property every
+Rask value already has. Renamed to `Heap<T>`; see
+[naming](fourth-option-naming.md).
 
 ### `Cell<T>` is `Shared<T>` with a task-local strategy
 
@@ -383,7 +384,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   Removes a question users can't answer at declaration time, and makes
   sending a task-local value a compile error rather than a race. Contradicts
   `mem.boxes`' closed-family listing, so it's a deliberate change.
-- **Take `Owned<T>` out of the storage question.** It answers "stack or
+- **Take `Heap<T>` out of the storage question.** It answers "stack or
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API

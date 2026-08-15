@@ -31,7 +31,7 @@ struct Task {
 
 <!-- test: skip -->
 ```rask
-mut tasks: Graph<Task> = Graph.new()
+mut tasks: Store<Task> = Graph.new()
 
 let design = tasks.insert(Task { title: "design", done: false })
 let build  = tasks.insert(Task { title: "build",  done: false })
@@ -50,7 +50,7 @@ Declare it in the struct, like any field.
 struct Task {
     title: string
     done: bool
-    blocked_by: Edge<Task>?        // this task waits on another one
+    blocked_by: Link<Task>?        // this task waits on another one
 }
 
 let design = tasks.insert(Task { title: "design", done: false, blocked_by: none })
@@ -112,7 +112,7 @@ is [#740](https://github.com/rask-lang/rask/issues/740), in the flagship.
 struct Task {
     title: string
     done: bool
-    deps: Vec<Edge<Task>> = Vec.new()
+    deps: Vec<Link<Task>> = Vec.new()
 }
 
 build.deps.push(design)
@@ -135,10 +135,10 @@ both ends. Declare that, and the compiler maintains both sides:
 ```rask
 struct Task {
     title: string
-    subtasks: Vec<Edge<Task>> = Vec.new()
+    subtasks: Vec<Link<Task>> = Vec.new()
 
     @inverse(subtasks)
-    parent: Edge<Task>?
+    parent: Link<Task>?
 }
 
 child.parent = epic         // child now appears in epic.subtasks, automatically
@@ -154,8 +154,8 @@ needs, so a declared inverse costs no extra memory at all.
 <!-- test: skip -->
 ```rask
 struct Store {
-    tasks: Graph<Task>
-    by_id: Map<TaskId, Edge<Task>>
+    tasks: Store<Task>
+    by_id: Map<TaskId, Link<Task>>
 }
 
 store.by_id.insert(id, task)
@@ -175,22 +175,22 @@ one that fits — that's the whole decision.
 | Rung | Use when | Cost |
 |---|---|---|
 | **Plain field** — `Entity { body: Body }` | Owned by exactly one thing, fixed size, nothing else references it | Nothing. It's inline |
-| **`Owned<T>`** — `Expr { left: Owned<Expr> }` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
-| **`Graph<T>` + `Edge<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
+| **`Heap<T>`** — `Expr { left: Heap<Expr> }` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
+| **`Store<T>` + `Link<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
 
 The question that decides it: **does anything else point at this?** If not, you
 never needed a graph — nothing can be left dangling by a delete, so there's
 nothing to fix, and paying for back-pointers buys you nothing.
 
-### `Owned<T>` keeps its job
+### `Heap<T>` keeps its job
 
-Graphs don't replace it, and the reason is sharper than cost. **An `Owned<T>`
+Graphs don't replace it, and the reason is sharper than cost. **An `Heap<T>`
 can leave.** It's a value: return it from a function, store it in a struct,
-move it into a channel. A parser writes `func parse_expr() -> Owned<Expr>`
+move it into a channel. A parser writes `func parse_expr() -> Heap<Expr>`
 and hands the tree back to its caller. A graph node can't be returned at all —
 edges live inside the graph's world.
 
-So for an AST: `Owned<T>` wins on every axis. It's movable, it's roughly half
+So for an AST: `Heap<T>` wins on every axis. It's movable, it's roughly half
 the memory (no back-pointer per child), the delete is free (drop the root,
 the tree goes), and linearity already guarantees exactly-once consumption. A
 graph would add bookkeeping for a question — "who else points at this
@@ -220,11 +220,11 @@ to be able to read layout off the page.
 genuinely has one owner, then deleting it happens *through* that owner, so
 the owner already has the field in hand and no back-pointer was ever needed
 to find it. That's not a graph with an optimization applied — that is
-`drop(ptr)` on an `Owned<T>`, exactly. The proof obligation *is*
-`Owned<T>`'s contract.
+`drop(ptr)` on an `Heap<T>`, exactly. The proof obligation *is*
+`Heap<T>`'s contract.
 
 So the two aren't one mechanism and its special case; they're two contracts,
-and the cost difference **is** the contract. `Owned<T>` says "exactly one
+and the cost difference **is** the contract. `Heap<T>` says "exactly one
 owner, consumed exactly once," gets checked at compile time, and is rewarded
 with zero bookkeeping. A graph says "an unknown number of referrers," and
 pays back-pointers to answer at runtime what linearity answers statically.
@@ -240,17 +240,17 @@ combination is the whole trigger.
 
 | Your data | Use |
 |---|---|
-| Entities that target, own, or depend on each other | `Graph<T>` + `Edge<T>?` |
+| Entities that target, own, or depend on each other | `Store<T>` + `Link<T>?` |
 | A list of values you iterate, no cross-references | `Vec<T>` — no graph |
 | One thing that belongs to exactly one other and is never referenced elsewhere | a plain field: `Entity { body: Body }` |
-| A tree you own and traverse, no back-pointers, single owner | `Owned<T>` |
+| A tree you own and traverse, no back-pointers, single owner | `Heap<T>` |
 | Something that must survive being written to a file or sent to another task | a domain id (`TaskId`), plus an index |
 | Config, constants, anything never deleted | ordinary values |
 
 Three concrete calls:
 
 - **A game's entities** → graph. They target each other and die constantly.
-- **A parsed AST** → `Owned<T>`. Single owner, no cross-references, never
+- **A parsed AST** → `Heap<T>`. Single owner, no cross-references, never
   partially deleted.
 - **Lines in a text buffer** → graph if lines reference each other (marks,
   folds, annotations); a plain `Vec` if they don't.
@@ -268,7 +268,7 @@ Three concrete calls:
 
 ## The mental model, ported
 
-| If you know | An `Edge<T>?` is |
+| If you know | An `Link<T>?` is |
 |---|---|
 | SQL | a foreign key with `ON DELETE SET NULL` |
 | Java, C#, Python | a reference that goes null on delete instead of keeping the object alive |

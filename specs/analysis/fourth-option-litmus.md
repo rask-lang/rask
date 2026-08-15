@@ -31,12 +31,12 @@ Edges, with `prev` declared as `next`'s inverse:
 
 <!-- test: skip -->
 ```rask
-struct Node { value: i32, next: Edge<Node>?, prev: Edge<Node>? inverse(next) }
+struct Node { value: i32, next: Link<Node>?, prev: Link<Node>? inverse(next) }
 
 func remove(self, n: Node) {
     if n.next == none { self.tail = n.prev }
     if n.prev? as p { p.next = n.next } else { self.head = n.next }
-    self.graph.delete(n)     // remaining incoming edges unlink themselves
+    self.store.delete(n)     // remaining incoming edges unlink themselves
 }
 ```
 
@@ -75,7 +75,7 @@ Edges:
 
 <!-- test: skip -->
 ```rask
-struct Entity { health: i32, damage: i32, target: Edge<Entity>? }
+struct Entity { health: i32, damage: i32, target: Link<Entity>? }
 
 for e in world {
     if e.target? as t {
@@ -123,8 +123,8 @@ Edges, with the 1:N inverse and a cascade policy in the schema:
 ```rask
 struct SceneNode {
     name: string
-    children: Vec<Edge<SceneNode>>   // @cascade
-    parent: Edge<SceneNode>? inverse(children)
+    children: Vec<Link<SceneNode>>   // @cascade
+    parent: Link<SceneNode>? inverse(children)
 }
 
 func reparent(n: SceneNode, new_parent: SceneNode) {
@@ -137,7 +137,7 @@ func delete_subtree(scene: Scene, n: SceneNode) {
 ```
 
 Reparenting is one assignment because that's what it *is* relationally —
-`UPDATE node SET parent = X`. The editor's `selected: Edge<SceneNode>?` (a
+`UPDATE node SET parent = X`. The editor's `selected: Link<SceneNode>?` (a
 root edge) nulls itself when the selection is deleted; the handle version
 re-validates the selection at every UI read.
 

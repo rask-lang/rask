@@ -28,8 +28,8 @@ transitively owns.
 <!-- test: skip -->
 ```rask
 struct Inventory {                 // not a node — a plain value
-    items: Vec<Edge<Item>>
-    favorite: Edge<Item>?
+    items: Vec<Link<Item>>
+    favorite: Link<Item>?
 }
 
 struct Player {                    // a node
@@ -41,7 +41,7 @@ struct Player {                    // a node
 This matters more than it looks. Composition works normally — a node's edges
 don't have to be flattened into its top level, so ordinary struct design
 survives. Combined with root edges (edge fields on the graph's owning struct)
-and root indexes (`Map<K, Edge<T>>` on that struct), the enumerable region is
+and root indexes (`Map<K, Link<T>>` on that struct), the enumerable region is
 the whole owned tree, not one level of it.
 
 What's excluded is narrow: locals (which are block-scoped borrows anyway) and
@@ -60,10 +60,10 @@ handle.
 ```rask
 struct DamageEvent {
     amount: i32
-    subject: Edge<Entity>?     // goes none if the subject dies first
+    subject: Link<Entity>?     // goes none if the subject dies first
 }
 
-// events: Graph<DamageEvent> — a field of the same world
+// events: Store<DamageEvent> — a field of the same world
 for ev in world.events {
     if ev.subject? as target {
         target.health -= ev.amount
@@ -134,7 +134,7 @@ A generic structure with no natural identity field still needs a stable name
 sometimes — a cache keyed by node, a debugger, a plugin boundary.
 
 **`NodeId`: a name, not a reference.** The graph mints a never-reused `u64`;
-`graph.find(id)` returns `T?`.
+`store.find(id)` returns `T?`.
 
 <!-- test: skip -->
 ```rask
@@ -228,7 +228,7 @@ property that forbids compaction. A graph can defragment its arena, or sort
 nodes into traversal order so a hot loop walks contiguous memory — an
 optimization that matters exactly in the workloads pools were designed for.
 
-**Decided: compaction is explicit, never automatic.** `graph.compact()` is a
+**Decided: compaction is explicit, never automatic.** `store.compact()` is a
 call the programmer writes, at a point they choose. A runtime that relocates
 nodes on its own schedule is a moving collector — unpredictable pauses
 decided by something other than the program — which is precisely what this
@@ -241,7 +241,7 @@ old graph must be severed or converted (a cross-sync-domain edge is barred by
 the ownership rule anyway). And relocation must respect open borrows —
 moving a node someone holds is the same compile error as deleting one.
 
-Nested `Owned<T>` fields ride along correctly: moving a node moves the owning
+Nested `Heap<T>` fields ride along correctly: moving a node moves the owning
 pointer, not the heap value it points at.
 
 ## Verdict

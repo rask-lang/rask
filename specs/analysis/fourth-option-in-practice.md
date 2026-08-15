@@ -10,19 +10,19 @@ What programs look like if `Graph` + `Edge` lands (eager default, per
 
 ## The two types
 
-Originally three — `Edge<T>` and `Edges<T>` differed by one character, which
+Originally three — `Link<T>` and `Edges<T>` differed by one character, which
 is unreadable and makes a typo compile. **`Edges<T>` is deleted.** The plural
 never needed its own type: put edges in the collections that already exist.
 
 | Today | Proposed | What it is |
 |---|---|---|
-| `Pool<Task>` | `Graph<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
-| `Handle<Task>` in a field | `Edge<Task>?` | **one reference** to a thing that lives in a graph |
-| `Vec<Handle<Task>>` | `Vec<Edge<Task>>` | **many references** — an ordinary Vec |
+| `Pool<Task>` | `Store<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
+| `Handle<Task>` in a field | `Link<Task>?` | **one reference** to a thing that lives in a graph |
+| `Vec<Handle<Task>>` | `Vec<Link<Task>>` | **many references** — an ordinary Vec |
 
-Read as a database, which is where the model comes from: `Graph<Task>` is the
-tasks table, `Edge<User>?` is a foreign key column pointing at one row, and a
-`Vec<Edge<Task>>` is the many side.
+Read as a database, which is where the model comes from: `Store<Task>` is the
+tasks table, `Link<User>?` is a foreign key column pointing at one row, and a
+`Vec<Link<Task>>` is the many side.
 
 <!-- test: skip -->
 ```rask
@@ -35,21 +35,21 @@ struct Store { tasks: Pool<Task>, users: Pool<User> }
 
 // Proposed — same shape, different guarantee
 struct Task {
-    assignee: Edge<User>?            // one, maybe
-    deps: Vec<Edge<Task>>            // several
+    assignee: Link<User>?            // one, maybe
+    deps: Vec<Link<Task>>            // several
 }
-struct Store { tasks: Graph<Task>, users: Graph<User> }
+struct Store { tasks: Store<Task>, users: Store<User> }
 ```
 
-`Vec<Edge<T>>` and `Map<K, Edge<T>>` work because the compiler knows the
+`Vec<Link<T>>` and `Map<K, Link<T>>` work because the compiler knows the
 element type is an edge and uses the tombstone-and-compact representation
 A5 already specified — the container is edge-aware underneath, ordinary at
 the source level. One reference concept, and collections stay collections.
 
 The difference is entirely in what happens when a target dies:
 
-- `Edge<User>?` becomes `none` — automatically, at the delete.
-- an entry in `Vec<Edge<Task>>` disappears — the list gets shorter.
+- `Link<User>?` becomes `none` — automatically, at the delete.
+- an entry in `Vec<Link<Task>>` disappears — the list gets shorter.
 - With handles, both keep pointing at a dead thing, and every reader has to
   check. (Missing that check is [#740](https://github.com/rask-lang/rask/issues/740).)
 
@@ -77,7 +77,7 @@ up as a normal argument exactly where the code actually mutates structure.
 
 ### How it maps to languages you know
 
-| Coming from | An `Edge<T>?` is… |
+| Coming from | An `Link<T>?` is… |
 |---|---|
 | SQL | a foreign key with `ON DELETE SET NULL`. Precisely this, and where the model came from |
 | Java / C# / Python | a normal object reference — except it goes null when someone deletes the object, instead of keeping it alive |
@@ -105,17 +105,17 @@ The data model reads like an ER diagram — because it is one:
 <!-- test: skip -->
 ```rask
 struct World {
-    entities: Graph<Entity>
-    player: Edge<Entity>?                  // root edge: nulls itself if the player dies
-    by_name: Map<string, Edge<Entity>>     // root index: entry drops at delete
+    entities: Store<Entity>
+    player: Link<Entity>?                  // root edge: nulls itself if the player dies
+    by_name: Map<string, Link<Entity>>     // root index: entry drops at delete
 }
 
 struct Entity {
     name: string
     health: i32
     damage: i32
-    target: Edge<Entity>?         // nulls when the target dies
-    squad: Vec<Edge<Entity>>      // M:N — deleted members drop out
+    target: Link<Entity>?         // nulls when the target dies
+    squad: Vec<Link<Entity>>      // M:N — deleted members drop out
     body: Body                    // owned by value — dies with the entity, no policy needed
 }
 
@@ -174,7 +174,7 @@ player. All of that is the schema executing, not code someone remembered to
 write. Note that no delete *policy* appears anywhere — the set-to-`none`
 default and ordinary composition carry the whole example (see A16).
 
-(Splitting `Body` into its own `Graph<Body>` for cache locality — the usual
+(Splitting `Body` into its own `Store<Body>` for cache locality — the usual
 ECS reason — is the one shape that *would* need an ownership policy, since
 the entity would then reference its body rather than contain it. That policy
 is deliberately deferred; see A16.)
@@ -192,7 +192,7 @@ not there.
 
 | Operation | Cost | vs C with raw pointers |
 |---|---|---|
-| Follow an `Edge<T>?` | the `?` test you wrote; + one header-flag load until the edge heals | 1.0× steady-state; ~1 extra predictable branch transiently |
+| Follow an `Link<T>?` | the `?` test you wrote; + one header-flag load until the edge heals | 1.0× steady-state; ~1 extra predictable branch transiently |
 | Assign an edge | pointer store + backlink relink (~4–8 stores) | ~4× a raw store — but the C/handle program does this relinking by hand as visible code |
 | `delete` | O(1) tombstone | cheaper than free() |
 | `flush_deletes()` | O(pending fixups), each edge pays once | the same work manual unlinking would do, batched |
@@ -251,7 +251,7 @@ rather than pretend the write is free.
   that handles survive growth is the very property that forbids moving a live
   element. This is a structural capability gain, not a tradeoff, and it lands
   in exactly the workloads pools were designed for. **Explicit only** —
-  `graph.compact()` is a call you write. A runtime that relocates on its own
+  `store.compact()` is a call you write. A runtime that relocates on its own
   schedule is a moving collector, which is the thing this design exists to
   avoid.
 - **Cycle-safe serialization.** The encoder knows the schema, so `Encode` on
@@ -281,7 +281,7 @@ rather than pretend the write is free.
   stays keys-only. Graphs serialize through Encode instead.
 - **Fully dynamic topology.** Relations are declared per-field. A bag of
   arbitrary runtime-decided cross-references doesn't fit (root
-  `Map<K, Edge<T>>` covers the tame cases; reflection-style graphs don't).
+  `Map<K, Link<T>>` covers the tame cases; reflection-style graphs don't).
 - **The high-fan-in churn workload** keeps a real cost floor: each incoming
   edge is written once, whenever it runs.
 
@@ -318,7 +318,7 @@ If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
 - DAY_ONE.md drops Handle, the get-dance, and `using Pool<T>`; gains `Edge?`
   and two schema clauses that announce themselves.
 - boxes.md: the family stays five (`Cell`, `Graph`, `Shared`, `Mutex`,
-  `Owned`), with the "identity" discipline upgraded to "relational".
+  `Heap`), with the "identity" discipline upgraded to "relational".
 
 The migration surface is honest: pools.md, boxes.md, context-clauses.md,
 relocatable.md, closures.md guidance, every example using `Pool` — plus the

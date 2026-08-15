@@ -25,7 +25,7 @@ worse than what's there today.
 | `lsm_database/cache.rk` | `Pool<CacheBlock>` + `Map<string, Handle<…>>` | 3 — LRU cache with an index | `Store` + `Link` | clean; removes real ceremony |
 | `text_editor.rk` | `Pool<Line>` + `Vec<Handle<Line>>` | 3 — ordered line view | `Store` + `Vec<Link<Line>>` | clean |
 | `game_loop.rk` | `Pool<Entity>` + `Handle<Entity>?` | 3 — entities target each other | `Store` + `Link` | clean |
-| `cli_calculator.rk` | `Owned<Expr>` | orthogonal — recursive, needs the heap | `Owned<Expr>` | unchanged |
+| `cli_calculator.rk` | `Heap<Expr>` | orthogonal — recursive, needs the heap | `Heap<Expr>` | unchanged |
 | anywhere | `Cell<T>` | — | — | **zero usages** |
 | anywhere | `Atomic<T>` | — | — | **zero usages** |
 
@@ -85,12 +85,14 @@ The ceremony is the cost of *remembering* — and forgetting it is the bug.
 Its header comment reads: *"Demonstrates `Pool<T>` and `Handle<T>` for
 **non-graph** use cases."* The corpus is explicitly documenting that this
 container is used for things that aren't graphs — written before any of this
-exploration existed. `Graph<CacheBlock>` would have contradicted a comment
-already in the tree. `Store<CacheBlock>` reads correctly.
+exploration existed. `Graph<CacheBlock>` (an early working name) would have
+contradicted a comment already in the tree. `Store<CacheBlock>` reads
+correctly.
 
 ### 5. `own` already means something else
 
-`Owned<T>` is the heap box, but `own` is also the move-capture keyword:
+`Owned<T>` (now `Heap<T>`) is the heap box, but `own` is also the
+move-capture keyword:
 
 <!-- test: skip -->
 ```rask
@@ -100,10 +102,9 @@ mut opts = parse_args(own args)     // move an argument
 ```
 
 Three uses of `own` in the corpus, two of which have nothing to do with heap
-allocation. Since `Owned` is being reclassified anyway — it answers "stack or
-heap?", not "who can reach this?" — the collision strengthens the case for
-naming it after its purpose. Rust's `Box` is the obvious precedent. Out of
-scope here, recorded.
+allocation. This finding fed directly into the rename: `Owned<T>` became
+`Heap<T>` with `Heap(expr)` construction, freeing `own` to mean move-capture
+and nothing else.
 
 ## What the test did not cover
 
