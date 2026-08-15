@@ -154,17 +154,20 @@ got the same treatment.
 <!-- test: skip -->
 ```rask
 let config = Shared.new(cfg)          // default: many readers at once
-let queue  = Shared.exclusive(q)      // opt-in: plain lock, write-heavy
-let hits   = Shared.atomic(0i64)      // opt-in: lock-free word
+let queue  = Shared.mutex(q)          // opt-in: plain lock, write-heavy
 ```
 
-Everyone writes `Shared.new` and never learns the others exist. The two who
-have measured a contended write path find `exclusive`; the one writing a
-metrics counter finds `atomic`. The distinction stops being a fork in the
-road every user must take and becomes a thing you go looking for.
+Everyone writes `Shared.new` and never learns the other exists. The person who
+has measured a contended write path goes looking and finds `mutex`. The
+distinction stops being a fork in the road every user must take and becomes a
+thing you seek out.
+
+(An earlier draft added `Shared.atomic` here too. That's since been rejected —
+see below: atomics need an API that doesn't look like locking, so they keep
+their own type.)
 
 **Why the type stays uniform.** The strategy is a defaulted type parameter —
-`Shared<T, S = ReadWrite>` — resolved at monomorphization, exactly like the
+`Shared<T, S = Readers>` — resolved at monomorphization, exactly like the
 allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and more
 importantly a function written `func serve(c: Shared<Config>)` accepts every
 variant. Today, `Mutex<T>` and `Shared<T>` being separate types means an API
@@ -183,13 +186,11 @@ compiler auto-detect an atomic increment inside a `write` block — it'd be
 fast when the optimizer recognised the pattern and slow when it didn't, with
 no way to tell from the page.
 
-**Where atomics only partly fit.** Simple operations — increment, load,
-store — express fine through the normal interface and compile to atomic
-instructions under `Shared.atomic`. Compare-and-swap loops and explicit
-memory orderings need their own API and their own vocabulary. That's the
-honest line: the common atomic operations become an opt-in variant, and the
-genuinely exotic ones stay a separate advanced surface for people who already
-know they want it.
+**Where the pattern stops.** It covers lock strategies, because every variant
+is still a lock and the API is honest for all of them. It does *not* stretch
+to atomics: those aren't a faster lock, they're the absence of one, and
+dressing them in `read`/`write` would misprice them at every use site. That
+boundary is argued below.
 
 ## The API of the unified `Shared`
 
