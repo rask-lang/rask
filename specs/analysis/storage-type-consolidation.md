@@ -142,14 +142,66 @@ The reason this reads better than the table is that the axes are now
 *sequential*. The current set forces a simultaneous three-way judgement,
 which is exactly the thing that's hard, and no amount of naming fixes it.
 
+## Performance as an opt-in variant, not a second type
+
+The general form of the fix, and Rask already uses it: `Pool.new()` versus
+`Pool.with_capacity(n)` is one type with two performance contracts, chosen at
+the constructor. Nothing new is being invented — the lock split just never
+got the same treatment.
+
+**Rule: the type says what it is; the constructor says how it's built.**
+
+<!-- test: skip -->
+```rask
+let config = Shared.new(cfg)          // default: many readers at once
+let queue  = Shared.exclusive(q)      // opt-in: plain lock, write-heavy
+let hits   = Shared.atomic(0i64)      // opt-in: lock-free word
+```
+
+Everyone writes `Shared.new` and never learns the others exist. The two who
+have measured a contended write path find `exclusive`; the one writing a
+metrics counter finds `atomic`. The distinction stops being a fork in the
+road every user must take and becomes a thing you go looking for.
+
+**Why the type stays uniform.** The strategy is a defaulted type parameter —
+`Shared<T, S = ReadWrite>` — resolved at monomorphization, exactly like the
+allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and more
+importantly a function written `func serve(c: Shared<Config>)` accepts every
+variant. Today, `Mutex<T>` and `Shared<T>` being separate types means an API
+must pick one and callers must match it; consolidating removes that too.
+
+This is *not* the objection that killed folding `Cell` into the lock family.
+There, the parameter would have carried **semantics** — thread-safe or not,
+which changes what the code means. Here every variant is equally correct and
+they differ only in speed, so a caller can never be wrong, only suboptimal.
+
+**Which way the default should lean.** Conservative. A reader of
+`Shared.new(x)` should never discover it was secretly doing something
+cleverer than it says; discovering "I could have been faster if I'd asked" is
+the acceptable direction for a surprise. That also rules out having the
+compiler auto-detect an atomic increment inside a `write` block — it'd be
+fast when the optimizer recognised the pattern and slow when it didn't, with
+no way to tell from the page.
+
+**Where atomics only partly fit.** Simple operations — increment, load,
+store — express fine through the normal interface and compile to atomic
+instructions under `Shared.atomic`. Compare-and-swap loops and explicit
+memory orderings need their own API and their own vocabulary. That's the
+honest line: the common atomic operations become an opt-in variant, and the
+genuinely exotic ones stay a separate advanced surface for people who already
+know they want it.
+
 ## Recommendation
 
-- **Merge `Shared` and `Mutex`.** Clean win, removes a question users can't
-  answer at declaration time. Contradicts `mem.boxes`' closed-family listing,
-  so it's a deliberate change, not a clarification.
-- **Move `Atomic` out of the storage story** into concurrency, documented as
-  a measured optimization. It never belonged in the "where does my data live"
-  question.
+- **Merge `Shared` and `Mutex`** into one type, with the lock strategy as a
+  constructor variant (`Shared.new` / `Shared.exclusive`) over a defaulted
+  type parameter. Removes a question users can't answer at declaration time,
+  and lets one signature accept every variant. Contradicts `mem.boxes`'
+  closed-family listing, so it's a deliberate change.
+- **Fold the common atomic operations in the same way** (`Shared.atomic`),
+  leaving CAS loops and explicit orderings as a separate advanced surface.
+  `Atomic` leaves the storage story either way — it answers a performance
+  question, not a "where does my data live" one.
 - **Keep the rest**, and ship the ordered decision procedure above in
   `DAY_ONE.md` and the boxes spec. The set isn't too large; it was presented
   as a flat menu when it's actually a sequence of yes/no questions.
