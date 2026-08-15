@@ -133,35 +133,63 @@ Working candidates, judged as pairs:
 | `Registry<T>` + `Link<T>` | things register and get identity | verbose; `Registry<Entity>` is a mouthful in hot-path code |
 | `Store<T>` + `Link<T>` | plain and honest | collides with real programs — the flagship's own struct is named `Store` |
 
-Current lean: **`Table<T>`**. The design's entire correctness argument is the
-database one, so a name that makes a reader think "foreign key" is doing
-teaching work every time it's read. `Table<Task>` + `Link<Task>` + a delete
-that nulls the links is one coherent story someone can guess most of.
+**`Table<T>` is out.** It isn't a table — no rows, no columns, no schema in
+the SQL sense, and "table" already means hash-map to a large audience. The
+model *resembles* a database; the container isn't one.
 
-<!-- test: skip -->
-```rask
-struct Store {
-    tasks: Table<Task>
-    by_id: Map<TaskId, Link<Task>>
-}
+### The cold-read test
 
-struct World {
-    entities: Table<Entity>
-    player: Link<Entity>?
-}
-```
+Same three declarations under each candidate. A name has to survive all
+three, because the container is general — it holds whatever a program has
+many of.
 
-The honest counter: `Table<Entity>` in a game loop reads strangely, and games
-are the workload this design serves best. If that friction is real,
-`Pool<T>` stays the fallback — familiar and harmless, just not instructive.
+| Candidate | `<Task>` | `<Entity>` | `<Line>` | Verdict |
+|---|---|---|---|---|
+| `Pool` | fine | fine | fine | survives everywhere, teaches nothing, carries object-pool (recycling) baggage |
+| `Roster` | good — a roster of tasks | good | odd | members with identity that join and leave; the meaning is exactly right |
+| `Colony` | odd | good | odd | real prior art (`plf::colony` is a stable-reference container), but reads whimsical |
+| `Web` | ok | odd | odd | pairs perfectly with `Link` — but Rask has `net`/`http`, so "web" is loaded |
+| `Ledger` | good | odd | odd | entries with identity; implies append-only accounting |
+| `Nest`, `Cohort`, `Zone` | odd | ok | odd | no meaning carried; just unfamiliar |
 
-Not settled. Next iteration should write the same three schemas under each
-pair and read them cold.
+Nothing survives all three cleanly except `Pool`, which is the finding.
+
+### What that suggests
+
+The candidates that *teach* (`Roster`, `Ledger`, `Web`, `Colony`) all teach by
+analogy to one domain, and then read wrong in the other two. That's not bad
+luck — it's what happens when a general container gets a specific name. The
+same objection that killed `Graph` and `Table` kills each of them at the
+schema where their analogy doesn't hold.
+
+So the pair criterion needs qualifying: **the two names should not fight each
+other, but only the reference has to teach.** `Link<T>` carries the whole
+lesson — it links, it unlinks when the target dies. The container just needs
+to say "many of these live here" without lying, and stay out of the way.
+
+By that standard the choice is between the neutral options:
+
+- **`Pool<T>`** — already learned, already in every existing program, honest
+  about the job. Its only sin is being uninformative, which is now the
+  requirement rather than the flaw. The object-pool connotation is worth one
+  sentence in the docs.
+- **`Roster<T>`** — the most accurate neutral word available: current
+  members, by identity, joining and leaving. Costs a rename everywhere and
+  reads oddly for non-membership data.
+
+Current lean: **`Pool<T>` + `Link<T>`**, arrived at from the opposite
+direction than before — not because the container's name should be familiar,
+but because every evocative alternative turned out to overfit one domain.
+
+Still genuinely open. The strongest argument against `Pool` is that it names
+the old model's ticket-and-recycle mental image, and someone learning
+`Link<T>` on top of `Pool<T>` may import the wrong intuitions.
 
 ## Recommendation so far
 
-`Link<T>?` for the reference — decided. Container name still open, leaning
-`Table<T>`, fallback `Pool<T>`.
+`Link<T>?` for the reference — decided. Container leaning `Pool<T>`, on the
+finding that every evocative candidate overfits one domain and reads wrong in
+the others. `Roster<T>` is the one alternative still worth a second look.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
