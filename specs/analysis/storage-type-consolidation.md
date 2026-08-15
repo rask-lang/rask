@@ -126,12 +126,19 @@ Six, after the lock merge — and the choice is mechanical if the questions are
 asked in the right order:
 
 1. **Is it one value, held by exactly one owner?** → a plain field. Done.
-   (Recursive or variable-sized, so it needs the heap? → `Owned<T>`.)
 2. **Many values?** → `Vec` or `Map`, unless…
 3. **…other things reference them, and they can be deleted?** → `Store` +
    `Link`.
-4. **Do several closures in one task share one mutable value?** → `Cell<T>`.
-5. **Does it cross tasks?** → `Shared<T>` (`.read()` / `.write()`).
+4. **Do several accessors share one mutable value?** → `Shared<T>`, plus a
+   strategy if it crosses tasks (`Mutex` / `Readers`).
+
+Two orthogonal questions sit *outside* this list, which is why mixing them in
+made it unchooseable:
+
+- **Does it need to be on the heap** (recursive, or large and moved often)?
+  → wrap it in `Owned<T>`. Independent of every answer above.
+- **Is this a contended counter or flag you've measured?** → `Atomic<T>`.
+  A concurrency primitive, not a storage choice.
 
 Read as a rule: **plain fields until you have many; `Vec`/`Map` until they
 reference each other; `Store` when they do; and the concurrency types only
@@ -281,6 +288,94 @@ API; with a separate type it simply doesn't arise.
 grounds, not because it answers "where does my data live." It belongs with
 SIMD and inline assembly: documented under concurrency, reached for after
 measuring, absent from the five questions below.
+
+## What `Owned` and `Cell` really are
+
+Both were sitting in the storage table under false pretenses, and stripping
+each to its essential job moves one out and folds the other in.
+
+### `Owned<T>` is heap indirection, not a sharing type
+
+Its job, plainly: **put this value on the heap.** That's the whole thing. It
+exists for two reasons and neither is about who can reach the data —
+
+- a struct can't contain itself by value (infinite size), so recursion needs
+  indirection;
+- a large value moves in one pointer instead of a memcpy.
+
+The linearity — consumed exactly once — isn't its purpose, it's how Rask makes
+it safe without a destructor. Answering "who can reach this?" for an `Owned`
+is trivial: exactly one thing, the owner. It never varies, so it isn't a
+question.
+
+So `Owned` belongs with `Atomic` in the reclassified pile: a real type, doing
+real work, but answering **"stack or heap?"** rather than "where does my data
+live and who sees it?". It should leave the storage decision table for the
+same reason `Atomic` did — it's an orthogonal axis, and mixing axes is what
+made the table unchooseable.
+
+Rust calls this `Box`, and the name is honest about it: a box you put a thing
+in. `Owned` names the linearity instead of the indirection, which may be
+naming the mechanism over the purpose — worth revisiting, out of scope here.
+
+### `Cell<T>` is `Shared<T>` with a task-local strategy
+
+This reverses a call made earlier in this document, so the reasoning is worth
+being explicit about.
+
+Strip `Cell` down: **one value, reached by several accessors, mutated through
+a scoped view.** That is word-for-word what `Shared` is. The only difference
+is *which* accessors — closures in one task, versus tasks — and therefore what
+synchronization is needed: none, versus a lock.
+
+Which is exactly the axis the strategy parameter already models:
+
+| | Who reaches it | Synchronization | Sendable |
+|---|---|---|---|
+| `Shared<T>` *(default: `Local`)* | closures and scopes in one task | none | no |
+| `Shared<T, Readers>` | many tasks | read-write lock | yes |
+| `Shared<T, Mutex>` | many tasks | plain lock | yes |
+
+**Three types become one.** `Cell` and `Mutex` both disappear as type names
+and survive as strategies.
+
+**Why the earlier objection doesn't hold.** This document rejected the merge
+because `func bump(c: Cell<i32>)` would need a sharing parameter, and every
+signature would carry it. Two things make that acceptable now. First, the
+strategy parameter already exists for locks, so this adds no new machinery —
+it extends a mechanism to its natural end. Second, and more importantly, the
+information *is* the caller's business: whether a value can cross a task
+boundary is a genuine type-level fact, not a hidden performance detail, and
+the compiler enforces it. A function that needs any strategy writes the
+generic form; one that needs a sendable value says so and gets a compile
+error otherwise. That's generics working correctly, not a leak.
+
+**Defaulting to `Local` is the right way round.** Write `Shared<Counter>` in
+single-task code and you pay no synchronization at all — the same cost `Cell`
+has today. Try to send it to another task and the compile error names the
+fix:
+
+```
+ERROR [conc.sync/SH7]: this `Shared` is task-local and cannot be sent
+   |
+ 8 |  spawn(own || { counter.write() … })
+   |                 ^^^^^^^ `Shared<i64>` uses the `Local` strategy
+
+WHY: `Local` takes no lock, so two tasks touching it would race.
+
+FIX: declare which lock you want:
+
+  let counter: Shared<i64, Mutex> = Shared.mutex(0)
+```
+
+You can never accidentally pay for synchronization you didn't need, and you
+can never accidentally skip synchronization you did — the expensive direction
+is opt-in and the unsafe direction is a compile error.
+
+**The cost, owned:** single-task access gains one method call —
+`with counter.write() as v` where `Cell` said `with counter as v`. In
+exchange, read-versus-write intent becomes visible at every use site, which
+`Cell` currently hides.
 
 ## Recommendation
 
