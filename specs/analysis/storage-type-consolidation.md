@@ -191,6 +191,95 @@ honest line: the common atomic operations become an opt-in variant, and the
 genuinely exotic ones stay a separate advanced surface for people who already
 know they want it.
 
+## The API of the unified `Shared`
+
+### Declaring
+
+The strategy lives in the type, so it's always writable and always
+inspectable — a constructor that silently changed behaviour with no type-level
+trace would be magic, which is the thing to avoid.
+
+<!-- test: skip -->
+```rask
+let config: Shared<Config> = Shared.new(cfg)                  // default
+let queue:  Shared<Queue, Exclusive> = Shared.exclusive(q)    // plain lock
+let hits:   Shared<i64, Atomic> = Shared.atomic(0)            // lock-free word
+```
+
+Write the bare `Shared<Config>` and you get the default; write the parameter
+and you've said it out loud. The constructor and the annotation agree, and
+either one alone is enough for a reader to know what they have.
+
+### Accessing
+
+Two verbs, and both work inline or as a block — the box family's existing
+shape (`mem.boxes`), unchanged:
+
+| Form | Use |
+|---|---|
+| `config.read().timeout` | inline read, scope is the expression |
+| `with config.read() as c { … }` | multi-statement read |
+| `queue.write().push(item)` | inline write |
+| `with queue.write() as q { … }` | multi-statement write |
+
+<!-- test: skip -->
+```rask
+with config.write() as c {
+    c.timeout = 60.seconds
+    c.retries = 5
+}
+```
+
+`return`, `try`, `break` and `continue` propagate through the block as they do
+today.
+
+**A quiet improvement:** today's `with mutex as q { … }` doesn't say whether
+you're reading or writing. Under the unified type you always say, at every use
+site. Read/write intent becomes visible in code that currently hides it.
+
+**Uniformity is the point:** `read()` on an `Exclusive` takes the exclusive
+lock. It's slower than the default variant would be there, never wrong. Code
+written against `Shared<T>` compiles and behaves correctly against every
+strategy, which is what makes the parameter safe to default.
+
+### The atomic variant
+
+Simple operations go through the same interface and compile to atomic
+instructions:
+
+<!-- test: skip -->
+```rask
+let n = hits.read()                       // atomic load
+with hits.write() as v { v += 1 }         // atomic fetch_add
+```
+
+Arbitrary code in a `write` block can't be lock-free, so on the `Atomic`
+strategy the block is restricted to one supported operation, and anything
+else is a compile error that names the fix:
+
+```
+ERROR [conc.sync/SH4]: `write` block on an atomic Shared must be a single
+                        supported operation
+   |
+ 4 |  with hits.write() as v {
+ 5 |      v += compute_delta()
+   |      ^^^^^^^^^^^^^^^^^^^^ calls a function; not expressible as one atomic
+
+WHY: `Shared.atomic` is lock-free — it can do add, sub, swap, and store in one
+     instruction, and nothing else.
+
+FIX: compute first, then apply:
+
+  let d = compute_delta()
+  with hits.write() as v { v += d }
+
+  or use `Shared.new(0)` if the update genuinely needs a lock.
+```
+
+Compare-and-swap and explicit memory orderings keep their own methods —
+`hits.compare_swap(old, new)` — available only on the `Atomic` strategy,
+where the person calling them already knows what they're doing.
+
 ## Recommendation
 
 - **Merge `Shared` and `Mutex`** into one type, with the lock strategy as a
