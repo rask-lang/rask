@@ -5,14 +5,15 @@
 
 # The Fourth Option in Practice
 
-What programs look like if `Graph` + `Edge` lands (eager default, per
+What programs look like if `Store` + `Link` lands (eager default, per
 [fourth-option.md](fourth-option.md)). Syntax is placeholder throughout.
 
 ## The two types
 
-Originally three — `Link<T>` and `Edges<T>` differed by one character, which
-is unreadable and makes a typo compile. **`Edges<T>` is deleted.** The plural
-never needed its own type: put edges in the collections that already exist.
+Originally three: the plural type (`Edges<T>`, alongside `Edge<T>`) differed
+from the singular by one character — unreadable, and a typo would compile.
+**The plural is deleted.** It never needed its own type: put links in the
+collections that already exist.
 
 | Today | Proposed | What it is |
 |---|---|---|
@@ -42,7 +43,7 @@ struct Store { tasks: Store<Task>, users: Store<User> }
 ```
 
 `Vec<Link<T>>` and `Map<K, Link<T>>` work because the compiler knows the
-element type is an edge and uses the tombstone-and-compact representation
+element type is a link and uses the tombstone-and-compact representation
 A5 already specified — the container is edge-aware underneath, ordinary at
 the source level. One reference concept, and collections stay collections.
 
@@ -232,7 +233,7 @@ that isn't a declared relation compile to a plain store, which is most of a
 Rask program.
 
 **The crossover, stated plainly.** Handles make the write cheap (one integer
-store) and the read expensive (a check, forever). Edges make the write cost
+store) and the read expensive (a check, forever). Links make the write cost
 ~4–7 stores and the read free. Set a target once and read it 60×/second for
 ten seconds: handles pay ~600 checks (~1.2µs), edges pay one write (~5ns)
 and 600 free reads. Reads dominate by orders of magnitude in every real
@@ -274,7 +275,7 @@ rather than pretend the write is free.
 
 ## What it closes
 
-- **Edges never leave the structure.** No free-floating persistent
+- **Links never leave the structure.** No free-floating persistent
   references; boundaries use domain keys + root indexes (the corpus census
   shows that's what real programs already do — validation's `TaskId`).
 - **Graph mmap/relocatability.** Decided: raw pointers, so `mem.relocatable`
@@ -315,7 +316,7 @@ If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
   strictly read).
 - `mem.pools`' weak handles, `with_valid`, `get_unchecked` escape hatches —
   the problems they escape from don't exist.
-- DAY_ONE.md drops Handle, the get-dance, and `using Pool<T>`; gains `Edge?`
+- DAY_ONE.md drops Handle, the get-dance, and `using Pool<T>`; gains `Link?`
   and two schema clauses that announce themselves.
 - boxes.md: the family stays five (`Cell`, `Graph`, `Shared`, `Mutex`,
   `Heap`), with the "identity" discipline upgraded to "relational".

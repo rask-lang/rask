@@ -3,12 +3,12 @@
 <!-- summary: Three litmus programs written with handles and with edges, scored per METRICS -->
 <!-- depends: analysis/fourth-option.md, memory/pools.md, specs/METRICS.md -->
 
-# Fourth Option Litmus: Edges vs Handles, Scored
+# Fourth Option Litmus: Links vs Handles, Scored
 
 Thought experiment, per METRICS.md. Three programs where references die behind
 your back, each written twice: today's `Pool` + `Handle`, and the proposed
-`Graph` + `Edge` (schema-declared, backlinked, fixed at delete —
-[fourth-option.md](fourth-option.md)). Edge syntax is hypothetical throughout.
+`Store` + `Link` (schema-declared, backlinked, fixed at delete —
+[fourth-option.md](fourth-option.md)). Link syntax is hypothetical throughout.
 
 ## L1: Doubly-linked list
 
@@ -27,7 +27,7 @@ func remove(self, h: Handle<Node>) {
 }
 ```
 
-Edges, with `prev` declared as `next`'s inverse:
+Links, with `prev` declared as `next`'s inverse:
 
 <!-- test: skip -->
 ```rask
@@ -71,7 +71,7 @@ for h in world {
 }
 ```
 
-Edges:
+Links:
 
 <!-- test: skip -->
 ```rask
@@ -117,7 +117,7 @@ func delete_subtree(scene: Scene, n: Handle<SceneNode>) {
 }
 ```
 
-Edges, with the 1:N inverse and a cascade policy in the schema:
+Links, with the 1:N inverse and a cascade policy in the schema:
 
 <!-- test: skip -->
 ```rask
@@ -143,7 +143,7 @@ re-validates the selection at every UI read.
 
 ## Memory model
 
-| Stored reference | Handles | Edges |
+| Stored reference | Handles | Links |
 |---|---|---|
 | One direction, inverse declared | 16B (`Handle?`) | 8B (pointer) — the inverse field *is* the backlink |
 | Both directions (list, tree) | 32B (two `Handle?`) + 4B generation/slot | 16B (two pointers), no generations |
@@ -156,7 +156,7 @@ edge case edges don't have: a slot whose generation saturates is dead forever.
 
 ## Speed (analytic — no implementation exists to measure)
 
-| Operation | Handles | Edges |
+| Operation | Handles | Links |
 |---|---|---|
 | Follow a reference | index math + bounds + generation compare + branch (~2 dependent loads, 2 branches; coalescing amortizes repeats) | 1 dependent load — it *is* a pointer chase; nothing to elide |
 | Write a reference | 1–2 stores (it's an integer) | unlink old + link new backlink: ~4–8 stores |
@@ -166,7 +166,7 @@ edge case edges don't have: a slot whose generation saturates is dead forever.
 The delete asymmetry is smaller than it looks: the handle version's O(1)
 remove leaves stale handles that every *future* read must check and every
 correct program must eventually clean up (L2's `else` branch — smeared
-delete cost, paid at read sites, forever). Edges concentrate the same fixup
+delete cost, paid at read sites, forever). Links concentrate the same fixup
 work at the delete. For the read-to-write ratios of real graph code (reads
 dominate by orders of magnitude), moving cost from reads to writes/deletes
 is the favorable direction. The genuinely worse case: high-fan-in nodes
@@ -175,22 +175,22 @@ chasing, honestly slower than a generation bump.
 
 ## Scorecard (per METRICS.md)
 
-| Metric | Handles | Edges | Notes |
+| Metric | Handles | Links | Notes |
 |---|---|---|---|
 | **MC** stale references | caught at runtime | **impossible by construction** | MC's own text: "impossible by construction, not just caught at runtime. That's the whole point." This is the row the fourth option exists for. Also kills the forget-the-else-branch bug class (L2), which is *silent* under handles |
 | **SN** on L2's hot loop | ~1.2 (ceremony exceeds logic; the 0.3 red line is crossed by the mandatory dance) | ~0.3 | On whole programs handles dilute to ~0.5; edges sit near the target everywhere because the dance has no edge equivalent |
 | **ED** (ref-management LOC) | L1 remove: 5 stmts / 4 branches. L3 reparent: 5 lines. Subtree delete: recursive helper | 3 / 2; 1 line; 1 line + schema | Roughly half the code on every reference-maintenance path; best-in-class comparison (Go with GC pointers) becomes *reachable* for reparent — one assignment, same as Go |
 | **TC** | generation check implicit (blessed by METRICS example) | backlink writes implicit (same small-cost tier); **`delete` hides O(degree)** | The one TC regression. Mitigation: the hidden work is exactly the fixups the handle program writes as visible code; it scales with real obligations, not with a collector's mood. Still — a `delete` whose cost varies 1000× deserves a doc-level answer |
 | **PI** | flat, predictable costs | edge write and delete vary with multiplicity/degree | Small loss. Layout prediction improves (no slot table between you and the node) |
-| **RS** | `Pool`, `Handle`, the get-dance idiom, `using` contexts, W2 rules | `Edge?`, `inverse`, `on_delete`, delete-locked scopes | Similar count, but edge concepts announce themselves in the schema (RS doesn't charge for type-announced concepts); the get-dance is an unwritten idiom living in heads, the most expensive kind |
-| **RO** hot reads | ~1.1–1.5× C (check + indirection; coalescing narrows it) | **1.0× C** — a pointer chase is the C baseline | Edges hit RO ≤ 1.10 with no elimination pass at all; pools need `comp.gen-coalesce` + frozen contexts to approach it |
+| **RS** | `Pool`, `Handle`, the get-dance idiom, `using` contexts, W2 rules | `Link?`, `inverse`, `on_delete`, delete-locked scopes | Similar count, but edge concepts announce themselves in the schema (RS doesn't charge for type-announced concepts); the get-dance is an unwritten idiom living in heads, the most expensive kind |
+| **RO** hot reads | ~1.1–1.5× C (check + indirection; coalescing narrows it) | **1.0× C** — a pointer chase is the C baseline | Links hit RO ≤ 1.10 with no elimination pass at all; pools need `comp.gen-coalesce` + frozen contexts to approach it |
 | **RO** churn-heavy | O(1) removes | O(degree) deletes | Handles win this workload, full stop |
 | **CS** | — | schema is per-struct, inverse checking module-local | No whole-program analysis; CS unaffected |
 | **IF** | ECS-standard | **no language has relational memory** | The seat is genuinely empty (fourth-option.md prior art) |
 
 ## Human factors
 
-Edges match the untrained mental model: "the target died, so the field is
+Links match the untrained mental model: "the target died, so the field is
 empty" is how people describe object graphs before any language teaches them
 otherwise. Handles are the trained model — reference-as-ticket, redeemed at
 an arena — and the training is what every ECS tutorial exists to do. The
@@ -211,7 +211,7 @@ Three honest intuition costs on the edge side:
   but it's where friction lives.
 
 Day-one surface: handles cost `Pool`, `Handle`, `using` contexts, the
-get-dance, and staleness-as-panic; edges cost `Edge?` plus schema clauses
+get-dance, and staleness-as-panic; links cost `Link?` plus schema clauses
 that announce themselves where they're used. In the litmus programs *and*
 the current example corpus (game_loop's `player` is a root edge; the other
 flagships barely touch pools), effectively 100% of handle uses are topology —
@@ -221,7 +221,7 @@ plugins), where `WeakHandle` lives today.
 
 ## Verdict
 
-Edges dominate handles on the workloads pools were designed for — read-mostly
+Links dominate handles on the workloads pools were designed for — read-mostly
 structures with dying members — winning MC, SN, ED, RS, hot-path RO, and IF.
 Handles win churn-heavy deletes and keep two structural duties edges can't
 take: durable identity (`Key<T>`, per the census) and escape across the

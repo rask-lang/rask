@@ -3,7 +3,7 @@
 <!-- summary: Lock-free-by-design concurrency for edges — staged structural mutation, three parallel shapes, and the batch that replaces transactions -->
 <!-- depends: analysis/fourth-option.md, analysis/fourth-option-adversarial.md, concurrency/sync.md -->
 
-# Edges and Concurrency, Designed In
+# Links and Concurrency, Designed In
 
 The adversarial pass answered "cross-graph edges can span two locks" with
 "then wrap the ownership root in one lock." That's a patch, and a bad one:
@@ -72,7 +72,7 @@ domains own their state, cross-domain is by name.
 
 ## Performance, claimed honestly
 
-| | Pools today | Edges, staged |
+| | Pools today | Links, staged |
 |---|---|---|
 | Parallel reads | generation check + Pool's internal `Arc<Mutex>` on structural ops | pointer chase, no atomics, scales linearly |
 | Parallel field writes | same lock | disjoint chunks, no coordination |
@@ -120,7 +120,7 @@ GC's shape, and three points concede cleanly:
 
 - **The shape is the same.** Deferred batch, latency spike, cost displaced
   from the line that caused it.
-- **Backlink maintenance is a write barrier.** Edge assignment costs ~4–8
+- **Backlink maintenance is a write barrier.** Link assignment costs ~4–8
   stores instead of 1 — structurally what a generational GC's write barrier
   does to every pointer write. Owned.
 - **A hub node is a real pause.** Deleting a node with 100k incoming edges

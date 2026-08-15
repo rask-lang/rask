@@ -177,7 +177,7 @@ struct Entity {
 
 The rules that make it work, all reusing existing machinery:
 
-1. **Edges live only in node fields.** An `Link<T>` can be stored in a field of
+1. **Links live only in node fields.** An `Link<T>` can be stored in a field of
    a node in the same graph, nowhere else. Locals hold block-scoped borrows, as
    everywhere in Rask. This is what keeps incoming references enumerable.
 
@@ -190,7 +190,7 @@ The rules that make it work, all reusing existing machinery:
    already carry by hand today.
 
 3. **Delete unlinks.** `store.delete(n)` walks n's incoming edges (enumerable,
-   via backlinks), sets each `Edge?` to `none` or removes it from its `Edges`
+   via backlinks), sets each `Link?` to `none` or removes it from its list
    list, unregisters n's outgoing backlinks, frees the node, returns it owned
    (so `@resource` fields follow `mem.linear`, same as `pool.remove`). O(degree),
    at an explicit call site — the cost is visible, per Transparency. No user
@@ -246,7 +246,7 @@ simply never exists.
 ### Runtime safety
 
 Handles are runtime-checked: the stale state exists, `pool[h]` detects it and
-panics, `get(h)?` asks the reader to remember to be careful. Edges move death
+panics, `get(h)?` asks the reader to remember to be careful. Links move death
 into the type: an edge to something that can die is `Link<T>?`, it becomes
 `none` when the target dies, and the compiler forces the branch. Reads cannot
 panic — there is no stale state left to detect.
@@ -293,7 +293,7 @@ trade is favorable. For churn-heavy, high-fan-in structures (10,000 edges into
 one node, deleted every frame) it's worse, and honestly so: the delete's cost is
 proportional to what must be fixed.
 
-| | `Pool` + `Handle` | `Graph` + `Edge` |
+| | `Pool` + `Handle` | `Store` + `Link` |
 |---|---|---|
 | Read a reference | ~1ns check + indirection (elidable sometimes) | plain deref, nothing to elide |
 | Write a reference | free (it's an integer copy) | O(1) backlink register |
@@ -303,7 +303,7 @@ proportional to what must be fixed.
 | Reference escapes the structure | yes — handles are values, send them anywhere | no — edges live in node fields only |
 | Survives serialization / mmap | yes (`mem.relocatable`) | needs pointer fixup, or loses the row above |
 
-The last two rows are the real finding. **Edges kill handles for topology, and
+The last two rows are the real finding. **Links kill handles for topology, and
 cannot replace them for identity.** An event queue holding "who died", a save
 file, a network message, a handle sent to another task — those are references
 that outlive scopes, escape the structure, and survive time. Anything that does
@@ -323,9 +323,9 @@ Walking every pool use case in the specs and examples:
 
 | Use case today | Lands on |
 |---|---|
-| Graphs, trees with parent pointers, linked lists | Edges |
-| ECS relationships (`entity.body`, `target`, `children`) | Edges — cross-graph works; delete touches both graphs, like a foreign key across tables |
-| Observer lists, in-world caches, event nodes | Edges, when the holder lives in the graph |
+| Graphs, trees with parent pointers, linked lists | Links |
+| ECS relationships (`entity.body`, `target`, `children`) | Links — cross-graph works; delete touches both graphs, like a foreign key across tables |
+| Observer lists, in-world caches, event nodes | Links, when the holder lives in the graph |
 | Iterate-and-delete loops | Graph iteration, same shape as pools |
 | Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Vec<Link<Line>>` on the owner; entries drop at delete |
 | Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Link<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
@@ -369,7 +369,7 @@ death wait for the name, which is RESTRICT wearing ownership's coat.)
 
 ### Representation (decided)
 
-Edges compile to raw pointers. An index representation (base + index, still
+Links compile to raw pointers. An index representation (base + index, still
 checkless — index reuse is safe without generations because stale edges can't
 exist) would keep pools' serialization/mmap story, at one add per hop paid
 everywhere. Declined: the relocatability story is narrow in practice and
@@ -379,7 +379,7 @@ keys-only feature.
 
 ### Eager or lazy: the unlink's timing is implementation-free
 
-Edge-vs-key is two choices, only one of them forced. The *semantics* — checked
+Link-vs-key is two choices, only one of them forced. The *semantics* — checked
 key or self-nulling edge — is user-visible and must be picked per reference.
 The *timing* of the unlink is not observable in single-threaded code: a reader
 cannot distinguish "nulled eagerly at delete" from "nulled lazily before I

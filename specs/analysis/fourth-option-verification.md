@@ -28,7 +28,7 @@ Soundness = three invariants, and every operation must preserve all three.
 
 The load-bearing structural facts, each already decided:
 
-1. **Enumerability.** Edges live only where the graph transitively owns them
+1. **Enumerability.** Links live only where the graph transitively owns them
    — nodes, values inside nodes, graph-owned containers (locals are block-scoped
    borrows), so the incoming list is complete by construction. This is where
    the no-storable-references ban is spent.
@@ -61,7 +61,7 @@ of wrong. Handles win five things:
 | **Relocation** (mmap, `to_bytes`) | integers survive being moved; pointers don't | Real, narrow |
 | **Snapshot** | shallow memcpy vs pointer translation | Real, narrow |
 
-Edges win: read cost (a plain deref vs a check), the stale-reference bug
+Links win: read cost (a plain deref vs a check), the stale-reference bug
 class (impossible vs detected), reference-maintenance code volume (~half),
 bidirectional memory (16B vs 32B + generations), day-one concept count, and
 they retire `using Pool<T>`, `frozen`, and the whole generation-coalescing
@@ -166,14 +166,14 @@ func task_is_blocked(t: Task) -> bool {
 
 ### Scoring (per METRICS)
 
-| Metric | Handles | Edges | Note |
+| Metric | Handles | Links | Note |
 |---|---|---|---|
 | **MC** (stale refs) | detected at runtime; **the flagship gets it wrong** (#740) | impossible | The bug class stops existing |
 | **SN** on the two functions above | ceremony ≈ logic on the blocked check; the sweep is pure ceremony | ~0.2 | Handles cross the 0.3 red line here |
 | **ED** (delete path) | 6 lines + an O(n) sweep, or 3 lines and a latent panic | 3 lines | Half, and no wrong-but-compiles variant |
 | **UCC** (web services, 30% weight) | 1.0 — expressible | 1.0 | Both express it; edges express it *correctly by default* |
 | **PI** | flat costs | delete now O(deps), not O(1) | Small loss |
-| **RO** (list endpoint, read-dominated) | generation check per dep per view | plain deref | Edges faster on the hot path this service actually runs |
+| **RO** (list endpoint, read-dominated) | generation check per dep per view | plain deref | Links faster on the hot path this service actually runs |
 | **RS** | `Pool`, `Handle`, `using frozen`, the get-dance | `Link<T>`, a root index | Fewer, and the store's `using frozen` helpers lose their reason to exist |
 
 **Sharpest finding:** the escaping identity in this program is already

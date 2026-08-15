@@ -3,7 +3,7 @@
 <!-- summary: Teaching guide for graphs and edges — how they work, how to use them, when to reach for them -->
 <!-- depends: analysis/fourth-option.md -->
 
-# Graphs and Edges: A Guide
+# Stores and Links: A Guide
 
 How you'd write Rask if this lands. Written as a tutorial partly because
 that's the honest design test — a model you can't teach in one page is a model
@@ -263,7 +263,7 @@ Three concrete calls:
   stores (it maintains the back-pointer); each read costs nothing. That trade
   is excellent when reads dominate — which is nearly always — and poor when
   they don't.
-- **You need the reference to leave.** Edges live inside the graph's world.
+- **You need the reference to leave.** Links live inside the graph's world.
   Crossing to a file, a socket, or another task means a domain id.
 
 ## The mental model, ported

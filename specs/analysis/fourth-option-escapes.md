@@ -7,7 +7,7 @@
 
 The objection, stated at full strength: Rask has no storable references, so
 `Handle<T>` was carrying that entire load — every place a program needs to
-name something later, elsewhere, or across a boundary. Edges can't leave the
+name something later, elsewhere, or across a boundary. Links can't leave the
 structure. That looks like a hole where a large amount of real code lives.
 
 Working it through: **"escaping" was never one need.** Handles served four,
@@ -215,7 +215,7 @@ O(in-degree), no new mechanism.
 
 That unlocks something handles structurally cannot do:
 
-| | `Pool` + `Handle` | `Graph` + `Edge` |
+| | `Pool` + `Handle` | `Store` + `Link` |
 |---|---|---|
 | Node identity is | the slot index | the node itself |
 | Can a live node change slots? | **No** — the index *is* the handle; moving it invalidates every handle | Yes — incoming edges are rewritten to the new address |
