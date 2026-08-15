@@ -402,27 +402,53 @@ semantically precise candidate. It also drops a keyword from the language,
 which is worth something on its own — and `own` is freed for move-capture
 either way.
 
+### The grammar filter
+
+`Alloc<i64>` reads as *"allocate an i64"* — a verb stem in a noun position.
+`let x: Alloc<i64>` says x is an allocate-i64, which isn't a thing. Types name
+things, so a candidate has to be a **noun** (naming what it is) or an
+**adjective** (modifying the wrapped type). Applying that:
+
+| Candidate | Part of speech | Reads as | |
+|---|---|---|---|
+| `Heap<Expr>` | noun (a place) | "a heap Expr" — an Expr on the heap | ✓ |
+| `Separate<Expr>` | adjective | "a separate Expr" | ✓ |
+| `Indirect<Expr>` | adjective | "an indirect Expr" | ✓ |
+| `Alloc<Expr>` | **verb stem** | "allocate an Expr" | ✗ |
+| `Apart<Expr>` | adverb | "an apart Expr" | ✗ |
+| `Place<Expr>` | noun *or* verb | ambiguous — reads both ways | ~ |
+
+`Alloc` is out on grammar, and the noun form that would fix it —
+`Allocation<Expr>` — is too long for a type appearing in every recursive
+field. There's no short noun for "an allocated thing" that isn't already
+taken (`Cell`, `Block`, `Slot`, `Box` all mean something else here).
+
+That leaves three, and the filter has done real work: it removed the
+allocator-neutral candidate that was competing with `Heap` on substance.
+
 ### Three worth choosing between
 
-- **`Heap<T>`** — shortest, instantly read by any systems programmer, and
-  Rask has already decided allocation is semantic (principle 1). Quibble:
+- **`Heap<T>`** — noun, shortest, instantly read by any systems programmer,
+  and Rask has already decided allocation is semantic (principle 1). Quibble:
   arena allocations aren't colloquially "the heap".
-- **`Alloc<T>`** — names the cost exactly and is allocator-neutral, which is
-  precisely the objection to `Heap`. Cost: it reads as an abbreviation, and
-  Rask spells things out (`string`, not `str`).
-- **`Indirect<T>`** — the most accurate description of what the type *is*,
-  neutral about where the bytes land. Cost: longest, and clinical.
+- **`Separate<T>`** — adjective, allocator-neutral, and states the actual
+  semantic (not stored inline). Cost: 8 characters, and it describes the
+  layout without hinting that an allocation happens.
+- **`Indirect<T>`** — adjective, most precise about the mechanism. Cost:
+  longest, and clinical.
 
 ### Recommendation
 
-Still `Heap<T>`, now with `Heap(expr)` construction rather than a keyword —
-which removes the operator argument that was propping it up, so it wins on
-its own merits or not at all.
+`Heap<T>`, with `Heap(expr)` construction rather than a keyword — which
+removes the operator argument that was propping it up, so it wins on its own
+merits or not at all. It's the only candidate that is both a noun and short,
+and Rask's own principle 1 makes allocation a semantic fact rather than an
+implementation one.
 
-If the allocator-neutrality objection is decisive for you, **`Alloc<T>`** is
-the better answer than `Indirect<T>`: same neutrality, half the length, and
-it names the cost rather than the mechanism, which is the more Rask-shaped
-choice.
+If allocator-neutrality is decisive, **`Separate<T>`** is the fallback — it
+passes the grammar filter, states the semantic exactly, and costs four
+characters over `Heap`. `Alloc<T>` was the better neutral candidate until the
+grammar test removed it, and no short noun form survives.
 
 What is settled: **`Owned` should go.** It names single ownership, which every
 value in Rask has, so it distinguishes nothing and implies other values are
