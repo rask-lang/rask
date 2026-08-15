@@ -113,11 +113,55 @@ that looks like a plain value carries a back-pointer), and it splits struct
 declarations into two kinds, which is a much larger language change than
 adding one type. Worth revisiting if `Link<T>` proves noisy in real schemas.
 
-## Recommendation
+## The container: still iterating
 
-`Pool<T>` and `Link<T>?`. The container keeps its name because its job didn't
-change; the reference gets a plain-English name because "handle" described a
-ticket-redemption model that no longer applies.
+`Link<T>` is settled. The container is not, and the reason surfaced from a
+reader's first reaction to `Pool<T>` + `Link<T>`: *"it's a pool of links?"*
+
+That's the real criterion. **The two names have to form a pair that teaches
+the model.** `Graph`/`Edge` paired beautifully and one half was wrong.
+`Pool`/`Link` has both halves defensible and no relationship between them —
+"pool" says nothing about why the things inside can be linked to, so the
+reader has to ask.
+
+Working candidates, judged as pairs:
+
+| Pair | Teaches | Against |
+|---|---|---|
+| `Pool<T>` + `Link<T>` | nothing — two unrelated words | familiar; zero migration on container declarations; but carries object-pool baggage (recycling, reuse) that was never what this is |
+| **`Table<T>` + `Link<T>`** | the actual model — this *is* `ON DELETE SET NULL`, so the DB analogy is a teaching tool, not a metaphor | "table" means hash-map in Lua and rows-and-columns to everyone else; game devs may find `Table<Entity>` odd |
+| `Registry<T>` + `Link<T>` | things register and get identity | verbose; `Registry<Entity>` is a mouthful in hot-path code |
+| `Store<T>` + `Link<T>` | plain and honest | collides with real programs — the flagship's own struct is named `Store` |
+
+Current lean: **`Table<T>`**. The design's entire correctness argument is the
+database one, so a name that makes a reader think "foreign key" is doing
+teaching work every time it's read. `Table<Task>` + `Link<Task>` + a delete
+that nulls the links is one coherent story someone can guess most of.
+
+<!-- test: skip -->
+```rask
+struct Store {
+    tasks: Table<Task>
+    by_id: Map<TaskId, Link<Task>>
+}
+
+struct World {
+    entities: Table<Entity>
+    player: Link<Entity>?
+}
+```
+
+The honest counter: `Table<Entity>` in a game loop reads strangely, and games
+are the workload this design serves best. If that friction is real,
+`Pool<T>` stays the fallback — familiar and harmless, just not instructive.
+
+Not settled. Next iteration should write the same three schemas under each
+pair and read them cold.
+
+## Recommendation so far
+
+`Link<T>?` for the reference — decided. Container name still open, leaning
+`Table<T>`, fallback `Pool<T>`.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
