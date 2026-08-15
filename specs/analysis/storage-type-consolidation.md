@@ -201,14 +201,19 @@ trace would be magic, which is the thing to avoid.
 
 <!-- test: skip -->
 ```rask
-let config: Shared<Config> = Shared.new(cfg)                  // default
-let queue:  Shared<Queue, Exclusive> = Shared.exclusive(q)    // plain lock
-let hits:   Shared<i64, Atomic> = Shared.atomic(0)            // lock-free word
+let config: Shared<Config> = Shared.new(cfg)              // default: concurrent readers
+let queue:  Shared<Queue, Mutex> = Shared.mutex(q)        // opt-in: one at a time
 ```
 
+`Mutex` stays as the **strategy** name — it's the word people already know for
+"one holder at a time," and keeping it means the familiar term survives even
+though the type doesn't. (An earlier draft called it `Exclusive`, which is
+both non-standard and misleading: a plain mutex covers reads *and* writes, so
+"exclusive" describes the locking, not what you're allowed to do.)
+
 Write the bare `Shared<Config>` and you get the default; write the parameter
-and you've said it out loud. The constructor and the annotation agree, and
-either one alone is enough for a reader to know what they have.
+and you've said it out loud. Constructor and annotation agree, and either one
+alone is enough for a reader to know what they have.
 
 ### Accessing
 
@@ -237,60 +242,58 @@ today.
 you're reading or writing. Under the unified type you always say, at every use
 site. Read/write intent becomes visible in code that currently hides it.
 
-**Uniformity is the point:** `read()` on an `Exclusive` takes the exclusive
-lock. It's slower than the default variant would be there, never wrong. Code
-written against `Shared<T>` compiles and behaves correctly against every
-strategy, which is what makes the parameter safe to default.
+**Uniformity is the point:** `read()` under the `Mutex` strategy takes the
+exclusive lock. It's slower than the default variant would be there, never
+wrong. Code written against `Shared<T>` compiles and behaves correctly against
+every strategy, which is what makes the parameter safe to default.
 
-### The atomic variant
+## `Atomic` earns its own type after all
 
-Simple operations go through the same interface and compile to atomic
-instructions:
+The previous draft folded atomics in as a third strategy, with
+`with hits.write() as v { v += 1 }` compiling to a fetch-add. That was wrong,
+and the objection is decisive: **the entire appeal of an atomic is that no
+lock is taken, and `write()` is lock-shaped syntax.** Writing lock ceremony
+for a lock-free operation misrepresents the cost at every use site — the
+precise opposite of what the transparency principle asks for.
+
+So `Atomic<T>` keeps its own type and its own vocabulary:
 
 <!-- test: skip -->
 ```rask
-let n = hits.read()                       // atomic load
-with hits.write() as v { v += 1 }         // atomic fetch_add
+let hits: Atomic<i64> = Atomic.new(0)
+
+hits.add(1)                          // one instruction, no lock, no block
+let n = hits.load()
+hits.store(0)
+let won = hits.compare_swap(old, new)
 ```
 
-Arbitrary code in a `write` block can't be lock-free, so on the `Atomic`
-strategy the block is restricted to one supported operation, and anything
-else is a compile error that names the fix:
+No `with`, no `read`/`write`, nothing that resembles acquiring anything —
+because nothing is acquired. It reads as cheap because it *is* cheap.
 
-```
-ERROR [conc.sync/SH4]: `write` block on an atomic Shared must be a single
-                        supported operation
-   |
- 4 |  with hits.write() as v {
- 5 |      v += compute_delta()
-   |      ^^^^^^^^^^^^^^^^^^^^ calls a function; not expressible as one atomic
+That also removes the restriction the previous draft needed (a `write` block
+limited to one supported operation, with a compile error explaining why).
+The restriction was a symptom of forcing a lock-free primitive into a locking
+API; with a separate type it simply doesn't arise.
 
-WHY: `Shared.atomic` is lock-free — it can do add, sub, swap, and store in one
-     instruction, and nothing else.
-
-FIX: compute first, then apply:
-
-  let d = compute_delta()
-  with hits.write() as v { v += d }
-
-  or use `Shared.new(0)` if the update genuinely needs a lock.
-```
-
-Compare-and-swap and explicit memory orderings keep their own methods —
-`hits.compare_swap(old, new)` — available only on the `Atomic` strategy,
-where the person calling them already knows what they're doing.
+**But `Atomic` still leaves the storage decision.** It earns a type on API
+grounds, not because it answers "where does my data live." It belongs with
+SIMD and inline assembly: documented under concurrency, reached for after
+measuring, absent from the five questions below.
 
 ## Recommendation
 
 - **Merge `Shared` and `Mutex`** into one type, with the lock strategy as a
-  constructor variant (`Shared.new` / `Shared.exclusive`) over a defaulted
-  type parameter. Removes a question users can't answer at declaration time,
-  and lets one signature accept every variant. Contradicts `mem.boxes`'
-  closed-family listing, so it's a deliberate change.
-- **Fold the common atomic operations in the same way** (`Shared.atomic`),
-  leaving CAS loops and explicit orderings as a separate advanced surface.
-  `Atomic` leaves the storage story either way — it answers a performance
-  question, not a "where does my data live" one.
+  defaulted type parameter (`Shared<T>` / `Shared<T, Mutex>`) and a matching
+  constructor. Removes a question users can't answer at declaration time, and
+  lets one signature accept every variant. `Mutex` survives as the strategy
+  name so the familiar word isn't lost. Contradicts `mem.boxes`' closed-family
+  listing, so it's a deliberate change.
+- **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
+  (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
+  into `Shared` would have dressed a one-instruction operation in lock
+  ceremony. It still leaves the *storage* decision — it's a measured
+  optimization, documented under concurrency.
 - **Keep the rest**, and ship the ordered decision procedure above in
   `DAY_ONE.md` and the boxes spec. The set isn't too large; it was presented
   as a flat menu when it's actually a sequence of yes/no questions.
