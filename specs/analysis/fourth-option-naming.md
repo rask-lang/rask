@@ -253,3 +253,74 @@ to be visible at all.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
+
+---
+
+## Naming `Owned<T>`
+
+Separate question, surfaced by reclassifying it: `Owned` answers "stack or
+heap?", so does its name say that?
+
+### The problem with `Owned`
+
+**It names a property every value in Rask already has.** Single ownership is
+the language default (`mem.ownership`) — every value has exactly one owner,
+always. So `Owned<T>` distinguishes nothing by its name, and worse, implies
+that values *not* wrapped in it are somehow unowned.
+
+What's actually distinctive is the indirection: this value lives on the heap
+rather than inline. That's also where the cost is — an allocation — and
+Rask's transparency principle says major costs belong in the source.
+
+`Box<T>` is rejected for two reasons: it's familiar rather than better (a
+"box" says nothing about heap allocation), and `mem.boxes` already uses "box"
+for the whole family — `Cell`, `Store`, `Shared`, `Owned`. Naming one member
+after the category is worse than the status quo.
+
+### `Heap<T>`
+
+<!-- test: skip -->
+```rask
+enum Expr {
+    Binary(left: Heap<Expr>, op: BinaryOp, right: Heap<Expr>)
+    Unary(op: UnaryOp, expr: Heap<Expr>)
+}
+
+return Expr.Binary(left: heap base, op: BinaryOp.Pow, right: heap exp)
+```
+
+"left is a heap `Expr`" — it says exactly where the value lives, which is the
+one thing that differs from a plain field, and the allocation is legible in
+the type. Nothing metaphorical, nothing borrowed from another language.
+
+**It also fixes the `own` collision.** Today `own` means two unrelated things:
+
+<!-- test: skip -->
+```rask
+Expr.Binary(left: own base, …)     // heap-allocate
+spawn(own || { … })                  // move-capture a closure
+parse_args(own args)                 // move an argument
+```
+
+With `heap expr` as the allocation operator, `own` means move-capture and
+nothing else. Two words, two jobs, instead of one word doing both.
+
+### The one collision to accept
+
+"Heap" is also a data structure — a binary heap, i.e. a priority queue. A
+future `Heap<T>` collection would clash.
+
+Resolved deliberately: a priority queue in Rask should be named for its
+purpose, not its internal shape. `PriorityQueue<T>` says what it does;
+`Heap<T>` is jargon naming an implementation detail, exactly the kind of
+lifted-from-`std` naming `std.stdlib/SD*` warns against. The name is free
+because the collection that wanted it shouldn't have it.
+
+### Recommendation
+
+`Heap<T>` for the type, `heap expr` for the operator. Names the thing that's
+actually different, puts the allocation cost in the type, and disentangles
+`own`.
+
+Runner-up: `Indirect<T>` — accurate and collision-free, but clinical and
+longer, and it names the mechanism where `Heap` names the location.
