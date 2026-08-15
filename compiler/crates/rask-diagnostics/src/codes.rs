@@ -303,6 +303,9 @@ impl Default for ErrorCodeRegistry {
                 "E0827" => ("type can't be iterated", Type,
                     "A `for` loop walks a Vec, Map, Pool, array, slice, range or iterator chain. The thing in the iterator position resolved to a single value instead — most often a count where the range was meant, a string where `.chars()` was meant, or a struct where one of its collection fields was meant. A container reached through a field resolves later than the loop, so this is reported once its type settles rather than at the loop itself.",
                     "for x in self.count { … }   // error: `i64` can't be iterated\n// fix: `for x in 0..self.count { … }`"),
+                "E0829" => ("with guard escapes its block", Type,
+                    "A `with` block's guard — the name after `as` — is access to a box's payload for the block's duration, not a value of its own: boxes hand out no guards, so the inner value can't outlive its scope. Returning the bare guard identifier as the block's own produced value would hand back a live view into memory the lock no longer protects once the block ends. This only fires for struct/enum/union payloads; scalars and `string` copy out fine as-is, since a plain identifier read of those is already an independent value.",
+                    "let c = with counter as g { g }   // error: `g` (a `Counter`) can't leave the block\n// fix: `with counter as g { g.hits }`, or a method that returns an owned `Counter`"),
             },
         }
     }

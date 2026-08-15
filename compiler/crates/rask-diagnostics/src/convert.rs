@@ -765,6 +765,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("Vec, Pool, and Map can grow or shrink, which would invalidate any persistent view — views are released at the semicolon")
             }
 
+            WithGuardEscapes { name, type_name, span } => {
+                Diagnostic::error(format!("the `with` guard `{}` can't leave its block", name))
+                    .with_code("E0829")
+                    .with_primary(*span, format!("`{}` (a `{}`) is only valid while this block holds access", name, type_name))
+                    .with_help("copy a field out, or add a method that returns an owned value")
+                    .with_fix(format!("with … as {} {{ {}.some_field }}", name, name))
+                    .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
+            }
+
             MutateBorrowedSource { source_var, view_var, borrow_span, mutate_span } => {
                 Diagnostic::error(format!("cannot mutate `{}` while viewed by `{}`", source_var, view_var))
                     .with_code("E0323")
