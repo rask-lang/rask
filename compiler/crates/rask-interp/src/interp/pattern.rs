@@ -86,18 +86,21 @@ impl Interpreter {
                         }
                     }
                 }
-                // ER27: bare type name as match arm on a Result scrutinee —
-                // match by payload type. Primitives (`i32`, `f64`, ...) and
-                // user type names (`DivError`) match if the Ok/Err payload
-                // has that runtime type. A name that's a *recognized* type
-                // (primitive, or a declared struct/enum) settles the arm
-                // outright: match or don't, but never fall through to the
-                // generic variable-binding case below, which binds
-                // unconditionally and used to let e.g. an `i32` arm catch an
-                // Err(DivError) payload just because "i32" looked like an
-                // ordinary identifier (#391).
+                // ER27: bare type name as match arm on a Result or Option
+                // scrutinee — match by payload type. Primitives (`i32`,
+                // `f64`, ...) and user type names (`DivError`) match if the
+                // Ok/Err/Some payload has that runtime type. A name that's a
+                // *recognized* type (primitive, or a declared struct/enum)
+                // settles the arm outright: match or don't, but never fall
+                // through to the generic variable-binding case below, which
+                // binds unconditionally and used to let e.g. an `i32` arm
+                // catch an Err(DivError) payload just because "i32" looked
+                // like an ordinary identifier (#391). Option needs the same
+                // treatment as Result (#579) — without it, `x is i32` on a
+                // `T?` fell through to the variable-binding case and matched
+                // unconditionally, `none` included.
                 if let Value::Enum { name: sc_name, fields, .. } = value {
-                    if sc_name == "Result" && self.is_known_type_name(name) {
+                    if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
                         return match fields.first() {
                             Some(inner) if runtime_type_matches(inner, name) => Some(HashMap::new()),
                             _ => None,

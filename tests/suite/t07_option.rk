@@ -67,4 +67,27 @@ test "optional with Vec" {
     assert not_found is none
 }
 
+// rask#579: bare `x is i32` (no `as` binding) on a `T?` fell through to a
+// variable-binding pattern in the interpreter and matched unconditionally,
+// so a `none` also answered `true`. Native always had this right.
+test "bare type-name is check on optional (#579)" {
+    let present: i32? = 5
+    assert present is i32
+    let absent: i32? = none
+    assert !(absent is i32)
+}
+
+test "is-as narrowing on optional agrees with bare is (#579)" {
+    let present: i32? = 5
+    if present is i32 as v {
+        assert v == 5
+    } else {
+        assert false, "expected present to narrow"
+    }
+    let absent: i32? = none
+    if absent is i32 as v {
+        assert false, "expected none not to narrow"
+    }
+}
+
 func main() {}
