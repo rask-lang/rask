@@ -361,15 +361,69 @@ Under a custom allocator the value still goes to dynamically-allocated
 storage rather than inline — which is what "heap" means in ordinary systems
 usage, arena or not. The objection is real but narrow.
 
+### A wider sweep
+
+Tested where the type actually lives — a recursive declaration and its
+constructor — since that's ~100% of its real usage:
+
+<!-- test: skip -->
+```rask
+Binary(left: X<Expr>, op: BinaryOp, right: X<Expr>)
+return Expr.Binary(left: <ctor> base, op: BinaryOp.Pow, right: <ctor> exp)
+```
+
+| Candidate | Declaration | Construction | Read |
+|---|---|---|---|
+| `Heap<Expr>` | good | `heap base` | "a heap Expr" — says where it goes |
+| `Alloc<Expr>` | ok | `alloc base` | allocator-neutral and names the exact cost; reads as an abbreviation |
+| `Indirect<Expr>` | good | `Indirect(base)` | most precise; longest |
+| `Place<Expr>` | good | `place base` | "a place holding an Expr" — allocator-neutral, plain English |
+| `Apart<Expr>` | ok | weak | "an apart Expr" — correct meaning, awkward grammar |
+| `Hold<Expr>` | ok | `hold base` | a ship's hold; but "hold" reads as locking |
+| `Solo` / `Sole` / `Only` | ok | — | name single ownership, which every Rask value has — same flaw as `Owned` |
+| `Stow<Expr>` | odd | `stow base` | good verb, unusual noun |
+| `Slot`, `Bay`, `Berth` | — | — | imply a position in something, which this isn't |
+| `Deep`, `Nested` | — | — | `Nest` implies containment — the opposite of indirection |
+| `Point<Expr>` | odd | `point base` | honest (it is one pointer) but collides with geometry |
+
+### The operator constraint can be removed
+
+`Indirect<T>` was penalised for having no usable prefix operator. But nothing
+requires one — construction can be an ordinary call:
+
+<!-- test: skip -->
+```rask
+return Expr.Binary(left: Indirect(base), op: BinaryOp.Pow, right: Indirect(exp))
+return Expr.Binary(left: Heap(base), op: BinaryOp.Pow, right: Heap(exp))
+```
+
+That costs a few characters against `heap base`, and buys back the most
+semantically precise candidate. It also drops a keyword from the language,
+which is worth something on its own — and `own` is freed for move-capture
+either way.
+
+### Three worth choosing between
+
+- **`Heap<T>`** — shortest, instantly read by any systems programmer, and
+  Rask has already decided allocation is semantic (principle 1). Quibble:
+  arena allocations aren't colloquially "the heap".
+- **`Alloc<T>`** — names the cost exactly and is allocator-neutral, which is
+  precisely the objection to `Heap`. Cost: it reads as an abbreviation, and
+  Rask spells things out (`string`, not `str`).
+- **`Indirect<T>`** — the most accurate description of what the type *is*,
+  neutral about where the bytes land. Cost: longest, and clinical.
+
 ### Recommendation
 
-`Heap<T>` for the type, `heap expr` for the operator — leaning, not settled.
+Still `Heap<T>`, now with `Heap(expr)` construction rather than a keyword —
+which removes the operator argument that was propping it up, so it wins on
+its own merits or not at all.
 
-`Indirect<T>` remains the principled alternative if you decide allocation
-strategy shouldn't appear in a type name; it costs a usable operator, so it
-would need `Indirect.new(expr)` at every construction site, which is heavy in
-exactly the recursive-constructor position where this type lives.
+If the allocator-neutrality objection is decisive for you, **`Alloc<T>`** is
+the better answer than `Indirect<T>`: same neutrality, half the length, and
+it names the cost rather than the mechanism, which is the more Rask-shaped
+choice.
 
 What is settled: **`Owned` should go.** It names single ownership, which every
 value in Rask has, so it distinguishes nothing and implies other values are
-unowned. Whatever replaces it should name the indirection.
+unowned. Whatever replaces it should name the indirection or its cost.
