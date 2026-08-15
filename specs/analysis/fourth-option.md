@@ -93,32 +93,77 @@ which is the honest counterexample; it buys that with a garbage collector.
 Each was checked with three questions — *is it legal, is it needed, can an
 existing mechanism do it?* Three of the four dissolved.
 
-**1. Index backlinks across a `Map` rehash — dissolved.**
-A `Map<K, Link<T>>` moves its entries when it grows, so a backlink pointing
-at a map slot breaks. But the whole construction is avoidable: **an index
-belongs to the store, not beside it.** Declare the key and the store
-maintains its own index:
+**1. Index backlinks across a `Map` rehash — dissolved, by a rule that
+already exists.**
+
+The worry: a `Map<K, Link<T>>` moves its entries when it grows, so a backlink
+pointing at a map slot breaks.
+
+But a rehash **already** touches every entry — that's what a rehash is. While
+it's moving each entry it can re-point that link's backlink to the new
+location. No asymptotic cost on an operation that was already O(n), and no
+new mechanism, because `Vec<Link<T>>` compaction (A5) needs exactly the same
+thing.
+
+**One rule covers both:** *a container that stores links and moves them must
+re-point their backlinks as it moves them.* The compiler knows the element
+type is a link, so it emits the fixup in `Vec`'s compaction and `Map`'s
+rehash alike.
+
+(An earlier draft "solved" this by inventing a store-owned index —
+`Store<Task> @key(id)` with a generated `by_id` lookup. That was a feature
+answering a question the rule above answers for free, and it introduced
+magic method names derived from field names. Withdrawn.)
+
+**2. The delete-locked scope — subsumed by batches; no implicit version.**
+The need: collect node references into a local `Vec`, then work through them,
+without a delete invalidating one mid-loop. Inside a staged batch, deletes
+are *enqueued and applied at the end* — so no node dies while the batch runs
+and references stay valid by construction. The batch already is the scope.
+
+**Should an ordinary `for` over a store imply one?** No — weighed below.
+
+### Should `for` over a store be implicitly delete-locked?
+
+Three shapes, and the middle one is the tempting mistake.
+
+**(a) `for` forbids deletes inside it.** Simple to state, and it makes
+collected references trivially safe. But it *removes a capability pools have
+today* — `mem.pools/PF1` guarantees "removing the current element is always
+safe", and iterate-and-delete is one of the commonest loops there is
+(`cleanup_system`, `evict_one`, `invalidate`). Trading that away to avoid one
+line of ceremony is a bad deal.
+
+**(b) `for` silently stages deletes and applies them at loop end.** Gets both
+properties — delete-during-iteration works *and* references stay valid. It's
+also the tempting mistake: `store.delete(x)` would then mean something
+different inside a loop than outside it, with no syntax marking the
+difference. A reader can't tell when the delete takes effect without knowing
+which construct encloses them. That's the kind of action-at-a-distance this
+whole design has been removing (`frozen`, hidden context clauses, Pool's
+covert `Arc<Mutex>`).
+
+**(c) No magic. Deleting during iteration takes a batch.** One extra line,
+and the mechanism is visible:
 
 <!-- test: skip -->
 ```rask
-tasks: Store<Task> @key(id)        // instead of a separate Map<TaskId, Link<Task>>
-
-if tasks.by_id(id)? as t { … }
+world.stage(|w| {
+    for e in w.entities {
+        if e.health <= 0 { w.delete(e) }
+    }
+})
 ```
 
-Delete then removes the node and its index entry in one internal operation —
-no backlink crosses a structure boundary, and rehashing is the store's own
-business. This is what databases do: an index is part of the table, not an
-object next to it. Wrinkle to spec: `cache.rk` keys on a *computed* value
-(`cache_key(sst_id, block_id)`), so keys can't be restricted to plain fields.
+**Recommendation: (c).** The cost is one line at the loops that delete; the
+benefit is that `for` means the same thing everywhere and `delete` takes
+effect at a point you can see. The compile error carries the fix — "deleting
+during iteration needs a batch; wrap the loop in `stage`" — so nobody has to
+learn it twice.
 
-**2. The delete-locked scope — probably subsumed by batches.**
-The need: collect node references into a local `Vec`, then work through
-them, without a delete invalidating one mid-loop. But inside a staged batch,
-deletes are *enqueued and applied at the end* — so no node dies while the
-batch runs, and references stay valid for its duration by construction. The
-batch already is the scope. What still needs stating: whether an ordinary
-`for` over a store implies one.
+Worth noting the shape of the argument: (b) is more convenient and is exactly
+what a language with a garbage collector would do, because there the timing
+doesn't matter. Here it does, so it has to be written down.
 
 **3. Batch semantics — still open, and genuinely needs answers.**
 Validate-then-apply is decided; these aren't: what exactly gets validated
