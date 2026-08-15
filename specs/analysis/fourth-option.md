@@ -55,6 +55,44 @@ a spec draft starts here.
 "does a real program demand this yet?" test. That the core keeps surviving
 scrutiny while the accessories keep failing it is itself a signal.
 
+### Does this grow the type zoo?
+
+No — it shrinks it by one, and stratifies what's left.
+
+| Type | Status after this change |
+|---|---|
+| `Vec`, `Map` | untouched |
+| `Pool` → `Store` | renamed, not added |
+| `Handle` → `Link` | renamed, not added |
+| `WeakHandle` | **deleted** — its whole job was surviving a stale reference, and stale references stop existing |
+| `Owned<T>` | kept, with a sharper boundary (exclusively-owned heap data, and unlike a node it can be returned) |
+| `Cell<T>` | kept. Solves a different problem — one mutable value shared across closures, which aren't store-owned, so a `Link` can't live there |
+| `Shared`, `Mutex`, `Atomic` | untouched; concurrency, not storage |
+
+Also gone, though they aren't types: `using Pool<T>` context clauses,
+`frozen`, and the generation-coalescing compiler pass.
+
+**What a reader must know, by stratum:**
+
+- **Day one:** `Vec`, `Map`, `string`, `T?`, `T or E`. Unchanged by any of
+  this.
+- **When things reference each other and can be deleted:** `Store` + `Link`.
+- **When data is recursive and exclusively owned:** `Owned<T>`.
+- **When closures share one mutable value:** `Cell<T>`.
+- **When you go concurrent:** `Shared`, `Mutex`, `Atomic`.
+
+Seven memory types total, and no stratum is entered until a program needs it.
+For comparison: Rust reaches for `Box`, `Rc`, `Arc`, `RefCell`, `Cell`,
+`Mutex`, `RwLock`, `Weak` — more types, and the selection is harder because
+several combine (`Arc<Mutex<T>>`, `Rc<RefCell<T>>`). Go has almost none,
+which is the honest counterexample; it buys that with a garbage collector.
+
+The one overlap worth revisiting sometime, unrelated to this exploration:
+`Shared<T>` and `Mutex<T>` are two names for locking, split on a performance
+distinction (many-readers vs exclusive). A single type with `read`/`write`
+would cover both at some cost to write-heavy paths. Out of scope here; noted
+so it isn't lost.
+
 **Unsolved:** index backlinks surviving a `Map` rehash. First thing a spec
 draft must answer.
 
