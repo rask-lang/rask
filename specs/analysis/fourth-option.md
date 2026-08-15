@@ -88,8 +88,39 @@ For comparison: Rust reaches for `Box`, `Rc`, `Arc`, `RefCell`, `Cell`,
 several combine (`Arc<Mutex<T>>`, `Rc<RefCell<T>>`). Go has almost none,
 which is the honest counterexample; it buys that with a garbage collector.
 
-**Unsolved:** index backlinks surviving a `Map` rehash. First thing a spec
-draft must answer.
+### Open questions
+
+**Unsolved mechanisms** — no worked design yet; a spec draft has to answer
+these first:
+
+1. **Index backlinks across a `Map` rehash.** A `Map<K, Link<T>>` moves its
+   entries when it grows. The backlink has to find the entry again. Probably
+   means the backlink carries the key rather than a slot address, but that's
+   a guess, not a design.
+2. **The delete-locked scope.** Named repeatedly (collect nodes into a local
+   `Vec`, then work through them), never specified. What opens it, what's
+   forbidden inside, how it interacts with `mutate` parameters.
+3. **Batch semantics.** Validate-then-apply is decided; the details aren't.
+   What exactly is validated, what a rejection returns, whether batches
+   nest, what happens on panic inside one.
+4. **Root link registration.** Links on the owning struct (a list's
+   `head`/`tail`, an editor's selection) are load-bearing in the litmus
+   programs and have no stated registration rule.
+
+**Specified nowhere yet, but no obvious difficulty:** iteration guarantees
+over a store (the `PF1`–`PF4` equivalents), the diagnostics for every new
+error path, and what `mem.relocatable` becomes when it's keys-only.
+
+**Untested, not unsolved:**
+
+- **Nothing is measured.** Every performance claim in these documents is
+  analytic. The read-path claim (a plain deref versus a checked one) is the
+  load-bearing one and the easiest to measure with a prototype.
+- **The `Local` default has no corpus example.** Not one program shares a
+  mutable value between closures in a single task, so the case `Shared<T>`
+  defaults to is unrepresented in the evidence.
+- **Migration cost is unsized.** Ten specs, two backends, the whole example
+  corpus. Nobody has counted it.
 
 **Companion documents:** [litmus](fourth-option-litmus.md) (three programs
 both ways, scored) · [in practice](fourth-option-in-practice.md) (worked
