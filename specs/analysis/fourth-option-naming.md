@@ -209,32 +209,47 @@ It says what it is, in every domain, and claims nothing false. `Registry<T>`
 is the runner-up and the more precise word if the extra five characters don't
 grate.
 
-### Reconsidering the wrapper-free option
+### The wrapper-free option is dead — but not for the cost reason
 
-With no installed base, "that's a bigger language change" also loses most of
-its force. So the radical option is worth re-listing rather than parking:
+With no installed base, "too big a change" lost its force, and cost-hiding
+alone wouldn't have killed it: Rask tolerates small opaque costs (`Vec` hides
+its allocation, bounds checks are implicit). A back-pointer is in that tier.
+
+The objection that actually kills it is different. Under `node struct`:
 
 <!-- test: skip -->
 ```rask
-node struct Task { ... }
-
 struct Project {
-    lead: Task?              // a Task lives in a store, so this is a link
-    deps: Vec<Task>
+    lead: Task?              // is this a Task value, or a link to one?
+    deps: Vec<Task>          // Tasks stored here, or links to Tasks?
 }
 ```
 
-Cleanest possible use sites — no wrapper anywhere. The objection that stands
-on its own merits is cost-hiding: a field that looks like a plain value
-carries a back-pointer, which is a real transparency cost. The objection that
-doesn't stand any more is "too big a change."
+You cannot tell by reading. The answer depends on whether `Task` was declared
+`node struct` or plain `struct` — a fact that lives in another file. And it
+isn't a cost question, it's a *semantics* question: does assigning this copy
+the data or point at it? Does someone else's delete change it? Two completely
+different behaviours, spelled identically.
+
+That's non-local reasoning, which is the thing Rask is built to avoid. So the
+wrapper stays, and its job is now stated precisely:
+
+**`Link<T>` marks kind, not cost.** It's there so a reader knows, without
+leaving the file, whether a field holds a value or points at one. The
+back-pointer it implies is an ordinary small opaque cost, and doesn't need
+to be visible at all.
 
 ## Recommendation so far
 
-`Link<T>?` for the reference — decided. Container: **`Store<T>`**, with
-`Registry<T>` the runner-up. `Pool` is rejected outright — it names a supply
-of interchangeable things, which is the opposite of a container built on
-stable identity.
+`Store<T>` and `Link<T>?`.
+
+- `Link<T>` — decided. The wrapper is non-negotiable: it tells a reader
+  whether a field holds a value or points at one, without leaving the file.
+- `Store<T>` — the container, with `Registry<T>` the runner-up. `Pool` is
+  rejected outright: it names a supply of interchangeable things, the
+  opposite of a container built on stable identity.
+- `node struct` (wrapper-free) — rejected. Makes value-versus-link a
+  non-local fact.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
