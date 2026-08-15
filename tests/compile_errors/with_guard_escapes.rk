@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `with` guard escaping its block
+// ERROR: the with guard `g` can't leave its block
+//
+// mem.boxes ("Why scoped access, not guards"): a box hands out access to its
+// payload for the with block's duration, not a value of its own. Returning
+// the bare guard identifier let the caller keep reading through the mutex
+// after the lock released — silently, since the value happened to still be
+// there until something else wrote it (#559).
+//
+// Struct/enum payloads need an explicit copy on the way out — a field read
+// or a method call. Scalar and `string` payloads are unaffected: copying
+// them out is already an independent value, same as the flagship example's
+// `with counter.lock() as c { c }` in examples/package_manager.rk.
+
+struct Counter { public hits: u64, public misses: u64 }
+
+extend Counter {
+    func snapshot(self) -> Counter { return self }
+}
+
+const counter = Mutex.new(Counter { hits: 3, misses: 4 })
+const plain = Mutex.new(0)
+
+func main() {
+    // ERROR: the with guard `g` can't leave its block
+    let escaped = with counter as g { g }
+
+    // Fine — a field read copies a scalar out.
+    let hits = with counter as g { g.hits }
+
+    // Fine — an explicit method returns an owned copy.
+    let snap = with counter as g { g.snapshot() }
+
+    // Fine — the payload itself is a scalar, not an aggregate.
+    let n = with plain as g { g }
+
+    println("{escaped.hits} {hits} {snap.hits} {n}")
+}

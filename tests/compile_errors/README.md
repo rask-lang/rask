@@ -49,6 +49,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
 | [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
+| [with_guard_escapes.rk](with_guard_escapes.rk) | A `with` guard's bare identifier returned as the block's own value (#559, E0829) — struct payload rejected, field read/method call/scalar payload still compile |
 | [ensure_cancellation.rk](ensure_cancellation.rk) | `ensure` cancellation must be statically definite (C3/C4): resource consumed on some merging paths but not all — if-without-else, single match arm, nested block (E0821) |
 
 ### Pattern Matching

@@ -831,6 +831,26 @@ fn error_no_auto_wrap_outside_return() {
     );
 }
 
+// #559: a `with` block's guard binding is access to the box's payload for the
+// block's duration, not a value of its own — returning it raw let a caller
+// keep reading through the mutex after the lock released. Struct payloads
+// are rejected; a field read, a method call, and a scalar payload (the
+// flagship example's `with counter.lock() as c { c }`) all still compile.
+#[test]
+fn error_with_guard_escapes() {
+    let (failed, out) = compile_error_output("with_guard_escapes.rk");
+    assert!(failed, "returning a struct `with` guard raw must be rejected: {}", out);
+    assert!(
+        out.contains("can't leave its block"),
+        "should name the with-guard-escape rule: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0829").count(), 1,
+        "only the bare-identifier case should fire — the field read, method \
+         call, and scalar payload in the same file are all legitimate: {}", out,
+    );
+}
+
 // #646: the error side of a `T or E` printed as `<type#N>` instead of the name.
 // The pass that fills type names in was a hand-written match with a catch-all
 // covering 17 of the 33 type-carrying variants, so anything added later fell

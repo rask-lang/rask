@@ -1419,6 +1419,11 @@ impl TypeChecker {
 
             ExprKind::WithAs { bindings, body } => {
                 self.push_scope();
+                // Guard element types by binding name, so the tail expression
+                // can be checked against the right one below — a binding's
+                // own name shadows anything outer, and there can be several.
+                let mut guard_elem_types: std::collections::HashMap<String, Type> =
+                    std::collections::HashMap::new();
                 for binding in bindings {
                     let raw_ty = self.infer_expr(&binding.source);
                     // Deciding whether to unwrap needs the source's concrete type.
@@ -1464,6 +1469,7 @@ impl TypeChecker {
                         ExprKind::MethodCall { object, method, .. }
                             if method == "read" && self.expr_is_shared(object)
                     );
+                    guard_elem_types.insert(binding.name.clone(), elem_ty.clone());
                     if is_read_lock {
                         self.define_local_with_read(binding.name.clone(), elem_ty);
                     } else {
@@ -1475,7 +1481,28 @@ impl TypeChecker {
                 }
                 let result = if let Some(last) = body.last() {
                     match &last.kind {
-                        StmtKind::Expr(e) => self.infer_expr(e),
+                        StmtKind::Expr(e) => {
+                            let ty = self.infer_expr(e);
+                            // A guard is access to the box's payload for this
+                            // block only, not a value (mem.boxes, "Why scoped
+                            // access, not guards") — the bare identifier can't
+                            // be the block's own produced value when the
+                            // payload is a struct/enum. A field read or a
+                            // method call already produces an independent
+                            // value, so only the plain identifier is checked.
+                            if let ExprKind::Ident(name) = &e.kind {
+                                if let Some(elem_ty) = guard_elem_types.get(name) {
+                                    if let Some(type_name) = self.guard_escape_type_name(elem_ty) {
+                                        self.errors.push(TypeError::WithGuardEscapes {
+                                            name: name.clone(),
+                                            type_name,
+                                            span: e.span,
+                                        });
+                                    }
+                                }
+                            }
+                            ty
+                        }
                         StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
                             Type::Never
                         }

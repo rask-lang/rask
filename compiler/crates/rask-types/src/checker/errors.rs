@@ -218,6 +218,17 @@ pub enum TypeError {
         source_span: Span,
         store_span: Span,
     },
+    /// A `with` guard's bare identifier used as the block's own produced
+    /// value, where the payload is a struct/enum/union. Boxes hand out no
+    /// guards — the payload is reachable only inside the block (mem.boxes,
+    /// "Why scoped access, not guards"). Scalars and `string` aren't checked
+    /// here: copying them out is already an independent value (#559).
+    #[error("the `with` guard `{name}` can't leave its block")]
+    WithGuardEscapes {
+        name: String,
+        type_name: String,
+        span: Span,
+    },
     #[error("cannot mutate `{source_var}` while viewed by `{view_var}`")]
     MutateBorrowedSource {
         source_var: String,
@@ -775,6 +786,7 @@ impl TypeError {
             | StringNewRemoved { .. }
             | StringSliceStored { .. }
             | VolatileViewStored { .. }
+            | WithGuardEscapes { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }

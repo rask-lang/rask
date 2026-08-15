@@ -405,6 +405,27 @@ impl TypeChecker {
         })
     }
 
+    /// Whether a `with` guard's element type is a struct/enum/union — the
+    /// shapes whose bare identity must not leave the block, since the guard
+    /// is access to the box's payload, not a value of its own (mem.boxes,
+    /// "Why scoped access, not guards"). Scalars and `string` are exempt:
+    /// copying them out already produces an independent value (#559).
+    /// Returns the type's name for the diagnostic when it's forbidden.
+    pub(super) fn guard_escape_type_name(&self, ty: &Type) -> Option<String> {
+        let resolved = self.ctx.apply(ty);
+        let type_id = match &resolved {
+            Type::Named(id) => Some(*id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        }?;
+        match self.types.get(type_id) {
+            Some(TypeDef::Struct { .. }) | Some(TypeDef::Enum { .. }) | Some(TypeDef::Union { .. }) => {
+                Some(self.types.type_name(type_id))
+            }
+            _ => None,
+        }
+    }
+
     /// Check if mutating a variable conflicts with active persistent borrows.
     pub(super) fn check_persistent_borrow_conflict(&self, var_name: &str) -> Option<&PersistentBorrow> {
         self.persistent_borrows.iter().rev().find(|b| b.source_var == var_name)
