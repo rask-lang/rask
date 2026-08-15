@@ -316,11 +316,60 @@ purpose, not its internal shape. `PriorityQueue<T>` says what it does;
 lifted-from-`std` naming `std.stdlib/SD*` warns against. The name is free
 because the collection that wanted it shouldn't have it.
 
+### Stating the thing exactly
+
+Before picking, say what it is with no name attached.
+
+**What it is:** a value stored separately from its container, reached through
+exactly one pointer, owned by exactly one holder, consumed exactly once.
+
+**Why anyone reaches for it:** two reasons, and only two.
+1. *A type can't contain itself.* `struct Expr { left: Expr }` has no finite
+   size. Something of fixed size has to stand in for the child. This is the
+   dominant case — every AST, tree and list node.
+2. *A large value should travel as a pointer.* Moving 8 bytes instead of 200.
+
+**Where it appears:** in type declarations, at recursive or large-value
+positions. Almost never in a signature, almost never in a local.
+
+**What the programmer means when they write it:** *"this field is not stored
+inside me."*
+
+So the essential semantic is **not-inline**. Single ownership is Rask's
+default and adds nothing. Consumed-exactly-once is how it's kept safe, not
+what it is. Everything else — malloc, arena, pool — is where the allocator
+chose to put it.
+
+### Which leaves two honest candidates
+
+| | Names | Cost |
+|---|---|---|
+| `Heap<T>` | where the value goes | "heap" is allocator terminology — an arena allocation isn't obviously "the heap" |
+| `Indirect<T>` | the mechanism, exactly | clinical, and no natural operator (`indirect base` is unusable) |
+
+**The tiebreak is a question about Rask, not about English:** is stack-versus-heap
+part of the language's semantic model, or an implementation detail below it?
+
+Rask already answered. Principle 1 lists **allocations** among the major costs
+that must be visible in source. A language that has decided allocation is
+semantic can name a type after it without naming an implementation detail —
+`Vec` hides its allocation and that's a deliberate small opacity; this type
+exists *precisely to make one allocation happen*, so saying so is the honest
+move.
+
+Under a custom allocator the value still goes to dynamically-allocated
+storage rather than inline — which is what "heap" means in ordinary systems
+usage, arena or not. The objection is real but narrow.
+
 ### Recommendation
 
-`Heap<T>` for the type, `heap expr` for the operator. Names the thing that's
-actually different, puts the allocation cost in the type, and disentangles
-`own`.
+`Heap<T>` for the type, `heap expr` for the operator — leaning, not settled.
 
-Runner-up: `Indirect<T>` — accurate and collision-free, but clinical and
-longer, and it names the mechanism where `Heap` names the location.
+`Indirect<T>` remains the principled alternative if you decide allocation
+strategy shouldn't appear in a type name; it costs a usable operator, so it
+would need `Indirect.new(expr)` at every construction site, which is heavy in
+exactly the recursive-constructor position where this type lives.
+
+What is settled: **`Owned` should go.** It names single ownership, which every
+value in Rask has, so it distinguishes nothing and implies other values are
+unowned. Whatever replaces it should name the indirection.
