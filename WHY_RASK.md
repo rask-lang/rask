@@ -85,7 +85,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
 - **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
-- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `ErrorMessage`. `@message` generates the method from variant templates. `catch e => return wrap(e)` chains transformation with leaving; every exit is written where it happens. See below
+- **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `Error`. `@message` generates the method from variant templates. `catch e => return wrap(e)` chains transformation with leaving; every exit is written where it happens. See below
 - **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `is none`). Match on `T?` is a style lint. Payload access is the `x? as v` bind — no flow narrowing to remember. Kotlin/TypeScript nullable ergonomics, not Rust Option
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
@@ -117,7 +117,7 @@ This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Opt
 
 **Binding, not flow typing.** `x?` is a plain boolean; getting at the payload is always the `as v` bind (`if x? as v { use(v) }`) or an operator. There is no in-place narrowing to remember and no destructuring pattern — one binding habit, `as name` after whatever proved a value exists, shared with `is` tests and match arms.
 
-**Errors are bounded.** Every `E` in `T or E` must implement `ErrorMessage` — a structural trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
+**Errors are bounded.** Every `E` in `T or E` must implement `Error` — a nominal trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
 
 **`@message` is builtin.** Rask generates the `message()` method from per-variant templates:
 

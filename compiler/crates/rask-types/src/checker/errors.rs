@@ -569,9 +569,9 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// ER4: error type must implement `ErrorMessage` (structural: `message(self) -> string`)
-    #[error("error type `{ty}` must implement `ErrorMessage` — needs `func message(self) -> string`")]
-    ErrorMessageMissing {
+    /// ER4: error type must implement `Error` — `message(self) -> string`.
+    #[error("error type `{ty}` must implement `Error` — needs `func message(self) -> string`")]
+    ErrorTraitMissing {
         ty: Type,
         span: Span,
     },
@@ -757,7 +757,7 @@ impl TypeError {
         match self {
             DiscardCopyType { ty, .. }
             | DiscardResourceType { ty, .. }
-            | ErrorMessageMissing { ty, .. }
+            | ErrorTraitMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
             | NoSuchField { ty, .. }

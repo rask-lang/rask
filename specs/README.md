@@ -95,7 +95,7 @@ Quick navigation by task or concept:
 | [structs.md](types/structs.md) | Struct definition, methods, visibility |
 | [enums.md](types/enums.md) | Sum types, pattern matching |
 | [optionals.md](types/optionals.md) | `T?` (sugar for `T or none`), `?`-family operators |
-| [error-types.md](types/error-types.md) | `T or E`, `ErrorMessage` trait, union composition |
+| [error-types.md](types/error-types.md) | `T or E`, `Error` trait, union composition |
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions — sketching only |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |

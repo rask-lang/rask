@@ -12,7 +12,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `ErrorMessage` (enums, `type.errors/ER6`) are also auto-derived |
+| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived |
 | **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
@@ -153,7 +153,7 @@ For `duck trait`, the same signature check runs at the use site against the type
 <!-- test: skip -->
 ```rask
 // The common shape for a trait-rich type: one block, header carries the claims
-extend LogSource with Reader, Displayable, ErrorMessage {
+extend LogSource with Reader, Displayable, Error {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
     func to_string(self) -> string { ... }
     func message(self) -> string { ... }
@@ -515,7 +515,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Comparable`: Equal | `compare(self, other: Self) -> Ordering` | Yes — all Comparable fields, lexicographic (CO1) |
 | `Hashable`: Equal | `hash(self) -> u64` | Yes — all Hashable fields, no floats (HA1) |
 | `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
-| `ErrorMessage` | `message(self) -> string` | Yes — enums, from variant names + payloads (`type.errors/ER6`); structs declare |
+| `Error` | `message(self) -> string` | Yes — enums, from variant names + payloads (`type.errors/ER6`); structs declare |
 | `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
 | `Debug` | `to_debug_string(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |

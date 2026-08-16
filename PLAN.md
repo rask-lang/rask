@@ -140,7 +140,7 @@ traits (`rask-types/src/traits.rs`). Progress by dependency order:
 5. 🟡 `duck trait` keyword (structural opt-in) — done. `scoped extend` parses (MN4 marker); scoped
    namespace exclusion + trait-qualified calls (MN2/MN3/MN5) not yet enforced.
 6. ⬜ Auto-derive roster: remove `Default` derive (blocked on struct field defaults, FD1–FD6/#311);
-   auto-derive ErrorMessage for enums.
+   auto-derive Error for enums.
 7. 🟡 Conditional conformance `where` (CC1/CC2) parses + records + checks (unit-tested); end-to-end
    blocked on generic-user-struct method resolution (#374). Override coherence (OC1–OC3) not started
    (would require gating the core traits nominally; zero corpus occurrences today).

@@ -1,11 +1,11 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
-<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement ErrorMessage. Auto-wrap fires only at return. Three words: `try` propagates the bad branch of either shape (shape must fit the enclosing return; a flat `T? or E` operand needs `try … ?? …`); `??` is the absence fallback (value or written-out exit); `catch e =>` / `catch _ =>` is the failure fallback — binder mandatory, no bare-value form, so a discarded error is always visible. `?` is absence-only, so results narrow with `is`. Neither wrapper has methods. No fold method, no presence guard. -->
+<!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement Error. Auto-wrap fires only at return. Three words: `try` propagates the bad branch of either shape (shape must fit the enclosing return; a flat `T? or E` operand needs `try … ?? …`); `??` is the absence fallback (value or written-out exit); `catch e =>` / `catch _ =>` is the failure fallback — binder mandatory, no bare-value form, so a discarded error is always visible. `?` is absence-only, so results narrow with `is`. Neither wrapper has methods. No fold method, no presence guard. -->
 <!-- depends: types/types.md, types/optionals.md, types/union-types.md, types/type-aliases.md -->
 
 # Error Types
 
-Errors are values. `T or E` is a builtin sum type — compiler-generated tagged union — with type-based branch disambiguation. No `Ok` or `Err` constructors; the compiler picks the branch from the value's type at the return site. Every `E` implements the structural `ErrorMessage` trait.
+Errors are values. `T or E` is a builtin sum type — compiler-generated tagged union — with type-based branch disambiguation. No `Ok` or `Err` constructors; the compiler picks the branch from the value's type at the return site. Every `E` implements the structural `Error` trait.
 
 Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (type-erased boxing). Match dispatches on type; operators cover the two-branch case.
 
@@ -18,7 +18,7 @@ Libraries use union errors (`T or (A | B | C)`), applications use `any Error` (t
 | **ER3: Disjointness** | `T or E` requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Checked where the type is written, and again after generic substitution (ER3a). Same rule as [union-types.md](union-types.md) U6. **Exception:** `none` — see ER3b |
 | **ER3a: Disjointness is a use-site obligation** | A signature that writes `T or E` with a type parameter on either side *is* the disjointness bound — there's no separate syntax to declare it. The compiler reads the obligation off the signature and checks it at the call site, where the type argument is known. A generic caller that forwards its own parameter passes the obligation on to *its* call sites, same as a trait bound (GF3) |
 | **ER3b: `none` layers instead of colliding** | `none` is exempt from disjointness and from the duplicate-variant rule. `T?` where `T` is itself optional is a legal two-layer optional, not a collision — see [optionals.md](optionals.md) |
-| **ER4: Error bound** | Every `E` must implement `ErrorMessage` — `func message(self) -> string`, auto-derived for enums (ER6). Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
+| **ER4: Error bound** | Every `E` must implement `Error` — `func message(self) -> string`, auto-derived for enums (ER6). Enforced at type formation. Primitives (`i32`, `f64`, `string`) don't qualify; newtype them. **Exception:** `none` is exempt — it's the absent sentinel for optionals (`T or none`), not an error type |
 | **ER5: No `Result<T, E>` name** | The generic `Result<T, E>` type is gone. Use `T or E` directly |
 
 <!-- test: skip -->
@@ -55,13 +55,13 @@ The error lands on the call, not inside `cached`. That's the point — a use-sit
 
 No new syntax. The signature already says which types can't collide; writing a separate `T: !CacheError` bound would just repeat it. When a caller genuinely wants both branches to carry a `CacheError`, newtype one side — the same escape hatch as the non-generic case.
 
-### The `ErrorMessage` Trait
+### The `Error` Trait
 
 | Rule | Description |
 |------|-------------|
-| **ER6: Auto-derived for enums** | `ErrorMessage` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `ErrorMessage` delegates to it. Override with `extend E with ErrorMessage { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
+| **ER6: Auto-derived for enums** | `Error` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `Error` delegates to it. Override with `extend E with Error { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
 | **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `to_string()` delegates to `message()` |
-| **ER8: Layered traits** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in traits on top of `ErrorMessage`. The minimum bound is just `message() -> string` |
+| **ER8: Layered traits** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in traits on top of `Error`. The minimum bound is just `message() -> string` |
 
 <!-- test: skip -->
 ```rask
@@ -70,7 +70,7 @@ enum DivError { ByZero, Overflow }
 //   ByZero → "by zero", Overflow → "overflow"
 
 // Override for hand-written prose:
-extend DivError with ErrorMessage {
+extend DivError with Error {
     func message(self) -> string {
         match self {
             DivError.ByZero   => "division by zero",
@@ -81,7 +81,7 @@ extend DivError with ErrorMessage {
 
 // Structs declare conformance in the block defining message():
 struct NotFound { key: string }
-extend NotFound with ErrorMessage {
+extend NotFound with Error {
     func message(self) -> string { "not found: {self.key}" }
 }
 ```
@@ -393,7 +393,7 @@ There is no fold *method* either. A fold ends the error's journey, and journey-e
 |------|-------------|
 | **ER31: Auto-widen** | `try` succeeds when the expression's error type is a subset of the current function's error union |
 | **ER31a: Auto-wrap into a boundary enum** | `try` succeeds when the current function's error type is an enum with **exactly one** variant whose only payload is the propagated error type. `try f()` then means `f() catch e => return Outer.Variant(e)`. Two candidate variants is a compile error naming both — the wrap has to be unambiguous |
-| **ER32: Auto-box to `any Error`** | `try` auto-boxes when the current function's error type is `any Error` — any `E` satisfying `ErrorMessage` widens by boxing |
+| **ER32: Auto-box to `any Error`** | `try` auto-boxes when the current function's error type is `any Error` — any `E` satisfying `Error` widens by boxing |
 
 <!-- test: skip -->
 ```rask
@@ -476,7 +476,7 @@ func start_app() -> App or any Error {
 |------|-------------|
 | **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
 | **ER36: Variant template** | `@message("template")` on a variant provides the format string. `{name}` for named payloads, `{0}` / `{1}` for positional |
-| **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `ErrorMessage`, and no `@message` annotation, delegates to `inner.message()` |
+| **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `Error`, and no `@message` annotation, delegates to `inner.message()` |
 | **ER38: Coverage required** | Every variant must have either an annotation or an auto-delegatable payload. Missing coverage is a compile error |
 
 <!-- test: skip -->
@@ -601,8 +601,8 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `f<T>() -> T or E` called with `T = E` | ER3a | Compile error at the call site, naming the parameter |
 | Generic caller forwards its own `T` into `T or E` | ER3a | Obligation propagates to the caller's own call sites |
 | `T?` where `T` is itself optional | ER3b | Legal — two-layer optional, see [optionals.md](optionals.md) |
-| `T or i32` (primitive E) | ER4 | Compile error — E lacks `ErrorMessage` |
-| `T or none` | ER4 | Legal — `none` is exempt from the `ErrorMessage` bound |
+| `T or i32` (primitive E) | ER4 | Compile error — E lacks `Error` |
+| `T or none` | ER4 | Legal — `none` is exempt from the `Error` bound |
 | `try x` on a `T?` in a `U?`-returning function | ER16/ER47 | Legal — propagates `none`; the ordinary way |
 | `try x` on a `T?` in a `T or E`-returning function | ER47 | Compile error — `none` doesn't fit an error branch. Use `x ?? return <error>` |
 | `try r` on a `T or E` in a `T?`-returning function | ER47 | Compile error — the error has nowhere to go. Use `r catch _ => return none` (drops the detail, acknowledged) |
@@ -681,12 +681,12 @@ FIX: Newtype the success side at this call:
      type Cached = CacheError with (…)
 ```
 
-**Missing ErrorMessage [ER4]:**
+**Missing Error [ER4]:**
 ```
 ERROR [type.errors/ER4]: i32 cannot be an error type
    |
 2  |  func f() -> string or i32
-   |                        ^^^ i32 does not implement ErrorMessage
+   |                        ^^^ i32 does not implement Error
 
 WHY: Every error type must provide `func message(self) -> string`.
 
@@ -835,7 +835,7 @@ The honest cost: `func cached<T>(…) -> T or CacheError` is not total over `T`,
 
 `none` is different on both counts. It carries no payload, and its layers are reached in order: the outer operators (`?`, `??`, `!`, `is none`) act on the outer layer, and the inner layer is only visible after narrowing through it. One rule — a bare `none` literal means the outer absent — closes the only remaining ambiguity. So `none` layers and payload variants don't. See [optionals.md](optionals.md).
 
-**ER4 (ErrorMessage bound).** A minimum bound on E solves three problems at once: (1) `r!` can always produce a useful panic message; (2) primitives can't accidentally be error types, so `i32 or i32` style ambiguities don't arise; (3) richer capabilities (context, codes, stack traces) layer opt-in on top without forcing complexity on simple errors.
+**ER4 (Error bound).** A minimum bound on E solves three problems at once: (1) `r!` can always produce a useful panic message; (2) primitives can't accidentally be error types, so `i32 or i32` style ambiguities don't arise; (3) richer capabilities (context, codes, stack traces) layer opt-in on top without forcing complexity on simple errors.
 
 **ER9 (auto-wrap return-only).** Auto-wrap at assignment/field/argument positions makes the branch choice invisible at the use site. Restricting it to `return` keeps the error branch visible — you can only produce a `T or E` by returning from a function declared to return one.
 

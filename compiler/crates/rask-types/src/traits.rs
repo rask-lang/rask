@@ -760,8 +760,8 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 });
                 Some(sigs)
             }
-            // ER4/ER32: ErrorMessage trait — `func message(self) -> string`
-            "ErrorMessage" => Some(vec![MethodSig {
+            // ER4/ER32: the Error trait — `func message(self) -> string`
+            "Error" => Some(vec![MethodSig {
                 type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
@@ -1089,12 +1089,12 @@ fn is_float_type(ty: &Type) -> bool {
 /// A vtable can only be built for a trait whose method list is known, and both
 /// places that build one — the reachability pass and the CLI's vtable
 /// collection — read that list off `trait Foo { … }` declarations. A
-/// compiler-provided trait has no declaration, so `any ErrorMessage` boxed fine
+/// compiler-provided trait has no declaration, so `any Error` boxed fine
 /// and then had nothing to dispatch through: MIR skipped the vtable path and
 /// fell back to static dispatch, which failed lowering with "method `message`
 /// on receiver of unresolved type" (#708).
 pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
-    ["ErrorMessage", "Displayable", "Debug", "Hashable"];
+    ["Error", "Displayable", "Debug", "Hashable"];
 
 /// Method names a trait object of `trait_name` can dispatch, in vtable order.
 ///

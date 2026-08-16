@@ -163,7 +163,7 @@ Prototype-to-production for traits is: delete one word, accept the quick-fixes. 
 
 `structural` is type-theory jargon. The replacement is `duck trait` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck trait` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on every duck trait declaration, `tool.lint/I3`).
 
-**Consequence (ruled): the stdlib ships zero duck traits.** `Reader`, `Writer`, and `ErrorMessage` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common trait") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`extend ConfigError with ErrorMessage { ... }`), zero marginal lines. Multi-trait types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
+**Consequence (ruled): the stdlib ships zero duck traits.** `Reader`, `Writer`, and `Error` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common trait") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`extend ConfigError with Error { ... }`), zero marginal lines. Multi-trait types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
 
 The candidate analysis, for the record:
 
@@ -219,7 +219,7 @@ A type that satisfies several traits with methods it already has needs one line 
 extend Ring<T> with Countable, Sizable {}       // two claims, one line
 
 // The common shape for a trait-rich type: ONE block, header carries the claims
-extend LogSource with Reader, Displayable, ErrorMessage {
+extend LogSource with Reader, Displayable, Error {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
     func to_string(self) -> string { ... }
     func message(self) -> string { ... }
@@ -237,7 +237,7 @@ Designed in #312; summary for completeness: the core (carve-out) traits are neve
 
 ## The auto-derive roster: corpus survey
 
-Question: the core five were Equal, Hashable, Comparable, Cloneable, Default — should the set grow? Surveyed the repo's 105 `.rk` files (examples, test suite, stdlib) for trait-need signals. Outcome: one addition (ErrorMessage for enums), one elimination (Default) — the carve-out family lands at **four**. (The full auto-derive roster is separate and larger: Debug for all types, Encode/Decode markers, now ErrorMessage for enums.)
+Question: the core five were Equal, Hashable, Comparable, Cloneable, Default — should the set grow? Surveyed the repo's 105 `.rk` files (examples, test suite, stdlib) for trait-need signals. Outcome: one addition (Error for enums), one elimination (Default) — the carve-out family lands at **four**. (The full auto-derive roster is separate and larger: Debug for all types, Encode/Decode markers, now Error for enums.)
 
 | Signal | Count | Verdict |
 |---|---|---|
@@ -250,7 +250,7 @@ Question: the core five were Equal, Hashable, Comparable, Cloneable, Default —
 | `.default()` | 0 | Default is the weakest member (see below) |
 | User-declared traits | 14, all domain | No missing core trait |
 
-**Accepted addition (the only one): auto-derive `ErrorMessage` for enums.** The sampled `message()` bodies are mechanical — match over variants, `"invalid nesting: {ctx}"`, wrappers delegating to `inner.message()`. Derivation: humanized variant name + payload interpolation; single-payload variants whose payload is itself ErrorMessage delegate. Overridable like EQ2; lint nudges public error types toward hand-written prose. Kills ~one impl per two files of ceremony, and keeps ErrorMessage nominal with compiler-provided conformance — consistent with the "stdlib ships zero duck traits" ruling at zero added cost.
+**Accepted addition (the only one): auto-derive `Error` for enums.** The sampled `message()` bodies are mechanical — match over variants, `"invalid nesting: {ctx}"`, wrappers delegating to `inner.message()`. Derivation: humanized variant name + payload interpolation; single-payload variants whose payload is itself Error delegate. Overridable like EQ2; lint nudges public error types toward hand-written prose. Kills ~one impl per two files of ceremony, and keeps Error nominal with compiler-provided conformance — consistent with the "stdlib ships zero duck traits" ruling at zero added cost.
 
 **Default is eliminated (decided).** Zero corpus usage, and DF4's universal zeros ("0 for ints, false for bool") are Go zero-values by another name. Declared field defaults (#311) replace the whole trait:
 
@@ -267,10 +267,10 @@ Rejected after survey: `Copy` (16-byte threshold, not a trait), `Sendable` (comp
 
 Rust's most-derived and most-implemented traits, mapped: `Debug`/`Clone`/`Eq`/`Hash`/`Ord`/`Default`/serde → all auto-derived here (and the `Partial*` splits collapse — they were float-driven; HA4/CO4 exclude floats instead of doubling every trait). Two findings with teeth:
 
-- **thiserror validates the ErrorMessage proposal.** One of Rust's most popular crates exists solely to derive error messages for enums — the ecosystem already voted for this feature. The corpus survey (48 mechanical impls) and Rust's dependency graph point at the same gap independently.
+- **thiserror validates the Error proposal.** One of Rust's most popular crates exists solely to derive error messages for enums — the ecosystem already voted for this feature. The corpus survey (48 mechanical impls) and Rust's dependency graph point at the same gap independently.
 - **`From`/`Into` — Rust's most hand-written trait — stays out, on record.** Its three jobs are dissolved at the language level: error conversion for `?` (Rask `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string params (one `string` type, no `String`/`&str`/`Cow` to abstract), general conversion (residue covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
 
-Deliberate absences confirmed against Rust's remaining heavy hitters: `Deref` (no autoderef — boxes use `with`), `AsRef`/`Borrow` (no reference-flavor zoo), `Drop` (`ensure`/`@resource`), `Send`/`Sync` (compiler property). The Rust data surfaces no new core candidate beyond ErrorMessage — most of Rust's trait traffic compensates for design choices Rask didn't make.
+Deliberate absences confirmed against Rust's remaining heavy hitters: `Deref` (no autoderef — boxes use `with`), `AsRef`/`Borrow` (no reference-flavor zoo), `Drop` (`ensure`/`@resource`), `Send`/`Sync` (compiler property). The Rust data surfaces no new core candidate beyond Error — most of Rust's trait traffic compensates for design choices Rask didn't make.
 
 ## Ergonomics check: what the user writes, before and after
 
@@ -295,10 +295,10 @@ All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-i
 
 Also accepted: **CD1–CD3** (comma-list conformance declarations, unrestricted block bodies, one condition per block).
 
-Also accepted: **auto-derived `ErrorMessage` for enums**, overridable (corpus survey; thiserror cross-check), and the **elimination of `Default`** — declared field defaults (#311) make omitted-field and zero-field construction (`Config {}`) the mechanism; core five → core four.
+Also accepted: **auto-derived `Error` for enums**, overridable (corpus survey; thiserror cross-check), and the **elimination of `Default`** — declared field defaults (#311) make omitted-field and zero-field construction (`Config {}`) the mechanism; core five → core four.
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
-- ~~Renaming `structural`~~ — **decided: `duck trait`**, and the stdlib ships zero of them: `Reader`/`Writer`/`ErrorMessage` go nominal (ER4/ER6 rewrite at fold-in). CD2 keeps multi-trait types at one block.
+- ~~Renaming `structural`~~ — **decided: `duck trait`**, and the stdlib ships zero of them: `Reader`/`Writer`/`Error` go nominal (ER4/ER6 rewrite at fold-in). CD2 keeps multi-trait types at one block.
 - Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-trait action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.

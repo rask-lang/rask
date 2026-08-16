@@ -413,7 +413,7 @@ impl TypeChecker {
                 let has = |name: &str| {
                     crate::traits::implements_trait(&self.types, ty, name)
                 };
-                has("Displayable") || has("ErrorMessage")
+                has("Displayable") || has("Error")
             }
             _ => true,
         }

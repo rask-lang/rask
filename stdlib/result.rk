@@ -7,7 +7,7 @@
 /// to the correct branch at return, picked by the value's type
 /// (type.errors/ER9). Disjointness rule: T ≠ E.
 ///
-/// Every `E` must implement `ErrorMessage` (structural trait requiring
+/// Every `E` must implement `Error` (nominal trait requiring
 /// `message(self) -> string`; type.errors/ER4-6).
 ///
 /// It has **no methods**. The operator surface is the whole API:

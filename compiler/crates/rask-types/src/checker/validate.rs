@@ -58,7 +58,7 @@ impl TypeChecker {
     /// and the duplicate-variant rule (U5 from union-types.md).
     ///
     /// ER3: T ≠ E (disjointness).
-    /// ER4: E (or each component of a union E) implements `ErrorMessage`.
+    /// ER4: E (or each component of a union E) implements `Error`.
     /// U5:  flattening the nested `or` tree must not yield a repeated variant
     ///      (e.g. `(T or E) or E`). `none` is exempt — repeated `none` layers
     ///      are nested optionals, which stay distinct (type.optionals/OPT28).
@@ -368,7 +368,7 @@ fn validate_single_result(
         }
     }
 
-    // ER4: E (or each component of a union E) must implement ErrorMessage.
+    // ER4: E (or each component of a union E) must implement Error.
     // `none` is exempt — it's the absent sentinel for `T or none` (the optional
     // shape), not an error type.
     for comp in &err_components {
@@ -378,12 +378,12 @@ fn validate_single_result(
         if matches!(comp, Type::None) {
             continue;
         }
-        // `any ErrorMessage` is the trait itself — no need to check it satisfies itself
-        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "ErrorMessage") {
+        // `any Error` is the trait itself — no need to check it satisfies itself
+        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "Error") {
             continue;
         }
         if !implements_error_message(comp, checker) {
-            errs.push(TypeError::ErrorMessageMissing {
+            errs.push(TypeError::ErrorTraitMissing {
                 ty: (*comp).clone(),
                 span,
             });

@@ -83,7 +83,7 @@ enum TemplatePiece {
 struct Desugarer {
     next_id: u32,
     errors: Vec<DesugarError>,
-    /// Type names known to implement `ErrorMessage` (ER37): `@message` enums and
+    /// Type names known to implement `Error` (ER37): `@message` enums and
     /// any type with a manual `message()` method. A single-payload `@message`
     /// variant whose payload is in this set auto-delegates to `inner.message()`.
     error_message_types: std::collections::HashSet<String>,
@@ -98,7 +98,7 @@ impl Desugarer {
         }
     }
 
-    /// Collect the type names that implement `ErrorMessage` so single-payload
+    /// Collect the type names that implement `Error` so single-payload
     /// `@message` variants can decide whether to delegate. Purely syntactic:
     /// a `@message` enum, or any struct/enum/impl that defines `message()`.
     fn scan_error_message_types(&mut self, decls: &[Decl]) {
@@ -287,7 +287,7 @@ impl Desugarer {
 
     /// Resolve a variant to its message template. Precedence (type.errors ER36/37/6):
     ///   1. explicit `@message("template")` on the variant,
-    ///   2. single payload implementing `ErrorMessage` → delegate to `inner.message()`,
+    ///   2. single payload implementing `Error` → delegate to `inner.message()`,
     ///   3. ER6 fallback: humanized variant name, with payloads interpolated.
     /// Every variant resolves — there is no uncovered case.
     fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
@@ -297,7 +297,7 @@ impl Desugarer {
                 return MessageTemplate::Format(translate_positional_refs(&tmpl));
             }
         }
-        // ER37: single payload that implements ErrorMessage delegates to it. The
+        // ER37: single payload that implements Error delegates to it. The
         // `ends_with("Error")` check keeps cross-module error types working when
         // their declaration isn't in this compilation unit's decl set.
         if variant.fields.len() == 1 {

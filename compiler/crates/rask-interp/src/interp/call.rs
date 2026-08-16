@@ -427,7 +427,7 @@ impl Interpreter {
     /// error, and `catch` never fired (#708).
     ///
     /// A trait object matches when the value's type provides the trait's
-    /// methods. ER4 already restricts an error side to `ErrorMessage`, so the
+    /// methods. ER4 already restricts an error side to `Error`, so the
     /// compiler-provided method lists cover every case that can legally appear
     /// here — a user trait can't be an error type on its own.
     fn value_matches_any_err(&self, value: &Value, names: &[String]) -> bool {

@@ -58,7 +58,7 @@ func main() {
 
 | Rule | Description |
 |------|-------------|
-| **SY1: Shared error type** | `SysError` covers rare platform-level failures (sleep, clock operations). One shared type instead of a one-variant enum per syscall. Implements `ErrorMessage` (`type.errors/ER4`) |
+| **SY1: Shared error type** | `SysError` covers rare platform-level failures (sleep, clock operations). One shared type instead of a one-variant enum per syscall. Implements `Error` (`type.errors/ER4`) |
 
 <!-- test: parse -->
 ```rask

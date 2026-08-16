@@ -101,7 +101,7 @@ Being callable at comptime is a property of what a function does, not of its mar
 | **CT7: No I/O** | Cannot perform I/O (exception: `@embed_file`), spawn tasks, allocate from runtime pools |
 | **CT8: No runtime values** | All inputs must be comptime-known; using runtime values in comptime context is a compile error |
 | **CT60: Definition-time guarantee** | `comptime func` checks CT6/CT7 at the definition instead of at distant call sites. Obligations involving type parameters are deferred to instantiation (`type.generics/G2`). `comptime func` stays comptime-only (CT3) |
-| **CT61: Trait bounds at comptime** | Calling a bound's method on `T` in comptime code is legal iff the concrete implementation, after instantiation, is comptime-evaluable — checked per instantiation. Auto-derived conformances (Equal, Hashable, Comparable, Cloneable, Debug, ErrorMessage) are comptime-evaluable by construction |
+| **CT61: Trait bounds at comptime** | Calling a bound's method on `T` in comptime code is legal iff the concrete implementation, after instantiation, is comptime-evaluable — checked per instantiation. Auto-derived conformances (Equal, Hashable, Comparable, Cloneable, Debug, Error) are comptime-evaluable by construction |
 | **CT62: No dynamic dispatch** | `any Trait` cannot be created or called at comptime — heap allocation and vtables are runtime machinery (CT30–CT34) |
 
 <!-- test: skip -->

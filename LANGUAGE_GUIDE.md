@@ -195,7 +195,7 @@ The error-conversion rules — widening into a union, wrapping into a boundary e
 **The line shows which shape.** Nothing with a `?` applies to a result — no `r?` test, no `r ?? v`, no `r?.field` chain; failures use `catch`, tests use `is`, and projection is `try r.field` (`try` attaches to the fallible step). `catch` never appears on an optional — absence has nothing to catch. `try`, `!` and `match` work on both.
 
 - Auto-wrap for `T or E` fires **only at `return`**; optionals widen at any position (ER9–ER11).
-- Every error type satisfies `ErrorMessage` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
+- Every error type satisfies `Error` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
 - Errors are for what callers can handle; panics are for bugs (bounds, overflow, stale handles). Panics kill the task, run `ensure` blocks, and are deterministic (`ctrl.panic`).
 
 ## Traits and generics
@@ -215,7 +215,7 @@ duck trait Sketchy { func poke(self) }       // opt-in shape-matching — protot
                                              // harden by deleting `duck` + accepting generated declarations
 ```
 
-- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `ErrorMessage` for enums. Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
+- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
 - Method-name collision between two conformances: mark the second `scoped extend`; call it as `Trait.method(value, args)` (MN3–MN5).
 - Generics monomorphize (`func max<T: Comparable>(a: T, b: T) -> T`). Public functions declare bounds; private functions may omit types and bounds entirely — inferred from the body, still fully static (`type.gradual`). Error unions infer too: `-> Config or _`.
 - Operators are authored sugar on concrete types: `a + b` calls `a.add(b)` — write the method, get the operator. Arithmetic operators require Copy types (no allocating `+`); `+=` has no such limit. Generic operator use goes through nominal bounds (OP1). There is no `From`/`Into` — `try` widens error unions structurally, and there's one string type.

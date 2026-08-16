@@ -3,14 +3,14 @@
 // function returns. Application code declares one error type at the boundary
 // and stops threading unions through every layer.
 //
-// None of this worked. `Error` wasn't a name the compiler knew — only
-// `ErrorMessage` was registered — so `any Error` was a trait object over a
-// trait nobody had heard of: it failed ER4's own error bound, `try` refused to
-// propagate into it, and `.message()` on the box wasn't found. Writing
-// `any ErrorMessage` instead got past the checker and then segfaulted natively,
-// because a compiler-provided trait has no declaration for the vtable builders
-// to read, and because `try`'s propagation stored the bare concrete error where
-// a fat pointer belonged (#708).
+// None of this worked. The trait was registered under a different name than the
+// one every code sample writes, so `any Error` was a trait object over a trait
+// nobody had heard of: it failed ER4's own error bound, `try` refused to
+// propagate into it, and `.message()` on the box wasn't found. Spelling it the
+// registered way got past the checker and then segfaulted natively, because a
+// compiler-provided trait has no declaration for the vtable builders to read,
+// and because `try`'s propagation stored the bare concrete error where a fat
+// pointer belonged (#708). The trait is now called `Error`, the one name.
 //
 // Spec: type.errors (ER4, ER32), type.generics (G1)
 
@@ -128,21 +128,3 @@ test "type.errors — the success branch of the same function still works" {
     assert outcome == 5
 }
 
-
-// Both spellings resolve to the error trait object in type position, so a
-// function written either way behaves the same. That's all this asserts —
-// whether `Error` is a second name for the `ErrorMessage` trait or the name of
-// the boxed error type with `ErrorMessage` as its admission rule is a question
-// the spec doesn't answer, and nothing here depends on which.
-func load_long_spelling(key: string) -> i64 or any ErrorMessage {
-    let stored = try fetch(key)
-    return stored
-}
-
-test "type.errors — both spellings work in an error position" {
-    let outcome = load_long_spelling("gone") catch e => {
-        assert e.message() == "missing: gone"
-        return
-    }
-    assert false, "expected the store error to propagate, got {outcome}"
-}

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Error surface for the tracker service.
 //
-// ErrorMessage is delivered two ways here:
+// Error is delivered two ways here:
 //   StoreError / AuthError — @message templates (ER35/ER36)
-//   ValidationError / ApiError — hand-written `extend … with ErrorMessage`
+//   ValidationError / ApiError — hand-written `extend … with Error`
 //
 // Not shown: pure auto-derive (ER6) and @message auto-delegation (ER37) — the
 // checker doesn't implement either yet, so a bare error enum needs @message or
@@ -51,7 +51,7 @@ enum ValidationError {
     BadEnum(string, string)
 }
 
-extend ValidationError with ErrorMessage {
+extend ValidationError with Error {
     func message(self) -> string {
         match self {
             Empty(field)          => return "{field} must not be empty",
@@ -77,7 +77,7 @@ enum ApiError {
     Internal(string)
 }
 
-extend ApiError with ErrorMessage {
+extend ApiError with Error {
     func message(self) -> string {
         match self {
             Validation(e)  => return e.message(),

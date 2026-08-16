@@ -19,7 +19,7 @@ enum IoError {
     NotFound
 }
 
-extend IoError with ErrorMessage {
+extend IoError with Error {
     func message(self) -> string {
         return "nf"
     }

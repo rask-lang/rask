@@ -83,10 +83,10 @@ tie-break by falling through; tests use `<`/`>`. Consequence: a hand-written
 the EmailAddress `Comparable` override from the OC1 demo had to be dropped —
 only `Equal` + `Hashable` remain.
 
-### B3 — `ErrorMessage` auto-derive (ER6) is unimplemented — [#378]
+### B3 — `Error` auto-derive (ER6) is unimplemented — [#378]
 A bare error enum gets no `message()` and can't be used as an error type
-(`does not implement ErrorMessage`). **Workaround:** every error enum needs
-`@message` or a manual `extend … with ErrorMessage`. AuthError became `@message`
+(`does not implement Error`). **Workaround:** every error enum needs
+`@message` or a manual `extend … with Error`. AuthError became `@message`
 (losing the pure-auto-derive demo).
 
 ### B4 — `@message` auto-delegation (ER37) is unimplemented — [#446]
