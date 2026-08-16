@@ -3140,3 +3140,52 @@ fn json_encode_uses_the_rask_encoder_on_both_backends() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// std.collections/C2 (#666): `try_push` was declared to return
+// `void or PushError<T>` and `PushError` was never declared anywhere, so the
+// rejected value it promised to hand back could not be named, matched or read.
+// The family is now `GrowError<T>`, and a generic error type survives being the
+// error branch of `T or E` on both backends.
+#[test]
+fn grow_error_carries_the_rejected_value_on_both_backends() {
+    assert_native_eq_interp("grow_error_family.rk", "4217ok");
+}
+
+// type.errors/ER16a (#647): `try` attaches to the fallible step of a postfix
+// chain, not to the whole chain. `try read_file(p).len()` used to be read as
+// `try (read_file(p).len())` and failed with "no method `len` on
+// `string or IoError`"; it means `(try read_file(p)).len()`.
+#[test]
+fn try_attaches_to_the_fallible_step_of_a_chain() {
+    assert_native_eq_interp("try_chain_placement.rk", "808080031608080");
+}
+
+// type.primitives/CV1a, CV2 (#649): narrowing never happens implicitly. A
+// method argument is a directional position like any other, and an array
+// literal's element type is the one every element fits — `[small_u8, big_u64]`
+// used to take `u8` and store 300 as 44 natively while the interpreter kept 300.
+#[test]
+fn no_implicit_narrowing_in_arguments_or_joins() {
+    assert_native_eq_interp("no_silent_narrowing.rk", "7,300,7,7,300");
+}
+
+// std.collections/CP1-CP3, C2 (#666): a bounded vector refuses to grow past its
+// bound, and `try_push` hands the rejected value back rather than panicking —
+// which is what the growth error carries a payload for. A capacity hint
+// (`with_capacity`) is not a bound.
+#[test]
+fn a_bounded_vec_hands_back_what_it_wont_take() {
+    assert_native_eq_interp("bounded_vec.rk", "true22true0302false3417");
+}
+
+// std.collections/C2: `push` past the bound panics on both backends, and
+// nothing after it runs.
+#[test]
+fn push_past_the_bound_panics_on_both_backends() {
+    let (nout, ncode) = run_native("bounded_vec_push_full.rk");
+    let (iout, icode) = run_interp("bounded_vec_push_full.rk");
+    assert_eq!(ncode, 101, "native should panic at the bound: {}", nout);
+    assert_eq!(icode, 101, "interp should panic at the bound: {}", iout);
+    assert!(!nout.contains("99"), "native ran past the panic: {}", nout);
+    assert!(!iout.contains("99"), "interp ran past the panic: {}", iout);
+}

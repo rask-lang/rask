@@ -71,9 +71,9 @@ impl Interpreter {
                 drop(st);
                 match self.iter_next(&src)? {
                     Some(item) => {
-                        let pair = Value::Vec(Arc::new(Mutex::new(
+                        let pair = Value::vec(
                             vec![Value::int(idx as i64), item],
-                        )));
+                        );
                         Ok(Some(pair))
                     }
                     None => Ok(None),
@@ -154,7 +154,7 @@ impl Interpreter {
                 drop(st);
                 match (self.iter_next(&a)?, self.iter_next(&b)?) {
                     (Some(va), Some(vb)) => {
-                        let pair = Value::Vec(Arc::new(Mutex::new(vec![va, vb])));
+                        let pair = Value::vec(vec![va, vb]);
                         Ok(Some(pair))
                     }
                     _ => Ok(None),
@@ -208,7 +208,7 @@ impl Interpreter {
                         None => break,
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(result))))
+                Ok(Value::vec(result))
             }
             "map" => {
                 let mapper = args.into_iter().next().unwrap_or(Value::Unit);
@@ -417,7 +417,7 @@ impl Interpreter {
                         None => break,
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(result))))
+                Ok(Value::vec(result))
             }
             "min" => {
                 let mut best: Option<Value> = None;

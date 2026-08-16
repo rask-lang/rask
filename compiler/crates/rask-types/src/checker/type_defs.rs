@@ -280,6 +280,11 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER16a: `try` node → the postfix-chain step it attaches to, when that
+    /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the
+    /// `read_file(p)` call, so lowering branches there and hands `.len()` the
+    /// payload. A `try` absent from this map wraps its whole operand.
+    pub try_chain_placement: HashMap<NodeId, NodeId>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).

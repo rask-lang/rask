@@ -170,11 +170,13 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
         "i8" => (i8::MIN as i64, i8::MAX as i64, MirType::I8),
         "i16" => (i16::MIN as i64, i16::MAX as i64, MirType::I16),
         "i32" => (i32::MIN as i64, i32::MAX as i64, MirType::I32),
-        "i64" | "isize" => (i64::MIN, i64::MAX, MirType::I64),
+        "i64" => (i64::MIN, i64::MAX, MirType::I64),
+        "isize" => (i64::MIN, i64::MAX, MirType::isize_ty()),
         "u8" => (0, u8::MAX as i64, MirType::U8),
         "u16" => (0, u16::MAX as i64, MirType::U16),
         "u32" => (0, u32::MAX as i64, MirType::U32),
-        "u64" | "usize" => (0, u64::MAX as i64, MirType::U64),
+        "u64" => (0, u64::MAX as i64, MirType::U64),
+        "usize" => (0, u64::MAX as i64, MirType::usize_ty()),
         _ => return None,
     };
     let val = match field {
@@ -692,6 +694,16 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        // ER16a: this is the chain step an enclosing `try` attached to. Lower it,
+        // then branch right here — the rest of the chain then works on the
+        // payload, which is what `(try read_file(p)).len()` means.
+        if let Some((try_id, step)) = self.pending_try_step {
+            if step == expr.id {
+                self.pending_try_step = None;
+                let (op, ty) = self.lower_expr_inner(expr)?;
+                return self.emit_try_branch(try_id, expr, op, ty);
+            }
+        }
         let (op, ty) = self.lower_expr_inner(expr)?;
         // TR5: a concrete value the checker flagged as flowing into an
         // `any Trait` position gets its vtable here — at the value, so every
@@ -723,7 +735,9 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U16) => MirType::U16,
                     Some(IntSuffix::U32) => MirType::U32,
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
-                    Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
+                    Some(IntSuffix::Isize) => MirType::isize_ty(),
+                    Some(IntSuffix::Usize) => MirType::usize_ty(),
+                    Some(IntSuffix::I128 | IntSuffix::U128) => MirType::I64,
                     // An unsuffixed literal the checker didn't pin down takes the
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal
@@ -1843,7 +1857,17 @@ impl<'a> MirLowerer<'a> {
 
             // Array literal
             ExprKind::Array(elems) => {
-                // Lower elements first to determine the element type
+                // The element type is the checker's, not the first element's.
+                // CV1a makes it the type every element fits, so `[small_u8,
+                // big_u64]` is a `[u64; 2]` — taking the first element's type
+                // laid the array out at one byte per slot and stored the u64
+                // truncated (#649).
+                let checked_elem = match self.ctx.node_types.get(&expr.id).cloned() {
+                    Some(rask_types::Type::Array { elem, .. }) => {
+                        Some(self.ctx.type_to_mir(&elem))
+                    }
+                    _ => None,
+                };
                 let mut lowered = Vec::new();
                 let mut elem_ty = MirType::I32;
                 for (i, elem) in elems.iter().enumerate() {
@@ -1852,6 +1876,9 @@ impl<'a> MirLowerer<'a> {
                         elem_ty = ty;
                     }
                     lowered.push(elem_op);
+                }
+                if let Some(ty) = checked_elem {
+                    elem_ty = ty;
                 }
                 let elem_size = elem_ty.size();
                 let array_ty = MirType::Array {
@@ -3377,6 +3404,9 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let method = method.to_string();
         let method = &method;
+        if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
+            return Ok(r);
+        }
         if let Some(r) = self.try_lower_c_namespace_call(expr, object, method, args)? {
             return Ok(r);
         }
@@ -3953,7 +3983,9 @@ impl<'a> MirLowerer<'a> {
 
                             // Vec.new() / Vec.with_capacity(n): inject elem_size so
                             // the runtime allocates correct slots.
-                            if base_name == "Vec" && (method == "new" || method == "with_capacity") {
+                            if base_name == "Vec"
+                                && (method == "new" || method == "with_capacity" || method == "fixed")
+                            {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
@@ -4621,6 +4653,125 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok((MirOperand::Local(result_local), ret_ty))
+    }
+
+    /// `v.try_push(x)` — lowered here rather than called, because the element
+    /// can't cross a function boundary generically.
+    ///
+    /// The stdlib body reads `if self.is_full() { return GrowError.Full(value) }`
+    /// then `self.push(value)`, and that is exactly what this emits. Compiling
+    /// it as an ordinary function instead gives one `Vec_try_push` shared by
+    /// every element type, so `value: T` has to be a pointer — and a `Vec<i32>`
+    /// then pushed the address of a register while a `Vec<string>` pushed a
+    /// pointer to a pointer. Stdlib generic bodies aren't monomorphized per
+    /// element type; until they are, the call site is the only place that knows
+    /// what `T` is. Same shape on the interpreter, which keeps its own builtin.
+    fn try_lower_try_push(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "try_push" || args.len() != 1 {
+            return Ok(None);
+        }
+        let (recv, recv_ty) = self.lower_expr(object)?;
+        // A Vec is a runtime pointer; anything else with a `try_push` isn't ours.
+        if !matches!(recv_ty, MirType::Ptr) {
+            return Ok(None);
+        }
+        // `void or GrowError<T>` — the err side names the enum whose `Full`
+        // variant carries the rejected element.
+        let Some(result_ty @ MirType::Result { .. }) = self.ctx.lookup_node_type(expr.id) else {
+            return Ok(None);
+        };
+        let MirType::Result { err, .. } = &result_ty else { return Ok(None) };
+        let MirType::Enum(crate::types::EnumLayoutId { id: enum_id, .. }) = err.as_ref() else {
+            return Ok(None);
+        };
+        let Some(layout) = self.ctx.enum_layouts.get(*enum_id as usize) else {
+            return Ok(None);
+        };
+        let Some(full) = layout.variants.iter().find(|v| v.name == "Full") else {
+            return Ok(None);
+        };
+        let (full_tag, payload_offset) = (full.tag, full.payload_offset);
+        let err_size = err.size();
+        let tag_offset = layout.tag_offset as u32;
+
+        let (value, value_ty) = self.lower_expr(&args[0].expr)?;
+        let value_size = value_ty.size();
+
+        let full_local = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(full_local),
+            func: FunctionRef::internal("Vec_is_full".to_string()),
+            args: vec![recv.clone()],
+        }));
+
+        let result_local = self.builder.alloc_temp(result_ty.clone());
+        let full_block = self.builder.create_block();
+        let push_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(full_local),
+            then_block: full_block,
+            else_block: push_block,
+        }));
+
+        // At the bound: build GrowError.Full(value) and hand it back as the
+        // error branch. Nothing is pushed, so the caller still owns the value.
+        self.builder.switch_to_block(full_block);
+        let err_local = self.builder.alloc_temp((**err).clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: err_local,
+            offset: tag_offset,
+            value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: err_local,
+            offset: payload_offset,
+            value: value.clone(),
+            store_size: if value_size > 8 { Some(value_size) } else { None },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: crate::types::RESULT_TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: crate::types::RESULT_PAYLOAD_OFFSET,
+            value: MirOperand::Local(err_local),
+            store_size: if err_size > 8 { Some(err_size) } else { None },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        // Room left: an ordinary push, and the ok branch carries nothing.
+        self.builder.switch_to_block(push_block);
+        let push_ret = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(push_ret),
+            func: FunctionRef::internal("Vec_push".to_string()),
+            args: vec![recv, value],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: crate::types::RESULT_TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok(Some((MirOperand::Local(result_local), result_ty)))
     }
 
     /// `c.func(args)` where `c` is the C namespace → extern "C" call.

@@ -25,9 +25,9 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 
 | Rule | Description |
 |------|-------------|
-| **CP1: Unbounded** | `capacity() == none`, grows indefinitely |
-| **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements |
-| **CP3: Fixed** | Bounded + pre-allocated at creation |
+| **CP1: Unbounded** | `capacity() == none`, grows indefinitely. `with_capacity(n)` is a pre-allocation hint, not a bound — it stays unbounded |
+| **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements. `is_bounded()` says which, `is_full()` says whether it's there, `remaining()` says how much room is left (`none` when unbounded) |
+| **CP3: Fixed** | Bounded + pre-allocated at creation — `Vec.fixed(n)`. A bound of 0 is legal: the vector is permanently full |
 
 ## Allocation
 
@@ -36,24 +36,37 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `T or E
 | Operation | Returns | On failure |
 |-----------|---------|------------|
 | `vec.push(x)` | `void` | Panics |
-| `vec.try_push(x)` | `void or PushError<T>` | Returns `PushError.Full(T)` or `PushError.Alloc(T)` |
+| `vec.try_push(x)` | `void or GrowError<T>` | Returns `GrowError.Full(T)` or `GrowError.NoMemory(T)` |
 | `vec.push_all(iter)` | `void` | Panics |
-| `vec.try_push_all(iter)` | `void or PushError<T>` | Returns first rejected item. `push_all`, not `extend` — that word is the declaration keyword |
+| `vec.try_push_all(iter)` | `void or GrowError<T>` | Returns first rejected item. `push_all`, not `extend` — that word is the declaration keyword |
 | `vec.reserve(n)` | `void` | Panics |
-| `vec.try_reserve(n)` | `void or AllocError` | Returns error |
+| `vec.try_reserve(n)` | `void or ReserveError` | Returns why; nothing was rejected, so nothing comes back |
 | `map.insert(k, v)` | `V?` | Panics |
-| `map.try_insert(k, v)` | `V? or InsertError<V>` | Returns `InsertError.Full(V)` or `InsertError.Alloc(V)` |
+| `map.try_insert(k, v)` | `V? or GrowError<V>` | Returns `GrowError.Full(V)` or `GrowError.NoMemory(V)` |
 
 <!-- test: parse -->
 ```rask
-enum PushError<T> {
-    Full(T),   // Bounded collection at capacity
-    Alloc(T),  // Allocation failed
+enum GrowError<T> {
+    Full(T),      // Bounded collection at capacity
+    NoMemory(T),  // Allocation failed
+}
+
+enum ReserveError {
+    Full,
+    NoMemory,
 }
 
 vec.push(x)                 // Panics on OOM or full (like Rust/Go)
 try vec.try_push(x)         // Propagate error (bounded collections, embedded)
 ```
+
+**One name across the family (C2a).** `push`, `push_all` and `insert` fail for the
+same two reasons and hand back the same thing, so they share `GrowError<T>`
+rather than getting a per-method error type each. A function that grows any
+collection can then name its error, and `std.collections` spends one name on the
+concept instead of three (`std.api/SD1`, `SD2`). `try_reserve` is the one that
+differs in shape — there's no rejected value to return, only a reason — so it
+keeps its own type.
 
 ## From Literal Constructors
 
@@ -402,7 +415,7 @@ PANIC [std.collections/C2]: push failed — collection at capacity
 
 FIX: Use try_push to handle capacity limits:
 
-  if vec.try_push(item) is PushError.Full(overflow) {
+  if vec.try_push(item) is GrowError.Full(overflow) {
       process_overflow(overflow)
   }
 ```

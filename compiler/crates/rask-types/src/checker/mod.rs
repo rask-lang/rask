@@ -156,6 +156,17 @@ pub struct TypeChecker {
     /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
     /// Only there may a `try` take a flat `T? or E` operand (ER47).
     pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
+    /// ER16a: steps of the postfix chain currently under a `try`, excluding the
+    /// outermost. The first one to come back `T or E` is where the `try`
+    /// attaches, and the rest of the chain sees its payload.
+    pub(super) try_chain_steps: std::collections::HashSet<NodeId>,
+    /// ER16a: the step that took the `try`, with the error type it propagates.
+    /// Set while a chain is being inferred, taken by the `try` node.
+    pub(super) try_chain_unwrapped: Option<(NodeId, Type)>,
+    /// ER16a: `try` node → the chain step it attaches to, when that isn't the
+    /// operand itself. Lowering reads this to put the branch in the same place
+    /// the checker did.
+    pub(super) try_chain_placement: HashMap<NodeId, NodeId>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -243,6 +254,9 @@ impl TypeChecker {
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             flat_try_sites: std::collections::HashSet::new(),
+            try_chain_steps: std::collections::HashSet::new(),
+            try_chain_unwrapped: None,
+            try_chain_placement: HashMap::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             mutate_self_fns: std::collections::HashSet::new(),
@@ -438,6 +452,7 @@ impl TypeChecker {
         let trait_coercions = self.trait_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        let try_chain_placement = self.try_chain_placement.clone();
 
         let unsafe_ops = self.unsafe_ops;
 
@@ -472,6 +487,7 @@ impl TypeChecker {
             trait_coercions,
             error_wraps,
             fallback_keeps_shape,
+            try_chain_placement,
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,

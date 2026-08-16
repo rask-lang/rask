@@ -75,12 +75,12 @@ impl Interpreter {
             "join_all" => {
                 // join_all(handles) — wait for all task handles, return Vec of results
                 if args.is_empty() {
-                    return Ok(Value::Vec(Arc::new(Mutex::new(Vec::new()))));
+                    return Ok(Value::vec(Vec::new()));
                 }
 
                 // Accept either a Vec of handles or variadic handles
                 let handles: Vec<Value> = match &args[0] {
-                    Value::Vec(v) => v.lock().unwrap().clone(),
+                    Value::Vec(v) => v.lock().unwrap().items.clone(),
                     _ => args,
                 };
 
@@ -103,7 +103,7 @@ impl Interpreter {
                         }
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(results))))
+                Ok(Value::vec(results))
             }
             "select_first" => {
                 // select_first(handles) — return first completed, cancel rest
@@ -114,7 +114,7 @@ impl Interpreter {
                 }
 
                 let handles: Vec<Value> = match &args[0] {
-                    Value::Vec(v) => v.lock().unwrap().clone(),
+                    Value::Vec(v) => v.lock().unwrap().items.clone(),
                     _ => args,
                 };
 
@@ -215,7 +215,7 @@ impl Interpreter {
                         results.push(result);
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(results))))
+                Ok(Value::vec(results))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "TaskGroup".to_string(),

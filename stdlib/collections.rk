@@ -12,8 +12,9 @@ extend Vec<T> {
     @native("rask_vec_with_capacity")
     public func with_capacity(n: usize) -> Vec<T> { }
 
-    /// Create a bounded vector that cannot grow beyond n elements.
-    @unimplemented
+    /// Create a bounded vector that cannot grow beyond n elements (CP2, CP3).
+    /// Pre-allocated at creation, and `push` past the bound panics.
+    @native("rask_vec_fixed")
     public func fixed(n: usize) -> Vec<T> { }
 
     /// Number of elements.
@@ -24,15 +25,19 @@ extend Vec<T> {
     @native("rask_vec_is_empty")
     public func is_empty(self) -> bool { }
 
-    /// Maximum capacity, if bounded.
-    @native("rask_vec_capacity")
+    /// Maximum capacity, if bounded — `none` when the vector may grow freely.
+    @native
     public func capacity(self) -> Option<usize> { }
 
-    /// True if this vector has a fixed capacity.
-    @unimplemented
+    /// True if this vector has a capacity bound.
+    @native
     public func is_bounded(self) -> bool { }
 
-    /// Remaining capacity before the vector is full.
+    /// True if this vector is bounded and at its bound.
+    @native
+    public func is_full(self) -> bool { }
+
+    /// Room left before the bound — `none` when the vector is unbounded.
     @native
     public func remaining(self) -> Option<usize> { }
 
@@ -44,9 +49,22 @@ extend Vec<T> {
     @native("rask_vec_push")
     public func push(mutate self, value: T) { }
 
-    /// Push a value onto the end. Returns error if bounded and full, or on OOM.
-    @native
-    public func try_push(mutate self, value: T) -> void or PushError<T> { }
+    /// Push a value onto the end. Hands the value back instead of panicking
+    /// when the vector is at its bound or the allocator refuses.
+    ///
+    /// Written in Rask so the two backends share one rule. `NoMemory` has no
+    /// path yet — the allocator panics on OOM rather than reporting it.
+    public func try_push(mutate self, value: T) -> void or GrowError<T> {
+        if self.is_full() {
+            return GrowError.Full(value)
+        }
+        self.push(value)
+    }
+
+    /// Push every element of `iter`. Hands back the first element that didn't
+    /// fit. `push_all`, not `extend` — that word is the declaration keyword.
+    @unimplemented
+    public func try_push_all(mutate self, iter: Iterator<T>) -> void or GrowError<T> { }
 
     /// Remove and return the last element.
     @native("rask_vec_pop")
@@ -73,9 +91,10 @@ extend Vec<T> {
     @unimplemented
     public func reserve(mutate self, additional: usize) { }
 
-    /// Reserve space for at least `additional` more elements. Returns error on OOM.
+    /// Reserve space for at least `additional` more elements. Reports why
+    /// instead of panicking when the room isn't there.
     @unimplemented
-    public func try_reserve(mutate self, additional: usize) -> void or AllocError { }
+    public func try_reserve(mutate self, additional: usize) -> void or ReserveError { }
 
     /// Get element at index (borrows).
     @native("rask_vec_get")
@@ -261,6 +280,48 @@ extend Vec<T> {
     public comptime func freeze(self) -> Vec<T> { }
 }
 
+// --- Growth errors ---
+
+/// A growth operation refused a value. The value comes back inside the error,
+/// so the caller can retry it, spill it, or log it instead of losing it.
+///
+/// One type covers `try_push`, `try_push_all` and `try_insert`: the reason a
+/// collection wouldn't take a value doesn't depend on which collection it was,
+/// so a function that grows any of them can still name its error.
+public enum GrowError<T> {
+    /// The collection is at its capacity bound.
+    Full(T),
+    /// The allocator couldn't provide the space.
+    NoMemory(T),
+}
+
+extend GrowError<T> {
+    public func message(self) -> string {
+        match self {
+            GrowError.Full(_) => return "collection is at its capacity bound",
+            GrowError.NoMemory(_) => return "allocation failed",
+        }
+    }
+}
+
+/// `try_reserve` couldn't get the room. Nothing was rejected, so nothing comes
+/// back — only the reason.
+public enum ReserveError {
+    /// The requested capacity is past the collection's bound.
+    Full,
+    /// The allocator couldn't provide the space.
+    NoMemory,
+}
+
+extend ReserveError {
+    public func message(self) -> string {
+        match self {
+            ReserveError.Full => return "requested capacity exceeds the collection's bound",
+            ReserveError.NoMemory => return "allocation failed",
+        }
+    }
+}
+
 /// A hash map from keys to values.
 public struct Map<K, V> { }
 
@@ -292,6 +353,12 @@ extend Map<K, V> {
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert")
     public func insert(mutate self, key: K, value: V) -> Option<V> { }
+
+    /// Insert a key-value pair, handing the value back instead of panicking
+    /// when the map is at its bound or the allocator refuses. The success side
+    /// is the displaced value, as with `insert`.
+    @unimplemented
+    public func try_insert(mutate self, key: K, value: V) -> Option<V> or GrowError<V> { }
 
     /// Remove a key and return its value.
     @native("rask_map_take")

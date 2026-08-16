@@ -956,11 +956,21 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::I8) => ComptimeValue::I8(*v as i8),
                     Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
                     Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
-                    Some(IntSuffix::I64) | Some(IntSuffix::Isize) => ComptimeValue::I64(*v),
+                    Some(IntSuffix::I64) => ComptimeValue::I64(*v),
+                    Some(IntSuffix::Isize) => if rask_ast::primitives::pointer_bits() == 32 {
+                        ComptimeValue::I32(*v as i32)
+                    } else {
+                        ComptimeValue::I64(*v)
+                    },
                     Some(IntSuffix::U8) => ComptimeValue::U8(*v as u8),
                     Some(IntSuffix::U16) => ComptimeValue::U16(*v as u16),
                     Some(IntSuffix::U32) => ComptimeValue::U32(*v as u32),
-                    Some(IntSuffix::U64) | Some(IntSuffix::Usize) => ComptimeValue::U64(*v as u64),
+                    Some(IntSuffix::U64) => ComptimeValue::U64(*v as u64),
+                    Some(IntSuffix::Usize) => if rask_ast::primitives::pointer_bits() == 32 {
+                        ComptimeValue::U32(*v as u32)
+                    } else {
+                        ComptimeValue::U64(*v as u64)
+                    },
                     // I128/U128 aren't distinct comptime variants; keep i64.
                     _ => ComptimeValue::I64(*v),
                 }

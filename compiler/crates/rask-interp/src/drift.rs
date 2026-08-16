@@ -23,7 +23,7 @@ fn dummy_value(type_name: &str) -> Value {
         "bool" => Value::Bool(false),
         "char" => Value::Char('a'),
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-        "Vec" => Value::Vec(Arc::new(Mutex::new(vec![]))),
+        "Vec" => Value::vec(vec![]),
         "Map" => Value::Map(Arc::new(Mutex::new(Default::default()))),
         "Pool" => Value::Pool(Arc::new(Mutex::new(PoolData {
             pool_id: 0,

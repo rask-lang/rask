@@ -66,6 +66,14 @@ impl TypeChecker {
         self.resolve_named(&Type::UnresolvedNamed("Ordering".to_string()))
     }
 
+    /// Declared type parameter names of an enum; empty for anything else.
+    pub(super) fn enum_type_params(&self, id: crate::types::TypeId) -> Vec<String> {
+        match self.types.get(id) {
+            Some(TypeDef::Enum { type_params, .. }) => type_params.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     pub(super) fn resolve_named(&self, ty: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(name) => {

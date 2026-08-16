@@ -62,6 +62,17 @@ pub enum MirType {
 }
 
 impl MirType {
+    /// P2: what `usize` is on this target — pointer-sized. The width comes
+    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
+    pub fn usize_ty() -> MirType {
+        if rask_ast::primitives::pointer_bits() == 32 { MirType::U32 } else { MirType::U64 }
+    }
+
+    /// P2: what `isize` is on this target.
+    pub fn isize_ty() -> MirType {
+        if rask_ast::primitives::pointer_bits() == 32 { MirType::I32 } else { MirType::I64 }
+    }
+
     /// Does a value of this type live in its own storage, so it's handed around
     /// as an address rather than as a register-sized value?
     ///

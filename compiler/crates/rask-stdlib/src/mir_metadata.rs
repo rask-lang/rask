@@ -497,6 +497,86 @@ mod tests {
         let meta = lookup("string_from_raw").expect("missing string_from_raw");
         assert_eq!(meta.ret_category, RetCategory::String);
     }
+
+    /// Names a stub signature may mention that `stdlib_type_names` doesn't hold.
+    ///
+    /// Two groups. Declared elsewhere and genuinely resolvable: `Never` and
+    /// `Ordering` are registered by the checker rather than by a stub;
+    /// `Reader`/`Writer` are stdlib traits in io.rk, and the stub registry only
+    /// collects structs and enums; `Iterator` is special-cased in the resolver;
+    /// `Self` isn't a type name at all. Genuinely still missing: `InsertError`
+    /// belongs to the pool API (`mem.pools/PL8`), and `Error` is the `any Error`
+    /// catch-all that ER32 auto-boxing will register (#708).
+    const PENDING_STUB_TYPES: &[&str] = &[
+        "Never", "Ordering", "Reader", "Writer", "Iterator", "Self",
+        "InsertError", "Error",
+    ];
+
+    /// PascalCase type names a signature string mentions, with generic
+    /// arguments, `T or E` branches and pointer/optional markers peeled off.
+    /// Single letters are type parameters, not types.
+    fn named_types_in(ty: &str) -> Vec<std::string::String> {
+        let mut out = Vec::new();
+        let mut word = std::string::String::new();
+        for ch in ty.chars() {
+            if ch.is_alphanumeric() || ch == '_' {
+                word.push(ch);
+            } else {
+                take_word(&mut word, &mut out);
+            }
+        }
+        take_word(&mut word, &mut out);
+        out
+    }
+
+    fn take_word(word: &mut std::string::String, out: &mut Vec<std::string::String>) {
+        let w = std::mem::take(word);
+        if w.len() > 1 && w.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            out.push(w);
+        }
+    }
+
+    /// Every named type a stub signature mentions has to be one that exists.
+    ///
+    /// `Vec.try_push` was declared `-> void or PushError<T>` for as long as the
+    /// stub existed, and `PushError` was never declared anywhere: the error had
+    /// no variants, no constructor and no `message()`, so the rejected value it
+    /// was meant to hand back could not be read (#666). Nothing caught it
+    /// because stub signatures aren't type-checked — a name that resolves to
+    /// nothing just stays unresolved until some unlucky call site trips on it.
+    #[test]
+    fn stub_signatures_only_name_types_that_exist() {
+        let reg = StubRegistry::load();
+        let known = stdlib_type_names();
+        let mut missing: Vec<std::string::String> = Vec::new();
+
+        let mut check = |ty: &str, at: std::string::String, missing: &mut Vec<std::string::String>| {
+            for name in named_types_in(ty) {
+                if !known.contains(&name) && !PENDING_STUB_TYPES.contains(&name.as_str()) {
+                    missing.push(format!("{} names unknown type `{}`", at, name));
+                }
+            }
+        };
+
+        for type_name in reg.type_names() {
+            for m in reg.methods(type_name) {
+                check(&m.ret_ty, format!("{}.{} return", type_name, m.name), &mut missing);
+                for (pname, pty) in &m.params {
+                    check(pty, format!("{}.{} param `{}`", type_name, m.name, pname), &mut missing);
+                }
+            }
+        }
+        for f in reg.functions() {
+            check(&f.ret_ty, format!("{} return", f.name), &mut missing);
+        }
+
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "stub signatures name types that don't exist:\n  {}",
+            missing.join("\n  ")
+        );
+    }
 }
 
 

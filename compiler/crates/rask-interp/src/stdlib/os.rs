@@ -78,13 +78,13 @@ impl Interpreter {
                     "env_vars" => {
                         let vars: Vec<Value> = std::env::vars()
                             .map(|(k, v)| {
-                                Value::Vec(Arc::new(Mutex::new(vec![
+                                Value::vec(vec![
                                     Value::String(Arc::new(Mutex::new(k))),
                                     Value::String(Arc::new(Mutex::new(v))),
-                                ])))
+                                ])
                             })
                             .collect();
-                        Ok(Value::Vec(Arc::new(Mutex::new(vars))))
+                        Ok(Value::vec(vars))
                     }
                     _ => unreachable!()
                 }
@@ -103,7 +103,7 @@ impl Interpreter {
                     .iter()
                     .map(|s| Value::String(Arc::new(Mutex::new(s.clone()))))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(args_vec))))
+                Ok(Value::vec(args_vec))
             }
 
             // --- Process control ---
@@ -235,8 +235,8 @@ impl Interpreter {
                 let program = self.expect_string(&args, 0)?;
                 let mut fields = indexmap::IndexMap::new();
                 fields.insert("program".to_string(), Value::String(Arc::new(Mutex::new(program))));
-                fields.insert("args".to_string(), Value::Vec(Arc::new(Mutex::new(vec![]))));
-                fields.insert("env_vars".to_string(), Value::Vec(Arc::new(Mutex::new(vec![]))));
+                fields.insert("args".to_string(), Value::vec(vec![]));
+                fields.insert("env_vars".to_string(), Value::vec(vec![]));
                 fields.insert("cwd".to_string(), Value::Enum {
                     name: "Option".to_string(),
                     variant: "None".to_string(),

@@ -62,12 +62,14 @@ fn parse_type_arg(s: &str) -> Type {
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
-            "i64" | "isize" | "int" => Type::I64,
+            "i64" | "int" => Type::I64,
+            "isize" => Type::isize_ty(),
             "i128" => Type::I128,
             "u8" => Type::U8,
             "u16" => Type::U16,
             "u32" => Type::U32,
-            "u64" | "usize" | "uint" => Type::U64,
+            "u64" | "uint" => Type::U64,
+            "usize" => Type::usize_ty(),
             "u128" => Type::U128,
             "f32" => Type::F32,
             "f64" => Type::F64,
@@ -202,13 +204,13 @@ impl TypeChecker {
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
                     Some(IntSuffix::I128) => Type::I128,
-                    Some(IntSuffix::Isize) => Type::I64,
+                    Some(IntSuffix::Isize) => Type::isize_ty(),
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
-                    Some(IntSuffix::Usize) => Type::U64,
+                    Some(IntSuffix::Usize) => Type::usize_ty(),
                     None => {
                         let var = self.ctx.fresh_literal_var(LiteralKind::Integer);
                         // The default is i32 (type.primitives/L1), but a literal
@@ -809,9 +811,16 @@ impl TypeChecker {
                         len: 0,
                     }
                 } else {
-                    let first_ty = self.infer_expr(&elements[0]);
-                    for elem in &elements[1..] {
-                        let elem_ty = self.infer_expr(elem);
+                    let elem_types: Vec<Type> =
+                        elements.iter().map(|e| self.infer_expr(e)).collect();
+                    // CV1a: the element type is the one every element fits, not
+                    // whichever element came first. `[small_u8, big_u64]` took
+                    // `u8` and silently narrowed the second — the interpreter
+                    // read 300 back and native read 44 (#649).
+                    let first_ty = self
+                        .widest_integer(&elem_types)
+                        .unwrap_or_else(|| elem_types[0].clone());
+                    for elem_ty in elem_types.into_iter().skip(1) {
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             first_ty.clone(),
                             elem_ty,
@@ -860,7 +869,20 @@ impl TypeChecker {
                 if matches!(&inner.kind, ExprKind::Block(_)) {
                     return self.infer_expr(inner);
                 }
+                // ER16a: `try` attaches to the fallible step of a postfix chain,
+                // not to the whole of it — `try read_file(p).len()` is
+                // `(try read_file(p)).len()`. Mark every step below the outermost
+                // so the first one that comes back wrapped hands the rest of the
+                // chain its payload instead of the wrapper.
+                self.mark_try_chain_steps(inner);
                 let inner_ty = self.infer_expr(inner);
+                self.try_chain_steps.clear();
+                if let Some((step_id, err_ty)) = self.try_chain_unwrapped.take() {
+                    // The chain already left through that step; this `try` has
+                    // nothing further to peel.
+                    self.record_try_placement(expr.id, step_id, &err_ty, expr.span);
+                    return inner_ty;
+                }
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
                     // ER16 on an optional: the `none` leaves to the caller.
@@ -1704,8 +1726,84 @@ impl TypeChecker {
             }
         };
 
+        // ER16a: this is a step of a postfix chain under a `try`. If it came
+        // back wrapped, this is the fallible step — the `try` attaches here and
+        // the rest of the chain works on the payload. The wrappers carry no
+        // methods, so at most one step in a chain can do this.
+        let ty = self.unwrap_try_chain_step(expr, ty);
+
         self.node_types.insert(expr.id, ty.clone());
         ty
+    }
+
+    /// ER16a: mark every postfix step below `chain` as a candidate for the
+    /// `try` to attach to. Receivers only — `try` does not slide into call
+    /// arguments, so a fallible call in an argument list keeps its own `try`.
+    fn mark_try_chain_steps(&mut self, chain: &Expr) {
+        self.try_chain_steps.clear();
+        self.try_chain_unwrapped = None;
+        let mut node = chain;
+        loop {
+            let inner = match &node.kind {
+                ExprKind::MethodCall { object, .. }
+                | ExprKind::Field { object, .. }
+                | ExprKind::Index { object, .. }
+                | ExprKind::DynamicField { object, .. } => object,
+                ExprKind::Call { func, .. } => func,
+                _ => break,
+            };
+            self.try_chain_steps.insert(inner.id);
+            node = inner;
+        }
+    }
+
+    /// ER16a: strip the wrapper off the chain step the `try` attaches to.
+    /// Only the first such step in a chain is taken.
+    fn unwrap_try_chain_step(&mut self, expr: &Expr, ty: Type) -> Type {
+        if self.try_chain_unwrapped.is_some() || !self.try_chain_steps.contains(&expr.id) {
+            return ty;
+        }
+        let resolved = self.ctx.apply(&ty);
+        let Type::Result { ok, err } = &resolved else { return ty };
+        // A flat `T? or E` has two branches that could leave, so it needs the
+        // `try … ??` composite and can't be resolved by placement alone (ER47).
+        if ok.is_option() {
+            return ty;
+        }
+        self.try_chain_unwrapped = Some((expr.id, (**err).clone()));
+        (**ok).clone()
+    }
+
+    /// ER16a: record where a `try` landed and run the propagation bookkeeping
+    /// for it — the same checks bare `try r` does, against the step's error.
+    fn record_try_placement(&mut self, try_id: NodeId, step_id: NodeId, err: &Type, span: Span) {
+        self.try_chain_placement.insert(try_id, step_id);
+        if matches!(err, Type::None) {
+            self.check_absence_can_leave(span);
+            return;
+        }
+        if !self.error_can_leave(span) {
+            return;
+        }
+        if self.accumulate_errors {
+            self.inferred_errors.push(err.clone());
+            return;
+        }
+        let Some(return_ty) = self.current_return_type.clone() else { return };
+        let resolved_ret = self.ctx.apply(&return_ty);
+        if let Type::Result { err: ret_err, .. } = &resolved_ret {
+            let ret_err = ret_err.clone();
+            self.propagate_try_error(try_id, err, &ret_err, span);
+        } else if matches!(resolved_ret, Type::Var(_)) {
+            // GC7: the return type is still open — `try` says it has an error
+            // branch, and this is it.
+            let ret_ok = self.ctx.fresh_var();
+            let ret_result = Type::Result {
+                ok: Box::new(ret_ok),
+                err: Box::new(err.clone()),
+            };
+            let _ = self.unify(&resolved_ret, &ret_result, span);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -2250,7 +2348,35 @@ impl TypeChecker {
             });
             if let Some((type_id, field_types)) = variant_fields {
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
-                let instantiated = self.instantiate_type_vars(&field_types);
+                // A generic enum written without type arguments takes them from
+                // the payload: `GrowError.Full(item)` gives each declared
+                // parameter a fresh variable that the argument binds. Answering
+                // bare `Named(type_id)` dropped them, so the value never matched
+                // a declared `void or GrowError<Item>` — the error branch of a
+                // generic error type was unwritable (#666).
+                let params = self.enum_type_params(type_id);
+                let (instantiated, result_ty) = if params.is_empty() {
+                    (self.instantiate_type_vars(&field_types), Type::Named(type_id))
+                } else {
+                    let fresh: Vec<Type> = params.iter().map(|_| self.ctx.fresh_var()).collect();
+                    let subst: std::collections::HashMap<&str, Type> = params
+                        .iter()
+                        .map(|p| p.as_str())
+                        .zip(fresh.iter().cloned())
+                        .collect();
+                    let fields: Vec<Type> = field_types
+                        .iter()
+                        .map(|t| Self::substitute_type_params(t, &subst))
+                        .collect();
+                    let ty = Type::Generic {
+                        base: type_id,
+                        args: fresh
+                            .into_iter()
+                            .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                            .collect(),
+                    };
+                    (fields, ty)
+                };
                 for (arg_ty, field_ty) in arg_types.iter().zip(instantiated.iter()) {
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         arg_ty.clone(),
@@ -2265,7 +2391,7 @@ impl TypeChecker {
                         span,
                     });
                 }
-                return Type::Named(type_id);
+                return result_ty;
             }
         }
 
@@ -2819,12 +2945,14 @@ impl TypeChecker {
             "u8" => Type::U8,
             "u16" => Type::U16,
             "u32" => Type::U32,
-            "u64" | "usize" => Type::U64,
+            "u64" => Type::U64,
+            "usize" => Type::usize_ty(),
             "u128" => Type::U128,
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
-            "i64" | "isize" => Type::I64,
+            "i64" => Type::I64,
+            "isize" => Type::isize_ty(),
             "i128" => Type::I128,
             "f32" => Type::F32,
             "f64" => Type::F64,
@@ -2943,8 +3071,40 @@ impl TypeChecker {
                                         let ret = Type::option(t_var);
                                         (params, ret)
                                     } else {
-                                        let instantiated = self.instantiate_type_vars(&fields);
-                                        (instantiated, Type::Named(id))
+                                        // A generic enum takes its type args from
+                                        // the payload: `GrowError.Full(item)` writes
+                                        // no `<…>`, so each declared parameter gets
+                                        // a fresh variable the argument then binds.
+                                        // Typing the result as bare `Named(id)`
+                                        // dropped them, and the value never matched
+                                        // the declared `void or GrowError<Item>` —
+                                        // so no generic error type could be returned
+                                        // at all (#666).
+                                        let params = self.enum_type_params(id);
+                                        if params.is_empty() {
+                                            let instantiated = self.instantiate_type_vars(&fields);
+                                            (instantiated, Type::Named(id))
+                                        } else {
+                                            let fresh: Vec<Type> =
+                                                params.iter().map(|_| self.ctx.fresh_var()).collect();
+                                            let subst: std::collections::HashMap<&str, Type> = params
+                                                .iter()
+                                                .map(|p| p.as_str())
+                                                .zip(fresh.iter().cloned())
+                                                .collect();
+                                            let instantiated: Vec<Type> = fields
+                                                .iter()
+                                                .map(|f| Self::substitute_type_params(f, &subst))
+                                                .collect();
+                                            let ret = Type::Generic {
+                                                base: id,
+                                                args: fresh
+                                                    .into_iter()
+                                                    .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                                                    .collect(),
+                                            };
+                                            (instantiated, ret)
+                                        }
                                     };
 
                                     return Type::Fn {

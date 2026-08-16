@@ -92,8 +92,32 @@ impl<'a> MirLowerer<'a> {
         try_id: rask_ast::NodeId,
         inner: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        // ER16a: the `try` may belong to a step inside the chain rather than to
+        // the whole of it — `try read_file(p).len()` branches at the call and
+        // hands `.len()` the payload. The checker worked out which step; arm it
+        // here and `lower_expr` emits the branch when it gets there.
+        if let Some(step) = self.ctx.try_chain_placement.get(&try_id).copied() {
+            if step != inner.id {
+                let saved = self.pending_try_step.replace((try_id, step));
+                let lowered = self.lower_expr(inner);
+                self.pending_try_step = saved;
+                return lowered;
+            }
+        }
         let (result, result_ty) = self.lower_expr(inner)?;
+        self.emit_try_branch(try_id, inner, result, result_ty)
+    }
 
+    /// The branch itself: read the tag, leave through the error path, carry on
+    /// with the payload. Split out of `lower_try` so ER16a can emit it at a
+    /// chain step instead of at the `try` node.
+    pub(super) fn emit_try_branch(
+        &mut self,
+        try_id: rask_ast::NodeId,
+        inner: &Expr,
+        result: MirOperand,
+        result_ty: MirType,
+    ) -> Result<TypedOperand, LoweringError> {
         // `try comptime f()`: comptime evaluation already collapsed the `T or E`
         // to its known-success payload — a plain scalar, not the tagged union
         // `try` normally reads a byte from. There's no runtime tag to check, and

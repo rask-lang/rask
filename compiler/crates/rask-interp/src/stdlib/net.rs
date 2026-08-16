@@ -154,7 +154,7 @@ impl Interpreter {
                 match s.read_to_end(&mut buf) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
-                        Ok(make_result_ok(Value::Vec(Arc::new(Mutex::new(bytes)))))
+                        Ok(make_result_ok(Value::vec(bytes)))
                     }
                     Err(e) => Ok(make_result_err(&e.to_string())),
                 }

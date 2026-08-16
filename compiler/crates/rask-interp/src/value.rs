@@ -29,6 +29,17 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// P2: what `usize` is on this target — pointer-sized. The width comes
+    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
+    pub fn usize_kind() -> IntKind {
+        if rask_ast::primitives::pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
+    }
+
+    /// P2: what `isize` is on this target.
+    pub fn isize_kind() -> IntKind {
+        if rask_ast::primitives::pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
+    }
+
     /// Unsigned widths carry their value as a bit pattern in the signed slot.
     pub fn is_unsigned(self) -> bool {
         matches!(self, IntKind::U8 | IntKind::U16 | IntKind::U32 | IntKind::U64)
@@ -86,11 +97,13 @@ impl IntKind {
             "i8" => IntKind::I8,
             "i16" => IntKind::I16,
             "i32" | "int" => IntKind::I32,
-            "i64" | "isize" => IntKind::I64,
+            "i64" => IntKind::I64,
+            "isize" => IntKind::isize_kind(),
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
             "u32" => IntKind::U32,
-            "u64" | "usize" | "uint" => IntKind::U64,
+            "u64" | "uint" => IntKind::U64,
+            "usize" => IntKind::usize_kind(),
             _ => return None,
         })
     }
@@ -643,6 +656,57 @@ pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
     entries
 }
 
+/// A vector's elements plus its capacity bound (`std.collections/CP1-CP3`).
+///
+/// Derefs to the elements, so everything that just wants the contents reads and
+/// writes them directly; only the bounded operations look at `bound`.
+#[derive(Debug, Clone, Default)]
+pub struct VecData {
+    pub items: Vec<Value>,
+    /// CP2: the ceiling this vector may not grow past. `None` is unbounded.
+    /// `Vec.fixed(0)` is a real bound of zero, so it can't be spelled with 0.
+    pub bound: Option<usize>,
+}
+
+impl VecData {
+    pub fn new(items: Vec<Value>) -> Self {
+        VecData { items, bound: None }
+    }
+
+    pub fn fixed(n: usize) -> Self {
+        VecData { items: Vec::with_capacity(n), bound: Some(n) }
+    }
+
+    /// CP2: at the bound, and so refusing further growth.
+    pub fn is_full(&self) -> bool {
+        self.bound.is_some_and(|b| self.items.len() >= b)
+    }
+
+    /// Room left before the bound, or `None` when unbounded.
+    pub fn remaining(&self) -> Option<usize> {
+        self.bound.map(|b| b.saturating_sub(self.items.len()))
+    }
+}
+
+impl From<Vec<Value>> for VecData {
+    fn from(items: Vec<Value>) -> Self {
+        VecData::new(items)
+    }
+}
+
+impl std::ops::Deref for VecData {
+    type Target = Vec<Value>;
+    fn deref(&self) -> &Vec<Value> {
+        &self.items
+    }
+}
+
+impl std::ops::DerefMut for VecData {
+    fn deref_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.items
+    }
+}
+
 /// A runtime value in the interpreter.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -693,7 +757,7 @@ pub enum Value {
         rev: bool,
     },
     /// Vec (growable array) with interior mutability
-    Vec(Arc<Mutex<Vec<Value>>>),
+    Vec(Arc<Mutex<VecData>>),
     /// Type constructor (for static method calls like Vec.new())
     TypeConstructor {
         kind: TypeConstructorKind,
@@ -868,7 +932,7 @@ impl RngState {
 pub enum IteratorState {
     /// Iterate over Vec elements by index.
     Vec {
-        items: Arc<Mutex<std::vec::Vec<Value>>>,
+        items: Arc<Mutex<VecData>>,
         index: usize,
     },
     /// Apply a mapping function to each element.
@@ -945,7 +1009,7 @@ impl fmt::Debug for IteratorState {
 #[derive(Debug, Clone)]
 pub enum WidePlan {
     /// Lanes materialized from a Vec (`data.wide()`).
-    Source(Arc<Mutex<std::vec::Vec<Value>>>),
+    Source(Arc<Mutex<VecData>>),
     /// Apply a closure to each lane.
     Map { source: Arc<WidePlan>, mapper: Value },
     /// Combine two plans lane-by-lane with a closure. Lengths must match.
@@ -953,6 +1017,16 @@ pub enum WidePlan {
 }
 
 impl Value {
+    /// An unbounded vector holding `items`.
+    pub fn vec(items: Vec<Value>) -> Value {
+        Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
+    }
+
+    /// CP3: a vector bounded at `n`, pre-allocated.
+    pub fn vec_fixed(n: usize) -> Value {
+        Value::Vec(Arc::new(Mutex::new(VecData::fixed(n))))
+    }
+
     /// Integer of unknown source width (lengths, indices, internal results).
     /// Unchecked for overflow — use `Value::Int(n, kind)` when the width is
     /// known (from a literal, cast, or typed context).
@@ -1038,7 +1112,8 @@ impl Value {
             "u8" => Value::Int(0, IntKind::U8),
             "u16" => Value::Int(0, IntKind::U16),
             "u32" => Value::Int(0, IntKind::U32),
-            "u64" | "uint" | "usize" => Value::Int(0, IntKind::U64),
+            "u64" | "uint" => Value::Int(0, IntKind::U64),
+            "usize" => Value::Int(0, IntKind::usize_kind()),
             "i128" => Value::Int128(0),
             "u128" => Value::Uint128(0),
             "f32" | "f64" => Value::Float(0.0, FloatKind::Untyped),
@@ -1095,7 +1170,7 @@ impl Value {
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
                 let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
-                Value::Vec(Arc::new(Mutex::new(deep)))
+                Value::vec(deep)
             }
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();

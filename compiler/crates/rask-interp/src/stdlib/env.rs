@@ -36,13 +36,13 @@ impl Interpreter {
             "vars" => {
                 let vars: Vec<Value> = std::env::vars()
                     .map(|(k, v)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![
+                        Value::vec(vec![
                             Value::String(Arc::new(Mutex::new(k))),
                             Value::String(Arc::new(Mutex::new(v))),
-                        ])))
+                        ])
                     })
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(vars))))
+                Ok(Value::vec(vars))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "env".to_string(),

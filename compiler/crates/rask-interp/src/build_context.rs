@@ -543,7 +543,7 @@ mod tests {
     }
 
     fn empty_vec() -> Value {
-        Value::Vec(Arc::new(Mutex::new(vec![])))
+        Value::vec(vec![])
     }
 
     // PM9: exec() blocked without build_exec capability

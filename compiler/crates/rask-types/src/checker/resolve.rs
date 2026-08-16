@@ -177,6 +177,35 @@ impl TypeChecker {
                     }
                 }
 
+                // A generic enum written without type arguments —
+                // `GrowError.Full(item)` — gets a fresh variable per declared
+                // parameter, so the payload can bind them. Handing back a bare
+                // `GrowError` instead dropped the arguments, and the value then
+                // never matched a declared `void or GrowError<Item>`: the error
+                // branch of every generic error type was unwritable (#666).
+                let enum_params = self.enum_type_params(*type_id);
+                let enum_subst: Vec<Type> = enum_params
+                    .iter()
+                    .map(|_| self.ctx.fresh_var())
+                    .collect();
+                let enum_self = if enum_params.is_empty() {
+                    ty.clone()
+                } else {
+                    Type::Generic {
+                        base: *type_id,
+                        args: enum_subst
+                            .iter()
+                            .cloned()
+                            .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                            .collect(),
+                    }
+                };
+                let param_map: std::collections::HashMap<&str, Type> = enum_params
+                    .iter()
+                    .map(|p| p.as_str())
+                    .zip(enum_subst.iter().cloned())
+                    .collect();
+
                 let result = self.types.get(*type_id).and_then(|def| {
                     match def {
                         TypeDef::Struct { fields, .. } | TypeDef::Union { fields, .. } => {
@@ -185,11 +214,14 @@ impl TypeChecker {
                         TypeDef::Enum { variants, .. } => {
                             variants.iter().find(|(n, _)| n == &field).map(|(_, fields)| {
                                 if fields.is_empty() {
-                                    ty.clone()
+                                    enum_self.clone()
                                 } else {
                                     Type::Fn {
-                                        params: fields.clone(),
-                                        ret: Box::new(ty.clone()),
+                                        params: fields
+                                            .iter()
+                                            .map(|t| Self::substitute_type_params(t, &param_map))
+                                            .collect(),
+                                        ret: Box::new(enum_self.clone()),
                                     }
                                 }
                             })
@@ -690,6 +722,11 @@ impl TypeChecker {
                             continue;
                         }
                         let substituted = Self::substitute_type_params(param_ty, &subst);
+                        // CV1a/CV2: the parameter is the slot, the argument the
+                        // value going into it — a direction plain unify doesn't
+                        // have, and without it `v.push(big_u64)` on a `Vec<u8>`
+                        // narrowed silently (#649).
+                        self.check_fits(arg, &substituted, span)?;
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
@@ -711,11 +748,37 @@ impl TypeChecker {
                     });
 
                     if let Some(mut fields) = variant {
-                        // Instantiate generic type parameters
+                        // The type args come from the payload: `GrowError.Full(item)`
+                        // names no arguments, so the variant's declared `T` gets a
+                        // fresh variable that the payload then binds. Without this
+                        // the constructed value is bare `GrowError`, which never
+                        // matches the declared `void or GrowError<Item>` — so the
+                        // error branch of every generic error type was unwritable
+                        // (#666).
+                        let mut constructed = ty.clone();
                         if Some(*type_id) == self.types.get_result_type_id()
                             || Some(*type_id) == self.types.get_option_type_id()
                         {
                             fields = self.instantiate_builtin_enum_variant(*type_id, &method, &fields);
+                        } else if !type_params.is_empty() && matches!(ty, Type::Named(_)) {
+                            let fresh: Vec<Type> =
+                                type_params.iter().map(|_| self.ctx.fresh_var()).collect();
+                            let subst: std::collections::HashMap<&str, Type> = type_params
+                                .iter()
+                                .map(|p| p.as_str())
+                                .zip(fresh.iter().cloned())
+                                .collect();
+                            fields = fields
+                                .iter()
+                                .map(|f| Self::substitute_type_params(f, &subst))
+                                .collect();
+                            constructed = Type::Generic {
+                                base: *type_id,
+                                args: fresh
+                                    .into_iter()
+                                    .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                                    .collect(),
+                            };
                         } else {
                             // User-defined enum: instantiate any TypeVars with fresh vars
                             fields = self.instantiate_type_vars(&fields);
@@ -734,7 +797,7 @@ impl TypeChecker {
                                 progress = true;
                             }
                         }
-                        if self.unify(&ty, &ret, span)? {
+                        if self.unify(&constructed, &ret, span)? {
                             progress = true;
                         }
                         Ok(progress)
@@ -1024,6 +1087,8 @@ impl TypeChecker {
                         let substituted = Self::substitute_type_params(param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
+                        // CV1a/CV2: same direction as above (#649).
+                        self.check_fits(arg, &substituted, span)?;
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
@@ -1313,6 +1378,8 @@ impl TypeChecker {
         let mut progress = false;
         for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
             let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
+            // CV1a/CV2: same direction as above (#649).
+            self.check_fits(arg, &substituted, span)?;
             if self.unify(&substituted, arg, span)? {
                 progress = true;
             }

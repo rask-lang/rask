@@ -45,7 +45,7 @@ impl Interpreter {
                     "f64" => Type::F64,
                     "bool" => Type::Bool,
                     "string" => Type::String,
-                    "usize" => Type::U64, // Map usize to u64 for now
+                    "usize" => Type::usize_ty(),
                     _ => Type::UnresolvedNamed(part.to_string()),
                 };
                 args.push(GenericArg::Type(Box::new(ty)));

@@ -151,7 +151,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         "u32" => Type::U32,
         "u64" => Type::U64,
         "u128" => Type::U128,
-        "usize" => Type::U64,
+        "usize" => Type::usize_ty(),
         "f32" => Type::F32,
         "f64" => Type::F64,
         "Never" => Type::Never,

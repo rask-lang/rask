@@ -168,6 +168,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
         },
+        // try_push shares push's C entry: the runtime has no reachable failure
+        // yet (Vec carries no capacity bound, and OOM panics in the allocator),
+        // so the destination `void or GrowError<T>` always gets its ok branch.
+        // A bound makes the status meaningful, and this entry then has to build
+        // GrowError.Full with the rejected element instead.
+        StdlibEntry {
+            mir_name: "Vec_try_push", c_name: "rask_vec_push",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Vec_pop", c_name: "rask_vec_pop",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -201,7 +211,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_clear", "rask_vec_clear", &[types::I64], None, false),
         StdlibEntry::simple("Vec_is_empty", "rask_vec_is_empty", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_capacity", "rask_vec_capacity", &[types::I64], Some(types::I64), false),
+        // CP1-CP3: `capacity()` is the *bound*, not the allocation — `none` when
+        // the vector is unbounded, which the runtime signals with -1. The
+        // allocation size isn't a Rask-visible number.
+        StdlibEntry::neg_none("Vec_capacity", "rask_vec_bound", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("Vec_remaining", "rask_vec_remaining", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_is_bounded", "rask_vec_is_bounded", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
+        // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
+        // with_capacity. The difference is the bound it sets.
+        StdlibEntry::simple("Vec_fixed", "rask_vec_fixed", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "Vec_insert", c_name: "rask_vec_insert_at",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,

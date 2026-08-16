@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.primitives/CV1a, CV2 (#649): a value only goes into a slot it fits.
+// Positions with a direction reject narrowing; a join takes the type every
+// element fits, rather than whichever one came first.
+
+public func main() {
+    let big: u64 = 300
+    let small: u8 = 7
+
+    // The join is `u64`, so the second element survives whole. Taking the
+    // first element's type made this a `[u8; 2]` and stored 300 as 44.
+    let arr = [small, big]
+    print(arr[0])
+    print(",")
+    print(arr[1])
+    print(",")
+
+    // Widening still needs no ceremony in either order.
+    let widened: u64 = small
+    print(widened)
+    print(",")
+
+    mut v: Vec<u64> = Vec.new()
+    v.push(small)
+    v.push(big)
+    print(v[0])
+    print(",")
+    print(v[1])
+}
