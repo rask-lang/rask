@@ -879,6 +879,41 @@ impl Resolver {
                     let param_types: Vec<String> = extern_decl.params.iter()
                         .map(|p| p.ty.clone())
                         .collect();
+
+                    // One C symbol, one signature. Ordinary bindings shadow, so
+                    // a second `extern "C" func strlen` just replaced the first
+                    // — and when the first was the stdlib's, std.fs's own calls
+                    // started type-checking against the user's return type. The
+                    // errors surfaced with fs.rk's offsets against the user's
+                    // file, pointing at a line and column that didn't exist
+                    // there. Agreeing redeclarations stay legal: a program
+                    // shouldn't have to know std.fs already declared `strlen`.
+                    if let Some(prev_id) = self.scopes.lookup(&extern_decl.name) {
+                        if let Some(prev) = self.symbols.get(prev_id) {
+                            if let SymbolKind::ExternFunction { abi, params, ret_ty } = &prev.kind {
+                                let same = *abi == extern_decl.abi
+                                    && *params == param_types
+                                    && *ret_ty == extern_decl.ret_ty;
+                                if !same {
+                                    self.errors.push(ResolveError::conflicting_extern(
+                                        extern_decl.name.clone(),
+                                        render_extern_sig(abi, params, ret_ty),
+                                        render_extern_sig(
+                                            &extern_decl.abi,
+                                            &param_types,
+                                            &extern_decl.ret_ty,
+                                        ),
+                                        prev.span,
+                                        decl.span,
+                                    ));
+                                }
+                                // Either way the existing binding stands, so the
+                                // declaration that's already in use keeps working.
+                                continue;
+                            }
+                        }
+                    }
+
                     let sym_id = self.symbols.insert(
                         extern_decl.name.clone(),
                         SymbolKind::ExternFunction {
@@ -2544,6 +2579,15 @@ impl Resolver {
                 }
             }
         }
+    }
+}
+
+/// An extern signature as the user wrote it, for the conflict message.
+fn render_extern_sig(abi: &str, params: &[String], ret_ty: &Option<String>) -> String {
+    let params = params.join(", ");
+    match ret_ty.as_deref().filter(|r| !r.is_empty() && *r != "()") {
+        Some(ret) => format!("extern \"{}\" func({}) -> {}", abi, params, ret),
+        None => format!("extern \"{}\" func({})", abi, params),
     }
 }
 

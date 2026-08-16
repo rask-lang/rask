@@ -179,6 +179,30 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 .with_why("circular imports create unresolvable dependencies — restructure into a DAG")
             }
 
+            ConflictingExtern { name, previous, current, previous_span: _ } => {
+                Diagnostic::error(format!(
+                    "`{}` is already declared with a different signature", name
+                ))
+                .with_code("E0213")
+                .with_primary(self.span, format!("declared here as `{}`", current))
+                // The earlier declaration is usually in the stdlib, and a span
+                // from another file renders as a blank line against this one —
+                // so name the signature rather than pointing at it.
+                .with_note(format!("already declared as `{}`", previous))
+                .with_help(format!(
+                    "match the existing declaration, or drop this one — `{}` is already in scope",
+                    name
+                ))
+                .with_fix(previous.clone())
+                .with_why(
+                    "an `extern` name is a single symbol in the linked program, so two \
+                     signatures for it can't both be right. The stdlib declares some C \
+                     functions itself — std.fs declares `strlen` — and a second declaration \
+                     used to replace it silently, which left the stdlib's own calls checked \
+                     against the wrong signature",
+                )
+            }
+
             ShadowsBuiltin { name } => {
                 Diagnostic::error(format!("`{}` shadows a built-in", name))
                     .with_code("E0209")

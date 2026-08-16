@@ -102,6 +102,24 @@ impl ResolveError {
         }
     }
 
+    pub fn conflicting_extern(
+        name: String,
+        previous: String,
+        current: String,
+        previous_span: Span,
+        span: Span,
+    ) -> Self {
+        Self {
+            kind: ResolveErrorKind::ConflictingExtern {
+                name,
+                previous,
+                current,
+                previous_span,
+            },
+            span,
+        }
+    }
+
     pub fn c_header_not_found(header: String, detail: String, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::CHeaderNotFound { header, detail },
@@ -125,6 +143,17 @@ pub enum ResolveErrorKind {
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },
+
+    /// Two `extern "C"` declarations of one C symbol that disagree. There's a
+    /// single `strlen` in the linked program, so two signatures for it can't
+    /// both be right.
+    #[error("`{name}` is already declared with a different signature: `{previous}` vs `{current}`")]
+    ConflictingExtern {
+        name: String,
+        previous: String,
+        current: String,
+        previous_span: Span,
+    },
 
     #[error("break outside of loop{}", label.as_ref().map(|l| format!(" (label: {})", l)).unwrap_or_default())]
     InvalidBreak { label: Option<String> },
