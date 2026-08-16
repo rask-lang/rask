@@ -167,6 +167,12 @@ pub struct TypeChecker {
     /// operand itself. Lowering reads this to put the branch in the same place
     /// the checker did.
     pub(super) try_chain_placement: HashMap<NodeId, NodeId>,
+    /// `??` nodes whose left side is an index expression. `m[k]` panics on a
+    /// miss instead of yielding a `T?`, so a `??` after it is the mistake
+    /// people actually make, and the fix is `.get(k)` rather than anything
+    /// about the `??` itself (#645). Recorded during the walk because by the
+    /// time the operand's type settles, the syntax is out of reach.
+    pub(super) coalesce_index_operands: std::collections::HashSet<NodeId>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -285,6 +291,7 @@ impl TypeChecker {
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
             try_chain_placement: HashMap::new(),
+            coalesce_index_operands: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             mutate_self_fns: std::collections::HashSet::new(),

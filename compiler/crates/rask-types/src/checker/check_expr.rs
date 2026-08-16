@@ -1131,10 +1131,20 @@ impl TypeChecker {
                 match &resolved {
                     Type::Result { err, .. } if **err == Type::None => resolved.clone(),
                     Type::Var(_) => {
-                        let inner = self.ctx.fresh_var();
-                        let opt = Type::option(inner);
-                        let _ = self.unify(&place_ty, &opt, expr.span);
-                        opt
+                        // The place resolves later — `take conn.pending` waits
+                        // on the field's own constraint. Unifying it with `T?`
+                        // here *decided* the place was optional, so a place
+                        // that turned out to be a plain `i64` reported
+                        // "expected `_?`, found `i64`" from the field's
+                        // constraint: the guess this line made, not the
+                        // mistake. Ask again once the place has settled (#645).
+                        let result = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::TakePlace {
+                            place: place_ty.clone(),
+                            result: result.clone(),
+                            span: expr.span,
+                        });
+                        result
                     }
                     Type::Error => Type::Error,
                     _ => {
@@ -1207,8 +1217,7 @@ impl TypeChecker {
                         payload
                     }
                     _ => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: Type::option(self.ctx.fresh_var()),
+                        self.errors.push(TypeError::ForceUnwrapOnNonOptional {
                             found: resolved,
                             span: expr.span,
                         });
@@ -1611,6 +1620,12 @@ impl TypeChecker {
                 // Tell the `try` it's the left half, so ER47 lets it through.
                 if matches!(value.kind, ExprKind::Try { .. }) {
                     self.flat_try_sites.insert(value.id);
+                }
+                // `m[k] ?? d` is the mistake worth its own advice, and the
+                // syntax that identifies it is gone by the time the operand's
+                // type settles (#645).
+                if matches!(value.kind, ExprKind::Index { .. }) {
+                    self.coalesce_index_operands.insert(expr.id);
                 }
                 let val_ty = self.infer_expr(value);
                 let resolved_val = self.ctx.apply(&val_ty);

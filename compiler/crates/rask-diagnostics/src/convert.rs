@@ -598,6 +598,33 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
+            CoalesceOnNonOptional { found, from_index, span } => {
+                let d = Diagnostic::error(format!(
+                    "`??` on `{}` — there's no absent branch to fall back to", found
+                ))
+                .with_code("E0831")
+                .with_primary(*span, format!("this is a `{}`, and it's always there", found));
+                let d = if *from_index {
+                    // The reason this case gets its own advice: indexing is the
+                    // one operation that *looks* like it might not find
+                    // anything and still hands back a plain `T`.
+                    d.with_fix("ask for the optional instead of indexing:\n    m[k] ?? fallback   →   m.get(k) ?? fallback")
+                } else {
+                    d.with_fix("drop the `??` and its right side:\n    x ?? fallback   →   x")
+                };
+                d.with_why("`??` supplies the other branch of a `T?`. A value that is always present has no other branch, so there is nothing for the right side to be [type.optionals/OPT3, OPT11]")
+            }
+
+            ForceUnwrapOnNonOptional { found, span } => {
+                Diagnostic::error(format!(
+                    "`!` on `{}` — there's no payload to force out", found
+                ))
+                .with_code("E0832")
+                .with_primary(*span, format!("this is a `{}`, and it's always there", found))
+                .with_fix("drop the `!`:\n    x!   →   x")
+                .with_why("`x!` takes the payload out of a `T?` and panics when there isn't one. A value that is always present has no wrapper to take it out of [type.optionals/OPT13]")
+            }
+
             NotOnOptional { found, span } => {
                 Diagnostic::error(format!("`!` on `{}` — negation doesn't reach through an optional", found))
                     .with_code("E0830")
@@ -641,7 +668,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`take` needs an optional slot, found `{}`", found))
                     .with_code("E0365")
                     .with_primary(*span, "not a `T?` place")
-                    .with_fix("if this is a `T or E`, use `match` — an error is not a slot you empty")
+                    .with_fix("make the slot optional, or read it without emptying it:\n    pending: Request   →   pending: Request?\n    take conn.pending  →   conn.pending")
                     .with_why("`take` leaves `none` behind, so the place has to have an absent branch to leave [type.optionals/OPT32]")
             }
 

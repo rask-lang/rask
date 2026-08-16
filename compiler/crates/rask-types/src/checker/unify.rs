@@ -83,6 +83,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
             ) {
                 match self.solve_constraint(constraint) {
@@ -255,6 +256,10 @@ impl TypeChecker {
                 self.resolve_coalesce(node, value, default, result, span)
             }
 
+            TypeConstraint::TakePlace { place, result, span } => {
+                self.resolve_take_place(place, result, span)
+            }
+
             TypeConstraint::ElementOf { container, elem, span } => {
                 self.resolve_element_of(container, elem, span)
             }
@@ -410,6 +415,40 @@ impl TypeChecker {
         }
     }
 
+    /// OPT32: settle `take <place>` once the place's type is known.
+    ///
+    /// A place that is always there has no absent branch to leave behind, which
+    /// is the whole mechanism — so it's rejected, naming the place's real type.
+    /// The walk can't do this: the place is usually a field, and its type comes
+    /// from a constraint of its own.
+    fn resolve_take_place(
+        &mut self,
+        place: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&place);
+        if resolved.is_option() {
+            self.unify(&result, &resolved, span)?;
+            return Ok(true);
+        }
+        match &resolved {
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::TakePlace { place, result, span });
+                Ok(false)
+            }
+            // Already poisoned by whatever produced the place. One diagnostic
+            // for one mistake.
+            Type::Error => Ok(true),
+            other => {
+                if let Type::Var(id) = self.ctx.apply(&result) {
+                    self.ctx.bind_var(id, Type::Error);
+                }
+                Err(TypeError::TakeOnNonOptional { found: other.clone(), span })
+            }
+        }
+    }
+
     /// Settle `object[index]` once the container's shape is known. Defers while
     /// the container is still a variable — a Pool behind a struct field only
     /// gets its type when that field's own constraint resolves.
@@ -448,6 +487,30 @@ impl TypeChecker {
         // solver, so registering here still lands in time.
         self.check_index_types(&obj, &index, is_range, span);
         Ok(progressed)
+    }
+
+    /// Could the left side of a `??` be absent?
+    ///
+    /// True for the optional shape, for a `T or E` (ER12 rejects that one at
+    /// the `??` itself, with advice about `catch` — this isn't the place to
+    /// re-answer it), and for anything not yet known. False only when the value
+    /// is a settled type that is always there.
+    fn coalesce_operand_can_be_absent(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Result { .. } => true,
+            // Nothing pinned it yet, or it's already poisoned by an earlier
+            // error. Neither is a reason to add a second diagnostic.
+            Type::Var(_)
+            | Type::Error
+            | Type::Never
+            | Type::UnresolvedNamed(_)
+            | Type::UnresolvedGeneric { .. } => true,
+            // `Option<T>` written the long way, or a bare `none`.
+            Type::None => true,
+            Type::Named(id) => Some(*id) == self.types.get_option_type_id(),
+            Type::Generic { base, .. } => Some(*base) == self.types.get_option_type_id(),
+            _ => false,
+        }
     }
 
     fn resolve_coalesce(
@@ -515,6 +578,32 @@ impl TypeChecker {
             }
             other => (other.clone(), other.clone()),
         };
+
+        // OPT3/OPT11: `??` supplies the branch a `T?` has and nothing else
+        // does. A left side that's always present has no branch to supply, and
+        // the unify below can only report that as a shape mismatch — "expected
+        // `i64`, found `i32 or _`", which names the compiler's own rewrite and
+        // then advises changing the type to what it already is (#645).
+        //
+        // Checked here rather than at the `??` because the operand's type often
+        // isn't known there: `m[key]` waits on a deferred Index constraint.
+        // Anything still open is left alone — it can still turn out optional.
+        let resolved_value = self.ctx.apply(&value);
+        if !self.coalesce_operand_can_be_absent(&resolved_value) {
+            self.errors.push(TypeError::CoalesceOnNonOptional {
+                found: resolved_value,
+                from_index: self.coalesce_index_operands.contains(&node),
+                span,
+            });
+            // Poison the result rather than leaving it open. Returning the
+            // error and stopping left the binding with no type, so one wrong
+            // `??` also reported "couldn't work out the type of `v`" — a second
+            // diagnostic for a problem the first one already explained.
+            if let Type::Var(id) = self.ctx.apply(&result) {
+                self.ctx.bind_var(id, Type::Error);
+            }
+            return Ok(true);
+        }
 
         // The error side stays free so both shapes fit: `T?` binds it to
         // `none`, and an operand whose shape isn't pinned yet still unifies.

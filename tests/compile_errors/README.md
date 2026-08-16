@@ -27,6 +27,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
 | [ambiguous_error_wrap.rk](ambiguous_error_wrap.rk) | Two variants of the error enum wrap the same error (ER31a, E0359) — `try` asks which instead of picking |
+| [optional_operators_need_optionals.rk](optional_operators_need_optionals.rk) | `??`, `!` and `take` on something that can never be absent (OPT3/OPT11/OPT13/OPT32, E0831/E0832/E0365) — including `m[k] ?? d`, which points at `.get(k)` |
 | [no_auto_wrap_outside_return.rk](no_auto_wrap_outside_return.rk) | A bare `T` becomes a `T or E` at `return` only (ER11, E0828) — binding, argument (free *and* method), and field are rejected, and the optional shape is exempt |
 | [error_type_named_in_diagnostics.rk](error_type_named_in_diagnostics.rk) | Three codes that mention a `T or E` all name its error type rather than leaking `<type#N>` (#646) |
 | [unknown_type_name.rk](unknown_type_name.rk) | Typo'd type name in signature (PC2) — errors instead of becoming a generic |

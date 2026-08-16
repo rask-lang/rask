@@ -94,6 +94,19 @@ pub enum TypeConstraint {
         result: Type,
         span: Span,
     },
+    /// OPT32: `take <place>` — the place has to be a `T?`, and the expression
+    /// yields that same `T?`.
+    ///
+    /// Deferred because the place is usually a field, whose type arrives from
+    /// its own constraint: `take conn.pending` meets an unresolved place. The
+    /// walk used to settle it by unifying the place with a fresh `T?`, which
+    /// answered the question instead of asking it — a non-optional place then
+    /// failed inside the field's constraint with a message about `_?`.
+    TakePlace {
+        place: Type,
+        result: Type,
+        span: Span,
+    },
     /// The element type of a container being iterated.
     ///
     /// A field's type arrives as a deferred `HasField`, so `for t in self.tables`

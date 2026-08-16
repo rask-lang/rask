@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `??`, `!` and `take` need something that can be absent
+// ERROR: `??` on `i64` — there's no absent branch to fall back to
+//
+// OPT3/OPT11/OPT13/OPT32: the whole optional operator family works on the
+// absent branch of a `T?`. A left side that is always there has no such
+// branch, so none of them mean anything on it.
+//
+// All three used to be rejected only by accident, and said so badly. `??` on a
+// plain `i64` got "expected `i64`, found `i32 or _`" — the compiler's own
+// internal rewrite of the operator — followed by "fix: change this to type
+// `i64`", which is the type the author had already written. `take` and `!` on
+// a place that resolves late got "expected `_?`, found `i64`": the guess the
+// checker made, reported as the mistake (#645).
+//
+// The map case is the one worth naming: `m[k]` panics when the key is absent
+// rather than handing back a `T?`, so reaching for `??` after it is the
+// natural mistake, and `.get(k)` is the answer.
+
+struct Slot {
+    held: i64
+}
+
+struct Widget {
+    tag: i64
+}
+
+func main() {
+    let n: i64 = 5
+
+    // ERROR: `??` on a plain value
+    let a: i64 = n ?? -1
+
+    // ERROR: `??` on a string
+    let s: string = "hi"
+    let b: string = s ?? "fallback"
+
+    // ERROR: `??` after a map index — the fix is `.get(k)`
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 5)
+    let c: i64 = m["a"] ?? -1
+
+    // ERROR: `??` on a struct field that isn't optional
+    let w = Widget { tag: 3 }
+    let d: i64 = w.tag ?? -1
+
+    // ERROR: `!` on a plain value
+    let e: i64 = n!
+
+    // ERROR: `take` on a place that isn't a `T?`
+    mut slot = Slot { held: 3 }
+    let f: i64 = take slot.held
+
+    // THE FIX, and the shapes that stay legal.
+    let opt: i64? = 7
+    let ok_coalesce: i64 = opt ?? -1
+    let ok_force: i64 = opt!
+    let ok_get: i64 = m.get("a") ?? -1
+
+    println("{ok_coalesce} {ok_force} {ok_get} {a} {b} {c} {d} {e} {f}")
+}

@@ -807,6 +807,40 @@ fn error_keyword_fn_name() {
     );
 }
 
+// OPT3/OPT11/OPT13/OPT32: the optional operator family needs an absent branch
+// to work on. All three used to be rejected only as a side effect of the shape
+// they were rewritten into, and reported it that way — `n ?? -1` said "expected
+// `i64`, found `i32 or _`" and advised changing the type to the one already
+// written (#645). Pins the message, the `.get(k)` advice for the index case,
+// and the count: six mistakes, six errors, nothing extra from the cascade and
+// nothing for the legal shapes in the same file.
+#[test]
+fn error_optional_operators_need_optionals() {
+    let (failed, out) = compile_error_output("optional_operators_need_optionals.rk");
+    assert!(failed, "`??`/`!`/`take` on a non-optional must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0831").count(), 4,
+        "one per `??`: a local, a string, a map index, a struct field: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0832").count(), 1,
+        "one `!` on a non-optional: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0365").count(), 1,
+        "one `take` on a non-optional place: {}", out,
+    );
+    assert!(
+        out.contains("m.get(k) ?? fallback"),
+        "the index case should point at `.get`, not at the `??`: {}", out,
+    );
+    assert!(
+        !out.contains("E0361"),
+        "a rejected operator poisons its result, so no follow-on \"couldn\'t work \
+         out the type\": {}", out,
+    );
+}
+
 // ER11: a bare `T` becomes a `T or E` at `return` and nowhere else. The rule was
 // always enforced; the message wasn't — the generic mismatch answered, and its
 // "change this to type `i64 or LoadError`" was what the author had already
