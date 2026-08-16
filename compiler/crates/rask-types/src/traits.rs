@@ -169,38 +169,28 @@ impl<'a> TraitChecker<'a> {
         // container of encodable elements, or a struct/enum whose fields all
         // encode qualifies. These aren't registered as traits, so short-circuit
         // before the method-based logic (which would fail with UnknownTrait).
-        // One name for one trait, wherever the name was written — a bound, a
-        // conformance header, an `any …` type. Folding it only at the `any`
-        // parse site is how `any Error` resolved while `extend E with Error`
-        // did not (#708). Generic arguments are preserved: only the base name
-        // has spellings.
-        let base_raw = trait_name.split('<').next().unwrap_or(trait_name);
-        let base_trait = rask_ast::traits::canonical_trait_name(base_raw);
-        let canonical = if base_trait == base_raw {
-            trait_name.to_string()
-        } else {
-            trait_name.replacen(base_raw, base_trait, 1)
-        };
-        let trait_name = canonical.as_str();
+        let base_trait = trait_name.split('<').next().unwrap_or(trait_name);
 
-        // NT1–NT3: `Numeric`, `Integer` and `Float` are sets of primitive
-        // types, not lists of methods. Their contents are constants (`MIN`,
-        // `MAX`, `BITS`, `EPSILON`), so the method-based path has nothing to
-        // check and would answer "satisfied" for every type in the language.
+        // NT1–NT3: every primitive of the right kind satisfies `Numeric`,
+        // `Integer` and `Float` — that's what the rules say those names mean,
+        // and the widths and constants they promise (`MIN`, `MAX`, `BITS`,
+        // `EPSILON`) aren't things the method-based check below can see.
         //
-        // Unregistered, they were worse than that: `func narrow<T: Integer>`
-        // failed at every call site with "`_` does not implement `Integer`" —
+        // A non-primitive falls through rather than being rejected here.
+        // `Numeric` is a nominal trait in the roster with eight methods, and
+        // OP1 says generic operator use goes through it "like any other
+        // generic call" — so a type that declares the conformance has to count
+        // too. Short-circuiting to a membership test alone would have made
+        // `extend MyDecimal with Numeric` unusable as a bound.
+        //
+        // Unregistered, these names failed at every call site: `func
+        // narrow<T: Integer>` reported "`_` does not implement `Integer`" —
         // `_` because an unknown trait has no type to blame, and unknown
         // because nothing had ever registered the name (#713).
         if let Some(members) = numeric_trait_members(base_trait) {
             if members(ty) {
                 return Ok(());
             }
-            return Err(TraitError::NotSatisfied {
-                ty: self.type_name(ty),
-                trait_name: trait_name.to_string(),
-                span,
-            });
         }
 
         if matches!(base_trait, "Encode" | "Decode") {
@@ -753,6 +743,23 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 params: vec![],
                 ret: Type::option(Type::Var(crate::types::TypeVarId(0))),
             }]),
+            // NT1–NT3 / the standard-trait roster. `Numeric` is a nominal
+            // trait with these eight; `Integer` and `Float` extend it with
+            // constants, which have no MethodSig to stand for them — a
+            // primitive answers through the membership test above, and a user
+            // type is held to the methods it can actually declare.
+            "Numeric" | "Integer" => Some(numeric_method_sigs()),
+            "Float" => {
+                let mut sigs = numeric_method_sigs();
+                sigs.push(MethodSig {
+                    type_params: Vec::new(),
+                    name: "is_nan".to_string(),
+                    self_param: SelfParam::Value,
+                    params: vec![],
+                    ret: Type::Bool,
+                });
+                Some(sigs)
+            }
             // ER4/ER32: ErrorMessage trait — `func message(self) -> string`
             "ErrorMessage" => Some(vec![MethodSig {
                 type_params: Vec::new(),
@@ -1014,6 +1021,40 @@ fn is_abstract_arg(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// The eight methods the roster gives `Numeric`.
+fn numeric_method_sigs() -> Vec<MethodSig> {
+    let binary = |name: &str| MethodSig {
+        type_params: Vec::new(),
+        name: name.to_string(),
+        self_param: SelfParam::Value,
+        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+        ret: Type::Var(crate::types::TypeVarId(0)),
+    };
+    let nullary = |name: &str, self_param| MethodSig {
+        type_params: Vec::new(),
+        name: name.to_string(),
+        self_param,
+        params: vec![],
+        ret: Type::Var(crate::types::TypeVarId(0)),
+    };
+    vec![
+        binary("add"),
+        binary("sub"),
+        binary("mul"),
+        binary("div"),
+        nullary("neg", SelfParam::Value),
+        nullary("zero", SelfParam::None),
+        nullary("one", SelfParam::None),
+        MethodSig {
+            type_params: Vec::new(),
+            name: "from_int".to_string(),
+            self_param: SelfParam::None,
+            params: vec![(Type::I64, ParamMode::Default)],
+            ret: Type::Var(crate::types::TypeVarId(0)),
+        },
+    ]
 }
 
 /// Membership test for one of the numeric traits, or `None` if `name` isn't

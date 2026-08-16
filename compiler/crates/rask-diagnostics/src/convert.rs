@@ -1017,10 +1017,21 @@ impl ToDiagnostic for rask_types::TypeError {
                 let d = Diagnostic::error(format!("no trait named `{}`", trait_name))
                     .with_code("E0833")
                     .with_primary(*span, "this name isn't a trait");
+                // A name with a longer registered spelling is too far away for
+                // edit distance to find — `Error` to `ErrorMessage` is seven
+                // characters. Ask the alias table first.
+                let canonical = rask_ast::traits::canonical_trait_name(trait_name);
                 let refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-                match crate::suggestions::did_you_mean(trait_name, refs) {
-                    Some(hint) => d.with_fix(format!("{}", hint)),
-                    None => d.with_fix(format!("declare it, or drop the bound:\n    trait {} {{ … }}", trait_name)),
+                if canonical != trait_name && known.iter().any(|k| k == canonical) {
+                    d.with_fix(format!("did you mean `{}`?", canonical))
+                } else {
+                    match crate::suggestions::did_you_mean(trait_name, refs) {
+                        Some(hint) => d.with_fix(hint),
+                        None => d.with_fix(format!(
+                            "declare it, or drop the bound:\n    trait {} {{ … }}",
+                            trait_name
+                        )),
+                    }
                 }
                 .with_why("a bound has to name a trait that exists — nothing can satisfy one that doesn't, so every call site would fail [type.generics/G1]")
             }

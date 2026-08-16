@@ -128,38 +128,18 @@ test "type.errors — the success branch of the same function still works" {
     assert outcome == 5
 }
 
-// The conformance header spelling folds too — `Error` and `ErrorMessage` are
-// one trait wherever the name is written, not only after `any`.
 
-enum HeaderSpelled { Nope }
-
-extend HeaderSpelled with Error {
-    public func message(self) -> string {
-        return "spelled with Error"
-    }
-}
-
-func header_spelled() -> i64 or any Error {
-    return HeaderSpelled.Nope
-}
-
-test "type.generics — `extend T with Error` declares the same conformance" {
-    let outcome = header_spelled() catch e => {
-        assert e.message() == "spelled with Error"
-        return
-    }
-    assert false, "expected the error branch, got {outcome}"
-}
-
-// `any ErrorMessage` is the same trait spelled with its declaration name, so it
-// has to behave identically — the two spellings folding to one is what the fix
-// is, and a divergence here would mean they hadn't.
+// Both spellings resolve to the error trait object in type position, so a
+// function written either way behaves the same. That's all this asserts —
+// whether `Error` is a second name for the `ErrorMessage` trait or the name of
+// the boxed error type with `ErrorMessage` as its admission rule is a question
+// the spec doesn't answer, and nothing here depends on which.
 func load_long_spelling(key: string) -> i64 or any ErrorMessage {
     let stored = try fetch(key)
     return stored
 }
 
-test "type.errors — `any ErrorMessage` and `any Error` are one type" {
+test "type.errors — both spellings work in an error position" {
     let outcome = load_long_spelling("gone") catch e => {
         assert e.message() == "missing: gone"
         return

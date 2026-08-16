@@ -314,13 +314,9 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The key a conformance is filed under: generic args stripped, and the
-    /// name folded to its registered spelling. Both ends have to agree — a
-    /// conformance recorded as `Error` and looked up as `ErrorMessage` is a
-    /// conformance nobody can find.
+    /// The key a conformance is filed under: generic args stripped.
     fn conformance_key(trait_name: &str) -> String {
-        let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
-        rask_ast::traits::canonical_trait_name(base).to_string()
+        trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
     }
 
     /// G1: record that a type conforms to a trait (declared or auto-derived).

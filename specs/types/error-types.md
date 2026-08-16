@@ -395,8 +395,6 @@ There is no fold *method* either. A fold ends the error's journey, and journey-e
 | **ER31a: Auto-wrap into a boundary enum** | `try` succeeds when the current function's error type is an enum with **exactly one** variant whose only payload is the propagated error type. `try f()` then means `f() catch e => return Outer.Variant(e)`. Two candidate variants is a compile error naming both — the wrap has to be unambiguous |
 | **ER32: Auto-box to `any Error`** | `try` auto-boxes when the current function's error type is `any Error` — any `E` satisfying `ErrorMessage` widens by boxing |
 
-`Error` and `ErrorMessage` name the same trait. `any Error` is what you write in a type — short, and it reads as the boxed error it is; `ErrorMessage` is what you write in a conformance header, because that's where the method it requires belongs. `any ErrorMessage` also works and means the same thing.
-
 <!-- test: skip -->
 ```rask
 // Library: precise union
