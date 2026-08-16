@@ -87,6 +87,9 @@ struct CodegenCtx<'a> {
     current_span_start: u32,
     ret_ty: &'a MirType,
     is_main: bool,
+    /// An `extern "C"` export: its body is bracketed with the FFI panic
+    /// boundary, so a panic inside aborts rather than unwinding into C frames.
+    is_extern_c: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
 }
 
@@ -411,8 +414,19 @@ impl<'a> FunctionBuilder<'a> {
             current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
             is_main: self.mir_fn.name == "main",
+            is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
         };
+
+        // ctrl.panic/A1: an exported symbol is entered from C, so the frames
+        // between here and any panic handler belong to the C caller. Mark the
+        // boundary on the way in — `rask_panic` aborts instead of longjmping
+        // over them. `lower_terminator` clears it on every normal return.
+        if ctx.is_extern_c {
+            if let Some(fr) = ctx.func_refs.get("rask_ffi_boundary_enter") {
+                builder.ins().call(*fr, &[]);
+            }
+        }
 
         // Lower each block (skip cleanup-only blocks)
         for mir_block in &self.mir_fn.blocks {
@@ -4448,6 +4462,14 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         match &term.kind {
             MirTerminatorKind::Return { value } => {
+                // Leaving an exported symbol the normal way — one level of the
+                // FFI boundary comes back off. A panic never gets here; it
+                // aborts at the boundary instead (ctrl.panic/A1).
+                if ctx.is_extern_c {
+                    if let Some(fr) = ctx.func_refs.get("rask_ffi_boundary_exit") {
+                        builder.ins().call(*fr, &[]);
+                    }
+                }
                 // main is called from C as void rask_main(void) — always return
                 // void. A `void or E` main still has to report its error branch,
                 // though: exit 1, not the silent 0 it used to give (#345).

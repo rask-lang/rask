@@ -496,6 +496,21 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
+    /// An `extern "C"` function with a body is exported for something outside
+    /// the program to call, so nothing in the call graph reaches it — it *is*
+    /// the edge of the graph. Without this it was dropped as dead code and the
+    /// symbol never made it into the object file: a C driver linking against it
+    /// got "undefined reference", which is why struct.c-interop/EX1's export
+    /// form had no working path through the compiler at all.
+    pub fn add_exported_roots(&mut self) {
+        for decl in self.decls {
+            let DeclKind::Fn(f) = &decl.kind else { continue };
+            if f.abi.as_deref() == Some("C") && !f.body.is_empty() && f.type_params.is_empty() {
+                self.enqueue(f.name.clone(), Vec::new());
+            }
+        }
+    }
+
     /// Is there a body here to make a concrete copy of? Stdlib stubs declare a
     /// signature and an empty block — the implementation is in the runtime.
     fn has_instantiable_body(&self, name: &str) -> bool {

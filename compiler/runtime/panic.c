@@ -58,6 +58,46 @@ void rask_panic_activate(void) {
     panic_ctx.active = 1;
 }
 
+// ─── FFI boundary (ctrl.panic/A1) ──────────────────────────
+//
+// An `extern "C"` function with a body is called from outside Rask, so the C
+// frames between the caller and the panic are frames the runtime doesn't own.
+// The task-unwind path would longjmp straight over them to the enclosing task's
+// setjmp — skipping whatever the C caller had on the stack. A1 says don't:
+// abort at the boundary instead.
+//
+// A depth counter rather than a saved/restored jmp_buf, because there is no
+// resuming here — the panic never unwinds past this point, it ends the process.
+// Nesting is counted so a Rask → C → Rask → C → Rask chain still aborts on the
+// innermost export, and a normal return unwinds the count one level at a time.
+static __thread int ffi_boundary_depth;
+
+void rask_ffi_boundary_enter(void) {
+    ffi_boundary_depth++;
+}
+
+void rask_ffi_boundary_exit(void) {
+    if (ffi_boundary_depth > 0) ffi_boundary_depth--;
+}
+
+int rask_in_ffi_boundary(void) {
+    return ffi_boundary_depth > 0;
+}
+
+// Report and abort. Called from both panic entry points before either decides
+// to longjmp.
+static void ffi_boundary_abort(const char *msg) {
+    rask_print_unlock_all();
+    fflush(stdout);
+    fprintf(stderr,
+            "panic crossed an FFI boundary: %s\n"
+            "  an `extern \"C\"` function cannot unwind into its C caller's frames, "
+            "so the process aborts here (ctrl.panic/A1)\n",
+            msg ? msg : "(unknown panic)");
+    fflush(stderr);
+    abort();
+}
+
 // Retrieve the panic message after longjmp. Transfers ownership to caller.
 char *rask_panic_take_message(void) {
     char *msg = panic_ctx.message;
@@ -220,6 +260,13 @@ _Noreturn void rask_panic(const char *msg) {
         rask_panic_at(f, l, c, msg);
     }
 
+    // A1: inside an exported symbol there are C frames between here and any
+    // handler, so there is nothing to unwind to. Abort before the ensures run —
+    // they'd be running during an unwind that isn't going to happen.
+    if (ffi_boundary_depth > 0) {
+        ffi_boundary_abort(msg);
+    }
+
     // A panic raised mid-line — from inside a print argument, or from an
     // ensure that prints — would longjmp past the unlock that balances
     // codegen's print lock and deadlock every later print on other threads.
@@ -248,6 +295,10 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     snprintf(buf, sizeof(buf), "%s:%d:%d: %s",
              file ? file : "<unknown>", line, col,
              msg ? msg : "(unknown panic)");
+
+    if (ffi_boundary_depth > 0) {
+        ffi_boundary_abort(buf);
+    }
 
     rask_print_unlock_all();
     rask_ensure_run_all();

@@ -83,6 +83,93 @@ fn compile_and_run(fixture_name: &str) -> (String, i32) {
     (stdout, code)
 }
 
+/// Compile a .rk fixture together with a C driver and run it, returning
+/// (stdout, stderr, exit code). The only way to exercise an `extern "C"` export
+/// — the symbol has to be called from actual C frames for the boundary rules to
+/// mean anything.
+fn compile_with_c_and_run(fixture_name: &str, c_driver: &str) -> (String, String, i32) {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let stem = fixture_name.trim_end_matches(".rk");
+    let bin_path = tmp.join(format!("rask_ffi_{}_{}", stem, std::process::id()));
+
+    let compile_out = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture(fixture_name))
+        .arg("--link-obj")
+        .arg(fixture(c_driver))
+        .arg("-o")
+        .arg(&bin_path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+
+    assert!(
+        compile_out.status.success(),
+        "rask compile {} + {} failed:\nstdout: {}\nstderr: {}",
+        fixture_name, c_driver,
+        String::from_utf8_lossy(&compile_out.stdout),
+        String::from_utf8_lossy(&compile_out.stderr),
+    );
+
+    let run_out = Command::new(&bin_path).output().expect("failed to run compiled binary");
+    let _ = std::fs::remove_file(&bin_path);
+    // A process killed by a signal has no exit code, so report it the way a
+    // shell does — 128 + signal. Otherwise an abort and a clean exit both read
+    // as "no code" and the test can't tell them apart.
+    let code = run_out.status.code().unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            run_out.status.signal().map(|s| 128 + s).unwrap_or(-1)
+        }
+        #[cfg(not(unix))]
+        { -1 }
+    });
+    (
+        String::from_utf8_lossy(&run_out.stdout).to_string(),
+        String::from_utf8_lossy(&run_out.stderr).to_string(),
+        code,
+    )
+}
+
+#[test]
+fn extern_c_export_returns_through_c_frames() {
+    // The export form (`public extern "C" func name() { ... }`) had no working
+    // path through the compiler at all: reachability starts at main, nothing in
+    // Rask calls an exported symbol, so it was dropped as dead code and a C
+    // driver linking against it got "undefined reference".
+    let (stdout, stderr, code) =
+        compile_with_c_and_run("ffi_boundary_ok.rk", "ffi_boundary_driver.c");
+    assert_eq!(code, 0, "normal returns through the boundary: {}", stderr);
+    assert_eq!(stdout, "C: got 42\nC: got 42\nmain still alive\n", "{:?}", stdout);
+}
+
+#[test]
+fn panic_in_extern_c_export_aborts_at_the_boundary() {
+    // ctrl.panic/A1. The panic happens inside a spawned task, so the task's
+    // setjmp is live and the normal unwind would longjmp straight over the C
+    // frame between them — skipping whatever the C caller had on the stack.
+    // It must abort at the boundary instead.
+    let (stdout, stderr, code) =
+        compile_with_c_and_run("ffi_boundary_panic.rk", "ffi_boundary_driver.c");
+    assert!(stdout.contains("C: before callback"), "the C frame ran: {:?}", stdout);
+    assert!(
+        !stdout.contains("C: after callback"),
+        "the C frame must not resume past a panicking callback: {:?}", stdout,
+    );
+    assert!(
+        !stdout.contains("must not be reached"),
+        "the panic must not unwind back into Rask: {:?}", stdout,
+    );
+    assert!(
+        stderr.contains("panic crossed an FFI boundary"),
+        "the abort names the boundary: {:?}", stderr,
+    );
+    // SIGABRT, not exit(101) — P4's exit code is for a panic escaping main.
+    assert_eq!(code, 134, "abort, not exit: stderr {}", stderr);
+}
+
 /// Compile a .rk fixture and assert codegen produces no errors.
 /// Use when the emitted binary may segfault for unrelated reasons
 /// (e.g. runtime layout issues) but the specific codegen bug must

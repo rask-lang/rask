@@ -215,9 +215,11 @@ impl CodeGenerator {
         }
 
         // Stream locks bracketing one print/println call, so its writes land
-        // together instead of splicing into another thread's line.
+        // together instead of splicing into another thread's line; and the FFI
+        // panic boundary bracketing an `extern "C"` export's body.
         for name in ["rask_print_lock", "rask_print_unlock",
-                     "rask_eprint_lock", "rask_eprint_unlock"] {
+                     "rask_eprint_lock", "rask_eprint_unlock",
+                     "rask_ffi_boundary_enter", "rask_ffi_boundary_exit"] {
             let sig = self.module.make_signature();
             let id = self.module
                 .declare_function(name, Linkage::Import, &sig)

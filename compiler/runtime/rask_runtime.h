@@ -615,6 +615,13 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
                              const char *msg);
 _Noreturn void rask_panic_fmt(const char *fmt, ...);
 
+// ctrl.panic/A1: an `extern "C"` function's body is bracketed with these, so a
+// panic inside it aborts at the boundary instead of unwinding into the C
+// caller's frames. Nesting is counted; a normal return unwinds one level.
+void rask_ffi_boundary_enter(void);
+void rask_ffi_boundary_exit(void);
+int  rask_in_ffi_boundary(void);
+
 // Thread-local panic location — codegen sets before panicking calls
 void rask_set_panic_location(const char *file, int32_t line, int32_t col);
 
