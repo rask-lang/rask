@@ -1,10 +1,22 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait bound on a type parameter that appears only in the return type.
+// A trait bound on a type parameter that appears only in the return type, and
+// the written type argument that pins it.
 //
 // `Integer` had never been registered as a trait. Nothing could satisfy it, so
 // `func zero<T: Integer>() -> T` failed at every call site with "`_` does not
-// implement `Integer`" — `_` because an unknown trait has no type to blame,
-// and unknown because nothing had ever registered the name (#713).
+// implement `Integer`" — `_` because an unknown trait has no type to blame
+// (#713).
+//
+// And `zero<i32>()` parsed fine and then dropped the `<i32>`. The parser folds
+// written type arguments into the callee's name; the checker only ever applied
+// them while unifying *parameters*, and neither backend stripped them before
+// looking the function up. Inference covered for all three wherever a parameter
+// mentioned the type parameter, so it only showed when none did — a
+// return-only parameter stayed open however explicitly the call spelled it
+// (#712).
+//
+// Together they're the "give me this value as type T" shape, which needed both
+// halves: a bound that can be satisfied, and a way to say which T you meant.
 //
 // Spec: type.primitives (NT1–NT3), type.generics (G1, generic literal coercion)
 
@@ -20,6 +32,10 @@ func answer<T: Integer>() -> T {
 
 func echo<T: Integer>(x: T) -> T {
     return x
+}
+
+func second<A: Integer, B: Integer>(a: A, b: B) -> B {
+    return b
 }
 
 func widen<T: Numeric>() -> T {
@@ -46,4 +62,21 @@ test "type.generics — a bound on a parameter position still works" {
 test "type.primitives — `Numeric` covers the integers too" {
     let n: i16 = widen()
     assert n == 1
+}
+
+// The written argument is the only thing that decides these — there's no
+// annotation for inference to fall back on.
+
+test "type.generics — a written type argument pins a return-only parameter" {
+    let b = answer<i32>()
+    assert b == 42
+}
+
+test "type.generics — a written argument works inside an expression" {
+    assert answer<i32>() == 42
+    assert zero<u8>() == 0
+}
+
+test "type.generics — each parameter is pinned independently" {
+    assert second<i32, u8>(1, 7) == 7
 }

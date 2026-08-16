@@ -2017,6 +2017,17 @@ impl TypeChecker {
         // the function type, we apply this substitution so that UnresolvedNamed("T")
         // in the param/return types becomes the fresh var. Constraint solving then
         // links the fresh vars to concrete types from the call arguments.
+        //
+        // `make<i32>(2)` — the parser keeps the written type arguments in the
+        // callee's name, and nothing had ever read them back out. Inference
+        // covered for that wherever a *parameter* also mentioned the type
+        // parameter, so it only showed when none did: a parameter appearing
+        // solely in the return type stayed a free variable, however explicitly
+        // the call had spelled it (#712).
+        let written_type_args: Vec<Type> = match &func.kind {
+            ExprKind::Ident(name) => Self::written_type_args(name),
+            _ => Vec::new(),
+        };
 
         let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
             // Resolve the callee's SymbolId, then look up its type params
@@ -2025,8 +2036,19 @@ impl TypeChecker {
                 .map(|(sym_id, type_params)| {
                     let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
-                        .map(|name| {
+                        .enumerate()
+                        .map(|(i, name)| {
                             let fresh = self.ctx.fresh_var();
+                            // A written type argument pins the variable now.
+                            // Inference still runs — a wrong one meets the
+                            // argument types and reports an ordinary mismatch,
+                            // which is the message that names both sides.
+                            if let Some(written) = written_type_args.get(i) {
+                                let resolved = self.resolve_named(written);
+                                if !matches!(resolved, Type::Error) {
+                                    let _ = self.unify(&fresh, &resolved, span);
+                                }
+                            }
                             // #314: obligate the type arg to satisfy its bounds.
                             if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
                                 self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
@@ -2780,6 +2802,23 @@ impl TypeChecker {
                 self.errors.push(err);
             }
         }
+    }
+
+    /// The type arguments written at a call, read back out of the callee's
+    /// name.
+    ///
+    /// The parser folds `make<i32>` into one identifier rather than a separate
+    /// node, so this is where the written arguments live. Empty for a call with
+    /// none, and for a name whose `<…>` isn't a well-formed argument list.
+    fn written_type_args(callee: &str) -> Vec<Type> {
+        let Some(open) = callee.find('<') else { return Vec::new() };
+        if !callee.ends_with('>') {
+            return Vec::new();
+        }
+        split_type_args(&callee[open + 1..callee.len() - 1])
+            .iter()
+            .map(|a| parse_type_arg(a.trim()))
+            .collect()
     }
 
     /// Resolve a type name string to a Type.
