@@ -86,6 +86,21 @@ fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> V
         .collect()
 }
 
+/// Which params are `mutate` on an aggregate — the ones the caller passes by
+/// address, so a callee's write is supposed to reach the caller's storage.
+fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<bool> {
+    params
+        .iter()
+        .map(|p| {
+            if !p.is_mutate || p.ty.is_empty() {
+                return false;
+            }
+            let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
+            crate::lower::stmt::mutate_param_by_pointer(&ty)
+        })
+        .collect()
+}
+
 /// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
@@ -96,6 +111,10 @@ struct FuncSig {
     /// through it); `None` means the param is not a by-pointer scalar mutate.
     /// Empty for extern/stdlib (no scalar mutate write-back).
     scalar_mutate_params: Vec<Option<MirType>>,
+    /// Per-parameter: a `mutate` param of an aggregate type, which the caller
+    /// passes as an address. A collection element passed here has to be written
+    /// back after the call — the caller handed over a copy.
+    aggregate_mutate_params: Vec<bool>,
     /// Element type when the function returns `Vec<T>`. `ret_ty` collapses a Vec
     /// to an opaque pointer, so `for x in f()` has nothing to type its binding
     /// from once the checker's node types are out of reach (a closure body, an
@@ -962,6 +981,14 @@ pub struct MirLowerer<'a> {
     /// back the new value and left the collection unchanged (#650). Every function
     /// exit point drains this first, the same way it drains `ensure_stack`.
     mutate_writebacks: Vec<MutateWriteback>,
+    /// Collection elements lent to something that writes through them, waiting
+    /// for the call to be emitted so the borrow can be released.
+    ///
+    /// Reading `v[i]` copies the element out of the buffer — that's the value
+    /// semantics `let e = v[i]` needs. A callee that writes through a `mutate`
+    /// parameter would write into that copy, so it gets a pointer to the real
+    /// element instead, held across exactly the one call.
+    elem_writebacks: Vec<ElemWriteback>,
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
@@ -2115,7 +2142,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -2392,6 +2419,7 @@ impl<'a> MirLowerer<'a> {
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
+                        aggregate_mutate_params: aggregate_mutate_params(&f.params, ctx),
                         ret_vec_elem: vec_elem_of_type_str(f.ret_ty.as_deref(), ctx),
                         param_ty_strs: f.params.iter().map(|p| Some(p.ty.clone())).collect(),
                     });
@@ -2402,7 +2430,7 @@ impl<'a> MirLowerer<'a> {
                         .as_deref()
                         .map(|s| ctx.resolve_type_str(s))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
@@ -2415,6 +2443,7 @@ impl<'a> MirLowerer<'a> {
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
                             scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
+                            aggregate_mutate_params: aggregate_mutate_params(&m.params, ctx),
                             ret_vec_elem: vec_elem_of_type_str(m.ret_ty.as_deref(), ctx),
                             param_ty_strs: m.params.iter().map(|p| Some(p.ty.clone())).collect(),
                         });
@@ -2430,6 +2459,7 @@ impl<'a> MirLowerer<'a> {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
                 ret_ty: ret_category_to_mir_type(&meta.ret_category),
                 scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
                 param_ty_strs: Vec::new(),
             });
@@ -2497,6 +2527,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_taken: None,
             ensure_stack: Vec::new(),
             mutate_writebacks: Vec::new(),
+            elem_writebacks: Vec::new(),
             take_self_methods,
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
@@ -2581,7 +2612,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     MirType::Void
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
 
@@ -2717,6 +2748,19 @@ impl<'a> MirLowerer<'a> {
                 lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             }
         }
+
+        // Every element borrow is released right after the call it was taken
+        // for, at one of the two call-emission points that lower `mutate` args.
+        // A leftover means some other call shape reached a `mutate` aggregate
+        // param without going through those — the borrow would stay open and
+        // the next push into that Vec would panic, a long way from the cause.
+        debug_assert!(
+            lowerer.elem_writebacks.is_empty(),
+            "{}: {} element borrow(s) never released — a call path reached a \
+             `mutate` aggregate parameter without a matching release",
+            lowerer.parent_name,
+            lowerer.elem_writebacks.len(),
+        );
 
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
@@ -4185,6 +4229,15 @@ pub(crate) struct MutateWriteback {
     binding: LocalId,
     /// A Map's value binding. `Some` means this is a Map iteration.
     map_value: Option<LocalId>,
+}
+
+/// One outstanding element borrow, waiting for its call to be emitted so the
+/// borrow can be released.
+pub(crate) struct ElemWriteback {
+    /// The collection the element was borrowed from.
+    collection: MirOperand,
+    /// Which release to call — Vec and Map keep separate borrow counts.
+    release: &'static str,
 }
 
 impl MutateWriteback {

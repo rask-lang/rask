@@ -230,6 +230,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
         },
 
+        // `mutate v[i]`: the callee has to write the real element, so it gets a
+        // pointer into the buffer rather than a copy of it. `RetAdapt::None`
+        // is the point — `DerefOrString` would copy the bytes into the
+        // destination's own slot, which is exactly the copy being avoided.
+        StdlibEntry {
+            mir_name: "Vec_borrow_elem", c_name: "rask_vec_borrow_elem",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Vec_release_elem", "rask_vec_release_elem", &[types::I64], None, false),
+
         StdlibEntry::simple("Vec_slice", "rask_vec_slice", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_chunks", "rask_vec_chunks", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
@@ -685,6 +696,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
         },
+        // `mutate m[k]` — the Map twin of Vec_borrow_elem. `RetAdapt::None`
+        // keeps the pointer into the table instead of copying the value out.
+        StdlibEntry {
+            mir_name: "Map_borrow_elem", c_name: "rask_map_borrow_elem",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Map_release_elem", "rask_map_release_elem", &[types::I64], None, false),
         StdlibEntry {
             // Declared `-> Option<V>`: hand back the removed value, not a
             // 0/-1 status. NULL → none, otherwise some(the value).

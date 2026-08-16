@@ -1,0 +1,27 @@
+// The hazard that comes with handing a callee a pointer into a Vec's buffer:
+// the callee reaches the same Vec and grows it, and the pointer it is writing
+// through is now freed memory.
+//
+// The runtime counts lent-out elements and refuses to move the buffer while one
+// is outstanding, so this panics with a message instead of corrupting the heap
+// — mem.ownership again: a stale reference is caught at the access, never
+// silent.
+struct Ctr { n: usize }
+
+const shared = Mutex.new(Vec.new())
+
+func grow_while_borrowed(mutate c: Ctr) {
+    c.n += 1
+    mut i = 0
+    while i < 64 {
+        shared.lock().push(Ctr { n: 99 })
+        i += 1
+    }
+}
+
+func main() {
+    shared.lock().push(Ctr { n: 0 })
+    println("borrowing")
+    grow_while_borrowed(mutate shared.lock()[0])
+    println("UNREACHABLE — the push above should have panicked")
+}

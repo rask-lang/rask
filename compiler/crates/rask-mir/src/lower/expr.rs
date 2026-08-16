@@ -545,14 +545,106 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(tmp))
     }
 
+    /// Borrow `v[i]` as a pointer into the buffer, for an element about to be
+    /// handed to something that writes through it.
+    ///
+    /// Lowering `v[i]` the ordinary way produces a *copy*: `Vec_index` returns a
+    /// pointer into the buffer, but codegen copies those bytes into the
+    /// destination's own slot — it has to, because the same lowering serves
+    /// `let e = v[i]`, which is a copy by definition. A callee handed that copy
+    /// writes into it and the collection never sees it.
+    ///
+    /// So a `mutate` use borrows the real element instead. The runtime counts
+    /// the borrow and panics if anything would move the buffer out from under
+    /// it, which is what keeps the pointer from going stale.
+    ///
+    /// `None` when this isn't a Vec element, or the element type isn't known;
+    /// the caller then lowers it the ordinary way.
+    fn lower_elem_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
+        let ExprKind::Index { object, index } = &place.kind else {
+            return None;
+        };
+        let (borrow, release) = if self.is_vec_expr(object) {
+            ("Vec_borrow_elem", "Vec_release_elem")
+        } else if self.is_map_expr(object) {
+            ("Map_borrow_elem", "Map_release_elem")
+        } else {
+            return None;
+        };
+        let elem_ty = self
+            .ctx
+            .lookup_raw_type(place.id)
+            .map(|t| self.ctx.type_to_mir(t))
+            .or_else(|| self.collection_elem_of_expr(object))?;
+        // Only aggregates. A scalar element is passed by value, and handing over
+        // its address here would have the callee read the pointer as the value.
+        if !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
+            return None;
+        }
+        let (coll_op, _) = self.lower_expr(object).ok()?;
+        let (idx_op, _) = self.lower_expr(index).ok()?;
+        // Ptr, not the element type: an aggregate-typed destination is what
+        // makes codegen copy the bytes into a slot, which is the copy being
+        // avoided. The callee wants an address either way.
+        let ptr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(ptr),
+            func: FunctionRef::internal(borrow.to_string()),
+            args: vec![coll_op.clone(), idx_op],
+        }));
+        self.elem_writebacks.push(super::ElemWriteback {
+            collection: coll_op,
+            release,
+        });
+        Some((MirOperand::Local(ptr), elem_ty))
+    }
+
+    /// Release every element borrowed since `mark`. Called right after the call
+    /// statement, so the borrow covers exactly the call that writes through it.
+    fn flush_elem_writebacks(&mut self, mark: usize) {
+        for wb in self.elem_writebacks.split_off(mark) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(wb.release.to_string()),
+                args: vec![wb.collection],
+            }));
+        }
+    }
+
     fn lower_call_arg(
         &mut self,
         arg: &Expr,
         scalar_mutate: Option<&MirType>,
+        aggregate_mutate: bool,
     ) -> Result<TypedOperand, LoweringError> {
         let sty = match scalar_mutate {
             Some(t) => t.clone(),
-            None => return self.lower_expr(arg),
+            None => {
+                // An aggregate `mutate` param is supposed to get the caller's
+                // storage, but lowering a place as an expression hands over a
+                // copy. #702 fixed that for method receivers and left the
+                // free-function form — `bump(mutate h.c)` — still writing to a
+                // copy nobody reads.
+                if aggregate_mutate {
+                    // A Vec element has no storage to point at: it was copied
+                    // out of the buffer, so it gets a write-back instead.
+                    if let Some(r) = self.lower_elem_for_mutate(arg) {
+                        return Ok(r);
+                    }
+                    // A field does have storage — point at it.
+                    if matches!(&arg.kind, ExprKind::Field { .. }) {
+                        if let Some(addr) = self.place_address(arg) {
+                            let ty = self
+                                .ctx
+                                .lookup_raw_type(arg.id)
+                                .map(|t| self.ctx.type_to_mir(t))
+                                .unwrap_or(MirType::Ptr);
+                            return Ok((addr, ty));
+                        }
+                    }
+                }
+                return self.lower_expr(arg);
+            }
         };
         // Chained: the arg is itself a by-pointer scalar mutate param — pass the
         // pointer straight through rather than loading + re-spilling it.
@@ -888,6 +980,17 @@ impl<'a> MirLowerer<'a> {
                 // that environment on the stack, so spawning one had the task
                 // reading a dead frame and freeing a stack address — glibc aborted
                 // with "free(): invalid pointer" right after the task ran (#463).
+                let callee_agg_mutate: Vec<bool> = match &func.kind {
+                    ExprKind::Ident(name) => {
+                        let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                            .unwrap_or_else(|| name.clone());
+                        self.func_sigs.get(&key)
+                            .map(|s| s.aggregate_mutate_params.clone())
+                            .unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
+                let wb_mark = self.elem_writebacks.len();
                 let spawns_closure = matches!(&func.kind, ExprKind::Ident(n) if n == "spawn");
                 let callee_params: Vec<Option<String>> = match &func.kind {
                     ExprKind::Ident(name) => {
@@ -910,7 +1013,8 @@ impl<'a> MirLowerer<'a> {
                             *is_own || spawns_closure, &expected, Some(a.expr.id),
                         )?
                     } else {
-                        let (op, mir_ty) = self.lower_call_arg(&a.expr, smut)?;
+                        let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
+                        let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
                         // A parameter declared `T?` or `T or E` given a bare `T`
                         // is the same coercion as an annotated binding, so it
                         // takes the same path. Left to codegen it only ever
@@ -1247,6 +1351,7 @@ impl<'a> MirLowerer<'a> {
                     func: func_ref,
                     args: arg_operands,
                 }));
+                self.flush_elem_writebacks(wb_mark);
 
                 Ok((MirOperand::Local(result_local), ret_ty))
             }
@@ -3332,7 +3437,20 @@ impl<'a> MirLowerer<'a> {
             });
         }
 
-        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let wb_mark = self.elem_writebacks.len();
+        // `v[i].bump()` has the same problem as `bump(mutate v[i])`: the receiver
+        // is a copy of the element, so the write never reaches the collection.
+        // `place_address` below can't help — a Vec element has no base+offset to
+        // point at — so take the copy and write it back after the call.
+        let elem_receiver = if self.receiver_method_mutates(object, method) {
+            self.lower_elem_for_mutate(object)
+        } else {
+            None
+        };
+        let (obj_op, obj_ty) = match elem_receiver {
+            Some(r) => r,
+            None => self.lower_expr(object)?,
+        };
 
         // A receiver reached through a field or index is a *place*, and lowering
         // it as an expression loads a copy of the aggregate:
@@ -3415,7 +3533,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty)
+        self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty, wb_mark)
     }
 
     /// Calls where the receiver is a type or module name, not a value:
@@ -3928,6 +4046,9 @@ impl<'a> MirLowerer<'a> {
         type_args: &Option<Vec<String>>,
         obj_op: MirOperand,
         obj_ty: MirType,
+        // Where the caller's element write-backs start — the receiver may
+        // already have queued one before this was reached.
+        wb_mark: usize,
     ) -> Result<TypedOperand, LoweringError> {
         // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)
         let method = if let Some(ta) = type_args {
@@ -4008,9 +4129,31 @@ impl<'a> MirLowerer<'a> {
                 .map(|s| s.scalar_mutate_params.clone())
                 .unwrap_or_default()
         };
+        let callee_agg_mutate: Vec<bool> = {
+            let mut keys: Vec<String> = Vec::new();
+            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let Some(prefix) = self
+                .ctx
+                .lookup_raw_type(object.id)
+                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            {
+                keys.push(format!("{}_{}", prefix, method));
+            }
+            if let ExprKind::Ident(recv) = &object.kind {
+                keys.push(format!("{}_{}", recv, method));
+            }
+            keys.iter()
+                .find_map(|k| self.func_sigs.get(k))
+                .map(|s| s.aggregate_mutate_params.clone())
+                .unwrap_or_default()
+        };
         for (i, arg) in args.iter().enumerate() {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
             let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
+            let agg_mut = callee_agg_mutate.get(i + 1).copied().unwrap_or(false);
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
@@ -4018,7 +4161,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
             } else {
-                self.lower_call_arg(&arg.expr, smut)?
+                self.lower_call_arg(&arg.expr, smut, agg_mut)?
             };
             all_args.push(op);
             arg_types.push(ty);
@@ -4458,6 +4601,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal(final_name.clone()),
             args: final_args,
         }));
+        self.flush_elem_writebacks(wb_mark);
 
         // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
         if matches!(final_name.as_str(),

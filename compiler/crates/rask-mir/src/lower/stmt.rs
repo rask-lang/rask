@@ -155,17 +155,37 @@ impl<'a> MirLowerer<'a> {
 
     /// True when `expr` refers to a `Vec` collection (by local metadata or the
     /// type checker's recorded type).
-    fn is_vec_expr(&self, expr: &Expr) -> bool {
+    pub(crate) fn is_vec_expr(&self, expr: &Expr) -> bool {
         if let ExprKind::Ident(name) = &expr.kind {
             if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Vec") {
+                return true;
+            }
+        }
+        // The checker records an instantiated Vec as a generic, and `type_prefix`
+        // renders that as `Vec<T>` — so comparing the whole string only ever
+        // matched the bare-`Vec` spelling the `meta` path above supplies. Every
+        // Vec reached through a field, an index, or a binding read as "not a Vec"
+        // and lost its element write-back. Compare the base name, the way
+        // `receiver_method_mutates` already does.
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .is_some_and(|p| p.split('<').next() == Some("Vec"))
+    }
+
+    /// True when `expr` refers to a `Map`. Same two sources as `is_vec_expr`,
+    /// and the same base-name comparison — the checker spells an instantiated
+    /// one `Map<K, V>`.
+    pub(crate) fn is_map_expr(&self, expr: &Expr) -> bool {
+        if let ExprKind::Ident(name) = &expr.kind {
+            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Map") {
                 return true;
             }
         }
         self.ctx
             .lookup_raw_type(expr.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .as_deref()
-            == Some("Vec")
+            .is_some_and(|p| p.split('<').next() == Some("Map"))
     }
 
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
@@ -1353,7 +1373,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
                 self.closure_locals.insert(name.to_string());
                 let ret_mir = self.ctx.type_to_mir(ret);
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
 

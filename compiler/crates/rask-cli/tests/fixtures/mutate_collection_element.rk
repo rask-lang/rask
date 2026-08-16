@@ -1,0 +1,102 @@
+// A `mutate` write has to reach the caller's storage however the place is
+// spelled — a plain local, a struct field, or a collection element.
+//
+// Reading `v[i]` copies the element out of the buffer, which is what
+// `let e = v[i]` needs. Handing that copy to a callee that writes through a
+// `mutate` parameter meant the write landed in the copy and the Vec never saw
+// it. Compound assignment (`v[i].n += 1`) already read-modify-wrote it back;
+// a call did not.
+//
+// Two things were wrong. `bump(mutate h.c)` passed a copy of the field, since
+// the address-of-a-place path only ran for scalar `mutate` params. And every
+// Vec reached through anything other than a plain `Vec.new()` binding — a
+// struct field, an index, a rebinding — wasn't recognized as a Vec at all, so
+// even `b.items[0].n += 1` silently wrote to a copy.
+struct Ctr { n: usize }
+struct Holder { c: Ctr }
+struct Bag { items: Vec<Ctr> }
+struct Named { tag: string }
+
+func bump(mutate c: Ctr) { c.n += 1 }
+func bump_nested(mutate c: Ctr) { bump(mutate c) }
+
+extend Ctr {
+    func m(mutate self) { self.n += 1 }
+    func peek(self) -> usize { return self.n }
+}
+
+func main() {
+    // A field handed to a free function, not a method.
+    mut h = Holder { c: Ctr { n: 0 } }
+    bump(mutate h.c)
+    bump_nested(mutate h.c)
+    println("field={h.c.n} (expect 2)")
+
+    // A Vec element, as an argument and as a receiver.
+    mut v = Vec.new()
+    v.push(Ctr { n: 0 })
+    bump(mutate v[0])
+    v[0].m()
+    println("elem={v[0].n} (expect 2)")
+
+    // A read-only method on an element still reads, and writes nothing back.
+    println("peek={v[0].peek()} (expect 2)")
+
+    // A Vec reached through a struct field.
+    mut b = Bag { items: Vec.new() }
+    b.items.push(Ctr { n: 0 })
+    bump(mutate b.items[0])
+    b.items[0].n += 1
+    println("field elem={b.items[0].n} (expect 2)")
+
+    // A Vec of Vecs, indexed twice in one expression.
+    mut vv = Vec.new()
+    mut inner = Vec.new()
+    inner.push(Ctr { n: 0 })
+    vv.push(inner)
+    bump(mutate vv[0][0])
+    vv[0][0].n += 1
+    println("nested elem={vv[0][0].n} (expect 2)")
+
+    // In a loop, so the write-back has to hold up more than once.
+    mut loops = Vec.new()
+    loops.push(Ctr { n: 0 })
+    mut i = 0
+    while i < 10 {
+        bump(mutate loops[0])
+        i += 1
+    }
+    println("looped={loops[0].n} (expect 10)")
+
+    // A Map value, reached with a variable key. The key being a variable is the
+    // interesting part: the interpreter used to deadlock comparing that string
+    // against itself, so there was no reference answer to check against.
+    mut m = Map.new()
+    let key = "k"
+    m.insert(key, Ctr { n: 0 })
+    bump(mutate m[key])
+    bump_nested(mutate m[key])
+    let got = m[key].n
+    println("map={got} (expect 2)")
+
+    // A borrow that ends cleanly leaves nothing behind, so the collection can
+    // still grow afterwards.
+    mut after = Vec.new()
+    after.push(Ctr { n: 0 })
+    bump(mutate after[0])
+    mut j = 0
+    while j < 40 {
+        after.push(Ctr { n: 0 })
+        j += 1
+    }
+    println("grew after={after.len()} (expect 41)")
+
+    // A string field in an element, so the write-back path covers a non-scalar
+    // field too.
+    mut names = Vec.new()
+    names.push(Named { tag: "first" })
+    rename(mutate names[0])
+    println("renamed={names[0].tag} (expect second)")
+}
+
+func rename(mutate n: Named) { n.tag = "second" }
