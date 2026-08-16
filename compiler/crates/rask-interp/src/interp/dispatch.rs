@@ -97,23 +97,24 @@ impl Interpreter {
     /// Call a built-in function.
     fn call_builtin(&self, kind: BuiltinKind, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match kind {
+            // Assemble the whole line first, then write it once. Writing the
+            // pieces separately let another thread's output land between them,
+            // splicing two lines into one (#704).
             BuiltinKind::Println => {
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.write_output(" ");
-                    }
-                    self.write_output(&format!("{}", arg));
-                }
-                self.write_output_ln();
+                let mut line: String = args.iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                line.push('\n');
+                self.write_output(&line);
                 Ok(Value::Unit)
             }
             BuiltinKind::Print => {
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.write_output(" ");
-                    }
-                    self.write_output(&format!("{}", arg));
-                }
+                let line: String = args.iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.write_output(&line);
                 Ok(Value::Unit)
             }
             // stderr isn't captured the way `write_output` captures stdout —

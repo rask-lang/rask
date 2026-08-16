@@ -777,12 +777,16 @@ impl<'a> MirContext<'a> {
 
     /// Look up the MIR type for an expression node.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
-        self.node_types.get(&node_id).map(|ty| self.type_to_mir(ty))
+        let found = self.node_types.get(&node_id);
+        crate::fallback::record_lookup(found);
+        found.map(|ty| self.type_to_mir(ty))
     }
 
     /// Look up the raw Type for an expression node (preserves generic info).
     pub fn lookup_raw_type(&self, node_id: NodeId) -> Option<&Type> {
-        self.node_types.get(&node_id)
+        let found = self.node_types.get(&node_id);
+        crate::fallback::record_lookup(found);
+        found
     }
 
     /// Extract stdlib type prefix for method name qualification.
@@ -2489,7 +2493,7 @@ impl<'a> MirLowerer<'a> {
         // Derived from stub files via rask_stdlib::mir_metadata.
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ret_category_to_mir_type(&meta.ret_category),
+                ret_ty: ret_category_to_mir_type_in(&meta.ret_category, Some(ctx)),
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
@@ -4039,9 +4043,21 @@ fn is_scalar_return(func_name: &str) -> bool {
 /// Primary source: stub-derived metadata. Suffix-based patterns serve as
 /// fallbacks for user type methods and methods not yet in stubs.
 fn stdlib_return_mir_type(func_name: &str) -> MirType {
+    stdlib_return_mir_type_in(func_name, None)
+}
+
+/// Same, but able to resolve a named error type against the program's layouts.
+///
+/// A stub's `T or E` used to lose `E` outright — the metadata parser wrote I64
+/// into the error slot no matter what was declared. That gave the Result an
+/// 8-byte payload where an error enum needs its own size, and left the match on
+/// it with no enum to switch on: `JoinError.Panicked(m)` read the payload as an
+/// address (#677). With a context in hand the declared name resolves to its
+/// real layout.
+fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirType {
     // Try stub-derived metadata first
     if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
-        return ret_category_to_mir_type(&meta.ret_category);
+        return ret_category_to_mir_type_in(&meta.ret_category, ctx);
     }
 
     // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
@@ -4093,6 +4109,13 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
 
 /// Convert a stub-derived RetCategory to a MirType.
 fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> MirType {
+    ret_category_to_mir_type_in(cat, None)
+}
+
+fn ret_category_to_mir_type_in(
+    cat: &rask_stdlib::mir_metadata::RetCategory,
+    ctx: Option<&MirContext>,
+) -> MirType {
     use rask_stdlib::mir_metadata::RetCategory;
     match cat {
         RetCategory::Void => MirType::Void,
@@ -4102,10 +4125,19 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
         RetCategory::String => MirType::String,
         RetCategory::Char => MirType::Char,
         RetCategory::Ptr => MirType::Ptr,
-        RetCategory::Option(inner) => MirType::Option(Box::new(ret_category_to_mir_type(inner))),
+        RetCategory::Option(inner) => {
+            MirType::Option(Box::new(ret_category_to_mir_type_in(inner, ctx)))
+        }
         RetCategory::Result { ok, err } => MirType::Result {
-            ok: Box::new(ret_category_to_mir_type(ok)),
-            err: Box::new(ret_category_to_mir_type(err)),
+            ok: Box::new(ret_category_to_mir_type_in(ok, ctx)),
+            // Only the error side resolves a name. Everywhere else a named
+            // stdlib type is an opaque runtime handle (File, TcpListener,
+            // Instant) that really is a word — but an error type is an enum, and
+            // its identity is what the match needs.
+            err: Box::new(match (err.as_ref(), ctx) {
+                (RetCategory::Named(name), Some(ctx)) => ctx.resolve_type_str(name),
+                _ => ret_category_to_mir_type_in(err, ctx),
+            }),
         },
         // A `StringView` is a `RaskStr` sharing the source's buffer
         // (std.strings/V1), so it has to travel as a string — the default
@@ -4117,7 +4149,7 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
         RetCategory::Named(name) if name == "StringView" => MirType::String,
         RetCategory::Named(_) => MirType::I64,
         RetCategory::Tuple(elems) => MirType::Tuple(
-            elems.iter().map(|e| ret_category_to_mir_type(e)).collect()
+            elems.iter().map(|e| ret_category_to_mir_type_in(e, ctx)).collect()
         ),
     }
 }
@@ -5492,9 +5524,13 @@ mod tests {
             expr_stmt(using_block),
             return_stmt(None),
         ]);
+        // ThreadPool installs the worker pool, not the green scheduler — the
+        // two contexts are independent, and sharing one init was why
+        // `workers: n` went nowhere (#686).
         let f = lower(&decl, &[decl.clone(), work]);
-        assert!(find_call(&f, "rask_runtime_init"), "ThreadPool should emit init");
-        assert!(find_call(&f, "rask_runtime_shutdown"), "ThreadPool should emit shutdown");
+        assert!(find_call(&f, "rask_threadpool_init"), "ThreadPool should emit pool init");
+        assert!(find_call(&f, "rask_threadpool_shutdown"), "ThreadPool should emit pool shutdown");
+        assert!(!find_call(&f, "rask_runtime_init"), "ThreadPool must not start the green scheduler");
         assert!(find_call(&f, "work"));
     }
 
@@ -5519,6 +5555,7 @@ mod tests {
         let f = lower(&decl, &[decl.clone(), work]);
         assert!(!find_call(&f, "rask_runtime_init"), "Unknown context should not emit init");
         assert!(!find_call(&f, "rask_runtime_shutdown"), "Unknown context should not emit shutdown");
+        assert!(!find_call(&f, "rask_threadpool_init"), "Unknown context should not start a pool");
         assert!(find_call(&f, "work"));
     }
 }

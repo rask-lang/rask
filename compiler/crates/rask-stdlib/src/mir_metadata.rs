@@ -203,8 +203,8 @@ pub fn unique_method_prefix(method: &str) -> Option<&'static str> {
 ///   "string" → String
 ///   "usize" / "i64" / "u64" → I64
 ///   "f64" / "f32" → F64
-///   "Result<File, IoError>" → Result { ok: Named("File"), err: I64 }
-///   "Result<(), IoError>" → Result { ok: Void, err: I64 }
+///   "Result<File, IoError>" → Result { ok: Named("File"), err: Named("IoError") }
+///   "Result<(), IoError>" → Result { ok: Void, err: Named("IoError") }
 ///   "Option<T>" → Option(I64)
 ///   "T?" → Option(I64)
 ///   "string?" → Option(String)
@@ -219,10 +219,10 @@ fn parse_ret_ty(ret_ty: &str) -> RetCategory {
     if let Some(inner) = strip_generic(s, "Result") {
         if let Some(comma) = find_top_level_comma(inner) {
             let ok_str = inner[..comma].trim();
-            let ok = parse_simple_type(ok_str);
+            let err_str = inner[comma + 1..].trim();
             return RetCategory::Result {
-                ok: Box::new(ok),
-                err: Box::new(RetCategory::I64),
+                ok: Box::new(parse_simple_type(ok_str)),
+                err: Box::new(parse_simple_type(err_str)),
             };
         }
     }
@@ -230,10 +230,10 @@ fn parse_ret_ty(ret_ty: &str) -> RetCategory {
     // "T or E" pattern (in case raw syntax appears)
     if let Some(idx) = find_or_keyword(s) {
         let ok_str = s[..idx].trim();
-        let ok = parse_simple_type(ok_str);
+        let err_str = s[idx + 4..].trim();
         return RetCategory::Result {
-            ok: Box::new(ok),
-            err: Box::new(RetCategory::I64),
+            ok: Box::new(parse_simple_type(ok_str)),
+            err: Box::new(parse_simple_type(err_str)),
         };
     }
 
@@ -393,18 +393,21 @@ mod tests {
     #[test]
     fn parse_result() {
         // Parser transforms "File or IoError" → "Result<File, IoError>"
+        // The error side is parsed, not assumed. It used to be hardcoded I64,
+        // which cost `T or JoinError` its enum identity all the way to codegen
+        // (#677) and left every other error enum in the same shape.
         assert_eq!(
             parse_ret_ty("Result<File, IoError>"),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Named("File".into())),
-                err: Box::new(RetCategory::I64),
+                err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
         assert_eq!(
             parse_ret_ty("Result<(), IoError>"),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Void),
-                err: Box::new(RetCategory::I64),
+                err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
         // Also handle raw "or" syntax as fallback
@@ -412,7 +415,7 @@ mod tests {
             parse_ret_ty("File or IoError"),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Named("File".into())),
-                err: Box::new(RetCategory::I64),
+                err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
     }

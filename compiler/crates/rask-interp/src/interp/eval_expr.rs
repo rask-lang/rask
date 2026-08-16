@@ -1035,6 +1035,12 @@ impl Interpreter {
                             expr.span
                         )),
                     },
+                    // mem.owned/OW3: `*owned` is a borrow, not a raw-pointer
+                    // read. `Owned<T>` is transparent — the value already is
+                    // the T — so the deref hands it straight back. A raw
+                    // pointer never reaches the interpreter to begin with;
+                    // `unsafe` code is native-only.
+                    UnaryOp::Deref => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",
@@ -2099,7 +2105,7 @@ impl Interpreter {
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
                     let mut result = Value::Unit;
                     for stmt in &body {
@@ -2171,7 +2177,7 @@ impl Interpreter {
                     ));
                 }
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
@@ -2201,7 +2207,7 @@ impl Interpreter {
 
                 for _ in 0..num_threads {
                     let rx = Arc::clone(&rx);
-                    workers.push(std::thread::spawn(move || {
+                    workers.push(crate::spawn_interp_thread(move || {
                         loop {
                             let task = {
                                 let rx = rx.lock().unwrap();

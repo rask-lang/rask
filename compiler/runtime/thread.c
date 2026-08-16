@@ -36,16 +36,23 @@ extern void     rask_panic_set_task_id(int64_t id);
 #define RASK_TASK_PANICKED  2
 #define RASK_TASK_CANCELLED 3
 
-typedef struct {
+typedef struct RaskTaskState {
     atomic_int   refcount;
     atomic_int   status;
     atomic_int   cancel_flag;
     char        *panic_msg;     // set on panic, owned by state
-    pthread_t    thread;
+    int64_t      result;        // task body's return value, read by join
+    pthread_t    thread;        // valid only when !pooled
+
+    // A pooled job shares a worker with other jobs, so there is no thread of
+    // its own to pthread_join. join() waits for the status to leave RUNNING
+    // instead, and the worker signals done_cond when it sets it.
+    int              pooled;
+    pthread_cond_t   done_cond;
 
     // O4: guards `detached` and the decision to print an unjoined panic to
     // stderr. Only the panic path and detach() ever touch this — the normal
-    // success path never contends on it.
+    // success path never contends on it. Also the mutex done_cond waits on.
     pthread_mutex_t report_lock;
     int              detached;
 
@@ -65,6 +72,9 @@ static RaskTaskState *state_new(void) {
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
     s->panic_msg = NULL;
+    s->result = 0;
+    s->pooled = 0;
+    pthread_cond_init(&s->done_cond, NULL);
     pthread_mutex_init(&s->report_lock, NULL);
     s->detached = 0;
     s->task_id = rask_next_task_id();
@@ -74,6 +84,7 @@ static RaskTaskState *state_new(void) {
 static void state_release(RaskTaskState *s) {
     if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
         if (s->panic_msg) rask_free(s->panic_msg);
+        pthread_cond_destroy(&s->done_cond);
         pthread_mutex_destroy(&s->report_lock);
         rask_free(s);
     }
@@ -87,13 +98,10 @@ typedef struct {
     RaskTaskState *state;
 } TaskEntry;
 
-static void *task_thread_entry(void *arg) {
-    TaskEntry *entry = (TaskEntry *)arg;
-    RaskTaskState *state = entry->state;
-    RaskTaskFn func = entry->func;
-    void *env = entry->env;
-    rask_free(entry);
-
+// Run one task body to completion and record how it ended. Shared by the
+// one-thread-per-spawn path below and by the pool workers in threadpool.c,
+// which run many of these back to back on the same thread.
+void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
     // Set up cancel flag for this thread
     current_cancel_flag = &state->cancel_flag;
 
@@ -104,7 +112,7 @@ static void *task_thread_entry(void *arg) {
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        func(env);
+        state->result = func(env);
         atomic_store_explicit(&state->status, RASK_TASK_OK, memory_order_release);
     } else {
         // Returned via longjmp from rask_panic
@@ -126,9 +134,27 @@ static void *task_thread_entry(void *arg) {
     }
 
     rask_panic_set_task_id(0);
-
     rask_panic_remove();
     current_cancel_flag = NULL;
+
+    // A pooled job has no thread for join() to wait on, so waking the waiter
+    // is what "finished" means for it.
+    if (state->pooled) {
+        pthread_mutex_lock(&state->report_lock);
+        pthread_cond_broadcast(&state->done_cond);
+        pthread_mutex_unlock(&state->report_lock);
+    }
+}
+
+static void *task_thread_entry(void *arg) {
+    TaskEntry *entry = (TaskEntry *)arg;
+    RaskTaskState *state = entry->state;
+    RaskTaskFn func = entry->func;
+    void *env = entry->env;
+    rask_free(entry);
+
+    rask_task_run_body(state, func, env);
+
     state_release(state);
     return NULL;
 }
@@ -162,10 +188,20 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     }
 
     RaskTaskState *state = h->state;
-    pthread_join(state->thread, NULL);
+    if (state->pooled) {
+        // No thread of its own — wait for the worker to finish this job.
+        pthread_mutex_lock(&state->report_lock);
+        while (atomic_load_explicit(&state->status, memory_order_acquire)
+               == RASK_TASK_RUNNING) {
+            pthread_cond_wait(&state->done_cond, &state->report_lock);
+        }
+        pthread_mutex_unlock(&state->report_lock);
+    } else {
+        pthread_join(state->thread, NULL);
+    }
 
     int status = atomic_load_explicit(&state->status, memory_order_acquire);
-    int64_t result = 0;
+    int64_t result;
 
     if (status == RASK_TASK_PANICKED) {
         if (msg_out) {
@@ -173,13 +209,44 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
             state->panic_msg = NULL; // transfer ownership
         }
         result = -1;
-    } else if (msg_out) {
-        *msg_out = NULL;
+    } else {
+        result = state->result;
+        if (msg_out) *msg_out = NULL;
     }
 
     state_release(state);
     rask_free(h);
     return result;
+}
+
+// Join, splitting "how it ended" from "what it produced". The old shape folded
+// both into one int64_t, so a task returning -1 read back as a panic and a task
+// returning 42 read back as 0 (the value was never captured at all).
+int64_t rask_task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
+    RaskTaskHandle *h = (RaskTaskHandle *)handle;
+    if (!h || !h->state) {
+        rask_panic("join on consumed TaskHandle");
+    }
+
+    int cancelled = atomic_load_explicit(&h->state->cancel_flag, memory_order_acquire);
+
+    char *msg = NULL;
+    int64_t value = rask_task_join(h, &msg);
+
+    if (msg) {
+        rask_string_from(msg_out, msg);
+        rask_free(msg);
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_PANICKED;
+    }
+
+    rask_string_new(msg_out);
+    if (cancelled) {
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_CANCELLED;
+    }
+    if (value_out) *value_out = value;
+    return RASK_JOIN_OK;
 }
 
 void rask_task_detach(RaskTaskHandle *h) {
@@ -202,7 +269,11 @@ void rask_task_detach(RaskTaskHandle *h) {
     }
     pthread_mutex_unlock(&state->report_lock);
 
-    pthread_detach(state->thread);
+    // A pooled job's thread belongs to the pool and outlives the job, so there
+    // is nothing to detach — dropping the handle's ref is the whole of it.
+    if (!state->pooled) {
+        pthread_detach(state->thread);
+    }
     state_release(state);
     rask_free(h);
 }
@@ -250,19 +321,20 @@ typedef struct {
     void          *alloc_base;  // closure allocation to free after task
 } RaskSpawnCtx;
 
-static void closure_spawn_entry(void *arg) {
+static int64_t closure_spawn_entry(void *arg) {
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)arg;
     RaskTaskFn func = ctx->func;
     void *env = ctx->env;
     void *alloc_base = ctx->alloc_base;
     rask_free(ctx);
 
-    func(env);
+    int64_t result = func(env);
     rask_free(alloc_base);
+    return result;
 }
 
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
-    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
+    RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
@@ -273,22 +345,25 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
     return rask_task_spawn(closure_spawn_entry, ctx);
 }
 
-// ThreadPool.spawn. Pool workers are OS threads that run a job to completion
-// (conc.io-context/IO2), so a pool task is an OS-thread task and the handle it
-// hands back is the `ThreadHandle<T>` the stub declares — the same handle
-// `ThreadHandle_join` knows how to join.
-//
-// It used to live in green.c and did two wrong things at once: it called the
-// closure inline and *then* handed the same closure to the green scheduler, so
-// every body ran twice off one allocation only one run would free; and the
-// green handle it returned was read by `ThreadHandle_join` as an OS-thread
-// handle, so join pthread_join'd whatever the first word happened to be (#657).
-//
-// Still not a bounded pool — `using ThreadPool(workers: n)` starts the green
-// scheduler and n is ignored here, so a thousand jobs are a thousand threads.
-// Tracked separately; running each job exactly once comes first.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr) {
-    return rask_closure_spawn(closure_ptr);
+// ─── Hooks for the worker pool (threadpool.c) ──────────────
+// A pooled job needs a task state and a handle without a thread behind them.
+// These keep RaskTaskState private to this file while letting the pool build
+// jobs whose handles join/detach/cancel like any other.
+
+RaskTaskState *rask_task_state_new_pooled(void) {
+    RaskTaskState *s = state_new();
+    s->pooled = 1;
+    return s;
+}
+
+RaskTaskHandle *rask_task_handle_for(RaskTaskState *state) {
+    RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
+    h->state = state;
+    return h;
+}
+
+void rask_task_state_release(RaskTaskState *state) {
+    state_release(state);
 }
 
 int64_t rask_task_join_simple(void *h) {

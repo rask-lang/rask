@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An exported symbol returning normally, called from C, twice. The FFI panic
+// boundary must not leak a level per call.
+extern "C" func c_calls_ok()
+
+/// Exported to C.
+public extern "C" func rask_add_one(n: i64) -> i64 {
+    return n + 1
+}
+
+/// Exported to C; unused here, the driver declares it.
+public extern "C" func rask_exported_panics() -> void {
+    panic("unused")
+}
+
+func main() {
+    unsafe c_calls_ok()
+    unsafe c_calls_ok()
+    println("main still alive")
+}

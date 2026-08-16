@@ -83,6 +83,93 @@ fn compile_and_run(fixture_name: &str) -> (String, i32) {
     (stdout, code)
 }
 
+/// Compile a .rk fixture together with a C driver and run it, returning
+/// (stdout, stderr, exit code). The only way to exercise an `extern "C"` export
+/// — the symbol has to be called from actual C frames for the boundary rules to
+/// mean anything.
+fn compile_with_c_and_run(fixture_name: &str, c_driver: &str) -> (String, String, i32) {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let stem = fixture_name.trim_end_matches(".rk");
+    let bin_path = tmp.join(format!("rask_ffi_{}_{}", stem, std::process::id()));
+
+    let compile_out = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture(fixture_name))
+        .arg("--link-obj")
+        .arg(fixture(c_driver))
+        .arg("-o")
+        .arg(&bin_path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+
+    assert!(
+        compile_out.status.success(),
+        "rask compile {} + {} failed:\nstdout: {}\nstderr: {}",
+        fixture_name, c_driver,
+        String::from_utf8_lossy(&compile_out.stdout),
+        String::from_utf8_lossy(&compile_out.stderr),
+    );
+
+    let run_out = Command::new(&bin_path).output().expect("failed to run compiled binary");
+    let _ = std::fs::remove_file(&bin_path);
+    // A process killed by a signal has no exit code, so report it the way a
+    // shell does — 128 + signal. Otherwise an abort and a clean exit both read
+    // as "no code" and the test can't tell them apart.
+    let code = run_out.status.code().unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            run_out.status.signal().map(|s| 128 + s).unwrap_or(-1)
+        }
+        #[cfg(not(unix))]
+        { -1 }
+    });
+    (
+        String::from_utf8_lossy(&run_out.stdout).to_string(),
+        String::from_utf8_lossy(&run_out.stderr).to_string(),
+        code,
+    )
+}
+
+#[test]
+fn extern_c_export_returns_through_c_frames() {
+    // The export form (`public extern "C" func name() { ... }`) had no working
+    // path through the compiler at all: reachability starts at main, nothing in
+    // Rask calls an exported symbol, so it was dropped as dead code and a C
+    // driver linking against it got "undefined reference".
+    let (stdout, stderr, code) =
+        compile_with_c_and_run("ffi_boundary_ok.rk", "ffi_boundary_driver.c");
+    assert_eq!(code, 0, "normal returns through the boundary: {}", stderr);
+    assert_eq!(stdout, "C: got 42\nC: got 42\nmain still alive\n", "{:?}", stdout);
+}
+
+#[test]
+fn panic_in_extern_c_export_aborts_at_the_boundary() {
+    // ctrl.panic/A1. The panic happens inside a spawned task, so the task's
+    // setjmp is live and the normal unwind would longjmp straight over the C
+    // frame between them — skipping whatever the C caller had on the stack.
+    // It must abort at the boundary instead.
+    let (stdout, stderr, code) =
+        compile_with_c_and_run("ffi_boundary_panic.rk", "ffi_boundary_driver.c");
+    assert!(stdout.contains("C: before callback"), "the C frame ran: {:?}", stdout);
+    assert!(
+        !stdout.contains("C: after callback"),
+        "the C frame must not resume past a panicking callback: {:?}", stdout,
+    );
+    assert!(
+        !stdout.contains("must not be reached"),
+        "the panic must not unwind back into Rask: {:?}", stdout,
+    );
+    assert!(
+        stderr.contains("panic crossed an FFI boundary"),
+        "the abort names the boundary: {:?}", stderr,
+    );
+    // SIGABRT, not exit(101) — P4's exit code is for a panic escaping main.
+    assert_eq!(code, 134, "abort, not exit: stderr {}", stderr);
+}
+
 /// Compile a .rk fixture and assert codegen produces no errors.
 /// Use when the emitted binary may segfault for unrelated reasons
 /// (e.g. runtime layout issues) but the specific codegen bug must
@@ -2081,6 +2168,115 @@ fn panic_detached_task_reports_to_stderr() {
     assert_eq!(code, 0, "a detached task's panic must not kill the process: {}", stderr);
     assert_eq!(stdout, "done\n");
     assert!(stderr.contains("boom"), "the detached panic must reach stderr: {}", stderr);
+}
+
+#[test]
+fn deref_of_owned_is_a_safe_borrow() {
+    // #737: `*x` was classified as a raw-pointer dereference by syntax alone,
+    // so `(*p).x` on an Owned needed an `unsafe` block — which made owned.md's
+    // own examples uncompilable. mem.owned/OW3 says it's an ordinary borrow.
+    // Neither backend could evaluate it either: the interpreter had no Deref
+    // arm, and native emitted a real load and segfaulted.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "owned_deref.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "read 1 2\nafter write 10\nstill owned 10 2\n",
+            "{}: read, write, and still-owned all through `*p`: {:?}", mode, stdout,
+        );
+    }
+}
+
+#[test]
+fn channel_element_type_reaches_the_receiving_end() {
+    // #717: a channel created without an explicit element type gave its Sender
+    // and Receiver empty type-argument lists, so nothing linked the two ends.
+    // Every method call on either end then invented its own fresh variable, and
+    // what `send` learned could never reach `receive` — the result stayed an
+    // unresolved `T or string` and lowering had no enum to match on.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "channel_elem_inferred.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, "done hello\nfailed 7\n", "{}: {:?}", mode, stdout);
+    }
+}
+
+#[test]
+fn unqualified_variant_takes_its_own_enums_tag() {
+    // #752: an unqualified arm resolved its tag by scanning every declared enum
+    // for the name, so a user enum with an `Io` variant picked up IoError's tag
+    // 6. The switch keyed an arm the enum has no tag for, nothing matched, and
+    // the match fell through to `unreachable` — SIGILL.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "variant_name_shared_with_stdlib.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "caught: inner\ncaught: not found\ncaught: I/O error: inner\n",
+            "{}: every arm reaches its own variant: {:?}", mode, stdout,
+        );
+    }
+}
+
+#[test]
+fn threadpool_runs_every_job_exactly_once() {
+    // #686: ThreadPool.spawn was pthread_create per job — `workers: 4` was
+    // accepted and ignored, so 800 jobs meant 800 threads. With a real pool the
+    // observable guarantee is that every job still runs exactly once: 800 joins
+    // and the sum 0+1+...+799.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "threadpool_bounded.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert!(stdout.contains("count 800"), "{}: every job joined: {:?}", mode, stdout);
+        assert!(stdout.contains("total 319600"), "{}: each job ran once: {:?}", mode, stdout);
+    }
+}
+
+#[test]
+fn one_println_call_lands_whole_on_both_backends() {
+    // #704: a print/println call is several writes — the text, then the newline
+    // — so two threads used to splice mid-line ("line 0 from thread 2line 194
+    // from thread 1"). Both backends now emit one call as one unit.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "print_line_atomic.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 1200, "{}: every line accounted for", mode);
+        let torn: Vec<&&str> = lines.iter()
+            .filter(|l| {
+                let mut parts = l.split(' ');
+                parts.next() != Some("line")
+                    || parts.next().is_none_or(|n| n.parse::<u32>().is_err())
+                    || parts.next() != Some("from")
+                    || parts.next() != Some("thread")
+                    || parts.next().is_none_or(|n| !matches!(n, "1" | "2" | "3" | "4"))
+                    || parts.next().is_some()
+            })
+            .collect();
+        assert!(torn.is_empty(), "{}: {} torn lines, first: {:?}", mode, torn.len(), torn.first());
+    }
+}
+
+#[test]
+fn thread_join_reports_value_and_panic_on_both_backends() {
+    // #677/#683: native join() used to fold the value and the outcome into one
+    // number — every success reported 0, a task returning -1 looked like a
+    // panic, and a real panic came back as an Err whose payload was the -1
+    // itself, so matching JoinError.Panicked dereferenced it.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "thread_join_outcome.rk");
+        assert_eq!(code, 0, "{}: joining a panicked task must not kill the joiner: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.first(), Some(&"value 42"), "{}: join hands back the task's value: {:?}", mode, stdout);
+        assert_eq!(lines.get(1), Some(&"value -1"), "{}: -1 is a value, not a failure: {:?}", mode, stdout);
+        // The two backends word the message differently (interp prefixes
+        // "panic: ", native prefixes the source location) — tracked separately.
+        let panicked = lines.get(2).copied().unwrap_or_default();
+        assert!(panicked.starts_with("panicked") && panicked.contains("boom"),
+            "{}: a panicked task joins as JoinError.Panicked carrying its message: {:?}", mode, stdout);
+        assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
+    }
 }
 
 #[test]

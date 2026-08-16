@@ -244,7 +244,22 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     match rask_resolve::resolve_package_with_stdlib(&all_decls, &prepared.registry, prepared.root_id, &stdlib_decls) {
         Ok(resolved) => {
-            match rask_types::typecheck(resolved, &all_decls) {
+            // Type-check the stdlib's own bodies alongside the program, the way
+            // the shared driver does for `rask build`. This path is an older
+            // hand-rolled copy of the pipeline that used the plain `typecheck`,
+            // so the stdlib's Rask source was resolved but never typed — every
+            // receiver inside it reached MIR with no recorded type, and lowering
+            // fell back to guessing a stdlib prefix from the method name.
+            //
+            // `rask build` never noticed because the main binary drops the
+            // stdlib functions the program doesn't call. A test binary compiles
+            // more of them, so `rask test examples/validation` failed on 17
+            // stdlib functions the build had simply discarded (#697).
+            let stdlib_typecheck_decls = rask_stdlib::StubRegistry::typecheck_decls();
+            let (typed, type_errors) = rask_types::typecheck_with_stdlib_lenient(
+                resolved, &all_decls, &stdlib_typecheck_decls,
+            );
+            match if type_errors.is_empty() { Ok(typed) } else { Err(type_errors) } {
                 Ok(typed) => {
                     let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                     if !ownership_result.is_ok() {

@@ -1,0 +1,5 @@
+# Three workers, three pool tasks and a producer/consumer pair all print
+# concurrently, so the order of their lines is genuinely up to the scheduler.
+# The set of lines is fixed — each one lands whole now that a single print
+# call is atomic (#704) — so sorting is the right comparison here.
+sort

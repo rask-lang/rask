@@ -249,6 +249,7 @@ pub fn monomorphize_with_packages(
         return Err(MonomorphizeError::NoEntryPoint);
     }
     mono.add_module_const_roots();
+    mono.add_exported_roots();
 
     mono.run();
 

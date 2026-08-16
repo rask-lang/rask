@@ -87,6 +87,9 @@ struct CodegenCtx<'a> {
     current_span_start: u32,
     ret_ty: &'a MirType,
     is_main: bool,
+    /// An `extern "C"` export: its body is bracketed with the FFI panic
+    /// boundary, so a panic inside aborts rather than unwinding into C frames.
+    is_extern_c: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
 }
 
@@ -133,11 +136,20 @@ enum CallAdapt {
     /// → Ok(string), else Err. Used by `io.read_line`, where the error case is
     /// end of input.
     StringResult(StackSlot),
+    /// join/cancel: the call returned how the task ended and wrote its value
+    /// into the first slot and any panic message into the second (a 16-byte
+    /// RaskStr). Build a `T or JoinError` in dst.
+    JoinOutcome(StackSlot, StackSlot),
 }
 
 /// `IoError.UnexpectedEof`'s variant index, counting the declaration order in
 /// stdlib/io.rk. Reordering that enum has to be reflected here.
 const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
+
+/// How a joined task ended, as the runtime reports it. Mirrors the
+/// `RASK_JOIN_*` defines in runtime/rask_runtime.h.
+const RASK_JOIN_OK: i64 = 0;
+const RASK_JOIN_PANICKED: i64 = 1;
 
 pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
@@ -402,8 +414,19 @@ impl<'a> FunctionBuilder<'a> {
             current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
             is_main: self.mir_fn.name == "main",
+            is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
         };
+
+        // ctrl.panic/A1: an exported symbol is entered from C, so the frames
+        // between here and any panic handler belong to the C caller. Mark the
+        // boundary on the way in — `rask_panic` aborts instead of longjmping
+        // over them. `lower_terminator` clears it on every normal return.
+        if ctx.is_extern_c {
+            if let Some(fr) = ctx.func_refs.get("rask_ffi_boundary_enter") {
+                builder.ins().call(*fr, &[]);
+            }
+        }
 
         // Lower each block (skip cleanup-only blocks)
         for mir_block in &self.mir_fn.blocks {
@@ -3609,6 +3632,16 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(func.name.as_str(), "print" | "println" | "eprint" | "eprintln") {
             let to_stderr = func.name.starts_with('e');
             let sep_fn = if to_stderr { "rask_eprint_string" } else { "rask_print_string" };
+            // One call emits several writes — a separator per extra argument,
+            // one per argument, and the newline. Bracket the lot so two threads
+            // can't splice mid-line ("line 0 from thread 2line 194 from
+            // thread 1"). The runtime's lock is recursive, so the individual
+            // writes inside just re-take it.
+            let lock_fn = if to_stderr { "rask_eprint_lock" } else { "rask_print_lock" };
+            let unlock_fn = if to_stderr { "rask_eprint_unlock" } else { "rask_print_unlock" };
+            if let Some(fr) = ctx.func_refs.get(lock_fn) {
+                builder.ins().call(*fr, &[]);
+            }
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
                     let sp = Self::lower_operand_typed(
@@ -3647,6 +3680,9 @@ impl<'a> FunctionBuilder<'a> {
                 let nl = ctx.func_refs.get(nl_fn)
                     .ok_or_else(|| CodegenError::FunctionNotFound(nl_fn.into()))?;
                 builder.ins().call(*nl, &[]);
+            }
+            if let Some(fr) = ctx.func_refs.get(unlock_fn) {
+                builder.ins().call(*fr, &[]);
             }
             // print/println return void — define dest as zero if needed
             if let Some(dst_id) = dst {
@@ -4429,6 +4465,30 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().iconst(types::I64, 0)
                 }
+                CallAdapt::JoinOutcome(value_ss, msg_ss) => {
+                    // outcome → `T or JoinError`. The call already wrote the
+                    // task's value and any panic message into the two slots;
+                    // all that's left is deciding which variant to build.
+                    //
+                    // What this replaces: the old entry point folded value and
+                    // outcome into one int64_t, so `-1` meant "panicked" and the
+                    // Err payload was that same `-1` — matching on it read -1 as
+                    // a JoinError address and segfaulted, and every successful
+                    // join reported 0 because the value was never captured.
+                    let results = builder.inst_results(call_inst);
+                    let outcome = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, RASK_JOIN_PANICKED)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        Self::build_join_result(
+                            builder, dst_ss, outcome, value_ss, msg_ss, dst_id, ctx,
+                        );
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
                 _ => {
                     let results = builder.inst_results(call_inst);
                     if !results.is_empty() {
@@ -4508,6 +4568,14 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         match &term.kind {
             MirTerminatorKind::Return { value } => {
+                // Leaving an exported symbol the normal way — one level of the
+                // FFI boundary comes back off. A panic never gets here; it
+                // aborts at the boundary instead (ctrl.panic/A1).
+                if ctx.is_extern_c {
+                    if let Some(fr) = ctx.func_refs.get("rask_ffi_boundary_exit") {
+                        builder.ins().call(*fr, &[]);
+                    }
+                }
                 // main is called from C as void rask_main(void) — always return
                 // void. A `void or E` main still has to report its error branch,
                 // though: exit 1, not the silent 0 it used to give (#345).
@@ -5224,6 +5292,116 @@ impl<'a> FunctionBuilder<'a> {
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
     }
 
+    /// Assemble a `T or JoinError` from what the runtime reported.
+    ///
+    /// `outcome` is RASK_JOIN_OK / _PANICKED / _CANCELLED; `value_ss` holds the
+    /// task's return value and `msg_ss` a 16-byte RaskStr (empty unless it
+    /// panicked). The JoinError variant tags and its message field's offset come
+    /// from the destination's own error layout, so renaming or reordering the
+    /// enum in stdlib/async.rk doesn't silently change what gets built.
+    fn build_join_result(
+        builder: &mut ClifFunctionBuilder,
+        dst_ss: StackSlot,
+        outcome: Value,
+        value_ss: StackSlot,
+        msg_ss: StackSlot,
+        dst_id: &LocalId,
+        ctx: &CodegenCtx,
+    ) {
+        let (ok_ty, err_layout) = ctx.locals.iter()
+            .find(|l| l.id == *dst_id)
+            .and_then(|l| match &l.ty {
+                MirType::Result { ok, err } => {
+                    let err_layout = match err.as_ref() {
+                        MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize),
+                        _ => None,
+                    };
+                    Some((ok.as_ref().clone(), err_layout))
+                }
+                _ => None,
+            })
+            .unwrap_or((MirType::I64, None));
+
+        let variant = |name: &str, fallback: i64| -> (i64, i32) {
+            err_layout
+                .and_then(|l| l.variants.iter().find(|v| v.name == name))
+                .map(|v| {
+                    let field_off = v.fields.first().map(|f| f.offset).unwrap_or(0);
+                    (v.tag as i64, (v.payload_offset + field_off) as i32)
+                })
+                .unwrap_or((fallback, 8))
+        };
+        let (panicked_tag, msg_offset) = variant("Panicked", 0);
+        let (cancelled_tag, _) = variant("Cancelled", 1);
+
+        let ok_block = builder.create_block();
+        let fail_block = builder.create_block();
+        let panicked_block = builder.create_block();
+        let cancelled_block = builder.create_block();
+        let merge_block = builder.create_block();
+
+        let ok_code = builder.ins().iconst(types::I64, RASK_JOIN_OK);
+        let is_ok = builder.ins().icmp(IntCC::Equal, outcome, ok_code);
+        builder.ins().brif(is_ok, ok_block, &[], fail_block, &[]);
+
+        builder.switch_to_block(ok_block);
+        builder.seal_block(ok_block);
+        let ok_size = Self::resolve_type_alloc_size(
+            &ok_ty, ctx.struct_layouts, ctx.enum_layouts,
+        ).unwrap_or(8);
+        let tag = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
+        Self::zero_result_origin(builder, dst_ss);
+        if ok_size > 8 {
+            // The task handed back an address. Copy through it — nothing in the
+            // slot survives the callee otherwise.
+            let src = builder.ins().stack_load(types::I64, value_ss, 0);
+            let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+            Self::copy_bytes(
+                builder, src, 0, dst_addr, crate::layouts::RESULT_PAYLOAD_OFFSET, ok_size,
+            );
+        } else {
+            let load_ty = mir_to_cranelift_type(&ok_ty).unwrap_or(types::I64);
+            let value = builder.ins().stack_load(load_ty, value_ss, 0);
+            builder.ins().stack_store(value, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        }
+        builder.ins().jump(merge_block, &[]);
+
+        builder.switch_to_block(fail_block);
+        builder.seal_block(fail_block);
+        let err_tag = builder.ins().iconst(types::I64, 1);
+        builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
+        Self::zero_result_origin(builder, dst_ss);
+        // The message slot is a valid string either way — empty for Cancelled —
+        // so copy it before the split. A Cancelled left with an uninitialized
+        // 16 bytes there would be freed as if it were a heap string.
+        let src = builder.ins().stack_addr(types::I64, msg_ss, 0);
+        let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+        Self::copy_bytes(
+            builder, src, 0, dst_addr,
+            crate::layouts::RESULT_PAYLOAD_OFFSET + msg_offset,
+            crate::layouts::STRING_SIZE as u32,
+        );
+        let panicked_code = builder.ins().iconst(types::I64, RASK_JOIN_PANICKED);
+        let is_panicked = builder.ins().icmp(IntCC::Equal, outcome, panicked_code);
+        builder.ins().brif(is_panicked, panicked_block, &[], cancelled_block, &[]);
+
+        builder.switch_to_block(panicked_block);
+        builder.seal_block(panicked_block);
+        let v = builder.ins().iconst(types::I64, panicked_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        builder.ins().jump(merge_block, &[]);
+
+        builder.switch_to_block(cancelled_block);
+        builder.seal_block(cancelled_block);
+        let v = builder.ins().iconst(types::I64, cancelled_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        builder.ins().jump(merge_block, &[]);
+
+        builder.switch_to_block(merge_block);
+        builder.seal_block(merge_block);
+    }
+
     /// Payload types that live in their own storage, so extracting one yields
     /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
     /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
@@ -5724,6 +5902,18 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 CallAdapt::ParseResult(ss, writer_ty, ok_ty)
+            }
+
+            ArgAdapt::JoinOutcomeOutParams => {
+                let value_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                let msg_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, value_ss, 0));
+                args.push(builder.ins().stack_addr(types::I64, msg_ss, 0));
+                CallAdapt::JoinOutcome(value_ss, msg_ss)
             }
 
             ArgAdapt::Custom => {

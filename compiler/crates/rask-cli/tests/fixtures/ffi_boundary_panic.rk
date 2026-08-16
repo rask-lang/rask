@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A panic inside an exported symbol, reached through a C frame from a spawned
+// task. The task's setjmp is live, so the unwind path would longjmp straight
+// over the C frame — which is what A1 forbids.
+extern "C" func c_calls_bad()
+
+/// Exported to C; panics on purpose.
+public extern "C" func rask_exported_panics() -> void {
+    panic("boom inside an exported symbol")
+}
+
+/// Exported to C; unused here, the driver declares it.
+public extern "C" func rask_add_one(n: i64) -> i64 {
+    return n + 1
+}
+
+func main() {
+    let h = Thread.spawn(|| {
+        unsafe c_calls_bad()
+        return 0
+    })
+    let _ = h.join()
+    println("must not be reached")
+}

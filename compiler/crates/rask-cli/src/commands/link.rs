@@ -28,6 +28,7 @@ const PORTABLE_SOURCES: &[&str] = &[
 /// Sources that require pthreads (Linux, macOS — not Windows/bare-metal).
 const PTHREAD_SOURCES: &[&str] = &[
     "thread.c",
+    "threadpool.c",
     "channel.c",
     "sync.c",
 ];

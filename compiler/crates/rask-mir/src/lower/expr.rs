@@ -723,6 +723,21 @@ impl<'a> MirLowerer<'a> {
             }
         }
         let (op, ty) = self.lower_expr_inner(expr)?;
+        // Lowering works each expression's type out as it goes, and lands on
+        // `Ptr` — "some address, contents unknown" — whenever it can't. The
+        // checker already answered the question; ask it here, once, instead of
+        // at each of the sites that would otherwise guess downstream (#725).
+        //
+        // Only `Ptr` defers. Anything lowering actually determined stays, because
+        // lowering knows things the checker doesn't — niche layouts, and the
+        // concrete shape a generic took after monomorphization.
+        let ty = if matches!(ty, MirType::Ptr) {
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| !matches!(t, MirType::Ptr | MirType::Void))
+                .unwrap_or(ty)
+        } else {
+            ty
+        };
         // TR5: a concrete value the checker flagged as flowing into an
         // `any Trait` position gets its vtable here — at the value, so every
         // use site is covered by one rule. Boxing at the call argument alone
@@ -961,7 +976,15 @@ impl<'a> MirLowerer<'a> {
                         }));
                         return Ok((MirOperand::Local(result_local), MirType::I64));
                     }
-                    UnaryOp::Deref => (operand_ty.clone(), MirRValue::Deref(operand_op)),
+                    // A raw pointer needs the load. An `Owned<T>` doesn't —
+                    // it's transparent, so the operand already *is* the T, and
+                    // emitting a Deref read whatever address the value's first
+                    // word happened to look like (segfault on
+                    // `(*owned_point).x`). mem.owned/OW3, #737.
+                    UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                        (operand_ty.clone(), MirRValue::Deref(operand_op))
+                    }
+                    UnaryOp::Deref => (operand_ty.clone(), MirRValue::Use(operand_op)),
                     UnaryOp::Not => (MirType::Bool, MirRValue::UnaryOp {
                         op: lower_unaryop(*op),
                         operand: operand_op,
@@ -2866,12 +2889,22 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Using block — emit runtime init/shutdown for Multitasking/ThreadPool
+            // Using block — bracket the body with the context's install/teardown.
+            // The two runtime contexts are independent (conc.async): Multitasking
+            // starts the green scheduler, ThreadPool starts a bounded worker
+            // pool. They used to emit the same call, so `using ThreadPool` spun
+            // up a green scheduler that ThreadPool.spawn never looked at and the
+            // `workers:` count was accepted and ignored (#686).
             ExprKind::UsingBlock { name, args, body } => {
-                if name == "Multitasking" || name == "MultiTasking" || name == "multitasking"
-                    || name == "ThreadPool" || name == "threadpool"
-                {
-                    // Extract worker count from args, default to 0 (auto-detect)
+                let ctx_fns = match name.as_str() {
+                    "Multitasking" | "MultiTasking" | "multitasking" =>
+                        Some(("rask_runtime_init", "rask_runtime_shutdown")),
+                    "ThreadPool" | "threadpool" =>
+                        Some(("rask_threadpool_init", "rask_threadpool_shutdown")),
+                    _ => None,
+                };
+                if let Some((init_fn, shutdown_fn)) = ctx_fns {
+                    // Worker count, or 0 for "one per core"
                     let worker_count = if let Some(arg) = args.first() {
                         let (op, _ty) = self.lower_expr(&arg.expr)?;
                         op
@@ -2880,13 +2913,13 @@ impl<'a> MirLowerer<'a> {
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("rask_runtime_init".to_string()),
+                        func: FunctionRef::internal(init_fn.to_string()),
                         args: vec![worker_count],
                     }));
                     let result = self.lower_block(body);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("rask_runtime_shutdown".to_string()),
+                        func: FunctionRef::internal(shutdown_fn.to_string()),
                         args: vec![],
                     }));
                     result
@@ -3622,7 +3655,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
@@ -3668,7 +3701,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
@@ -4063,7 +4096,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
                             // Channel.buffered()/unbuffered() C runtime returns a
                             // single i64 (raw channel pair pointer), not a tuple.
                             // Override the Tuple return type from stubs to I64 so the
@@ -4517,7 +4550,7 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.ctx.lookup_node_type(expr.id)
                     .filter(|t| matches!(t, MirType::Option(_))))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
-                .or_else(|| Some(super::stdlib_return_mir_type(stub)))
+                .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
         } else if qualified_name == "string_parse"
             || qualified_name.strip_prefix("string_parse_")
                 .is_some_and(super::is_parse_target_type_name)
@@ -4540,23 +4573,21 @@ impl<'a> MirLowerer<'a> {
         } else {
             None
         }.unwrap_or_else(|| self
+            // Qualified first. `Type_method` names exactly one function;
+            // the bare method name is whatever else in the program shares it,
+            // so consulting it first let an unrelated `join` answer for
+            // `ThreadHandle_join`.
             .func_sigs
-            .get(&method)
-            .or_else(|| self.func_sigs.get(&qualified_name))
+            .get(&qualified_name)
+            .or_else(|| self.func_sigs.get(&method))
             .map(|s| s.ret_ty.clone())
-            .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
+            .unwrap_or_else(|| super::stdlib_return_mir_type_in(&qualified_name, Some(self.ctx))));
 
         // A method on a generic type is lowered once, so its signature says `T`
         // — which reaches MIR as a bare `Ptr`. The call site knows what `T`
         // became: `Box<string>.get()` returning `Ptr` meant the caller printed
-        // the string's address as a number (#272).
-        let ret_ty = if matches!(ret_ty, MirType::Ptr) {
-            self.ctx.lookup_node_type(expr.id)
-                .filter(|t| !matches!(t, MirType::Ptr | MirType::Void))
-                .unwrap_or(ret_ty)
-        } else {
-            ret_ty
-        };
+        // the string's address as a number (#272). That substitution now happens
+        // for every expression kind on the way out of `lower_expr`, not just here.
 
         // Struct clone: inline field-by-field copy with deep clone for
         // heap fields (string, Vec, Map). Avoids needing a generated
@@ -4956,7 +4987,7 @@ impl<'a> MirLowerer<'a> {
                         .func_sigs
                         .get(&func_name)
                         .map(|s| s.ret_ty.clone())
-                        .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                        .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),

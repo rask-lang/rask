@@ -598,6 +598,18 @@ const char *rask_args_get(int64_t index);
 const RaskStr *rask_os_env(const RaskStr *name);
 void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
 
+// ─── Print locking ─────────────────────────────────────────
+// Codegen brackets the writes for one print/println call with these, so the
+// whole line lands before another thread's does. Recursive: nesting is fine.
+void rask_print_lock(void);
+void rask_print_unlock(void);
+void rask_eprint_lock(void);
+void rask_eprint_unlock(void);
+
+// Release everything this thread still holds — the panic path calls it before
+// longjmping past an unlock that will never run.
+void rask_print_unlock_all(void);
+
 // ─── Panic ─────────────────────────────────────────────────
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.
@@ -608,6 +620,13 @@ _Noreturn void rask_panic(const char *msg);
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
                              const char *msg);
 _Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// ctrl.panic/A1: an `extern "C"` function's body is bracketed with these, so a
+// panic inside it aborts at the boundary instead of unwinding into the C
+// caller's frames. Nesting is counted; a normal return unwinds one level.
+void rask_ffi_boundary_enter(void);
+void rask_ffi_boundary_exit(void);
+int  rask_in_ffi_boundary(void);
 
 // Thread-local panic location — codegen sets before panicking calls
 void rask_set_panic_location(const char *file, int32_t line, int32_t col);
@@ -706,8 +725,11 @@ int       rask_green_task_is_cancelled(void);
 
 typedef struct RaskTaskHandle RaskTaskHandle;
 
-// Function signature for spawned tasks: takes environment pointer.
-typedef void (*RaskTaskFn)(void *env);
+// Function signature for spawned tasks: takes environment pointer, hands back
+// the task's return value. A task body that returns nothing still matches this
+// on every ABI Rask targets — the unused return register is simply garbage,
+// and join() on a `ThreadHandle<void>` never looks at it.
+typedef int64_t (*RaskTaskFn)(void *env);
 
 // Spawn a new OS thread running func(env). Caller must join/detach/cancel.
 RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env);
@@ -734,11 +756,44 @@ int64_t rask_sleep_ns(int64_t ns);
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
 
-// ThreadPool.spawn — an OS-thread task, same handle shape as Thread.spawn.
+// ─── Worker pool (threadpool.c) ────────────────────────────
+// `using ThreadPool(workers: n)` brackets its block with these. Workers are
+// OS threads that run a job to completion (conc.io-context/IO2) — a plain
+// pool, independent of the green scheduler that `using Multitasking` starts.
+
+// Start n workers (n <= 0 means one per core). Idempotent.
+void rask_threadpool_init(int64_t worker_count);
+
+// Drain the queue, stop the workers, join them. Idempotent.
+void rask_threadpool_shutdown(void);
+
+// ThreadPool.spawn — enqueues a job and hands back the same handle shape
+// Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
+// `using ThreadPool` block there is no pool, so it falls back to one thread.
 RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);
+
+// ─── Join outcome (T or JoinError) ─────────────────────────
+// How a joined task ended. Codegen turns this into the Result tag and, for the
+// two failure cases, the JoinError variant tag — so the numbering here is the
+// only thing the two sides have to agree on besides the offsets.
+#define RASK_JOIN_OK        0
+#define RASK_JOIN_PANICKED  1
+#define RASK_JOIN_CANCELLED 2
+
+// Join and report the outcome separately from the value, so a task that
+// legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
+// task's return value (0 when it failed); `*msg_out` is always left a valid
+// string — the panic message, or empty. Consumes the handle.
+int64_t rask_task_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+
+// Same for the green scheduler's task handles.
+int64_t rask_green_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+
+// Cancel-then-join. Reports CANCELLED unless the task panicked on its way out.
+int64_t rask_green_cancel_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

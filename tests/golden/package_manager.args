@@ -1,0 +1,6 @@
+# One invocation per line; stdout is concatenated in this order.
+# `--help` is the one path that neither reads a manifest nor touches a
+# registry, so it needs no fixture — and it still exercises the error enums
+# whose tags were wrong (#752), because the arg parse fails first and the
+# `catch e => e.message()` in main runs before the usage text prints.
+--help

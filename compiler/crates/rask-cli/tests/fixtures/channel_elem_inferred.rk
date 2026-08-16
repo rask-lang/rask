@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The channel's element type is never written down — it has to come from what
+// gets sent, and reach the receive() at the other end.
+
+enum Res {
+    Done(string)
+    Failed(i64)
+}
+
+func main() {
+    using Multitasking {
+        mut (tx, rx) = Channel.buffered(4)
+        let _ = tx.send(Res.Done("hello"))
+        let _ = tx.send(Res.Failed(7))
+
+        mut received = 0
+        while received < 2 {
+            if rx.receive()? as result {
+                if result is Res.Done(msg) {
+                    println("done {msg}")
+                } else if result is Res.Failed(e) {
+                    println("failed {e}")
+                }
+            }
+            received += 1
+        }
+    }
+}

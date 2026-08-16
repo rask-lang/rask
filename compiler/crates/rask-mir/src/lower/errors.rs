@@ -404,7 +404,7 @@ impl<'a> MirLowerer<'a> {
                                     let func_name = format!("{}_{}", mod_name, method);
                                     let ret = self.func_sigs.get(&func_name)
                                         .map(|s| s.ret_ty.clone())
-                                        .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                                        .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
                                     return match ret {
                                         MirType::Result { ok, .. } => Some(*ok),
                                         MirType::Option(inner) => Some(*inner),
@@ -426,7 +426,7 @@ impl<'a> MirLowerer<'a> {
                             };
                             let ret = self.func_sigs.get(&name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type(&name));
+                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&name, Some(self.ctx)));
                             return match ret {
                                 MirType::Result { ok, .. } => Some(*ok),
                                 MirType::Option(inner) => Some(*inner),

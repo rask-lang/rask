@@ -141,16 +141,6 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
-                // Deref write (*ptr = value) requires unsafe
-                if matches!(&target.kind, rask_ast::expr::ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }) {
-                    self.unsafe_ops.push((stmt.span, super::UnsafeCategory::PointerDerefWrite));
-                    if !self.in_unsafe {
-                        self.errors.push(TypeError::UnsafeRequired {
-                            operation: "pointer dereference write".to_string(),
-                            span: stmt.span,
-                        });
-                    }
-                }
                 // Reject mutation of read-only bindings (const) and read-only
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
@@ -217,6 +207,34 @@ impl TypeChecker {
                 self.in_assign_target = true;
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
+
+                // `*x = v` requires unsafe only when `x` really is a raw
+                // pointer. Writing through an `Owned` is a mutable borrow
+                // (mem.owned/OW3), not a raw-pointer store. Checked here rather
+                // than before the target is inferred, because "what is x" is
+                // the whole question and there's no answer until then (#737).
+                if let rask_ast::expr::ExprKind::Unary {
+                    op: rask_ast::expr::UnaryOp::Deref, operand,
+                } = &target.kind {
+                    let operand_ty = self
+                        .node_types
+                        .get(&operand.id)
+                        .map(|t| self.ctx.apply(t));
+                    let needs_unsafe = match operand_ty {
+                        Some(t) => matches!(t, Type::RawPtr(_) | Type::Var(_)),
+                        // Never inferred — can't prove it's safe.
+                        None => true,
+                    };
+                    if needs_unsafe {
+                        self.unsafe_ops.push((stmt.span, super::UnsafeCategory::PointerDerefWrite));
+                        if !self.in_unsafe {
+                            self.errors.push(TypeError::UnsafeRequired {
+                                operation: "pointer dereference write".to_string(),
+                                span: stmt.span,
+                            });
+                        }
+                    }
+                }
                 let value_ty = self.infer_expr_expecting(value, &target_ty);
                 // Assignment is a widening position (optionals/O-widen, SYNTAX L521):
                 // the optional shape `T` widens to `T?` at the lvalue, same as a
