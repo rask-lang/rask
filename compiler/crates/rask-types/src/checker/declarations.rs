@@ -614,6 +614,60 @@ impl TypeChecker {
         }
     }
 
+    /// EQ1/HA1/CL1/CO1 on a generic type: which of its own type parameters a
+    /// derive would depend on, or `None` if a concrete field rules it out.
+    ///
+    /// A field whose type *is* a type parameter can't be settled here — whether
+    /// it has the method depends on what the parameter turns out to be, and G2
+    /// puts that check at the use site. So the derive goes ahead and the
+    /// parameters become the conformance's condition (CC1): `Pair<i32>` is
+    /// Equal because `i32` is, `Pair<SomeNonEqualThing>` isn't. Treating those
+    /// fields as "no method" instead meant a generic struct whose fields are
+    /// its parameters never derived anything at all (#670).
+    fn derive_condition(
+        &self,
+        field_types: &[Type],
+        type_params: &[String],
+        method: &str,
+    ) -> Option<Vec<String>> {
+        let mut needed: Vec<String> = Vec::new();
+        for ty in field_types {
+            if let Some(param) = Self::as_type_param(ty, type_params) {
+                if !needed.contains(&param) {
+                    needed.push(param);
+                }
+                continue;
+            }
+            if !self.type_has_method(ty, method) {
+                return None;
+            }
+        }
+        Some(needed)
+    }
+
+    /// The struct's own type parameter this field type names, if it names one.
+    fn as_type_param(ty: &Type, type_params: &[String]) -> Option<String> {
+        match ty {
+            Type::UnresolvedNamed(name) if type_params.iter().any(|p| p == name) => {
+                Some(name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Record a derived conformance, plus the `where` clause it rests on when
+    /// the type is generic (CC1). An empty condition is an unconditional one.
+    fn record_derived(&mut self, id: crate::types::TypeId, trait_name: &str, cond: &[String]) {
+        self.types.record_conformance(id, trait_name);
+        if !cond.is_empty() {
+            let bounds = cond
+                .iter()
+                .map(|p| (p.clone(), vec![trait_name.to_string()]))
+                .collect();
+            self.types.record_conformance_condition(id, trait_name, bounds);
+        }
+    }
+
     fn auto_derive_traits(&mut self) {
         use crate::types::TypeId;
 
@@ -628,10 +682,17 @@ impl TypeChecker {
                     let self_ty = Self::self_type_with_params(id, type_params);
                     let mut new_methods = Vec::new();
 
+                    // A field that *is* one of the struct's type parameters is
+                    // settled at the use site, not here — it becomes part of the
+                    // derive's condition instead of blocking it (CC1, G2).
+                    let eq_cond = self.derive_condition(&field_types, type_params, "eq");
+                    let hash_cond = self.derive_condition(&field_types, type_params, "hash");
+                    let clone_cond = self.derive_condition(&field_types, type_params, "clone");
+                    let cmp_cond = self.derive_condition(&field_types, type_params, "compare");
+                    let default_cond = self.derive_condition(&field_types, type_params, "default");
+
                     // EQ1: auto-derive eq if all fields are Equatable
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
+                    if !methods.iter().any(|m| m.name == "eq") && eq_cond.is_some() {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
                             name: "eq".to_string(),
@@ -643,8 +704,8 @@ impl TypeChecker {
 
                     // HA1: auto-derive hash if all fields are Hashable (requires eq too)
                     if !methods.iter().any(|m| m.name == "hash")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                        && hash_cond.is_some()
+                        && eq_cond.is_some()
                     {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
@@ -656,9 +717,7 @@ impl TypeChecker {
                     }
 
                     // DF1: auto-derive default if all fields are Default (structs only)
-                    if !methods.iter().any(|m| m.name == "default")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
-                    {
+                    if !methods.iter().any(|m| m.name == "default") && default_cond.is_some() {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
                             name: "default".to_string(),
@@ -670,7 +729,7 @@ impl TypeChecker {
 
                     // CL1: auto-derive clone if all fields are Clone and no raw pointers (CL2)
                     if !methods.iter().any(|m| m.name == "clone")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && clone_cond.is_some()
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
@@ -685,9 +744,7 @@ impl TypeChecker {
                     // CO1/ORD2: auto-derive compare if all fields are Comparable
                     // Comparable is a supertrait of Equal, so eq is implied.
                     // CO4: f32/f64 excluded (NaN breaks totality).
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
+                    if !methods.iter().any(|m| m.name == "compare") && cmp_cond.is_some() {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
@@ -729,15 +786,15 @@ impl TypeChecker {
 
                     // G1: mark auto-derived conformances so the nominal check
                     // accepts eligible types without an explicit `extend ... with`.
-                    let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    let has_raw_ptr = field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    if let Some(cond) = &eq_cond { self.record_derived(id, "Equal", cond); }
+                    if let (Some(_), Some(cond)) = (&eq_cond, &hash_cond) {
+                        self.record_derived(id, "Hashable", cond);
+                    }
+                    if let Some(cond) = &clone_cond {
+                        if !has_raw_ptr { self.record_derived(id, "Cloneable", cond); }
+                    }
+                    if let Some(cond) = &cmp_cond { self.record_derived(id, "Comparable", cond); }
                     self.types.record_conformance(id, "Debug");
                 }
                 TypeDef::Enum { variants, methods, type_params, .. } => {
@@ -747,10 +804,15 @@ impl TypeChecker {
                     let self_ty = Self::self_type_with_params(id, type_params);
                     let mut new_methods = Vec::new();
 
+                    // A payload that *is* one of the enum's type parameters is
+                    // settled at the use site, not here — same rule as structs.
+                    let eq_cond = self.derive_condition(&payload_types, type_params, "eq");
+                    let hash_cond = self.derive_condition(&payload_types, type_params, "hash");
+                    let clone_cond = self.derive_condition(&payload_types, type_params, "clone");
+                    let cmp_cond = self.derive_condition(&payload_types, type_params, "compare");
+
                     // EQ3: auto-derive eq for enums (tag + payload equality)
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
+                    if !methods.iter().any(|m| m.name == "eq") && eq_cond.is_some() {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
                             name: "eq".to_string(),
@@ -762,8 +824,8 @@ impl TypeChecker {
 
                     // HA1: auto-derive hash for enums
                     if !methods.iter().any(|m| m.name == "hash")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                        && hash_cond.is_some()
+                        && eq_cond.is_some()
                     {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
@@ -778,7 +840,7 @@ impl TypeChecker {
 
                     // CL1: auto-derive clone for enums
                     if !methods.iter().any(|m| m.name == "clone")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && clone_cond.is_some()
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
@@ -791,9 +853,7 @@ impl TypeChecker {
                     }
 
                     // CO1/ORD2: auto-derive compare for enums (variant order, then payload)
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
+                    if !methods.iter().any(|m| m.name == "compare") && cmp_cond.is_some() {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
@@ -834,15 +894,15 @@ impl TypeChecker {
                     }
 
                     // G1: mark auto-derived conformances (enum eligibility).
-                    let eq_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
+                    let has_raw_ptr = payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
+                    if let Some(cond) = &eq_cond { self.record_derived(id, "Equal", cond); }
+                    if let (Some(_), Some(cond)) = (&eq_cond, &hash_cond) {
+                        self.record_derived(id, "Hashable", cond);
+                    }
+                    if let Some(cond) = &clone_cond {
+                        if !has_raw_ptr { self.record_derived(id, "Cloneable", cond); }
+                    }
+                    if let Some(cond) = &cmp_cond { self.record_derived(id, "Comparable", cond); }
                     self.types.record_conformance(id, "Debug");
                 }
                 _ => {}

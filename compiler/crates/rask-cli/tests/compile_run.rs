@@ -3168,3 +3168,16 @@ fn try_attaches_to_the_fallible_step_of_a_chain() {
 fn no_implicit_narrowing_in_arguments_or_joins() {
     assert_native_eq_interp("no_silent_narrowing.rk", "7,300,7,7,300");
 }
+
+// type.generics/EQ1, CO1, G2 (#670): a generic type whose fields are its own
+// parameters derives eq/compare — the condition is checked at the instantiation
+// like any other conditional conformance. Each instantiation gets its own
+// layout, so a `string` parameter is compared as a string rather than as the
+// word the shared placeholder layout claimed it was.
+#[test]
+fn generic_types_derive_eq_and_lay_out_per_instantiation() {
+    assert_native_eq_interp(
+        "generic_derive_and_layout.rk",
+        "truefalsetruefalsetruefalse34truefalse",
+    );
+}

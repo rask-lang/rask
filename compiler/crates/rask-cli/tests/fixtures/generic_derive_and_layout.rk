@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.generics/EQ1, CO1, G2 (#670): a generic type whose fields are its own
+// parameters derives eq/compare like any other — the condition is checked at
+// the instantiation, not at the declaration. Each instantiation carries its own
+// layout, so a parameter wider than a word is laid out and compared correctly.
+
+public struct Pair<T> {
+    a: T
+    b: T
+}
+
+public struct Boxed<T> {
+    value: T
+}
+
+public enum Choice<T> {
+    Left(T),
+    Right(T),
+}
+
+public func main() {
+    let p = Pair { a: 1, b: 2 }
+    let q = Pair { a: 1, b: 2 }
+    let r = Pair { a: 1, b: 9 }
+    print(p == q)
+    print(p == r)
+
+    // Comparable rides along, so lt/gt come from the derived compare.
+    print(p.lt(r))
+    print(p.gt(r))
+
+    // A string parameter is sixteen bytes, not one word. Sharing the base
+    // type's placeholder layout compared this field as an integer and answered
+    // false while the interpreter said true.
+    let s = Boxed { value: "hi" }
+    let t = Boxed { value: "hi" }
+    let u = Boxed { value: "no" }
+    print(s == t)
+    print(s == u)
+
+    // Writing the type arguments out reaches the same layout as leaving them
+    // to inference — it used to find none at all and segfault.
+    let e = Pair<i32> { a: 3, b: 4 }
+    print(e.a)
+    print(e.b)
+
+    // Enums take the same route: payload is the parameter, condition is checked
+    // per instantiation.
+    let c1 = Choice.Left(3)
+    let c2 = Choice.Left(3)
+    let c3 = Choice.Right(3)
+    print(c1 == c2)
+    print(c1 == c3)
+}
