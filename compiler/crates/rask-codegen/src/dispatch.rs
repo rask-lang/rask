@@ -277,6 +277,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Vec<f64> needs the float total order — the default compares elements
         // as int64_t, which orders negatives backwards (type.operators/ORD3).
         StdlibEntry::simple("Vec_sort_f64", "rask_vec_sort_f64", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_sort_str", "rask_vec_sort_str", &[types::I64], None, false),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
@@ -334,6 +335,35 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
         },
+
+        // ─── StringView (std.strings/V1–V6) ───────────────────────
+        //
+        // A view is a `RaskStr` sharing the source's buffer, so every read-only
+        // operation is the string one. `view()` is the 16-byte copy plus the
+        // refcount bump the StringClone adapter already emits — that is the
+        // whole of V1, and it is why this needs no runtime function of its own.
+        // A view of a view lands here too, re-referencing the original header
+        // rather than chaining (V6).
+        StdlibEntry {
+            mir_name: "string_view", c_name: "rask_string_clone",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "StringView_view", c_name: "rask_string_clone",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        // V2: copying out has to release the pin, so this allocates rather than
+        // handing back another reference to the source's buffer.
+        StdlibEntry {
+            mir_name: "StringView_to_string", c_name: "rask_string_unshare",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("StringView_len", "rask_string_len", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringView_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringView_hash", "rask_string_hash", &[types::I64], Some(types::I64), false),
 
         // Error origin (ER15/ER16)
         StdlibEntry {
@@ -859,12 +889,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
-
-        // ── Metadata methods ────────────────────────────────────────
-        StdlibEntry::simple("Metadata_size", "rask_metadata_size", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Metadata_accessed", "rask_metadata_accessed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Metadata_modified", "rask_metadata_modified", &[types::I64], Some(types::I64), false),
+        // `fs.metadata` and `Metadata`'s accessors used to live here. It's a
+        // plain Rask struct built by Rask code now — see stdlib/fs.rk (#674).
 
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),

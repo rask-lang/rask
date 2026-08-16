@@ -20,6 +20,10 @@ extern "C" func opendir(path: *u8) -> *u8
 extern "C" func readdir(dir: *u8) -> *u8
 extern "C" func closedir(dir: *u8) -> i32
 extern "C" func rask_dirent_name(entry: *u8) -> *u8
+extern "C" func rask_stat_load(path: *u8) -> i32
+extern "C" func rask_stat_loaded_size() -> u64
+extern "C" func rask_stat_loaded_mtime() -> i64
+extern "C" func rask_stat_loaded_atime() -> i64
 extern "C" func rask_stat_size(path: *u8) -> i64
 extern "C" func rask_stat_mtime(path: *u8) -> i64
 extern "C" func rask_stat_atime(path: *u8) -> i64
@@ -43,7 +47,7 @@ extend fs {
         let p = unsafe path.as_c_str()
         let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
-            return IoError.Other("could not open file")
+            return IoError.last_os_error()
         }
         unsafe fseek(f, 0, 2)
         let size = unsafe ftell(f)
@@ -65,7 +69,7 @@ extend fs {
         let p = unsafe path.as_c_str()
         let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
-            return IoError.Other("could not open file")
+            return IoError.last_os_error()
         }
         unsafe fseek(f, 0, 2)
         let size = unsafe ftell(f)
@@ -92,7 +96,7 @@ extend fs {
         let p = unsafe path.as_c_str()
         let f = unsafe fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
-            return IoError.Other("could not open file")
+            return IoError.last_os_error()
         }
         let ptr = unsafe content.as_ptr()
         let len = content.len() truncate to u64
@@ -127,9 +131,9 @@ extend fs {
         let result = unsafe realpath(path.as_c_str(), buf)
         if unsafe result.is_null() {
             unsafe rask_free(buf)
-            return IoError.Other("could not resolve path")
+            return IoError.last_os_error()
         }
-        let len = unsafe strlen(buf)
+        let len: u64 = unsafe strlen(buf)
         let s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
         return s
@@ -139,12 +143,12 @@ extend fs {
     public func copy(from: string, to: string) -> void or IoError {
         let src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
         if unsafe src.is_null() {
-            return IoError.Other("could not open source file")
+            return IoError.last_os_error()
         }
         let dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
-            return IoError.Other("could not open destination file")
+            return IoError.last_os_error()
         }
         let buf = unsafe rask_alloc(8192)
         loop {
@@ -162,7 +166,7 @@ extend fs {
     public func rename(from: string, to: string) -> void or IoError {
         let r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
         if r != 0 {
-            return IoError.Other("could not rename")
+            return IoError.last_os_error()
         }
         return
     }
@@ -171,7 +175,7 @@ extend fs {
     public func remove_file(path: string) -> void or IoError {
         let r = unsafe rask_libc_remove(path.as_c_str())
         if r != 0 {
-            return IoError.Other("could not remove")
+            return IoError.last_os_error()
         }
         return
     }
@@ -180,7 +184,7 @@ extend fs {
     public func create_dir(path: string) -> void or IoError {
         let r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
         if r != 0 {
-            return IoError.Other("could not create directory")
+            return IoError.last_os_error()
         }
         return
     }
@@ -194,7 +198,7 @@ extend fs {
         let p = unsafe path.as_c_str()
         let f = unsafe fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
-            return IoError.Other("could not open file for append")
+            return IoError.last_os_error()
         }
         let ptr = unsafe content.as_ptr()
         let len = content.len() truncate to u64
@@ -207,14 +211,14 @@ extend fs {
     public func list_dir(path: string) -> Vec<string> or IoError {
         let dir = unsafe opendir(path.as_c_str())
         if unsafe dir.is_null() {
-            return IoError.Other("could not open directory")
+            return IoError.last_os_error()
         }
         mut entries: Vec<string> = Vec.new()
         loop {
             let entry = unsafe readdir(dir)
             if unsafe entry.is_null() { break }
             let name_ptr = unsafe rask_dirent_name(entry)
-            let name_len = unsafe strlen(name_ptr)
+            let name_len: u64 = unsafe strlen(name_ptr)
             let name = unsafe string.from_raw(name_ptr, name_len as usize)
             // Skip . and ..
             if name != "." {
@@ -228,8 +232,22 @@ extend fs {
     }
 
     /// Get metadata for a file or directory.
-    @native("rask_fs_metadata")
-    public func metadata(path: string) -> Metadata or IoError { }
+    ///
+    /// Written here rather than left to `rask_fs_metadata`, which signalled
+    /// failure by returning a null pointer that codegen handed back as a
+    /// `Metadata` — so the `catch` never ran and `meta.size` read through null.
+    /// A `T or E` needs the error built on this side (#674).
+    public func metadata(path: string) -> Metadata or IoError {
+        let p = unsafe path.as_c_str()
+        if unsafe { rask_stat_load(p) } != 0 {
+            return IoError.last_os_error()
+        }
+        return Metadata {
+            size: unsafe rask_stat_loaded_size(),
+            modified: unsafe rask_stat_loaded_mtime(),
+            accessed: unsafe rask_stat_loaded_atime(),
+        }
+    }
 
     /// Current working directory.
     public func current_dir() -> Path {
@@ -239,7 +257,7 @@ extend fs {
             unsafe rask_free(buf)
             return Path.from(".")
         }
-        let len = unsafe strlen(buf)
+        let len: u64 = unsafe strlen(buf)
         let s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
         return Path.from(s)
@@ -251,25 +269,23 @@ extend fs {
         if unsafe ptr.is_null() {
             return none
         }
-        let len = unsafe strlen(ptr)
+        let len: u64 = unsafe strlen(ptr)
         let s = unsafe string.from_raw(ptr, len as usize)
         return Path.from(s)
     }
 }
 
 /// File metadata: size, access time, modification time.
-public struct Metadata { }
-
-extend Metadata {
+///
+/// Plain fields, as std.fs specifies. It used to be an opaque handle with
+/// `size()`/`accessed()`/`modified()` accessors reading out of a C-allocated
+/// array, which is what forced `metadata` to be `@native` and left it with no
+/// way to report a failure.
+public struct Metadata {
     /// File size in bytes.
-    @native("rask_metadata_size")
-    public func size(self) -> u64 { }
-
-    /// Last access time as Unix epoch seconds.
-    @native("rask_metadata_accessed")
-    public func accessed(self) -> i64 { }
-
+    public size: u64
     /// Last modification time as Unix epoch seconds.
-    @native("rask_metadata_modified")
-    public func modified(self) -> i64 { }
+    public modified: i64
+    /// Last access time as Unix epoch seconds.
+    public accessed: i64
 }

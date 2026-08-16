@@ -621,6 +621,12 @@ Current interpreter behavior differs from spec in some areas:
 - `s.trim()`, `s.trim_start()`, `s.trim_end()` return new `string` instead of expression-scoped slices
 - This causes allocation but matches common usage patterns
 
+**`.view()` shares, but the slice under it already allocated:**
+- `.view()` works on both backends. A view is a `RaskStr` sharing the source's buffer and holding a refcount on it, so V1, V2, V4 and V6 hold and a stored view can't dangle
+- What doesn't hold yet is V5's "no copy either way" on a *sub-range*. `s[i..j]` and `s.trim()` allocate today (above), so `s.trim().view()` shares the trimmed copy rather than referencing a range of `s` — one allocation per slice, not per view
+- The header-pointer + start/len layout under "Internal Layout" is what removes that last allocation. Until slices are ranges instead of copies, a view always covers the whole of its (already copied) source, so `start`/`len` have nothing to say
+- Read-only API on a view is `len`, `is_empty`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (`index_of`, `chars`, sub-slicing, comparison) isn't wired up
+
 **Method name aliases:**
 - The interpreter still accepts the removed aliases `s.parse()` (for `parse_int`) and `s.find(pat)` (for `index_of`)
 

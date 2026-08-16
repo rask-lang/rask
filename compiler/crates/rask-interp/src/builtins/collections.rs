@@ -411,10 +411,33 @@ impl Interpreter {
                 Ok(Value::vec(flattened))
             }
             "sort" => {
-                let mut vec = v.lock().unwrap();
-                vec.sort_by(|a, b| {
-                    Self::value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                // std.collections/SO3: `sort()` is `T: Comparable`, so a type
+                // that writes its own `compare` is sorted by it. `value_cmp` is
+                // the *derived* order (CO3, lexicographic by field), which is
+                // right only when nothing overrode it — `derive.rs` skips
+                // generating one when the user wrote theirs, and this has to
+                // agree or the two orders disagree by backend.
+                let user_compare = {
+                    let vec = v.lock().unwrap();
+                    vec.items.first().and_then(Self::nominal_type_name)
+                        .filter(|ty| {
+                            self.methods.get(ty)
+                                .and_then(|ms| ms.get("compare"))
+                                .is_some_and(|f| !f.body.is_empty())
+                        })
+                };
+                let items: Vec<Value> = v.lock().unwrap().items.clone();
+                let sorted = match user_compare {
+                    Some(ty) => self.sort_values_by_compare(items, &ty)?,
+                    None => {
+                        let mut items = items;
+                        items.sort_by(|a, b| {
+                            Self::value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        items
+                    }
+                };
+                v.lock().unwrap().items = sorted;
                 Ok(Value::Unit)
             }
             "sort_by" => {
@@ -1633,5 +1656,43 @@ impl Interpreter {
                 got: args.len(),
             }),
         }
+    }
+}
+
+impl Interpreter {
+    /// Sort by a type's own `compare`, the way `sort()` is specified when the
+    /// element implements Comparable (std.collections/SO3).
+    ///
+    /// `Vec::sort_by` can't be used here: the comparator calls back into the
+    /// interpreter, which can fail, and a panicking or error-returning
+    /// comparator inside `sort_by` has nowhere to go. Insertion sort over the
+    /// same `compare` keeps errors propagable and is stable, matching the
+    /// merge sort the native side uses for exactly this case.
+    fn sort_values_by_compare(
+        &mut self,
+        items: Vec<Value>,
+        type_name: &str,
+    ) -> Result<Vec<Value>, RuntimeError> {
+        let mut out: Vec<Value> = Vec::with_capacity(items.len());
+        for item in items {
+            let mut lo = 0usize;
+            let mut hi = out.len();
+            // Upper bound: the first position whose element compares Greater,
+            // so equal elements keep the order they arrived in.
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let ord = self.call_rask_method(
+                    type_name,
+                    "compare",
+                    out[mid].clone(),
+                    vec![item.clone()],
+                )?;
+                let greater = matches!(&ord,
+                    Value::Enum { name, variant, .. } if name == "Ordering" && variant == "Greater");
+                if greater { hi = mid } else { lo = mid + 1 }
+            }
+            out.insert(lo, item);
+        }
+        Ok(out)
     }
 }

@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Ordering` is compiler-registered, so it had no layout and `compare` handed
+// back a bare tag. The type checker said `Ordering` and MIR said `i64`, so
+// `{a.compare(b)}` formatted the integer and printed `0` for Less on native
+// while the interpreter printed `less`, and an `extend Ordering with
+// Displayable` was never reached (#729).
+//
+// It has a layout now. The boundaries that still want a number — the C
+// comparator ABI and the assert helpers — convert explicitly, so the shapes
+// below are the ones that catch a regression in either direction.
+
+extend Ordering with Displayable {
+    func to_string(self) -> string {
+        match self {
+            Ordering.Less => return "less",
+            Ordering.Equal => return "equal",
+            Ordering.Greater => return "greater",
+        }
+    }
+}
+
+struct Row {
+    public rank: i64
+    public name: string
+}
+
+test "std.fmt/D3 — an Ordering renders through the Displayable that was written for it" {
+    let n = 3
+    let m = 7
+    assert "{n.compare(m)}" == "less"
+    assert "{m.compare(n)}" == "greater"
+    assert "{n.compare(n)}" == "equal"
+    // Unsuffixed float literals take the total-order runtime path, not the
+    // inline compare chain.
+    assert "{1.5.compare(2.5)}" == "less"
+    assert "{2.5.compare(1.5)}" == "greater"
+    // The string path shifts the runtime's -1/0/1 onto the tags.
+    assert "{\"abc\".compare(\"abd\")}" == "less"
+}
+
+// A narrow tag store left the rest of the slot undefined, and structural `==`
+// compares the whole slot — so three of these passed in `main` and the third
+// failed inside a test block, purely on stack contents.
+test "ORD1 — equality against a variant holds for every receiver kind" {
+    assert 1.compare(2) == Ordering.Less
+    assert 2.compare(1) == Ordering.Greater
+    assert 2.compare(2) == Ordering.Equal
+    assert 'a'.compare('b') == Ordering.Less
+    assert false.compare(true) == Ordering.Less
+    assert 1.5.compare(2.5) == Ordering.Less
+    assert 2.5.compare(2.5) == Ordering.Equal
+    assert "ab".compare("abc") == Ordering.Less
+}
+
+// The comparator crosses a C ABI that reads the return as a number. Returning
+// the aggregate handed it a stack address, so this sorted differently run to
+// run — it passed roughly half the time.
+test "stdlib.collections — a comparator closure returning Ordering sorts deterministically" {
+    mut rows = Vec.new()
+    rows.push(Row { rank: 3, name: "c" })
+    rows.push(Row { rank: 1, name: "a" })
+    rows.push(Row { rank: 2, name: "b" })
+
+    // Tail-expression form.
+    rows.sort_by(|x, y| x.rank.compare(y.rank))
+    assert rows[0].name == "a"
+    assert rows[1].name == "b"
+    assert rows[2].name == "c"
+
+    // Explicit-return form, descending. This one reaches the boundary through
+    // `terminate_return` rather than the closure's tail.
+    rows.sort_by(|x, y| {
+        return y.rank.compare(x.rank)
+    })
+    assert rows[0].name == "c"
+    assert rows[2].name == "a"
+}
+
+test "ORD1 — matching an Ordering still picks the right arm" {
+    mut seen = ""
+    match 1.compare(2) {
+        Ordering.Less => seen = "l",
+        Ordering.Equal => seen = "e",
+        Ordering.Greater => seen = "g",
+    }
+    assert seen == "l"
+    match 2.compare(2) {
+        Ordering.Less => seen = "l",
+        Ordering.Equal => seen = "e",
+        Ordering.Greater => seen = "g",
+    }
+    assert seen == "e"
+}

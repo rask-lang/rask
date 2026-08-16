@@ -88,6 +88,9 @@ pub enum PackageError {
     NotFound(Vec<String>),
     /// No .rk files found in directory.
     EmptyPackage(PathBuf),
+    /// More source files than the `file_id` space can name. Past this every
+    /// diagnostic would be attributed to the wrong file.
+    TooManyFiles { limit: u16 },
     /// Multiple errors across files.
     Multiple(Vec<PackageError>),
 }
@@ -114,6 +117,15 @@ impl std::fmt::Display for PackageError {
             }
             PackageError::EmptyPackage(path) => {
                 write!(f, "No .rk files found in {}", path.display())
+            }
+            PackageError::TooManyFiles { limit } => {
+                write!(
+                    f,
+                    "package has more than {} source files — past that a file \
+                     can't be named in a diagnostic without colliding with the \
+                     stdlib's own sources. Split it into several packages.",
+                    limit
+                )
             }
             PackageError::Multiple(errors) => {
                 for (i, e) in errors.iter().enumerate() {
@@ -197,6 +209,17 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
         // Same id the parser is about to use — token spans have to agree with
         // the composite spans the parser builds, or half the diagnostics in this
         // file point somewhere else.
+        // The stdlib's sources hold the top of the `file_id` range. Running
+        // into it would make a package file and a stdlib file share an id, and
+        // every diagnostic from one would be rendered against the other — so
+        // say so instead of wrapping into it silently.
+        if successful_file_idx >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE {
+            file_errors.push(PackageError::TooManyFiles {
+                limit: rask_stdlib::stubs::STDLIB_FILE_ID_BASE,
+            });
+            break;
+        }
+
         let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, successful_file_idx);
         let lex_result = lexer.tokenize();
         if !lex_result.is_ok() {

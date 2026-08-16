@@ -598,12 +598,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
-            CoalesceOnNonOptional { found, from_index, span } => {
+            CoalesceOnNonOptional { found, from_index, value_span, default_span, .. } => {
+                // Two labels, because the operator is not the thing that's
+                // wrong. Blaming the whole expression put the caret on the
+                // binding and left the reader to work out which half of it
+                // couldn't be missing (#662): the left operand's type is the
+                // reason, and the fallback is the part to delete.
                 let d = Diagnostic::error(format!(
                     "`??` on `{}` — there's no absent branch to fall back to", found
                 ))
                 .with_code("E0831")
-                .with_primary(*span, format!("this is a `{}`, and it's always there", found));
+                .with_primary(*value_span, format!("this is a `{}`, and it's always there", found))
+                .with_secondary(*default_span, "so the fallback can never run");
                 let d = if *from_index {
                     // The reason this case gets its own advice: indexing is the
                     // one operation that *looks* like it might not find
@@ -790,9 +796,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
             }
             StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
+                // Only an exact reprint of the user's expression gets quoted;
+                // otherwise say "this slice" and point at it with the span.
+                // A near-miss quote reads as their own code and sends them
+                // looking for a line they never wrote (#694).
+                let subject = match slice_expr {
+                    Some(expr) => format!("`{}`", expr),
+                    None if *yields_sequence => "this split".to_string(),
+                    None => "this slice".to_string(),
+                };
                 let d = Diagnostic::error(format!(
-                    "`{}` gives {} into `{}`, not {}",
-                    slice_expr,
+                    "{} gives {} into `{}`, not {}",
+                    subject,
                     if *yields_sequence { "views" } else { "a view" },
                     source_var,
                     if *yields_sequence { "new strings" } else { "a new string" }
@@ -804,13 +819,34 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_secondary(*store_span, format!("`{}` would hold {} past the end of this line", view_var, if *yields_sequence { "them" } else { "it" }))
                     .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes");
+                // Two fixes, and they differ in cost, so both get named:
+                // `.view()` is zero-copy and keeps the source buffer alive,
+                // `.to_string()` copies out and releases it (std.strings/V2,
+                // the spec's FIX 1 and FIX 2).
                 if *yields_sequence {
-                    // `.to_string()` on a sequence of views is not a fix, so
-                    // don't offer one — loop over it and copy each piece.
-                    d.with_help("loop over it in place, or copy each piece out with .to_string() as you go")
+                    let d = d.with_help("collect views with .view(), or copy each piece out with .to_string() as you go");
+                    match slice_expr {
+                        Some(expr) => d.with_fix(format!(
+                            "for piece in {} {{ {}.push(piece.view()) }}  — .to_string() instead of .view() to copy the bytes out",
+                            expr, view_var
+                        )),
+                        None => d.with_fix(format!(
+                            "loop over the pieces and push `piece.view()` into `{}` — or `piece.to_string()` to copy the bytes out",
+                            view_var
+                        )),
+                    }
                 } else {
-                    d.with_help("add .to_string() to copy the bytes out, or keep the byte indices and re-slice where you need them")
-                        .with_fix(format!("let {} = {}.to_string()", view_var, slice_expr))
+                    let d = d.with_help("add .view() to store it zero-copy, or .to_string() to copy the bytes out");
+                    match slice_expr {
+                        Some(expr) => d.with_fix(format!(
+                            "let {}: StringView = {}.view()  — or {}.to_string() for an independent copy",
+                            view_var, expr, expr
+                        )),
+                        None => d.with_fix(format!(
+                            "add `.view()` to the slice to store it zero-copy, or `.to_string()` to copy the bytes out of `{}`",
+                            source_var
+                        )),
+                    }
                 }
             }
 

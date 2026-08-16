@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+extern "C" func rask_io_errno() -> i32
+extern "C" func rask_io_error_kind(err: i32) -> i32
+extern "C" func rask_io_error_text(err: i32) -> *u8
+extern "C" func rask_io_cstr_len(s: *u8) -> u64
+
 /// I/O error type — all I/O operations return T or IoError.
 public enum IoError {
     NotFound(string)
@@ -24,6 +29,42 @@ extend IoError {
             IoError.UnexpectedEof => return "unexpected end of file",
             IoError.Other(msg) => return msg,
         }
+    }
+
+    /// The error for whatever errno the last failed C call left behind.
+    ///
+    /// Call it immediately after the call that failed — anything in between
+    /// can overwrite errno.
+    ///
+    /// Variant and wording both match what the interpreter builds from Rust's
+    /// `std::io::Error`, so one failure reads the same on both backends. The
+    /// interpreter implements `fs.*` in Rust and never runs this; it's the
+    /// thing being matched, not a caller (#674).
+    public func last_os_error() -> IoError {
+        let code = unsafe rask_io_errno()
+        let ptr = unsafe rask_io_error_text(code)
+        let len = unsafe rask_io_cstr_len(ptr)
+        let msg = unsafe string.from_raw(ptr, len as usize)
+        let kind = unsafe rask_io_error_kind(code)
+        if kind == 0 {
+            return IoError.NotFound(msg)
+        }
+        if kind == 1 {
+            return IoError.PermissionDenied(msg)
+        }
+        if kind == 2 {
+            return IoError.AlreadyExists(msg)
+        }
+        if kind == 3 {
+            return IoError.BrokenPipe
+        }
+        if kind == 4 {
+            return IoError.ConnectionReset
+        }
+        if kind == 5 {
+            return IoError.TimedOut
+        }
+        return IoError.Other(msg)
     }
 }
 

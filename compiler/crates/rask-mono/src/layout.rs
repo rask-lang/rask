@@ -159,7 +159,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedNamed(name) if name.starts_with('*') => (8, 8),
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                "string" | "Path" => (16, 8),
+                // A `StringView` is a `RaskStr` that shares the source's buffer
+                // (std.strings/V1) — same 16 bytes as a string.
+                "string" | "Path" | "StringView" => (16, 8),
                 "bool" => (1, 1),
                 "i8" | "u8" => (1, 1),
                 "i16" | "u16" => (2, 2),
@@ -487,6 +489,46 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+    }
+}
+
+/// The layout for `Ordering`.
+///
+/// `Ordering` is registered by the compiler rather than declared in source, so
+/// no decl reaches `compute_enum_layout` for it. Without a layout the backends
+/// had no variant tags to read, every stage carried its own
+/// `enum_name == "Ordering"` branch, and `compare` gave up and handed back a
+/// bare integer (#729).
+///
+/// Built from `ORDERING_VARIANTS` so the variant list stays in one place, and
+/// sized through `type_size_align` rather than by hand, because a `u8` tag does
+/// not occupy one byte here: codegen gives every scalar an 8-byte slot, so
+/// `compute_enum_layout` gives a fieldless enum size 8, align 8. Written as
+/// `size: 1` this layout was the only enum in the program whose stack slot was
+/// narrower than the stores and loads aimed at it — `Ordering.Less` wrote eight
+/// bytes into a one-byte slot, a returned `Ordering` was copied one byte out of
+/// eight, and `==` read all eight back, so two equal values compared equal or
+/// not depending on what was next to them on the stack. It moved when a test
+/// was added above the one that used it.
+pub fn ordering_layout() -> EnumLayout {
+    let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
+    EnumLayout {
+        name: "Ordering".to_string(),
+        size: tag_size,
+        align: tag_align,
+        tag_ty: Type::U8,
+        tag_offset: 0,
+        variants: rask_stdlib::ORDERING_VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(tag, name)| VariantLayout {
+                name: (*name).to_string(),
+                tag: tag as u64,
+                payload_offset: tag_size,
+                payload_size: 0,
+                fields: Vec::new(),
+            })
+            .collect(),
     }
 }
 

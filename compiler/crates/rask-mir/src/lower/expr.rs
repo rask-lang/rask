@@ -222,6 +222,24 @@ impl<'a> MirLowerer<'a> {
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
+    /// The `compare` function for this Vec's element type, when it has one.
+    ///
+    /// `sort()` is `T: Comparable` (std.collections/SO3), so an element type
+    /// that defines or derives `compare` has to be sorted by it. Only
+    /// aggregates ask this question — a scalar or a string is sorted by the
+    /// type-specific runtime comparator, which is the same order its `compare`
+    /// would give and cheaper to reach.
+    fn vec_elem_compare_fn(&self, object: &Expr) -> Option<String> {
+        let elem = Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))?;
+        if !matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
+            return None;
+        }
+        let name = format!("{}_compare", self.mir_type_name(&elem)?);
+        self.func_sigs.contains_key(&name).then_some(name)
+    }
+
     /// Does this Vec receiver hold floats? Picks the sort that uses the float
     /// total order rather than an integer compare over the bit patterns.
     fn vec_elem_is_float(&self, object: &Expr) -> bool {
@@ -1658,7 +1676,7 @@ impl<'a> MirLowerer<'a> {
             // Index access
             ExprKind::Index { object, index } => {
                 // Range index → slice operation: vec[start..end] or string[start..end]
-                if let ExprKind::Range { start, end, .. } = &index.kind {
+                if let ExprKind::Range { start, end, inclusive } = &index.kind {
                     let (obj_op, obj_ty) = self.lower_expr(object)?;
 
                     // Determine if receiver is a string (MIR type, type checker, or local prefix)
@@ -1686,7 +1704,13 @@ impl<'a> MirLowerer<'a> {
                         // String slice: string_substr(s, start, end)
                         let end_op = if let Some(e) = end {
                             let (op, _) = self.lower_expr(e)?;
-                            op
+                            // `..=` includes its last index, and the runtime
+                            // takes a half-open pair. Dropping the flag here
+                            // made `s[0..=4]` four bytes on native and five on
+                            // the interpreter — the same `Range { .., .. }`
+                            // slip that made the E0324 message quote `s[0..4]`
+                            // for code that said `s[0..=4]` (#694).
+                            self.bump_inclusive_end(op, *inclusive)
                         } else {
                             let len_local = self.builder.alloc_temp(MirType::I64);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -1709,7 +1733,7 @@ impl<'a> MirLowerer<'a> {
                     // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
                         let (op, _) = self.lower_expr(e)?;
-                        op
+                        self.bump_inclusive_end(op, *inclusive)
                     } else {
                         let len_local = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -4614,6 +4638,19 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Built before the chain below: emitting the wrapper mutates the
+        // builder, and the arms are an expression.
+        let sort_comparator = if qualified_name == "Vec_sort"
+            && !self.vec_elem_is_string(object)
+            && !self.vec_elem_is_float(object)
+        {
+            self.vec_elem_compare_fn(object)
+                .and_then(|name| self.lower_compare_as_comparator(&name))
+                .map(|(op, _)| op)
+        } else {
+            None
+        };
+
         // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
         // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
         let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
@@ -4632,6 +4669,24 @@ impl<'a> MirLowerer<'a> {
             // The default sort compares elements as integers, which puts
             // -1.5 before -2.5 and a NaN wherever its sign bit lands.
             ("Vec_sort_f64".to_string(), all_args)
+        } else if qualified_name == "Vec_sort" && self.vec_elem_is_string(object) {
+            // Same problem, different type: as integers a string compares by
+            // its inline bytes or its heap pointer, so `["pear", "apple"]`
+            // came back in whatever order the allocator produced.
+            ("Vec_sort_str".to_string(), all_args)
+        } else if qualified_name == "Vec_sort" && sort_comparator.is_some() {
+            // An aggregate with a `compare`: sort by it. The default runtime
+            // comparator reads the first eight bytes, which for a struct is
+            // whichever field landed there — `sort()` on a `{name, rank}`
+            // ordered by name however the type's own `compare` was written.
+            //
+            // Going through `sort_by` also picks up its stable merge sort,
+            // which is what SO1 asks for and what matters here: a comparator
+            // that reads one field of several has ties, and ties are where
+            // stability is observable.
+            let mut args = all_args;
+            args.push(sort_comparator.expect("checked above"));
+            ("Vec_sort_by".to_string(), args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
@@ -5246,6 +5301,83 @@ impl<'a> MirLowerer<'a> {
         Ok(Some((MirOperand::Local(out), obj_ty.clone())))
     }
 
+    /// The half-open end index for a range's written end.
+    ///
+    /// `a..=b` includes `b`, while `string_substr` and `Vec_slice` both take a
+    /// half-open pair — so an inclusive range ends one past its last index.
+    fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
+        if !inclusive {
+            return end;
+        }
+        let bumped = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: bumped,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: end,
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        MirOperand::Local(bumped)
+    }
+
+    /// True when this MIR type is the `Ordering` enum.
+    pub(super) fn is_ordering_ty(&self, ty: &MirType) -> bool {
+        let MirType::Enum(EnumLayoutId { id, .. }) = ty else { return false };
+        self.ctx
+            .enum_layouts
+            .get(*id as usize)
+            .is_some_and(|l| l.name == "Ordering")
+    }
+
+    /// An `Ordering`'s tag, widened to `i64`.
+    ///
+    /// For the boundaries that still want a number rather than the value: the
+    /// C comparator ABI, and the assert-failure helpers.
+    pub(super) fn emit_ordering_tag_i64(&mut self, value: MirOperand) -> crate::LocalId {
+        let tag = self.emit_enum_tag(value);
+        let wide = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: wide,
+            rvalue: MirRValue::Cast {
+                value: MirOperand::Local(tag),
+                target_ty: MirType::I64,
+            },
+        }));
+        wide
+    }
+
+    /// Wrap a computed Ordering tag into an actual `Ordering` value.
+    ///
+    /// `compare` used to hand the tag back as a bare `i64`. Matching still
+    /// worked — the match lowering special-cased `Ordering` against a raw tag —
+    /// but nothing downstream knew the value was an enum, so `{a.compare(b)}`
+    /// formatted it as the integer it claimed to be and printed `0` for Less,
+    /// and a user's `extend Ordering with Displayable` was never consulted
+    /// (#729). Storing the tag into a properly laid out slot makes it the same
+    /// shape as any other fieldless enum value.
+    fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
+        let Some((id, layout)) = self.ctx.find_enum("Ordering") else {
+            // No layout registered — a bare context in a unit test. The raw tag
+            // is what this used to produce, so fall back rather than fail.
+            return (tag, MirType::I64);
+        };
+        let ty = MirType::Enum(EnumLayoutId::new(id, layout.size, layout.align));
+        let slot = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: 0,
+            value: tag,
+            // `None` — the value's natural width, which is what the enum
+            // literal path stores. A narrow store leaves the rest of the slot
+            // undefined, and structural `==` compares the whole slot: three
+            // asserts in a row passed in `main` and the third failed in a
+            // `test` block, purely on what the stack happened to hold.
+            store_size: None,
+        }));
+        (MirOperand::Local(slot), ty)
+    }
+
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
     fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
@@ -5290,7 +5422,9 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("f64_compare".to_string()),
                 args: vec![obj_op.clone(), rhs],
             }));
-            return Ok(Some((MirOperand::Local(result), MirType::I64)));
+            // `rask_f64_compare_total` already answers in tag values (0/1/2),
+            // unlike `string_compare`'s -1/0/1 — no shift here.
+            return Ok(Some(self.wrap_ordering(MirOperand::Local(result))));
         }
         let scalar = matches!(
             obj_ty,
@@ -5384,7 +5518,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(done_block);
-        Ok(Some((MirOperand::Local(result), MirType::I64)))
+        Ok(Some(self.wrap_ordering(MirOperand::Local(result))))
     }
 
     fn try_lower_string_compare(
@@ -5418,7 +5552,7 @@ impl<'a> MirLowerer<'a> {
                     right: MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL)),
                 },
             }));
-            return Ok(Some((MirOperand::Local(tag), MirType::I64)));
+            return Ok(Some(self.wrap_ordering(MirOperand::Local(tag))));
         }
         if is_string_obj && args.len() == 1 {
             let string_cmp_fn = match method.as_str() {

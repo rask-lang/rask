@@ -474,11 +474,68 @@ int32_t rask_libc_rename(const char *from, const char *to) { return rename(from,
 int32_t rask_libc_remove(const char *path) { return remove(path); }
 int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
 
+// ─── errno → IoError ──────────────────────────────────────────────
+//
+// The self-hosted `fs.*` functions used to throw errno away and hand back
+// `IoError.Other("could not open file")`, while the interpreter built the
+// real variant from Rust's std::io::Error — so one failure read two
+// different ways depending on the backend (#674). These three let the Rask
+// side rebuild what the interpreter produces. The interpreter is the
+// reference, so the wording below matches its `std::io::Error` output.
+
+#include <errno.h>
+
+// `errno` is a macro over a thread-local, so Rask can't name it directly.
+int32_t rask_io_errno(void) { return errno; }
+
+// IoError variant index for an errno, in stdlib/io.rk declaration order.
+// The E* values differ across platforms, so the mapping lives on this side
+// rather than as numbers hardcoded in Rask.
+int32_t rask_io_error_kind(int32_t err) {
+    switch (err) {
+        case ENOENT: return 0;                  // NotFound
+        case EACCES: case EPERM: return 1;      // PermissionDenied
+        case EEXIST: return 2;                  // AlreadyExists
+        case EPIPE: return 3;                   // BrokenPipe
+        case ECONNRESET: return 4;              // ConnectionReset
+        case ETIMEDOUT: return 5;               // TimedOut
+        default: return 7;                      // Other
+    }
+}
+
+// "No such file or directory (os error 2)" — the exact shape Rust's
+// std::io::Error prints, so both backends say the same thing. The buffer is
+// thread-local and the caller copies out of it immediately via string.from_raw.
+const char *rask_io_error_text(int32_t err) {
+    static _Thread_local char buf[256];
+    snprintf(buf, sizeof(buf), "%s (os error %d)", strerror(err), err);
+    return buf;
+}
+
+// strlen under a name Rask can declare without clashing with fs.rk's own
+// `strlen` extern — one C symbol may only be declared once across stdlib.
+uint64_t rask_io_cstr_len(const char *s) { return s ? (uint64_t)strlen(s) : 0; }
+
 #include <dirent.h>
 // Extract name from dirent (Rask can't access C struct fields)
 const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_name; }
 
 // Stat helpers — return individual fields so Rask doesn't need struct access
+// One stat, then read the fields off it. Rask can't hold a `struct stat`, and
+// the three separate helpers below are three syscalls on a file that can change
+// between them — plus none of them can tell "size 0" from "no such file". These
+// report failure once and leave errno set for `IoError.last_os_error()` (#674).
+static __thread struct stat rask_stat_buf;
+
+int32_t rask_stat_load(const char *path) {
+    return stat(path, &rask_stat_buf) == 0 ? 0 : -1;
+}
+// Unsigned: st_size is non-negative after a successful stat, and `Metadata.size`
+// is a u64 — `i64 as u64` is a sign reinterpret the cast rules reject (CV3).
+uint64_t rask_stat_loaded_size(void) { return (uint64_t)rask_stat_buf.st_size; }
+int64_t rask_stat_loaded_mtime(void) { return (int64_t)rask_stat_buf.st_mtime; }
+int64_t rask_stat_loaded_atime(void) { return (int64_t)rask_stat_buf.st_atime; }
+
 int64_t rask_stat_size(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return -1;
@@ -1092,45 +1149,12 @@ void rask_net_local_addr(RaskStr *out, int64_t fd) {
     rask_string_from(out, buf);
 }
 
-// Get filesystem metadata for a path. Returns pointer to a
-// [size(8B), accessed(8B), modified(8B)] struct, or NULL on error.
-int64_t rask_fs_metadata(int64_t path_ptr) {
-    const RaskStr *p = (const RaskStr *)(intptr_t)path_ptr;
-    const char *path = rask_string_ptr(p);
-    int64_t len = rask_string_len(p);
-    char *cpath = (char *)rask_alloc(len + 1);
-    memcpy(cpath, path, (size_t)len);
-    cpath[len] = '\0';
+// `fs.metadata` is implemented in Rask now (stdlib/fs.rk). The C version
+// returned NULL on failure, which codegen handed back as a valid `Metadata`,
+// so the `catch` never ran and reading a field went through null — a `T or E`
+// needs its error built on the Rask side (#674). `rask_stat_load` and the
+// `rask_stat_loaded_*` readers above are what replaced it.
 
-    struct stat st;
-    if (stat(cpath, &st) < 0) {
-        rask_free(cpath);
-        return 0;
-    }
-    rask_free(cpath);
-
-    int64_t *meta = (int64_t *)rask_alloc(24);
-    meta[0] = (int64_t)st.st_size;
-    meta[1] = (int64_t)st.st_atime;
-    meta[2] = (int64_t)st.st_mtime;
-    return (int64_t)(intptr_t)meta;
-}
-
-// Metadata field accessors — meta_ptr points to [size, accessed, modified].
-int64_t rask_metadata_size(int64_t meta_ptr) {
-    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
-    return meta ? meta[0] : 0;
-}
-
-int64_t rask_metadata_accessed(int64_t meta_ptr) {
-    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
-    return meta ? meta[1] : 0;
-}
-
-int64_t rask_metadata_modified(int64_t meta_ptr) {
-    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
-    return meta ? meta[2] : 0;
-}
 
 // ── Args parsing ───────────────────────────────────────────────
 // Parse raw CLI args into an Args struct:

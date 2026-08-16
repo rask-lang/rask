@@ -3,6 +3,13 @@
 
 enum Suit { Clubs, Diamonds, Hearts, Spades }
 
+// No `compare` written here — the checker derives one (CO1) and derive.rs
+// generates its body, comparing field by field in declaration order (CO3).
+struct Version {
+    public major: i64
+    public minor: i64
+}
+
 test "ORD1 — compare on integers" {
     assert 1.compare(2) == Ordering.Less
     assert 2.compare(1) == Ordering.Greater
@@ -56,4 +63,27 @@ test "ORD1 — matching the result picks the right arm" {
         Ordering.Greater => seen = "greater",
     }
     assert seen == "greater"
+}
+
+// A derived `compare` used to be generated as `-1 / 0 / 1` while the checker
+// told every caller it returned `Ordering`. Anything that believed the
+// declaration read a tag out of the integer: this match segfaulted natively,
+// and the interpreter's `sort()` saw a value that was not an Ordering and
+// quietly left the vector in arrival order. One shape now — the derived body
+// answers with `Ordering` like a written one does.
+test "type.enums/CO3 — a derived compare answers with an Ordering too" {
+    let lo = Version { major: 1, minor: 2 }
+    let hi = Version { major: 1, minor: 9 }
+
+    assert lo.compare(hi) == Ordering.Less
+    assert hi.compare(lo) == Ordering.Greater
+    assert lo.compare(lo) == Ordering.Equal
+
+    mut seen = ""
+    match lo.compare(hi) {
+        Ordering.Less => seen = "less",
+        Ordering.Equal => seen = "equal",
+        Ordering.Greater => seen = "greater",
+    }
+    assert seen == "less"
 }

@@ -118,7 +118,7 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
 
     // fs.copy returns void — read the copied size back off disk for the report
     let meta = fs.metadata(opts.dest) catch e => return CopyError.WriteError(e)
-    return meta.size()
+    return meta.size
 }
 
 func format_size(bytes: u64) -> string {

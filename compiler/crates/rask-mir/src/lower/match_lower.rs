@@ -271,14 +271,12 @@ impl<'a> MirLowerer<'a> {
         } else {
             false
         };
-        // An `Ordering` has no boxed form: `compare` hands back the tag itself,
-        // and nothing ever allocates one. Reading a tag out of that would
-        // dereference the value 0, 1 or 2 as an address (#496).
-        let is_ordering_match = arms.iter().any(|arm| {
-            pattern_name(&arm.pattern).is_some_and(|n| n.starts_with("Ordering."))
-        });
-        let has_tag =
-            (is_enum || is_result_or_option || patterns_imply_enum || is_niche) && !is_ordering_match;
+        // `Ordering` used to be exempt here: it had no layout, `compare` handed
+        // back the bare tag, and reading a tag out of that would have
+        // dereferenced 0, 1 or 2 as an address (#496). It has a layout now and
+        // `compare` allocates a real value, so it takes the ordinary enum path
+        // like anything else (#729).
+        let has_tag = is_enum || is_result_or_option || patterns_imply_enum || is_niche;
 
         // Left as Options. A match on a plain enum or an integer has no ok/err
         // payload at all, so resolving one here would ask for a type that

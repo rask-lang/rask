@@ -278,7 +278,7 @@ public struct StringView { }
 extend string {
     /// Storable zero-copy view. On a slice, captures the slice's range;
     /// on a whole string, views all of it. Keeps the source buffer alive.
-    @unimplemented
+    @native("rask_string_clone")
     public func view(self) -> StringView { }
 }
 
@@ -292,11 +292,11 @@ extend StringView {
     public func is_empty(self) -> bool { }
 
     /// Copy bytes into an independent string — releases the source buffer.
-    @native
+    @native("rask_string_unshare")
     public func to_string(self) -> string { }
 
     /// Sub-view. Same as slicing then .view() — references the original buffer.
-    @unimplemented
+    @native("rask_string_clone")
     public func view(self) -> StringView { }
 
     /// Hash the view contents.

@@ -47,8 +47,32 @@ impl SourceMap {
         (self.files.len() - 1) as u16
     }
 
+    /// Register a file at a specific id, growing the table if needed.
+    ///
+    /// The stdlib's stubs are parsed separately from the user's package, so
+    /// their ids can't come from the same running counter. They take a reserved
+    /// range instead (`rask_stdlib::STDLIB_FILE_ID_BASE`), and this is how a
+    /// sparse table gets filled.
+    pub fn insert_at(&mut self, file_id: u16, name: impl Into<String>, text: impl Into<String>) {
+        let idx = file_id as usize;
+        while self.files.len() <= idx {
+            self.files.push(SourceFile {
+                name: String::new(),
+                text: String::new(),
+                line_map: LineMap::new(""),
+            });
+        }
+        let text = text.into();
+        let line_map = LineMap::new(&text);
+        self.files[idx] = SourceFile { name: name.into(), text, line_map };
+    }
+
+    /// The file for an id, or `None` when the id was never registered — which
+    /// includes the placeholder rows `insert_at` leaves behind.
     pub fn get(&self, file_id: u16) -> Option<&SourceFile> {
-        self.files.get(file_id as usize)
+        self.files
+            .get(file_id as usize)
+            .filter(|f| !f.name.is_empty())
     }
 
     pub fn is_empty(&self) -> bool {

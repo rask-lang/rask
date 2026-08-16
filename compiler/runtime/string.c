@@ -444,6 +444,20 @@ void rask_string_to_uppercase(RaskStr *out, const RaskStr *s) {
     rask_realloc(buf, len, 0);
 }
 
+// StringView.to_string() — std.strings/V2, "copies out and releases the pin".
+//
+// A view shares the source's heap header, so handing back another reference
+// would keep the whole source buffer alive — the exact cost V2 says
+// `.to_string()` is there to escape. This allocates its own buffer instead.
+// An SSO view has no header to release and str_make just re-inlines the bytes.
+//
+// (`view()` itself needs no function here: it is a 16-byte copy plus a refcount
+// increment, which is what codegen's StringClone argument adapter already
+// emits.)
+void rask_string_unshare(RaskStr *out, const RaskStr *s) {
+    str_make(out, str_data(s), str_len(s));
+}
+
 void rask_string_trim(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }

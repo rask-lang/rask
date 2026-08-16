@@ -1,0 +1,202 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two sort bugs that were invisible on the inputs people usually try.
+//
+// `Vec<string>.sort()` compared each element's first 8 bytes as an int64, which
+// for a 16-byte RaskStr is inline characters or a heap pointer — so the result
+// depended on the allocator.
+//
+// `sort_by`'s comparator crosses a C ABI that reads the return as a sign, but an
+// `Ordering` crosses it as its tag (Less 0, Equal 1, Greater 2). Reading the tag
+// as a sign makes Less look like "equal" and Equal look like "greater". That is
+// monotone in the true ordering, so ascending sorts still came out ascending —
+// which is why it hid. It shows up the moment a comparator answers Equal.
+
+struct Tagged {
+    public key: i64
+    public label: string
+}
+
+struct Scored {
+    public score: i64
+    public seq: i64
+}
+
+// A user-written `compare` orders by rank. The name field is deliberately
+// first and deliberately ordered the other way, so byte-comparing the element
+// or falling back to the derived field order both give the reverse.
+struct Ranked {
+    public name: string
+    public rank: i64
+}
+
+extend Ranked {
+    func compare(self, other: Ranked) -> Ordering {
+        return self.rank.compare(other.rank)
+    }
+}
+
+
+test "stdlib.collections — sorting a Vec<string> is lexicographic, not by bytes" {
+    mut short = Vec.new()
+    short.push("pear")
+    short.push("apple")
+    short.push("fig")
+    short.push("banana")
+    short.sort()
+    assert short[0] == "apple"
+    assert short[1] == "banana"
+    assert short[2] == "fig"
+    assert short[3] == "pear"
+
+    // >15 bytes, so these are heap strings and the raw compare read pointers.
+    mut long = Vec.new()
+    long.push("zzzzzzzzzzzzzzzzzzzzzzzz")
+    long.push("aaaaaaaaaaaaaaaaaaaaaaaa")
+    long.push("mmmmmmmmmmmmmmmmmmmmmmmm")
+    long.sort()
+    assert long[0] == "aaaaaaaaaaaaaaaaaaaaaaaa"
+    assert long[1] == "mmmmmmmmmmmmmmmmmmmmmmmm"
+    assert long[2] == "zzzzzzzzzzzzzzzzzzzzzzzz"
+
+    // A shared prefix is broken by length, same as `<`.
+    mut prefix = Vec.new()
+    prefix.push("abc")
+    prefix.push("ab")
+    prefix.sort()
+    assert prefix[0] == "ab"
+    assert prefix[1] == "abc"
+}
+
+// Every pair compares Equal, so nothing has any reason to move. Native used to
+// reverse the vector outright: Equal reached the adapter as `1`, which reads as
+// "greater", so every comparison asked for a swap.
+test "stdlib.collections — a comparator that answers Equal leaves the order alone" {
+    mut v = Vec.new()
+    v.push(Tagged { key: 1, label: "a" })
+    v.push(Tagged { key: 1, label: "b" })
+    v.push(Tagged { key: 1, label: "c" })
+    v.push(Tagged { key: 1, label: "d" })
+
+    v.sort_by(|x, y| x.key.compare(y.key))
+
+    mut seen = ""
+    for t in v {
+        seen = "{seen}{t.label}"
+    }
+    assert seen == "abcd"
+}
+
+test "stdlib.collections — a comparator still orders ascending and descending" {
+    mut v = Vec.new()
+    v.push(30)
+    v.push(10)
+    v.push(20)
+
+    v.sort_by(|a, b| a.compare(b))
+    assert v[0] == 10
+    assert v[1] == 20
+    assert v[2] == 30
+
+    v.sort_by(|a, b| b.compare(a))
+    assert v[0] == 30
+    assert v[1] == 20
+    assert v[2] == 10
+}
+
+// A run with duplicates and a reversed input — the shape where a comparator
+// that can't say "less" would fall apart if the mapping were merely lucky.
+test "stdlib.collections — a comparator sorts a reversed run with duplicates" {
+    mut v = Vec.new()
+    mut i = 0
+    while i < 24 {
+        v.push((24 - i) / 2)
+        i = i + 1
+    }
+    v.sort_by(|a, b| a.compare(b))
+
+    mut ordered = true
+    mut j = 1
+    while j < v.len() {
+        if v[j] < v[j - 1] {
+            ordered = false
+        }
+        j = j + 1
+    }
+    assert ordered
+    assert v[0] == 0
+    assert v[23] == 12
+}
+
+// std.collections/SO1 says sorting is stable. Native handed the work to qsort,
+// which promises nothing: glibc's happens to be merge-based and stable, musl's
+// is smoothsort and isn't, and glibc itself falls back to an in-place quicksort
+// when it can't allocate. So "stable" held or didn't depending on the libc and
+// the memory situation, while the interpreter (Rust's stable sort_by) always
+// held. It's a merge sort on both sides now.
+test "std.collections/SO1 — equal elements keep their relative order" {
+    mut v = Vec.new()
+    mut i = 0
+    while i < 60 {
+        v.push(Scored { score: i % 3, seq: i })
+        i = i + 1
+    }
+
+    v.sort_by(|x, y| x.score.compare(y.score))
+
+    mut stable = true
+    mut j = 1
+    while j < v.len() {
+        if v[j].score == v[j - 1].score {
+            if v[j].seq < v[j - 1].seq {
+                stable = false
+            }
+        }
+        j = j + 1
+    }
+    assert stable
+    assert v[0].score == 0
+    assert v[59].score == 2
+}
+
+// std.collections/SO3 says `sort()` is `T: Comparable`, so the type's own
+// `compare` decides the order. It didn't: the runtime comparator read each
+// element's first eight bytes, which for a struct is whichever field landed
+// there. Both backends sorted these by `name` and ignored the `compare` that
+// says `rank`.
+test "std.collections/SO3 — sort() uses the type's own compare" {
+    mut v = Vec.new()
+    v.push(Ranked { name: "aaa", rank: 3 })
+    v.push(Ranked { name: "bbb", rank: 2 })
+    v.push(Ranked { name: "ccc", rank: 1 })
+
+    v.sort()
+
+    assert v[0].rank == 1
+    assert v[1].rank == 2
+    assert v[2].rank == 3
+}
+
+// The derived case (CO3, lexicographic by field). It used to depend on the
+// subcommand: `rask test` skipped the pass that generates derived bodies, so
+// `Pair_compare` had a signature and no function. Native codegen failed
+// outright once `sort()` started asking for it; before that, both backends
+// quietly fell back to comparing bytes.
+struct Pair {
+    public a: i64
+    public b: i64
+}
+
+test "type.enums/CO3 — sort() uses a derived compare, field by field" {
+    mut v = Vec.new()
+    v.push(Pair { a: 2, b: 1 })
+    v.push(Pair { a: 1, b: 9 })
+    v.push(Pair { a: 1, b: 3 })
+
+    v.sort()
+
+    assert v[0].a == 1
+    assert v[0].b == 3
+    assert v[1].a == 1
+    assert v[1].b == 9
+    assert v[2].a == 2
+}

@@ -99,6 +99,12 @@ pub enum TypeConstraint {
         value: Type,
         default: Type,
         result: Type,
+        /// The two operands' own spans. `??` applied to something that can't
+        /// be missing has to underline which half is the problem, and the
+        /// whole-expression span can't say "this side always has a value,
+        /// so that side is dead" (#662).
+        value_span: Span,
+        default_span: Span,
         span: Span,
     },
     /// OPT32: `take <place>` — the place has to be a `T?`, and the expression

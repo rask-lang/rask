@@ -42,6 +42,11 @@ impl Interpreter {
                 s.lock().unwrap().push_str(&other);
                 Ok(Value::Unit)
             }
+            // std.strings/V5. A view shares the source's buffer and holds a
+            // count on it — here that count is the `Arc`, so the view is a
+            // second handle on the same storage. Native reaches the same
+            // semantics with a 16-byte copy plus a refcount bump (V1).
+            "view" => Ok(Value::String(Arc::clone(s))),
             "trim" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim().to_string()))))
             }

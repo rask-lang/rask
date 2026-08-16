@@ -86,6 +86,80 @@ impl<'a> MirLowerer<'a> {
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
 
+    /// Wrap a type's `compare` into a comparator closure for `sort_by`.
+    ///
+    /// `sort()` is defined as `T: Comparable` (std.collections/SO3), so an
+    /// element type that has a `compare` has to be sorted by it. This is the
+    /// bridge: the sort runtime takes a closure, `compare` is a plain function,
+    /// and the two disagree about the answer's shape — `compare` produces an
+    /// `Ordering` while the C comparator ABI reads an integer. Same conversion
+    /// the closure path does, for the same reason.
+    ///
+    /// Returns `None` when the type has no `compare`, or has one that doesn't
+    /// answer with an `Ordering`, leaving the caller on the byte-comparing
+    /// default. Bailing out sorts by the wrong key; guessing at an unknown
+    /// return shape reads a tag out of whatever it is, which crashes.
+    pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
+        let sig = self.func_sigs.get(name)?;
+        let param_ty_strs = sig.param_ty_strs.clone();
+        let ret_ty = sig.ret_ty.clone();
+        if param_ty_strs.len() != 2 || !self.is_ordering_ty(&ret_ty) {
+            return None;
+        }
+
+        let wrapper_name = format!("{}__cmpval_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        {
+            let mut wb = BlockBuilder::new(wrapper_name.clone(), MirType::I64);
+            wb.add_param("__env".to_string(), MirType::Ptr);
+
+            let mut args = Vec::new();
+            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+                let ty = ty_str
+                    .as_deref()
+                    .map(|s| self.ctx.resolve_type_str(s))
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:cmp_param"));
+                let id = wb.add_param(format!("__c{}", i), ty);
+                args.push(MirOperand::Local(id));
+            }
+
+            let result = wb.alloc_temp(ret_ty.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+
+            // `compare` answers with an `Ordering`; the C comparator ABI reads
+            // an integer. Hand over the tag — Less 0, Equal 1, Greater 2 — and
+            // the adapter's `tag - 1` turns it back into a sign.
+            let saved = std::mem::replace(&mut self.builder, wb);
+            let normalized = self.emit_ordering_tag_i64(MirOperand::Local(result));
+            let mut wb = std::mem::replace(&mut self.builder, saved);
+            wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(MirOperand::Local(normalized)),
+            }));
+
+            self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
+                ret_ty: MirType::I64,
+                scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            });
+            self.synthesized_functions.push(wb.finish());
+        }
+
+        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: result_local,
+            func_name: wrapper_name,
+            captures: Vec::new(),
+            heap: false,
+        }));
+        Some((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///
@@ -165,6 +239,11 @@ impl<'a> MirLowerer<'a> {
             } else {
                 crate::fallback::i64_fallback("lower/closures:closure_ret")
             });
+        // A comparator closure hands its answer to C code that reads a plain
+        // integer — `rask_vec_sort_by`'s adapter tests the return against zero.
+        // Returning an aggregate would return its address instead (#729).
+        let returns_ordering = self.is_ordering_ty(&closure_ret);
+        let closure_ret = if returns_ordering { MirType::I64 } else { closure_ret };
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
@@ -221,7 +300,17 @@ impl<'a> MirLowerer<'a> {
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
 
-            let body_result = self.lower_expr(body);
+            // The tag read has to be emitted while the closure's own builder is
+            // still installed, so it lands inside the closure body. An explicit
+            // `return` in the body is converted by `terminate_return` instead.
+            let body_result = self.lower_expr(body).map(|(op, ty)| {
+                if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
+                    let tag = self.emit_ordering_tag_i64(op);
+                    (MirOperand::Local(tag), MirType::I64)
+                } else {
+                    (op, ty)
+                }
+            });
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;

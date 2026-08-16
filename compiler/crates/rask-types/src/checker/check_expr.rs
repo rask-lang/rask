@@ -3,7 +3,7 @@
 
 use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
-use rask_ast::stmt::StmtKind;
+use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
@@ -85,6 +85,47 @@ fn parse_type_arg(s: &str) -> Type {
 }
 
 impl TypeChecker {
+    /// Walk a block body and return the type it produces.
+    ///
+    /// Every statement is walked exactly once. A trailing expression statement
+    /// is walked in *value* position (`infer_expr`) instead of statement
+    /// position (`check_stmt`) — never both. Doing both is what printed the
+    /// same error twice at the same span: once per walk, and four times at two
+    /// levels of nesting, since each block's last statement is re-walked by its
+    /// parent (#695).
+    ///
+    /// The two walks were never interchangeable. `check_stmt` sets
+    /// `in_stmt_expr`, which makes a trailing `if` return unit and leaves its
+    /// branches unconstrained. Value position is the right one for a block's
+    /// result, so that's the one kept — plus the two things `check_stmt` would
+    /// have done afterwards for an expression statement.
+    pub(super) fn check_block_body(&mut self, body: &[Stmt]) -> Type {
+        let value_stmt_idx = match body.last() {
+            Some(last) if matches!(last.kind, StmtKind::Expr(_)) => Some(body.len() - 1),
+            _ => None,
+        };
+        for (i, stmt) in body.iter().enumerate() {
+            if Some(i) == value_stmt_idx {
+                break;
+            }
+            self.check_stmt(stmt);
+            self.solve_constraints();
+        }
+        match body.last() {
+            Some(last) => match &last.kind {
+                StmtKind::Expr(e) => {
+                    let ty = self.infer_expr(e);
+                    self.check_bare_sync_access(e);
+                    self.clear_expression_borrows();
+                    self.solve_constraints();
+                    ty
+                }
+                StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => Type::Never,
+                _ => Type::Unit,
+            },
+            None => Type::Unit,
+        }
+    }
     /// Infer expression type with an expected type hint for unsuffixed literals.
     /// Falls through to normal inference for non-literal or suffixed expressions.
     pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
@@ -607,47 +648,7 @@ impl TypeChecker {
 
             ExprKind::Block(stmts) => {
                 self.push_scope();
-                // The last statement is the block's value, so when it's an
-                // expression it gets inferred below in value position. Running
-                // check_stmt over it here as well walked it a second time, and
-                // every diagnostic inside it was reported once per walk — twice
-                // for one nesting level, four times for two, since each block's
-                // last statement is itself re-walked by its parent (#695).
-                //
-                // The two walks were never interchangeable: check_stmt sets
-                // in_stmt_expr, which makes a trailing `if` return unit and
-                // leaves its branches unconstrained. Value position is the one
-                // that's right for a block's result, so that's the one kept.
-                let value_stmt_idx = match stmts.last() {
-                    Some(last) if matches!(last.kind, StmtKind::Expr(_)) => Some(stmts.len() - 1),
-                    _ => None,
-                };
-                for (i, stmt) in stmts.iter().enumerate() {
-                    if Some(i) == value_stmt_idx {
-                        break;
-                    }
-                    self.check_stmt(stmt);
-                    self.solve_constraints();
-                }
-                let result = if let Some(last) = stmts.last() {
-                    match &last.kind {
-                        StmtKind::Expr(e) => {
-                            let ty = self.infer_expr(e);
-                            // The rest of what check_stmt would have done for an
-                            // expression statement.
-                            self.check_bare_sync_access(e);
-                            self.clear_expression_borrows();
-                            self.solve_constraints();
-                            ty
-                        }
-                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
-                            Type::Never
-                        }
-                        _ => Type::Unit,
-                    }
-                } else {
-                    Type::Unit
-                };
+                let result = self.check_block_body(stmts);
                 self.pop_scope();
                 result
             }
@@ -1361,44 +1362,17 @@ impl TypeChecker {
             ExprKind::Unsafe { body } => {
                 let was_unsafe = self.in_unsafe;
                 self.in_unsafe = true;
-                // The trailing expression is inferred once, not checked and
-                // then inferred again. Inferring it twice built two separate
-                // sets of type vars for the same call and handed the caller the
-                // second set, which nothing ever solved — so `let v = unsafe
-                // p.as_ptr()` came back "type is still open here" while the
-                // block form of the same code was fine (#696).
-                let (init, last) = match body.split_last() {
-                    Some((last, init)) => (init, Some(last)),
-                    None => (&body[..], None),
-                };
-                for stmt in init {
-                    self.check_stmt(stmt);
-                }
-                let result = match last {
-                    Some(last) => match &last.kind {
-                        StmtKind::Expr(e) => self.infer_expr(e),
-                        _ => {
-                            self.check_stmt(last);
-                            Type::Unit
-                        }
-                    },
-                    None => Type::Unit,
-                };
+                // Also #696: inferring the trailing expression twice built two
+                // sets of type vars for the same call and handed back the
+                // second, which nothing solved — `let v = unsafe p.as_ptr()`
+                // came out "type is still open here". The shared helper walks
+                // it once, same as every other block kind.
+                let result = self.check_block_body(body);
                 self.in_unsafe = was_unsafe;
                 result
             }
 
-            ExprKind::Comptime { body } => {
-                for stmt in body {
-                    self.check_stmt(stmt);
-                }
-                if let Some(last) = body.last() {
-                    if let StmtKind::Expr(e) = &last.kind {
-                        return self.infer_expr(e);
-                    }
-                }
-                Type::Unit
-            }
+            ExprKind::Comptime { body } => self.check_block_body(body),
 
             ExprKind::Spawn { body } => {
                 // CC1: direct spawn must be lexically inside a `using Multitasking { }` block
@@ -1555,41 +1529,29 @@ impl TypeChecker {
                         self.define_local(binding.name.clone(), elem_ty);
                     }
                 }
-                for stmt in body {
-                    self.check_stmt(stmt);
-                }
-                let result = if let Some(last) = body.last() {
-                    match &last.kind {
-                        StmtKind::Expr(e) => {
-                            let ty = self.infer_expr(e);
-                            // A guard is access to the box's payload for this
-                            // block only, not a value (mem.boxes, "Why scoped
-                            // access, not guards") — the bare identifier can't
-                            // be the block's own produced value when the
-                            // payload is a struct/enum. A field read or a
-                            // method call already produces an independent
-                            // value, so only the plain identifier is checked.
-                            if let ExprKind::Ident(name) = &e.kind {
-                                if let Some(elem_ty) = guard_elem_types.get(name) {
-                                    if let Some(type_name) = self.guard_escape_type_name(elem_ty) {
-                                        self.errors.push(TypeError::WithGuardEscapes {
-                                            name: name.clone(),
-                                            type_name,
-                                            span: e.span,
-                                        });
-                                    }
+                // A guard is access to the box's payload for this block only,
+                // not a value (mem.boxes, "Why scoped access, not guards") —
+                // the bare identifier can't be the block's own produced value
+                // when the payload is a struct/enum. A field read or a method
+                // call already produces an independent value, so only the
+                // plain identifier is checked. Reads `e` without walking it,
+                // so it stays outside the single walk below.
+                if let Some(last) = body.last() {
+                    if let StmtKind::Expr(e) = &last.kind {
+                        if let ExprKind::Ident(name) = &e.kind {
+                            if let Some(elem_ty) = guard_elem_types.get(name) {
+                                if let Some(type_name) = self.guard_escape_type_name(elem_ty) {
+                                    self.errors.push(TypeError::WithGuardEscapes {
+                                        name: name.clone(),
+                                        type_name,
+                                        span: e.span,
+                                    });
                                 }
                             }
-                            ty
                         }
-                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
-                            Type::Never
-                        }
-                        _ => Type::Unit,
                     }
-                } else {
-                    Type::Unit
-                };
+                }
+                let result = self.check_block_body(body);
                 self.pop_scope();
                 result
             }
@@ -1644,6 +1606,25 @@ impl TypeChecker {
                 }
 
                 let def_ty = self.infer_expr(default);
+
+                // ER12 from the other side: `??` supplies the value for a
+                // miss, so an operand that can't miss leaves the fallback
+                // dead. Reported here, while the type is already concrete,
+                // rather than left to the solver — its unify against a
+                // synthesized `T or _` blamed a shape the program never had.
+                // Handing back the operand's own type also keeps the binding
+                // typed, so the second error about the binding stops (#662).
+                if !self.coalesce_operand_can_be_absent(&resolved_val) {
+                    self.errors.push(TypeError::CoalesceOnNonOptional {
+                        found: resolved_val.clone(),
+                        from_index: self.coalesce_index_operands.contains(&expr.id),
+                        value_span: value.span,
+                        default_span: default.span,
+                        span: expr.span,
+                    });
+                    return resolved_val;
+                }
+
                 // Which of ER14a's three cases applies turns on the right
                 // side's shape, and a method-call return type often isn't
                 // known yet. Hand the whole decision to the solver.
@@ -1653,6 +1634,8 @@ impl TypeChecker {
                     value: val_ty,
                     default: def_ty,
                     result: result.clone(),
+                    value_span: value.span,
+                    default_span: default.span,
                     span: expr.span,
                 });
                 result
