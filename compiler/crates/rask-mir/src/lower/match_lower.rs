@@ -377,7 +377,12 @@ impl<'a> MirLowerer<'a> {
                         let tag = self.pattern_is_err_side(name, &scrutinee_ty) as u64;
                         cases.push((tag, arm_blocks[i]));
                     } else if has_tag && is_variant_name(name) {
-                        cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
+                        // Unqualified: the scrutinee's own enum decides, not
+                        // whichever layout happens to declare the name first.
+                        let tag = self
+                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
+                            .unwrap_or_else(|| self.variant_tag(name));
+                        cases.push((tag as u64, arm_blocks[i]));
                     } else if !default_claimed {
                         // A plain binding pattern is a catch-all too.
                         default_block = arm_blocks[i];
@@ -388,7 +393,10 @@ impl<'a> MirLowerer<'a> {
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
                     } else if has_tag {
-                        cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
+                        let tag = self
+                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
+                            .unwrap_or_else(|| self.variant_tag(name));
+                        cases.push((tag as u64, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }

@@ -3063,12 +3063,16 @@ impl<'a> MirLowerer<'a> {
                         return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
                     }
                 }
-                self.variant_tag(name)
+                self.variant_tag_in_scrutinee(name, val_ty)
+                    .unwrap_or_else(|| self.variant_tag(name))
             }
             Pattern::Ident(_) => 0,
             Pattern::TypePat { ty_name, .. } => {
                 if self.pattern_is_err_side(ty_name, val_ty) { 1 } else { 0 }
             }
+            Pattern::Constructor { name, .. } => self
+                .variant_tag_in_scrutinee(name, val_ty)
+                .unwrap_or_else(|| self.variant_tag(name)),
             _ => self.pattern_tag(pattern),
         }
     }
@@ -3115,6 +3119,28 @@ impl<'a> MirLowerer<'a> {
     /// When the qualifier is there it also pins down which enum to look in,
     /// which matters as soon as two enums share a variant name.
     fn variant_tag(&self, name: &str) -> i64 {
+        self.variant_tag_impl(name)
+    }
+
+    /// The tag `name` carries inside the scrutinee's own enum, when the
+    /// scrutinee is an enum that has such a variant.
+    ///
+    /// Without a qualifier `variant_tag` scans every layout and takes the first
+    /// hit, so an unqualified arm loses the name to whichever enum was
+    /// registered first — the stdlib included. `enum Top { Io(Inner) }` matched
+    /// with `Io(e) => …` compared against `HttpError.Io`'s tag from
+    /// `stdlib/http.rk`, no arm matched, and the match trapped (SIGILL). The
+    /// value being matched knows its own enum; ask it first.
+    pub(crate) fn variant_tag_in_scrutinee(&self, name: &str, val_ty: &MirType) -> Option<i64> {
+        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = val_ty else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*id as usize)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        layout.variants.iter().find(|v| v.name == bare).map(|v| v.tag as i64)
+    }
+
+    fn variant_tag_impl(&self, name: &str) -> i64 {
         // Well-known built-in variant tags
         match name {
             "Some" | "Ok" => 0,
