@@ -245,10 +245,11 @@ impl TypeChecker {
                     // method/field constraints are solved, so we know if the
                     // return expression is already a Result or needs wrapping.
                     // Return position permits the full ER9 wrap.
-                    self.coerce_into(
+                    self.coerce_into_node(
                         CoercionSite::Return,
                         ret_ty,
                         expected.clone(),
+                        value.as_ref().map(|e| e.id),
                         stmt.span,
                     );
                 }

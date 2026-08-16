@@ -235,8 +235,9 @@ impl TypeChecker {
                 value,
                 target,
                 site,
+                value_node,
                 span,
-            } => self.resolve_coercion(value, target, site, span),
+            } => self.resolve_coercion(value, target, site, value_node, span),
             TypeConstraint::TypePatternMatches {
                 scrutinee,
                 narrow_ty,
@@ -647,6 +648,7 @@ impl TypeChecker {
             arg_ty.clone(),
             param_ty.clone(),
             CoercionSite::Argument,
+            None,
             span,
         )
     }
@@ -671,6 +673,7 @@ impl TypeChecker {
         ret_ty: Type,
         expected: Type,
         site: CoercionSite,
+        value_node: Option<rask_ast::NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
@@ -704,7 +707,7 @@ impl TypeChecker {
                     && !matches!(ret_now, Type::Var(_))
                     && (ret_now == inner || !ret_now.is_option());
                 if widens {
-                    return self.resolve_coercion(ret_ty, *ok.clone(), site, span);
+                    return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                 }
             }
             match &resolved_ret {
@@ -750,6 +753,7 @@ impl TypeChecker {
                         value: ret_ty,
                         target: expected,
                         site,
+                        value_node,
                         span,
                     });
                     Ok(false)
@@ -787,6 +791,25 @@ impl TypeChecker {
                         }
                         other => other == &resolved_ret,
                     };
+                    // ER32 again, from the other side: deciding the branch is
+                    // only half of it. The value is a concrete error and the
+                    // branch it lands on is erased, so it needs a vtable — and
+                    // MIR boxes at the value, keyed by its node (TR5).
+                    //
+                    // Without this the checker said "error", MIR built a Result
+                    // whose tag said Ok and whose payload was the bare concrete
+                    // error, and `return Boom.Bad("x")` from an
+                    // `i64 or any Error` came back as a *success* holding 0 on
+                    // native while the interpreter reported the error (#708).
+                    if is_err_branch {
+                        if let (Type::TraitObject { trait_name }, Some(node)) =
+                            (&resolved_err, value_node)
+                        {
+                            if !matches!(resolved_ret, Type::TraitObject { .. }) {
+                                self.trait_coercions.insert(node, trait_name.clone());
+                            }
+                        }
+                    }
                     let wrapped = if is_err_branch {
                         Type::Result {
                             ok: ok.clone(),
@@ -820,6 +843,7 @@ impl TypeChecker {
                         value: ret_ty,
                         target: expected,
                         site,
+                        value_node,
                         span,
                     });
                     Ok(false)

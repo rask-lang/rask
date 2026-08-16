@@ -99,6 +99,58 @@ test "type.errors — an explicit box reads the same as an inferred one" {
     assert boxed.message() == "missing: direct"
 }
 
+// ER9 picks the branch by type, and with an erased error side that means "does
+// this type implement the trait". Deciding it is only half the job: the value
+// still has to acquire a vtable on the way out. It didn't, so MIR built a
+// Result tagged Ok around the bare concrete error and native reported a
+// *success* holding 0 where the interpreter reported the error.
+
+func straight_to_error(bad: bool) -> i64 or any Error {
+    if bad {
+        return StoreError.Missing("direct return")
+    }
+    return 5
+}
+
+test "type.errors — returning a concrete error into `any Error` boxes it" {
+    let outcome = straight_to_error(true) catch e => {
+        assert e.message() == "missing: direct return"
+        return
+    }
+    assert false, "expected the error branch, got {outcome}"
+}
+
+test "type.errors — the success branch of the same function still works" {
+    let outcome = straight_to_error(false) catch _ => {
+        assert false, "expected success"
+        return
+    }
+    assert outcome == 5
+}
+
+// The conformance header spelling folds too — `Error` and `ErrorMessage` are
+// one trait wherever the name is written, not only after `any`.
+
+enum HeaderSpelled { Nope }
+
+extend HeaderSpelled with Error {
+    public func message(self) -> string {
+        return "spelled with Error"
+    }
+}
+
+func header_spelled() -> i64 or any Error {
+    return HeaderSpelled.Nope
+}
+
+test "type.generics — `extend T with Error` declares the same conformance" {
+    let outcome = header_spelled() catch e => {
+        assert e.message() == "spelled with Error"
+        return
+    }
+    assert false, "expected the error branch, got {outcome}"
+}
+
 // `any ErrorMessage` is the same trait spelled with its declaration name, so it
 // has to behave identically — the two spellings folding to one is what the fix
 // is, and a divergence here would mean they hadn't.

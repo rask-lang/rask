@@ -138,7 +138,7 @@ impl Interpreter {
             let err_names = func.ret_ty.as_ref()
                 .map(|t| extract_result_err_names(t))
                 .unwrap_or_default();
-            let is_err_branch = value_matches_any_type(&value, &err_names);
+            let is_err_branch = self.value_matches_any_err(&value, &err_names);
             if is_err_branch {
                 return Ok(Value::Enum {
                     name: "Result".to_string(),
@@ -415,6 +415,44 @@ fn extract_result_err_names(ret_ty: &str) -> Vec<String> {
         out.push(err_str[start..].trim().to_string());
     }
     out
+}
+
+impl Interpreter {
+    /// ER9 branch selection where the error side is erased.
+    ///
+    /// A name like `any Error` names no runtime type, so the plain name compare
+    /// below never matched it and a directly returned concrete error was
+    /// wrapped as the *success* branch: `return StoreError.Missing(k)` from an
+    /// `i64 or any Error` came back to the caller as an ok value holding the
+    /// error, and `catch` never fired (#708).
+    ///
+    /// A trait object matches when the value's type provides the trait's
+    /// methods. ER4 already restricts an error side to `ErrorMessage`, so the
+    /// compiler-provided method lists cover every case that can legally appear
+    /// here — a user trait can't be an error type on its own.
+    fn value_matches_any_err(&self, value: &Value, names: &[String]) -> bool {
+        if value_matches_any_type(value, names) {
+            return true;
+        }
+        let type_name = match value {
+            Value::Enum { name, .. } => name.clone(),
+            Value::Struct(s) => s.lock().unwrap().name.clone(),
+            _ => return false,
+        };
+        names.iter().any(|n| {
+            let Some(trait_name) = rask_ast::traits::trait_object_name(n) else {
+                return false;
+            };
+            let required = rask_types::builtin_trait_method_names(trait_name);
+            if required.is_empty() {
+                return false;
+            }
+            let provided = self.methods.get(&type_name);
+            required
+                .iter()
+                .all(|m| provided.is_some_and(|ms| ms.contains_key(m)))
+        })
+    }
 }
 
 /// Does the runtime value match any of the named types?

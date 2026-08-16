@@ -169,7 +169,19 @@ impl<'a> TraitChecker<'a> {
         // container of encodable elements, or a struct/enum whose fields all
         // encode qualifies. These aren't registered as traits, so short-circuit
         // before the method-based logic (which would fail with UnknownTrait).
-        let base_trait = trait_name.split('<').next().unwrap_or(trait_name);
+        // One name for one trait, wherever the name was written — a bound, a
+        // conformance header, an `any …` type. Folding it only at the `any`
+        // parse site is how `any Error` resolved while `extend E with Error`
+        // did not (#708). Generic arguments are preserved: only the base name
+        // has spellings.
+        let base_raw = trait_name.split('<').next().unwrap_or(trait_name);
+        let base_trait = rask_ast::traits::canonical_trait_name(base_raw);
+        let canonical = if base_trait == base_raw {
+            trait_name.to_string()
+        } else {
+            trait_name.replacen(base_raw, base_trait, 1)
+        };
+        let trait_name = canonical.as_str();
 
         // NT1–NT3: `Numeric`, `Integer` and `Float` are sets of primitive
         // types, not lists of methods. Their contents are constants (`MIN`,

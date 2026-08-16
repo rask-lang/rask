@@ -247,10 +247,27 @@ impl TypeChecker {
         target: Type,
         span: rask_ast::Span,
     ) {
+        self.coerce_into_node(site, value, target, None, span)
+    }
+
+    /// `coerce_into`, naming the expression being coerced.
+    ///
+    /// Worth the extra argument only where the decision has to reach a backend:
+    /// ER32's error branch erases a concrete error into `any Trait`, and MIR
+    /// boxes at the value, keyed by its node.
+    pub(super) fn coerce_into_node(
+        &mut self,
+        site: rask_ast::coercion::CoercionSite,
+        value: Type,
+        target: Type,
+        value_node: Option<NodeId>,
+        span: rask_ast::Span,
+    ) {
         self.ctx.add_constraint(inference::TypeConstraint::Coerce {
             value,
             target,
             site,
+            value_node,
             span,
         });
     }

@@ -44,6 +44,13 @@ pub enum TypeConstraint {
         value: Type,
         target: Type,
         site: CoercionSite,
+        /// The expression being coerced, when there is one node to point at.
+        ///
+        /// Only needed where the decision this constraint makes has to reach a
+        /// backend: ER32's error branch erases a concrete error into
+        /// `any Trait`, and MIR boxes at the *value*, keyed by its node. `None`
+        /// for positions that never erase.
+        value_node: Option<NodeId>,
         span: Span,
     },
     /// ER27: scrutinee is a `T or E`, and `narrow_ty` must match either `T`
