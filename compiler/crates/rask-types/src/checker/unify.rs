@@ -253,8 +253,8 @@ impl TypeChecker {
                 self.resolve_index(object, index, result, is_range, span)
             }
 
-            TypeConstraint::Coalesce { node, value, default, result, span } => {
-                self.resolve_coalesce(node, value, default, result, span)
+            TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span } => {
+                self.resolve_coalesce(node, value, default, result, value_span, default_span, span)
             }
 
             TypeConstraint::TakePlace { place, result, span } => {
@@ -496,16 +496,19 @@ impl TypeChecker {
     /// the `??` itself, with advice about `catch` — this isn't the place to
     /// re-answer it), and for anything not yet known. False only when the value
     /// is a settled type that is always there.
-    fn coalesce_operand_can_be_absent(&self, ty: &Type) -> bool {
+    pub(super) fn coalesce_operand_can_be_absent(&self, ty: &Type) -> bool {
         match ty {
             Type::Result { .. } => true,
             // Nothing pinned it yet, or it's already poisoned by an earlier
-            // error. Neither is a reason to add a second diagnostic.
+            // error. Neither is a reason to add a second diagnostic. A trait
+            // object is in the same class: the concrete type behind it is what
+            // decides, and it isn't known here.
             Type::Var(_)
             | Type::Error
             | Type::Never
             | Type::UnresolvedNamed(_)
-            | Type::UnresolvedGeneric { .. } => true,
+            | Type::UnresolvedGeneric { .. }
+            | Type::TraitObject { .. } => true,
             // `Option<T>` written the long way, or a bare `none`.
             Type::None => true,
             Type::Named(id) => Some(*id) == self.types.get_option_type_id(),
@@ -520,6 +523,8 @@ impl TypeChecker {
         value: Type,
         default: Type,
         result: Type,
+        value_span: Span,
+        default_span: Span,
         span: Span,
     ) -> Result<bool, TypeError> {
         let def = self.ctx.apply(&default);
@@ -538,7 +543,7 @@ impl TypeChecker {
             _ => false,
         };
         if matches!(def, Type::Var(_)) && !def_is_bare_literal {
-            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
+            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span });
             return Ok(false);
         }
 
@@ -549,7 +554,7 @@ impl TypeChecker {
         // `let v = try t.lookup(key) ?? continue` came out un-inferrable however
         // `lookup` later resolved (#620 family).
         if matches!(def, Type::Never) && matches!(self.ctx.apply(&value), Type::Var(_)) {
-            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, span });
+            self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span });
             return Ok(false);
         }
 
@@ -594,6 +599,8 @@ impl TypeChecker {
             self.errors.push(TypeError::CoalesceOnNonOptional {
                 found: resolved_value,
                 from_index: self.coalesce_index_operands.contains(&node),
+                value_span,
+                default_span,
                 span,
             });
             // Poison the result rather than leaving it open. Returning the

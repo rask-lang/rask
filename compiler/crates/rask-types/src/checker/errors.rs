@@ -126,14 +126,28 @@ pub enum TypeError {
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },
-    /// OPT3/OPT11: `??` supplies the branch a `T?` doesn't have. On a value
-    /// that is always there, there's no branch to supply and no way to lower it.
+    /// OPT3/OPT11, and ER12 from the other side: `??` supplies the branch a
+    /// `T?` doesn't have. On a value that is always there, there's no branch to
+    /// supply and no way to lower it.
+    ///
+    /// Caught here rather than left to unification, which used to unify the
+    /// operand against a synthesized `T or _` and report the failure as a
+    /// mismatch against that shape — "expected `i64`, found `i32 or _`", naming
+    /// an error branch the program never had (#662).
     ///
     /// `from_index` marks the case worth its own advice: `m[k]` panics when the
     /// key is absent rather than handing back a `T?`, so reaching for `??`
     /// after it is the natural mistake and `.get(k)` is the answer.
     #[error("`??` on `{found}` — there's no absent branch to fall back to")]
-    CoalesceOnNonOptional { found: Type, from_index: bool, span: Span },
+    CoalesceOnNonOptional {
+        found: Type,
+        from_index: bool,
+        /// The left operand, whose type is the reason this is an error.
+        value_span: Span,
+        /// The fallback, which is the dead code to delete.
+        default_span: Span,
+        span: Span,
+    },
     /// `!` negates a `bool`. `T?` doesn't coerce to `T` (OPT5), so lifting `!`
     /// through an optional is rejected rather than guessed — on a `bool?` a
     /// reader can't tell "negate the payload" from "test for absence".
@@ -771,6 +785,7 @@ impl TypeError {
             | ResultNotDisjoint { ty, .. } => *ty = f(ty),
 
             CatchOnOptional { found, .. }
+            | CoalesceOnNonOptional { found, .. }
             | CoalesceOnResult { found, .. }
             | CoalesceOnNonOptional { found, .. }
             | ForceUnwrapOnNonOptional { found, .. }

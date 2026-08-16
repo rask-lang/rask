@@ -598,12 +598,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
-            CoalesceOnNonOptional { found, from_index, span } => {
+            CoalesceOnNonOptional { found, from_index, value_span, default_span, .. } => {
+                // Two labels, because the operator is not the thing that's
+                // wrong. Blaming the whole expression put the caret on the
+                // binding and left the reader to work out which half of it
+                // couldn't be missing (#662): the left operand's type is the
+                // reason, and the fallback is the part to delete.
                 let d = Diagnostic::error(format!(
                     "`??` on `{}` — there's no absent branch to fall back to", found
                 ))
                 .with_code("E0831")
-                .with_primary(*span, format!("this is a `{}`, and it's always there", found));
+                .with_primary(*value_span, format!("this is a `{}`, and it's always there", found))
+                .with_secondary(*default_span, "so the fallback can never run");
                 let d = if *from_index {
                     // The reason this case gets its own advice: indexing is the
                     // one operation that *looks* like it might not find

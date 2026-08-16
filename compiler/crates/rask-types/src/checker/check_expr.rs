@@ -1644,6 +1644,25 @@ impl TypeChecker {
                 }
 
                 let def_ty = self.infer_expr(default);
+
+                // ER12 from the other side: `??` supplies the value for a
+                // miss, so an operand that can't miss leaves the fallback
+                // dead. Reported here, while the type is already concrete,
+                // rather than left to the solver — its unify against a
+                // synthesized `T or _` blamed a shape the program never had.
+                // Handing back the operand's own type also keeps the binding
+                // typed, so the second error about the binding stops (#662).
+                if !self.coalesce_operand_can_be_absent(&resolved_val) {
+                    self.errors.push(TypeError::CoalesceOnNonOptional {
+                        found: resolved_val.clone(),
+                        from_index: self.coalesce_index_operands.contains(&expr.id),
+                        value_span: value.span,
+                        default_span: default.span,
+                        span: expr.span,
+                    });
+                    return resolved_val;
+                }
+
                 // Which of ER14a's three cases applies turns on the right
                 // side's shape, and a method-call return type often isn't
                 // known yet. Hand the whole decision to the solver.
@@ -1653,6 +1672,8 @@ impl TypeChecker {
                     value: val_ty,
                     default: def_ty,
                     result: result.clone(),
+                    value_span: value.span,
+                    default_span: default.span,
                     span: expr.span,
                 });
                 result
