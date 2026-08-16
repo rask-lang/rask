@@ -189,25 +189,51 @@ impl<'a> DiagnosticFormatter<'a> {
         // Fix/why supersede help when present
         if diagnostic.fix.is_some() || diagnostic.why.is_some() {
             if let Some(ref fix) = diagnostic.fix {
-                out.push_str(&format!(
-                    "{} {} {}: {}\n",
-                    " ".repeat(primary_gutter_width + 1),
-                    "=".cyan(),
-                    "fix".green().bold(),
-                    fix
-                ));
+                Self::push_labelled(out, primary_gutter_width, &"fix".green().bold().to_string(), 3, fix);
             }
             if let Some(ref why) = diagnostic.why {
-                out.push_str(&format!(
-                    "{} {} {}: {}\n",
-                    " ".repeat(primary_gutter_width + 1),
-                    "=".cyan(),
-                    "why".cyan().bold(),
-                    why
-                ));
+                Self::push_labelled(out, primary_gutter_width, &"why".cyan().bold().to_string(), 3, why);
             }
         } else if let Some(ref help) = diagnostic.help {
             self.format_help(out, help, primary_gutter_width);
+        }
+    }
+
+    /// `= label: text`, with continuation lines indented under the text.
+    ///
+    /// A few fixes offer several alternatives and separate them with newlines.
+    /// Emitting the string as-is dropped those lines out of the gutter
+    /// entirely, so the alternatives read as stray source rather than as part
+    /// of the message:
+    ///
+    /// ```text
+    ///     = fix: x truncate to u8   // bit-preserving
+    ///   x saturate to u8   // clamps
+    /// ```
+    ///
+    /// `label_width` is the label's visible width — `.green().bold()` wraps it
+    /// in escape codes, so its byte length is not what lines up on screen.
+    fn push_labelled(
+        out: &mut String,
+        gutter_width: usize,
+        label: &str,
+        label_width: usize,
+        text: &str,
+    ) {
+        // gutter + " = " + label + ": "
+        let continuation = " ".repeat(gutter_width + 1 + 2 + label_width + 2);
+        for (i, line) in text.split('\n').enumerate() {
+            if i == 0 {
+                out.push_str(&format!(
+                    "{} {} {}: {}\n",
+                    " ".repeat(gutter_width + 1),
+                    "=".cyan(),
+                    label,
+                    line
+                ));
+            } else {
+                out.push_str(&format!("{}{}\n", continuation, line.trim_start()));
+            }
         }
     }
 
@@ -264,6 +290,17 @@ impl<'a> DiagnosticFormatter<'a> {
             std::collections::BTreeMap::new();
 
         for label in &diagnostic.labels {
+            // A span that runs past its file can't be pointed at. Rendering it
+            // anyway invented a location: an error raised while checking a
+            // stdlib body carried that file's byte offset but the user's
+            // file_id, and came out as `examples/19_unsafe.rk:152:767` on a
+            // 151-line file, quoting a blank line. Drop the label and let the
+            // message stand on its own rather than send someone to a line that
+            // isn't there.
+            let (text, _) = self.file_of(label.span.file_id);
+            if label.span.start > text.len() {
+                continue;
+            }
             let (line_num, col_start) = self.offset_to_line_col(label.span.start, label.span.file_id);
             let (end_line, col_end) = self.offset_to_line_col(label.span.end, label.span.file_id);
 

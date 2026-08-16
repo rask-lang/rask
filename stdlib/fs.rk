@@ -133,7 +133,7 @@ extend fs {
             unsafe rask_free(buf)
             return IoError.last_os_error()
         }
-        let len = unsafe strlen(buf)
+        let len: u64 = unsafe strlen(buf)
         let s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
         return s
@@ -218,7 +218,7 @@ extend fs {
             let entry = unsafe readdir(dir)
             if unsafe entry.is_null() { break }
             let name_ptr = unsafe rask_dirent_name(entry)
-            let name_len = unsafe strlen(name_ptr)
+            let name_len: u64 = unsafe strlen(name_ptr)
             let name = unsafe string.from_raw(name_ptr, name_len as usize)
             // Skip . and ..
             if name != "." {
@@ -257,7 +257,7 @@ extend fs {
             unsafe rask_free(buf)
             return Path.from(".")
         }
-        let len = unsafe strlen(buf)
+        let len: u64 = unsafe strlen(buf)
         let s = unsafe string.from_raw(buf, len as usize)
         unsafe rask_free(buf)
         return Path.from(s)
@@ -269,7 +269,7 @@ extend fs {
         if unsafe ptr.is_null() {
             return none
         }
-        let len = unsafe strlen(ptr)
+        let len: u64 = unsafe strlen(ptr)
         let s = unsafe string.from_raw(ptr, len as usize)
         return Path.from(s)
     }
