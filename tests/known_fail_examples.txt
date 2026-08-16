@@ -68,7 +68,11 @@
                          # the adapter turns every one into IoError.UnexpectedEof.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
-19_unsafe.rk             # both exit 1
+19_unsafe.rk             # Native runs to completion now (#696 — the raw pointer method
+                         # surface). The interpreter still exits 1: it has no `extern "C"`
+                         # at all, so `strlen` is an undefined function before any pointer
+                         # work is reached. Nothing to diff between backends until the
+                         # interpreter can call into libc.
 file_copy.rk             # both exit 1
 package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1

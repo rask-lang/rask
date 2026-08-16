@@ -92,6 +92,17 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
+    // `*T` — a raw pointer. Without this it came back as a *name* that happened
+    // to read "*u8", and a name prints exactly like the real pointer type — so
+    // `s.as_ptr().offset(1)` failed with "no method `offset` found for type
+    // `*u8`" while the type on screen looked perfectly correct (#696). Same
+    // shape as the `T?` case above, and for the same reason.
+    if let Some(inner) = s.strip_prefix('*') {
+        if !inner.is_empty() {
+            return Type::RawPtr(Box::new(parse_stub_type(inner)));
+        }
+    }
+
     // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
     // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
     // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.

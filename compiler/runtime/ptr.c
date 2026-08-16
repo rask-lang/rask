@@ -31,6 +31,16 @@ int64_t rask_ptr_is_null(int64_t ptr) {
     return ptr == 0;
 }
 
+// Address comparison. `p == null` and `p == q` land here — nothing is read
+// through either pointer, so these need no unsafe block.
+int64_t rask_ptr_eq(int64_t a, int64_t b) {
+    return a == b;
+}
+
+int64_t rask_ptr_ne(int64_t a, int64_t b) {
+    return a != b;
+}
+
 int64_t rask_ptr_is_aligned(int64_t ptr) {
     return (ptr % 8) == 0;
 }

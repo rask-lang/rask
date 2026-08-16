@@ -251,8 +251,10 @@ extend Vec<T> {
     @native("rask_vec_as_ptr")
     public unsafe func as_ptr(self) -> *T { }
 
-    /// Mutable raw pointer to the underlying buffer (unsafe).
-    @unimplemented
+    /// Mutable raw pointer to the underlying buffer (unsafe). Same address
+    /// `as_ptr` hands back — it's the `mutate self` receiver that makes writing
+    /// through it legal, not a different buffer.
+    @native("rask_vec_as_ptr")
     public unsafe func as_mut_ptr(mutate self) -> *T { }
 
     /// Freeze into a compile-time array.

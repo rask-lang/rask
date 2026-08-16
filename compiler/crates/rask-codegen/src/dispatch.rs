@@ -175,6 +175,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_len", "rask_vec_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_as_ptr", "rask_vec_as_ptr", &[types::I64], Some(types::I64), false),
+        // Same buffer address as as_ptr — `mutate self` is the only difference.
+        StdlibEntry::simple("Vec_as_mut_ptr", "rask_vec_as_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "Vec_get", c_name: "rask_vec_get",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
@@ -1201,16 +1203,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
 
-        // ── Raw pointer operations ────────────────────────────
-        StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_sub", "rask_ptr_sub", &[types::I64, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_offset", "rask_ptr_offset", &[types::I64, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_read", "rask_ptr_read", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_write", "rask_ptr_write", &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("RawPtr_is_null", "rask_ptr_is_null", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_is_aligned", "rask_ptr_is_aligned", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_is_aligned_to", "rask_ptr_is_aligned_to", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("RawPtr_align_offset", "rask_ptr_align_offset", &[types::I64, types::I64], Some(types::I64), false),
+        // Raw pointer entries are generated below from
+        // rask_stdlib::PTR_METHODS.
     ];
 
     // ── Atomic operations ──────────────────────────────────
@@ -1304,6 +1298,36 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             FloatSig::ToString => continue,
             // No C symbol, so unreachable — the `else` above skipped them.
             FloatSig::Comparison | FloatSig::Compare | FloatSig::ToInt => continue,
+        };
+        entries.push(entry);
+    }
+
+    // ── Raw pointer methods ─────────────────────────────────
+    // Generated from rask_stdlib::PTR_METHODS so the set codegen can call is
+    // exactly the set the checker accepts. A pointer is an i64 address here;
+    // read/write/add/sub/offset take the pointee size as a trailing argument.
+    for m in rask_stdlib::PTR_METHODS {
+        use rask_stdlib::PtrSig;
+        let Some(c_symbol) = m.c_symbol else { continue };
+        let mir_name = leak_str(&rask_stdlib::ptr_methods::mir_name(m.name));
+        let entry = match m.sig {
+            PtrSig::Read => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::I64, types::I64], Some(types::I64), false,
+            ),
+            PtrSig::Write => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::I64, types::I64, types::I64], None, false,
+            ),
+            PtrSig::Arith => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::I64, types::I64, types::I64], Some(types::I64), false,
+            ),
+            PtrSig::Predicate => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::I64], Some(types::I64), false,
+            ),
+            PtrSig::PredicateInt | PtrSig::Comparison | PtrSig::ToInt => StdlibEntry::simple(
+                mir_name, c_symbol, &[types::I64, types::I64], Some(types::I64), false,
+            ),
+            // No C symbol, so unreachable — the `else` above skipped it.
+            PtrSig::Cast => continue,
         };
         entries.push(entry);
     }

@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Unsafe blocks and C FFI
-//
-// NOTE: This is a SPEC EXAMPLE showing intended syntax.
-// Unsafe blocks, pointer operations, and FFI not yet implemented.
-// See examples/README.md for status.
 
-// External C functions must be declared
-extern "C" func strlen(ptr: *u8) -> i32
-extern "C" func memcpy(dest: *u8, src: *u8, n: i32)
-extern "C" func malloc(size: i32) -> *u8
+// External C functions must be declared. Match the real C signature —
+// strlen, malloc and memcpy all deal in size_t, which is usize here. An
+// `extern "C"` name is global, so declaring `strlen` with a different return
+// type than the one std.fs already declares breaks that module too.
+extern "C" func strlen(ptr: *u8) -> u64
+extern "C" func memcpy(dest: *u8, src: *u8, n: usize)
+extern "C" func malloc(size: usize) -> *u8
 extern "C" func free(ptr: *u8)
 
 // Wrapper for C strlen — expression form for single operations
-func c_string_length(s: string) -> i32 {
+func c_string_length(s: string) -> u64 {
     let ptr = s.as_ptr()
     return unsafe strlen(ptr)
 }
 
-// Safe wrapper for raw pointer operations
-// Parameters are read-only by default in Rask
-func copy_bytes(src: Vec<u8>, dest: Vec<u8>, count: i32) {
+// Safe wrapper for raw pointer operations. Parameters are read-only by
+// default, so the destination needs `mutate` to hand out a writable pointer.
+func copy_bytes(src: Vec<u8>, mutate dest: Vec<u8>, count: usize) {
     unsafe {
         let src_ptr = src.as_ptr()
         let dest_ptr = dest.as_mut_ptr()
@@ -47,7 +46,7 @@ func manual_allocation_example() {
         // Write some data
         for i in 0..16 {
             let offset_ptr = ptr.offset(i)
-            *offset_ptr = i as u8
+            *offset_ptr = i truncate to u8
         }
 
         // Read it back
