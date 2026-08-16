@@ -289,7 +289,7 @@ impl Interpreter {
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
                     match interp.eval_expr(&body).map_err(|diag| diag.error) {
                         Ok(val) => Ok(val),
@@ -346,7 +346,7 @@ impl Interpreter {
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
                     match interp.eval_expr(&body).map_err(|diag| diag.error) {
                         Ok(val) => Ok(val),
@@ -445,7 +445,7 @@ impl Interpreter {
                     ));
                 }
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))

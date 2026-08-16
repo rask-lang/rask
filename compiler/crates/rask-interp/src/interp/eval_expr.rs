@@ -2057,7 +2057,7 @@ impl Interpreter {
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
                     let mut result = Value::Unit;
                     for stmt in &body {
@@ -2129,7 +2129,7 @@ impl Interpreter {
                     ));
                 }
 
-                let join_handle = std::thread::spawn(move || {
+                let join_handle = crate::spawn_interp_thread(move || {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
@@ -2159,7 +2159,7 @@ impl Interpreter {
 
                 for _ in 0..num_threads {
                     let rx = Arc::clone(&rx);
-                    workers.push(std::thread::spawn(move || {
+                    workers.push(crate::spawn_interp_thread(move || {
                         loop {
                             let task = {
                                 let rx = rx.lock().unwrap();

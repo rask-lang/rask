@@ -538,7 +538,7 @@ impl MultitaskingRuntime {
         let mut threads = Vec::with_capacity(workers);
         for _ in 0..workers {
             let rx = Arc::clone(&rx);
-            threads.push(std::thread::spawn(move || {
+            threads.push(crate::spawn_interp_thread(move || {
                 loop {
                     let task = rx.lock().unwrap().recv();
                     match task {
