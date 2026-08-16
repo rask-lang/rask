@@ -372,7 +372,7 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
-            NotDisplayable { ty, interpolated, span } => {
+            NotDisplayable { ty, interpolated, is_ordering, span } => {
                 let site = if *interpolated { "this placeholder" } else { "this call" };
                 let mut diag = Diagnostic::error(format!(
                     "`{}` does not implement `Displayable`",
@@ -385,8 +385,23 @@ impl ToDiagnostic for rask_types::TypeError {
                      so the compiler never invents output that looks intentional but isn't \
                      [std.fmt/D3, D4]",
                 );
-                // The two cases have genuinely different fixes.
-                if ty.ends_with('?') || ty.contains(" or ") {
+                // The three cases have genuinely different fixes.
+                if *is_ordering {
+                    diag = diag
+                        .with_help(
+                            "an `Ordering` says which way the comparison went — read it \
+                             with `match`, or use the operator that asks the question directly",
+                        )
+                        .with_fix(
+                            "match it: `match a.compare(b) { Ordering.Less => …, \
+                             Ordering.Equal => …, Ordering.Greater => … }` — or just `a < b`",
+                        )
+                        .with_note(
+                            "`extend Ordering with Displayable` compiles but doesn't work: \
+                             `compare` lowers to a plain integer, so the native backend prints \
+                             the tag (`0` for Less) and never calls your `to_string()`",
+                        );
+                } else if ty.ends_with('?') || ty.contains(" or ") {
                     diag = diag
                         .with_help(format!(
                             "{} holds a `{}`, which may not have a value to show",

@@ -155,20 +155,37 @@ impl TypeChecker {
     /// accepted here and failed later — in MIR lowering, in codegen, or not at
     /// all.
     pub(super) fn retry_deferred_methods(&mut self) {
-        let deferred = std::mem::take(&mut self.deferred_methods);
-        if deferred.is_empty() {
-            return;
-        }
-        for constraint in deferred {
-            match self.solve_constraint(constraint) {
-                Ok(_) => {}
-                Err(e) => self.errors.push(e),
+        // A deferred call can be waiting on another deferred call. The receiver
+        // of `"{n.compare(m)}"`'s `to_string` is compare's *result*, which only
+        // binds once compare itself resolves — and compare deferred too, since
+        // `n` is an unsuffixed literal. One pass took the queue in order, so the
+        // `to_string` sitting ahead of its own dependency saw an open receiver,
+        // re-deferred, and was dropped: `{n.compare(m)}` type-checked and
+        // printed a raw `Ordering` tag (#729). Go round until a pass resolves
+        // nothing new.
+        //
+        // Bounded, and it stops as soon as a round makes no progress — a
+        // receiver that is still open then has nothing left to wait for.
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            let deferred = std::mem::take(&mut self.deferred_methods);
+            if deferred.is_empty() {
+                break;
+            }
+            let before = deferred.len();
+            for constraint in deferred {
+                match self.solve_constraint(constraint) {
+                    Ok(_) => {}
+                    Err(e) => self.errors.push(e),
+                }
+            }
+            if self.deferred_methods.len() >= before {
+                break;
             }
         }
-        // A retry can re-defer (a receiver that is still open has nothing left
-        // to wait for). Those were silently dropped before this existed, and
-        // reporting them is a separate question from reporting a real
-        // no-such-method — leave them.
+        // Anything still deferred has nothing left to wait for. Those were
+        // silently dropped before this existed, and reporting them is a
+        // separate question from reporting a real no-such-method — leave them.
         self.ctx.constraints.clear();
     }
 

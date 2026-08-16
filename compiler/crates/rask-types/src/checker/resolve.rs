@@ -548,14 +548,33 @@ impl TypeChecker {
         if (method == "to_string" && args.is_empty())
             || (method == "__fmt" && args.len() == 5)
         {
+            // The answer is a string either way, so pin that now — deferring it
+            // as well would leave the interpolation's own type open and produce
+            // a second, unrelated error about it.
+            let progress = self.unify(&ret, &Type::String, span)?;
+
+            // "Does this have to_string" has no answer until the receiver's type
+            // is settled, and `is_displayable` says yes to anything unresolved.
+            // An unsuffixed literal (`let n = 3`) stays a variable until literal
+            // defaulting runs at the very end, so its `Ordering` arrived after
+            // this check had already waved it through: `println("{n.compare(m)}")`
+            // compiled and printed the raw enum tag natively, `0` for Less
+            // (#729). Come back for it once defaults have landed.
+            if matches!(ty, Type::Var(_)) {
+                self.deferred_methods.push(TypeConstraint::HasMethod {
+                    ty, method, args, ret, span, call_node,
+                });
+                return Ok(progress);
+            }
             if !self.is_displayable(&ty) {
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
                     interpolated: method == "__fmt",
+                    is_ordering: ty == self.ordering_type(),
                     span,
                 });
             }
-            return self.unify(&ret, &Type::String, span);
+            return Ok(progress);
         }
 
         // ER16: .origin() on any type returns the error origin string.
