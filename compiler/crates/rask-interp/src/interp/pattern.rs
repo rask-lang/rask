@@ -276,6 +276,19 @@ impl Interpreter {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a, _), Value::Int(b, _)) => a == b,
+            // `value_hash` and `value_cmp` both have these; equality didn't, so
+            // a 128-bit Map key hashed to the right bucket and then compared
+            // unequal to itself (#663). Mixed with a machine-width integer too,
+            // since an unsuffixed literal arrives as `Int` — `m.get(5)` on a
+            // `Map<i128, _>` has to find the key it just inserted.
+            (Value::Int128(a), Value::Int128(b)) => a == b,
+            (Value::Uint128(a), Value::Uint128(b)) => a == b,
+            (Value::Int128(a), Value::Int(b, _)) | (Value::Int(b, _), Value::Int128(a)) => {
+                *a == *b as i128
+            }
+            (Value::Uint128(a), Value::Int(b, _)) | (Value::Int(b, _), Value::Uint128(a)) => {
+                *b >= 0 && *a == *b as u128
+            }
             (Value::Float(a, _), Value::Float(b, _)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             // Locking both sides hangs when they are the same buffer, and a
