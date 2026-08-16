@@ -4,20 +4,14 @@
 import thread.{Thread, ThreadPool}
 
 func worker(id: i32, iterations: i32) {
-    print("Worker ")
-    print(id)
-    print(" starting\n")
+    println("Worker {id} starting")
 
     mut sum = 0
     for i in 1..iterations + 1 {
         sum = sum + i
     }
 
-    print("Worker ")
-    print(id)
-    print(" done, sum = ")
-    print(sum)
-    print("\n")
+    println("Worker {id} done, sum = {sum}")
 }
 
 func main() -> void {
@@ -77,9 +71,7 @@ func main() -> void {
     let consumer = Thread.spawn(own || {
         for _ in 0..3 {
             if rx.receive() is string as msg {
-                print("Received: ")
-                print(msg)
-                print("\n")
+                println("Received: {msg}")
             }
         }
     })
@@ -102,9 +94,7 @@ func main() -> void {
     let receiver_thread = Thread.spawn(own || {
         print("Waiting to receive...\n")
         if sync_rx.receive() is i32 as value {  // Blocks until sent
-            print("Received: ")
-            print(value)
-            print("\n")
+            println("Received: {value}")
         }
     })
 
@@ -122,18 +112,14 @@ func main() -> void {
 
     // Try to receive
     if test_rx.try_receive() is i32 as got {
-        print("Got message: ")
-        print(got)
-        print("\n")
+        println("Got message: {got}")
     } else {
         print("No message available\n")
     }
 
     // Try to receive again (should fail, channel empty)
     if test_rx.try_receive() is i32 as again {
-        print("Got message: ")
-        print(again)
-        print("\n")
+        println("Got message: {again}")
     } else {
         print("Channel empty (expected)\n")
     }
@@ -148,9 +134,7 @@ func main() -> void {
 
         for i in 0..8 {
             let h = ThreadPool.spawn(own || {
-                print("Pool task ")
-                print(i)
-                print(" running\n")
+                println("Pool task {i} running")
             })
             handles.push(h)
         }

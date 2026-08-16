@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Four threads, each emitting its whole line in one println. Every line of
+// output must read exactly "line N from thread M" — no splicing.
+
+func spam(id: i64) {
+    for i in 0..300 {
+        println("line {i} from thread {id}")
+    }
+}
+
+func main() {
+    let h1 = Thread.spawn(|| { spam(1) })
+    let h2 = Thread.spawn(|| { spam(2) })
+    let h3 = Thread.spawn(|| { spam(3) })
+    let h4 = Thread.spawn(|| { spam(4) })
+    let _ = h1.join()
+    let _ = h2.join()
+    let _ = h3.join()
+    let _ = h4.join()
+}

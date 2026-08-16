@@ -1,0 +1,62 @@
+=== Basic Threading ===
+
+Main thread continues...
+Hello from thread!
+Thread joined
+
+=== Multiple Threads ===
+
+Worker 1 starting
+Worker 1 done, sum = 55
+Worker 2 starting
+Worker 2 done, sum = 210
+Worker 3 starting
+Worker 3 done, sum = 120
+
+All workers done
+
+=== Detached Threads ===
+
+Detached thread running in background
+
+=== Channels ===
+
+I'm a detached thread!
+Producer sent 3 messages
+Received: Message 1
+Received: Message 2
+Received: Message 3
+
+=== Unbuffered Channel ===
+
+Sending 100...
+Waiting to receive...
+Send complete
+Received: 100
+
+=== Non-blocking Receive ===
+
+Got message: 999
+Channel empty (expected)
+
+=== Thread Pool ===
+
+Pool task 0 running
+Pool task 1 running
+Pool task 2 running
+Pool task 3 running
+Pool task 4 running
+Pool task 5 running
+Pool task 6 running
+Pool task 7 running
+
+Waiting for all pool tasks...
+
+=== Key Points ===
+- Thread.spawn(|| {}) creates raw OS threads
+- ThreadPool.spawn(|| {}) uses thread pool (needs using ThreadPool)
+- handle.join() waits for completion
+- handle.detach() runs in background
+- Channels enable message passing
+- No data races - compiler enforces safety
+- No function coloring - threads are first-class

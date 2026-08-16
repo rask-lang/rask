@@ -220,6 +220,11 @@ _Noreturn void rask_panic(const char *msg) {
         rask_panic_at(f, l, c, msg);
     }
 
+    // A panic raised mid-line — from inside a print argument, or from an
+    // ensure that prints — would longjmp past the unlock that balances
+    // codegen's print lock and deadlock every later print on other threads.
+    rask_print_unlock_all();
+
     // Unwind: run scheduled ensures for the dying task (U1/E2/E3). The primary
     // panic message is set afterward, so it wins over any secondary.
     rask_ensure_run_all();
@@ -244,6 +249,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
              file ? file : "<unknown>", line, col,
              msg ? msg : "(unknown panic)");
 
+    rask_print_unlock_all();
     rask_ensure_run_all();
 
     if (panic_ctx.active) {

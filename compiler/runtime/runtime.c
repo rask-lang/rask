@@ -67,6 +67,33 @@ static void rask_fput_string(FILE *out, const RaskStr *s) {
     fputs(rask_string_ptr(s), out);
 }
 
+// ─── One print call, one line ──────────────────────────────
+//
+// A single `println("a {b} c")` is at least two writes — the text and the
+// newline — and a multi-argument one is more. Two threads printing at once
+// used to splice mid-line: "line 0 from thread 2line 194 from thread 1".
+// Holding the stream's lock across the whole call makes one call atomic.
+// stdio's own per-call locking is recursive, so the individual fputs inside
+// just re-take a lock this thread already has.
+//
+// The depth counter is what makes it safe to panic mid-line: a longjmp out of
+// here would otherwise leave the lock held forever and deadlock every later
+// print. rask_print_unlock_all() runs on the panic path and unwinds it.
+static __thread int print_lock_depth;
+static __thread int eprint_lock_depth;
+
+void rask_print_lock(void)    { flockfile(stdout); print_lock_depth++; }
+void rask_print_unlock(void)  { if (print_lock_depth > 0) { print_lock_depth--; funlockfile(stdout); } }
+void rask_eprint_lock(void)   { flockfile(stderr); eprint_lock_depth++; }
+void rask_eprint_unlock(void) { if (eprint_lock_depth > 0) { eprint_lock_depth--; funlockfile(stderr); } }
+
+// Drop whatever this thread still holds. Called before a panic longjmps past
+// the matching unlock, and before the panic reporter writes to stderr.
+void rask_print_unlock_all(void) {
+    while (print_lock_depth > 0)  { print_lock_depth--;  funlockfile(stdout); }
+    while (eprint_lock_depth > 0) { eprint_lock_depth--; funlockfile(stderr); }
+}
+
 void rask_print_i64(int64_t val) { rask_fput_i64(stdout, val); }
 void rask_print_bool(int8_t val) { rask_fput_bool(stdout, val); }
 void rask_print_f64(double val) { rask_fput_f64(stdout, val); }

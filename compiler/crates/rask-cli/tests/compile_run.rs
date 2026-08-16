@@ -2004,6 +2004,31 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
+fn one_println_call_lands_whole_on_both_backends() {
+    // #704: a print/println call is several writes — the text, then the newline
+    // — so two threads used to splice mid-line ("line 0 from thread 2line 194
+    // from thread 1"). Both backends now emit one call as one unit.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "print_line_atomic.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 1200, "{}: every line accounted for", mode);
+        let torn: Vec<&&str> = lines.iter()
+            .filter(|l| {
+                let mut parts = l.split(' ');
+                parts.next() != Some("line")
+                    || parts.next().is_none_or(|n| n.parse::<u32>().is_err())
+                    || parts.next() != Some("from")
+                    || parts.next() != Some("thread")
+                    || parts.next().is_none_or(|n| !matches!(n, "1" | "2" | "3" | "4"))
+                    || parts.next().is_some()
+            })
+            .collect();
+        assert!(torn.is_empty(), "{}: {} torn lines, first: {:?}", mode, torn.len(), torn.first());
+    }
+}
+
+#[test]
 fn thread_join_reports_value_and_panic_on_both_backends() {
     // #677/#683: native join() used to fold the value and the outcome into one
     // number — every success reported 0, a task returning -1 looked like a

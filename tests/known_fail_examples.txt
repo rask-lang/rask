@@ -8,14 +8,17 @@
 # Every line below carries a measured symptom and an issue. If you find one
 # without an issue, that means nobody has looked; file before you assume.
 #
+# Re-measured 2026-08-16 (sixth pass). Changes this round:
+#   - 16_concurrency_basics is ENROLLED, with a `sort` normalizer. The tearing
+#     recorded below had two causes, not one. A single print/println call was
+#     several writes (the text, then the newline), so two threads spliced
+#     mid-line — fixed by locking the stream across one call, on both backends.
+#     But this example also wrote each line as three separate print calls, and
+#     no per-call lock can make three calls atomic; those are now one
+#     interpolated println each, which is how the example should have read
+#     anyway. 45 runs across both backends, one identical sorted hash. #704
+#
 # Re-measured 2026-08-10 (fifth pass). Changes this round:
-#   - 16_concurrency_basics is still NOT enrolled, and the reason recorded here
-#     was wrong. Sorting does not make it gateable: the lines aren't merely
-#     reordered, they're torn. Two threads' println calls interleave mid-line
-#     ("Pool task 2Pool task  running"), so about 1 run in 15 has a different
-#     set of lines, not a different order. The gate grew a .normalize hook
-#     anyway — it's the right tool for order-varying output — but this example
-#     needs atomic println first. Filed as #704.
 #   - markdown_renderer is ENROLLED. Its 27 check errors were all one missing
 #     method, and the method was never supposed to exist: the example was
 #     mutating `string` where std.strings/S7 says only StringBuilder mutates.
@@ -53,13 +56,6 @@
                          # `parse<i32>()` gives "invalid integer" on interp and the raw
                          # number 1114129 on native. ParseError has no definition
                          # anywhere in the stdlib — it's a name in a signature. #320.
-16_concurrency_basics.rk # Runs clean on both backends (#657 — pool tasks ran twice and
-                         # joined a handle of the wrong shape). Not gateable yet, but
-                         # not for the reason recorded before: it isn't just that pool
-                         # tasks interleave. Concurrent println calls tear into each
-                         # other mid-line — "Pool task 2Pool task  running" — so ~1 run
-                         # in 15 produces a different *set* of lines and sorting can't
-                         # normalize it. Needs atomic println. #704
 18_resource_types.rk     # Runs to completion on both backends now (#654 — the string
                          # out-param). One line still differs: reading a file opened
                          # for writing errors on both, but interp says "Bad file

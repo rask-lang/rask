@@ -3512,6 +3512,16 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(func.name.as_str(), "print" | "println" | "eprint" | "eprintln") {
             let to_stderr = func.name.starts_with('e');
             let sep_fn = if to_stderr { "rask_eprint_string" } else { "rask_print_string" };
+            // One call emits several writes — a separator per extra argument,
+            // one per argument, and the newline. Bracket the lot so two threads
+            // can't splice mid-line ("line 0 from thread 2line 194 from
+            // thread 1"). The runtime's lock is recursive, so the individual
+            // writes inside just re-take it.
+            let lock_fn = if to_stderr { "rask_eprint_lock" } else { "rask_print_lock" };
+            let unlock_fn = if to_stderr { "rask_eprint_unlock" } else { "rask_print_unlock" };
+            if let Some(fr) = ctx.func_refs.get(lock_fn) {
+                builder.ins().call(*fr, &[]);
+            }
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
                     let sp = Self::lower_operand_typed(
@@ -3550,6 +3560,9 @@ impl<'a> FunctionBuilder<'a> {
                 let nl = ctx.func_refs.get(nl_fn)
                     .ok_or_else(|| CodegenError::FunctionNotFound(nl_fn.into()))?;
                 builder.ins().call(*nl, &[]);
+            }
+            if let Some(fr) = ctx.func_refs.get(unlock_fn) {
+                builder.ins().call(*fr, &[]);
             }
             // print/println return void — define dest as zero if needed
             if let Some(dst_id) = dst {

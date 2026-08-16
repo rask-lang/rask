@@ -214,6 +214,17 @@ impl CodeGenerator {
             self.func_ids.insert("rask_print_newline".to_string(), id);
         }
 
+        // Stream locks bracketing one print/println call, so its writes land
+        // together instead of splicing into another thread's line.
+        for name in ["rask_print_lock", "rask_print_unlock",
+                     "rask_eprint_lock", "rask_eprint_unlock"] {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
+        }
+
         // rask_print_string(ptr: i64) -> void
         {
             let mut sig = self.module.make_signature();

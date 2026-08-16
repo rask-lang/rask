@@ -592,6 +592,18 @@ const char *rask_args_get(int64_t index);
 const RaskStr *rask_os_env(const RaskStr *name);
 void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
 
+// ─── Print locking ─────────────────────────────────────────
+// Codegen brackets the writes for one print/println call with these, so the
+// whole line lands before another thread's does. Recursive: nesting is fine.
+void rask_print_lock(void);
+void rask_print_unlock(void);
+void rask_eprint_lock(void);
+void rask_eprint_unlock(void);
+
+// Release everything this thread still holds — the panic path calls it before
+// longjmping past an unlock that will never run.
+void rask_print_unlock_all(void);
+
 // ─── Panic ─────────────────────────────────────────────────
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.
