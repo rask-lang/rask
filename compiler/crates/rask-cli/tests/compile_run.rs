@@ -2280,6 +2280,49 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
 }
 
 #[test]
+fn string_hash_is_the_same_number_every_run_on_both_backends() {
+    // #744: native mixed the Map's per-process seed into the FNV accumulator,
+    // and `string.hash()` is built on that same function — so the public method
+    // answered a different number every run, and a different one again from the
+    // interpreter. `.hash()` on a value should be as stable as `==` on it.
+    let (interp, stderr, code) = run_capture("--interp", "string_hash_stable.rk");
+    assert_eq!(code, 0, "interp: {}", stderr);
+
+    for attempt in 0..3 {
+        let (native, stderr, code) = run_capture("--native", "string_hash_stable.rk");
+        assert_eq!(code, 0, "native: {}", stderr);
+        assert_eq!(
+            native, interp,
+            "run {attempt}: native must agree with the interpreter, and with itself",
+        );
+    }
+    assert_eq!(interp.lines().count(), 3, "three hashes: {:?}", interp);
+}
+
+#[test]
+fn map_iteration_order_still_varies_between_runs() {
+    // determinism/D7. The seed moved out of the hash function and into bucket
+    // placement for #744 — this is the property that move must not cost. Eight
+    // keys is 8! orders, so runs agreeing by chance isn't a real risk.
+    for mode in ["--interp", "--native"] {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let (stdout, stderr, code) = run_capture(mode, "map_order_varies.rk");
+            assert_eq!(code, 0, "{}: {}", mode, stderr);
+            assert_eq!(
+                stdout.split_whitespace().count(), 8,
+                "{}: every entry is iterated exactly once: {:?}", mode, stdout,
+            );
+            seen.insert(stdout);
+        }
+        assert!(
+            seen.len() > 1,
+            "{}: five runs gave one order — the seed stopped reaching iteration order", mode,
+        );
+    }
+}
+
+#[test]
 fn panic_ensure_runs_on_native_with_captured_receiver() {
     // U1 on native: an ensure calling a method on a captured receiver runs during
     // unwind, and the by-reference capture sees the pre-panic mutation (42, not 1).
