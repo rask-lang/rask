@@ -38,6 +38,34 @@ pub fn is_machine_integer(name: &str) -> bool {
     SIGNED_INTS.contains(&name) || UNSIGNED_INTS.contains(&name)
 }
 
+/// P2: how wide a pointer is on the target, in bits.
+///
+/// `isize`/`usize` are pointer-sized, so this is the one place that decides how
+/// wide they are. Every crate used to answer it for itself, by putting `usize`
+/// in the same match arm as `u64` — a dozen independent assertions that a
+/// pointer is eight bytes, none of them connected to a target and none of them
+/// stating the rule. They all route through here now.
+///
+/// The width is the compiler host's, and today that is exactly right: the only
+/// binaries the compiler produces are for the machine it runs on. Cross-
+/// compiling to another OS, to wasm32, or to bare metal is refused at link
+/// time, so no reachable target's pointer width can differ from the host's.
+/// When a target triple reaches the frontend — it currently stops at codegen —
+/// this takes it as a parameter and every caller follows unchanged.
+pub fn pointer_bits() -> u32 {
+    (std::mem::size_of::<usize>() * 8) as u32
+}
+
+/// The fixed-width spelling `usize` stands for on this target.
+pub fn usize_spelling() -> &'static str {
+    if pointer_bits() == 32 { "u32" } else { "u64" }
+}
+
+/// The fixed-width spelling `isize` stands for on this target.
+pub fn isize_spelling() -> &'static str {
+    if pointer_bits() == 32 { "i32" } else { "i64" }
+}
+
 /// Any integer spelling, 128-bit and aliases included.
 pub fn is_integer(name: &str) -> bool {
     is_machine_integer(name) || WIDE_INTS.contains(&name) || INT_ALIASES.contains(&name)
@@ -105,6 +133,26 @@ mod tests {
         assert!(!is_machine_integer("i128"));
         assert!(!is_machine_integer("u128"));
         assert!(!is_machine_integer("int"));
+    }
+
+    /// P2: `usize`/`isize` are pointer-sized, so their width has to come from
+    /// the pointer width rather than from a literal 64 written into a dozen
+    /// match arms (#651). This is the rule stated once; the rest of the
+    /// compiler asks `pointer_bits` instead of assuming.
+    #[test]
+    fn usize_follows_the_pointer_width() {
+        assert_eq!(pointer_bits(), (std::mem::size_of::<*const u8>() * 8) as u32);
+        assert!(matches!(pointer_bits(), 32 | 64), "unexpected pointer width");
+        match pointer_bits() {
+            32 => {
+                assert_eq!(usize_spelling(), "u32");
+                assert_eq!(isize_spelling(), "i32");
+            }
+            _ => {
+                assert_eq!(usize_spelling(), "u64");
+                assert_eq!(isize_spelling(), "i64");
+            }
+        }
     }
 
     /// The sets are meant to be disjoint; an overlap would make "which question

@@ -62,13 +62,15 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
         "i8" => (i8::MIN as i64, i8::MAX as i64, IntKind::I8),
         "i16" => (i16::MIN as i64, i16::MAX as i64, IntKind::I16),
         "i32" => (i32::MIN as i64, i32::MAX as i64, IntKind::I32),
-        "i64" | "isize" => (i64::MIN, i64::MAX, IntKind::I64),
+        "i64" => (i64::MIN, i64::MAX, IntKind::I64),
+        "isize" => (i64::MIN, i64::MAX, IntKind::isize_kind()),
         "u8" => (0, u8::MAX as i64, IntKind::U8),
         "u16" => (0, u16::MAX as i64, IntKind::U16),
         "u32" => (0, u32::MAX as i64, IntKind::U32),
         // u64::MAX doesn't fit an i64; it's carried as the same bit pattern and
         // read back unsigned because the kind says U64.
-        "u64" | "usize" => (0, u64::MAX as i64, IntKind::U64),
+        "u64" => (0, u64::MAX as i64, IntKind::U64),
+        "usize" => (0, u64::MAX as i64, IntKind::usize_kind()),
         _ => return None,
     };
     let n = match field {
@@ -512,12 +514,13 @@ impl Interpreter {
                     Some(IntSuffix::I8) => IntKind::I8,
                     Some(IntSuffix::I16) => IntKind::I16,
                     Some(IntSuffix::I32) => IntKind::I32,
-                    Some(IntSuffix::I64) | Some(IntSuffix::Isize) => IntKind::I64,
+                    Some(IntSuffix::I64) => IntKind::I64,
+                    Some(IntSuffix::Isize) => IntKind::isize_kind(),
                     Some(IntSuffix::U8) => IntKind::U8,
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
-                    Some(IntSuffix::U64) | Some(IntSuffix::Usize)
-                    | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
+                    Some(IntSuffix::Usize) => IntKind::usize_kind(),
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
                     None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
                 };
                 Ok(Value::Int(*n, kind))

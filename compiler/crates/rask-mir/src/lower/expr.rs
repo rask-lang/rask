@@ -170,11 +170,13 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
         "i8" => (i8::MIN as i64, i8::MAX as i64, MirType::I8),
         "i16" => (i16::MIN as i64, i16::MAX as i64, MirType::I16),
         "i32" => (i32::MIN as i64, i32::MAX as i64, MirType::I32),
-        "i64" | "isize" => (i64::MIN, i64::MAX, MirType::I64),
+        "i64" => (i64::MIN, i64::MAX, MirType::I64),
+        "isize" => (i64::MIN, i64::MAX, MirType::isize_ty()),
         "u8" => (0, u8::MAX as i64, MirType::U8),
         "u16" => (0, u16::MAX as i64, MirType::U16),
         "u32" => (0, u32::MAX as i64, MirType::U32),
-        "u64" | "usize" => (0, u64::MAX as i64, MirType::U64),
+        "u64" => (0, u64::MAX as i64, MirType::U64),
+        "usize" => (0, u64::MAX as i64, MirType::usize_ty()),
         _ => return None,
     };
     let val = match field {
@@ -733,7 +735,9 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U16) => MirType::U16,
                     Some(IntSuffix::U32) => MirType::U32,
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
-                    Some(IntSuffix::I128 | IntSuffix::U128 | IntSuffix::Isize | IntSuffix::Usize) => MirType::I64,
+                    Some(IntSuffix::Isize) => MirType::isize_ty(),
+                    Some(IntSuffix::Usize) => MirType::usize_ty(),
+                    Some(IntSuffix::I128 | IntSuffix::U128) => MirType::I64,
                     // An unsuffixed literal the checker didn't pin down takes the
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal

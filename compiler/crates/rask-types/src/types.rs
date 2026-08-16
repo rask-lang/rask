@@ -106,6 +106,18 @@ pub enum Type {
 }
 
 impl Type {
+    /// P2: what `usize` is on this target — pointer-sized, not always 64-bit.
+    /// The width comes from `rask_ast::primitives::pointer_bits`, which is the
+    /// single place that decides it.
+    pub fn usize_ty() -> Type {
+        if rask_ast::primitives::pointer_bits() == 32 { Type::U32 } else { Type::U64 }
+    }
+
+    /// P2: what `isize` is on this target.
+    pub fn isize_ty() -> Type {
+        if rask_ast::primitives::pointer_bits() == 32 { Type::I32 } else { Type::I64 }
+    }
+
     /// Set the display name for Named types (used for readable error messages).
     /// Returns a new type with the name resolved if applicable.
     pub fn with_name(self, name: std::string::String) -> Type {

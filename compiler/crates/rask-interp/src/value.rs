@@ -29,6 +29,17 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// P2: what `usize` is on this target — pointer-sized. The width comes
+    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
+    pub fn usize_kind() -> IntKind {
+        if rask_ast::primitives::pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
+    }
+
+    /// P2: what `isize` is on this target.
+    pub fn isize_kind() -> IntKind {
+        if rask_ast::primitives::pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
+    }
+
     /// Unsigned widths carry their value as a bit pattern in the signed slot.
     pub fn is_unsigned(self) -> bool {
         matches!(self, IntKind::U8 | IntKind::U16 | IntKind::U32 | IntKind::U64)
@@ -86,11 +97,13 @@ impl IntKind {
             "i8" => IntKind::I8,
             "i16" => IntKind::I16,
             "i32" | "int" => IntKind::I32,
-            "i64" | "isize" => IntKind::I64,
+            "i64" => IntKind::I64,
+            "isize" => IntKind::isize_kind(),
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
             "u32" => IntKind::U32,
-            "u64" | "usize" | "uint" => IntKind::U64,
+            "u64" | "uint" => IntKind::U64,
+            "usize" => IntKind::usize_kind(),
             _ => return None,
         })
     }
@@ -1038,7 +1051,8 @@ impl Value {
             "u8" => Value::Int(0, IntKind::U8),
             "u16" => Value::Int(0, IntKind::U16),
             "u32" => Value::Int(0, IntKind::U32),
-            "u64" | "uint" | "usize" => Value::Int(0, IntKind::U64),
+            "u64" | "uint" => Value::Int(0, IntKind::U64),
+            "usize" => Value::Int(0, IntKind::usize_kind()),
             "i128" => Value::Int128(0),
             "u128" => Value::Uint128(0),
             "f32" | "f64" => Value::Float(0.0, FloatKind::Untyped),

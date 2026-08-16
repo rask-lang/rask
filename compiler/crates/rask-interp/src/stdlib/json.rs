@@ -1019,11 +1019,13 @@ fn int_kind(ty: &str) -> crate::value::IntKind {
         "i8" => IntKind::I8,
         "i16" => IntKind::I16,
         "i32" => IntKind::I32,
-        "i64" | "isize" => IntKind::I64,
+        "i64" => IntKind::I64,
+        "isize" => IntKind::isize_kind(),
         "u8" => IntKind::U8,
         "u16" => IntKind::U16,
         "u32" => IntKind::U32,
-        "u64" | "usize" => IntKind::U64,
+        "u64" => IntKind::U64,
+        "usize" => IntKind::usize_kind(),
         _ => IntKind::Untyped,
     }
 }
