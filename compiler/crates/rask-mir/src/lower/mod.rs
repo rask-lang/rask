@@ -1431,12 +1431,38 @@ impl<'a> MirLowerer<'a> {
         }));
     }
 
+    /// Hand an `Ordering` back as its tag when the function is declared to
+    /// return a plain integer.
+    ///
+    /// That combination means a comparator closure: `rask_vec_sort_by`'s C
+    /// adapter reads the return as a number and tests it against zero, so
+    /// returning the aggregate handed it a stack address and `sort_by` sorted
+    /// by address — a different order run to run. The tag is exactly what
+    /// crossed this boundary before `Ordering` had a layout (#729).
+    ///
+    /// Applied at the return terminator rather than at the closure's tail
+    /// expression, because `|a, b| { return a.compare(b) }` reaches the same
+    /// boundary through an explicit `return`.
+    fn ordering_return_as_tag(&mut self, value: Option<MirOperand>) -> Option<MirOperand> {
+        if *self.builder.ret_ty() != MirType::I64 {
+            return value;
+        }
+        let Some(MirOperand::Local(id)) = value else { return value };
+        let Some(ty) = self.builder.local_type(id) else { return value };
+        if !self.is_ordering_ty(&ty) {
+            return value;
+        }
+        let tag = self.emit_ordering_tag_i64(MirOperand::Local(id));
+        Some(MirOperand::Local(tag))
+    }
+
     /// Terminate the current block as a function return.
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
     /// (twice), and the implicit tail — and each one has to run the same exits:
     /// pending `for mutate` writebacks, then the ensure chain.
     pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
+        let value = self.ordering_return_as_tag(value);
         self.emit_mutate_writebacks();
         if self.ensure_stack.is_empty() {
             self.builder

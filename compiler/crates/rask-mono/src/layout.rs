@@ -492,6 +492,38 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
     }
 }
 
+/// The layout for `Ordering`.
+///
+/// `Ordering` is registered by the compiler rather than declared in source, so
+/// no decl reaches `compute_enum_layout` for it. Without a layout the backends
+/// had no variant tags to read, every stage carried its own
+/// `enum_name == "Ordering"` branch, and `compare` gave up and handed back a
+/// bare integer (#729).
+///
+/// Built from `ORDERING_VARIANTS` so the variant list stays in one place, and
+/// laid out the way `compute_enum_layout` lays out any fieldless enum of this
+/// size: a `u8` tag at offset 0, no payload.
+pub fn ordering_layout() -> EnumLayout {
+    EnumLayout {
+        name: "Ordering".to_string(),
+        size: 1,
+        align: 1,
+        tag_ty: Type::U8,
+        tag_offset: 0,
+        variants: rask_stdlib::ORDERING_VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(tag, name)| VariantLayout {
+                name: (*name).to_string(),
+                tag: tag as u64,
+                payload_offset: 1,
+                payload_size: 0,
+                fields: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
 /// Compute enum layout with tag and variant payloads (spec rules E1-E6)
 pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> EnumLayout {
     use rask_ast::decl::DeclKind;

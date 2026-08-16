@@ -165,6 +165,11 @@ impl<'a> MirLowerer<'a> {
             } else {
                 crate::fallback::i64_fallback("lower/closures:closure_ret")
             });
+        // A comparator closure hands its answer to C code that reads a plain
+        // integer — `rask_vec_sort_by`'s adapter tests the return against zero.
+        // Returning an aggregate would return its address instead (#729).
+        let returns_ordering = self.is_ordering_ty(&closure_ret);
+        let closure_ret = if returns_ordering { MirType::I64 } else { closure_ret };
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
@@ -221,7 +226,17 @@ impl<'a> MirLowerer<'a> {
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
 
-            let body_result = self.lower_expr(body);
+            // The tag read has to be emitted while the closure's own builder is
+            // still installed, so it lands inside the closure body. An explicit
+            // `return` in the body is converted by `terminate_return` instead.
+            let body_result = self.lower_expr(body).map(|(op, ty)| {
+                if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
+                    let tag = self.emit_ordering_tag_i64(op);
+                    (MirOperand::Local(tag), MirType::I64)
+                } else {
+                    (op, ty)
+                }
+            });
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;

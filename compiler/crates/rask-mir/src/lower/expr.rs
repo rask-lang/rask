@@ -5272,6 +5272,63 @@ impl<'a> MirLowerer<'a> {
         MirOperand::Local(bumped)
     }
 
+    /// True when this MIR type is the `Ordering` enum.
+    pub(super) fn is_ordering_ty(&self, ty: &MirType) -> bool {
+        let MirType::Enum(EnumLayoutId { id, .. }) = ty else { return false };
+        self.ctx
+            .enum_layouts
+            .get(*id as usize)
+            .is_some_and(|l| l.name == "Ordering")
+    }
+
+    /// An `Ordering`'s tag, widened to `i64`.
+    ///
+    /// For the boundaries that still want a number rather than the value: the
+    /// C comparator ABI, and the assert-failure helpers.
+    pub(super) fn emit_ordering_tag_i64(&mut self, value: MirOperand) -> crate::LocalId {
+        let tag = self.emit_enum_tag(value);
+        let wide = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: wide,
+            rvalue: MirRValue::Cast {
+                value: MirOperand::Local(tag),
+                target_ty: MirType::I64,
+            },
+        }));
+        wide
+    }
+
+    /// Wrap a computed Ordering tag into an actual `Ordering` value.
+    ///
+    /// `compare` used to hand the tag back as a bare `i64`. Matching still
+    /// worked — the match lowering special-cased `Ordering` against a raw tag —
+    /// but nothing downstream knew the value was an enum, so `{a.compare(b)}`
+    /// formatted it as the integer it claimed to be and printed `0` for Less,
+    /// and a user's `extend Ordering with Displayable` was never consulted
+    /// (#729). Storing the tag into a properly laid out slot makes it the same
+    /// shape as any other fieldless enum value.
+    fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
+        let Some((id, layout)) = self.ctx.find_enum("Ordering") else {
+            // No layout registered — a bare context in a unit test. The raw tag
+            // is what this used to produce, so fall back rather than fail.
+            return (tag, MirType::I64);
+        };
+        let ty = MirType::Enum(EnumLayoutId::new(id, layout.size, layout.align));
+        let slot = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: 0,
+            value: tag,
+            // `None` — the value's natural width, which is what the enum
+            // literal path stores. A narrow store leaves the rest of the slot
+            // undefined, and structural `==` compares the whole slot: three
+            // asserts in a row passed in `main` and the third failed in a
+            // `test` block, purely on what the stack happened to hold.
+            store_size: None,
+        }));
+        (MirOperand::Local(slot), ty)
+    }
+
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
     fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
@@ -5316,7 +5373,9 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("f64_compare".to_string()),
                 args: vec![obj_op.clone(), rhs],
             }));
-            return Ok(Some((MirOperand::Local(result), MirType::I64)));
+            // `rask_f64_compare_total` already answers in tag values (0/1/2),
+            // unlike `string_compare`'s -1/0/1 — no shift here.
+            return Ok(Some(self.wrap_ordering(MirOperand::Local(result))));
         }
         let scalar = matches!(
             obj_ty,
@@ -5410,7 +5469,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(done_block);
-        Ok(Some((MirOperand::Local(result), MirType::I64)))
+        Ok(Some(self.wrap_ordering(MirOperand::Local(result))))
     }
 
     fn try_lower_string_compare(
@@ -5444,7 +5503,7 @@ impl<'a> MirLowerer<'a> {
                     right: MirOperand::Constant(MirConst::Int(rask_stdlib::ORDERING_EQUAL)),
                 },
             }));
-            return Ok(Some((MirOperand::Local(tag), MirType::I64)));
+            return Ok(Some(self.wrap_ordering(MirOperand::Local(tag))));
         }
         if is_string_obj && args.len() == 1 {
             let string_cmp_fn = match method.as_str() {

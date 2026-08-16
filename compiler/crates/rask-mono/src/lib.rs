@@ -14,8 +14,8 @@ mod reachability;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
-    compute_enum_layout, compute_struct_layout, compute_union_layout, type_size_align, EnumLayout, FieldLayout,
-    LayoutCache, StructLayout, VariantLayout,
+    compute_enum_layout, compute_struct_layout, compute_union_layout, ordering_layout, type_size_align,
+    EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
 
@@ -329,6 +329,15 @@ pub fn monomorphize_with_packages(
             }
             _ => {}
         }
+    }
+
+    // `Ordering` has no decl to compute a layout from — the compiler registers
+    // it instead. Give it one anyway so it behaves like every other fieldless
+    // enum downstream: `compare` can hand back a real Ordering value rather
+    // than a bare tag, and `{}` on one reaches whatever Displayable was
+    // written for it (#729).
+    if !enum_layouts.iter().any(|l| l.name == "Ordering") {
+        enum_layouts.push(layout::ordering_layout());
     }
 
     Ok(MonoProgram {
@@ -724,8 +733,13 @@ mod tests {
         ];
         let tp = dummy_typed_program();
         let result = monomorphize(&tp, &decls).unwrap();
-        assert_eq!(result.enum_layouts.len(), 1);
-        assert_eq!(result.enum_layouts[0].name, "Color");
+        // `Ordering` is synthesized alongside the declared enums, so assert on
+        // the declared ones rather than the raw count.
+        let declared: Vec<&str> = result.enum_layouts.iter()
+            .map(|l| l.name.as_str())
+            .filter(|n| *n != "Ordering")
+            .collect();
+        assert_eq!(declared, vec!["Color"]);
     }
 
     #[test]
@@ -779,8 +793,13 @@ mod tests {
         let tp = dummy_typed_program();
         let result = monomorphize(&tp, &decls).unwrap();
 
-        assert_eq!(result.enum_layouts.len(), 1);
-        assert_eq!(result.enum_layouts[0].name, "Kind");
+        // `Ordering` is synthesized alongside the declared enums, so assert on
+        // the declared ones rather than the raw count.
+        let declared: Vec<&str> = result.enum_layouts.iter()
+            .map(|l| l.name.as_str())
+            .filter(|n| *n != "Ordering")
+            .collect();
+        assert_eq!(declared, vec!["Kind"]);
 
         assert_eq!(result.struct_layouts.len(), 1);
         let container = &result.struct_layouts[0];

@@ -570,7 +570,6 @@ impl TypeChecker {
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
                     interpolated: method == "__fmt",
-                    is_ordering: ty == self.ordering_type(),
                     span,
                 });
             }

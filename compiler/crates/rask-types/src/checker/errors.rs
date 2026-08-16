@@ -60,12 +60,6 @@ pub enum TypeError {
         /// `Some` when it came from an interpolation, so the message can name
         /// the placeholder instead of a `to_string()` the user never wrote.
         interpolated: bool,
-        /// The builtin `Ordering`, which needs different advice: writing the
-        /// `extend … with Displayable` the general message suggests compiles,
-        /// but native ignores it and prints the raw tag, because `compare`
-        /// lowers to a plain `i64` in MIR (#729). Send them to `match` instead
-        /// of to a fix that only works on one backend.
-        is_ordering: bool,
         span: Span,
     },
     /// #314: method called on a type param whose bounds don't provide it.
