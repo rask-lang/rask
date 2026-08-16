@@ -144,10 +144,16 @@ impl Interpreter {
                     self.functions.insert(fn_name, f.clone());
                 }
                 DeclKind::Enum(e) => {
-                    self.enums.insert(e.name.clone(), e.clone());
+                    // The parser keeps the parameter list in the name, so a
+                    // generic enum arrives as "Wrap<T>" while every lookup asks
+                    // for "Wrap" — `Wrap.One(2)` answered "undefined variable
+                    // `Wrap`" on the interpreter and worked natively. Structs
+                    // and extend blocks already strip it here.
+                    let base_name = strip_generics(&e.name).to_string();
+                    self.enums.insert(base_name.clone(), e.clone());
                     // Register enum methods (e.g., @message-generated message())
                     if !e.methods.is_empty() {
-                        let type_methods = self.methods.entry(e.name.clone()).or_default();
+                        let type_methods = self.methods.entry(base_name).or_default();
                         for method in &e.methods {
                             type_methods.insert(method.name.clone(), method.clone());
                         }

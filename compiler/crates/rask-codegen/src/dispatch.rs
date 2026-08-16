@@ -168,6 +168,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
         },
+        // try_push shares push's C entry: the runtime has no reachable failure
+        // yet (Vec carries no capacity bound, and OOM panics in the allocator),
+        // so the destination `void or GrowError<T>` always gets its ok branch.
+        // A bound makes the status meaningful, and this entry then has to build
+        // GrowError.Full with the rejected element instead.
+        StdlibEntry {
+            mir_name: "Vec_try_push", c_name: "rask_vec_push",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Vec_pop", c_name: "rask_vec_pop",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,

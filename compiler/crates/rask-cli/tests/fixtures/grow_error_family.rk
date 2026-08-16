@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.collections/C2 (#666): the growth error is a real type — it can be named,
+// matched, destructured, and it carries the rejected value back out.
+
+func rejected_or(e: GrowError<i32>, fallback: i32) -> i32 {
+    match e {
+        GrowError.Full(v) => return v,
+        GrowError.NoMemory(v) => return v,
+    }
+}
+
+// A generic error type has to survive being the error branch of `T or E`, which
+// is the whole point of carrying the rejected value.
+func submit(mutate q: Vec<i32>, job: i32) -> void or GrowError<i32> {
+    try q.try_push(job)
+}
+
+public func main() {
+    print(rejected_or(GrowError.Full(4), 0))
+    print(rejected_or(GrowError.NoMemory(2), 0))
+
+    mut v: Vec<i32> = Vec.new()
+    submit(v, 7) catch _ => print(9)
+    print(v.len())
+    print(v[0])
+
+    // Element types wider than a word go through try_push intact.
+    mut s: Vec<string> = Vec.new()
+    s.try_push("ok") catch _ => {}
+    print(s[0])
+}

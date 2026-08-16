@@ -32,6 +32,11 @@ impl Interpreter {
                 v.lock().unwrap().push(item);
                 Ok(Value::Unit)
             }
+            // Vec has no capacity bound yet and OOM panics in the allocator, so
+            // there is no reachable failure — every push is accepted and the
+            // result is the ok branch. Native does the same through the
+            // Vec_try_push dispatch entry; when a bound lands, both sides have
+            // to start building GrowError.Full with the rejected value.
             "try_push" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
                 v.lock().unwrap().push(item);

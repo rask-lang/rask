@@ -2250,7 +2250,35 @@ impl TypeChecker {
             });
             if let Some((type_id, field_types)) = variant_fields {
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
-                let instantiated = self.instantiate_type_vars(&field_types);
+                // A generic enum written without type arguments takes them from
+                // the payload: `GrowError.Full(item)` gives each declared
+                // parameter a fresh variable that the argument binds. Answering
+                // bare `Named(type_id)` dropped them, so the value never matched
+                // a declared `void or GrowError<Item>` — the error branch of a
+                // generic error type was unwritable (#666).
+                let params = self.enum_type_params(type_id);
+                let (instantiated, result_ty) = if params.is_empty() {
+                    (self.instantiate_type_vars(&field_types), Type::Named(type_id))
+                } else {
+                    let fresh: Vec<Type> = params.iter().map(|_| self.ctx.fresh_var()).collect();
+                    let subst: std::collections::HashMap<&str, Type> = params
+                        .iter()
+                        .map(|p| p.as_str())
+                        .zip(fresh.iter().cloned())
+                        .collect();
+                    let fields: Vec<Type> = field_types
+                        .iter()
+                        .map(|t| Self::substitute_type_params(t, &subst))
+                        .collect();
+                    let ty = Type::Generic {
+                        base: type_id,
+                        args: fresh
+                            .into_iter()
+                            .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                            .collect(),
+                    };
+                    (fields, ty)
+                };
                 for (arg_ty, field_ty) in arg_types.iter().zip(instantiated.iter()) {
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         arg_ty.clone(),
@@ -2265,7 +2293,7 @@ impl TypeChecker {
                         span,
                     });
                 }
-                return Type::Named(type_id);
+                return result_ty;
             }
         }
 
@@ -2943,8 +2971,40 @@ impl TypeChecker {
                                         let ret = Type::option(t_var);
                                         (params, ret)
                                     } else {
-                                        let instantiated = self.instantiate_type_vars(&fields);
-                                        (instantiated, Type::Named(id))
+                                        // A generic enum takes its type args from
+                                        // the payload: `GrowError.Full(item)` writes
+                                        // no `<…>`, so each declared parameter gets
+                                        // a fresh variable the argument then binds.
+                                        // Typing the result as bare `Named(id)`
+                                        // dropped them, and the value never matched
+                                        // the declared `void or GrowError<Item>` —
+                                        // so no generic error type could be returned
+                                        // at all (#666).
+                                        let params = self.enum_type_params(id);
+                                        if params.is_empty() {
+                                            let instantiated = self.instantiate_type_vars(&fields);
+                                            (instantiated, Type::Named(id))
+                                        } else {
+                                            let fresh: Vec<Type> =
+                                                params.iter().map(|_| self.ctx.fresh_var()).collect();
+                                            let subst: std::collections::HashMap<&str, Type> = params
+                                                .iter()
+                                                .map(|p| p.as_str())
+                                                .zip(fresh.iter().cloned())
+                                                .collect();
+                                            let instantiated: Vec<Type> = fields
+                                                .iter()
+                                                .map(|f| Self::substitute_type_params(f, &subst))
+                                                .collect();
+                                            let ret = Type::Generic {
+                                                base: id,
+                                                args: fresh
+                                                    .into_iter()
+                                                    .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                                                    .collect(),
+                                            };
+                                            (instantiated, ret)
+                                        }
                                     };
 
                                     return Type::Fn {

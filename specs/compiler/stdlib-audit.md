@@ -12,7 +12,7 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `push(item)` | ✓ Implemented | Returns `()`, panics on failure. `try_push` returns `() or PushError` |
+| `push(item)` | ✓ Implemented | Returns `()`, panics on failure. `try_push` returns `() or GrowError` |
 | `pop()` | ✓ Implemented | Returns `T?` |
 | `len()` | ✓ Implemented | Returns count |
 | `get(i)` | ✓ Implemented | Returns `T?` (copies) |
@@ -194,9 +194,9 @@ Per spec (C2), default growth operations panic on failure:
 - `vec.reserve(n)` → `void` (panics on OOM)
 
 Fallible `try_` variants return an error union:
-- `vec.try_push(x)` → `void or PushError<T>`
-- `map.try_insert(k, v)` → `V? or InsertError<V>`
-- `vec.try_reserve(n)` → `void or AllocError`
+- `vec.try_push(x)` → `void or GrowError<T>`
+- `map.try_insert(k, v)` → `V? or GrowError<V>`
+- `vec.try_reserve(n)` → `void or ReserveError`
 
 Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in error union.
 

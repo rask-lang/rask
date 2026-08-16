@@ -3140,3 +3140,13 @@ fn json_encode_uses_the_rask_encoder_on_both_backends() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// std.collections/C2 (#666): `try_push` was declared to return
+// `void or PushError<T>` and `PushError` was never declared anywhere, so the
+// rejected value it promised to hand back could not be named, matched or read.
+// The family is now `GrowError<T>`, and a generic error type survives being the
+// error branch of `T or E` on both backends.
+#[test]
+fn grow_error_carries_the_rejected_value_on_both_backends() {
+    assert_native_eq_interp("grow_error_family.rk", "4217ok");
+}
