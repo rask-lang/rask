@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.errors/ER16a (#647): `try` attaches to the fallible step of a postfix
+// chain, not to the whole chain. The wrappers carry no methods, so only one
+// placement can work and the compiler finds it — no parentheses needed.
+
+struct Config { port: i32, name: string }
+
+func load(bad: bool) -> Config or IoError {
+    if bad { return IoError.NotFound("no config") }
+    return Config { port: 8080, name: "svc" }
+}
+
+func read_file(path: string) -> string or IoError {
+    if path == "missing" { return IoError.NotFound("no such file") }
+    return "contents"
+}
+
+func doubles(n: u64) -> u64 { return n * 2 }
+
+// `(try read_file(p)).len()`, not `try (read_file(p).len())`.
+func size(path: string) -> u64 or IoError {
+    return try read_file(path).len()
+}
+
+// Field projection: extract first, then project.
+func port(bad: bool) -> i32 or IoError {
+    return try load(bad).port
+}
+
+// Two infallible steps after the fallible one.
+func name_len(bad: bool) -> u64 or IoError {
+    return try load(bad).name.len()
+}
+
+// `try` does not slide into call arguments — the argument keeps its own.
+func doubled(path: string) -> u64 or IoError {
+    return doubles(try read_file(path).len())
+}
+
+// The whole call is the fallible step here, so the `try` stays outside it.
+func whole(bad: bool) -> Config or IoError {
+    return try load(bad)
+}
+
+public func main() {
+    print(size("x") catch _ => 0)
+    print(size("missing") catch _ => 0)
+    print(port(false) catch _ => 0)
+    print(port(true) catch _ => 0)
+    print(name_len(false) catch _ => 0)
+    print(doubled("x") catch _ => 0)
+    print(doubled("missing") catch _ => 0)
+    print((whole(false) catch _ => Config { port: 0, name: "" }).port)
+}

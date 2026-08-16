@@ -103,6 +103,13 @@ pub struct Interpreter {
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape instead of unwrapping.
     pub(crate) fallback_keeps_shape: std::collections::HashSet<rask_ast::NodeId>,
+    /// ER16a: `try` node → the postfix-chain step it attaches to, when that
+    /// isn't the operand itself. `try read_file(p).len()` propagates at the
+    /// call and hands `.len()` the payload.
+    pub(crate) try_chain_placement: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
+    /// ER16a: the `try` whose propagation is still owed, and the step it waits
+    /// for. Armed when a `try` node is evaluated, discharged at that step.
+    pub(crate) pending_try_step: Option<(rask_ast::NodeId, rask_ast::NodeId)>,
     /// Final values of `mutate` parameters from the most recent user-function
     /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
     /// this to write each value back to its argument place. Cleared before every
@@ -134,6 +141,8 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            try_chain_placement: HashMap::new(),
+            pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
         }
@@ -153,6 +162,8 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            try_chain_placement: HashMap::new(),
+            pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             build_state: None,
             source_info: None,
@@ -178,6 +189,8 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             error_wraps: HashMap::new(),
+            try_chain_placement: HashMap::new(),
+            pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
         };
@@ -220,6 +233,15 @@ impl Interpreter {
         self.error_wraps = wraps;
     }
 
+    /// ER16a: supply the `try` sites that attach to a step inside a postfix
+    /// chain rather than to the whole operand.
+    pub fn set_try_chain_placement(
+        &mut self,
+        placement: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
+    ) {
+        self.try_chain_placement = placement;
+    }
+
     /// ER14a: supply the `??` sites whose right side is still wrapped, so a
     /// present left operand is handed back with its layer intact.
     pub fn set_fallback_keeps_shape(
@@ -255,6 +277,7 @@ impl Interpreter {
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.error_wraps = self.error_wraps.clone();
+        child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);

@@ -433,6 +433,72 @@ impl Interpreter {
     }
 
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
+        // ER16a: this is the chain step an enclosing `try` attached to. Evaluate
+        // it, then propagate here — the rest of the chain works on the payload,
+        // which is what `(try read_file(p)).len()` means.
+        if let Some((try_id, step)) = self.pending_try_step {
+            if step == expr.id {
+                self.pending_try_step = None;
+                let val = self.eval_expr_inner(expr)?;
+                return self.apply_try(try_id, expr.span, val);
+            }
+        }
+        self.eval_expr_inner(expr)
+    }
+
+    /// ER16/ER16a: hand back the payload, or leave through the other branch.
+    /// `try_id` is the `try` node; its `error_wraps` entry decides whether the
+    /// error leaves wearing the caller's boundary enum (ER31a).
+    pub(crate) fn apply_try(
+        &mut self,
+        try_id: rask_ast::NodeId,
+        span: rask_ast::Span,
+        val: Value,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        match &val {
+            Value::Enum { variant, fields, .. } => match variant.as_str() {
+                "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                "Err" | "None" => {
+                    let origin = self.origin_string(span);
+                    if let Some(wrap) = self.error_wraps.get(&try_id).cloned() {
+                        // ER31a: the caller declared a boundary enum, so the
+                        // error leaves wearing it.
+                        let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                        let wrapped = Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![set_error_origin(
+                                self.wrap_propagated_error(&wrap, inner),
+                                &origin,
+                            )],
+                            variant_index: 0,
+                            origin: Some(origin),
+                        };
+                        Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), span))
+                    } else {
+                        let propagated = set_result_origin(val, &origin);
+                        Err(RuntimeDiagnostic::new(RuntimeError::TryError(propagated), span))
+                    }
+                }
+                _ => Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError(format!(
+                        "`try` requires an Ok/Some or Err/None variant, got {}",
+                        variant
+                    )),
+                    span,
+                )),
+            },
+            _ => Err(RuntimeDiagnostic::new(
+                RuntimeError::TypeError(format!(
+                    "`try` requires a result or an optional, got {}",
+                    val.type_name()
+                )),
+                span,
+            )),
+        }
+    }
+
+    fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
                 use rask_ast::token::IntSuffix;
@@ -1731,50 +1797,20 @@ impl Interpreter {
                 if matches!(&inner.kind, ExprKind::Block(_)) {
                     return self.eval_expr(inner);
                 }
-                let val = self.eval_expr(inner)?;
-                match &val {
-                    Value::Enum {
-                        variant, fields, ..
-                    } => match variant.as_str() {
-                        "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "Err" | "None" => {
-                            let origin = self.origin_string(expr.span);
-                            if let Some(wrap) = self.error_wraps.get(&expr.id).cloned() {
-                                // ER31a: the caller declared a boundary enum, so
-                                // the error leaves wearing it.
-                                let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                let wrapped = Value::Enum {
-                                    name: "Result".to_string(),
-                                    variant: "Err".to_string(),
-                                    fields: vec![set_error_origin(
-                                        self.wrap_propagated_error(&wrap, inner),
-                                        &origin,
-                                    )],
-                                    variant_index: 0,
-                                    origin: Some(origin),
-                                };
-                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
-                            } else {
-                                let propagated = set_result_origin(val, &origin);
-                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(propagated), expr.span))
-                            }
-                        }
-                        _ => Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "`try` requires an Ok/Some or Err/None variant, got {}",
-                                variant
-                            )),
-                            expr.span
-                        )),
-                    },
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "`try` requires a result or an optional, got {}",
-                            val.type_name()
-                        )),
-                        expr.span
-                    )),
+                // ER16a: the `try` may belong to a step inside the chain rather
+                // than to the whole of it — `try read_file(p).len()` propagates
+                // at the call and hands `.len()` the payload. The checker picked
+                // the step; arm it and let `eval_expr` discharge it there.
+                if let Some(step) = self.try_chain_placement.get(&expr.id).copied() {
+                    if step != inner.id {
+                        let saved = self.pending_try_step.replace((expr.id, step));
+                        let out = self.eval_expr(inner);
+                        self.pending_try_step = saved;
+                        return out;
+                    }
                 }
+                let val = self.eval_expr(inner)?;
+                self.apply_try(expr.id, expr.span, val)
             }
 
             // ER14: `r catch e => body`. The body runs only on failure, with

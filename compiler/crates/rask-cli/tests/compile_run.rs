@@ -3150,3 +3150,12 @@ fn json_encode_uses_the_rask_encoder_on_both_backends() {
 fn grow_error_carries_the_rejected_value_on_both_backends() {
     assert_native_eq_interp("grow_error_family.rk", "4217ok");
 }
+
+// type.errors/ER16a (#647): `try` attaches to the fallible step of a postfix
+// chain, not to the whole chain. `try read_file(p).len()` used to be read as
+// `try (read_file(p).len())` and failed with "no method `len` on
+// `string or IoError`"; it means `(try read_file(p)).len()`.
+#[test]
+fn try_attaches_to_the_fallible_step_of_a_chain() {
+    assert_native_eq_interp("try_chain_placement.rk", "808080031608080");
+}

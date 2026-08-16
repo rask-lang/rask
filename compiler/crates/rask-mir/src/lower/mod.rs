@@ -267,6 +267,7 @@ impl<'a> MirContext<'a> {
             trait_coercions: &typed.trait_coercions,
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
+            try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
             comptime_globals: empty::comptime_globals(),
@@ -397,6 +398,9 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
+    /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
+    /// goes there, and the rest of the chain works on the payload.
+    pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -469,6 +473,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
+            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
@@ -495,6 +501,7 @@ impl<'a> MirContext<'a> {
             trait_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
+            try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -1029,6 +1036,10 @@ pub struct MirLowerer<'a> {
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
     catch_frames: Vec<CatchFrame>,
+    /// ER16a: the `try` whose branch is still owed, and the chain step it
+    /// attaches to. Armed by `lower_try` and discharged by `lower_expr` when it
+    /// reaches that step.
+    pending_try_step: Option<(NodeId, NodeId)>,
     /// Active `comptime for` loop-binding names and the field they're currently
     /// bound to (innermost last, for nesting). `field` here isn't a runtime
     /// value — `field.name`/`value.(field.name)` splice this directly instead
@@ -2537,6 +2548,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
+            pending_try_step: None,
             comptime_for_bindings: Vec::new(),
         };
 

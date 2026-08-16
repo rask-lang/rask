@@ -692,6 +692,16 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        // ER16a: this is the chain step an enclosing `try` attached to. Lower it,
+        // then branch right here — the rest of the chain then works on the
+        // payload, which is what `(try read_file(p)).len()` means.
+        if let Some((try_id, step)) = self.pending_try_step {
+            if step == expr.id {
+                self.pending_try_step = None;
+                let (op, ty) = self.lower_expr_inner(expr)?;
+                return self.emit_try_branch(try_id, expr, op, ty);
+            }
+        }
         let (op, ty) = self.lower_expr_inner(expr)?;
         // TR5: a concrete value the checker flagged as flowing into an
         // `any Trait` position gets its vtable here — at the value, so every

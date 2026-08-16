@@ -860,7 +860,20 @@ impl TypeChecker {
                 if matches!(&inner.kind, ExprKind::Block(_)) {
                     return self.infer_expr(inner);
                 }
+                // ER16a: `try` attaches to the fallible step of a postfix chain,
+                // not to the whole of it — `try read_file(p).len()` is
+                // `(try read_file(p)).len()`. Mark every step below the outermost
+                // so the first one that comes back wrapped hands the rest of the
+                // chain its payload instead of the wrapper.
+                self.mark_try_chain_steps(inner);
                 let inner_ty = self.infer_expr(inner);
+                self.try_chain_steps.clear();
+                if let Some((step_id, err_ty)) = self.try_chain_unwrapped.take() {
+                    // The chain already left through that step; this `try` has
+                    // nothing further to peel.
+                    self.record_try_placement(expr.id, step_id, &err_ty, expr.span);
+                    return inner_ty;
+                }
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
                     // ER16 on an optional: the `none` leaves to the caller.
@@ -1704,8 +1717,84 @@ impl TypeChecker {
             }
         };
 
+        // ER16a: this is a step of a postfix chain under a `try`. If it came
+        // back wrapped, this is the fallible step — the `try` attaches here and
+        // the rest of the chain works on the payload. The wrappers carry no
+        // methods, so at most one step in a chain can do this.
+        let ty = self.unwrap_try_chain_step(expr, ty);
+
         self.node_types.insert(expr.id, ty.clone());
         ty
+    }
+
+    /// ER16a: mark every postfix step below `chain` as a candidate for the
+    /// `try` to attach to. Receivers only — `try` does not slide into call
+    /// arguments, so a fallible call in an argument list keeps its own `try`.
+    fn mark_try_chain_steps(&mut self, chain: &Expr) {
+        self.try_chain_steps.clear();
+        self.try_chain_unwrapped = None;
+        let mut node = chain;
+        loop {
+            let inner = match &node.kind {
+                ExprKind::MethodCall { object, .. }
+                | ExprKind::Field { object, .. }
+                | ExprKind::Index { object, .. }
+                | ExprKind::DynamicField { object, .. } => object,
+                ExprKind::Call { func, .. } => func,
+                _ => break,
+            };
+            self.try_chain_steps.insert(inner.id);
+            node = inner;
+        }
+    }
+
+    /// ER16a: strip the wrapper off the chain step the `try` attaches to.
+    /// Only the first such step in a chain is taken.
+    fn unwrap_try_chain_step(&mut self, expr: &Expr, ty: Type) -> Type {
+        if self.try_chain_unwrapped.is_some() || !self.try_chain_steps.contains(&expr.id) {
+            return ty;
+        }
+        let resolved = self.ctx.apply(&ty);
+        let Type::Result { ok, err } = &resolved else { return ty };
+        // A flat `T? or E` has two branches that could leave, so it needs the
+        // `try … ??` composite and can't be resolved by placement alone (ER47).
+        if ok.is_option() {
+            return ty;
+        }
+        self.try_chain_unwrapped = Some((expr.id, (**err).clone()));
+        (**ok).clone()
+    }
+
+    /// ER16a: record where a `try` landed and run the propagation bookkeeping
+    /// for it — the same checks bare `try r` does, against the step's error.
+    fn record_try_placement(&mut self, try_id: NodeId, step_id: NodeId, err: &Type, span: Span) {
+        self.try_chain_placement.insert(try_id, step_id);
+        if matches!(err, Type::None) {
+            self.check_absence_can_leave(span);
+            return;
+        }
+        if !self.error_can_leave(span) {
+            return;
+        }
+        if self.accumulate_errors {
+            self.inferred_errors.push(err.clone());
+            return;
+        }
+        let Some(return_ty) = self.current_return_type.clone() else { return };
+        let resolved_ret = self.ctx.apply(&return_ty);
+        if let Type::Result { err: ret_err, .. } = &resolved_ret {
+            let ret_err = ret_err.clone();
+            self.propagate_try_error(try_id, err, &ret_err, span);
+        } else if matches!(resolved_ret, Type::Var(_)) {
+            // GC7: the return type is still open — `try` says it has an error
+            // branch, and this is it.
+            let ret_ok = self.ctx.fresh_var();
+            let ret_result = Type::Result {
+                ok: Box::new(ret_ok),
+                err: Box::new(err.clone()),
+            };
+            let _ = self.unify(&resolved_ret, &ret_result, span);
+        }
     }
 
     // ------------------------------------------------------------------------
