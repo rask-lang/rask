@@ -66,6 +66,18 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 .with_fix("check spelling or add an import")
                 .with_why("all symbols must be defined before use — Rask requires explicit imports"),
 
+            // structure.modules/IM1: `pkg.Name` follows from `import pkg`. The
+            // stdlib's own source is resolved alongside the program and declares
+            // each module as a plain type, so the name was in scope whether or
+            // not it was imported — native compiled and ran `math.sin(x)` with
+            // no import while the interpreter, which binds a module only when it
+            // sees the import, died at runtime (#723).
+            ModuleNotImported { name } => Diagnostic::error(format!("`{}` is used but never imported", name))
+                .with_code("E0210")
+                .with_primary(self.span, format!("`{}` needs an import to be in scope", name))
+                .with_fix(format!("import {}", name))
+                .with_why("a module's name comes from its import — without one there's nothing bringing `{}` into scope [structure.modules/IM1]".replace("{}", name)),
+
             DuplicateDefinition { name, previous } => {
                 Diagnostic::error(format!("duplicate definition: `{}`", name))
                     .with_code("E0201")

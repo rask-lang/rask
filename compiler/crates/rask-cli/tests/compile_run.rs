@@ -881,6 +881,27 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+#[test]
+fn error_module_used_without_import() {
+    // #723: the stdlib's source is resolved alongside the program and declares
+    // each module as a plain type (`struct math { }`), so the name was in scope
+    // whether or not it was imported. `math.sin(x)` with no import passed
+    // `rask check`, compiled, and ran natively — and died on the interpreter,
+    // which binds a module only when it sees the import declaration.
+    let (failed, out) = compile_error_output("module_without_import.rk");
+    assert!(failed, "a module used without importing it must be rejected: {}", out);
+    for module in ["math", "fs"] {
+        assert!(
+            out.contains(&format!("`{module}` is used but never imported")),
+            "should name `{module}`: {out}",
+        );
+        assert!(
+            out.contains(&format!("import {module}")),
+            "should show the import as the fix for `{module}`: {out}",
+        );
+    }
+}
+
 // #500: a free function named with a keyword can be declared but never called,
 // so the declaration is rejected — and the message says why, instead of the
 // backwards type error the call site used to produce.

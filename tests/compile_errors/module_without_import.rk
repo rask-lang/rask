@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// structure.modules/IM1: a module's name comes from its import. The stdlib's
+// own source is resolved alongside the program and declares each module as a
+// plain type, so these names used to be in scope with no import at all — the
+// program compiled and ran natively and died on the interpreter (#723).
+
+func uses_math() -> f64 {
+    return math.sin(0.5)               // ERROR: `math` used but never imported
+}
+
+func uses_fs() -> bool {
+    return fs.exists("/tmp")           // ERROR: `fs` used but never imported
+}
+
+func main() {}
