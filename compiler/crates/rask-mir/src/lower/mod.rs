@@ -5234,6 +5234,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -5258,6 +5259,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -5304,6 +5306,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -5328,6 +5331,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
@@ -5380,6 +5384,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -5404,6 +5409,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
             resource_types: &empty_resource_types,
