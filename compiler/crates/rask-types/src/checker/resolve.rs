@@ -2021,6 +2021,16 @@ impl TypeChecker {
             self.ctx.fresh_var()
         };
 
+        // What to hand back on a constructed `Sender<T>`/`Receiver<T>`/`Mutex<T>`.
+        // Written-out arguments pass through; when there are none this is the
+        // fresh variable from just above, so every piece of one channel shares a
+        // type instead of each call inventing its own and dropping it (#717).
+        let inner_args = if type_args.is_empty() {
+            vec![GenericArg::Type(Box::new(inner_type.clone()))]
+        } else {
+            type_args.to_vec()
+        };
+
         match (type_name, method) {
             // Shared<T>.read() -> T  (inline access, E5/R5)
             ("Shared", "read") if args.is_empty() => {
@@ -2056,7 +2066,7 @@ impl TypeChecker {
             ("Shared", "clone") if args.is_empty() => {
                 let shared_ty = Type::UnresolvedGeneric {
                     name: "Shared".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 self.unify(ret, &shared_ty, span)
             }
@@ -2097,7 +2107,7 @@ impl TypeChecker {
             ("Mutex", "clone") if args.is_empty() => {
                 let mutex_ty = Type::UnresolvedGeneric {
                     name: "Mutex".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 self.unify(ret, &mutex_ty, span)
             }
@@ -2133,7 +2143,7 @@ impl TypeChecker {
             ("Sender", "clone") if args.is_empty() => {
                 let sender_ty = Type::UnresolvedGeneric {
                     name: "Sender".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 self.unify(ret, &sender_ty, span)
             }
@@ -2165,11 +2175,11 @@ impl TypeChecker {
             ("Channel", "buffered") if args.len() == 1 => {
                 let sender = Type::UnresolvedGeneric {
                     name: "Sender".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 let receiver = Type::UnresolvedGeneric {
                     name: "Receiver".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 let tuple_ty = Type::Tuple(vec![sender, receiver]);
                 self.unify(ret, &tuple_ty, span)
@@ -2178,31 +2188,36 @@ impl TypeChecker {
             ("Channel", "unbuffered") if args.is_empty() => {
                 let sender = Type::UnresolvedGeneric {
                     name: "Sender".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 let receiver = Type::UnresolvedGeneric {
                     name: "Receiver".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 let tuple_ty = Type::Tuple(vec![sender, receiver]);
                 self.unify(ret, &tuple_ty, span)
             }
-            // Shared<T>.new(value) -> Shared<T> (static constructor with explicit type param)
+            // Shared<T>.new(value) -> Shared<T>. Written `Shared.new(0)` the
+            // element type comes from the value, so pin the variable to it.
             ("Shared", "new") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
                 let shared_ty = Type::UnresolvedGeneric {
                     name: "Shared".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 self.unify(ret, &shared_ty, span)
             }
-            // Mutex<T>.new(value) -> Mutex<T> (static constructor with explicit type param)
+            // Mutex<T>.new(value) -> Mutex<T>, same as Shared above.
             ("Mutex", "new") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
                 let mutex_ty = Type::UnresolvedGeneric {
                     name: "Mutex".to_string(),
-                    args: type_args.to_vec(),
+                    args: inner_args.clone(),
                 };
                 self.unify(ret, &mutex_ty, span)
             }
+            // Unrecognized method: hand the receiver on exactly as written
+            // rather than inventing an argument the solver never asked for.
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
