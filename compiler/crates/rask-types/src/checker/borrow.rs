@@ -43,7 +43,9 @@ pub(crate) struct ViewCreation {
     pub(crate) display: String,
     /// The whole slicing expression as written (`self.url.trim()`), so a
     /// message can quote the user's code rather than a generic slice.
-    pub(crate) slice_expr: String,
+    /// `None` when it won't reprint exactly — then the message describes the
+    /// slice instead of quoting it.
+    pub(crate) slice_expr: Option<String>,
     /// Set for `split`/`lines`/`chars` — a sequence of views, not one.
     pub(crate) yields_sequence: bool,
     pub(crate) mode: BorrowMode,
@@ -56,7 +58,7 @@ pub(crate) struct ViewCreation {
 pub(crate) struct PendingViewBinding {
     pub(crate) binding: String,
     pub(crate) display: String,
-    pub(crate) slice_expr: String,
+    pub(crate) slice_expr: Option<String>,
     pub(crate) yields_sequence: bool,
     pub(crate) source_ty: Type,
     pub(crate) slice_span: Span,
@@ -296,52 +298,52 @@ impl TypeChecker {
     /// Check if an expression creates a view (borrow) from a source variable.
     /// Returns (source_var_name, borrow_mode) if it does.
     /// Render an lvalue path for diagnostics: `self.url`, `cfg.parts[0]`.
-    /// Indices collapse to `[..]` — the message only needs to name the source.
+    ///
+    /// Exact or nothing. Everything this returns is quoted back to the user as
+    /// their own code, so a subscript it can't reprint is `None`, not a guess —
+    /// collapsing `lines[0]` to `lines[..]` quoted a program nobody wrote and
+    /// suggested a fix that doesn't compile (#694).
     fn view_source_path(expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::Field { object, field } => {
                 Some(format!("{}.{}", Self::view_source_path(object)?, field))
             }
-            ExprKind::Index { object, .. } => {
-                Some(format!("{}[..]", Self::view_source_path(object)?))
+            ExprKind::Index { object, index } => {
+                let base = Self::view_source_path(object)?;
+                let idx = Self::render_range(index)
+                    .or_else(|| Self::render_simple(index))?;
+                Some(format!("{}[{}]", base, idx))
             }
             _ => None,
         }
     }
 
     /// Render the slicing expression the way the user wrote it, so the message
-    /// can quote their code instead of a generic `line[i..j]`. Only the shapes
-    /// `detect_view_creation` recognises need to render; anything it can't
-    /// reproduce faithfully falls back to the source path.
+    /// can quote their code instead of a generic `line[i..j]`. `None` when any
+    /// piece won't reprint exactly — the caller then drops the quote rather
+    /// than passing an approximation off as the user's source.
     fn render_slice_expr(expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::Index { object, index } => {
                 let base = Self::view_source_path(object)?;
-                match Self::render_range(index) {
-                    Some(range) => Some(format!("{}[{}]", base, range)),
-                    None => Some(format!("{}[..]", base)),
-                }
+                Some(format!("{}[{}]", base, Self::render_range(index)?))
             }
             ExprKind::MethodCall { object, method, args, .. } => {
                 let base = Self::view_source_path(object)?;
-                // Only render arguments that round-trip exactly; a view method
-                // with a complex argument keeps the bare `()` rather than
-                // printing something the user didn't type.
                 let rendered: Option<Vec<String>> =
                     args.iter().map(|a| Self::render_simple(&a.expr)).collect();
-                match rendered {
-                    Some(parts) => Some(format!("{}.{}({})", base, method, parts.join(", "))),
-                    None => Some(format!("{}.{}(…)", base, method)),
-                }
+                Some(format!("{}.{}({})", base, method, rendered?.join(", ")))
             }
             _ => None,
         }
     }
 
-    /// `0..4`, `start..`, `..n` — only when both ends render exactly.
+    /// `0..4`, `0..=4`, `start..`, `..n` — only when both ends render exactly.
+    /// The `=` is part of the text: dropping it quoted a half-open range at a
+    /// closed one, which is a different substring (#694).
     fn render_range(index: &Expr) -> Option<String> {
-        let ExprKind::Range { start, end, .. } = &index.kind else { return None };
+        let ExprKind::Range { start, end, inclusive } = &index.kind else { return None };
         let lo = match start {
             Some(e) => Self::render_simple(e)?,
             None => String::new(),
@@ -350,7 +352,7 @@ impl TypeChecker {
             Some(e) => Self::render_simple(e)?,
             None => String::new(),
         };
-        Some(format!("{}..{}", lo, hi))
+        Some(format!("{}..{}{}", lo, if *inclusive { "=" } else { "" }, hi))
     }
 
     /// Literals and plain paths only — the pieces that can be reprinted
@@ -394,9 +396,11 @@ impl TypeChecker {
 
     fn viewed(object: &Expr, whole: &Expr, mode: BorrowMode) -> Option<ViewCreation> {
         let root = Self::root_ident_name(object)?;
+        // Naming the root variable is always true — it's where the bytes live —
+        // so that's the fallback when the full path won't reprint exactly.
         let display = Self::view_source_path(object).unwrap_or_else(|| root.clone());
         Some(ViewCreation {
-            slice_expr: Self::render_slice_expr(whole).unwrap_or_else(|| display.clone()),
+            slice_expr: Self::render_slice_expr(whole),
             yields_sequence: false,
             display,
             root,

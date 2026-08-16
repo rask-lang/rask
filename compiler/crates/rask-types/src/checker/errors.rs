@@ -218,7 +218,12 @@ pub enum TypeError {
         /// `line[0..4]`). The message quotes this — describing the code in
         /// terms of a `line[i..j]` the program never contained meant the
         /// reader had to already know that `trim()` returns a slice (#694).
-        slice_expr: String,
+        ///
+        /// `None` when the expression won't reprint exactly. Only an exact
+        /// quote goes in, since anything else reads as the user's own code:
+        /// rendering `lines[0]` as `lines[..]` produced a fix that doesn't
+        /// compile, and `s[0..=4]` as `s[0..4]` named a shorter substring.
+        slice_expr: Option<String>,
         /// True for the methods that hand back a sequence of views
         /// (`split`, `lines`, `chars`) rather than one. `.to_string()` is the
         /// fix for a single view and nonsense for a sequence, so the message

@@ -790,9 +790,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
             }
             StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
+                // Only an exact reprint of the user's expression gets quoted;
+                // otherwise say "this slice" and point at it with the span.
+                // A near-miss quote reads as their own code and sends them
+                // looking for a line they never wrote (#694).
+                let subject = match slice_expr {
+                    Some(expr) => format!("`{}`", expr),
+                    None if *yields_sequence => "this split".to_string(),
+                    None => "this slice".to_string(),
+                };
                 let d = Diagnostic::error(format!(
-                    "`{}` gives {} into `{}`, not {}",
-                    slice_expr,
+                    "{} gives {} into `{}`, not {}",
+                    subject,
                     if *yields_sequence { "views" } else { "a view" },
                     source_var,
                     if *yields_sequence { "new strings" } else { "a new string" }
@@ -807,10 +816,26 @@ impl ToDiagnostic for rask_types::TypeError {
                 if *yields_sequence {
                     // `.to_string()` on a sequence of views is not a fix, so
                     // don't offer one — loop over it and copy each piece.
-                    d.with_help("loop over it in place, or copy each piece out with .to_string() as you go")
+                    let d = d.with_help("loop over it in place, or copy each piece out with .to_string() as you go");
+                    match slice_expr {
+                        Some(expr) => d.with_fix(format!(
+                            "for piece in {} {{ … }}  — or copy each one: {}.push(piece.to_string())",
+                            expr, view_var
+                        )),
+                        None => d.with_fix(format!(
+                            "loop over the pieces where you slice them, or copy each with `.to_string()` before putting it in `{}`",
+                            view_var
+                        )),
+                    }
                 } else {
-                    d.with_help("add .to_string() to copy the bytes out, or keep the byte indices and re-slice where you need them")
-                        .with_fix(format!("let {} = {}.to_string()", view_var, slice_expr))
+                    let d = d.with_help("add .to_string() to copy the bytes out, or keep the byte indices and re-slice where you need them");
+                    match slice_expr {
+                        Some(expr) => d.with_fix(format!("let {} = {}.to_string()", view_var, expr)),
+                        None => d.with_fix(format!(
+                            "add `.to_string()` to the slice: it copies the bytes out of `{}` into a string `{}` can keep",
+                            source_var, view_var
+                        )),
+                    }
                 }
             }
 
