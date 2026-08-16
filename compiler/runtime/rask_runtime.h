@@ -86,6 +86,12 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
 void     rask_vec_free(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
+int64_t  rask_vec_bound(const RaskVec *v);
+int64_t  rask_vec_remaining(const RaskVec *v);
+int64_t  rask_vec_is_bounded(const RaskVec *v);
+int64_t  rask_vec_is_full(const RaskVec *v);
+int64_t  rask_vec_try_push(RaskVec *v, const void *elem);
 int64_t  rask_vec_push(RaskVec *v, const void *elem);
 void    *rask_vec_get(const RaskVec *v, int64_t index);
 // Element pointer lent straight out of the buffer, so a `mutate` callee writes

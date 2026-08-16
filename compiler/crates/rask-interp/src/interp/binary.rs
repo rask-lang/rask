@@ -225,13 +225,13 @@ impl Interpreter {
             .iter()
             .map(|&b| Value::int(b as i64))
             .collect();
-        let remaining_val = Value::Vec(Arc::new(Mutex::new(remaining)));
+        let remaining_val = Value::vec(remaining);
 
         // Return Ok((struct, remaining))
         Ok(Value::Enum {
             name: "Result".into(),
             variant: "Ok".into(),
-            fields: vec![Value::Vec(Arc::new(Mutex::new(vec![struct_val, remaining_val])))],
+            fields: vec![Value::vec(vec![struct_val, remaining_val])],
             variant_index: 0,
             origin: None,
         })
@@ -261,7 +261,7 @@ impl Interpreter {
         }
 
         let result: Vec<Value> = buf.iter().map(|&b| Value::int(b as i64)).collect();
-        Ok(Value::Vec(Arc::new(Mutex::new(result))))
+        Ok(Value::vec(result))
     }
 
     /// G3: build_into(self, buffer: []u8) -> usize or BuildError
@@ -339,7 +339,7 @@ fn read_binary_field(data: &[u8], field: &BinaryFieldMeta) -> Value {
             .iter()
             .map(|&b| Value::int(b as i64))
             .collect();
-        return Value::Vec(Arc::new(Mutex::new(values)));
+        return Value::vec(values);
     }
 
     let raw = read_bits(data, field.bit_offset, field.bits);

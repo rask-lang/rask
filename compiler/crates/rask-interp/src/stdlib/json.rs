@@ -756,7 +756,7 @@ fn make_json_array(items: Vec<Value>) -> Value {
     Value::Enum {
         name: "JsonValue".to_string(),
         variant: "Array".to_string(),
-        fields: vec![Value::Vec(Arc::new(Mutex::new(items)))],
+        fields: vec![Value::vec(items)],
         variant_index: 4, origin: None,
     }
 }
@@ -868,7 +868,7 @@ fn json_to_typed(
             let base = if path.is_empty() { "the list" } else { path };
             out.push(json_to_typed(item, &inner, &format!("{}[{}]", base, i), struct_decls)?);
         }
-        return Ok(Value::Vec(Arc::new(Mutex::new(out))));
+        return Ok(Value::vec(out));
     }
 
     if let Some(args) = generic_args(ty, "Map") {
@@ -989,7 +989,7 @@ fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
         return option_none();
     }
     if generic_arg(ty, "Vec").is_some() {
-        return Value::Vec(Arc::new(Mutex::new(Vec::new())));
+        return Value::vec(Vec::new());
     }
     if generic_args(ty, "Map").is_some() {
         return Value::Map(Arc::new(Mutex::new(MapData::new())));

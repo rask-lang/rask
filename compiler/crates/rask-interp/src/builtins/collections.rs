@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value};
+use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value, VecData};
 
 /// Helper function to check if a value is truthy.
 fn is_truthy(val: &Value) -> bool {
@@ -18,28 +18,74 @@ fn is_truthy(val: &Value) -> bool {
     }
 }
 
+/// `Some(v)` / `none` as interpreter values.
+fn option_value(v: Option<Value>) -> Value {
+    match v {
+        Some(v) => Value::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            fields: vec![v],
+            variant_index: 0,
+            origin: None,
+        },
+        None => Value::Enum {
+            name: "Option".to_string(),
+            variant: "None".to_string(),
+            fields: vec![],
+            variant_index: 0,
+            origin: None,
+        },
+    }
+}
+
 impl Interpreter {
     /// Handle Vec method calls.
     pub(crate) fn call_vec_method(
         &mut self,
-        v: &Arc<Mutex<Vec<Value>>>,
+        v: &Arc<Mutex<VecData>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
             "push" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
-                v.lock().unwrap().push(item);
+                let mut guard = v.lock().unwrap();
+                // C2: growth past the bound panics. `try_push` is the variant
+                // that hands the value back instead.
+                if guard.is_full() {
+                    let bound = guard.bound.unwrap_or(0);
+                    return Err(RuntimeError::Panic(format!(
+                        "push failed - collection at capacity (bound {})",
+                        bound
+                    )));
+                }
+                guard.push(item);
                 Ok(Value::Unit)
             }
-            // Vec has no capacity bound yet and OOM panics in the allocator, so
-            // there is no reachable failure — every push is accepted and the
-            // result is the ok branch. Native does the same through the
-            // Vec_try_push dispatch entry; when a bound lands, both sides have
-            // to start building GrowError.Full with the rejected value.
+            // C2: hands the value back rather than panicking. Native lowers the
+            // same shape inline at the call site (stdlib generic bodies aren't
+            // monomorphized, so the element can't cross a call boundary there).
+            // `NoMemory` has no path on either backend — the allocator panics on
+            // OOM rather than reporting it.
             "try_push" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
-                v.lock().unwrap().push(item);
+                let mut guard = v.lock().unwrap();
+                if guard.is_full() {
+                    return Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::Enum {
+                            name: "GrowError".to_string(),
+                            variant: "Full".to_string(),
+                            fields: vec![item],
+                            variant_index: 0,
+                            origin: None,
+                        }],
+                        variant_index: 0,
+                        origin: None,
+                    });
+                }
+                guard.push(item);
                 Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
@@ -47,6 +93,17 @@ impl Interpreter {
                     variant_index: 0, origin: None,
                 })
             }
+            // CP1/CP2: `none` when the vector may grow freely.
+            "capacity" => {
+                let bound = v.lock().unwrap().bound;
+                Ok(option_value(bound.map(|b| Value::int(b as i64))))
+            }
+            "remaining" => {
+                let left = v.lock().unwrap().remaining();
+                Ok(option_value(left.map(|n| Value::int(n as i64))))
+            }
+            "is_bounded" => Ok(Value::Bool(v.lock().unwrap().bound.is_some())),
+            "is_full" => Ok(Value::Bool(v.lock().unwrap().is_full())),
             "pop" => {
                 let result = v.lock().unwrap().pop();
                 match result {
@@ -94,12 +151,12 @@ impl Interpreter {
             "skip" => {
                 let n = self.expect_int(&args, 0)? as usize;
                 let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(skipped))))
+                Ok(Value::vec(skipped))
             }
             "take" => {
                 let n = self.expect_int(&args, 0)? as usize;
                 let taken: Vec<Value> = v.lock().unwrap().iter().take(n).cloned().collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(taken))))
+                Ok(Value::vec(taken))
             }
             "first" => {
                 match v.lock().unwrap().first().cloned() {
@@ -232,9 +289,9 @@ impl Interpreter {
                 }
                 let vec = v.lock().unwrap();
                 let chunks: Vec<Value> = vec.chunks(chunk_size)
-                    .map(|chunk| Value::Vec(Arc::new(Mutex::new(chunk.to_vec()))))
+                    .map(|chunk| Value::vec(chunk.to_vec()))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(chunks))))
+                Ok(Value::vec(chunks))
             }
             "filter" => {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
@@ -246,7 +303,7 @@ impl Interpreter {
                         filtered.push(item.clone());
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(filtered))))
+                Ok(Value::vec(filtered))
             }
             "map" => {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
@@ -256,7 +313,7 @@ impl Interpreter {
                     let result = self.call_value(closure.clone(), vec![item.clone()])?;
                     mapped.push(result);
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(mapped))))
+                Ok(Value::vec(mapped))
             }
             "wide" => {
                 // Stage this Vec as a data-parallel plan (conc.data-parallel).
@@ -269,12 +326,12 @@ impl Interpreter {
                 for item in vec.iter() {
                     let mapped = self.call_value(closure.clone(), vec![item.clone()])?;
                     if let Value::Vec(inner) = mapped {
-                        result.extend(inner.lock().unwrap().clone());
+                        result.extend(inner.lock().unwrap().items.clone());
                     } else {
                         result.push(mapped);
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(result))))
+                Ok(Value::vec(result))
             }
             "fold" => {
                 let init = args.get(0).cloned().unwrap_or(Value::Unit);
@@ -314,10 +371,10 @@ impl Interpreter {
                     .iter()
                     .enumerate()
                     .map(|(i, item)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![Value::int(i as i64), item.clone()])))
+                        Value::vec(vec![Value::int(i as i64), item.clone()])
                     })
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(enumerated))))
+                Ok(Value::vec(enumerated))
             }
             "zip" => {
                 if let Some(Value::Vec(other)) = args.first() {
@@ -327,10 +384,10 @@ impl Interpreter {
                         .iter()
                         .zip(vec2.iter())
                         .map(|(a, b)| {
-                            Value::Vec(Arc::new(Mutex::new(vec![a.clone(), b.clone()])))
+                            Value::vec(vec![a.clone(), b.clone()])
                         })
                         .collect();
-                    Ok(Value::Vec(Arc::new(Mutex::new(zipped))))
+                    Ok(Value::vec(zipped))
                 } else {
                     Err(RuntimeError::TypeError("zip requires a Vec argument".to_string()))
                 }
@@ -339,19 +396,19 @@ impl Interpreter {
                 let n = self.expect_int(&args, 0)? as usize;
                 let vec = v.lock().unwrap();
                 let taken: Vec<Value> = vec.iter().take(n).cloned().collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(taken))))
+                Ok(Value::vec(taken))
             }
             "flatten" => {
                 let vec = v.lock().unwrap();
                 let mut flattened = Vec::new();
                 for item in vec.iter() {
                     if let Value::Vec(inner) = item {
-                        flattened.extend(inner.lock().unwrap().clone());
+                        flattened.extend(inner.lock().unwrap().items.clone());
                     } else {
                         flattened.push(item.clone());
                     }
                 }
-                Ok(Value::Vec(Arc::new(Mutex::new(flattened))))
+                Ok(Value::vec(flattened))
             }
             "sort" => {
                 let mut vec = v.lock().unwrap();
@@ -547,8 +604,10 @@ impl Interpreter {
                 })
             }
             "take_all" => {
-                let items = std::mem::take(&mut *v.lock().unwrap());
-                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+                // Draining leaves the vector empty but keeps its bound — a
+                // fixed vector is still fixed after you empty it.
+                let items = std::mem::take(&mut v.lock().unwrap().items);
+                Ok(Value::vec(items))
             }
             "read" => {
                 let index = self.expect_int(&args, 0)? as usize;
@@ -740,7 +799,7 @@ impl Interpreter {
                         generation: *gen,
                     })
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(handles))))
+                Ok(Value::vec(handles))
             }
             "clone" => {
                 let pool = p.lock().unwrap();
@@ -794,7 +853,7 @@ impl Interpreter {
                 }
                 pool.free_list = (0..pool.slots.len() as u32).collect();
                 pool.len = 0;
-                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+                Ok(Value::vec(items))
             }
             "entries" => {
                 let pool = p.lock().unwrap();
@@ -803,14 +862,14 @@ impl Interpreter {
                     .filter_map(|(i, (gen, slot))| {
                         slot.as_ref().map(|val| {
                             // Pair as a 2-element Vec (tuple representation)
-                            Value::Vec(Arc::new(Mutex::new(vec![
+                            Value::vec(vec![
                                 Value::Handle { pool_id, index: i as u32, generation: *gen },
                                 val.clone(),
-                            ])))
+                            ])
                         })
                     })
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+                Ok(Value::vec(pairs))
             }
             "get_unchecked" => {
                 if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
@@ -909,7 +968,7 @@ impl Interpreter {
                 };
                 let p1 = clone_pool(&pool);
                 let p2 = clone_pool(&pool);
-                Ok(Value::Vec(Arc::new(Mutex::new(vec![p1, p2]))))
+                Ok(Value::vec(vec![p1, p2]))
             }
             "take_all" => {
                 let mut pool = p.lock().unwrap();
@@ -923,7 +982,7 @@ impl Interpreter {
                 // Reset pool state
                 pool.free_list = (0..pool.slots.len() as u32).collect();
                 pool.len = 0;
-                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+                Ok(Value::vec(items))
             }
             "read" => {
                 if let Some(Value::Handle { pool_id: _, index, generation }) = args.get(0) {
@@ -1113,12 +1172,12 @@ impl Interpreter {
             "keys" => {
                 let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
                     .into_iter().map(|(k, _)| k).collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(keys))))
+                Ok(Value::vec(keys))
             }
             "values" => {
                 let values: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
                     .into_iter().map(|(_, v)| v).collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+                Ok(Value::vec(values))
             }
             "len" => Ok(Value::int(m.lock().unwrap().len() as i64)),
             "is_empty" => Ok(Value::Bool(m.lock().unwrap().is_empty())),
@@ -1129,9 +1188,9 @@ impl Interpreter {
             "iter" => {
                 let pairs: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
                     .into_iter()
-                    .map(|(k, v)| Value::Vec(Arc::new(Mutex::new(vec![k, v]))))
+                    .map(|(k, v)| Value::vec(vec![k, v]))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+                Ok(Value::vec(pairs))
             }
             "clone" => {
                 let cloned: MapData = m.lock().unwrap().clone();
@@ -1182,11 +1241,11 @@ impl Interpreter {
             "take_all" => {
                 let items: MapData = std::mem::take(&mut *m.lock().unwrap());
                 let pairs = map_entries_seeded(&items);
-                Ok(Value::Vec(Arc::new(Mutex::new(
+                Ok(Value::vec(
                     pairs.into_iter().map(|(k, v)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![k, v])))
+                        Value::vec(vec![k, v])
                     }).collect()
-                ))))
+                ))
             }
             "read" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
@@ -1237,11 +1296,23 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match (kind, method) {
             (TypeConstructorKind::Vec, "new") => {
-                Ok(Value::Vec(Arc::new(Mutex::new(Vec::new()))))
+                Ok(Value::vec(Vec::new()))
             }
             (TypeConstructorKind::Vec, "with_capacity") => {
+                // CP1: a hint, not a ceiling — the vector stays unbounded.
                 let cap = self.expect_int(&args, 0)? as usize;
-                Ok(Value::Vec(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
+                Ok(Value::vec(Vec::with_capacity(cap)))
+            }
+            // CP2/CP3: bounded and pre-allocated. Past the bound, `push` panics
+            // and `try_push` hands the value back.
+            (TypeConstructorKind::Vec, "fixed") => {
+                let n = self.expect_int(&args, 0)?;
+                if n < 0 {
+                    return Err(RuntimeError::Panic(
+                        "Vec.fixed needs a non-negative bound".to_string(),
+                    ));
+                }
+                Ok(Value::vec_fixed(n as usize))
             }
             (TypeConstructorKind::Vec, "from") => {
                 // Vec.from(array) — copy array elements into new Vec
@@ -1322,7 +1393,7 @@ impl Interpreter {
                     Value::Sender(Arc::new(Mutex::new(tx))),
                     Value::Receiver(Arc::new(Mutex::new(rx))),
                 ];
-                Ok(Value::Vec(Arc::new(Mutex::new(tuple))))
+                Ok(Value::vec(tuple))
             }
             (TypeConstructorKind::Channel, "unbuffered") => {
                 let (tx, rx) = mpsc::sync_channel::<Value>(0);
@@ -1330,7 +1401,7 @@ impl Interpreter {
                     Value::Sender(Arc::new(Mutex::new(tx))),
                     Value::Receiver(Arc::new(Mutex::new(rx))),
                 ];
-                Ok(Value::Vec(Arc::new(Mutex::new(tuple))))
+                Ok(Value::vec(tuple))
             }
             (TypeConstructorKind::Map, "new") => {
                 Ok(Value::Map(Arc::new(Mutex::new(MapData::new()))))

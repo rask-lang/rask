@@ -17,6 +17,11 @@ struct RaskVec {
     // pointer into `data` is only safe while `data` stays put, so growing with
     // a borrow outstanding is refused instead of left to corrupt memory.
     int64_t borrows;
+    // std.collections/CP1-CP3: the ceiling this vector may not grow past, or
+    // -1 for unbounded. `cap` is the allocation, which grows on demand; this is
+    // a promise about how large the vector is allowed to get. `Vec.fixed(0)` is
+    // a legitimate bound of zero, so unbounded can't be spelled 0.
+    int64_t bound;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
@@ -28,6 +33,7 @@ RaskVec *rask_vec_new(int64_t elem_size) {
     v->cap = 0;
     v->elem_size = elem_size;
     v->borrows = 0;
+    v->bound = -1;
     return v;
 }
 
@@ -36,6 +42,8 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     v->len = 0;
     v->elem_size = elem_size;
     v->borrows = 0;
+    // CP1: a capacity hint pre-allocates but sets no ceiling.
+    v->bound = -1;
     if (cap > 0) {
         v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
@@ -55,6 +63,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     v->cap = count;
     v->elem_size = elem_size;
     v->borrows = 0;
+    v->bound = -1;
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
@@ -74,6 +83,41 @@ int64_t rask_vec_len(const RaskVec *v) {
 
 int64_t rask_vec_capacity(const RaskVec *v) {
     return v ? v->cap : 0;
+}
+
+// CP3: bounded and pre-allocated at creation. A bound of 0 is legal — the
+// vector is permanently full — so unbounded is -1, never 0.
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n) {
+    if (n < 0) rask_panic("Vec.fixed needs a non-negative bound");
+    RaskVec *v = rask_vec_with_capacity(elem_size, n);
+    v->bound = n;
+    return v;
+}
+
+// CP1/CP2: the ceiling, or -1 when there isn't one. The Rask-facing
+// `capacity()` and `remaining()` answer `none` on -1.
+int64_t rask_vec_bound(const RaskVec *v) {
+    return v ? v->bound : -1;
+}
+
+// Room left before the bound, or -1 when unbounded.
+int64_t rask_vec_remaining(const RaskVec *v) {
+    if (!v || v->bound < 0) return -1;
+    return v->bound - v->len;
+}
+
+int64_t rask_vec_is_bounded(const RaskVec *v) {
+    return (v && v->bound >= 0) ? 1 : 0;
+}
+
+int64_t rask_vec_is_full(const RaskVec *v) {
+    return (v && v->bound >= 0 && v->len >= v->bound) ? 1 : 0;
+}
+
+// C2: growth past the bound panics. `try_push` is the variant that hands the
+// value back instead.
+static int vec_at_bound(const RaskVec *v) {
+    return v->bound >= 0 && v->len >= v->bound;
 }
 
 static int vec_grow(RaskVec *v, int64_t needed) {
@@ -124,10 +168,23 @@ void rask_vec_release_elem(RaskVec *v) {
 
 int64_t rask_vec_push(RaskVec *v, const void *elem) {
     if (!v) return -1;
+    if (vec_at_bound(v)) {
+        rask_panic_fmt("push failed - collection at capacity (bound %lld)",
+                       (long long)v->bound);
+    }
     if (vec_grow(v, v->len + 1) != 0) return -1;
     memcpy(v->data + v->len * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
     return 0;
+}
+
+// std.collections/C2: 0 on success, 1 when the vector is at its bound. The
+// allocator panics on OOM rather than reporting it, so `GrowError.NoMemory`
+// has no path to come from here yet.
+int64_t rask_vec_try_push(RaskVec *v, const void *elem) {
+    if (!v) return 1;
+    if (vec_at_bound(v)) return 1;
+    return rask_vec_push(v, elem) == 0 ? 0 : 1;
 }
 
 void *rask_vec_get(const RaskVec *v, int64_t index) {

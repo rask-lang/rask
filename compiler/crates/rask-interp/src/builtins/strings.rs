@@ -56,7 +56,7 @@ impl Interpreter {
                 let trimmed = guard.trim();
                 let start = trimmed.as_ptr() as usize - guard.as_ptr() as usize;
                 let end = start + trimmed.len();
-                Ok(Value::Vec(Arc::new(Mutex::new(vec![Value::int(start as i64), Value::int(end as i64)]))))
+                Ok(Value::vec(vec![Value::int(start as i64), Value::int(end as i64)]))
             }
             // FNV-1a over the bytes — the same function the native runtime
             // and string-keyed maps use, so both backends agree.
@@ -115,15 +115,15 @@ impl Interpreter {
             }
             "char_indices" => {
                 let pairs: Vec<Value> = s.lock().unwrap().char_indices()
-                    .map(|(i, c)| Value::Vec(Arc::new(Mutex::new(vec![Value::int(i as i64), Value::Char(c)]))))
+                    .map(|(i, c)| Value::vec(vec![Value::int(i as i64), Value::Char(c)]))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+                Ok(Value::vec(pairs))
             }
             "bytes" => {
                 let bytes: Vec<Value> = s.lock().unwrap().bytes()
                     .map(|b| Value::int(b as i64))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(bytes))))
+                Ok(Value::vec(bytes))
             }
             "lines" => {
                 let lines: Vec<Value> = s

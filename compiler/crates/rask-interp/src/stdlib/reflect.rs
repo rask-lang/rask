@@ -91,7 +91,7 @@ impl Interpreter {
             })
             .collect();
 
-        Ok(Value::Vec(Arc::new(Mutex::new(field_infos))))
+        Ok(Value::vec(field_infos))
     }
 }
 

@@ -79,7 +79,7 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Arc::new(Mutex::new(values)))],
+                            fields: vec![Value::vec(values)],
                             variant_index: 0, origin: None,
                         })
                     }
@@ -97,7 +97,7 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Arc::new(Mutex::new(lines)))],
+                            fields: vec![Value::vec(lines)],
                             variant_index: 0, origin: None,
                         })
                     }
@@ -368,7 +368,7 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Arc::new(Mutex::new(names)))],
+                            fields: vec![Value::vec(names)],
                             variant_index: 0, origin: None,
                         })
                     }
@@ -432,7 +432,7 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Arc::new(Mutex::new(bytes)))],
+                            fields: vec![Value::vec(bytes)],
                             variant_index: 0, origin: None,
                         })
                     }

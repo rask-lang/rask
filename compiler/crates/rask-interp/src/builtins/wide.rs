@@ -15,7 +15,7 @@ impl Interpreter {
     /// Execute a plan into its lane vector. This is the one place work happens.
     fn eval_wide(&mut self, plan: &WidePlan) -> Result<Vec<Value>, RuntimeError> {
         match plan {
-            WidePlan::Source(items) => Ok(items.lock().unwrap().clone()),
+            WidePlan::Source(items) => Ok(items.lock().unwrap().items.clone()),
             WidePlan::Map { source, mapper } => {
                 let lanes = self.eval_wide(source)?;
                 let mut out = Vec::with_capacity(lanes.len());
@@ -81,7 +81,7 @@ impl Interpreter {
             // --- terminals (run the plan) ---
             "read" => {
                 let lanes = self.eval_wide(plan)?;
-                Ok(Value::Vec(Arc::new(Mutex::new(lanes))))
+                Ok(Value::vec(lanes))
             }
             "sum" => {
                 let lanes = self.eval_wide(plan)?;

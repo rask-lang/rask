@@ -296,7 +296,7 @@ impl Interpreter {
                                     self.env.define(names[1].clone(), val);
                                 }
                             } else {
-                                let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key.clone(), val])));
+                                let pair = Value::vec(vec![key.clone(), val]);
                                 self.define_for_binding(binding, pair);
                             }
                             let outcome = self.exec_stmts(body);
@@ -381,11 +381,11 @@ impl Interpreter {
                                     self.env.define(names[0].clone(), key);
                                     self.env.define(names[1].clone(), val);
                                 } else if names.len() == 1 {
-                                    let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key, val])));
+                                    let pair = Value::vec(vec![key, val]);
                                     self.define_for_binding(binding, pair);
                                 }
                             } else {
-                                let pair = Value::Vec(std::sync::Arc::new(std::sync::Mutex::new(vec![key, val])));
+                                let pair = Value::vec(vec![key, val]);
                                 self.define_for_binding(binding, pair);
                             }
                             match self.exec_stmts(body) {
@@ -408,7 +408,7 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Vec(v) => {
-                        let items: Vec<Value> = v.lock().unwrap().clone();
+                        let items: Vec<Value> = v.lock().unwrap().items.clone();
                         for item in items {
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
@@ -531,7 +531,7 @@ impl Interpreter {
                 let iter_val = self.eval_expr(iter)?;
                 match iter_val {
                     Value::Vec(v) => {
-                        let items: Vec<Value> = v.lock().unwrap().clone();
+                        let items: Vec<Value> = v.lock().unwrap().items.clone();
                         for item in items {
                             self.env.push_scope();
                             self.define_for_binding(binding, item);

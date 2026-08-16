@@ -3181,3 +3181,24 @@ fn generic_types_derive_eq_and_lay_out_per_instantiation() {
         "truefalsetruefalsetruefalse34truefalse",
     );
 }
+
+// std.collections/CP1-CP3, C2 (#666): a bounded vector refuses to grow past its
+// bound, and `try_push` hands the rejected value back rather than panicking —
+// which is what the growth error carries a payload for. A capacity hint
+// (`with_capacity`) is not a bound.
+#[test]
+fn a_bounded_vec_hands_back_what_it_wont_take() {
+    assert_native_eq_interp("bounded_vec.rk", "true22true0302false3keptgiven back");
+}
+
+// std.collections/C2: `push` past the bound panics on both backends, and
+// nothing after it runs.
+#[test]
+fn push_past_the_bound_panics_on_both_backends() {
+    let (nout, ncode) = run_native("bounded_vec_push_full.rk");
+    let (iout, icode) = run_interp("bounded_vec_push_full.rk");
+    assert_eq!(ncode, 101, "native should panic at the bound: {}", nout);
+    assert_eq!(icode, 101, "interp should panic at the bound: {}", iout);
+    assert!(!nout.contains("99"), "native ran past the panic: {}", nout);
+    assert!(!iout.contains("99"), "interp ran past the panic: {}", iout);
+}

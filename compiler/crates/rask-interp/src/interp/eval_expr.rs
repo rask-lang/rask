@@ -777,7 +777,7 @@ impl Interpreter {
                                     variant_index: idx as u32, origin: None,
                                 }
                             }).collect();
-                            return Ok(Value::Vec(Arc::new(Mutex::new(values))));
+                            return Ok(Value::vec(values));
                         }
 
                         // E18: from_value(n) — construct enum from integer discriminant
@@ -1605,7 +1605,7 @@ impl Interpreter {
                             e.max(0).min(len) as usize
                         };
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
-                        Ok(Value::Vec(Arc::new(Mutex::new(slice))))
+                        Ok(Value::vec(slice))
                     }
                     (Value::String(s), Value::Int(i, _)) => {
                         let str_val = s.lock().unwrap();
@@ -1672,7 +1672,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+                Ok(Value::vec(values))
             }
 
             ExprKind::ArrayRepeat { value, count } => {
@@ -1687,7 +1687,7 @@ impl Interpreter {
                     )),
                 };
                 let values: Vec<Value> = (0..n).map(|_| val.clone()).collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+                Ok(Value::vec(values))
             }
 
             ExprKind::Tuple(elements) => {
@@ -1695,7 +1695,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+                Ok(Value::vec(values))
             }
 
             ExprKind::Match { scrutinee, arms } => {

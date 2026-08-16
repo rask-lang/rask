@@ -211,7 +211,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_clear", "rask_vec_clear", &[types::I64], None, false),
         StdlibEntry::simple("Vec_is_empty", "rask_vec_is_empty", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_capacity", "rask_vec_capacity", &[types::I64], Some(types::I64), false),
+        // CP1-CP3: `capacity()` is the *bound*, not the allocation — `none` when
+        // the vector is unbounded, which the runtime signals with -1. The
+        // allocation size isn't a Rask-visible number.
+        StdlibEntry::neg_none("Vec_capacity", "rask_vec_bound", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("Vec_remaining", "rask_vec_remaining", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_is_bounded", "rask_vec_is_bounded", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
+        // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
+        // with_capacity. The difference is the bound it sets.
+        StdlibEntry::simple("Vec_fixed", "rask_vec_fixed", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "Vec_insert", c_name: "rask_vec_insert_at",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,

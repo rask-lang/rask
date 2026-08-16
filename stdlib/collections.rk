@@ -12,8 +12,9 @@ extend Vec<T> {
     @native("rask_vec_with_capacity")
     public func with_capacity(n: usize) -> Vec<T> { }
 
-    /// Create a bounded vector that cannot grow beyond n elements.
-    @unimplemented
+    /// Create a bounded vector that cannot grow beyond n elements (CP2, CP3).
+    /// Pre-allocated at creation, and `push` past the bound panics.
+    @native("rask_vec_fixed")
     public func fixed(n: usize) -> Vec<T> { }
 
     /// Number of elements.
@@ -24,15 +25,19 @@ extend Vec<T> {
     @native("rask_vec_is_empty")
     public func is_empty(self) -> bool { }
 
-    /// Maximum capacity, if bounded.
-    @native("rask_vec_capacity")
+    /// Maximum capacity, if bounded — `none` when the vector may grow freely.
+    @native
     public func capacity(self) -> Option<usize> { }
 
-    /// True if this vector has a fixed capacity.
-    @unimplemented
+    /// True if this vector has a capacity bound.
+    @native
     public func is_bounded(self) -> bool { }
 
-    /// Remaining capacity before the vector is full.
+    /// True if this vector is bounded and at its bound.
+    @native
+    public func is_full(self) -> bool { }
+
+    /// Room left before the bound — `none` when the vector is unbounded.
     @native
     public func remaining(self) -> Option<usize> { }
 
@@ -46,8 +51,15 @@ extend Vec<T> {
 
     /// Push a value onto the end. Hands the value back instead of panicking
     /// when the vector is at its bound or the allocator refuses.
-    @native
-    public func try_push(mutate self, value: T) -> void or GrowError<T> { }
+    ///
+    /// Written in Rask so the two backends share one rule. `NoMemory` has no
+    /// path yet — the allocator panics on OOM rather than reporting it.
+    public func try_push(mutate self, value: T) -> void or GrowError<T> {
+        if self.is_full() {
+            return GrowError.Full(value)
+        }
+        self.push(value)
+    }
 
     /// Push every element of `iter`. Hands back the first element that didn't
     /// fit. `push_all`, not `extend` — that word is the declaration keyword.

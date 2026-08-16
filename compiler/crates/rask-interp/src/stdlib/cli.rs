@@ -28,7 +28,7 @@ impl Interpreter {
                     .iter()
                     .map(|s| Value::String(Arc::new(Mutex::new(s.clone()))))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(args_vec))))
+                Ok(Value::vec(args_vec))
             }
             // cli.parse() -> Args struct
             "parse" => {
@@ -92,7 +92,7 @@ impl Interpreter {
             "positional" => {
                 match fields.get("_positional") {
                     Some(v) => Ok(v.clone()),
-                    None => Ok(Value::Vec(Arc::new(Mutex::new(vec![])))),
+                    None => Ok(Value::vec(vec![])),
                 }
             }
             "program" => {
@@ -176,22 +176,22 @@ fn parse_args(raw_args: &[String]) -> Value {
     }
 
     // Build the Args struct
-    let flags_value = Value::Vec(Arc::new(Mutex::new(
+    let flags_value = Value::vec(
         flags
             .into_iter()
             .map(|f| Value::String(Arc::new(Mutex::new(f))))
             .collect(),
-    )));
+    );
 
     let options_value = {
         let mut map_entries: Vec<Value> = Vec::new();
         for (k, v) in &options {
-            map_entries.push(Value::Vec(Arc::new(Mutex::new(vec![
+            map_entries.push(Value::vec(vec![
                 Value::String(Arc::new(Mutex::new(k.clone()))),
                 Value::String(Arc::new(Mutex::new(v.clone()))),
-            ]))));
+            ]));
         }
-        Value::Vec(Arc::new(Mutex::new(map_entries)))
+        Value::vec(map_entries)
     };
 
     let mut struct_fields = IndexMap::new();
@@ -199,7 +199,7 @@ fn parse_args(raw_args: &[String]) -> Value {
     struct_fields.insert("_options".to_string(), options_value);
     struct_fields.insert(
         "_positional".to_string(),
-        Value::Vec(Arc::new(Mutex::new(positional))),
+        Value::vec(positional),
     );
     struct_fields.insert(
         "_program".to_string(),

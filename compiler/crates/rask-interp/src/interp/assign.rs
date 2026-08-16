@@ -69,7 +69,7 @@ impl Interpreter {
                         expected, vec.len()
                     )));
                 }
-                Ok(vec.clone())
+                Ok(vec.items.clone())
             }
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();

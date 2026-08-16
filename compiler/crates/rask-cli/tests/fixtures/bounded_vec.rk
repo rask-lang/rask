@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.collections/CP1-CP3, C2 (#666): a bounded vector refuses to grow past its
+// bound. `try_push` hands the rejected value back instead of panicking, which is
+// the whole reason the growth error carries a payload.
+
+public func main() {
+    mut v: Vec<i32> = Vec.fixed(2)
+    print(v.is_bounded())
+    print(v.capacity() ?? 0)
+    print(v.remaining() ?? 0)
+
+    v.push(10)
+    v.push(20)
+    print(v.is_full())
+    print(v.remaining() ?? 9)
+
+    match v.try_push(30) {
+        GrowError.Full(rejected) => print(rejected),
+        GrowError.NoMemory(rejected) => print(rejected),
+        _ => print(0),
+    }
+    // The rejected element never went in.
+    print(v.len())
+
+    // CP1: a capacity hint is not a bound.
+    mut u: Vec<i32> = Vec.with_capacity(2)
+    print(u.is_bounded())
+    u.push(1)
+    u.push(2)
+    u.push(3)
+    print(u.len())
+
+    // An element wider than a word survives the rejection intact.
+    mut s: Vec<string> = Vec.fixed(1)
+    s.try_push("kept") catch _ => {}
+    print(s[0])
+    match s.try_push("given back") {
+        GrowError.Full(r) => print(r),
+        _ => print("pushed"),
+    }
+}

@@ -258,9 +258,9 @@ impl Interpreter {
         fields.insert("env".to_string(), Value::String(Arc::new(Mutex::new(cfg.env.clone()))));
         fields.insert("profile".to_string(), Value::String(Arc::new(Mutex::new(cfg.profile.clone()))));
         fields.insert("debug".to_string(), Value::Bool(cfg.profile == "debug"));
-        fields.insert("features".to_string(), Value::Vec(Arc::new(Mutex::new(
+        fields.insert("features".to_string(), Value::vec(
             cfg.features.iter().map(|f| Value::String(Arc::new(Mutex::new(f.clone())))).collect(),
-        ))));
+        ));
         self.env.define("cfg".to_string(), Value::new_struct(
             "Cfg".to_string(),
             fields,

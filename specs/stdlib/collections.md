@@ -25,9 +25,9 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 
 | Rule | Description |
 |------|-------------|
-| **CP1: Unbounded** | `capacity() == none`, grows indefinitely |
-| **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements |
-| **CP3: Fixed** | Bounded + pre-allocated at creation |
+| **CP1: Unbounded** | `capacity() == none`, grows indefinitely. `with_capacity(n)` is a pre-allocation hint, not a bound — it stays unbounded |
+| **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements. `is_bounded()` says which, `is_full()` says whether it's there, `remaining()` says how much room is left (`none` when unbounded) |
+| **CP3: Fixed** | Bounded + pre-allocated at creation — `Vec.fixed(n)`. A bound of 0 is legal: the vector is permanently full |
 
 ## Allocation
 
