@@ -33,7 +33,11 @@ use std::path::{Path, PathBuf};
 use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
-mod derive;
+// Public because `rask test` and `rask bench` assemble the back half of the
+// pipeline themselves rather than going through `finalize_compile`, and they
+// have to run this pass too — a derived `compare` that only `rask run`
+// generates is a method that exists or doesn't depending on the subcommand.
+pub mod derive;
 mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.
