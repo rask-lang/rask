@@ -2960,7 +2960,28 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             ForBinding::Tuple(names)
         } else {
-            ForBinding::Single(self.expect_ident()?)
+            let name = self.expect_ident()?;
+            // `for k, v in m` — the two-name form written without parentheses.
+            // Left to `expect(In)` this came out as "Expected 'in', found ','",
+            // which says nothing about the spelling that does work (#738).
+            if self.check(&TokenKind::Comma) {
+                let second = match self.peek(1) {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => "value".to_string(),
+                };
+                let mutate_kw = if mutate { "mutate " } else { "" };
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "two-name iteration needs parentheses".to_string(),
+                    hint: Some(format!("for {}({}, {}) in …", mutate_kw, name, second)),
+                    why: None,
+                }
+                .with_why(
+                    "one `for` binding is one name; a key and its value are a pair, \
+                     and the parentheses are what say so [ctrl.loops/LP13]",
+                ));
+            }
+            ForBinding::Single(name)
         };
 
         self.expect(&TokenKind::In)?;

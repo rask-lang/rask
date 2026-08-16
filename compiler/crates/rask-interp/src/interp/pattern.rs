@@ -278,7 +278,14 @@ impl Interpreter {
             (Value::Int(a, _), Value::Int(b, _)) => a == b,
             (Value::Float(a, _), Value::Float(b, _)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
-            (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
+            // Locking both sides hangs when they are the same buffer, and a
+            // string compared with itself isn't hypothetical: `for mutate (k, v)
+            // in map` writes each entry back under the key it just read out, so
+            // probe and stored key share one Arc (#738). Same guard the struct
+            // arm below already carries.
+            (Value::String(a), Value::String(b)) => {
+                Arc::ptr_eq(a, b) || *a.lock().unwrap() == *b.lock().unwrap()
+            }
             (Value::Enum { name: n1, variant: v1, fields: f1, .. },
              Value::Enum { name: n2, variant: v2, fields: f2, .. }) => {
                 n1 == n2 && v1 == v2 && f1.len() == f2.len()

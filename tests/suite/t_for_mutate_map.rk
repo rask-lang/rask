@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `for mutate (k, v) in map` — the two-name form from ctrl.loops/LP13 (#738).
+//
+// Only the value is writable. Keys aren't: changing one would move the entry to
+// a different bucket mid-iteration, so `k` is a read-only view of the key the
+// value is filed under.
+
+test "ctrl.loops/LP13 — writing v updates the map" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+
+    for mutate (k, v) in m {
+        v = v + 100
+    }
+
+    assert m["a"] == 101
+    assert m["b"] == 102
+    assert m.len() == 2
+}
+
+test "ctrl.loops/LP13 — the key is readable in the body" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("x", 10)
+
+    mut seen = ""
+    for mutate (k, v) in m {
+        seen = k
+        v = v * 2
+    }
+
+    assert seen == "x"
+    assert m["x"] == 20
+}
+
+// The writeback keys off the entry being visited, so an integer key has to
+// round-trip the same way a string one does.
+test "ctrl.loops/LP13 — integer keys write back too" {
+    mut m: Map<i64, i64> = Map.new()
+    m.insert(1, 10)
+    m.insert(2, 20)
+
+    for mutate (k, v) in m {
+        v = v + k
+    }
+
+    assert m[1] == 11
+    assert m[2] == 22
+}
+
+test "ctrl.loops/LP13 — break still writes the current entry back" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("only", 5)
+
+    for mutate (k, v) in m {
+        v = 99
+        break
+    }
+
+    assert m["only"] == 99
+}
+
+func bump_first(mutate m: Map<string, i64>) -> i64 {
+    for mutate (k, v) in m {
+        v = v + 100
+        return v
+    }
+    return -1
+}
+
+// Same rule as the Vec case (#650): leaving by `return` owes the writeback too.
+test "ctrl.loops/LP13 — return writes the current entry back" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("only", 1)
+    assert bump_first(m) == 101
+    assert m["only"] == 101
+}
+
+test "ctrl.loops/LP13 — read-only two-name iteration is unaffected" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+
+    mut total = 0
+    mut keys = 0
+    for (k, v) in m {
+        total = total + v
+        keys = keys + k.len()
+    }
+    assert total == 3
+    assert keys == 2
+    assert m["a"] == 1
+}
+
+func main() {}
