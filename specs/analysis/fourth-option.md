@@ -44,8 +44,8 @@ a spec draft starts here.
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
 | Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site |
 | Ownership | Composition by value (`Entity { body: Body }`), not a policy |
-| Concurrency | Staged structural mutation, no lock on the hot path. Three parallel tiers: per-node, frozen, staged |
-| Atomicity | Batches — validate then apply, no rollback. Also how required-edge cycles get built |
+| Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Open: parallel inserts allocate concurrently |
+| Atomicity | Batches — a region where **deletes** defer to the end. No validation step (required links are a compile-time check), no rollback needed. Also the delete-locked scope, and how required-link cycles get built. See [batches](fourth-option-batches.md) |
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
 | Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
 | Pool / Handle | Pool folds into `Store<T>`; `Handle` becomes boundary-only, if it's needed at all |
