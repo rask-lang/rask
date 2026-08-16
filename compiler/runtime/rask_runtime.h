@@ -743,7 +743,20 @@ int64_t rask_sleep_ns(int64_t ns);
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
 
-// ThreadPool.spawn — an OS-thread task, same handle shape as Thread.spawn.
+// ─── Worker pool (threadpool.c) ────────────────────────────
+// `using ThreadPool(workers: n)` brackets its block with these. Workers are
+// OS threads that run a job to completion (conc.io-context/IO2) — a plain
+// pool, independent of the green scheduler that `using Multitasking` starts.
+
+// Start n workers (n <= 0 means one per core). Idempotent.
+void rask_threadpool_init(int64_t worker_count);
+
+// Drain the queue, stop the workers, join them. Idempotent.
+void rask_threadpool_shutdown(void);
+
+// ThreadPool.spawn — enqueues a job and hands back the same handle shape
+// Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
+// `using ThreadPool` block there is no pool, so it falls back to one thread.
 RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.

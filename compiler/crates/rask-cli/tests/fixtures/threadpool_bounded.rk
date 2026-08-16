@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Far more jobs than workers. One thread per job would try to have 800 live
+// at once; a bounded pool runs them four at a time and every job still runs
+// exactly once.
+
+func main() {
+    using ThreadPool(workers: 4) {
+        mut handles = Vec.new()
+        for i in 0..800 {
+            let h = ThreadPool.spawn(own || {
+                return i
+            })
+            handles.push(h)
+        }
+        mut total = 0
+        mut count = 0
+        for h in handles {
+            if h.join() is i64 as v {
+                total = total + v
+                count = count + 1
+            }
+        }
+        println("count {count}")
+        println("total {total}")
+    }
+}

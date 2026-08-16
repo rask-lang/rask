@@ -1073,6 +1073,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: runtime init/shutdown ───────────────────────
         StdlibEntry::simple("rask_runtime_init", "rask_runtime_init", &[types::I64], None, false),
         StdlibEntry::simple("rask_runtime_shutdown", "rask_runtime_shutdown", &[], None, false),
+        StdlibEntry::simple("rask_threadpool_init", "rask_threadpool_init", &[types::I64], None, false),
+        StdlibEntry::simple("rask_threadpool_shutdown", "rask_threadpool_shutdown", &[], None, false),
         StdlibEntry::simple("rask_green_spawn", "rask_green_spawn", &[types::I64, types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: yield helpers ───────────────────────────────

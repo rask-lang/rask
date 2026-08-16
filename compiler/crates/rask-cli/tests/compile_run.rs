@@ -2004,6 +2004,20 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
+fn threadpool_runs_every_job_exactly_once() {
+    // #686: ThreadPool.spawn was pthread_create per job — `workers: 4` was
+    // accepted and ignored, so 800 jobs meant 800 threads. With a real pool the
+    // observable guarantee is that every job still runs exactly once: 800 joins
+    // and the sum 0+1+...+799.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "threadpool_bounded.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert!(stdout.contains("count 800"), "{}: every job joined: {:?}", mode, stdout);
+        assert!(stdout.contains("total 319600"), "{}: each job ran once: {:?}", mode, stdout);
+    }
+}
+
+#[test]
 fn one_println_call_lands_whole_on_both_backends() {
     // #704: a print/println call is several writes — the text, then the newline
     // — so two threads used to splice mid-line ("line 0 from thread 2line 194

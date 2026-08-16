@@ -2814,12 +2814,22 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Using block — emit runtime init/shutdown for Multitasking/ThreadPool
+            // Using block — bracket the body with the context's install/teardown.
+            // The two runtime contexts are independent (conc.async): Multitasking
+            // starts the green scheduler, ThreadPool starts a bounded worker
+            // pool. They used to emit the same call, so `using ThreadPool` spun
+            // up a green scheduler that ThreadPool.spawn never looked at and the
+            // `workers:` count was accepted and ignored (#686).
             ExprKind::UsingBlock { name, args, body } => {
-                if name == "Multitasking" || name == "MultiTasking" || name == "multitasking"
-                    || name == "ThreadPool" || name == "threadpool"
-                {
-                    // Extract worker count from args, default to 0 (auto-detect)
+                let ctx_fns = match name.as_str() {
+                    "Multitasking" | "MultiTasking" | "multitasking" =>
+                        Some(("rask_runtime_init", "rask_runtime_shutdown")),
+                    "ThreadPool" | "threadpool" =>
+                        Some(("rask_threadpool_init", "rask_threadpool_shutdown")),
+                    _ => None,
+                };
+                if let Some((init_fn, shutdown_fn)) = ctx_fns {
+                    // Worker count, or 0 for "one per core"
                     let worker_count = if let Some(arg) = args.first() {
                         let (op, _ty) = self.lower_expr(&arg.expr)?;
                         op
@@ -2828,13 +2838,13 @@ impl<'a> MirLowerer<'a> {
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("rask_runtime_init".to_string()),
+                        func: FunctionRef::internal(init_fn.to_string()),
                         args: vec![worker_count],
                     }));
                     let result = self.lower_block(body);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("rask_runtime_shutdown".to_string()),
+                        func: FunctionRef::internal(shutdown_fn.to_string()),
                         args: vec![],
                     }));
                     result

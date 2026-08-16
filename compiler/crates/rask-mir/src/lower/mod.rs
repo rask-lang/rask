@@ -5445,9 +5445,13 @@ mod tests {
             expr_stmt(using_block),
             return_stmt(None),
         ]);
+        // ThreadPool installs the worker pool, not the green scheduler — the
+        // two contexts are independent, and sharing one init was why
+        // `workers: n` went nowhere (#686).
         let f = lower(&decl, &[decl.clone(), work]);
-        assert!(find_call(&f, "rask_runtime_init"), "ThreadPool should emit init");
-        assert!(find_call(&f, "rask_runtime_shutdown"), "ThreadPool should emit shutdown");
+        assert!(find_call(&f, "rask_threadpool_init"), "ThreadPool should emit pool init");
+        assert!(find_call(&f, "rask_threadpool_shutdown"), "ThreadPool should emit pool shutdown");
+        assert!(!find_call(&f, "rask_runtime_init"), "ThreadPool must not start the green scheduler");
         assert!(find_call(&f, "work"));
     }
 
@@ -5472,6 +5476,7 @@ mod tests {
         let f = lower(&decl, &[decl.clone(), work]);
         assert!(!find_call(&f, "rask_runtime_init"), "Unknown context should not emit init");
         assert!(!find_call(&f, "rask_runtime_shutdown"), "Unknown context should not emit shutdown");
+        assert!(!find_call(&f, "rask_threadpool_init"), "Unknown context should not start a pool");
         assert!(find_call(&f, "work"));
     }
 }
