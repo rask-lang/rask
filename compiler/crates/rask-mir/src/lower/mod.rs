@@ -577,6 +577,12 @@ impl<'a> MirContext<'a> {
             "bool" => MirType::Bool,
             "char" => MirType::Char,
             "string" => MirType::String,
+            // std.strings/V1: a view is a `RaskStr` that shares the source's
+            // heap buffer and holds a refcount on it — same 16 bytes, same copy
+            // semantics, read-only API. Its stdlib methods already point at the
+            // `rask_string_*` runtime functions, so the representation has to
+            // agree with them.
+            "StringView" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
                 // "any TraitName" → TraitObject
@@ -4075,6 +4081,14 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
             ok: Box::new(ret_category_to_mir_type(ok)),
             err: Box::new(ret_category_to_mir_type(err)),
         },
+        // A `StringView` is a `RaskStr` sharing the source's buffer
+        // (std.strings/V1), so it has to travel as a string — the default
+        // pointer-sized `i64` handed `StringView.len()` an integer where it
+        // wanted the 16-byte value, which segfaults. The prefix stays
+        // "StringView" so the view's own methods still dispatch: `to_string`
+        // has to copy out and release the pin (V2), which the string one
+        // doesn't do.
+        RetCategory::Named(name) if name == "StringView" => MirType::String,
         RetCategory::Named(_) => MirType::I64,
         RetCategory::Tuple(elems) => MirType::Tuple(
             elems.iter().map(|e| ret_category_to_mir_type(e)).collect()

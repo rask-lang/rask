@@ -335,6 +335,35 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
+        // ─── StringView (std.strings/V1–V6) ───────────────────────
+        //
+        // A view is a `RaskStr` sharing the source's buffer, so every read-only
+        // operation is the string one. `view()` is the 16-byte copy plus the
+        // refcount bump the StringClone adapter already emits — that is the
+        // whole of V1, and it is why this needs no runtime function of its own.
+        // A view of a view lands here too, re-referencing the original header
+        // rather than chaining (V6).
+        StdlibEntry {
+            mir_name: "string_view", c_name: "rask_string_clone",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "StringView_view", c_name: "rask_string_clone",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringClone, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        // V2: copying out has to release the pin, so this allocates rather than
+        // handing back another reference to the source's buffer.
+        StdlibEntry {
+            mir_name: "StringView_to_string", c_name: "rask_string_unshare",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("StringView_len", "rask_string_len", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringView_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("StringView_hash", "rask_string_hash", &[types::I64], Some(types::I64), false),
+
         // Error origin (ER15/ER16)
         StdlibEntry {
             mir_name: "rask_result_origin", c_name: "rask_result_origin",

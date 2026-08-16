@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.view()` — std.strings/V1–V6. The method was declared and left
+// `@unimplemented`, so `s.trim().view()` failed with E0353 plus a knock-on
+// E0361 about the binding, and E0324 couldn't offer the spec's FIX 1 for
+// storing a slice.
+//
+// A view is a `RaskStr` sharing the source's buffer and holding a refcount on
+// it, so the interesting property is that it stays valid after the source
+// binding is gone.
+
+struct Header {
+    public name: StringView
+    public value: StringView
+}
+
+struct Token {
+    public text: StringView
+}
+
+// The source is heap-sized (>15 bytes, so no SSO) and dies at the return.
+func make_token() -> Token {
+    let src = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaXXbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    return Token { text: src[30..32].view() }
+}
+
+test "std.strings/V5 — view of a whole string and of a slice" {
+    let s = "  hello world  "
+    let whole = s.view()
+    assert whole.len() == 15
+    assert !whole.is_empty()
+
+    let trimmed = s.trim().view()
+    assert trimmed.len() == 11
+    assert trimmed.to_string() == "hello world"
+
+    let head = s[2..7].view()
+    assert head.to_string() == "hello"
+}
+
+test "std.strings/V6 — a view of a view re-references the source" {
+    let s = "hello"
+    let a = s.view()
+    let b = a.view()
+    assert b.to_string() == "hello"
+    assert b.len() == 5
+}
+
+test "std.strings/V1 — a stored view outlives the binding it came from" {
+    mut toks = Vec.new()
+    mut i = 0
+    while i < 64 {
+        toks.push(make_token())
+        i = i + 1
+    }
+    // Churn the allocator so a freed buffer would be handed back out.
+    mut junk = ""
+    mut j = 0
+    while j < 200 {
+        junk = "{junk}x"
+        j = j + 1
+    }
+    assert junk.len() == 200
+    assert toks[0].text.to_string() == "XX"
+    assert toks[63].text.to_string() == "XX"
+}
+
+test "std.strings/V5 — the spec's parse_header shares one buffer" {
+    let line = "Content-Type: text/html"
+    let colon = line.index_of(":") ?? 0
+    let h = Header {
+        name: line[0..colon].trim().view(),
+        value: line[colon + 1..].trim().view(),
+    }
+    assert h.name.to_string() == "Content-Type"
+    assert h.value.to_string() == "text/html"
+}
+
+test "std.strings/V3 — a view interpolates like a string" {
+    let s = "abc"
+    let v = s.view()
+    let rendered = "[{v}]"
+    assert rendered == "[abc]"
+}
+
+// `a..=b` includes b. Native dropped the flag when lowering a slice, so this
+// read one byte short while the interpreter read it right.
+test "type.ranges — an inclusive range slice includes its last index" {
+    let s = "hello world"
+    assert s[0..=4].to_string() == "hello"
+    assert s[0..5].to_string() == "hello"
+    assert s[6..=10].to_string() == "world"
+
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    mut inclusive_total = 0
+    for x in v[0..=2] {
+        inclusive_total = inclusive_total + x
+    }
+    mut exclusive_total = 0
+    for x in v[0..2] {
+        exclusive_total = exclusive_total + x
+    }
+    assert inclusive_total == 6
+    assert exclusive_total == 3
+}

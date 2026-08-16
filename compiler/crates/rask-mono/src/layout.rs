@@ -159,7 +159,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedNamed(name) if name.starts_with('*') => (8, 8),
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                "string" | "Path" => (16, 8),
+                // A `StringView` is a `RaskStr` that shares the source's buffer
+                // (std.strings/V1) — same 16 bytes as a string.
+                "string" | "Path" | "StringView" => (16, 8),
                 "bool" => (1, 1),
                 "i8" | "u8" => (1, 1),
                 "i16" | "u16" => (2, 2),

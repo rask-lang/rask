@@ -834,27 +834,32 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_secondary(*store_span, format!("`{}` would hold {} past the end of this line", view_var, if *yields_sequence { "them" } else { "it" }))
                     .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes");
+                // Two fixes, and they differ in cost, so both get named:
+                // `.view()` is zero-copy and keeps the source buffer alive,
+                // `.to_string()` copies out and releases it (std.strings/V2,
+                // the spec's FIX 1 and FIX 2).
                 if *yields_sequence {
-                    // `.to_string()` on a sequence of views is not a fix, so
-                    // don't offer one — loop over it and copy each piece.
-                    let d = d.with_help("loop over it in place, or copy each piece out with .to_string() as you go");
+                    let d = d.with_help("collect views with .view(), or copy each piece out with .to_string() as you go");
                     match slice_expr {
                         Some(expr) => d.with_fix(format!(
-                            "for piece in {} {{ … }}  — or copy each one: {}.push(piece.to_string())",
+                            "for piece in {} {{ {}.push(piece.view()) }}  — .to_string() instead of .view() to copy the bytes out",
                             expr, view_var
                         )),
                         None => d.with_fix(format!(
-                            "loop over the pieces where you slice them, or copy each with `.to_string()` before putting it in `{}`",
+                            "loop over the pieces and push `piece.view()` into `{}` — or `piece.to_string()` to copy the bytes out",
                             view_var
                         )),
                     }
                 } else {
-                    let d = d.with_help("add .to_string() to copy the bytes out, or keep the byte indices and re-slice where you need them");
+                    let d = d.with_help("add .view() to store it zero-copy, or .to_string() to copy the bytes out");
                     match slice_expr {
-                        Some(expr) => d.with_fix(format!("let {} = {}.to_string()", view_var, expr)),
+                        Some(expr) => d.with_fix(format!(
+                            "let {}: StringView = {}.view()  — or {}.to_string() for an independent copy",
+                            view_var, expr, expr
+                        )),
                         None => d.with_fix(format!(
-                            "add `.to_string()` to the slice: it copies the bytes out of `{}` into a string `{}` can keep",
-                            source_var, view_var
+                            "add `.view()` to the slice to store it zero-copy, or `.to_string()` to copy the bytes out of `{}`",
+                            source_var
                         )),
                     }
                 }
