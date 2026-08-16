@@ -2040,6 +2040,7 @@ impl TypeChecker {
         };
 
         match (type_name, method) {
+
             // Shared<T>.read() -> T  (inline access, E5/R5)
             ("Shared", "read") if args.is_empty() => {
                 self.unify(ret, &inner_type, span)

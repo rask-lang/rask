@@ -9,6 +9,14 @@
 # without an issue, that means nobody has looked; file before you assume.
 #
 # Re-measured 2026-08-16 (sixth pass). Changes this round:
+#   - package_manager is ENROLLED. Its line said "both exit 1", which was two
+#     bugs stacked. It didn't lower at all (#717): a channel created without an
+#     explicit element type gave its Sender and Receiver empty type-argument
+#     lists, so the two ends weren't linked and nothing `send` learned could
+#     reach `receive`. With that fixed it compiled and then died with SIGILL
+#     (#752): the unqualified `Io(e)` arm in FetchError.message took its tag
+#     from the stdlib's IoError, which has an `Io` variant at 6, so the switch
+#     keyed an arm the enum has no tag for. Byte-identical on both backends now.
 #   - 16_concurrency_basics is ENROLLED, with a `sort` normalizer. The tearing
 #     recorded below had two causes, not one. A single print/println call was
 #     several writes (the text, then the newline), so two threads spliced
@@ -70,7 +78,6 @@
                          # work is reached. Nothing to diff between backends until the
                          # interpreter can call into libc.
 file_copy.rk             # both exit 1
-package_manager.rk       # both exit 1
 simple_grep.rk           # both exit 1
 
 # --- has its own harness, not a stdout golden ---

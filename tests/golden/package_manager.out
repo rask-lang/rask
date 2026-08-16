@@ -1,0 +1,18 @@
+rask-fetch: dependency resolver and package fetcher
+
+Usage: package_manager [OPTIONS] <command>
+
+Commands:
+  resolve     Resolve dependencies and print the graph
+  fetch       Resolve + download packages to cache
+  lock        Generate/update rask.lock
+  check       Verify lock file is in sync with manifest
+
+Options:
+  --manifest PATH       Path to build.rk (default: build.rk)
+  --registry local|http Registry type (default: local)
+  --registry-path PATH  Local registry directory
+  --registry-url URL    HTTP registry base URL
+  --cache PATH          Cache directory (default: /tmp/rask-cache)
+  --lock PATH           Lock file path (default: rask.lock)
+  -h, --help            Show this help

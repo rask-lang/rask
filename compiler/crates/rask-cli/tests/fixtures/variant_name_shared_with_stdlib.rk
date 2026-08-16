@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Io` and `NotFound` are also variant names on the stdlib's IoError. An
+// unqualified arm has to take its tag from the enum being matched, not from
+// whichever declared enum uses the name first.
+
+enum InnerErr { Bad }
+
+extend InnerErr {
+    func message(self) -> string { return "inner" }
+}
+
+enum OuterErr {
+    Manifest(InnerErr),
+    NotFound,
+    Io(InnerErr),
+}
+
+extend OuterErr {
+    func message(self) -> string {
+        match self {
+            Manifest(e) => return e.message(),
+            NotFound => return "not found",
+            Io(e) => return "I/O error: {e.message()}",
+        }
+    }
+}
+
+func fail_with(which: i64) -> i64 or OuterErr {
+    if which == 0 {
+        return OuterErr.Manifest(InnerErr.Bad)
+    }
+    if which == 1 {
+        return OuterErr.NotFound
+    }
+    return OuterErr.Io(InnerErr.Bad)
+}
+
+func report(which: i64) {
+    let v = fail_with(which) catch e => {
+        println("caught: {e.message()}")
+        return
+    }
+    println("value {v}")
+}
+
+func main() {
+    report(0)
+    report(1)
+    report(2)
+}

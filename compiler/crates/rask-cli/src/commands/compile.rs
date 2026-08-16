@@ -148,6 +148,7 @@ fn lower_to_mir(
     }
 
     rask_mir::dispatch_trace::report();
+    rask_mir::fallback::report_coverage();
 
     let pipeline_result = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 

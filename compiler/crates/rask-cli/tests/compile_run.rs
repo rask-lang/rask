@@ -2004,6 +2004,37 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
+fn channel_element_type_reaches_the_receiving_end() {
+    // #717: a channel created without an explicit element type gave its Sender
+    // and Receiver empty type-argument lists, so nothing linked the two ends.
+    // Every method call on either end then invented its own fresh variable, and
+    // what `send` learned could never reach `receive` — the result stayed an
+    // unresolved `T or string` and lowering had no enum to match on.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "channel_elem_inferred.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, "done hello\nfailed 7\n", "{}: {:?}", mode, stdout);
+    }
+}
+
+#[test]
+fn unqualified_variant_takes_its_own_enums_tag() {
+    // #752: an unqualified arm resolved its tag by scanning every declared enum
+    // for the name, so a user enum with an `Io` variant picked up IoError's tag
+    // 6. The switch keyed an arm the enum has no tag for, nothing matched, and
+    // the match fell through to `unreachable` — SIGILL.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "variant_name_shared_with_stdlib.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "caught: inner\ncaught: not found\ncaught: I/O error: inner\n",
+            "{}: every arm reaches its own variant: {:?}", mode, stdout,
+        );
+    }
+}
+
+#[test]
 fn threadpool_runs_every_job_exactly_once() {
     // #686: ThreadPool.spawn was pthread_create per job — `workers: 4` was
     // accepted and ignored, so 800 jobs meant 800 threads. With a real pool the
