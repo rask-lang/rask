@@ -2723,9 +2723,15 @@ impl<'a> FunctionBuilder<'a> {
     /// comparison. Strings are already broken into `string_eq` calls during
     /// MIR lowering, so they never reach here as a top-level operand.
     fn is_structural_eq_type(ty: &MirType) -> bool {
-        matches!(ty,
+        match ty {
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-            | MirType::Union(_) | MirType::Array { .. })
+            | MirType::Union(_) | MirType::Array { .. } => true,
+            // A `Handle<T>?` is a niche: the handle *is* the value and `none`
+            // is the all-ones sentinel, so there's no slot to walk — comparing
+            // the two handles directly is already right.
+            MirType::Option(inner) => !matches!(**inner, MirType::Handle),
+            _ => false,
+        }
     }
 
     /// Compare two aggregates (pointed to by `lhs`/`rhs`) for structural
@@ -2740,6 +2746,7 @@ impl<'a> FunctionBuilder<'a> {
         match ty {
             MirType::Struct(id) => Self::emit_struct_eq(builder, ctx, lhs, rhs, id.id as usize),
             MirType::Enum(id) => Self::emit_enum_eq(builder, ctx, lhs, rhs, id.id as usize),
+            MirType::Option(inner) => Self::emit_option_eq(builder, ctx, lhs, rhs, inner),
             MirType::Tuple(elems) => {
                 // Tuple elements are packed at their natural offsets (see the
                 // tuple-literal lowering); mirror that packing here.
@@ -2774,6 +2781,105 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Union(variants) => {
                 let size = variants.iter().map(|v| v.size()).max().unwrap_or(0);
                 Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
+            }
+            _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
+        }
+    }
+
+    /// Compare two `T?` slots.
+    ///
+    /// Two absent optionals are equal, an absent and a present one are not, and
+    /// two present ones compare their payloads. That last step is the one that
+    /// was missing: `Option` wasn't in the structural-equality set at all, so
+    /// `a == b` on two `f32?` compared the two *stack slot addresses*, which are
+    /// never equal — every optional comparison in a compiled program answered
+    /// false, including `none == none` (#638).
+    ///
+    /// The absent case has to short-circuit before the payload. A `none` slot's
+    /// payload is never written, so comparing those 8 bytes reads whatever the
+    /// stack held, and two `none` values would agree or disagree depending on
+    /// what ran before them.
+    ///
+    /// Only the low byte of the tag carries meaning — `EnumTag` loads an i8 —
+    /// so the comparison reads the same width the constructors and the branch
+    /// tests do. Tag 0 is present.
+    fn emit_option_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        payload_ty: &MirType,
+    ) -> CodegenResult<Value> {
+        let tag_off = rask_mono::abi::OPTION_TAG_OFFSET as i32;
+        let payload_off = rask_mono::abi::OPTION_PAYLOAD_OFFSET as i64;
+
+        let tag_l = builder.ins().load(types::I8, MemFlags::new(), lhs, tag_off);
+        let tag_r = builder.ins().load(types::I8, MemFlags::new(), rhs, tag_off);
+        let present_l = builder.ins().icmp_imm(IntCC::Equal, tag_l, 0);
+        let present_r = builder.ins().icmp_imm(IntCC::Equal, tag_r, 0);
+        let same_shape = builder.ins().icmp(IntCC::Equal, present_l, present_r);
+
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I8);
+        let both_same = builder.create_block();
+        let cmp_payload = builder.create_block();
+
+        let false_v = builder.ins().iconst(types::I8, 0);
+        builder.ins().brif(same_shape, both_same, &[], merge, &[false_v.into()]);
+
+        // Same shape: both absent is equal outright, both present compares.
+        builder.switch_to_block(both_same);
+        builder.seal_block(both_same);
+        let true_v = builder.ins().iconst(types::I8, 1);
+        builder.ins().brif(present_l, cmp_payload, &[], merge, &[true_v.into()]);
+
+        builder.switch_to_block(cmp_payload);
+        builder.seal_block(cmp_payload);
+        let l = builder.ins().iadd_imm(lhs, payload_off);
+        let r = builder.ins().iadd_imm(rhs, payload_off);
+        let payload_eq = Self::emit_wrapper_payload_eq(builder, ctx, l, r, payload_ty)?;
+        builder.ins().jump(merge, &[payload_eq.into()]);
+
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        Ok(builder.block_params(merge)[0])
+    }
+
+    /// Compare the payload of a wrapper slot.
+    ///
+    /// Separate from `emit_field_eq_mir` because a wrapper's scalar payload
+    /// fills the whole 8-byte slot — floats widened to f64, integers to their
+    /// full width — which is the same rule the constructors write by and the
+    /// peels read by. Loading an `f32?`'s payload as an f32 would take four
+    /// bytes of an eight-byte write.
+    fn emit_wrapper_payload_eq(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        lhs: Value,
+        rhs: Value,
+        ty: &MirType,
+    ) -> CodegenResult<Value> {
+        match ty {
+            MirType::F32 | MirType::F64 => {
+                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
+            }
+            MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            | MirType::Char | MirType::Handle | MirType::Ptr => {
+                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                Ok(builder.ins().icmp(IntCC::Equal, a, b))
+            }
+            MirType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
+            // An aggregate payload is memcpy'd into the slot, so it is right
+            // there to walk — including a nested `T??`, which recurses back
+            // into the option comparison rather than byte-comparing a slot
+            // whose absent half is uninitialised.
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+            | MirType::Union(_) | MirType::Array { .. } | MirType::Option(_) => {
+                Self::emit_aggregate_eq(builder, ctx, lhs, rhs, ty)
             }
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
         }

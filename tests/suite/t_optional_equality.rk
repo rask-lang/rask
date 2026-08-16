@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Equality on two `T?` values: both absent, or both present with equal
+// payloads. No optional-specific rule — it's the general union one.
+//
+// Both backends got this wrong, in opposite directions, and each got exactly
+// one case right by accident. The interpreter compared variants and nothing
+// else, so any two present optionals were "equal" whatever they held. Native
+// never got as far as the contents: `Option` wasn't in the structural-equality
+// set, so `a == b` compared the two stack slot *addresses* and answered false
+// for everything, `none == none` included (#638).
+//
+// The absent case is why the payload comparison has to come second rather than
+// being folded into a byte compare of the whole slot: a `none` slot's payload
+// is never written, so two of them agreed or disagreed depending on what the
+// stack happened to hold.
+//
+// Spec: type.optionals (Equality), type.union-types
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+func churn(seed: i64) -> i64 {
+    mut acc = seed
+    for i in 0..8 {
+        acc = acc * 31 + i
+    }
+    return acc
+}
+
+// Two absent optionals built after different amounts of stack traffic. If the
+// comparison reads the unwritten payload, these stop agreeing.
+func fresh_none(seed: i64) -> f32? {
+    let _ = churn(seed)
+    return none
+}
+
+test "type.optionals — two present floats compare by payload" {
+    let a: f32? = 2.5
+    let b: f32? = 2.5
+    let c: f32? = 1.5
+    assert a == b
+    assert !(a == c)
+}
+
+test "type.optionals — two absent optionals are equal" {
+    let n: f32? = none
+    let m: f32? = none
+    assert n == m
+}
+
+test "type.optionals — absent and present are never equal" {
+    let n: f32? = none
+    let a: f32? = 2.5
+    assert !(n == a)
+    assert !(a == n)
+}
+
+test "type.optionals — absent equality doesn't read the unwritten payload" {
+    let n1 = fresh_none(1)
+    let n2 = fresh_none(999999)
+    assert n1 == n2
+}
+
+test "type.optionals — integer payloads compare by value" {
+    let i: i64? = 7
+    let j: i64? = 7
+    let k: i64? = 8
+    assert i == j
+    assert !(i == k)
+}
+
+test "type.optionals — string payloads compare by content" {
+    let s: string? = "hi"
+    let t: string? = "hi"
+    let u: string? = "no"
+    assert s == t
+    assert !(s == u)
+}
+
+test "type.optionals — struct payloads compare field-wise" {
+    let p: Point? = Point { x: 1, y: 2 }
+    let q: Point? = Point { x: 1, y: 2 }
+    let r: Point? = Point { x: 1, y: 3 }
+    assert p == q
+    assert !(p == r)
+}
+
+test "type.optionals — bool payloads compare by value" {
+    let t: bool? = true
+    let t2: bool? = true
+    let f: bool? = false
+    assert t == t2
+    assert !(t == f)
+}
+
+// OPT28: the layers stay distinct, so equality has to tell them apart too —
+// an empty vec and an empty first slot are different answers.
+test "type.optionals — nested layers are told apart" {
+    let outer_absent: i64?? = none
+    let empty_slot: i64? = none
+    let inner_absent: i64?? = empty_slot
+    let present: i64?? = 9
+    let present2: i64?? = 9
+    assert !(outer_absent == inner_absent)
+    assert !(inner_absent == present)
+    assert present == present2
+}
+
+test "type.optionals — `!=` is the same comparison negated" {
+    let a: i64? = 4
+    let b: i64? = 4
+    let c: i64? = 5
+    assert !(a != b)
+    assert a != c
+}

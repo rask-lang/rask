@@ -189,14 +189,33 @@ impl Interpreter {
                 }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
-            // `x == none` desugars to `x.eq(none)` — compare by variant
+            // Equality on `T or none`: both absent, or both present with equal
+            // payloads. This arm was written for `x == none` alone — it answered
+            // by comparing variants — and every other optional comparison landed
+            // in it too, so two present values were "equal" whatever they held:
+            // `2.5 == 1.5` on `f32?` came back true (#638).
             "eq" if args.len() == 1 => {
                 let is_none = variant == "None";
-                let arg_is_none = matches!(
-                    &args[0],
-                    Value::Enum { name, variant: v, .. } if name == "Option" && v == "None"
-                );
-                Ok(Value::Bool(is_none == arg_is_none))
+                match &args[0] {
+                    Value::Enum { name, variant: other_variant, fields: other_fields, .. }
+                        if name == "Option" =>
+                    {
+                        let other_is_none = other_variant == "None";
+                        if is_none || other_is_none {
+                            return Ok(Value::Bool(is_none && other_is_none));
+                        }
+                        Ok(Value::Bool(match (fields.first(), other_fields.first()) {
+                            (Some(a), Some(b)) => Self::value_eq(a, b),
+                            (None, None) => true,
+                            _ => false,
+                        }))
+                    }
+                    // A right side that never got wrapped — the payload itself.
+                    // An absent left is never equal to a value that is there.
+                    other => Ok(Value::Bool(
+                        !is_none && fields.first().is_some_and(|p| Self::value_eq(p, other)),
+                    )),
+                }
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Option".to_string(),
