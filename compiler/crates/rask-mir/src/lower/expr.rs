@@ -545,13 +545,18 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(tmp))
     }
 
-    /// Copy `v[i]` out into a temp and queue the write-back, for an element about
-    /// to be handed to something that writes through it.
+    /// Borrow `v[i]` as a pointer into the buffer, for an element about to be
+    /// handed to something that writes through it.
     ///
-    /// `Vec_index` hands back a pointer into the buffer, but codegen copies the
-    /// bytes into the destination's own slot — it has to, since the same lowering
-    /// serves `let e = v[i]`, which is a copy by definition. So the callee gets a
-    /// detached copy, and without the `Vec_set` the write lands nowhere.
+    /// Lowering `v[i]` the ordinary way produces a *copy*: `Vec_index` returns a
+    /// pointer into the buffer, but codegen copies those bytes into the
+    /// destination's own slot — it has to, because the same lowering serves
+    /// `let e = v[i]`, which is a copy by definition. A callee handed that copy
+    /// writes into it and the collection never sees it.
+    ///
+    /// So a `mutate` use borrows the real element instead. The runtime counts
+    /// the borrow and panics if anything would move the buffer out from under
+    /// it, which is what keeps the pointer from going stale.
     ///
     /// `None` when this isn't a Vec element, or the element type isn't known;
     /// the caller then lowers it the ordinary way.
@@ -559,44 +564,49 @@ impl<'a> MirLowerer<'a> {
         let ExprKind::Index { object, index } = &place.kind else {
             return None;
         };
-        if !self.is_vec_expr(object) {
+        let (borrow, release) = if self.is_vec_expr(object) {
+            ("Vec_borrow_elem", "Vec_release_elem")
+        } else if self.is_map_expr(object) {
+            ("Map_borrow_elem", "Map_release_elem")
+        } else {
             return None;
-        }
+        };
         let elem_ty = self
             .ctx
             .lookup_raw_type(place.id)
             .map(|t| self.ctx.type_to_mir(t))
             .or_else(|| self.collection_elem_of_expr(object))?;
-        // Only aggregates: a scalar element has its own by-pointer path, and
-        // writing one back through here would store the value as an address.
+        // Only aggregates. A scalar element is passed by value, and handing over
+        // its address here would have the callee read the pointer as the value.
         if !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
             return None;
         }
         let (coll_op, _) = self.lower_expr(object).ok()?;
         let (idx_op, _) = self.lower_expr(index).ok()?;
-        let tmp = self.builder.alloc_temp(elem_ty.clone());
+        // Ptr, not the element type: an aggregate-typed destination is what
+        // makes codegen copy the bytes into a slot, which is the copy being
+        // avoided. The callee wants an address either way.
+        let ptr = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(tmp),
-            func: FunctionRef::internal("Vec_index".to_string()),
-            args: vec![coll_op.clone(), idx_op.clone()],
+            dst: Some(ptr),
+            func: FunctionRef::internal(borrow.to_string()),
+            args: vec![coll_op.clone(), idx_op],
         }));
         self.elem_writebacks.push(super::ElemWriteback {
             collection: coll_op,
-            index: idx_op,
-            elem: tmp,
+            release,
         });
-        Some((MirOperand::Local(tmp), elem_ty))
+        Some((MirOperand::Local(ptr), elem_ty))
     }
 
-    /// Emit the `Vec_set` for every element queued since `mark`. Called right
-    /// after the call statement, so the element is back in the collection before
-    /// anything reads it again.
+    /// Release every element borrowed since `mark`. Called right after the call
+    /// statement, so the borrow covers exactly the call that writes through it.
     fn flush_elem_writebacks(&mut self, mark: usize) {
         for wb in self.elem_writebacks.split_off(mark) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Vec_set".to_string()),
-                args: vec![wb.collection, wb.index, MirOperand::Local(wb.elem)],
+                func: FunctionRef::internal(wb.release.to_string()),
+                args: vec![wb.collection],
             }));
         }
     }

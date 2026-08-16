@@ -15,6 +15,7 @@
 struct Ctr { n: usize }
 struct Holder { c: Ctr }
 struct Bag { items: Vec<Ctr> }
+struct Named { tag: string }
 
 func bump(mutate c: Ctr) { c.n += 1 }
 func bump_nested(mutate c: Ctr) { bump(mutate c) }
@@ -66,4 +67,36 @@ func main() {
         i += 1
     }
     println("looped={loops[0].n} (expect 10)")
+
+    // A Map value, reached with a variable key. The key being a variable is the
+    // interesting part: the interpreter used to deadlock comparing that string
+    // against itself, so there was no reference answer to check against.
+    mut m = Map.new()
+    let key = "k"
+    m.insert(key, Ctr { n: 0 })
+    bump(mutate m[key])
+    bump_nested(mutate m[key])
+    let got = m[key].n
+    println("map={got} (expect 2)")
+
+    // A borrow that ends cleanly leaves nothing behind, so the collection can
+    // still grow afterwards.
+    mut after = Vec.new()
+    after.push(Ctr { n: 0 })
+    bump(mutate after[0])
+    mut j = 0
+    while j < 40 {
+        after.push(Ctr { n: 0 })
+        j += 1
+    }
+    println("grew after={after.len()} (expect 41)")
+
+    // A string field in an element, so the write-back path covers a non-scalar
+    // field too.
+    mut names = Vec.new()
+    names.push(Named { tag: "first" })
+    rename(mutate names[0])
+    println("renamed={names[0].tag} (expect second)")
 }
+
+func rename(mutate n: Named) { n.tag = "second" }

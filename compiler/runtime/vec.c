@@ -13,7 +13,13 @@ struct RaskVec {
     int64_t len;
     int64_t cap;
     int64_t elem_size;
+    // How many element pointers are currently lent out. A callee holding a
+    // pointer into `data` is only safe while `data` stays put, so growing with
+    // a borrow outstanding is refused instead of left to corrupt memory.
+    int64_t borrows;
 };
+
+static void vec_check_no_borrows(const RaskVec *v, const char *op);
 
 RaskVec *rask_vec_new(int64_t elem_size) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
@@ -21,6 +27,7 @@ RaskVec *rask_vec_new(int64_t elem_size) {
     v->len = 0;
     v->cap = 0;
     v->elem_size = elem_size;
+    v->borrows = 0;
     return v;
 }
 
@@ -28,6 +35,7 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->len = 0;
     v->elem_size = elem_size;
+    v->borrows = 0;
     if (cap > 0) {
         v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
@@ -46,6 +54,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     v->len = count;
     v->cap = count;
     v->elem_size = elem_size;
+    v->borrows = 0;
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
@@ -54,6 +63,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
 
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
+    vec_check_no_borrows(v, "free");
     if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
@@ -68,6 +78,13 @@ int64_t rask_vec_capacity(const RaskVec *v) {
 
 static int vec_grow(RaskVec *v, int64_t needed) {
     if (needed <= v->cap) return 0;
+    // Reallocating moves `data`, which would leave every lent-out element
+    // pointer dangling. mem.ownership: a stale reference is caught at the
+    // access, never silent.
+    if (v->borrows > 0) {
+        rask_panic("Vec grew while one of its elements was being modified — "
+                   "the element reference would dangle");
+    }
     int64_t new_cap = v->cap ? v->cap : 4;
     while (new_cap < needed) {
         if (new_cap > INT64_MAX / 2) rask_panic("Vec capacity overflow");
@@ -78,6 +95,31 @@ static int vec_grow(RaskVec *v, int64_t needed) {
     v->data = new_data;
     v->cap = new_cap;
     return 0;
+}
+
+// Every mutator that moves elements or frees the buffer goes through this.
+// Writing *into* an element (rask_vec_set) is fine — nothing moves.
+static void vec_check_no_borrows(const RaskVec *v, const char *op) {
+    if (v && v->borrows > 0) {
+        rask_panic_fmt("Vec.%s while one of its elements was being modified — "
+                       "the element reference would dangle", op);
+    }
+}
+
+// Lend out a pointer straight into the buffer, so a callee writing through a
+// `mutate` parameter writes the real element instead of a copy. Paired with
+// rask_vec_release_elem; in between, anything that would move the buffer panics.
+void *rask_vec_borrow_elem(RaskVec *v, int64_t index) {
+    if (!v || index < 0 || index >= v->len) {
+        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
+    v->borrows++;
+    return v->data + index * v->elem_size;
+}
+
+void rask_vec_release_elem(RaskVec *v) {
+    if (v && v->borrows > 0) v->borrows--;
 }
 
 int64_t rask_vec_push(RaskVec *v, const void *elem) {
@@ -124,6 +166,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
 // out the bytes into the destination Option payload before any
 // subsequent vec mutation could clobber it.
 void *rask_vec_pop(RaskVec *v) {
+    vec_check_no_borrows(v, "pop");
     if (!v || v->len == 0) {
         return NULL;
     }
@@ -132,6 +175,7 @@ void *rask_vec_pop(RaskVec *v) {
 }
 
 int64_t rask_vec_remove(RaskVec *v, int64_t index) {
+    vec_check_no_borrows(v, "remove");
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index %lld, len %lld",
                        (long long)index, (long long)(v ? v->len : 0));
@@ -148,6 +192,7 @@ int64_t rask_vec_remove(RaskVec *v, int64_t index) {
 }
 
 void rask_vec_clear(RaskVec *v) {
+    vec_check_no_borrows(v, "clear");
     if (v) v->len = 0;
 }
 
@@ -161,6 +206,7 @@ int64_t rask_vec_is_empty(const RaskVec *v) {
 }
 
 int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
+    vec_check_no_borrows(v, "insert");
     if (!v || index < 0 || index > v->len) {
         rask_panic_fmt("insert index out of bounds: index %lld, len %lld",
                        (long long)index, (long long)(v ? v->len : 0));
@@ -179,6 +225,7 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
 }
 
 int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
+    vec_check_no_borrows(v, "remove_at");
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index %lld, len %lld",
                        (long long)index, (long long)(v ? v->len : 0));
@@ -212,6 +259,7 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
 // is what makes the source safe to keep using — iteration reads the returned
 // vec, and nothing points into the original's buffer any more.
 RaskVec *rask_vec_take_all(RaskVec *v) {
+    vec_check_no_borrows(v, "take_all");
     RaskVec *out = rask_vec_clone(v);
     if (v) rask_vec_clear(v);
     return out;
@@ -356,6 +404,7 @@ static int rask_i64_compare(const void *a, const void *b) {
 }
 
 void rask_vec_sort(RaskVec *v) {
+    vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
 }
@@ -386,6 +435,7 @@ static int rask_f64_compare(const void *a, const void *b) {
 }
 
 void rask_vec_sort_f64(RaskVec *v) {
+    vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
 }
@@ -438,6 +488,7 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
 }
 
 void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
+    vec_check_no_borrows(v, "sort_by");
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
     rask_sort_by_ptr = v->elem_size > 8;
@@ -446,6 +497,7 @@ void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
 
 // reverse(vec) — in-place reversal.
 void rask_vec_reverse(RaskVec *v) {
+    vec_check_no_borrows(v, "reverse");
     if (!v || v->len <= 1) return;
     char tmp[16]; // max elem_size we support for stack swap
     int64_t es = v->elem_size;
@@ -463,6 +515,7 @@ void rask_vec_reverse(RaskVec *v) {
 // swap(i, j) — exchange two elements in place. Out-of-range indices panic,
 // same as indexing does; a silent no-op would hide the mistake.
 void rask_vec_swap(RaskVec *v, int64_t i, int64_t j) {
+    vec_check_no_borrows(v, "swap");
     if (!v) return;
     if (i < 0 || i >= v->len || j < 0 || j >= v->len) {
         rask_panic("Vec.swap: index out of bounds");
@@ -503,6 +556,7 @@ int64_t rask_vec_contains_str(const RaskVec *v, const RaskStr *needle) {
 
 // dedup(vec) — remove consecutive duplicates in-place.
 void rask_vec_dedup(RaskVec *v) {
+    vec_check_no_borrows(v, "dedup");
     if (!v || v->len <= 1) return;
     int64_t write = 1;
     for (int64_t read = 1; read < v->len; read++) {

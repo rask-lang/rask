@@ -173,6 +173,21 @@ impl<'a> MirLowerer<'a> {
             .is_some_and(|p| p.split('<').next() == Some("Vec"))
     }
 
+    /// True when `expr` refers to a `Map`. Same two sources as `is_vec_expr`,
+    /// and the same base-name comparison — the checker spells an instantiated
+    /// one `Map<K, V>`.
+    pub(crate) fn is_map_expr(&self, expr: &Expr) -> bool {
+        if let ExprKind::Ident(name) = &expr.kind {
+            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Map") {
+                return true;
+            }
+        }
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .is_some_and(|p| p.split('<').next() == Some("Map"))
+    }
+
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
     /// field names in outermost-last order.
     fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {

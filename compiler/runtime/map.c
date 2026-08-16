@@ -30,6 +30,9 @@ struct RaskMap {
     char      *vals;
     RaskHashFn hash_fn;
     RaskEqFn   eq_fn;
+    // Value pointers currently lent out. Rehashing moves `vals`, so it is
+    // refused while one is outstanding rather than left to dangle.
+    int64_t    borrows;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -147,7 +150,31 @@ static int64_t map_find_slot(const RaskMap *m, const void *key) {
     return (first_tombstone >= 0) ? first_tombstone : -1;
 }
 
+// Every mutator that moves the value array or frees it goes through this.
+static void map_check_no_borrows(const RaskMap *m, const char *op) {
+    if (m && m->borrows > 0) {
+        rask_panic_fmt("Map.%s while one of its values was being modified — "
+                       "the value reference would dangle", op);
+    }
+}
+
+// Value pointer lent straight out of the table, so a `mutate` callee writes the
+// real value instead of a copy. Paired with rask_map_release_elem.
+void *rask_map_borrow_elem(RaskMap *m, const void *key) {
+    void *slot = rask_map_get(m, key);
+    if (!slot) {
+        rask_panic("key not found");
+    }
+    m->borrows++;
+    return slot;
+}
+
+void rask_map_release_elem(RaskMap *m) {
+    if (m && m->borrows > 0) m->borrows--;
+}
+
 static void map_rehash(RaskMap *m) {
+    map_check_no_borrows(m, "insert");
     int64_t old_cap = m->cap;
     uint8_t *old_states = m->states;
     char *old_keys = m->keys;
@@ -188,11 +215,13 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
     m->tombstones = 0;
     m->hash_fn = hash;
     m->eq_fn = eq;
+    m->borrows = 0;
     map_alloc_tables(m, MAP_INITIAL_CAP);
     return m;
 }
 
 void rask_map_free(RaskMap *m) {
+    map_check_no_borrows(m, "free");
     if (!m) return;
     if (m->states) rask_realloc(m->states, m->cap, 0);
     if (m->keys) rask_realloc(m->keys, rask_safe_mul(m->cap, m->key_size), 0);
@@ -263,6 +292,7 @@ void *rask_map_get_unwrap(const RaskMap *m, const void *key) {
 // until the map is next written — the same window `rask_map_get`'s callers
 // already copy within.
 void *rask_map_take(RaskMap *m, const void *key) {
+    map_check_no_borrows(m, "remove");
     if (!m || m->len == 0) return NULL;
 
     uint64_t h = m->hash_fn(key, m->key_size);
@@ -297,6 +327,7 @@ int64_t rask_map_is_empty(const RaskMap *m) {
 }
 
 void rask_map_clear(RaskMap *m) {
+    map_check_no_borrows(m, "clear");
     if (!m) return;
     memset(m->states, MAP_EMPTY, (size_t)m->cap);
     m->len = 0;

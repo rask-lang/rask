@@ -88,6 +88,11 @@ int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 int64_t  rask_vec_push(RaskVec *v, const void *elem);
 void    *rask_vec_get(const RaskVec *v, int64_t index);
+// Element pointer lent straight out of the buffer, so a `mutate` callee writes
+// the real element instead of a copy. Between borrow and release, anything that
+// would move the buffer panics rather than leave the pointer dangling.
+void    *rask_vec_borrow_elem(RaskVec *v, int64_t index);
+void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
 void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
@@ -272,6 +277,12 @@ typedef struct RaskMap RaskMap;
 
 typedef uint64_t (*RaskHashFn)(const void *key, int64_t key_size);
 typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
+
+// Value pointer lent straight out of the table, so a `mutate` callee writes the
+// real value. Between borrow and release, anything that would move or free the
+// value array panics rather than leave the pointer dangling.
+void    *rask_map_borrow_elem(RaskMap *m, const void *key);
+void     rask_map_release_elem(RaskMap *m);
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size);
 RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);

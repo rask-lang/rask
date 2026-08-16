@@ -2675,12 +2675,41 @@ fn a_mutate_write_reaches_fields_and_collection_elements() {
         "field elem=2 (expect 2)\n",
         "nested elem=2 (expect 2)\n",
         "looped=10 (expect 10)\n",
+        "map=2 (expect 2)\n",
+        "grew after=41 (expect 41)\n",
+        "renamed=second (expect second)\n",
     );
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "mutate_collection_element.rk");
         assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}: a mutate write went to a copy", mode);
     }
+}
+
+// ─── Regression: an element borrow can't be left dangling ──────────
+//
+// The element pointer handed to a `mutate` callee points into the Vec's own
+// buffer, so a callee that reaches the same Vec and grows it would be writing
+// through freed memory. mem.borrowing/W2 already forbids structurally mutating
+// a collection while one of its elements is borrowed — `with v[0] as item { v
+// .push(3) }` is a compile error — but the checker can't see that through a
+// call into a global, so the runtime holds the line instead.
+//
+// Native only: the interpreter works on values rather than a pointer into a
+// buffer, so it has nothing to invalidate and runs the program to completion.
+#[test]
+fn growing_a_vec_while_an_element_is_borrowed_panics() {
+    let (stdout, stderr, code) = run_capture("--native", "mutate_elem_realloc_guard.rk");
+    assert_ne!(code, 0, "should have panicked, stdout: {}", stdout);
+    let out = format!("{}{}", stdout, stderr);
+    assert!(
+        out.contains("elements was being modified"),
+        "expected the dangling-element panic, got: {}", out
+    );
+    assert!(
+        !out.contains("UNREACHABLE"),
+        "the push should have panicked before this line: {}", out
+    );
 }
 
 // ─── Regression: issue #698 ─────────────────────────────────

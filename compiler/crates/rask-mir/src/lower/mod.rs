@@ -981,14 +981,13 @@ pub struct MirLowerer<'a> {
     /// back the new value and left the collection unchanged (#650). Every function
     /// exit point drains this first, the same way it drains `ensure_stack`.
     mutate_writebacks: Vec<MutateWriteback>,
-    /// Collection elements handed to something that writes through them, waiting
-    /// for the call to be emitted so the element can be written back.
+    /// Collection elements lent to something that writes through them, waiting
+    /// for the call to be emitted so the borrow can be released.
     ///
     /// Reading `v[i]` copies the element out of the buffer — that's the value
-    /// semantics `let e = v[i]` needs. So a callee that writes through a `mutate`
-    /// parameter writes into the copy, and the collection never sees it. Compound
-    /// assignment (`v[i].n += 1`) and `with v[i] as e` already read-modify-write
-    /// back; a call has to do the same, once it has returned.
+    /// semantics `let e = v[i]` needs. A callee that writes through a `mutate`
+    /// parameter would write into that copy, so it gets a pointer to the real
+    /// element instead, held across exactly the one call.
     elem_writebacks: Vec<ElemWriteback>,
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
@@ -2750,6 +2749,19 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Every element borrow is released right after the call it was taken
+        // for, at one of the two call-emission points that lower `mutate` args.
+        // A leftover means some other call shape reached a `mutate` aggregate
+        // param without going through those — the borrow would stay open and
+        // the next push into that Vec would panic, a long way from the cause.
+        debug_assert!(
+            lowerer.elem_writebacks.is_empty(),
+            "{}: {} element borrow(s) never released — a call path reached a \
+             `mutate` aggregate parameter without a matching release",
+            lowerer.parent_name,
+            lowerer.elem_writebacks.len(),
+        );
+
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
@@ -4219,15 +4231,13 @@ pub(crate) struct MutateWriteback {
     map_value: Option<LocalId>,
 }
 
-/// One pending `Vec_set` for an element passed to a callee that writes through it.
+/// One outstanding element borrow, waiting for its call to be emitted so the
+/// borrow can be released.
 pub(crate) struct ElemWriteback {
-    /// The collection the element came out of.
+    /// The collection the element was borrowed from.
     collection: MirOperand,
-    /// Index it was read at. Lowered once and reused, so `v[next()]` doesn't
-    /// advance twice.
-    index: MirOperand,
-    /// Temp holding the copied-out element the callee was handed.
-    elem: LocalId,
+    /// Which release to call — Vec and Map keep separate borrow counts.
+    release: &'static str,
 }
 
 impl MutateWriteback {
