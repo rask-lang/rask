@@ -78,7 +78,7 @@ pub(super) fn build_nominal_underlying(
 
 /// Extract trait method lists for trait object dispatch.
 pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
-    typed.types.iter()
+    let mut methods: HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
             if let rask_types::TypeDef::Trait { name, .. } = def {
                 // Object-compatible methods only (TR1–TR3): the vtable holds
@@ -89,7 +89,17 @@ pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<S
                 None
             }
         })
-        .collect()
+        .collect();
+    // A trait the compiler provides has no declaration to read, so `any Error`
+    // got a box with no vtable behind it and dispatch fell through to the
+    // static path (#708). A program that declares a trait of the same name
+    // keeps its own — the entry is already there and isn't overwritten.
+    for name in rask_types::COMPILER_PROVIDED_TRAITS {
+        methods.entry(name.to_string()).or_insert_with(|| {
+            rask_types::object_compatible_methods(&typed.types, name)
+        });
+    }
+    methods
 }
 
 /// Lower mono functions to MIR and run optimization passes.

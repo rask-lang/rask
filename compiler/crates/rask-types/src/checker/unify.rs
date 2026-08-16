@@ -539,21 +539,6 @@ impl TypeChecker {
         }
     }
 
-    /// The one place that decides whether a value gains wrapper layers.
-    ///
-    /// `T or E`: at a `return` (or a `catch` arm) a bare `T` wraps to ok and a
-    /// bare `E` — or one component of a union `E` — wraps to err. ER9, with the
-    /// branch picked by type; ER3 disjointness makes that unambiguous. At every
-    /// other position ER11 suppresses the wrap: the value has to arrive already
-    /// carrying the union type. `CoercionSite::wraps_error_branch` is what makes
-    /// that distinction, and MIR lowering asks the same method, so neither half
-    /// can quietly grow its own opinion about a position.
-    ///
-    /// `T?` (= `T or none`): widens everywhere. `none` carries nothing, so
-    /// there's no hidden branch choice to make visible.
-    ///
-    /// If the value's type is still unresolved, defer — at an argument or a
-    /// field it usually is.
     /// An argument landing in a declared parameter.
     ///
     /// Method dispatch runs inside the solver, so this resolves the coercion on
@@ -577,6 +562,21 @@ impl TypeChecker {
         )
     }
 
+    /// The one place that decides whether a value gains wrapper layers.
+    ///
+    /// `T or E`: at a `return` (or a `catch` arm) a bare `T` wraps to ok and a
+    /// bare `E` — or one component of a union `E` — wraps to err. ER9, with the
+    /// branch picked by type; ER3 disjointness makes that unambiguous. At every
+    /// other position ER11 suppresses the wrap: the value has to arrive already
+    /// carrying the union type. `CoercionSite::wraps_error_branch` is what makes
+    /// that distinction, and MIR lowering asks the same method, so neither half
+    /// can quietly grow its own opinion about a position.
+    ///
+    /// `T?` (= `T or none`): widens everywhere. `none` carries nothing, so
+    /// there's no hidden branch choice to make visible.
+    ///
+    /// If the value's type is still unresolved, defer — at an argument or a
+    /// field it usually is.
     pub(super) fn resolve_coercion(
         &mut self,
         ret_ty: Type,

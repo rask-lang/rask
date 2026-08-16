@@ -17,4 +17,5 @@ pub use checker::{
 pub use traits::{
     TraitBound, TraitChecker, TraitError,
     verify_instantiation, implements_trait, implemented_traits,
+    COMPILER_PROVIDED_TRAITS, builtin_trait_method_names, object_compatible_methods,
 };

@@ -153,8 +153,9 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         }
     }
 
-    // Trait object: "any TraitName"
-    if let Some(trait_name) = s.strip_prefix("any ") {
+    // Trait object: "any TraitName". `any Error` folds to `ErrorMessage` here
+    // — same trait, two spellings (#708).
+    if let Some(trait_name) = rask_ast::traits::trait_object_name(s) {
         return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
     }
 

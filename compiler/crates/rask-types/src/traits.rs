@@ -565,6 +565,17 @@ impl<'a> TraitChecker<'a> {
 
     /// Get builtin trait methods for standard traits.
     fn get_builtin_trait_methods(&self, trait_name: &str) -> Option<Vec<MethodSig>> {
+        builtin_trait_methods(trait_name)
+    }
+}
+
+/// Signatures of a trait the compiler provides, with no type table needed.
+///
+/// Free-standing because the reachability pass needs the method *names* before
+/// a type table exists, and duplicating the list there is how the two would
+/// drift.
+pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
+    {
         match trait_name {
             "Add" => Some(vec![MethodSig {
                 type_params: Vec::new(),
@@ -720,7 +731,23 @@ impl<'a> TraitChecker<'a> {
             _ => None,
         }
     }
+}
 
+/// Object-compatible method names of a compiler-provided trait, in vtable
+/// order. Empty for a trait the compiler doesn't provide.
+pub fn builtin_trait_method_names(trait_name: &str) -> Vec<String> {
+    builtin_trait_methods(trait_name)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| {
+            m.type_params.is_empty()
+                && !matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self")
+        })
+        .map(|m| m.name)
+        .collect()
+}
+
+impl<'a> TraitChecker<'a> {
     /// Get methods available on a type.
     fn get_type_methods(&self, ty: &Type) -> Vec<MethodSig> {
         let id = match ty {
@@ -954,6 +981,44 @@ fn is_abstract_arg(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// Traits the compiler provides rather than the program declaring them.
+///
+/// A vtable can only be built for a trait whose method list is known, and both
+/// places that build one — the reachability pass and the CLI's vtable
+/// collection — read that list off `trait Foo { … }` declarations. A
+/// compiler-provided trait has no declaration, so `any ErrorMessage` boxed fine
+/// and then had nothing to dispatch through: MIR skipped the vtable path and
+/// fell back to static dispatch, which failed lowering with "method `message`
+/// on receiver of unresolved type" (#708).
+pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
+    ["ErrorMessage", "Displayable", "Debug", "Hashable"];
+
+/// Method names a trait object of `trait_name` can dispatch, in vtable order.
+///
+/// Declared traits answer from their declaration, compiler-provided ones from
+/// the builtin table. Object compatibility applies either way (TR2/TR3): a
+/// method with its own type parameters, or one returning `Self`, has no vtable
+/// slot.
+pub fn object_compatible_methods(types: &TypeTable, trait_name: &str) -> Vec<String> {
+    let base = trait_name.split('<').next().unwrap_or(trait_name);
+    if let Some(def) = types.get_type_id(base).and_then(|id| types.get(id)) {
+        let names = def.object_compatible_method_names();
+        if !names.is_empty() {
+            return names;
+        }
+    }
+    let checker = TraitChecker::new(types);
+    checker
+        .get_trait_methods_public(base)
+        .into_iter()
+        .filter(|m| {
+            m.type_params.is_empty()
+                && !matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self")
+        })
+        .map(|m| m.name)
+        .collect()
 }
 
 pub fn implements_trait(

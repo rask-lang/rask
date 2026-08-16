@@ -389,7 +389,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Emit a TraitBox instruction: heap-allocate `value` and produce a trait object.
     /// Used for both explicit `as any Trait` casts and implicit TR5 coercions.
-    fn emit_trait_box(
+    pub(super) fn emit_trait_box(
         &mut self,
         val: MirOperand,
         concrete_mir_ty: &MirType,
@@ -2801,9 +2801,10 @@ impl<'a> MirLowerer<'a> {
             // Cast
             ExprKind::Cast { expr, ty } => {
                 // Trait object boxing: `value as any Trait`
-                if let Some(trait_name) = ty.strip_prefix("any ") {
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
+                    let trait_name = trait_name.to_string();
                     let (val, concrete_mir_ty) = self.lower_expr(expr)?;
-                    return Ok(self.emit_trait_box(val, &concrete_mir_ty, trait_name));
+                    return Ok(self.emit_trait_box(val, &concrete_mir_ty, &trait_name));
                 }
 
                 let (val, _) = self.lower_expr(expr)?;

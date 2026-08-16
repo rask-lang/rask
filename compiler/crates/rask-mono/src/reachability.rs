@@ -228,6 +228,17 @@ impl<'a> Monomorphizer<'a> {
                 trait_methods.insert(t.name.clone(), compatible);
             }
         }
+        // Compiler-provided traits have no declaration to read. Without an
+        // entry, boxing a value as `any Error` marked none of the concrete
+        // type's `message` bodies reachable, so the vtable slot pointed at a
+        // function nobody had emitted (#708). Method names only — the
+        // signatures live in rask-types, and the concrete bodies are found by
+        // bare name below, same as for a declared trait.
+        for name in rask_types::COMPILER_PROVIDED_TRAITS {
+            trait_methods
+                .entry(name.to_string())
+                .or_insert_with(|| rask_types::builtin_trait_method_names(name));
+        }
 
         Self {
             fn_table,
@@ -965,7 +976,7 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Trait` boxes `value` — pull in the vtable's methods.
-                if let Some(trait_name) = ty.strip_prefix("any ") {
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
                     self.mark_trait_object_methods(trait_name);
                 }
                 self.visit_expr(inner);

@@ -580,7 +580,7 @@ impl<'a> MirContext<'a> {
             "()" | "" => MirType::Void,
             name => {
                 // "any TraitName" → TraitObject
-                if let Some(trait_name) = name.strip_prefix("any ") {
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
                     return MirType::TraitObject { trait_name: trait_name.to_string() };
                 }
                 // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
