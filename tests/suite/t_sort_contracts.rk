@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A sort bug invisible on the inputs people usually try.
+//
+// `Vec<string>.sort()` compared each element's first 8 bytes as an int64, which
+// for a 16-byte RaskStr is inline characters or a heap pointer — so the result
+// depended on the allocator.
+
+test "stdlib.collections — sorting a Vec<string> is lexicographic, not by bytes" {
+    mut short = Vec.new()
+    short.push("pear")
+    short.push("apple")
+    short.push("fig")
+    short.push("banana")
+    short.sort()
+    assert short[0] == "apple"
+    assert short[1] == "banana"
+    assert short[2] == "fig"
+    assert short[3] == "pear"
+
+    // >15 bytes, so these are heap strings and the raw compare read pointers.
+    mut long = Vec.new()
+    long.push("zzzzzzzzzzzzzzzzzzzzzzzz")
+    long.push("aaaaaaaaaaaaaaaaaaaaaaaa")
+    long.push("mmmmmmmmmmmmmmmmmmmmmmmm")
+    long.sort()
+    assert long[0] == "aaaaaaaaaaaaaaaaaaaaaaaa"
+    assert long[1] == "mmmmmmmmmmmmmmmmmmmmmmmm"
+    assert long[2] == "zzzzzzzzzzzzzzzzzzzzzzzz"
+
+    // A shared prefix is broken by length, same as `<`.
+    mut prefix = Vec.new()
+    prefix.push("abc")
+    prefix.push("ab")
+    prefix.sort()
+    assert prefix[0] == "ab"
+    assert prefix[1] == "abc"
+}

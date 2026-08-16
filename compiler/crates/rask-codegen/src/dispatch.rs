@@ -277,6 +277,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Vec<f64> needs the float total order — the default compares elements
         // as int64_t, which orders negatives backwards (type.operators/ORD3).
         StdlibEntry::simple("Vec_sort_f64", "rask_vec_sort_f64", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_sort_str", "rask_vec_sort_str", &[types::I64], None, false),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),

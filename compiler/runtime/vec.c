@@ -466,6 +466,22 @@ void rask_vec_sort(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
 }
 
+// sort(vec) for Vec<string> — lexicographic, the same order `<` gives.
+//
+// The default sort reads each element's first 8 bytes as an int64_t. A string
+// is a 16-byte RaskStr, so that compared inline character bytes as a
+// little-endian number for a short string and a heap pointer for a long one:
+// ["pear", "apple"] came back unsorted, and which order you got depended on the
+// allocator. Compare the contents instead.
+static int rask_str_compare_qsort(const void *a, const void *b) {
+    return (int)rask_string_compare((const RaskStr *)a, (const RaskStr *)b);
+}
+
+void rask_vec_sort_str(RaskVec *v) {
+    if (!v || v->len <= 1) return;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_qsort);
+}
+
 // sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
 //
 // The default sort compares elements as int64_t whatever they hold. For floats

@@ -4638,6 +4638,11 @@ impl<'a> MirLowerer<'a> {
             // The default sort compares elements as integers, which puts
             // -1.5 before -2.5 and a NaN wherever its sign bit lands.
             ("Vec_sort_f64".to_string(), all_args)
+        } else if qualified_name == "Vec_sort" && self.vec_elem_is_string(object) {
+            // Same problem, different type: as integers a string compares by
+            // its inline bytes or its heap pointer, so `["pear", "apple"]`
+            // came back in whatever order the allocator produced.
+            ("Vec_sort_str".to_string(), all_args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
