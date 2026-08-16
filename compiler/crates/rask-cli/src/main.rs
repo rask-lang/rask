@@ -21,8 +21,29 @@ pub(crate) enum Format {
     Json,
 }
 
+/// Everything a diagnostic's `file_id` might point at: the files being
+/// compiled at their own ids, plus the stdlib's stubs at their reserved ones.
+///
+/// The stdlib half matters because its bodies are type-checked with every
+/// program. Without it a diagnostic raised inside one carried a stdlib byte
+/// offset and got resolved against the user's file — `examples/19_unsafe.rk:152`
+/// on a 151-line program, quoting a blank line.
+fn sources_for(files: &[(String, &str)]) -> rask_diagnostics::source_map::SourceMap {
+    let mut map = rask_diagnostics::source_map::SourceMap::new();
+    for (i, (name, text)) in files.iter().enumerate() {
+        map.insert_at(i as u16, name.clone(), *text);
+    }
+    for (name, text, id) in rask_stdlib::stubs::stub_sources() {
+        map.insert_at(id, format!("stdlib/{}", name), text);
+    }
+    map
+}
+
 fn show_diagnostic(source: &str, file_name: &str, diagnostic: &Diagnostic) {
-    let formatter = DiagnosticFormatter::new(source).with_file_name(file_name);
+    let sources = sources_for(&[(file_name.to_string(), source)]);
+    let formatter = DiagnosticFormatter::new(source)
+        .with_file_name(file_name)
+        .with_sources(&sources);
     eprintln!("{}", formatter.format(diagnostic));
 }
 
@@ -31,22 +52,26 @@ pub(crate) fn show_diagnostic_multi(
     diagnostic: &Diagnostic,
     source_files: &[(std::path::PathBuf, String)],
 ) {
+    let named: Vec<(String, &str)> = source_files
+        .iter()
+        .map(|(path, text)| (path.to_string_lossy().into_owned(), text.as_str()))
+        .collect();
+    let sources = sources_for(&named);
+
+    // The primary label picks which file heads the report; the formatter
+    // resolves every label through the map, so a span from another file in the
+    // package — or from a stdlib body — lands on its own text either way.
     let primary_label = diagnostic.labels.iter()
-        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary);
-    let matched = primary_label.and_then(|label| {
-        let fid = label.span.file_id as usize;
-        if fid < source_files.len() {
-            Some(&source_files[fid])
-        } else {
-            None
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .or_else(|| diagnostic.labels.first());
+    match primary_label.and_then(|l| sources.get(l.span.file_id)) {
+        Some(file) => {
+            let fmt = DiagnosticFormatter::new(&file.text)
+                .with_file_name(&file.name)
+                .with_sources(&sources);
+            eprintln!("{}", fmt.format(diagnostic));
         }
-    });
-    if let Some((path, source)) = matched {
-        let file_name = path.to_string_lossy();
-        let fmt = DiagnosticFormatter::new(source).with_file_name(&file_name);
-        eprintln!("{}", fmt.format(diagnostic));
-    } else {
-        eprintln!("{}: {}", output::error_label(), diagnostic.message);
+        None => eprintln!("{}: {}", output::error_label(), diagnostic.message),
     }
 }
 

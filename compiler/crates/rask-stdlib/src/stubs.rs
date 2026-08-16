@@ -9,6 +9,31 @@ use rask_ast::Span;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// First `file_id` the stdlib's own sources use.
+///
+/// Stubs are parsed separately from the user's package, so their ids can't come
+/// from the same running counter — they'd collide with the package's and a
+/// diagnostic raised inside a stdlib body would resolve against the user's
+/// file. A reserved range keeps the two apart; the number is far above any
+/// realistic package file count and the assertion below keeps it honest.
+pub const STDLIB_FILE_ID_BASE: u16 = 1000;
+
+/// `(name, source, file_id)` for every stub, so a caller can register them with
+/// a `SourceMap` and have stdlib spans resolve against stdlib text.
+pub fn stub_sources() -> impl Iterator<Item = (&'static str, &'static str, u16)> {
+    STUB_SOURCES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, src))| (*name, *src, stub_file_id(i)))
+}
+
+/// The `file_id` for the nth stub source.
+fn stub_file_id(index: usize) -> u16 {
+    let id = STDLIB_FILE_ID_BASE as usize + index;
+    debug_assert!(id <= u16::MAX as usize, "stdlib file ids overflowed u16");
+    id as u16
+}
+
 /// Embedded stub file sources.
 const STUB_SOURCES: &[(&str, &str)] = &[
     ("collections.rk", include_str!("../../../../stdlib/collections.rk")),
@@ -163,13 +188,15 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 1_000_000;
 
-        for (_filename, source) in STUB_SOURCES {
-            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+            let file_id = stub_file_id(stub_index);
+            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
-                .allow_keyword_fn_names();
+            let mut parser =
+                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
+                    .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             for decl in parse_result.decls {
@@ -195,13 +222,15 @@ impl StubRegistry {
         // Start NodeIds high to avoid collision with user code NodeIds.
         let mut next_id: u32 = 1_000_000;
 
-        for (_filename, source) in STUB_SOURCES {
-            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+            let file_id = stub_file_id(stub_index);
+            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
-                .allow_keyword_fn_names();
+            let mut parser =
+                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
+                    .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
@@ -251,13 +280,15 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 2_000_000;
 
-        for (_filename, source) in STUB_SOURCES {
-            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+            let file_id = stub_file_id(stub_index);
+            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
-                .allow_keyword_fn_names();
+            let mut parser =
+                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
+                    .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
@@ -284,13 +315,15 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 3_000_000;
 
-        for (_filename, source) in STUB_SOURCES {
-            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+            let file_id = stub_file_id(stub_index);
+            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id)
-                .allow_keyword_fn_names();
+            let mut parser =
+                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
+                    .allow_keyword_fn_names();
             let parse_result = parser.parse();
             next_id = parser.next_node_id();
             for decl in parse_result.decls {

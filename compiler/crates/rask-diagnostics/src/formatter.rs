@@ -290,15 +290,13 @@ impl<'a> DiagnosticFormatter<'a> {
             std::collections::BTreeMap::new();
 
         for label in &diagnostic.labels {
-            // A span that runs past its file can't be pointed at. Rendering it
-            // anyway invented a location: an error raised while checking a
-            // stdlib body carried that file's byte offset but the user's
-            // file_id, and came out as `examples/19_unsafe.rk:152:767` on a
-            // 151-line file, quoting a blank line. Drop the label and let the
-            // message stand on its own rather than send someone to a line that
-            // isn't there.
-            let (text, _) = self.file_of(label.span.file_id);
-            if label.span.start > text.len() {
+            // Only resolve a span against a file that was actually registered
+            // for its id. A caller with no SourceMap has one file and every
+            // span belongs to it, so that case still resolves as before; a
+            // caller with a map means a span whose id isn't in it came from
+            // somewhere this report can't see, and guessing produced
+            // `examples/19_unsafe.rk:152:767` on a 151-line file.
+            if self.sources.is_some_and(|m| m.get(label.span.file_id).is_none()) {
                 continue;
             }
             let (line_num, col_start) = self.offset_to_line_col(label.span.start, label.span.file_id);
