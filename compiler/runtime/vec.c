@@ -452,6 +452,49 @@ int64_t rask_vec_as_ptr(const RaskVec *v) {
 }
 
 // sort(vec) — in-place sort using default i64 comparison.
+// Bottom-up merge sort — std.collections/SO1, "stable by default".
+//
+// qsort makes no stability promise, and glibc's introsort actively reorders
+// equal elements. That is observable the moment a comparator looks at less than
+// the whole element: `users.sort_by(|a, b| a.score.compare(b.score))` shuffled
+// same-score users on native while the interpreter (Rust's stable sort_by) kept
+// them in place.
+//
+// One scratch buffer, ping-ponged between passes, so each pass is a linear
+// merge and nothing is copied twice. The `<= 0` on the merge is the whole of
+// stability: on a tie the left run's element goes first, and the left run is
+// always the earlier one.
+static void rask_stable_sort(void *base, int64_t n, int64_t size,
+                             int (*cmp)(const void *, const void *)) {
+    if (!base || n < 2 || size <= 0) return;
+    char *src = (char *)base;
+    char *buf = (char *)rask_alloc(rask_safe_mul(n, size));
+    char *dst = buf;
+
+    for (int64_t width = 1; width < n; width *= 2) {
+        for (int64_t lo = 0; lo < n; lo += 2 * width) {
+            int64_t mid = lo + width;
+            int64_t hi = lo + 2 * width;
+            if (mid > n) mid = n;
+            if (hi > n) hi = n;
+            int64_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                if (cmp(src + i * size, src + j * size) <= 0)
+                    memcpy(dst + k++ * size, src + i++ * size, (size_t)size);
+                else
+                    memcpy(dst + k++ * size, src + j++ * size, (size_t)size);
+            }
+            while (i < mid) memcpy(dst + k++ * size, src + i++ * size, (size_t)size);
+            while (j < hi)  memcpy(dst + k++ * size, src + j++ * size, (size_t)size);
+        }
+        char *swap = src; src = dst; dst = swap;
+    }
+
+    // An odd number of passes leaves the result in the scratch buffer.
+    if (src != (char *)base) memcpy(base, src, (size_t)rask_safe_mul(n, size));
+    rask_realloc(buf, rask_safe_mul(n, size), 0);
+}
+
 static int rask_i64_compare(const void *a, const void *b) {
     int64_t va = *(const int64_t *)a;
     int64_t vb = *(const int64_t *)b;
@@ -463,7 +506,7 @@ static int rask_i64_compare(const void *a, const void *b) {
 void rask_vec_sort(RaskVec *v) {
     vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
+    rask_stable_sort(v->data, v->len, v->elem_size, rask_i64_compare);
 }
 
 // sort(vec) for Vec<string> — lexicographic, the same order `<` gives.
@@ -473,13 +516,13 @@ void rask_vec_sort(RaskVec *v) {
 // little-endian number for a short string and a heap pointer for a long one:
 // ["pear", "apple"] came back unsorted, and which order you got depended on the
 // allocator. Compare the contents instead.
-static int rask_str_compare_qsort(const void *a, const void *b) {
+static int rask_str_compare_elem(const void *a, const void *b) {
     return (int)rask_string_compare((const RaskStr *)a, (const RaskStr *)b);
 }
 
 void rask_vec_sort_str(RaskVec *v) {
     if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_qsort);
+    rask_stable_sort(v->data, v->len, v->elem_size, rask_str_compare_elem);
 }
 
 // sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
@@ -510,7 +553,7 @@ static int rask_f64_compare(const void *a, const void *b) {
 void rask_vec_sort_f64(RaskVec *v) {
     vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
+    rask_stable_sort(v->data, v->len, v->elem_size, rask_f64_compare);
 }
 
 // compare(a, b) on f64 — the same total order, returning an Ordering *tag*.
@@ -558,7 +601,7 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
         vb = *(const int64_t *)b;
     }
     /* The comparator is declared `-> Ordering`, and an Ordering crosses this
-       boundary as its tag: Less 0, Equal 1, Greater 2. qsort wants the sign, so
+       boundary as its tag: Less 0, Equal 1, Greater 2. The sort wants a sign, so
        the mapping is tag - 1.
 
        Reading the tag as a sign instead — as this used to — makes Less look
@@ -574,7 +617,7 @@ void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
     rask_sort_by_ptr = v->elem_size > 8;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_sort_by_adapter);
+    rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
 // reverse(vec) — in-place reversal.

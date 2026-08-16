@@ -16,6 +16,11 @@ struct Tagged {
     public label: string
 }
 
+struct Scored {
+    public score: i64
+    public seq: i64
+}
+
 test "stdlib.collections — sorting a Vec<string> is lexicographic, not by bytes" {
     mut short = Vec.new()
     short.push("pear")
@@ -105,4 +110,35 @@ test "stdlib.collections — a comparator sorts a reversed run with duplicates" 
     assert ordered
     assert v[0] == 0
     assert v[23] == 12
+}
+
+// std.collections/SO1 says sorting is stable. Native handed the work to qsort,
+// which promises nothing: glibc's happens to be merge-based and stable, musl's
+// is smoothsort and isn't, and glibc itself falls back to an in-place quicksort
+// when it can't allocate. So "stable" held or didn't depending on the libc and
+// the memory situation, while the interpreter (Rust's stable sort_by) always
+// held. It's a merge sort on both sides now.
+test "std.collections/SO1 — equal elements keep their relative order" {
+    mut v = Vec.new()
+    mut i = 0
+    while i < 60 {
+        v.push(Scored { score: i % 3, seq: i })
+        i = i + 1
+    }
+
+    v.sort_by(|x, y| x.score.compare(y.score))
+
+    mut stable = true
+    mut j = 1
+    while j < v.len() {
+        if v[j].score == v[j - 1].score {
+            if v[j].seq < v[j - 1].seq {
+                stable = false
+            }
+        }
+        j = j + 1
+    }
+    assert stable
+    assert v[0].score == 0
+    assert v[59].score == 2
 }
