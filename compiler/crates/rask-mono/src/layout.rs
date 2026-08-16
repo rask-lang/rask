@@ -501,13 +501,21 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
 /// bare integer (#729).
 ///
 /// Built from `ORDERING_VARIANTS` so the variant list stays in one place, and
-/// laid out the way `compute_enum_layout` lays out any fieldless enum of this
-/// size: a `u8` tag at offset 0, no payload.
+/// sized through `type_size_align` rather than by hand, because a `u8` tag does
+/// not occupy one byte here: codegen gives every scalar an 8-byte slot, so
+/// `compute_enum_layout` gives a fieldless enum size 8, align 8. Written as
+/// `size: 1` this layout was the only enum in the program whose stack slot was
+/// narrower than the stores and loads aimed at it — `Ordering.Less` wrote eight
+/// bytes into a one-byte slot, a returned `Ordering` was copied one byte out of
+/// eight, and `==` read all eight back, so two equal values compared equal or
+/// not depending on what was next to them on the stack. It moved when a test
+/// was added above the one that used it.
 pub fn ordering_layout() -> EnumLayout {
+    let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
     EnumLayout {
         name: "Ordering".to_string(),
-        size: 1,
-        align: 1,
+        size: tag_size,
+        align: tag_align,
         tag_ty: Type::U8,
         tag_offset: 0,
         variants: rask_stdlib::ORDERING_VARIANTS
@@ -516,7 +524,7 @@ pub fn ordering_layout() -> EnumLayout {
             .map(|(tag, name)| VariantLayout {
                 name: (*name).to_string(),
                 tag: tag as u64,
-                payload_offset: 1,
+                payload_offset: tag_size,
                 payload_size: 0,
                 fields: Vec::new(),
             })
