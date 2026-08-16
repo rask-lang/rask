@@ -888,12 +888,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
-
-        // ── Metadata methods ────────────────────────────────────────
-        StdlibEntry::simple("Metadata_size", "rask_metadata_size", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Metadata_accessed", "rask_metadata_accessed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Metadata_modified", "rask_metadata_modified", &[types::I64], Some(types::I64), false),
+        // `fs.metadata` and `Metadata`'s accessors used to live here. It's a
+        // plain Rask struct built by Rask code now — see stdlib/fs.rk (#674).
 
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),

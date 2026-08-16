@@ -143,6 +143,22 @@ struct DirEntry {
 }
 ```
 
+### Implementation Notes
+
+`fs.metadata` is written in Rask over a single `stat`, so the failure branch is
+a real `IoError` — it used to be a `@native` whose C side returned a null
+pointer that codegen handed back as a valid `Metadata`, and the `catch` never
+ran (#674).
+
+What's built differs from the declaration above in two ways:
+
+- `modified` and `accessed` are `i64`, not `u64`. `time_t` is signed and a
+  pre-1970 timestamp is a real value; widening it to `u64` would turn it into a
+  very large positive number instead of reporting the date
+- `is_file`, `is_dir` and `is_symlink` aren't there yet. The first two are mode
+  bits off the same `stat`; `is_symlink` needs `lstat`, since `stat` follows the
+  link and would answer `false` every time
+
 ## Error Messages
 
 ```

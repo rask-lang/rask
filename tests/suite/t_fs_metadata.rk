@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `fs.metadata` used to be `@native("rask_fs_metadata")`, and that C function
+// signalled failure by returning a null pointer. Codegen handed the null back
+// as a valid `Metadata`, so the `catch` never ran and reading a field went
+// through null — native reported size 0 for a file that doesn't exist while the
+// interpreter reported NotFound (#674).
+//
+// It's written in Rask now, so the error branch is built on the Rask side and
+// both backends answer the same way.
+
+import fs
+
+test "std.fs — metadata on a missing path is an IoError, not a zero-sized file" {
+    let missing = "/tmp/rask_t_fs_metadata_does_not_exist"
+    mut reported = ""
+    mut size_if_ok: u64 = 0
+    let m = fs.metadata(missing) catch e => {
+        reported = e.message()
+        Metadata { size: 0, modified: 0, accessed: 0 }
+    }
+    size_if_ok = m.size
+
+    // The catch has to have run at all — that's the bug.
+    assert reported != ""
+    // And it has to be the right variant, with the OS's own wording.
+    assert reported.starts_with("not found:")
+    assert size_if_ok == 0
+}
+
+test "std.fs — metadata on a real file reports its size" {
+    let path = "/tmp/rask_t_fs_metadata_fixture"
+    fs.write_text(path, "hello world\n") catch e => {
+        assert false
+        return
+    }
+    let m = fs.metadata(path) catch e => {
+        assert false
+        return
+    }
+    assert m.size == 12
+    assert m.modified > 0
+    assert m.accessed > 0
+
+    fs.remove_file(path) catch e => {
+        assert false
+    }
+}
+
+test "std.fs — metadata on a directory succeeds" {
+    mut failed = false
+    fs.metadata("/tmp") catch e => {
+        failed = true
+    }
+    assert !failed
+}

@@ -20,6 +20,10 @@ extern "C" func opendir(path: *u8) -> *u8
 extern "C" func readdir(dir: *u8) -> *u8
 extern "C" func closedir(dir: *u8) -> i32
 extern "C" func rask_dirent_name(entry: *u8) -> *u8
+extern "C" func rask_stat_load(path: *u8) -> i32
+extern "C" func rask_stat_loaded_size() -> u64
+extern "C" func rask_stat_loaded_mtime() -> i64
+extern "C" func rask_stat_loaded_atime() -> i64
 extern "C" func rask_stat_size(path: *u8) -> i64
 extern "C" func rask_stat_mtime(path: *u8) -> i64
 extern "C" func rask_stat_atime(path: *u8) -> i64
@@ -228,8 +232,22 @@ extend fs {
     }
 
     /// Get metadata for a file or directory.
-    @native("rask_fs_metadata")
-    public func metadata(path: string) -> Metadata or IoError { }
+    ///
+    /// Written here rather than left to `rask_fs_metadata`, which signalled
+    /// failure by returning a null pointer that codegen handed back as a
+    /// `Metadata` — so the `catch` never ran and `meta.size` read through null.
+    /// A `T or E` needs the error built on this side (#674).
+    public func metadata(path: string) -> Metadata or IoError {
+        let p = unsafe path.as_c_str()
+        if unsafe { rask_stat_load(p) } != 0 {
+            return IoError.last_os_error()
+        }
+        return Metadata {
+            size: unsafe rask_stat_loaded_size(),
+            modified: unsafe rask_stat_loaded_mtime(),
+            accessed: unsafe rask_stat_loaded_atime(),
+        }
+    }
 
     /// Current working directory.
     public func current_dir() -> Path {
@@ -258,18 +276,16 @@ extend fs {
 }
 
 /// File metadata: size, access time, modification time.
-public struct Metadata { }
-
-extend Metadata {
+///
+/// Plain fields, as std.fs specifies. It used to be an opaque handle with
+/// `size()`/`accessed()`/`modified()` accessors reading out of a C-allocated
+/// array, which is what forced `metadata` to be `@native` and left it with no
+/// way to report a failure.
+public struct Metadata {
     /// File size in bytes.
-    @native("rask_metadata_size")
-    public func size(self) -> u64 { }
-
-    /// Last access time as Unix epoch seconds.
-    @native("rask_metadata_accessed")
-    public func accessed(self) -> i64 { }
-
+    public size: u64
     /// Last modification time as Unix epoch seconds.
-    @native("rask_metadata_modified")
-    public func modified(self) -> i64 { }
+    public modified: i64
+    /// Last access time as Unix epoch seconds.
+    public accessed: i64
 }
