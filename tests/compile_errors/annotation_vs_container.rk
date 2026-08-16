@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An annotation has to be checked against the initializer even when the
+// initializer's type is a stdlib container. `unify` defers on those because the
+// name may still resolve, and the deferred constraint was then dropped — so a
+// primitive annotation on a Mutex/Sender/Vec type-checked (#730).
+
+func mutex_as_string() -> string {
+    let m = Mutex.new(0)
+    let probe: string = m              // ERROR: string vs Mutex
+    return probe
+}
+
+func destructured_sender_as_int() -> i64 {
+    using Multitasking {
+        mut (tx, rx) = Channel.buffered(4)
+        let probe: i64 = tx            // ERROR: i64 vs Sender
+        let _ = rx
+        return probe
+    }
+}
+
+func main() {}

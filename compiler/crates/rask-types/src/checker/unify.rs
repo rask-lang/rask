@@ -139,12 +139,67 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Leftover Equal/Coerce constraints on type vars
-                // that never unified — not necessarily errors (can be
-                // resolved by literal defaults), so skip for now.
+                // A leftover `Equal` is usually harmless — a type var waiting on
+                // literal defaults — but not always. `unify` defers instead of
+                // deciding whenever either side is an unresolved name or
+                // generic, since the name may still resolve, and every one of
+                // those landed here and was dropped. So a genuine mismatch that
+                // took the deferred path was recorded and thrown away:
+                //
+                //     let m = Mutex.new(0)
+                //     let probe: string = m      // type-checked fine (#730)
+                //
+                // Reported only when both sides name something concrete.
+                TypeConstraint::Equal(t1, t2, span) => {
+                    let a = self.ctx.apply(&t1);
+                    let b = self.ctx.apply(&t2);
+                    if self.primitive_against_container(&a, &b) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: a,
+                            found: b,
+                            span,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// A primitive on one side and a stdlib container on the other.
+    ///
+    /// `unify` defers instead of deciding whenever either side is an unresolved
+    /// generic, because the name may still resolve — and every deferred `Equal`
+    /// that never resolved was dropped here in silence. So this type-checked:
+    ///
+    /// ```text
+    /// let m = Mutex.new(0)
+    /// let probe: string = m
+    /// ```
+    ///
+    /// This is deliberately the narrowest pair that can't be anything else. A
+    /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
+    /// either direction, so the constraint is a mismatch rather than something
+    /// still settling. Two *named* types are left alone — union members, enum
+    /// variants, trait objects and nominal aliases all legitimately unify across
+    /// names, and judging those from here reported the stdlib's own source as
+    /// broken (#730).
+    fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
+        let is_primitive = |t: &Type| matches!(
+            t,
+            Type::Bool | Type::Char | Type::String | Type::Unit
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64
+        );
+        let is_stdlib_container = |t: &Type| match t {
+            Type::UnresolvedGeneric { name, .. } => {
+                rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+            }
+            _ => false,
+        };
+        (is_primitive(a) && is_stdlib_container(b))
+            || (is_stdlib_container(a) && is_primitive(b))
     }
 
     /// Re-solve method calls that deferred on an unresolved receiver, after
@@ -187,6 +242,43 @@ impl TypeChecker {
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.
         self.ctx.constraints.clear();
+    }
+
+    /// Is this a type whose identity is settled — something a mismatch can be
+    /// judged against? A variable, an error, or a name that isn't a declared or
+    /// stdlib type (a type parameter like `T`, `Self`, a `__module_` marker) is
+    /// not, and is left alone.
+    fn names_a_concrete_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Var(_) | Type::Error => false,
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                self.types.type_names.contains_key(name)
+                    || self.types.stdlib_type_names.contains_key(name)
+                    || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+            }
+            // A wrapper is only as settled as what it wraps.
+            Type::RawPtr(inner) | Type::Slice(inner) => self.names_a_concrete_type(inner),
+            Type::Result { ok, err } => {
+                self.names_a_concrete_type(ok) && self.names_a_concrete_type(err)
+            }
+            Type::Tuple(elems) => elems.iter().all(|e| self.names_a_concrete_type(e)),
+            _ => true,
+        }
+    }
+
+    /// Same nominal type, whatever the arguments — `Mutex<i64>` vs `Mutex<_>`.
+    /// Their arguments unify (or don't) on their own; the names agreeing is
+    /// enough to say this isn't the mismatch this pass is looking for.
+    fn same_named_type(a: &Type, b: &Type) -> bool {
+        let name_of = |t: &Type| match t {
+            Type::UnresolvedNamed(n) => Some(n.clone()),
+            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+            _ => None,
+        };
+        match (name_of(a), name_of(b)) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        }
     }
 
     /// Types that legitimately stay unresolved (generic params, placeholders).

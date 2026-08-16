@@ -882,6 +882,27 @@ fn compile_error_output(name: &str) -> (bool, String) {
 }
 
 #[test]
+fn error_annotation_against_a_container_initializer() {
+    // #730: `unify` defers whenever either side is an unresolved generic, since
+    // the name may still resolve — and a deferred `Equal` that never resolved
+    // was dropped in silence. So `let probe: string = m` on a `Mutex` passed.
+    // Reported for a primitive against a stdlib container only: two *named*
+    // types legitimately unify across names (union members, enum variants,
+    // trait objects, nominal aliases) and judging those reported the stdlib's
+    // own source as broken.
+    let (failed, out) = compile_error_output("annotation_vs_container.rk");
+    assert!(failed, "an annotation must be checked against a container init: {}", out);
+    assert!(
+        out.contains("expected `string`, found `Mutex"),
+        "should name both sides for the Mutex case: {}", out,
+    );
+    assert!(
+        out.contains("expected `i64`, found `Sender"),
+        "and for the tuple-destructured Sender: {}", out,
+    );
+}
+
+#[test]
 fn error_module_used_without_import() {
     // #723: the stdlib's source is resolved alongside the program and declares
     // each module as a plain type (`struct math { }`), so the name was in scope
