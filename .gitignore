@@ -27,3 +27,6 @@ docs/playground/dist/
 docs/playground/node_modules/
 docs/playground/.cache/
 docs/playground/pkg/
+# Byproduct of running examples/18_resource_types.rk, which creates and then
+# removes it. It got committed once by an examples sweep run from the repo root.
+test.txt
