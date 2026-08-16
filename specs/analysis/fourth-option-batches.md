@@ -142,6 +142,35 @@ with world.batch() as w {
 }
 ```
 
+## B9 — Deleting the node you hold ends that borrow
+
+The commonest loop in the corpus deletes the element it is standing on:
+
+<!-- test: skip -->
+```rask
+for e in store {
+    if e.expired { store.delete(e) }      // no batch — immediate
+}
+```
+
+This has to keep working; pools guarantee it today (`mem.pools/PF1`,
+"removing the current element is always safe"). Two rules make it fall out
+rather than needing an exception:
+
+- **`delete` consumes the reference it is given.** After `store.delete(e)`,
+  `e` is unusable — the same shape as any consuming operation. So there is no
+  window where a borrow outlives its node.
+- **Iteration is position-based, not reference-based.** The iterator holds a
+  slot position in the store's arena, so freeing the current slot doesn't
+  disturb it; it advances to the next position as usual.
+
+What stays a compile error is deleting a *different* node while holding a
+borrow of one — that's the existing borrow-exclusion rule, unchanged.
+
+Note this is why `for` is not implicitly a batch (`fourth-option.md`): the
+common loop needs no batch at all, so making one implicit would be paying
+for a problem that doesn't arise.
+
 ## What this does *not* provide
 
 - **No rollback of ordinary code.** Local variables, I/O, and anything
