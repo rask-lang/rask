@@ -175,3 +175,28 @@ test "std.collections/SO3 — sort() uses the type's own compare" {
     assert v[1].rank == 2
     assert v[2].rank == 3
 }
+
+// The derived case (CO3, lexicographic by field). It used to depend on the
+// subcommand: `rask test` skipped the pass that generates derived bodies, so
+// `Pair_compare` had a signature and no function. Native codegen failed
+// outright once `sort()` started asking for it; before that, both backends
+// quietly fell back to comparing bytes.
+struct Pair {
+    public a: i64
+    public b: i64
+}
+
+test "type.enums/CO3 — sort() uses a derived compare, field by field" {
+    mut v = Vec.new()
+    v.push(Pair { a: 2, b: 1 })
+    v.push(Pair { a: 1, b: 9 })
+    v.push(Pair { a: 1, b: 3 })
+
+    v.sort()
+
+    assert v[0].a == 1
+    assert v[0].b == 3
+    assert v[1].a == 1
+    assert v[1].b == 9
+    assert v[2].a == 2
+}

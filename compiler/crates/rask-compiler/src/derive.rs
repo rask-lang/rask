@@ -21,10 +21,18 @@ fn stmt(kind: StmtKind) -> Stmt {
     Stmt { id: NodeId(0), kind, span: DUMMY }
 }
 
+/// `Ordering.Less` and friends — the same AST a hand-written `compare` gets.
+fn ordering(variant: &str) -> Expr {
+    expr(ExprKind::Field {
+        object: Box::new(expr(ExprKind::Ident("Ordering".to_string()))),
+        field: variant.to_string(),
+    })
+}
+
 /// Generate synthetic function bodies for auto-derived methods on structs.
 ///
 /// Currently handles:
-/// - `compare`: lexicographic field-by-field comparison returning i64 (-1, 0, 1)
+/// - `compare`: lexicographic field-by-field comparison returning `Ordering`
 ///
 /// The generated functions are added as Impl declarations to `decls`.
 pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
@@ -71,18 +79,24 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
 ///
 /// Produces:
 /// ```text
-/// func compare(self, other: TypeName) -> i64 {
-///     if self.f1 < other.f1 { return -1 }
-///     if self.f1 > other.f1 { return 1 }
-///     if self.f2 < other.f2 { return -1 }
-///     if self.f2 > other.f2 { return 1 }
+/// func compare(self, other: TypeName) -> Ordering {
+///     if self.f1 < other.f1 { return Ordering.Less }
+///     if self.f1 > other.f1 { return Ordering.Greater }
+///     if self.f2 < other.f2 { return Ordering.Less }
+///     if self.f2 > other.f2 { return Ordering.Greater }
 ///     ...
-///     return 0
+///     return Ordering.Equal
 /// }
 /// ```
 ///
-/// Uses raw i64 return (-1/0/1) rather than Ordering enum because the
-/// runtime (sort_by, etc.) operates on i64 values directly.
+/// `Ordering`, not a raw `-1 / 0 / 1`, because that is what `compare` is —
+/// `Comparable::compare(self, other: Self) -> Ordering` (type.operators/ORD1),
+/// and it is what the checker already tells every caller this returns. The
+/// body used to answer with the integers so a C comparator could read the
+/// sign; the declared type and the generated one disagreed, and everything
+/// that believed the declaration was reading a tag out of an integer.
+/// Converting for the sort runtime is the sort lowering's job, at the one
+/// boundary that needs it.
 fn gen_struct_compare(
     type_name: &str,
     fields: &[(String, rask_types::Type)],
@@ -106,7 +120,7 @@ fn gen_struct_compare(
             field: field_name.clone(),
         });
 
-        // if self.field < other.field { return -1 }
+        // if self.field < other.field { return Ordering.Less }
         body.push(stmt(StmtKind::Expr(expr(ExprKind::If {
             cond: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Lt,
@@ -114,16 +128,13 @@ fn gen_struct_compare(
                 right: Box::new(other_field.clone()),
             })),
             then_branch: Box::new(expr(ExprKind::Block(vec![
-                stmt(StmtKind::Return(Some(expr(ExprKind::Unary {
-                    op: rask_ast::expr::UnaryOp::Neg,
-                    operand: Box::new(expr(ExprKind::Int(1, None))),
-                })))),
+                stmt(StmtKind::Return(Some(ordering("Less")))),
             ]))),
             else_branch: None,
             else_binding: None,
         }))));
 
-        // if self.field > other.field { return 1 }
+        // if self.field > other.field { return Ordering.Greater }
         body.push(stmt(StmtKind::Expr(expr(ExprKind::If {
             cond: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Gt,
@@ -131,15 +142,15 @@ fn gen_struct_compare(
                 right: Box::new(other_field),
             })),
             then_branch: Box::new(expr(ExprKind::Block(vec![
-                stmt(StmtKind::Return(Some(expr(ExprKind::Int(1, None))))),
+                stmt(StmtKind::Return(Some(ordering("Greater")))),
             ]))),
             else_branch: None,
             else_binding: None,
         }))));
     }
 
-    // return 0
-    body.push(stmt(StmtKind::Return(Some(expr(ExprKind::Int(0, None))))));
+    // return Ordering.Equal
+    body.push(stmt(StmtKind::Return(Some(ordering("Equal")))));
 
     Some(FnDecl {
         name: "compare".to_string(),
@@ -162,7 +173,7 @@ fn gen_struct_compare(
                 default: None,
             },
         ],
-        ret_ty: Some("i64".to_string()),
+        ret_ty: Some("Ordering".to_string()),
         context_clauses: vec![],
         body,
         is_pub: false,

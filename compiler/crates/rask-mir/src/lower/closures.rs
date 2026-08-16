@@ -95,13 +95,15 @@ impl<'a> MirLowerer<'a> {
     /// `Ordering` while the C comparator ABI reads an integer. Same conversion
     /// the closure path does, for the same reason.
     ///
-    /// Returns `None` when the type has no `compare`, leaving the caller on the
-    /// byte-comparing default.
+    /// Returns `None` when the type has no `compare`, or has one that doesn't
+    /// answer with an `Ordering`, leaving the caller on the byte-comparing
+    /// default. Bailing out sorts by the wrong key; guessing at an unknown
+    /// return shape reads a tag out of whatever it is, which crashes.
     pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?;
         let param_ty_strs = sig.param_ty_strs.clone();
         let ret_ty = sig.ret_ty.clone();
-        if param_ty_strs.len() != 2 {
+        if param_ty_strs.len() != 2 || !self.is_ordering_ty(&ret_ty) {
             return None;
         }
 
@@ -128,30 +130,11 @@ impl<'a> MirLowerer<'a> {
                 args,
             }));
 
-            // `compare` has two shapes in this codebase and the adapter reads
-            // one. A user-written one returns an `Ordering`, so take its tag. A
-            // derived one (derive.rs) is generated as `-1 / 0 / 1`, which is a
-            // sign, so shift it onto the same tag scale — Less 0, Equal 1,
-            // Greater 2 — and the adapter's `tag - 1` recovers the sign either
-            // way. Getting this wrong is not a wrong order but a crash: reading
-            // a tag out of an integer dereferences it.
+            // `compare` answers with an `Ordering`; the C comparator ABI reads
+            // an integer. Hand over the tag — Less 0, Equal 1, Greater 2 — and
+            // the adapter's `tag - 1` turns it back into a sign.
             let saved = std::mem::replace(&mut self.builder, wb);
-            let normalized = if self.is_ordering_ty(&ret_ty) {
-                self.emit_ordering_tag_i64(MirOperand::Local(result))
-            } else {
-                let shifted = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: shifted,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Add,
-                        left: MirOperand::Local(result),
-                        right: MirOperand::Constant(crate::operand::MirConst::Int(
-                            rask_stdlib::ORDERING_EQUAL,
-                        )),
-                    },
-                }));
-                shifted
-            };
+            let normalized = self.emit_ordering_tag_i64(MirOperand::Local(result));
             let mut wb = std::mem::replace(&mut self.builder, saved);
             wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(MirOperand::Local(normalized)),
