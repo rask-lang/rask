@@ -1158,6 +1158,14 @@ impl TypeChecker {
                 "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
             },
+            // Raw pointers. The eager path in check_expr catches these when the
+            // receiver's type is already known; it isn't when the pointer came
+            // out of another call, and without this arm those fell through to
+            // "no method `offset` found for type `*u8`" (#696).
+            Type::RawPtr(ref inner) => {
+                let inner = (**inner).clone();
+                self.resolve_raw_ptr_method(&inner, &ty, &method, &args, &ret, span)
+            }
             // type.tuples/TU9 — `==`/`!=` on tuples, element by element. The
             // elements have to be comparable themselves, which unifying the
             // two tuple types checks.
@@ -2745,6 +2753,14 @@ impl TypeChecker {
             "eq" | "ne" if args.len() == 1 => {
                 self.unify(ret, &Type::Bool, span)
             }
+            // vec.as_ptr() / vec.as_mut_ptr() -> *T. Both name the same buffer
+            // address; the `mutate self` on as_mut_ptr is what allows writing.
+            // Reached when the receiver is still the unresolved `Vec<T>` shape
+            // rather than the registered type — the registered path finds these
+            // in Vec's own method table.
+            "as_ptr" | "as_mut_ptr" if args.is_empty() => {
+                self.unify(ret, &Type::RawPtr(Box::new(inner_type)), span)
+            }
             // Fall through to static methods (e.g. Vec<Route>.from(...))
             _ => self.resolve_vec_static_method(method, args, ret, span),
         }
@@ -3366,6 +3382,70 @@ impl TypeChecker {
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),
+        }
+    }
+
+    /// Resolve methods on raw pointer types (`*T`) once the receiver is known.
+    ///
+    /// The same table the eager path in check_expr uses, so the two can't
+    /// disagree about what a pointer answers to.
+    pub(super) fn resolve_raw_ptr_method(
+        &mut self,
+        inner: &Type,
+        ptr_ty: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        use rask_stdlib::PtrSig;
+
+        let no_such = || TypeError::NoSuchMethod {
+            ty: ptr_ty.clone(),
+            method: method.to_string(),
+            span,
+        };
+        let entry = rask_stdlib::ptr_methods::lookup(method).ok_or_else(no_such)?;
+
+        let wants_arg = matches!(
+            entry.sig,
+            PtrSig::Write | PtrSig::Arith | PtrSig::PredicateInt | PtrSig::Comparison | PtrSig::ToInt
+        );
+        if wants_arg != (args.len() == 1) {
+            return Err(no_such());
+        }
+
+        // The walk recorded whether this site sat inside `unsafe`. Without the
+        // check here a pointer method on a late-resolved receiver skipped the
+        // rule entirely — `ptr.read()` outside `unsafe` was accepted.
+        if entry.needs_unsafe && !self.ptr_method_sites.get(&span).copied().unwrap_or(true) {
+            return Err(TypeError::UnsafeRequired {
+                operation: format!("pointer method .{}()", method),
+                span,
+            });
+        }
+
+        match entry.sig {
+            PtrSig::Read => self.unify(ret, inner, span),
+            PtrSig::Write => {
+                let _ = self.unify(&args[0], inner, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            // The step count is left open — a `usize` index and an `i32` loop
+            // variable are both fine here.
+            PtrSig::Arith => self.unify(ret, ptr_ty, span),
+            PtrSig::Predicate => self.unify(ret, &Type::Bool, span),
+            PtrSig::PredicateInt => self.unify(ret, &Type::Bool, span),
+            PtrSig::Comparison => {
+                // `null` is typed `*_`, so this ties its pointee to ours.
+                let _ = self.unify(&args[0], ptr_ty, span);
+                self.unify(ret, &Type::Bool, span)
+            }
+            PtrSig::ToInt => self.unify(ret, &Type::I64, span),
+            PtrSig::Cast => {
+                let fresh = self.ctx.fresh_var();
+                self.unify(ret, &Type::RawPtr(Box::new(fresh)), span)
+            }
         }
     }
 }

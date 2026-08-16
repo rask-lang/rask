@@ -124,6 +124,14 @@ impl TypeChecker {
             Type::Slice(elem) => {
                 Type::Slice(Box::new(Self::substitute_type_params(elem, subst)))
             }
+            // Every other compound type recursed; pointers didn't, so a method
+            // returning `*T` — `Vec<T>.as_ptr()` — kept a literal `T` here. The
+            // freshening pass right after this then turned that surviving `T`
+            // into a variable tied to nothing, and `let p = v.as_ptr()` came
+            // back "type is still open here" (#696).
+            Type::RawPtr(inner) => {
+                Type::RawPtr(Box::new(Self::substitute_type_params(inner, subst)))
+            }
             Type::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| Self::substitute_type_params(e, subst)).collect())
             }

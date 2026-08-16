@@ -814,6 +814,29 @@ impl<'a> MirLowerer<'a> {
                         };
                         (MirType::Ptr, rv)
                     }
+                    // `*p` on a raw pointer reads exactly the pointee's width.
+                    // Plain MIR Deref always took a full word, so `*p` on a
+                    // `*u8` handed back four bytes of whatever followed —
+                    // "hello" read as 1869376613 instead of the byte 101 —
+                    // while `p.read()` next to it was right, because only the
+                    // method path passed the pointee size (#696). Both go
+                    // through the same call now. Floats and struct pointees
+                    // keep the old path: RawPtr_read hands back an integer.
+                    UnaryOp::Deref if self.integral_pointee_size(operand).is_some() => {
+                        let elem_size = self.integral_pointee_size(operand).unwrap();
+                        let result_local = self.builder.alloc_temp(MirType::I64);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result_local),
+                            func: FunctionRef::internal(
+                                rask_stdlib::ptr_methods::mir_name("read"),
+                            ),
+                            args: vec![
+                                operand_op,
+                                MirOperand::Constant(crate::operand::MirConst::Int(elem_size)),
+                            ],
+                        }));
+                        return Ok((MirOperand::Local(result_local), MirType::I64));
+                    }
                     UnaryOp::Deref => (operand_ty.clone(), MirRValue::Deref(operand_op)),
                     UnaryOp::Not => (MirType::Bool, MirRValue::UnaryOp {
                         op: lower_unaryop(*op),
@@ -4584,6 +4607,40 @@ impl<'a> MirLowerer<'a> {
         Ok(None)
     }
 
+    /// Byte size of what `expr`'s pointer points at — `*u8` → 1, `*i64` → 8.
+    /// `None` when `expr` isn't a raw pointer, or its pointee isn't a scalar
+    /// this can size (a struct pointee has no single-word read).
+    fn pointee_size(&self, expr: &Expr) -> Option<i64> {
+        match self.ctx.lookup_raw_type(expr.id)? {
+            rask_types::Type::RawPtr(inner) => match inner.as_ref() {
+                rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool => Some(1),
+                rask_types::Type::U16 | rask_types::Type::I16 => Some(2),
+                rask_types::Type::U32 | rask_types::Type::I32 | rask_types::Type::F32 => Some(4),
+                rask_types::Type::U64 | rask_types::Type::I64 | rask_types::Type::F64
+                | rask_types::Type::U128 | rask_types::Type::I128
+                | rask_types::Type::Char => Some(8),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Like `pointee_size`, but only for pointees that come back as a plain
+    /// integer — `RawPtr_read` returns an i64, so a float or a struct behind
+    /// the pointer would arrive as its bit pattern.
+    fn integral_pointee_size(&self, expr: &Expr) -> Option<i64> {
+        match self.ctx.lookup_raw_type(expr.id)? {
+            rask_types::Type::RawPtr(inner) if matches!(
+                inner.as_ref(),
+                rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool
+                    | rask_types::Type::U16 | rask_types::Type::I16
+                    | rask_types::Type::U32 | rask_types::Type::I32
+                    | rask_types::Type::U64 | rask_types::Type::I64
+            ) => self.pointee_size(expr),
+            _ => None,
+        }
+    }
+
     /// Raw-pointer methods (`.read()`, `.write()`, `.add()`, `.cast()`, ...)
     /// dispatched to `RawPtr_*` C functions. Skips smart-pointer types.
     fn try_lower_raw_ptr_method(
@@ -4609,47 +4666,33 @@ impl<'a> MirLowerer<'a> {
                 false
             };
         if matches!(obj_ty, MirType::Ptr) && !is_smart_ptr {
-            let ptr_method = match method.as_str() {
-                "read" | "write" | "add" | "sub" | "offset"
-                | "is_null" | "is_aligned" | "is_aligned_to" | "align_offset" => {
-                    Some(format!("RawPtr_{}", method))
-                }
-                "cast" => None, // cast is type-only, no runtime call
-                _ => None,
-            };
+            let entry = rask_stdlib::ptr_methods::lookup(method.as_str());
             if method == "cast" {
                 // Cast is a no-op at runtime — pointer value unchanged
                 return Ok(Some((obj_op.clone(), MirType::Ptr)));
             }
+            let ptr_method = entry
+                .filter(|e| e.c_symbol.is_some())
+                .map(|e| rask_stdlib::ptr_methods::mir_name(e.name));
             if let Some(func_name) = ptr_method {
-                // Determine element size from the pointer's type (*u8 → 1, *i64 → 8)
-                let elem_size: i64 = self.ctx.lookup_raw_type(object.id)
-                    .and_then(|ty| match ty {
-                        rask_types::Type::RawPtr(inner) => Some(match inner.as_ref() {
-                            rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool => 1,
-                            rask_types::Type::U16 | rask_types::Type::I16 => 2,
-                            rask_types::Type::U32 | rask_types::Type::I32 | rask_types::Type::F32 => 4,
-                            _ => 8,
-                        }),
-                        _ => None,
-                    })
-                    .unwrap_or(8);
+                let elem_size = self.pointee_size(object).unwrap_or(8);
 
                 let mut all_args = vec![obj_op.clone()];
                 for arg in args {
                     let (op, _) = self.lower_expr(&arg.expr)?;
                     all_args.push(op);
                 }
-                // Inject element size for read/write/add/sub/offset
-                if matches!(method.as_str(), "read" | "write" | "add" | "sub" | "offset") {
+                // read/write/add/sub/offset step by whole elements, so the
+                // runtime needs the pointee's size.
+                if entry.map(|e| e.scales_by_elem).unwrap_or(false) {
                     all_args.push(MirOperand::Constant(crate::operand::MirConst::Int(elem_size)));
                 }
-                let ret_ty = match method.as_str() {
-                    "read" => MirType::I64,
-                    "write" => MirType::Void,
-                    "add" | "sub" | "offset" => MirType::Ptr,
-                    "is_null" | "is_aligned" | "is_aligned_to" => MirType::Bool,
-                    "align_offset" => MirType::I64,
+                let ret_ty = match entry.map(|e| e.sig) {
+                    Some(rask_stdlib::PtrSig::Write) => MirType::Void,
+                    Some(rask_stdlib::PtrSig::Arith) => MirType::Ptr,
+                    Some(rask_stdlib::PtrSig::Predicate)
+                    | Some(rask_stdlib::PtrSig::PredicateInt)
+                    | Some(rask_stdlib::PtrSig::Comparison) => MirType::Bool,
                     _ => MirType::I64,
                 };
                 let result_local = self.builder.alloc_temp(ret_ty.clone());

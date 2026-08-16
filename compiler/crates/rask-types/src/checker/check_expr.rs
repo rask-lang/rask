@@ -289,6 +289,21 @@ impl TypeChecker {
                         let resolved = self.ctx.apply(&operand_ty);
                         match resolved {
                             Type::RawPtr(inner) => *inner,
+                            // The operand's type isn't settled yet — it came
+                            // out of another call, as in `*nums.as_ptr()`.
+                            // Returning the open var left the whole binding
+                            // untypeable ("couldn't work out the type of
+                            // `value`"). Say "you're a pointer to something"
+                            // now and let solving fill the something in (#696).
+                            Type::Var(_) => {
+                                let pointee = self.ctx.fresh_var();
+                                self.ctx.add_constraint(TypeConstraint::Equal(
+                                    operand_ty,
+                                    Type::RawPtr(Box::new(pointee.clone())),
+                                    expr.span,
+                                ));
+                                pointee
+                            }
                             _ => operand_ty,
                         }
                     }
@@ -1313,17 +1328,28 @@ impl TypeChecker {
             ExprKind::Unsafe { body } => {
                 let was_unsafe = self.in_unsafe;
                 self.in_unsafe = true;
-                for stmt in body {
+                // The trailing expression is inferred once, not checked and
+                // then inferred again. Inferring it twice built two separate
+                // sets of type vars for the same call and handed the caller the
+                // second set, which nothing ever solved — so `let v = unsafe
+                // p.as_ptr()` came back "type is still open here" while the
+                // block form of the same code was fine (#696).
+                let (init, last) = match body.split_last() {
+                    Some((last, init)) => (init, Some(last)),
+                    None => (&body[..], None),
+                };
+                for stmt in init {
                     self.check_stmt(stmt);
                 }
-                let result = if let Some(last) = body.last() {
-                    if let StmtKind::Expr(e) = &last.kind {
-                        self.infer_expr(e)
-                    } else {
-                        Type::Unit
-                    }
-                } else {
-                    Type::Unit
+                let result = match last {
+                    Some(last) => match &last.kind {
+                        StmtKind::Expr(e) => self.infer_expr(e),
+                        _ => {
+                            self.check_stmt(last);
+                            Type::Unit
+                        }
+                    },
+                    None => Type::Unit,
                 };
                 self.in_unsafe = was_unsafe;
                 result
@@ -2346,6 +2372,15 @@ impl TypeChecker {
             }
         }
 
+        // The receiver's type may not be known yet — `s.as_ptr()` hands back a
+        // fresh var that only becomes `*u8` once the constraints are solved. If
+        // this call names a pointer method, remember whether we were inside
+        // `unsafe`, so the solver can hold it to the same rule the branch above
+        // applies (#696).
+        if rask_stdlib::ptr_methods::lookup(method).is_some() {
+            self.ptr_method_sites.insert(span, self.in_unsafe);
+        }
+
         let ret_ty = self.ctx.fresh_var();
 
         self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -2427,6 +2462,9 @@ impl TypeChecker {
 
     /// Resolve methods on raw pointer types (*T).
     /// Returns Some(return_type) if the method is recognized, None otherwise.
+    ///
+    /// Shape and unsafe-ness both come from `ptr_methods::PTR_METHODS` so this
+    /// path and the constraint solver's can't drift apart.
     fn check_raw_ptr_method(
         &mut self,
         inner: &Type,
@@ -2434,10 +2472,11 @@ impl TypeChecker {
         _args: &[Type],
         span: Span,
     ) -> Option<Type> {
-        let requires_unsafe = method != "is_null";
-        if requires_unsafe {
-            let category = match method {
-                "add" | "sub" | "offset" => super::UnsafeCategory::PointerArithmetic,
+        let entry = rask_stdlib::ptr_methods::lookup(method)?;
+
+        if entry.needs_unsafe {
+            let category = match entry.sig {
+                rask_stdlib::PtrSig::Arith => super::UnsafeCategory::PointerArithmetic,
                 _ => super::UnsafeCategory::PointerMethod,
             };
             self.unsafe_ops.push((span, category));
@@ -2449,16 +2488,23 @@ impl TypeChecker {
             }
         }
 
-        match method {
-            "read" => Some(inner.clone()),
-            "write" => Some(Type::Unit),
-            "add" | "sub" | "offset" => Some(Type::RawPtr(Box::new(inner.clone()))),
-            "is_null" => Some(Type::Bool),
-            "cast" => Some(Type::RawPtr(Box::new(self.ctx.fresh_var()))),
-            "is_aligned" => Some(Type::Bool),
-            "is_aligned_to" => Some(Type::Bool),
-            "align_offset" => Some(Type::I64),
-            _ => None,
+        Some(self.raw_ptr_method_return(entry, inner))
+    }
+
+    /// The type a pointer method hands back, given the pointee.
+    pub(super) fn raw_ptr_method_return(
+        &mut self,
+        entry: &rask_stdlib::PtrMethod,
+        inner: &Type,
+    ) -> Type {
+        use rask_stdlib::PtrSig;
+        match entry.sig {
+            PtrSig::Read => inner.clone(),
+            PtrSig::Write => Type::Unit,
+            PtrSig::Arith => Type::RawPtr(Box::new(inner.clone())),
+            PtrSig::Predicate | PtrSig::PredicateInt | PtrSig::Comparison => Type::Bool,
+            PtrSig::ToInt => Type::I64,
+            PtrSig::Cast => Type::RawPtr(Box::new(self.ctx.fresh_var())),
         }
     }
 

@@ -125,6 +125,11 @@ pub struct TypeChecker {
     pub(super) in_unsafe: bool,
     /// Collected unsafe operations with their locations (for tooling/auditing).
     pub(super) unsafe_ops: Vec<(rask_ast::Span, UnsafeCategory)>,
+    /// Was this call site inside `unsafe`? Recorded for calls that *name* a
+    /// pointer method but whose receiver type isn't known yet. The constraint
+    /// solver resolves those later, long after `in_unsafe` has been unwound, so
+    /// it reads the flag from here instead of from the walk.
+    pub(super) ptr_method_sites: std::collections::HashMap<rask_ast::Span, bool>,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
     /// Whether we're inferring an expression in statement position (value discarded).
@@ -229,6 +234,7 @@ impl TypeChecker {
             pending_disjointness: Vec::new(),
             in_unsafe: false,
             unsafe_ops: Vec::new(),
+            ptr_method_sites: HashMap::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             in_stmt_expr: false,
