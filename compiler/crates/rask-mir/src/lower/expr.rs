@@ -1658,7 +1658,7 @@ impl<'a> MirLowerer<'a> {
             // Index access
             ExprKind::Index { object, index } => {
                 // Range index → slice operation: vec[start..end] or string[start..end]
-                if let ExprKind::Range { start, end, .. } = &index.kind {
+                if let ExprKind::Range { start, end, inclusive } = &index.kind {
                     let (obj_op, obj_ty) = self.lower_expr(object)?;
 
                     // Determine if receiver is a string (MIR type, type checker, or local prefix)
@@ -1686,7 +1686,13 @@ impl<'a> MirLowerer<'a> {
                         // String slice: string_substr(s, start, end)
                         let end_op = if let Some(e) = end {
                             let (op, _) = self.lower_expr(e)?;
-                            op
+                            // `..=` includes its last index, and the runtime
+                            // takes a half-open pair. Dropping the flag here
+                            // made `s[0..=4]` four bytes on native and five on
+                            // the interpreter — the same `Range { .., .. }`
+                            // slip that made the E0324 message quote `s[0..4]`
+                            // for code that said `s[0..=4]` (#694).
+                            self.bump_inclusive_end(op, *inclusive)
                         } else {
                             let len_local = self.builder.alloc_temp(MirType::I64);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -1709,7 +1715,7 @@ impl<'a> MirLowerer<'a> {
                     // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
                         let (op, _) = self.lower_expr(e)?;
-                        op
+                        self.bump_inclusive_end(op, *inclusive)
                     } else {
                         let len_local = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -5244,6 +5250,26 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::UnaryOp { op, operand: input },
         }));
         Ok(Some((MirOperand::Local(out), obj_ty.clone())))
+    }
+
+    /// The half-open end index for a range's written end.
+    ///
+    /// `a..=b` includes `b`, while `string_substr` and `Vec_slice` both take a
+    /// half-open pair — so an inclusive range ends one past its last index.
+    fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
+        if !inclusive {
+            return end;
+        }
+        let bumped = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: bumped,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: end,
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        MirOperand::Local(bumped)
     }
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
