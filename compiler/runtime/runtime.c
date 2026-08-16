@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
 
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
@@ -358,20 +359,26 @@ RaskVec *rask_fs_read_lines(const RaskStr *path) {
 
 // ─── IO module ────────────────────────────────────────────────────
 
-// Returns 0 and writes the line, or 1 at end of input. The status is what
-// makes EOF distinguishable from a blank line — without it every `loop { }`
-// over stdin spins forever once the input runs out.
-int64_t rask_io_read_line(RaskStr *out) {
+// Writes the line, or says why there isn't one. Distinguishing EOF from a
+// blank line is what stops every `loop { }` over stdin spinning once the input
+// runs out; distinguishing EOF from a read *error* is what stops a failure
+// being reported as end-of-input (#682).
+int64_t rask_io_read_line(RaskStr *out, RaskStr *err_out) {
     char buf[4096];
+    rask_string_new(err_out);
     if (!fgets(buf, sizeof(buf), stdin)) {
         rask_string_new(out);
-        return 1;
+        if (ferror(stdin)) {
+            rask_string_from(err_out, rask_io_error_text(errno));
+            return RASK_STROUT_ERROR;
+        }
+        return RASK_STROUT_EOF;
     }
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
     if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
     rask_string_from_bytes(out, buf, (int64_t)len);
-    return 0;
+    return RASK_STROUT_OK;
 }
 
 // ─── More FS module ───────────────────────────────────────────────
@@ -510,8 +517,6 @@ int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mo
 // side rebuild what the interpreter produces. The interpreter is the
 // reference, so the wording below matches its `std::io::Error` output.
 
-#include <errno.h>
-
 // `errno` is a macro over a thread-local, so Rask can't name it directly.
 int32_t rask_io_errno(void) { return errno; }
 
@@ -622,9 +627,14 @@ void rask_file_close(int64_t file) {
 // Chunked rather than sized by ftell/fseek: a pipe or a terminal has no size to
 // seek to, and a stream opened write-only reports one anyway (0), so the old
 // version answered Ok("") for a file it could not read at all.
-int64_t rask_file_read_all(RaskStr *out, int64_t file) {
+int64_t rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) { rask_string_new(out); return 1; }
+    rask_string_new(err_out);
+    if (!f) {
+        rask_string_new(out);
+        rask_string_from(err_out, "file handle is closed");
+        return RASK_STROUT_ERROR;
+    }
 
     size_t cap = 4096, len = 0;
     char *buf = (char *)rask_alloc((int64_t)cap);
@@ -642,13 +652,16 @@ int64_t rask_file_read_all(RaskStr *out, int64_t file) {
         if (n == 0) break;
     }
     if (ferror(f)) {
+        // The reason, not just the fact. Reading a write-only descriptor is
+        // EBADF, and "unexpected end of file" said nothing about that (#682).
+        rask_string_from(err_out, rask_io_error_text(errno));
         rask_free(buf);
         rask_string_new(out);
-        return 1;
+        return RASK_STROUT_ERROR;
     }
     rask_string_from_bytes(out, buf, (int64_t)len);
     rask_free(buf);
-    return 0;
+    return RASK_STROUT_OK;
 }
 
 // Returns a RaskVec<u8>* (cast to int64_t), or -1 if the handle is null.

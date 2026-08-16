@@ -9,6 +9,12 @@
 # without an issue, that means nobody has looked; file before you assume.
 #
 # Re-measured 2026-08-16 (sixth pass). Changes this round:
+#   - 18_resource_types is ENROLLED. The one line that differed was the error
+#     text for reading a file opened write-only: a string-out-param call
+#     reported failure as a bare 1, so codegen had nothing to build an IoError
+#     from and used a fixed UnexpectedEof. The runtime says which failure and
+#     carries the OS text now, so native says "Bad file descriptor (os error 9)"
+#     like the interpreter. Byte-identical. #682
 #   - package_manager is ENROLLED. Its line said "both exit 1", which was two
 #     bugs stacked. It didn't lower at all (#717): a channel created without an
 #     explicit element type gave its Sender and Receiver empty type-argument
@@ -64,12 +70,6 @@
                          # `parse<i32>()` gives "invalid integer" on interp and the raw
                          # number 1114129 on native. ParseError has no definition
                          # anywhere in the stdlib — it's a name in a signature. #320.
-18_resource_types.rk     # Runs to completion on both backends now (#654 — the string
-                         # out-param). One line still differs: reading a file opened
-                         # for writing errors on both, but interp says "Bad file
-                         # descriptor (os error 9)" and native "unexpected end of
-                         # file" — native's runtime hands back a bare failure flag and
-                         # the adapter turns every one into IoError.UnexpectedEof.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # Native runs to completion now (#696 — the raw pointer method
