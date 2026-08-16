@@ -165,13 +165,15 @@ Worth noting the shape of the argument: (b) is more convenient and is exactly
 what a language with a garbage collector would do, because there the timing
 doesn't matter. Here it does, so it has to be written down.
 
-**3. Batch semantics — still open, and genuinely needs answers.**
-Validate-then-apply is decided; these aren't: what exactly gets validated
-(required links satisfied, restrict violations, nothing else?), what a
-rejection returns (`void or BatchError` naming the first violation), whether
-batches nest (probably flatten into the outermost), and what a panic inside
-one does (nothing applies — the enqueued ops are dropped, which is the one
-place Rask gets rollback for free, because nothing had mutated yet).
+**3. Batch semantics — designed, in [batches](fourth-option-batches.md).**
+The pass simplified it twice over: only *deletes* defer (inserts and link
+writes are immediate, since neither can invalidate a reference), so a batch
+is precisely "a region where deletes are deferred" rather than a general
+command buffer; and required links are checked by definite assignment at
+compile time, which removes the validation step and the rejection path
+entirely. What's left open is one real hole: parallel inserts need an
+allocation story, since immediate inserts mean workers allocate
+concurrently.
 
 **4. Root link registration — dissolved, it's static.**
 "Root link" means a link stored on the struct that *owns* the store rather
@@ -211,7 +213,8 @@ error path, and what `mem.relocatable` becomes when it's keys-only.
 - **Migration cost is unsized.** Ten specs, two backends, the whole example
   corpus. Nobody has counted it.
 
-**Companion documents:** [litmus](fourth-option-litmus.md) (three programs
+**Companion documents:** [batches](fourth-option-batches.md) ·
+[litmus](fourth-option-litmus.md) (three programs
 both ways, scored) · [in practice](fourth-option-in-practice.md) (worked
 example, costs, what it retires) · [adversarial](fourth-option-adversarial.md)
 (16 attacks) · [concurrency](fourth-option-concurrency.md) ·
