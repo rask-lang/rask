@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
+use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
 use rask_ast::stmt::StmtKind;
 use rask_ast::{NodeId, Span};
@@ -9,7 +10,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
-use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
+use super::inference::{LiteralKind, TypeConstraint};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -720,12 +721,12 @@ impl TypeChecker {
                                     // OPT6: optional fields widen bare values at
                                     // initialization. Bind position keeps non-optional
                                     // sums strict (ER11).
-                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                                        ret_ty: field_ty,
+                                    self.coerce_into(
+                                        CoercionSite::StructField,
+                                        field_ty,
                                         expected,
-                                        position: WrapPosition::Bind,
-                                        span: field_init.value.span,
-                                    });
+                                        field_init.value.span,
+                                    );
                                 }
                             }
                             ty
@@ -750,12 +751,12 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(sub) = substituted {
-                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                                        ret_ty: field_ty,
-                                        expected: sub,
-                                        position: WrapPosition::Bind,
-                                        span: field_init.value.span,
-                                    });
+                                    self.coerce_into(
+                                        CoercionSite::StructField,
+                                        field_ty,
+                                        sub,
+                                        field_init.value.span,
+                                    );
                                 }
                             }
 
@@ -2083,12 +2084,7 @@ impl TypeChecker {
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     // OPT6: optional parameters widen bare arguments. Bind
                     // position keeps non-optional sums strict (ER11).
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty: arg_ty,
-                        expected: param.clone(),
-                        position: WrapPosition::Bind,
-                        span,
-                    });
+                    self.coerce_into(CoercionSite::Argument, arg_ty, param.clone(), span);
                 }
 
                 ret

@@ -3,7 +3,9 @@
 
 use rask_ast::Span;
 
-use super::inference::{TypeConstraint, WrapPosition};
+use rask_ast::coercion::CoercionSite;
+
+use super::inference::TypeConstraint;
 use super::errors::TypeError;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
@@ -136,7 +138,7 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Leftover Equal/ReturnValue constraints on type vars
+                // Leftover Equal/Coerce constraints on type vars
                 // that never unified — not necessarily errors (can be
                 // resolved by literal defaults), so skip for now.
                 _ => {}
@@ -228,12 +230,12 @@ impl TypeChecker {
                 if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
                 self.resolve_method(ty, method, args, ret, span, call_node)
             }
-            TypeConstraint::ReturnValue {
-                ret_ty,
-                expected,
-                position,
+            TypeConstraint::Coerce {
+                value,
+                target,
+                site,
                 span,
-            } => self.resolve_return_value(ret_ty, expected, position, span),
+            } => self.resolve_coercion(value, target, site, span),
             TypeConstraint::TypePatternMatches {
                 scrutinee,
                 narrow_ty,
@@ -537,22 +539,49 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a return-value / coercion constraint with deferred auto-wrap.
+    /// The one place that decides whether a value gains wrapper layers.
     ///
-    /// `T or E`: at return position, bare `T` wraps to ok and bare `E` (or a
-    /// component of a union `E`) wraps to err — ER9, disambiguated by type
-    /// (ER3 disjointness). At assignment / field / argument position the wrap
-    /// is suppressed (ER11): the value must already have the union type, or
-    /// `none` may widen because the optional shape is permissive.
+    /// `T or E`: at a `return` (or a `catch` arm) a bare `T` wraps to ok and a
+    /// bare `E` — or one component of a union `E` — wraps to err. ER9, with the
+    /// branch picked by type; ER3 disjointness makes that unambiguous. At every
+    /// other position ER11 suppresses the wrap: the value has to arrive already
+    /// carrying the union type. `CoercionSite::wraps_error_branch` is what makes
+    /// that distinction, and MIR lowering asks the same method, so neither half
+    /// can quietly grow its own opinion about a position.
     ///
-    /// `T?` (= `T or none`): widens at any position.
+    /// `T?` (= `T or none`): widens everywhere. `none` carries nothing, so
+    /// there's no hidden branch choice to make visible.
     ///
-    /// If the return expression's type is still unresolved, defer.
-    fn resolve_return_value(
+    /// If the value's type is still unresolved, defer — at an argument or a
+    /// field it usually is.
+    /// An argument landing in a declared parameter.
+    ///
+    /// Method dispatch runs inside the solver, so this resolves the coercion on
+    /// the spot instead of queueing one: a constraint pushed from in here is
+    /// dropped without a word if nothing else makes progress in the same round,
+    /// and a dropped coercion is an accepted program.
+    ///
+    /// Method arguments used to plain-unify while function arguments coerced,
+    /// which is why `f(2)` and `w.m(2)` disagreed about an `i64?` parameter.
+    pub(super) fn coerce_arg(
+        &mut self,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        self.resolve_coercion(
+            arg_ty.clone(),
+            param_ty.clone(),
+            CoercionSite::Argument,
+            span,
+        )
+    }
+
+    pub(super) fn resolve_coercion(
         &mut self,
         ret_ty: Type,
         expected: Type,
-        position: WrapPosition,
+        site: CoercionSite,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
@@ -569,7 +598,7 @@ impl TypeChecker {
             // Optional shape (T or none) is widened freely; non-optional sums
             // wrap only at return.
             let err_is_none = matches!(self.ctx.apply(err), Type::None);
-            let allow_wrap = position == WrapPosition::Return || err_is_none;
+            let allow_wrap = site.wraps_error_branch() || err_is_none;
             // OPT29/OPT31: widening adds an optional layer. A value already
             // typed as the target's *inner* optional fills the outer present
             // branch — `const x: T?? = y` where `y: T?` means "the inner one".
@@ -586,7 +615,7 @@ impl TypeChecker {
                     && !matches!(ret_now, Type::Var(_))
                     && (ret_now == inner || !ret_now.is_option());
                 if widens {
-                    return self.resolve_return_value(ret_ty, *ok.clone(), position, span);
+                    return self.resolve_coercion(ret_ty, *ok.clone(), site, span);
                 }
             }
             match &resolved_ret {
@@ -628,10 +657,10 @@ impl TypeChecker {
                         .map_err(|_| self.er11_error(&resolved_ret, &resolved_expected, span))
                 }
                 Type::Var(_) => {
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty,
-                        expected,
-                        position,
+                    self.ctx.add_constraint(TypeConstraint::Coerce {
+                        value: ret_ty,
+                        target: expected,
+                        site,
                         span,
                     });
                     Ok(false)
@@ -698,10 +727,10 @@ impl TypeChecker {
             match &resolved_ret {
                 _ if is_option_shaped => self.unify(&expected, &ret_ty, span),
                 Type::Var(_) => {
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty,
-                        expected,
-                        position,
+                    self.ctx.add_constraint(TypeConstraint::Coerce {
+                        value: ret_ty,
+                        target: expected,
+                        site,
                         span,
                     });
                     Ok(false)

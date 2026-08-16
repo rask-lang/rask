@@ -221,6 +221,34 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
+    /// Record that `value` is going into a position declared as `target`, and
+    /// may need `T?` / `T or E` layers added on the way in.
+    ///
+    /// **Every position that coerces goes through here.** The rule itself lives
+    /// in one place (`resolve_coercion`) keyed by one enum (`CoercionSite`,
+    /// shared with MIR lowering). Before this, each position decided for itself
+    /// whether to widen or to plain-unify, so the same rule got a different
+    /// answer depending on which code path reached it — `f(2)` widened a bare
+    /// `2` into an `i64?` parameter and `w.m(2)` rejected it (#701).
+    ///
+    /// The decision is deferred: whether a value needs wrapping depends on the
+    /// target's shape, and at an argument or a field the target is often still
+    /// an inference variable when the position is first visited.
+    pub(super) fn coerce_into(
+        &mut self,
+        site: rask_ast::coercion::CoercionSite,
+        value: Type,
+        target: Type,
+        span: rask_ast::Span,
+    ) {
+        self.ctx.add_constraint(inference::TypeConstraint::Coerce {
+            value,
+            target,
+            site,
+            span,
+        });
+    }
+
     /// Create a new type checker.
     pub fn new(resolved: ResolvedProgram) -> Self {
         Self {

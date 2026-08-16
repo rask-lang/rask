@@ -4140,7 +4140,7 @@ impl<'a> MirLowerer<'a> {
         // The qualified name isn't resolved until after the arguments are
         // lowered, so rebuild the candidate keys in the same priority order the
         // resolution below uses and take the first one with a signature.
-        let callee_smut: Vec<Option<MirType>> = {
+        let callee_sig = {
             let mut keys: Vec<String> = Vec::new();
             if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
                 keys.push(format!("{}_{}", prefix, method));
@@ -4156,32 +4156,28 @@ impl<'a> MirLowerer<'a> {
             if let ExprKind::Ident(recv) = &object.kind {
                 keys.push(format!("{}_{}", recv, method));
             }
-            keys.iter()
-                .find_map(|k| self.func_sigs.get(k))
-                .map(|s| s.scalar_mutate_params.clone())
-                .unwrap_or_default()
+            keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
-        let callee_agg_mutate: Vec<bool> = {
-            let mut keys: Vec<String> = Vec::new();
-            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
-                keys.push(format!("{}_{}", prefix, method));
-            }
-            if let Some(prefix) = self
-                .ctx
-                .lookup_raw_type(object.id)
-                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            {
-                keys.push(format!("{}_{}", prefix, method));
-            }
-            if let ExprKind::Ident(recv) = &object.kind {
-                keys.push(format!("{}_{}", recv, method));
-            }
-            keys.iter()
-                .find_map(|k| self.func_sigs.get(k))
-                .map(|s| s.aggregate_mutate_params.clone())
-                .unwrap_or_default()
-        };
+        // Three things are read off that one signature. They used to be three
+        // separate key-building lookups of the same table, in the same order,
+        // for the same entry.
+        let callee_smut: Vec<Option<MirType>> = callee_sig
+            .as_ref()
+            .map(|s| s.scalar_mutate_params.clone())
+            .unwrap_or_default();
+        let callee_agg_mutate: Vec<bool> = callee_sig
+            .as_ref()
+            .map(|s| s.aggregate_mutate_params.clone())
+            .unwrap_or_default();
+        // A method parameter declared `T?` or `T or E` given a bare `T` is the
+        // same coercion as a free function's, and takes the same path. It didn't
+        // used to: only the plain-call path wrapped, so `w.deep(7)` into an
+        // `i64??` parameter got codegen's one-layer net and arrived with the
+        // inner layer absent, printing -2 where the interpreter printed 7 (#701).
+        let callee_params: Vec<Option<String>> = callee_sig
+            .as_ref()
+            .map(|s| s.param_ty_strs.clone())
+            .unwrap_or_default();
         for (i, arg) in args.iter().enumerate() {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
             let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
@@ -4193,7 +4189,23 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
             } else {
-                self.lower_call_arg(&arg.expr, smut, agg_mut)?
+                let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
+                let declared = callee_params
+                    .get(i + 1)
+                    .and_then(|o| o.as_ref())
+                    .map(|s| self.ctx.resolve_type_str(s));
+                match declared {
+                    Some(dst_ty) => {
+                        let op = self.coerce_into_wrapper(
+                            rask_ast::coercion::CoercionSite::Argument,
+                            op,
+                            &mir_ty,
+                            &dst_ty,
+                        );
+                        (op, mir_ty)
+                    }
+                    None => (op, mir_ty),
+                }
             };
             all_args.push(op);
             arg_types.push(ty);

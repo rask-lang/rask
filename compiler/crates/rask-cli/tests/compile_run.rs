@@ -810,8 +810,13 @@ fn error_keyword_fn_name() {
 // ER11: a bare `T` becomes a `T or E` at `return` and nowhere else. The rule was
 // always enforced; the message wasn't — the generic mismatch answered, and its
 // "change this to type `i64 or LoadError`" was what the author had already
-// written (#550, #641, #701). Pins the message and the count: three rejected
+// written (#550, #641, #701). Pins the message and the count: four rejected
 // positions, and the legitimate uses in the same file stay clean.
+//
+// The method argument is the fourth. It only started giving this message once
+// the checker routed method arguments through the same coercion decision as
+// every other position — before that it plain-unified and the generic mismatch
+// answered there (#701).
 #[test]
 fn error_no_auto_wrap_outside_return() {
     let (failed, out) = compile_error_output("no_auto_wrap_outside_return.rk");
@@ -825,9 +830,9 @@ fn error_no_auto_wrap_outside_return() {
         "should name the error type rather than printing `<type#N>`: {}", out,
     );
     assert_eq!(
-        out.matches("E0828").count(), 3,
-        "one per coercion position — binding, argument, field — and nothing for \
-         the wrapped-by-a-call forms or the optional: {}", out,
+        out.matches("E0828").count(), 4,
+        "one per coercion position — binding, argument, method argument, field — \
+         and nothing for the wrapped-by-a-call forms or the optional: {}", out,
     );
 }
 

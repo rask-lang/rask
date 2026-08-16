@@ -722,12 +722,11 @@ impl TypeChecker {
                             continue;
                         }
                         let substituted = Self::substitute_type_params(param_ty, &subst);
-                        // CV1a/CV2: the parameter is the slot, the argument the
-                        // value going into it — a direction plain unify doesn't
-                        // have, and without it `v.push(big_u64)` on a `Vec<u8>`
-                        // narrowed silently (#649).
-                        self.check_fits(arg, &substituted, span)?;
-                        if self.unify(&substituted, arg, span)? {
+                        // CV1a/CV2 (#649) and the wrapper coercion (#701) are
+                        // the same question — which side is the slot — so one
+                        // call answers both: `coerce_arg` runs `check_fits`
+                        // before deciding whether layers are needed.
+                        if self.coerce_arg(&substituted, arg, span)? {
                             progress = true;
                         }
                     }
@@ -1087,9 +1086,8 @@ impl TypeChecker {
                         let substituted = Self::substitute_type_params(param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
-                        // CV1a/CV2: same direction as above (#649).
-                        self.check_fits(arg, &substituted, span)?;
-                        if self.unify(&substituted, arg, span)? {
+                        // Same direction as above, same one call (#649, #701).
+                        if self.coerce_arg(&substituted, arg, span)? {
                             progress = true;
                         }
                     }
@@ -1184,7 +1182,7 @@ impl TypeChecker {
 
                     let mut progress = false;
                     for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
-                        if self.unify(param_ty, arg, span)? {
+                        if self.coerce_arg(param_ty, arg, span)? {
                             progress = true;
                         }
                     }
@@ -1378,9 +1376,8 @@ impl TypeChecker {
         let mut progress = false;
         for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
             let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
-            // CV1a/CV2: same direction as above (#649).
-            self.check_fits(arg, &substituted, span)?;
-            if self.unify(&substituted, arg, span)? {
+            // Same direction as above, same one call (#649, #701).
+            if self.coerce_arg(&substituted, arg, span)? {
                 progress = true;
             }
         }

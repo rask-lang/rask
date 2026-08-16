@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Statement type checking.
 
+use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 
 use super::errors::TypeError;
-use super::inference::{TypeConstraint, WrapPosition};
+use super::inference::TypeConstraint;
 use super::parse_type::parse_type_string;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
@@ -81,12 +82,12 @@ impl TypeChecker {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens. Bare T into T or E (E ≠ none)
                     // is rejected so the error-branch coercion stays visible.
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty: init_ty,
-                        expected: declared.clone(),
-                        position: WrapPosition::Bind,
-                        span: stmt.span,
-                    });
+                    self.coerce_into(
+                        CoercionSite::AnnotatedBinding,
+                        init_ty,
+                        declared.clone(),
+                        stmt.span,
+                    );
                     self.define_local(name.clone(), declared.clone());
                     declared
                 } else {
@@ -118,12 +119,12 @@ impl TypeChecker {
                 let binding_ty = if let Some(declared) = declared_ty {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens — same rule as Mut above.
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty: init_ty,
-                        expected: declared.clone(),
-                        position: WrapPosition::Bind,
-                        span: stmt.span,
-                    });
+                    self.coerce_into(
+                        CoercionSite::AnnotatedBinding,
+                        init_ty,
+                        declared.clone(),
+                        stmt.span,
+                    );
                     self.define_local_const(name.clone(), declared.clone());
                     declared
                 } else {
@@ -220,12 +221,7 @@ impl TypeChecker {
                 // Assignment is a widening position (optionals/O-widen, SYNTAX L521):
                 // the optional shape `T` widens to `T?` at the lvalue, same as a
                 // binding. Bind keeps `T or E` (E ≠ none) strict.
-                self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                    ret_ty: value_ty,
-                    expected: target_ty,
-                    position: WrapPosition::Bind,
-                    span: stmt.span,
-                });
+                self.coerce_into(CoercionSite::Assignment, value_ty, target_ty, stmt.span);
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
@@ -249,12 +245,12 @@ impl TypeChecker {
                     // method/field constraints are solved, so we know if the
                     // return expression is already a Result or needs wrapping.
                     // Return position permits the full ER9 wrap.
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                    self.coerce_into(
+                        CoercionSite::Return,
                         ret_ty,
-                        expected: expected.clone(),
-                        position: WrapPosition::Return,
-                        span: stmt.span,
-                    });
+                        expected.clone(),
+                        stmt.span,
+                    );
                 }
                 self.clear_expression_borrows();
             }
