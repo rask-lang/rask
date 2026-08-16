@@ -306,6 +306,9 @@ impl Default for ErrorCodeRegistry {
                 "E0829" => ("with guard escapes its block", Type,
                     "A `with` block's guard — the name after `as` — is access to a box's payload for the block's duration, not a value of its own: boxes hand out no guards, so the inner value can't outlive its scope. Returning the bare guard identifier as the block's own produced value would hand back a live view into memory the lock no longer protects once the block ends. This only fires for struct/enum/union payloads; scalars and `string` copy out fine as-is, since a plain identifier read of those is already an independent value.",
                     "let c = with counter as g { g }   // error: `g` (a `Counter`) can't leave the block\n// fix: `with counter as g { g.hits }`, or a method that returns an owned `Counter`"),
+                "E0830" => ("`!` on an optional", Type,
+                    "`!` negates a `bool`; a `T?` doesn't coerce to `T` (type.optionals/OPT5), so `!` doesn't reach through the wrapper. This matters most on `bool?`, where the payload's type makes `!x` look applicable — but a reader can't tell whether it negates the payload or tests for absence, and `x!` already means force-unwrap on the same operand. Test presence with `x is none`, or narrow first with `if x? as v { !v }`.",
+                    "let x: bool? = flag()\nlet y = !x   // error: negation doesn't reach through the optional\n// fix: `if x? as v { !v }`, or `x is none` to test absence"),
             },
         }
     }

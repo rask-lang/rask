@@ -292,6 +292,26 @@ impl TypeChecker {
                             _ => operand_ty,
                         }
                     }
+                    rask_ast::expr::UnaryOp::Not => {
+                        // `!` negates a bool. `T?` doesn't coerce to `T` (OPT5), so a
+                        // `bool?` operand must be rejected here rather than lifted through —
+                        // there's no way to tell "negate the payload" from "test for absence".
+                        let resolved = self.ctx.apply(&operand_ty);
+                        if resolved.is_option() {
+                            self.errors.push(TypeError::NotOnOptional {
+                                found: resolved,
+                                span: expr.span,
+                            });
+                            Type::Bool
+                        } else {
+                            self.ctx.add_constraint(TypeConstraint::Equal(
+                                Type::Bool,
+                                operand_ty,
+                                expr.span,
+                            ));
+                            Type::Bool
+                        }
+                    }
                     _ => operand_ty,
                 }
             }
