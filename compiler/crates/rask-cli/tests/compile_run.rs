@@ -807,11 +807,91 @@ fn error_keyword_fn_name() {
     );
 }
 
+// #713: one error variant covers four different trait requirements, and it
+// used to give all four the same advice — "implement `Trait` for `Type`",
+// explained in terms of trait objects. That is not advice anyone can take on a
+// numeric bound (`Integer` is a set of primitive types, not a list of methods),
+// and at a call site it points at the wrong file. A bound naming a trait that
+// doesn't exist had no type to blame at all and reported `_`.
+#[test]
+fn error_trait_bound_messages() {
+    let (failed, out) = compile_error_output("trait_bound_messages.rk");
+    assert!(failed, "unsatisfied trait requirements must be rejected: {}", out);
+    assert!(
+        !out.contains("`_` does not implement"),
+        "an unknown trait is a name problem, not a mystery type: {}", out,
+    );
+    assert!(
+        out.contains("did you mean `Integer`?"),
+        "a misspelt trait should suggest the real one: {}", out,
+    );
+    // The numeric bound explains membership and lists the members.
+    assert!(
+        out.contains("is not one of the types `Integer` covers"),
+        "a numeric bound is membership, not missing methods: {}", out,
+    );
+    assert!(
+        !out.contains("implement `Integer` for"),
+        "nothing can implement a numeric trait, so that must not be the fix: {}", out,
+    );
+    // The other three keep their own advice, each naming what to do where.
+    for expected in [
+        "add the missing methods to the block",
+        "pass a type that implements `Greeter`",
+        "implement the trait before boxing",
+    ] {
+        assert!(out.contains(expected), "missing advice {:?}: {}", expected, out);
+    }
+    assert!(
+        !out.contains("casting to a trait object requires"),
+        "the trait-object wording belongs to the cast alone: {}", out,
+    );
+}
+
+// OPT3/OPT11/OPT13/OPT32: the optional operator family needs an absent branch
+// to work on. All three used to be rejected only as a side effect of the shape
+// they were rewritten into, and reported it that way — `n ?? -1` said "expected
+// `i64`, found `i32 or _`" and advised changing the type to the one already
+// written (#645). Pins the message, the `.get(k)` advice for the index case,
+// and the count: six mistakes, six errors, nothing extra from the cascade and
+// nothing for the legal shapes in the same file.
+#[test]
+fn error_optional_operators_need_optionals() {
+    let (failed, out) = compile_error_output("optional_operators_need_optionals.rk");
+    assert!(failed, "`??`/`!`/`take` on a non-optional must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0831").count(), 4,
+        "one per `??`: a local, a string, a map index, a struct field: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0832").count(), 1,
+        "one `!` on a non-optional: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0365").count(), 1,
+        "one `take` on a non-optional place: {}", out,
+    );
+    assert!(
+        out.contains("m.get(k) ?? fallback"),
+        "the index case should point at `.get`, not at the `??`: {}", out,
+    );
+    assert!(
+        !out.contains("E0361"),
+        "a rejected operator poisons its result, so no follow-on \"couldn\'t work \
+         out the type\": {}", out,
+    );
+}
+
 // ER11: a bare `T` becomes a `T or E` at `return` and nowhere else. The rule was
 // always enforced; the message wasn't — the generic mismatch answered, and its
 // "change this to type `i64 or LoadError`" was what the author had already
-// written (#550, #641, #701). Pins the message and the count: three rejected
+// written (#550, #641, #701). Pins the message and the count: four rejected
 // positions, and the legitimate uses in the same file stay clean.
+//
+// The method argument is the fourth. It only started giving this message once
+// the checker routed method arguments through the same coercion decision as
+// every other position — before that it plain-unified and the generic mismatch
+// answered there (#701).
 #[test]
 fn error_no_auto_wrap_outside_return() {
     let (failed, out) = compile_error_output("no_auto_wrap_outside_return.rk");
@@ -825,9 +905,9 @@ fn error_no_auto_wrap_outside_return() {
         "should name the error type rather than printing `<type#N>`: {}", out,
     );
     assert_eq!(
-        out.matches("E0828").count(), 3,
-        "one per coercion position — binding, argument, field — and nothing for \
-         the wrapped-by-a-call forms or the optional: {}", out,
+        out.matches("E0828").count(), 4,
+        "one per coercion position — binding, argument, method argument, field — \
+         and nothing for the wrapped-by-a-call forms or the optional: {}", out,
     );
 }
 

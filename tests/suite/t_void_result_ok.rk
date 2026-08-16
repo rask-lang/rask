@@ -17,7 +17,7 @@ enum ValidationError {
     BadEnum(string, string)
 }
 
-extend ValidationError with ErrorMessage {
+extend ValidationError with Error {
     func message(self) -> string {
         match self {
             Empty(field)          => return "{field} must not be empty",
@@ -32,7 +32,7 @@ enum ApiError {
     BadRequest(string)
 }
 
-extend ApiError with ErrorMessage {
+extend ApiError with Error {
     func message(self) -> string {
         match self {
             Validation(e) => return e.message(),

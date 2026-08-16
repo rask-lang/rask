@@ -38,6 +38,18 @@ pub struct AmbiguousMethod {
     pub span: Span,
 }
 
+/// A callee name with any written type arguments removed: `make<i32>` →
+/// `make`. Names with no `<…>` come back unchanged.
+///
+/// Only for call position. A *type* name like `Vec<i64>` keeps its arguments —
+/// they're part of which type it is.
+pub(crate) fn strip_written_type_args(name: &str) -> &str {
+    match name.find('<') {
+        Some(i) if name.ends_with('>') => &name[..i],
+        _ => name,
+    }
+}
+
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"
 pub fn mangle_name(base: &str, type_args: &[Type]) -> String {
@@ -227,6 +239,17 @@ impl<'a> Monomorphizer<'a> {
                     .collect();
                 trait_methods.insert(t.name.clone(), compatible);
             }
+        }
+        // Compiler-provided traits have no declaration to read. Without an
+        // entry, boxing a value as `any Error` marked none of the concrete
+        // type's `message` bodies reachable, so the vtable slot pointed at a
+        // function nobody had emitted (#708). Method names only — the
+        // signatures live in rask-types, and the concrete bodies are found by
+        // bare name below, same as for a declared trait.
+        for name in rask_types::COMPILER_PROVIDED_TRAITS {
+            trait_methods
+                .entry(name.to_string())
+                .or_insert_with(|| rask_types::builtin_trait_method_names(name));
         }
 
         Self {
@@ -713,6 +736,12 @@ impl<'a> Monomorphizer<'a> {
         match &expr.kind {
             ExprKind::Call { func, args } => {
                 if let ExprKind::Ident(name) = &func.kind {
+                    // `make<i32>(2)` — the parser folds the written type
+                    // arguments into the callee's name, so the function table's
+                    // bare key never matched and nothing was ever queued for
+                    // the call (#712). The arguments are already in
+                    // `type_args_at`, put there by the checker.
+                    let name = &strip_written_type_args(name).to_string();
                     let type_args = self.type_args_at(expr.id);
                     // Record call rewrite so MIR lowering uses the mangled name.
                     // Only for functions with a body to instantiate — a stdlib
@@ -965,7 +994,7 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Trait` boxes `value` — pull in the vtable's methods.
-                if let Some(trait_name) = ty.strip_prefix("any ") {
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
                     self.mark_trait_object_methods(trait_name);
                 }
                 self.visit_expr(inner);

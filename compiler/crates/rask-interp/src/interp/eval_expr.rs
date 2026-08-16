@@ -654,6 +654,15 @@ impl Interpreter {
                 if self.struct_decls.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
+                // `make<i32>(2)` — the parser folds the written type arguments
+                // into the callee's name, and the function table is keyed by
+                // the bare one, so an explicitly instantiated call went looking
+                // for a function literally called `make<i32>` (#712). The
+                // arguments themselves are already handled: the checker bound
+                // them, and `push_call_type_params` carries them into the body.
+                if base_name != name && self.functions.contains_key(base_name) {
+                    return Ok(Value::Function { name: base_name.to_string() });
+                }
                 // Prelude free functions from stdlib/async.rk. These are usable
                 // unqualified inside `using Multitasking`, without an import.
                 if let Some(kind) = super::register::prelude_builtin(base_name) {

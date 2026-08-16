@@ -33,6 +33,20 @@ func consume(size: i64 or LoadError) -> i64 {
     return size catch _ => -1
 }
 
+// A method argument is the same position, so it gets the same answer. It used
+// to get a different one — the checker plain-unified method arguments instead
+// of coercing them, so the generic mismatch answered here while `consume(7)`
+// got the ER11 message (#701).
+struct Loader {
+    public tag: i64
+}
+
+extend Loader {
+    public func absorb(self, size: i64 or LoadError) -> i64 {
+        return size catch _ => -1
+    }
+}
+
 // The one position that does wrap.
 func loaded() -> i64 or LoadError {
     return 7
@@ -49,12 +63,17 @@ func main() {
     // ERROR: argument
     let n = consume(7)
 
+    // ERROR: method argument — same rule, same message
+    let loader = Loader { tag: 1 }
+    let m: i64 = loader.absorb(7)
+
     // ERROR: struct field
     let rec = Record { size: 7 }
 
     // THE FIX: get it from something whose `return` does the wrapping.
     let ok_binding: i64 or LoadError = loaded()
     let ok_arg = consume(loaded())
+    let ok_method_arg = loader.absorb(loaded())
     let ok_field = Record { size: loaded() }
 
     // And the optional shape is exempt — this is fine at every position.

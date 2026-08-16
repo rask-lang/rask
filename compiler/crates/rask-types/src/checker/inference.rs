@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::{NodeId, Span};
+use rask_ast::{coercion::CoercionSite, NodeId, Span};
 
 use crate::types::{GenericArg, Type, TypeVarId};
 
@@ -33,17 +33,24 @@ pub enum TypeConstraint {
         /// constraints with no originating call node (e.g. union sub-checks).
         call_node: Option<NodeId>,
     },
-    /// Return value must match function return type, with auto-wrap into a
-    /// sum type (T or E or T or none) when applicable. Defers wrapping
-    /// decision until the return type is resolved.
+    /// A value is being put somewhere with a declared type, and may need to
+    /// gain `T?` / `T or E` layers on the way in. Deferred, because whether it
+    /// needs any depends on the target resolving first.
     ///
-    /// `position` distinguishes spec ER9 (return: any T or E wraps) from
-    /// ER11 (assignment / field / argument: only `T or none` widens, the
-    /// optional shape; an error union must already have the union type).
-    ReturnValue {
-        ret_ty: Type,
-        expected: Type,
-        position: WrapPosition,
+    /// `site` says which position this is. It comes from the list MIR lowering
+    /// wraps at, so "can a bare `E` go to the error branch here" is one match
+    /// on one enum instead of one rule per position (#701).
+    Coerce {
+        value: Type,
+        target: Type,
+        site: CoercionSite,
+        /// The expression being coerced, when there is one node to point at.
+        ///
+        /// Only needed where the decision this constraint makes has to reach a
+        /// backend: ER32's error branch erases a concrete error into
+        /// `any Trait`, and MIR boxes at the *value*, keyed by its node. `None`
+        /// for positions that never erase.
+        value_node: Option<NodeId>,
         span: Span,
     },
     /// ER27: scrutinee is a `T or E`, and `narrow_ty` must match either `T`
@@ -94,6 +101,19 @@ pub enum TypeConstraint {
         result: Type,
         span: Span,
     },
+    /// OPT32: `take <place>` — the place has to be a `T?`, and the expression
+    /// yields that same `T?`.
+    ///
+    /// Deferred because the place is usually a field, whose type arrives from
+    /// its own constraint: `take conn.pending` meets an unresolved place. The
+    /// walk used to settle it by unifying the place with a fresh `T?`, which
+    /// answered the question instead of asking it — a non-optional place then
+    /// failed inside the field's constraint with a message about `_?`.
+    TakePlace {
+        place: Type,
+        result: Type,
+        span: Span,
+    },
     /// The element type of a container being iterated.
     ///
     /// A field's type arrives as a deferred `HasField`, so `for t in self.tables`
@@ -112,21 +132,6 @@ pub enum TypeConstraint {
 pub enum LiteralKind {
     Integer,
     Float,
-}
-
-/// Position of a value-coercion site, used by `ReturnValue` to gate
-/// auto-wrap into `T or E`.
-///
-/// Per ER9/ER11: `T or E` (where E ≠ none) auto-wraps **only** at `return`.
-/// Optionals (`T or none`) widen at any position. Anywhere else for a
-/// non-optional sum, the value must already have the union type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WrapPosition {
-    /// Return statement — full ER9 auto-wrap into T or E.
-    Return,
-    /// Assignment, field initialiser, function argument — ER11 restricts
-    /// auto-wrap to optional (`T or none`) only.
-    Bind,
 }
 
 /// State for type inference and unification.

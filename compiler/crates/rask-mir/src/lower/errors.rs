@@ -163,6 +163,23 @@ impl<'a> MirLowerer<'a> {
             Some(_) => None,
             None => self.error_wrap_target(try_id),
         };
+        // ER32: the enclosing function's error side is `any Trait`, so the
+        // concrete error acquires a vtable on its way out. Same trigger as
+        // ER31a's enum wrap and mutually exclusive with it — an error is either
+        // named by a boundary enum or type-erased, not both.
+        //
+        // Without this the checker accepted the propagation and the payload
+        // stored into the caller's slot was the bare concrete value. The caller
+        // then read its first two words as {data, vtable} and called through
+        // whatever the second one happened to be, which is a segfault as soon
+        // as anyone asks for `.message()`.
+        let box_trait: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
+            (None, None, MirType::Result { err, .. }) => match &**err {
+                MirType::TraitObject { trait_name } => Some(trait_name.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
         let err_val = match &handler {
             Some(frame) => frame.err_val,
             None => self.builder.alloc_temp(err_ty.clone()),
@@ -177,9 +194,13 @@ impl<'a> MirLowerer<'a> {
                 byte_offset: err_byte_offset,
                 // Wrapping copies the error into an enum slot, so an aggregate
                 // one has to come back as an address to copy from.
-                access: match &wrap {
-                    Some(_) => aggregate_payload_access(&err_ty),
-                    None => FieldAccess::Word,
+                // Wrapping copies the error into an enum slot and boxing
+                // memcpies it onto the heap, so an aggregate one has to come
+                // back as an address either way.
+                access: if wrap.is_some() || box_trait.is_some() {
+                    aggregate_payload_access(&err_ty)
+                } else {
+                    FieldAccess::Word
                 },
             },
         }));
@@ -220,6 +241,23 @@ impl<'a> MirLowerer<'a> {
                 }));
                 let size = w.enum_ty.size();
                 (wrapped, if size > 8 { Some(size) } else { None })
+            }
+            None => (err_val, err_store_size),
+        };
+
+        // ER32: box after any ER31a wrap, so the two compose in the one order
+        // that makes sense — the enum names the error, the box erases it.
+        let (err_val, err_store_size) = match &box_trait {
+            Some(trait_name) => {
+                let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_trait_box(
+                    MirOperand::Local(err_val),
+                    &err_ty,
+                    trait_name,
+                );
+                match boxed {
+                    MirOperand::Local(id) => (id, Some(boxed_ty.size())),
+                    _ => (err_val, err_store_size),
+                }
             }
             None => (err_val, err_store_size),
         };
@@ -568,7 +606,12 @@ impl<'a> MirLowerer<'a> {
                 base: result.clone(),
                 field_index: 0,
                 byte_offset: self.payload_byte_offset(&err_ty),
-                access: FieldAccess::Word,
+                // Same rule the ok path below already uses: an error that
+                // lives in its own storage comes back as an address, because a
+                // word read takes only its first 8 bytes. An `any Error` is a
+                // 16-byte fat pointer, so `catch e => e.message()` was
+                // dispatching through the concrete value's second word (#708).
+                access: aggregate_payload_access(&err_ty),
             },
         }));
         let shadowed = if clause.is_discard() {

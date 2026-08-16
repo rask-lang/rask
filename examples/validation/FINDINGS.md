@@ -79,10 +79,10 @@ asserts it directly. (A hand-written `Comparable` still needs all five of
 compare/lt/le/gt/ge — no derive-from-compare — so EmailAddress, never sorted,
 stays non-Comparable. That's the reason now, not "Ordering unnameable".)
 
-### B3 — `ErrorMessage` auto-derive (ER6) is unimplemented — [#378], open
+### B3 — `Error` auto-derive (ER6) is unimplemented — [#378], open
 A bare error enum gets no `message()` and can't be used as an error type
-(`does not implement ErrorMessage`). **Workaround:** every error enum needs
-`@message` or a manual `extend … with ErrorMessage`. AuthError carries `@message`
+(`does not implement Error`). **Workaround:** every error enum needs
+`@message` or a manual `extend … with Error`. AuthError carries `@message`
 (no pure-auto-derive demo).
 
 ### B4 — `@message` auto-delegation (ER37) — [#446], **fixed**

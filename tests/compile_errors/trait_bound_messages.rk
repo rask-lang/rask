@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: what a failed trait requirement says depends on where it came from
+// ERROR: `Marker` does not implement `Integer`
+//
+// One error variant covers four different situations, and it used to give all
+// four the same advice: "implement `Trait` for `Type`", explained in terms of
+// trait objects. On a numeric bound that's advice nobody can take — `Integer`
+// is a set of primitive types, not a list of methods — and at a call site it
+// points at the wrong file (#713).
+//
+// A bound naming a trait that doesn't exist was worse: it had no type to blame,
+// so the placeholder `_` stood in for one and the message read as a mysterious
+// failure of the type system rather than as a misspelt name.
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+struct Marker {
+    tag: i64
+}
+
+struct Silent {
+    tag: i64
+}
+
+// ERROR: conformance header with no evidence — the block doesn't define `greet`
+extend Silent with Greeter {
+    public func other(self) -> i64 {
+        return self.tag
+    }
+}
+
+func needs_int<T: Integer>(x: i64) -> T {
+    return unreachable("stub")
+}
+
+func needs_greeter<T: Greeter>(g: T) -> i64 {
+    return 1
+}
+
+func typo<T: Intger>(x: i64) -> T {
+    return unreachable("stub")
+}
+
+func main() {
+    // ERROR: numeric bound — nothing to implement, so the fix lists the members
+    let bad: Marker = needs_int(1)
+
+    // ERROR: ordinary generic bound — the fix is the conformance or another type
+    let s = Silent { tag: 1 }
+    let n = needs_greeter(s)
+
+    // ERROR: `as any Trait` on a type without the methods
+    let boxed = s as any Greeter
+
+    // ERROR: a bound naming a trait nobody declared — did-you-mean, not `_`
+    let t: i32 = typo(1)
+
+    // THE FIX for the numeric one: a type the bound actually covers.
+    let ok: i32 = needs_int(1)
+
+    println("{bad.tag} {n} {t} {ok} {boxed.greet()}")
+}

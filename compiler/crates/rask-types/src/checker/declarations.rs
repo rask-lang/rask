@@ -974,10 +974,22 @@ impl TypeChecker {
                                 }
                             }
                         }
-                        for (trait_name, _e) in trait_errors {
+                        for (trait_name, e) in trait_errors {
+                            // A header naming a trait that doesn't exist is a
+                            // name problem, not a missing method — the block
+                            // may well define everything the author meant.
+                            if matches!(e, crate::traits::TraitError::UnknownTrait(_)) {
+                                self.errors.push(TypeError::NoSuchTrait {
+                                    trait_name,
+                                    known: self.declared_trait_names(),
+                                    span: decl.span,
+                                });
+                                continue;
+                            }
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: i.target_ty.clone(),
                                 trait_name,
+                                context: super::TraitBoundContext::ConformanceHeader,
                                 span: decl.span,
                             });
                         }

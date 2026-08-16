@@ -67,7 +67,7 @@ test "error union div error" {
 }
 
 // --- shared-method dispatch (rask#211) ---
-// Every `E` satisfies `ErrorMessage` (ER4), so `e.message()` on a union
+// Every `E` satisfies `Error` (ER4), so `e.message()` on a union
 // `e: A | B` resolves by dispatching to whichever variant `e` holds.
 func union_message(s: string, b: i32) -> string {
     let r = combined(s, b)

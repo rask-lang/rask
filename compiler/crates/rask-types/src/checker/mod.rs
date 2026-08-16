@@ -30,7 +30,7 @@ mod resolved_types;
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
+pub use errors::{TypeError, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
 pub use declarations::signature_type_param_names;
 
@@ -167,6 +167,12 @@ pub struct TypeChecker {
     /// operand itself. Lowering reads this to put the branch in the same place
     /// the checker did.
     pub(super) try_chain_placement: HashMap<NodeId, NodeId>,
+    /// `??` nodes whose left side is an index expression. `m[k]` panics on a
+    /// miss instead of yielding a `T?`, so a `??` after it is the mistake
+    /// people actually make, and the fix is `.get(k)` rather than anything
+    /// about the `??` itself (#645). Recorded during the walk because by the
+    /// time the operand's type settles, the syntax is out of reach.
+    pub(super) coalesce_index_operands: std::collections::HashSet<NodeId>,
     /// ER20: Collected error types from `try` calls in error-accumulation mode.
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
@@ -221,6 +227,51 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
+    /// Record that `value` is going into a position declared as `target`, and
+    /// may need `T?` / `T or E` layers added on the way in.
+    ///
+    /// **Every position that coerces goes through here.** The rule itself lives
+    /// in one place (`resolve_coercion`) keyed by one enum (`CoercionSite`,
+    /// shared with MIR lowering). Before this, each position decided for itself
+    /// whether to widen or to plain-unify, so the same rule got a different
+    /// answer depending on which code path reached it — `f(2)` widened a bare
+    /// `2` into an `i64?` parameter and `w.m(2)` rejected it (#701).
+    ///
+    /// The decision is deferred: whether a value needs wrapping depends on the
+    /// target's shape, and at an argument or a field the target is often still
+    /// an inference variable when the position is first visited.
+    pub(super) fn coerce_into(
+        &mut self,
+        site: rask_ast::coercion::CoercionSite,
+        value: Type,
+        target: Type,
+        span: rask_ast::Span,
+    ) {
+        self.coerce_into_node(site, value, target, None, span)
+    }
+
+    /// `coerce_into`, naming the expression being coerced.
+    ///
+    /// Worth the extra argument only where the decision has to reach a backend:
+    /// ER32's error branch erases a concrete error into `any Trait`, and MIR
+    /// boxes at the value, keyed by its node.
+    pub(super) fn coerce_into_node(
+        &mut self,
+        site: rask_ast::coercion::CoercionSite,
+        value: Type,
+        target: Type,
+        value_node: Option<NodeId>,
+        span: rask_ast::Span,
+    ) {
+        self.ctx.add_constraint(inference::TypeConstraint::Coerce {
+            value,
+            target,
+            site,
+            value_node,
+            span,
+        });
+    }
+
     /// Create a new type checker.
     pub fn new(resolved: ResolvedProgram) -> Self {
         Self {
@@ -257,6 +308,7 @@ impl TypeChecker {
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
             try_chain_placement: HashMap::new(),
+            coalesce_index_operands: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             mutate_self_fns: std::collections::HashSet::new(),

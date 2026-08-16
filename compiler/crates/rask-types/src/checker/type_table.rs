@@ -314,17 +314,24 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
+    /// The key a conformance is filed under: generic args stripped.
+    fn conformance_key(trait_name: &str) -> String {
+        trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
+    }
+
     /// G1: record that a type conforms to a trait (declared or auto-derived).
     /// Trait names are stored base-only (generic args stripped).
     pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
-        let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
-        self.conformances.entry(type_id).or_default().insert(base);
+        self.conformances
+            .entry(type_id)
+            .or_default()
+            .insert(Self::conformance_key(trait_name));
     }
 
     /// G1: does the type declare (or auto-derive) conformance to the trait?
     pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
-        let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
-        self.conformances.get(&type_id).is_some_and(|set| set.contains(base))
+        let base = Self::conformance_key(trait_name);
+        self.conformances.get(&type_id).is_some_and(|set| set.contains(&base))
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.
@@ -334,8 +341,8 @@ impl TypeTable {
         trait_name: &str,
         bounds: Vec<(String, Vec<String>)>,
     ) {
-        let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
-        self.conformance_conditions.insert((type_id, base), bounds);
+        self.conformance_conditions
+            .insert((type_id, Self::conformance_key(trait_name)), bounds);
     }
 
     /// CC1: the `where` condition for a conformance, if it's conditional.
@@ -344,7 +351,8 @@ impl TypeTable {
         type_id: TypeId,
         trait_name: &str,
     ) -> Option<&Vec<(String, Vec<String>)>> {
-        let base = trait_name.split('<').next().unwrap_or(trait_name).trim();
+        let base = Self::conformance_key(trait_name);
+        let base = base.as_str();
         self.conformance_conditions.get(&(type_id, base.to_string()))
     }
 

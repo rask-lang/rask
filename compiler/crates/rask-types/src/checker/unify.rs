@@ -3,7 +3,9 @@
 
 use rask_ast::Span;
 
-use super::inference::{TypeConstraint, WrapPosition};
+use rask_ast::coercion::CoercionSite;
+
+use super::inference::TypeConstraint;
 use super::errors::TypeError;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
@@ -81,6 +83,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
             ) {
                 match self.solve_constraint(constraint) {
@@ -136,7 +139,7 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Leftover Equal/ReturnValue constraints on type vars
+                // Leftover Equal/Coerce constraints on type vars
                 // that never unified — not necessarily errors (can be
                 // resolved by literal defaults), so skip for now.
                 _ => {}
@@ -228,12 +231,13 @@ impl TypeChecker {
                 if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
                 self.resolve_method(ty, method, args, ret, span, call_node)
             }
-            TypeConstraint::ReturnValue {
-                ret_ty,
-                expected,
-                position,
+            TypeConstraint::Coerce {
+                value,
+                target,
+                site,
+                value_node,
                 span,
-            } => self.resolve_return_value(ret_ty, expected, position, span),
+            } => self.resolve_coercion(value, target, site, value_node, span),
             TypeConstraint::TypePatternMatches {
                 scrutinee,
                 narrow_ty,
@@ -251,6 +255,10 @@ impl TypeChecker {
 
             TypeConstraint::Coalesce { node, value, default, result, span } => {
                 self.resolve_coalesce(node, value, default, result, span)
+            }
+
+            TypeConstraint::TakePlace { place, result, span } => {
+                self.resolve_take_place(place, result, span)
             }
 
             TypeConstraint::ElementOf { container, elem, span } => {
@@ -408,6 +416,40 @@ impl TypeChecker {
         }
     }
 
+    /// OPT32: settle `take <place>` once the place's type is known.
+    ///
+    /// A place that is always there has no absent branch to leave behind, which
+    /// is the whole mechanism — so it's rejected, naming the place's real type.
+    /// The walk can't do this: the place is usually a field, and its type comes
+    /// from a constraint of its own.
+    fn resolve_take_place(
+        &mut self,
+        place: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved = self.ctx.apply(&place);
+        if resolved.is_option() {
+            self.unify(&result, &resolved, span)?;
+            return Ok(true);
+        }
+        match &resolved {
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::TakePlace { place, result, span });
+                Ok(false)
+            }
+            // Already poisoned by whatever produced the place. One diagnostic
+            // for one mistake.
+            Type::Error => Ok(true),
+            other => {
+                if let Type::Var(id) = self.ctx.apply(&result) {
+                    self.ctx.bind_var(id, Type::Error);
+                }
+                Err(TypeError::TakeOnNonOptional { found: other.clone(), span })
+            }
+        }
+    }
+
     /// Settle `object[index]` once the container's shape is known. Defers while
     /// the container is still a variable — a Pool behind a struct field only
     /// gets its type when that field's own constraint resolves.
@@ -446,6 +488,30 @@ impl TypeChecker {
         // solver, so registering here still lands in time.
         self.check_index_types(&obj, &index, is_range, span);
         Ok(progressed)
+    }
+
+    /// Could the left side of a `??` be absent?
+    ///
+    /// True for the optional shape, for a `T or E` (ER12 rejects that one at
+    /// the `??` itself, with advice about `catch` — this isn't the place to
+    /// re-answer it), and for anything not yet known. False only when the value
+    /// is a settled type that is always there.
+    fn coalesce_operand_can_be_absent(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Result { .. } => true,
+            // Nothing pinned it yet, or it's already poisoned by an earlier
+            // error. Neither is a reason to add a second diagnostic.
+            Type::Var(_)
+            | Type::Error
+            | Type::Never
+            | Type::UnresolvedNamed(_)
+            | Type::UnresolvedGeneric { .. } => true,
+            // `Option<T>` written the long way, or a bare `none`.
+            Type::None => true,
+            Type::Named(id) => Some(*id) == self.types.get_option_type_id(),
+            Type::Generic { base, .. } => Some(*base) == self.types.get_option_type_id(),
+            _ => false,
+        }
     }
 
     fn resolve_coalesce(
@@ -514,6 +580,32 @@ impl TypeChecker {
             other => (other.clone(), other.clone()),
         };
 
+        // OPT3/OPT11: `??` supplies the branch a `T?` has and nothing else
+        // does. A left side that's always present has no branch to supply, and
+        // the unify below can only report that as a shape mismatch — "expected
+        // `i64`, found `i32 or _`", which names the compiler's own rewrite and
+        // then advises changing the type to what it already is (#645).
+        //
+        // Checked here rather than at the `??` because the operand's type often
+        // isn't known there: `m[key]` waits on a deferred Index constraint.
+        // Anything still open is left alone — it can still turn out optional.
+        let resolved_value = self.ctx.apply(&value);
+        if !self.coalesce_operand_can_be_absent(&resolved_value) {
+            self.errors.push(TypeError::CoalesceOnNonOptional {
+                found: resolved_value,
+                from_index: self.coalesce_index_operands.contains(&node),
+                span,
+            });
+            // Poison the result rather than leaving it open. Returning the
+            // error and stopping left the binding with no type, so one wrong
+            // `??` also reported "couldn't work out the type of `v`" — a second
+            // diagnostic for a problem the first one already explained.
+            if let Type::Var(id) = self.ctx.apply(&result) {
+                self.ctx.bind_var(id, Type::Error);
+            }
+            return Ok(true);
+        }
+
         // The error side stays free so both shapes fit: `T?` binds it to
         // `none`, and an operand whose shape isn't pinned yet still unifies.
         let free_err = self.ctx.fresh_var();
@@ -537,22 +629,51 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a return-value / coercion constraint with deferred auto-wrap.
+    /// An argument landing in a declared parameter.
     ///
-    /// `T or E`: at return position, bare `T` wraps to ok and bare `E` (or a
-    /// component of a union `E`) wraps to err — ER9, disambiguated by type
-    /// (ER3 disjointness). At assignment / field / argument position the wrap
-    /// is suppressed (ER11): the value must already have the union type, or
-    /// `none` may widen because the optional shape is permissive.
+    /// Method dispatch runs inside the solver, so this resolves the coercion on
+    /// the spot instead of queueing one: a constraint pushed from in here is
+    /// dropped without a word if nothing else makes progress in the same round,
+    /// and a dropped coercion is an accepted program.
     ///
-    /// `T?` (= `T or none`): widens at any position.
+    /// Method arguments used to plain-unify while function arguments coerced,
+    /// which is why `f(2)` and `w.m(2)` disagreed about an `i64?` parameter.
+    pub(super) fn coerce_arg(
+        &mut self,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        self.resolve_coercion(
+            arg_ty.clone(),
+            param_ty.clone(),
+            CoercionSite::Argument,
+            None,
+            span,
+        )
+    }
+
+    /// The one place that decides whether a value gains wrapper layers.
     ///
-    /// If the return expression's type is still unresolved, defer.
-    fn resolve_return_value(
+    /// `T or E`: at a `return` (or a `catch` arm) a bare `T` wraps to ok and a
+    /// bare `E` — or one component of a union `E` — wraps to err. ER9, with the
+    /// branch picked by type; ER3 disjointness makes that unambiguous. At every
+    /// other position ER11 suppresses the wrap: the value has to arrive already
+    /// carrying the union type. `CoercionSite::wraps_error_branch` is what makes
+    /// that distinction, and MIR lowering asks the same method, so neither half
+    /// can quietly grow its own opinion about a position.
+    ///
+    /// `T?` (= `T or none`): widens everywhere. `none` carries nothing, so
+    /// there's no hidden branch choice to make visible.
+    ///
+    /// If the value's type is still unresolved, defer — at an argument or a
+    /// field it usually is.
+    pub(super) fn resolve_coercion(
         &mut self,
         ret_ty: Type,
         expected: Type,
-        position: WrapPosition,
+        site: CoercionSite,
+        value_node: Option<rask_ast::NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
@@ -569,7 +690,7 @@ impl TypeChecker {
             // Optional shape (T or none) is widened freely; non-optional sums
             // wrap only at return.
             let err_is_none = matches!(self.ctx.apply(err), Type::None);
-            let allow_wrap = position == WrapPosition::Return || err_is_none;
+            let allow_wrap = site.wraps_error_branch() || err_is_none;
             // OPT29/OPT31: widening adds an optional layer. A value already
             // typed as the target's *inner* optional fills the outer present
             // branch — `const x: T?? = y` where `y: T?` means "the inner one".
@@ -586,7 +707,7 @@ impl TypeChecker {
                     && !matches!(ret_now, Type::Var(_))
                     && (ret_now == inner || !ret_now.is_option());
                 if widens {
-                    return self.resolve_return_value(ret_ty, *ok.clone(), position, span);
+                    return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                 }
             }
             match &resolved_ret {
@@ -628,10 +749,11 @@ impl TypeChecker {
                         .map_err(|_| self.er11_error(&resolved_ret, &resolved_expected, span))
                 }
                 Type::Var(_) => {
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty,
-                        expected,
-                        position,
+                    self.ctx.add_constraint(TypeConstraint::Coerce {
+                        value: ret_ty,
+                        target: expected,
+                        site,
+                        value_node,
                         span,
                     });
                     Ok(false)
@@ -669,6 +791,25 @@ impl TypeChecker {
                         }
                         other => other == &resolved_ret,
                     };
+                    // ER32 again, from the other side: deciding the branch is
+                    // only half of it. The value is a concrete error and the
+                    // branch it lands on is erased, so it needs a vtable — and
+                    // MIR boxes at the value, keyed by its node (TR5).
+                    //
+                    // Without this the checker said "error", MIR built a Result
+                    // whose tag said Ok and whose payload was the bare concrete
+                    // error, and `return Boom.Bad("x")` from an
+                    // `i64 or any Error` came back as a *success* holding 0 on
+                    // native while the interpreter reported the error (#708).
+                    if is_err_branch {
+                        if let (Type::TraitObject { trait_name }, Some(node)) =
+                            (&resolved_err, value_node)
+                        {
+                            if !matches!(resolved_ret, Type::TraitObject { .. }) {
+                                self.trait_coercions.insert(node, trait_name.clone());
+                            }
+                        }
+                    }
                     let wrapped = if is_err_branch {
                         Type::Result {
                             ok: ok.clone(),
@@ -698,10 +839,11 @@ impl TypeChecker {
             match &resolved_ret {
                 _ if is_option_shaped => self.unify(&expected, &ret_ty, span),
                 Type::Var(_) => {
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty,
-                        expected,
-                        position,
+                    self.ctx.add_constraint(TypeConstraint::Coerce {
+                        value: ret_ty,
+                        target: expected,
+                        site,
+                        value_node,
                         span,
                     });
                     Ok(false)

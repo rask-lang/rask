@@ -58,7 +58,7 @@ impl TypeChecker {
     /// and the duplicate-variant rule (U5 from union-types.md).
     ///
     /// ER3: T ≠ E (disjointness).
-    /// ER4: E (or each component of a union E) implements `ErrorMessage`.
+    /// ER4: E (or each component of a union E) implements `Error`.
     /// U5:  flattening the nested `or` tree must not yield a repeated variant
     ///      (e.g. `(T or E) or E`). `none` is exempt — repeated `none` layers
     ///      are nested optionals, which stay distinct (type.optionals/OPT28).
@@ -100,6 +100,17 @@ impl TypeChecker {
                         continue;
                     }
                     reported.push(key);
+                    // An unknown trait has no type to blame, so reporting it as
+                    // "`_` does not implement X" pointed at the wrong thing
+                    // entirely — the name is the problem (#713).
+                    if matches!(e, crate::traits::TraitError::UnknownTrait(_)) {
+                        self.errors.push(TypeError::NoSuchTrait {
+                            trait_name,
+                            known: self.declared_trait_names(),
+                            span,
+                        });
+                        continue;
+                    }
                     let err = self.bound_error(&ty, ty_name, trait_name, span);
                     self.errors.push(err);
                 }
@@ -357,7 +368,7 @@ fn validate_single_result(
         }
     }
 
-    // ER4: E (or each component of a union E) must implement ErrorMessage.
+    // ER4: E (or each component of a union E) must implement Error.
     // `none` is exempt — it's the absent sentinel for `T or none` (the optional
     // shape), not an error type.
     for comp in &err_components {
@@ -367,12 +378,12 @@ fn validate_single_result(
         if matches!(comp, Type::None) {
             continue;
         }
-        // `any ErrorMessage` is the trait itself — no need to check it satisfies itself
-        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "ErrorMessage") {
+        // `any Error` is the trait itself — no need to check it satisfies itself
+        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "Error") {
             continue;
         }
         if !implements_error_message(comp, checker) {
-            errs.push(TypeError::ErrorMessageMissing {
+            errs.push(TypeError::ErrorTraitMissing {
                 ty: (*comp).clone(),
                 span,
             });
@@ -421,6 +432,23 @@ impl TypeChecker {
     /// The right error for a failed bound. `Encode`/`Decode` aren't method sets,
     /// so they get their own shape of message — one that names the field that
     /// blocked it rather than telling you to implement a trait you can't.
+    /// Every trait the program declares, for a did-you-mean on a misspelt one.
+    pub(super) fn declared_trait_names(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .filter_map(|def| match def {
+                crate::TypeDef::Trait { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .chain(
+                crate::COMPILER_PROVIDED_TRAITS
+                    .iter()
+                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode"].iter())
+                    .map(|s| s.to_string()),
+            )
+            .collect()
+    }
+
     pub(super) fn bound_error(
         &self,
         ty: &Type,
@@ -429,7 +457,12 @@ impl TypeChecker {
         span: Span,
     ) -> TypeError {
         if trait_name != "Encode" && trait_name != "Decode" {
-            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, span };
+            let context = if matches!(trait_name.as_str(), "Numeric" | "Integer" | "Float") {
+                super::TraitBoundContext::NumericBound
+            } else {
+                super::TraitBoundContext::GenericBound
+            };
+            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, context, span };
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);

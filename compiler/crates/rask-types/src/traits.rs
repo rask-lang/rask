@@ -170,6 +170,29 @@ impl<'a> TraitChecker<'a> {
         // encode qualifies. These aren't registered as traits, so short-circuit
         // before the method-based logic (which would fail with UnknownTrait).
         let base_trait = trait_name.split('<').next().unwrap_or(trait_name);
+
+        // NT1–NT3: every primitive of the right kind satisfies `Numeric`,
+        // `Integer` and `Float` — that's what the rules say those names mean,
+        // and the widths and constants they promise (`MIN`, `MAX`, `BITS`,
+        // `EPSILON`) aren't things the method-based check below can see.
+        //
+        // A non-primitive falls through rather than being rejected here.
+        // `Numeric` is a nominal trait in the roster with eight methods, and
+        // OP1 says generic operator use goes through it "like any other
+        // generic call" — so a type that declares the conformance has to count
+        // too. Short-circuiting to a membership test alone would have made
+        // `extend MyDecimal with Numeric` unusable as a bound.
+        //
+        // Unregistered, these names failed at every call site: `func
+        // narrow<T: Integer>` reported "`_` does not implement `Integer`" —
+        // `_` because an unknown trait has no type to blame, and unknown
+        // because nothing had ever registered the name (#713).
+        if let Some(members) = numeric_trait_members(base_trait) {
+            if members(ty) {
+                return Ok(());
+            }
+        }
+
         if matches!(base_trait, "Encode" | "Decode") {
             if self.type_is_encodable(ty, &mut Vec::new()) {
                 return Ok(());
@@ -565,6 +588,17 @@ impl<'a> TraitChecker<'a> {
 
     /// Get builtin trait methods for standard traits.
     fn get_builtin_trait_methods(&self, trait_name: &str) -> Option<Vec<MethodSig>> {
+        builtin_trait_methods(trait_name)
+    }
+}
+
+/// Signatures of a trait the compiler provides, with no type table needed.
+///
+/// Free-standing because the reachability pass needs the method *names* before
+/// a type table exists, and duplicating the list there is how the two would
+/// drift.
+pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
+    {
         match trait_name {
             "Add" => Some(vec![MethodSig {
                 type_params: Vec::new(),
@@ -709,8 +743,25 @@ impl<'a> TraitChecker<'a> {
                 params: vec![],
                 ret: Type::option(Type::Var(crate::types::TypeVarId(0))),
             }]),
-            // ER4/ER32: ErrorMessage trait — `func message(self) -> string`
-            "ErrorMessage" => Some(vec![MethodSig {
+            // NT1–NT3 / the standard-trait roster. `Numeric` is a nominal
+            // trait with these eight; `Integer` and `Float` extend it with
+            // constants, which have no MethodSig to stand for them — a
+            // primitive answers through the membership test above, and a user
+            // type is held to the methods it can actually declare.
+            "Numeric" | "Integer" => Some(numeric_method_sigs()),
+            "Float" => {
+                let mut sigs = numeric_method_sigs();
+                sigs.push(MethodSig {
+                    type_params: Vec::new(),
+                    name: "is_nan".to_string(),
+                    self_param: SelfParam::Value,
+                    params: vec![],
+                    ret: Type::Bool,
+                });
+                Some(sigs)
+            }
+            // ER4/ER32: the Error trait — `func message(self) -> string`
+            "Error" => Some(vec![MethodSig {
                 type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
@@ -720,7 +771,23 @@ impl<'a> TraitChecker<'a> {
             _ => None,
         }
     }
+}
 
+/// Object-compatible method names of a compiler-provided trait, in vtable
+/// order. Empty for a trait the compiler doesn't provide.
+pub fn builtin_trait_method_names(trait_name: &str) -> Vec<String> {
+    builtin_trait_methods(trait_name)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| {
+            m.type_params.is_empty()
+                && !matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self")
+        })
+        .map(|m| m.name)
+        .collect()
+}
+
+impl<'a> TraitChecker<'a> {
     /// Get methods available on a type.
     fn get_type_methods(&self, ty: &Type) -> Vec<MethodSig> {
         let id = match ty {
@@ -954,6 +1021,105 @@ fn is_abstract_arg(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// The eight methods the roster gives `Numeric`.
+fn numeric_method_sigs() -> Vec<MethodSig> {
+    let binary = |name: &str| MethodSig {
+        type_params: Vec::new(),
+        name: name.to_string(),
+        self_param: SelfParam::Value,
+        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+        ret: Type::Var(crate::types::TypeVarId(0)),
+    };
+    let nullary = |name: &str, self_param| MethodSig {
+        type_params: Vec::new(),
+        name: name.to_string(),
+        self_param,
+        params: vec![],
+        ret: Type::Var(crate::types::TypeVarId(0)),
+    };
+    vec![
+        binary("add"),
+        binary("sub"),
+        binary("mul"),
+        binary("div"),
+        nullary("neg", SelfParam::Value),
+        nullary("zero", SelfParam::None),
+        nullary("one", SelfParam::None),
+        MethodSig {
+            type_params: Vec::new(),
+            name: "from_int".to_string(),
+            self_param: SelfParam::None,
+            params: vec![(Type::I64, ParamMode::Default)],
+            ret: Type::Var(crate::types::TypeVarId(0)),
+        },
+    ]
+}
+
+/// Membership test for one of the numeric traits, or `None` if `name` isn't
+/// one of them.
+///
+/// NT2/NT3 spell these as traits over associated constants. Nothing declares
+/// them and nothing can implement them — a type is a member because of what it
+/// is, so the bound is a set test.
+fn numeric_trait_members(name: &str) -> Option<fn(&Type) -> bool> {
+    match name {
+        "Integer" => Some(is_integer_type),
+        "Float" => Some(is_float_type),
+        "Numeric" => Some(|ty: &Type| is_integer_type(ty) || is_float_type(ty)),
+        _ => None,
+    }
+}
+
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+    )
+}
+
+fn is_float_type(ty: &Type) -> bool {
+    matches!(ty, Type::F32 | Type::F64)
+}
+
+/// Traits the compiler provides rather than the program declaring them.
+///
+/// A vtable can only be built for a trait whose method list is known, and both
+/// places that build one — the reachability pass and the CLI's vtable
+/// collection — read that list off `trait Foo { … }` declarations. A
+/// compiler-provided trait has no declaration, so `any Error` boxed fine
+/// and then had nothing to dispatch through: MIR skipped the vtable path and
+/// fell back to static dispatch, which failed lowering with "method `message`
+/// on receiver of unresolved type" (#708).
+pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
+    ["Error", "Displayable", "Debug", "Hashable"];
+
+/// Method names a trait object of `trait_name` can dispatch, in vtable order.
+///
+/// Declared traits answer from their declaration, compiler-provided ones from
+/// the builtin table. Object compatibility applies either way (TR2/TR3): a
+/// method with its own type parameters, or one returning `Self`, has no vtable
+/// slot.
+pub fn object_compatible_methods(types: &TypeTable, trait_name: &str) -> Vec<String> {
+    let base = trait_name.split('<').next().unwrap_or(trait_name);
+    if let Some(def) = types.get_type_id(base).and_then(|id| types.get(id)) {
+        let names = def.object_compatible_method_names();
+        if !names.is_empty() {
+            return names;
+        }
+    }
+    let checker = TraitChecker::new(types);
+    checker
+        .get_trait_methods_public(base)
+        .into_iter()
+        .filter(|m| {
+            m.type_params.is_empty()
+                && !matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self")
+        })
+        .map(|m| m.name)
+        .collect()
 }
 
 pub fn implements_trait(

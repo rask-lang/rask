@@ -444,7 +444,7 @@ If the type already has the methods, an empty declaration suffices: `extend Poin
 **Several conformances, one block:** the `with` list is a header on a normal extend block — methods for any listed trait plus plain methods, together:
 
 ```rask
-extend LogSource with Reader, Displayable, ErrorMessage {
+extend LogSource with Reader, Displayable, Error {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
     func to_string(self) -> string { ... }
     func message(self) -> string { ... }

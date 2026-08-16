@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
+use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
 use rask_ast::stmt::StmtKind;
 use rask_ast::{NodeId, Span};
@@ -9,7 +10,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
-use super::inference::{LiteralKind, TypeConstraint, WrapPosition};
+use super::inference::{LiteralKind, TypeConstraint};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -720,12 +721,12 @@ impl TypeChecker {
                                     // OPT6: optional fields widen bare values at
                                     // initialization. Bind position keeps non-optional
                                     // sums strict (ER11).
-                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                                        ret_ty: field_ty,
+                                    self.coerce_into(
+                                        CoercionSite::StructField,
+                                        field_ty,
                                         expected,
-                                        position: WrapPosition::Bind,
-                                        span: field_init.value.span,
-                                    });
+                                        field_init.value.span,
+                                    );
                                 }
                             }
                             ty
@@ -750,12 +751,12 @@ impl TypeChecker {
                                     self.infer_expr(&field_init.value)
                                 };
                                 if let Some(sub) = substituted {
-                                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                                        ret_ty: field_ty,
-                                        expected: sub,
-                                        position: WrapPosition::Bind,
-                                        span: field_init.value.span,
-                                    });
+                                    self.coerce_into(
+                                        CoercionSite::StructField,
+                                        field_ty,
+                                        sub,
+                                        field_init.value.span,
+                                    );
                                 }
                             }
 
@@ -1130,10 +1131,20 @@ impl TypeChecker {
                 match &resolved {
                     Type::Result { err, .. } if **err == Type::None => resolved.clone(),
                     Type::Var(_) => {
-                        let inner = self.ctx.fresh_var();
-                        let opt = Type::option(inner);
-                        let _ = self.unify(&place_ty, &opt, expr.span);
-                        opt
+                        // The place resolves later — `take conn.pending` waits
+                        // on the field's own constraint. Unifying it with `T?`
+                        // here *decided* the place was optional, so a place
+                        // that turned out to be a plain `i64` reported
+                        // "expected `_?`, found `i64`" from the field's
+                        // constraint: the guess this line made, not the
+                        // mistake. Ask again once the place has settled (#645).
+                        let result = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::TakePlace {
+                            place: place_ty.clone(),
+                            result: result.clone(),
+                            span: expr.span,
+                        });
+                        result
                     }
                     Type::Error => Type::Error,
                     _ => {
@@ -1206,8 +1217,7 @@ impl TypeChecker {
                         payload
                     }
                     _ => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: Type::option(self.ctx.fresh_var()),
+                        self.errors.push(TypeError::ForceUnwrapOnNonOptional {
                             found: resolved,
                             span: expr.span,
                         });
@@ -1298,6 +1308,7 @@ impl TypeChecker {
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: ty_desc,
                                 trait_name: trait_name.clone(),
+                                context: super::TraitBoundContext::TraitObjectCast,
                                 span: expr.span,
                             });
                         }
@@ -1610,6 +1621,12 @@ impl TypeChecker {
                 // Tell the `try` it's the left half, so ER47 lets it through.
                 if matches!(value.kind, ExprKind::Try { .. }) {
                     self.flat_try_sites.insert(value.id);
+                }
+                // `m[k] ?? d` is the mistake worth its own advice, and the
+                // syntax that identifies it is gone by the time the operand's
+                // type settles (#645).
+                if matches!(value.kind, ExprKind::Index { .. }) {
+                    self.coalesce_index_operands.insert(expr.id);
                 }
                 let val_ty = self.infer_expr(value);
                 let resolved_val = self.ctx.apply(&val_ty);
@@ -2000,6 +2017,18 @@ impl TypeChecker {
         // the function type, we apply this substitution so that UnresolvedNamed("T")
         // in the param/return types becomes the fresh var. Constraint solving then
         // links the fresh vars to concrete types from the call arguments.
+        //
+        // `make<i32>(2)` — the parser keeps the written type arguments in the
+        // callee's name, and nothing had ever read them back out. Inference
+        // covered for that wherever a *parameter* also mentioned the type
+        // parameter, so it only showed when none did: a parameter appearing
+        // solely in the return type stayed a free variable, however explicitly
+        // the call had spelled it (#712).
+        let written_type_args: Vec<Type> = match &func.kind {
+            ExprKind::Ident(name) => Self::written_type_args(name),
+            _ => Vec::new(),
+        };
+
         let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
             // Resolve the callee's SymbolId, then look up its type params
             self.resolved.resolutions.get(&func.id).copied()
@@ -2007,8 +2036,19 @@ impl TypeChecker {
                 .map(|(sym_id, type_params)| {
                     let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
-                        .map(|name| {
+                        .enumerate()
+                        .map(|(i, name)| {
                             let fresh = self.ctx.fresh_var();
+                            // A written type argument pins the variable now.
+                            // Inference still runs — a wrong one meets the
+                            // argument types and reports an ordinary mismatch,
+                            // which is the message that names both sides.
+                            if let Some(written) = written_type_args.get(i) {
+                                let resolved = self.resolve_named(written);
+                                if !matches!(resolved, Type::Error) {
+                                    let _ = self.unify(&fresh, &resolved, span);
+                                }
+                            }
                             // #314: obligate the type arg to satisfy its bounds.
                             if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
                                 self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
@@ -2083,12 +2123,7 @@ impl TypeChecker {
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     // OPT6: optional parameters widen bare arguments. Bind
                     // position keeps non-optional sums strict (ER11).
-                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
-                        ret_ty: arg_ty,
-                        expected: param.clone(),
-                        position: WrapPosition::Bind,
-                        span,
-                    });
+                    self.coerce_into(CoercionSite::Argument, arg_ty, param.clone(), span);
                 }
 
                 ret
@@ -2767,6 +2802,23 @@ impl TypeChecker {
                 self.errors.push(err);
             }
         }
+    }
+
+    /// The type arguments written at a call, read back out of the callee's
+    /// name.
+    ///
+    /// The parser folds `make<i32>` into one identifier rather than a separate
+    /// node, so this is where the written arguments live. Empty for a call with
+    /// none, and for a name whose `<…>` isn't a well-formed argument list.
+    fn written_type_args(callee: &str) -> Vec<Type> {
+        let Some(open) = callee.find('<') else { return Vec::new() };
+        if !callee.ends_with('>') {
+            return Vec::new();
+        }
+        split_type_args(&callee[open + 1..callee.len() - 1])
+            .iter()
+            .map(|a| parse_type_arg(a.trim()))
+            .collect()
     }
 
     /// Resolve a type name string to a Type.

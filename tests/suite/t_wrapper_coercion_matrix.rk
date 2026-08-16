@@ -12,9 +12,44 @@
 // The point of this file is the grid, not any single case: payload kind ×
 // depth × position. A fix that only lands one cell fails the rest (#644, #637,
 // #376, #383).
+//
+// A *method* argument is the same position as a function argument, and it was
+// the cell nobody had filled in: the checker plain-unified there instead of
+// coercing, so `w.takes(2)` was rejected outright where `takes(2)` was fine.
+// Once the checker allowed it, MIR handed the value straight through and left
+// codegen's one-layer net to finish — which at depth 2 means the inner layer
+// comes back absent (#701).
 
 struct FloatBox {
     public slot: f32??
+}
+
+struct Sink {
+    seen: i64
+}
+
+extend Sink {
+    public func one_layer(self, v: i64?) -> i64 {
+        return v ?? -1
+    }
+
+    public func float_d2(self, v: f32??) -> f32 {
+        if v? as inner {
+            if inner? as got {
+                return got
+            }
+        }
+        return 0.0
+    }
+
+    public func string_d2(self, v: string??) -> string {
+        if v? as inner {
+            if inner? as got {
+                return got
+            }
+        }
+        return "absent"
+    }
 }
 
 struct TextBox {
@@ -25,7 +60,7 @@ enum Fault {
     Bad
 }
 
-extend Fault with ErrorMessage {
+extend Fault with Error {
     func message(self) -> string {
         return "bad"
     }
@@ -182,4 +217,29 @@ test "type.errors — a bare payload returned from `T? or E` gets both layers" {
 test "type.errors — the error side of `T? or E` is still reachable" {
     let outcome = fails_flat() catch _ => none
     assert outcome is none
+}
+
+// An argument is an argument. Reaching the callee through a receiver changes
+// nothing about the rule, so every argument cell above has a method twin.
+
+test "type.optionals — a method argument widens one layer" {
+    let sink = Sink { seen: 0 }
+    assert sink.one_layer(2) == 2
+}
+
+test "type.optionals — a float survives two layers through a method argument" {
+    let sink = Sink { seen: 0 }
+    assert sink.float_d2(2.5) == 2.5
+}
+
+test "type.optionals — a string survives two layers through a method argument" {
+    let sink = Sink { seen: 0 }
+    assert sink.string_d2("hi") == "hi"
+}
+
+test "type.optionals — a method argument that is already wrapped is left alone" {
+    let sink = Sink { seen: 0 }
+    let inner: f32? = 2.5
+    assert sink.float_d2(inner) == 2.5
+    assert sink.one_layer(none) == -1
 }

@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER32: `try` boxes any error into `any Error` when that's what the enclosing
+// function returns. Application code declares one error type at the boundary
+// and stops threading unions through every layer.
+//
+// None of this worked. The trait was registered under a different name than the
+// one every code sample writes, so `any Error` was a trait object over a trait
+// nobody had heard of: it failed ER4's own error bound, `try` refused to
+// propagate into it, and `.message()` on the box wasn't found. Spelling it the
+// registered way got past the checker and then segfaulted natively, because a
+// compiler-provided trait has no declaration for the vtable builders to read,
+// and because `try`'s propagation stored the bare concrete error where a fat
+// pointer belonged (#708). The trait is now called `Error`, the one name.
+//
+// Spec: type.errors (ER4, ER32), type.generics (G1)
+
+enum StoreError {
+    Missing(string)
+}
+
+extend StoreError {
+    func message(self) -> string {
+        match self {
+            Missing(k) => return "missing: {k}"
+        }
+    }
+}
+
+struct ParseError {
+    public at: i64
+}
+
+extend ParseError {
+    public func message(self) -> string {
+        return "bad input at {self.at}"
+    }
+}
+
+func fetch(key: string) -> i64 or StoreError {
+    if key == "known" {
+        return 42
+    }
+    return StoreError.Missing(key)
+}
+
+func parse(text: string) -> i64 or ParseError {
+    if text == "7" {
+        return 7
+    }
+    return ParseError { at: 0 }
+}
+
+// Two different concrete error types, one boxed error out. This is the whole
+// point of the rule — neither `or` list mentions the other's error.
+func load(key: string, text: string) -> i64 or any Error {
+    let stored = try fetch(key)
+    let parsed = try parse(text)
+    return stored + parsed
+}
+
+func describe(e: any Error) -> string {
+    return e.message()
+}
+
+test "type.errors — a boxed error carries the concrete type's message" {
+    let outcome = load("gone", "7") catch e => {
+        assert e.message() == "missing: gone"
+        return
+    }
+    assert false, "expected the store error to propagate, got {outcome}"
+}
+
+test "type.errors — a second error type boxes into the same return" {
+    let outcome = load("known", "nope") catch e => {
+        assert e.message() == "bad input at 0"
+        return
+    }
+    assert false, "expected the parse error to propagate, got {outcome}"
+}
+
+test "type.errors — the success path is untouched by the boxing" {
+    let outcome = load("known", "7") catch _ => {
+        assert false, "expected success"
+        return
+    }
+    assert outcome == 49
+}
+
+test "type.generics — a boxed error passes as an `any Error` argument" {
+    let outcome = load("gone", "7") catch e => {
+        assert describe(e) == "missing: gone"
+        return
+    }
+    assert false, "expected the store error to propagate, got {outcome}"
+}
+
+test "type.errors — an explicit box reads the same as an inferred one" {
+    let boxed = StoreError.Missing("direct") as any Error
+    assert boxed.message() == "missing: direct"
+}
+
+// ER9 picks the branch by type, and with an erased error side that means "does
+// this type implement the trait". Deciding it is only half the job: the value
+// still has to acquire a vtable on the way out. It didn't, so MIR built a
+// Result tagged Ok around the bare concrete error and native reported a
+// *success* holding 0 where the interpreter reported the error.
+
+func straight_to_error(bad: bool) -> i64 or any Error {
+    if bad {
+        return StoreError.Missing("direct return")
+    }
+    return 5
+}
+
+test "type.errors — returning a concrete error into `any Error` boxes it" {
+    let outcome = straight_to_error(true) catch e => {
+        assert e.message() == "missing: direct return"
+        return
+    }
+    assert false, "expected the error branch, got {outcome}"
+}
+
+test "type.errors — the success branch of the same function still works" {
+    let outcome = straight_to_error(false) catch _ => {
+        assert false, "expected success"
+        return
+    }
+    assert outcome == 5
+}
+
