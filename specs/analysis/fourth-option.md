@@ -165,7 +165,8 @@ Worth noting the shape of the argument: (b) is more convenient and is exactly
 what a language with a garbage collector would do, because there the timing
 doesn't matter. Here it does, so it has to be written down.
 
-**3. Batch semantics — designed, in [batches](fourth-option-batches.md).**
+**3. Batch semantics — designed and settled, in
+[batches](fourth-option-batches.md).**
 The pass simplified it twice over: only *deletes* defer (inserts and link
 writes are immediate, since neither can invalidate a reference), so a batch
 is precisely "a region where deletes are deferred" rather than a general

@@ -251,10 +251,12 @@ enemy, now."
 | **`retire`** | single plain verb; means "take out of service" with no implication of *now*; a retired thing still exists, which is exactly the node's state until apply | slightly soft |
 | `condemn` | most precise — a condemned building still stands and is going to come down | too dramatic for a systems language |
 
-**Lean: `retire`.** `w.retire(enemy)` reads honestly, stays a single plain
-verb in Rask's style, and its ordinary meaning matches the semantics
-precisely: still here, definitely going. `store.delete(x)` keeps the direct
-name for the one-shot sugar, where the effect really is immediate.
+**Decided: `delete` on both.** Once the timing rule is uniform, a second verb
+would be marking a distinction that no longer exists — `delete` means the
+same thing in both positions, and the receiver (`w` bound by a batch block
+versus the store itself) shows which one you're in. Adding `retire` would buy
+a little honesty at a call site in exchange for a second name for one
+operation, and the exploration has consistently traded the other way.
 
-Not settled — `retire` versus keeping `delete` on both is a judgement about
-whether the receiver is marker enough.
+The rule carries it: **a delete takes effect at the end of its enclosing
+batch.** One sentence, one verb, no exceptions.
