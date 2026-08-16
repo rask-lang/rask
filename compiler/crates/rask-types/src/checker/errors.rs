@@ -126,6 +126,11 @@ pub enum TypeError {
     /// ER12: `??` is optionals-only.
     #[error("`??` on a result — `?` marks absence, not failure")]
     CoalesceOnResult { found: Type, span: Span },
+    /// `!` negates a `bool`. `T?` doesn't coerce to `T` (OPT5), so lifting `!`
+    /// through an optional is rejected rather than guessed — on a `bool?` a
+    /// reader can't tell "negate the payload" from "test for absence".
+    #[error("`!` on `{found}` — negation doesn't reach through an optional")]
+    NotOnOptional { found: Type, span: Span },
     /// CV1a/CV2: an integer that doesn't fit the position it's going into.
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
@@ -703,6 +708,7 @@ impl TypeError {
             | CoalesceOnResult { found, .. }
             | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }
+            | NotOnOptional { found, .. }
             | PresenceTestOnResult { found, .. }
             | TakeOnNonOptional { found, .. }
             | TryOnFlatShape { found, .. }

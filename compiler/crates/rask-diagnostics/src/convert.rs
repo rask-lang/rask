@@ -574,6 +574,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the fallbacks are split by shape on purpose: a miss carries nothing, a failure carries something you shouldn't silently lose [type.errors/ER12]")
             }
 
+            NotOnOptional { found, span } => {
+                Diagnostic::error(format!("`!` on `{}` — negation doesn't reach through an optional", found))
+                    .with_code("E0830")
+                    .with_primary(*span, "this is an optional, not a bool")
+                    .with_fix("test for absence with `x is none`, or narrow first and negate the payload: `if x? as v { !v }`")
+                    .with_why("`T?` doesn't coerce to `T`; lifting `!` through the wrapper would be ambiguous — on a `bool?`, `!x` could mean negate the payload or test for absence, and `x!` already means force-unwrap [type.optionals/OPT5, OPT15]")
+            }
+
             NarrowingNeedsPolicy { from, to, span } => {
                 Diagnostic::error(format!(
                     "`{}` doesn't fit in `{}` — some values would be lost",
