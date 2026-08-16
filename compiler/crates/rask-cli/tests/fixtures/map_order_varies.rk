@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// determinism/D7: a Map's observable iteration order must not be something a
+// program can come to depend on. With eight keys there are 8! orders, so runs
+// agreeing by chance is not a thing that happens.
+
+func main() {
+    mut m = Map.new()
+    m.insert("alpha", 1)
+    m.insert("bravo", 2)
+    m.insert("charlie", 3)
+    m.insert("delta", 4)
+    m.insert("echo", 5)
+    m.insert("foxtrot", 6)
+    m.insert("golf", 7)
+    m.insert("hotel", 8)
+
+    mut out = ""
+    for (k, v) in m {
+        out = "{out}{k}:{v} "
+    }
+    println(out)
+}

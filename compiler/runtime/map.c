@@ -36,11 +36,15 @@ struct RaskMap {
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
-// Mixed into every hash below so map layout (and thus iteration order)
-// differs run to run: an attacker can no longer precompute FNV-1a collisions
-// (HashDoS), and no program can come to depend on the exact order — matching
-// determinism/D7 for production (sim's replay-exact seeding is future work,
-// once sim mode itself exists; rask_map_set_seed is the hook for it).
+// Mixed into bucket placement (see `map_bucket_hash`) so map layout — and
+// thus iteration order — differs run to run: an attacker can no longer
+// precompute FNV-1a collisions (HashDoS), and no program can come to depend
+// on the exact order, matching determinism/D7 for production. (sim's
+// replay-exact seeding is future work, once sim mode itself exists;
+// rask_map_set_seed is the hook for it.)
+//
+// Not mixed into the hash *functions*: those are the public `.hash()`, which
+// has to answer the same number for the same content every run (#744).
 static uint64_t g_map_seed;
 static pthread_once_t g_map_seed_once = PTHREAD_ONCE_INIT;
 
@@ -77,7 +81,7 @@ void rask_map_set_seed(uint64_t seed) {
 
 uint64_t rask_hash_bytes(const void *key, int64_t key_size) {
     const uint8_t *p = (const uint8_t *)key;
-    uint64_t h = 0xcbf29ce484222325ULL ^ map_seed();
+    uint64_t h = 0xcbf29ce484222325ULL;
     for (int64_t i = 0; i < key_size; i++) {
         h ^= p[i];
         h *= 0x100000001b3ULL;
@@ -95,7 +99,7 @@ uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
     const RaskStr *s = (const RaskStr *)key;
     int64_t len = rask_string_len(s);
     const char *data = rask_string_ptr(s);
-    uint64_t h = 0xcbf29ce484222325ULL ^ map_seed();
+    uint64_t h = 0xcbf29ce484222325ULL;
     for (int64_t i = 0; i < len; i++) {
         h ^= (uint8_t)data[i];
         h *= 0x100000001b3ULL;
@@ -125,8 +129,24 @@ static void map_alloc_tables(RaskMap *m, int64_t cap) {
     m->vals = (char *)rask_alloc(rask_safe_mul(cap, m->val_size));
 }
 
+// Where the per-process seed belongs: bucket placement, not the hash value.
+//
+// It used to be mixed into the FNV accumulator inside `rask_hash_bytes` and
+// `rask_hash_string_key`. Those are also what `string.hash()` is built on, so
+// the public method inherited the randomization and answered a different number
+// every run — while the interpreter, which seeds only its iteration order,
+// answered the same number every time (#744). `.hash()` on a value should be as
+// stable as `==` on it.
+//
+// Splitmix64 rather than a bare XOR because the bucket is `h % cap`: the seed
+// has to reach the low bits, and this is the same mixer the seed itself is
+// built with.
+static uint64_t map_bucket_hash(const RaskMap *m, const void *key) {
+    return map_seed_splitmix64(m->hash_fn(key, m->key_size) ^ map_seed());
+}
+
 static int64_t map_find_slot(const RaskMap *m, const void *key) {
-    uint64_t h = m->hash_fn(key, m->key_size);
+    uint64_t h = map_bucket_hash(m, key);
     int64_t idx = (int64_t)(h % (uint64_t)m->cap);
     int64_t first_tombstone = -1;
 
@@ -262,7 +282,7 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
 void *rask_map_get(const RaskMap *m, const void *key) {
     if (!m || m->len == 0) return NULL;
 
-    uint64_t h = m->hash_fn(key, m->key_size);
+    uint64_t h = map_bucket_hash(m, key);
     int64_t idx = (int64_t)(h % (uint64_t)m->cap);
 
     for (int64_t i = 0; i < m->cap; i++) {
@@ -295,7 +315,7 @@ void *rask_map_take(RaskMap *m, const void *key) {
     map_check_no_borrows(m, "remove");
     if (!m || m->len == 0) return NULL;
 
-    uint64_t h = m->hash_fn(key, m->key_size);
+    uint64_t h = map_bucket_hash(m, key);
     int64_t idx = (int64_t)(h % (uint64_t)m->cap);
 
     for (int64_t i = 0; i < m->cap; i++) {

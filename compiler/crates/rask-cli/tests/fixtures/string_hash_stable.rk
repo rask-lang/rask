@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.hash()` answers the same number for the same content — every run, both
+// backends. It used to inherit the Map's per-process seed natively (#744).
+
+func main() {
+    let a = "hei"
+    let b = ""
+    let c = "the quick brown fox"
+    println("{a.hash()}")
+    println("{b.hash()}")
+    println("{c.hash()}")
+}
