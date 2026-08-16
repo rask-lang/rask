@@ -867,6 +867,7 @@ impl Parser {
         let mut clauses = Vec::new();
         loop {
             self.skip_newlines();
+            let clause_start = self.current().span.start;
 
             // Check for `frozen` modifier
             let is_frozen = if let TokenKind::Ident(ref name) = self.current_kind().clone() {
@@ -896,8 +897,14 @@ impl Parser {
             };
 
             let ty = self.parse_type_name()?;
+            let clause_end = self.tokens[self.pos.saturating_sub(1)].span.end;
 
-            clauses.push(ContextClause { name, ty, is_frozen });
+            clauses.push(ContextClause {
+                name,
+                ty,
+                is_frozen,
+                span: self.span(clause_start, clause_end),
+            });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;

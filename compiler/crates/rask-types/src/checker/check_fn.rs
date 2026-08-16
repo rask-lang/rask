@@ -15,6 +15,15 @@ use super::TypeChecker;
 use crate::types::Type;
 
 impl TypeChecker {
+    /// The process entry point: a free function called `main`, or one marked
+    /// `@entry`. A method named `main` is an ordinary method — it has callers.
+    fn is_entry_point(&self, f: &FnDecl) -> bool {
+        if f.attrs.iter().any(|a| a == "entry") {
+            return true;
+        }
+        f.name == "main" && self.current_self_type.is_none()
+    }
+
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
@@ -115,6 +124,24 @@ impl TypeChecker {
                 self.errors.push(TypeError::SignatureRuntimeContext {
                     ctx: cc.ty.clone(),
                     span: f.span,
+                });
+            }
+        }
+
+        // CC11: a `using` clause becomes a hidden parameter every caller fills
+        // in. The entry point has no caller, so the parameter stays whatever
+        // the process started with — a garbage pointer the pool then indexes
+        // through (#732). Reject it here rather than let it compile.
+        if self.is_entry_point(f) {
+            for cc in &f.context_clauses {
+                if is_runtime_context(&cc.ty) {
+                    continue; // already reported above
+                }
+                self.errors.push(TypeError::EntryPointContext {
+                    entry: f.name.clone(),
+                    alias: cc.name.clone(),
+                    ty: cc.ty.clone(),
+                    span: cc.span,
                 });
             }
         }
