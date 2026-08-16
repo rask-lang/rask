@@ -230,6 +230,8 @@ Two forms: count or collect. There is no `retain` — invert the predicate on `r
 | Rule | Description |
 |------|-------------|
 | **SO1: Stable by default** | `sort()` preserves relative order of equal elements |
+
+`sort_by` is backed by a merge sort, so the guarantee holds whatever the comparator looks at. `sort` and `sort_by_key` compare whole elements, where two equal elements are indistinguishable and the guarantee has nothing to bite on — those use the platform sort, which is faster and needs no scratch buffer.
 | **SO2: In-place** | Sorting mutates the Vec. No new allocation (may use O(log n) stack) |
 | **SO3: Comparable required** | `sort()` requires `T: Comparable`. Custom ordering uses `sort_by` |
 

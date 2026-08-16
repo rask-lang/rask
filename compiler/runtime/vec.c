@@ -464,6 +464,14 @@ int64_t rask_vec_as_ptr(const RaskVec *v) {
 // merge and nothing is copied twice. The `<= 0` on the merge is the whole of
 // stability: on a tie the left run's element goes first, and the left run is
 // always the earlier one.
+//
+// Used by sort_by only. Stability is observable exactly when the comparator
+// looks at less than the whole element, and that is what sort_by is for — the
+// plain sorts compare whole scalars and whole strings, where two equal elements
+// are indistinguishable and which one lands first cannot be detected. Measured
+// on a million i64: 304ms here against 224ms for qsort, plus n*elem_size of
+// scratch. That is a lot to pay for a property nobody can observe, so they keep
+// qsort. Don't "unify" these without re-measuring.
 static void rask_stable_sort(void *base, int64_t n, int64_t size,
                              int (*cmp)(const void *, const void *)) {
     if (!base || n < 2 || size <= 0) return;
@@ -506,7 +514,7 @@ static int rask_i64_compare(const void *a, const void *b) {
 void rask_vec_sort(RaskVec *v) {
     vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
-    rask_stable_sort(v->data, v->len, v->elem_size, rask_i64_compare);
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
 }
 
 // sort(vec) for Vec<string> — lexicographic, the same order `<` gives.
@@ -522,7 +530,7 @@ static int rask_str_compare_elem(const void *a, const void *b) {
 
 void rask_vec_sort_str(RaskVec *v) {
     if (!v || v->len <= 1) return;
-    rask_stable_sort(v->data, v->len, v->elem_size, rask_str_compare_elem);
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_elem);
 }
 
 // sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
@@ -553,7 +561,7 @@ static int rask_f64_compare(const void *a, const void *b) {
 void rask_vec_sort_f64(RaskVec *v) {
     vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
-    rask_stable_sort(v->data, v->len, v->elem_size, rask_f64_compare);
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
 }
 
 // compare(a, b) on f64 — the same total order, returning an Ordering *tag*.
