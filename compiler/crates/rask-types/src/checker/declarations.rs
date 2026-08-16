@@ -978,6 +978,7 @@ impl TypeChecker {
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: i.target_ty.clone(),
                                 trait_name,
+                                context: super::TraitBoundContext::ConformanceHeader,
                                 span: decl.span,
                             });
                         }

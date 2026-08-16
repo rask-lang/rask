@@ -170,6 +170,27 @@ impl<'a> TraitChecker<'a> {
         // encode qualifies. These aren't registered as traits, so short-circuit
         // before the method-based logic (which would fail with UnknownTrait).
         let base_trait = trait_name.split('<').next().unwrap_or(trait_name);
+
+        // NT1–NT3: `Numeric`, `Integer` and `Float` are sets of primitive
+        // types, not lists of methods. Their contents are constants (`MIN`,
+        // `MAX`, `BITS`, `EPSILON`), so the method-based path has nothing to
+        // check and would answer "satisfied" for every type in the language.
+        //
+        // Unregistered, they were worse than that: `func narrow<T: Integer>`
+        // failed at every call site with "`_` does not implement `Integer`" —
+        // `_` because an unknown trait has no type to blame, and unknown
+        // because nothing had ever registered the name (#713).
+        if let Some(members) = numeric_trait_members(base_trait) {
+            if members(ty) {
+                return Ok(());
+            }
+            return Err(TraitError::NotSatisfied {
+                ty: self.type_name(ty),
+                trait_name: trait_name.to_string(),
+                span,
+            });
+        }
+
         if matches!(base_trait, "Encode" | "Decode") {
             if self.type_is_encodable(ty, &mut Vec::new()) {
                 return Ok(());
@@ -981,6 +1002,33 @@ fn is_abstract_arg(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// Membership test for one of the numeric traits, or `None` if `name` isn't
+/// one of them.
+///
+/// NT2/NT3 spell these as traits over associated constants. Nothing declares
+/// them and nothing can implement them — a type is a member because of what it
+/// is, so the bound is a set test.
+fn numeric_trait_members(name: &str) -> Option<fn(&Type) -> bool> {
+    match name {
+        "Integer" => Some(is_integer_type),
+        "Float" => Some(is_float_type),
+        "Numeric" => Some(|ty: &Type| is_integer_type(ty) || is_float_type(ty)),
+        _ => None,
+    }
+}
+
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+    )
+}
+
+fn is_float_type(ty: &Type) -> bool {
+    matches!(ty, Type::F32 | Type::F64)
 }
 
 /// Traits the compiler provides rather than the program declaring them.

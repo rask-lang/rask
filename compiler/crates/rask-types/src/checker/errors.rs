@@ -314,6 +314,26 @@ pub enum TypeError {
     TraitNotSatisfied {
         ty: String,
         trait_name: String,
+        /// Where the requirement came from. The advice differs completely: a
+        /// failed `as any Trait` is fixed by implementing the trait, a failed
+        /// generic bound is usually fixed by passing a different type, and a
+        /// `Numeric`/`Integer` bound can't be implemented at all. One message
+        /// for all three told everyone to "implement `Integer` for `Marker`"
+        /// and explained itself in terms of trait objects (#713).
+        context: TraitBoundContext,
+        span: Span,
+    },
+    /// A bound, conformance header or cast naming a trait that doesn't exist.
+    ///
+    /// Used to be reported as `TraitNotSatisfied` with `_` standing in for the
+    /// type, because an unknown trait has no type to blame — so a typo in a
+    /// bound read as a mysterious failure of the type system rather than as a
+    /// name nobody had declared.
+    #[error("no trait named `{trait_name}`")]
+    NoSuchTrait {
+        trait_name: String,
+        /// Declared trait names, for a did-you-mean.
+        known: Vec<String>,
         span: Span,
     },
 
@@ -683,6 +703,23 @@ pub enum IndexErrorKind {
     NotSliceable,
 }
 
+/// Where a trait requirement came from — drives the advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraitBoundContext {
+    /// `value as any Trait` — the box needs a vtable, so the concrete type has
+    /// to have the methods.
+    TraitObjectCast,
+    /// `f<T: Trait>(…)` at a call site — the type argument doesn't qualify.
+    GenericBound,
+    /// `extend T with Trait { … }` — the block claims a conformance it doesn't
+    /// deliver.
+    ConformanceHeader,
+    /// A bound on one of the numeric traits (NT1–NT3). These are sets of
+    /// primitive types rather than method lists, so "implement it" is not
+    /// advice anyone can act on.
+    NumericBound,
+}
+
 /// Why an `as` cast is rejected — drives the diagnostic and suggested fix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidCastClass {
@@ -828,6 +865,7 @@ impl TypeError {
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
             | TraitNotSatisfied { .. }
+            | NoSuchTrait { .. }
             | NotSerializable { .. }
             | StringAddForbidden { .. }
             | PublicDuckTrait { .. }

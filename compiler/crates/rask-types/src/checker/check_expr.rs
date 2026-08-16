@@ -1308,6 +1308,7 @@ impl TypeChecker {
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: ty_desc,
                                 trait_name: trait_name.clone(),
+                                context: super::TraitBoundContext::TraitObjectCast,
                                 span: expr.span,
                             });
                         }
@@ -2016,6 +2017,7 @@ impl TypeChecker {
         // the function type, we apply this substitution so that UnresolvedNamed("T")
         // in the param/return types becomes the fresh var. Constraint solving then
         // links the fresh vars to concrete types from the call arguments.
+
         let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
             // Resolve the callee's SymbolId, then look up its type params
             self.resolved.resolutions.get(&func.id).copied()

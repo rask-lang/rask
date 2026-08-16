@@ -807,6 +807,47 @@ fn error_keyword_fn_name() {
     );
 }
 
+// #713: one error variant covers four different trait requirements, and it
+// used to give all four the same advice — "implement `Trait` for `Type`",
+// explained in terms of trait objects. That is not advice anyone can take on a
+// numeric bound (`Integer` is a set of primitive types, not a list of methods),
+// and at a call site it points at the wrong file. A bound naming a trait that
+// doesn't exist had no type to blame at all and reported `_`.
+#[test]
+fn error_trait_bound_messages() {
+    let (failed, out) = compile_error_output("trait_bound_messages.rk");
+    assert!(failed, "unsatisfied trait requirements must be rejected: {}", out);
+    assert!(
+        !out.contains("`_` does not implement"),
+        "an unknown trait is a name problem, not a mystery type: {}", out,
+    );
+    assert!(
+        out.contains("did you mean `Integer`?"),
+        "a misspelt trait should suggest the real one: {}", out,
+    );
+    // The numeric bound explains membership and lists the members.
+    assert!(
+        out.contains("is not one of the types `Integer` covers"),
+        "a numeric bound is membership, not missing methods: {}", out,
+    );
+    assert!(
+        !out.contains("implement `Integer` for"),
+        "nothing can implement a numeric trait, so that must not be the fix: {}", out,
+    );
+    // The other three keep their own advice, each naming what to do where.
+    for expected in [
+        "add the missing methods to the block",
+        "pass a type that implements `Greeter`",
+        "implement the trait before boxing",
+    ] {
+        assert!(out.contains(expected), "missing advice {:?}: {}", expected, out);
+    }
+    assert!(
+        !out.contains("casting to a trait object requires"),
+        "the trait-object wording belongs to the cast alone: {}", out,
+    );
+}
+
 // OPT3/OPT11/OPT13/OPT32: the optional operator family needs an absent branch
 // to work on. All three used to be rejected only as a side effect of the shape
 // they were rewritten into, and reported it that way — `n ?? -1` said "expected

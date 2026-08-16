@@ -100,6 +100,17 @@ impl TypeChecker {
                         continue;
                     }
                     reported.push(key);
+                    // An unknown trait has no type to blame, so reporting it as
+                    // "`_` does not implement X" pointed at the wrong thing
+                    // entirely — the name is the problem (#713).
+                    if matches!(e, crate::traits::TraitError::UnknownTrait(_)) {
+                        self.errors.push(TypeError::NoSuchTrait {
+                            trait_name,
+                            known: self.declared_trait_names(),
+                            span,
+                        });
+                        continue;
+                    }
                     let err = self.bound_error(&ty, ty_name, trait_name, span);
                     self.errors.push(err);
                 }
@@ -421,6 +432,23 @@ impl TypeChecker {
     /// The right error for a failed bound. `Encode`/`Decode` aren't method sets,
     /// so they get their own shape of message — one that names the field that
     /// blocked it rather than telling you to implement a trait you can't.
+    /// Every trait the program declares, for a did-you-mean on a misspelt one.
+    pub(super) fn declared_trait_names(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .filter_map(|def| match def {
+                crate::TypeDef::Trait { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .chain(
+                crate::COMPILER_PROVIDED_TRAITS
+                    .iter()
+                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode"].iter())
+                    .map(|s| s.to_string()),
+            )
+            .collect()
+    }
+
     pub(super) fn bound_error(
         &self,
         ty: &Type,
@@ -429,7 +457,12 @@ impl TypeChecker {
         span: Span,
     ) -> TypeError {
         if trait_name != "Encode" && trait_name != "Decode" {
-            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, span };
+            let context = if matches!(trait_name.as_str(), "Numeric" | "Integer" | "Float") {
+                super::TraitBoundContext::NumericBound
+            } else {
+                super::TraitBoundContext::GenericBound
+            };
+            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, context, span };
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);

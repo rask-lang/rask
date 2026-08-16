@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A trait bound on a type parameter that appears only in the return type.
+//
+// `Integer` had never been registered as a trait. Nothing could satisfy it, so
+// `func zero<T: Integer>() -> T` failed at every call site with "`_` does not
+// implement `Integer`" — `_` because an unknown trait has no type to blame,
+// and unknown because nothing had ever registered the name (#713).
+//
+// Spec: type.primitives (NT1–NT3), type.generics (G1, generic literal coercion)
+
+// The two things a `T: Integer` body can do today: take a literal (an integer
+// literal coerces to a `Numeric` type parameter), and pass a `T` through.
+func zero<T: Integer>() -> T {
+    return 0
+}
+
+func answer<T: Integer>() -> T {
+    return 42
+}
+
+func echo<T: Integer>(x: T) -> T {
+    return x
+}
+
+func widen<T: Numeric>() -> T {
+    return 1
+}
+
+test "type.generics — a return-position bound infers from the annotation" {
+    let a: i32 = answer()
+    assert a == 42
+}
+
+test "type.primitives — the bound admits every integer width" {
+    let small: u8 = answer()
+    let wide: i64 = answer()
+    assert small == 42
+    assert wide == 42
+}
+
+test "type.generics — a bound on a parameter position still works" {
+    let e: u8 = echo(7)
+    assert e == 7
+}
+
+test "type.primitives — `Numeric` covers the integers too" {
+    let n: i16 = widen()
+    assert n == 1
+}

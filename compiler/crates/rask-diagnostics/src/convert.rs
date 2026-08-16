@@ -975,13 +975,54 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", trait_name))
             }
 
-            TraitNotSatisfied { ty, trait_name, span } => {
-                Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
+            TraitNotSatisfied { ty, trait_name, context, span } => {
+                use rask_types::TraitBoundContext as Ctx;
+                let d = Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
                     .with_code("E0333")
-                    .with_primary(*span, format!("`{}` missing required methods", ty))
-                    .with_help(format!("add the required methods via `extend {} {{ ... }}`", ty))
-                    .with_fix(format!("implement `{}` for `{}`", trait_name, ty))
-                    .with_why("casting to a trait object requires the concrete type to implement all trait methods")
+                    .with_primary(*span, match context {
+                        Ctx::NumericBound => format!("`{}` is not one of the types `{}` covers", ty, trait_name),
+                        _ => format!("`{}` is missing methods `{}` requires", ty, trait_name),
+                    });
+                match context {
+                    // A numeric trait is a set of primitive types, not a list
+                    // of methods — there is nothing to implement.
+                    Ctx::NumericBound => d
+                        .with_fix(format!(
+                            "pass one of the types `{}` covers:\n    Integer  → i8 i16 i32 i64 i128 u8 u16 u32 u64 u128\n    Float    → f32 f64\n    Numeric  → either",
+                            trait_name
+                        ))
+                        .with_why("the numeric traits are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
+                    Ctx::GenericBound => d
+                        .with_fix(format!(
+                            "pass a type that implements `{0}`, or declare the conformance:\n    extend {1} with {0} {{ … }}",
+                            trait_name, ty
+                        ))
+                        .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
+                    Ctx::ConformanceHeader => d
+                        .with_fix(format!(
+                            "add the missing methods to the block, or drop `{}` from its header:\n    extend {} with {} {{ … }}",
+                            trait_name, ty, trait_name
+                        ))
+                        .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
+                    Ctx::TraitObjectCast => d
+                        .with_fix(format!(
+                            "implement the trait before boxing:\n    extend {} with {} {{ … }}",
+                            ty, trait_name
+                        ))
+                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/TR1]"),
+                }
+            }
+
+            NoSuchTrait { trait_name, known, span } => {
+                let d = Diagnostic::error(format!("no trait named `{}`", trait_name))
+                    .with_code("E0833")
+                    .with_primary(*span, "this name isn't a trait");
+                let refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+                match crate::suggestions::did_you_mean(trait_name, refs) {
+                    Some(hint) => d.with_fix(format!("{}", hint)),
+                    None => d.with_fix(format!("declare it, or drop the bound:\n    trait {} {{ … }}", trait_name)),
+                }
+                .with_why("a bound has to name a trait that exists — nothing can satisfy one that doesn't, so every call site would fail [type.generics/G1]")
             }
 
             PublicDuckTrait { name, span } => {

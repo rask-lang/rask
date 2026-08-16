@@ -30,7 +30,7 @@ mod resolved_types;
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, InvalidCastClass, IndexErrorKind};
+pub use errors::{TypeError, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
 pub use declarations::signature_type_param_names;
 
