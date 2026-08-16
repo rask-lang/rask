@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The entry point owns the pool; the callee keeps the `using` clause (#732).
+//
+// `main() using players: Pool<Player>` is rejected outright — see
+// tests/compile_errors/context_on_entry_point.rk. This is the shape that
+// replaces it: main (or any ordinary function) holds the pool as a local, and
+// CC4 resolves it into every callee that declares the context.
+//
+// The pool lives in `run_*` helpers rather than in the test bodies on purpose:
+// a call needing a hidden context from directly inside a `test` block fails
+// native MIR lowering with "unresolved variable `__ctx_players`". Separate,
+// pre-existing bug — not this one.
+
+struct Player { health: i32 }
+
+func heal(h: Handle<Player>, amount: i32) using players: Pool<Player> {
+    players[h].health = players[h].health + amount
+}
+
+func health_of(h: Handle<Player>) -> i32 using players: Pool<Player> {
+    return players[h].health
+}
+
+func run_heal() -> i32 {
+    mut players: Pool<Player> = Pool.new()
+    let h = players.insert(Player { health: 100 })
+    heal(h, 5)
+    return players[h].health
+}
+
+func run_health_of() -> i32 {
+    mut players: Pool<Player> = Pool.new()
+    let h = players.insert(Player { health: 42 })
+    return health_of(h)
+}
+
+test "mem.context/CC11 — the caller owns the pool, the callee declares it" {
+    assert run_heal() == 105
+    assert run_health_of() == 42
+}
+
+// A method named `main` is an ordinary method with ordinary callers, so it
+// isn't the entry point and a context clause on it would be fine.
+struct Game { turn: i32 }
+
+extend Game {
+    func main(self) -> i32 {
+        return self.turn
+    }
+}
+
+test "mem.context/CC11 — a method named main is not the entry point" {
+    let g = Game { turn: 7 }
+    assert g.main() == 7
+}
+
+func main() {}

@@ -236,7 +236,8 @@ test "map iteration with destructuring" {
 }
 
 // --- for mutate (LP11-LP12) ---
-// BUG: parser doesn't support `for mutate` yet
+// Early exits out of the body are covered in t_for_mutate_early_exit.rk, the
+// two-name map form in t_for_mutate_map.rk.
 
 test "for mutate doubles in place" {
     mut v = Vec.new()

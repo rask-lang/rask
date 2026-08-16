@@ -1726,6 +1726,11 @@ impl<'a> MirLowerer<'a> {
         // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection[_i]; ...; _i += 1 }
         let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
 
+        // LP13: the map itself, kept aside because the loop goes on to walk a
+        // snapshot of its entries. `for mutate` writes back into the map, not
+        // into the snapshot, so `Map_set` needs this one and not `collection`.
+        let mut map_local = None;
+
         // For pools: convert pool → Vec<Handle> via Pool_handles snapshot
         let (iter_op, iter_ty) = if is_pool {
             let pool_tmp = self.builder.alloc_temp(iter_ty.clone());
@@ -1751,6 +1756,7 @@ impl<'a> MirLowerer<'a> {
                 dst: map_tmp,
                 rvalue: MirRValue::Use(iter_op),
             }));
+            map_local = Some(map_tmp);
             let entries_vec = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
@@ -1934,8 +1940,11 @@ impl<'a> MirLowerer<'a> {
         // The writeback the body owes its collection. `continue` and `break` pay it
         // through the blocks below; a `return` or a `try` that propagates pays it
         // from here, because neither passes through a block (#650).
+        // A map writes back into itself; everything else into the thing being
+        // walked. Handing `Map_set` the entries snapshot stored a key/value pair
+        // through a Vec pointer and segfaulted on the first iteration (#738).
         let writeback = super::MutateWriteback::new(
-            collection,
+            map_local.unwrap_or(collection),
             idx,
             binding_local,
             map_value_local,

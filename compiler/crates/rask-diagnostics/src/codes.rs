@@ -309,6 +309,9 @@ impl Default for ErrorCodeRegistry {
                 "E0830" => ("`!` on an optional", Type,
                     "`!` negates a `bool`; a `T?` doesn't coerce to `T` (type.optionals/OPT5), so `!` doesn't reach through the wrapper. This matters most on `bool?`, where the payload's type makes `!x` look applicable — but a reader can't tell whether it negates the payload or tests for absence, and `x!` already means force-unwrap on the same operand. Test presence with `x is none`, or narrow first with `if x? as v { !v }`.",
                     "let x: bool? = flag()\nlet y = !x   // error: negation doesn't reach through the optional\n// fix: `if x? as v { !v }`, or `x is none` to test absence"),
+                "E0831" => ("`using` context on the entry point", Type,
+                    "A `using` clause is a hidden parameter (mem.context/CC11): callers pass the context in, and the compiler finds it by searching the caller's scope. The entry point has no caller — the process starts there — so that parameter is never written and holds whatever the stack happened to contain. Own the context instead: build it as a local in the entry point and call the functions that declare `using`; they resolve it out of your scope automatically.",
+                    "func main() using players: Pool<Player> {   // error: nothing can supply this\n    spawn_wave(10)\n}\n\n// fix: own the pool in main, leave the clause on the callee\nfunc main() {\n    mut players: Pool<Player> = Pool.new()\n    spawn_wave(10)   // resolves `players` from main's scope\n}\n\nfunc spawn_wave(n: i64) using players: Pool<Player> { }"),
             },
         }
     }

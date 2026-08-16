@@ -374,6 +374,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// CC11: the entry point can't declare a context — it has no caller to supply one
+    #[error("`{entry}` cannot declare a `using` context")]
+    EntryPointContext {
+        /// Entry function name, so an `@entry`-marked function reads correctly.
+        entry: String,
+        /// Alias the clause named, if any — the suggested local reuses it.
+        alias: Option<String>,
+        /// Context type as written: `Pool<Player>`.
+        ty: String,
+        span: Span,
+    },
+
     /// CC1: `spawn` used outside any `using Multitasking` block
     #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
     SpawnOutsideBlock {
@@ -810,6 +822,7 @@ impl TypeError {
             | UndefinedName { .. }
             | UnknownContext { .. }
             | SignatureRuntimeContext { .. }
+            | EntryPointContext { .. }
             | SpawnOutsideBlock { .. }
             | CyclicTypeAlias { .. }
             | PrivateFieldAccess { .. }

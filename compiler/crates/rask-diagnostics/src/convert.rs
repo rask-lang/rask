@@ -1027,6 +1027,28 @@ impl ToDiagnostic for rask_types::TypeError {
                                functions don't declare it, they just use it [conc.async/CC1]")
             }
 
+            EntryPointContext { entry, alias, ty, span } => {
+                let binding = alias.clone().unwrap_or_else(|| "ctx".to_string());
+                // `Pool<Player>` → `Pool`, so the suggestion names the constructor
+                // the way it's actually written.
+                let head = ty.split('<').next().unwrap_or(ty).trim();
+                Diagnostic::error(format!("`{}` cannot declare a `using` context", entry))
+                    .with_code("E0831")
+                    .with_primary(*span, "nothing can supply this")
+                    .with_fix(format!(
+                        "drop the clause and own it here — `mut {}: {} = {}.new()` — \
+                         then call the functions that declare `using {}`; they resolve \
+                         it out of `{}`'s scope",
+                        binding, ty, head, ty, entry
+                    ))
+                    .with_why(format!(
+                        "a `using` clause is a hidden parameter the caller fills in, and \
+                         `{}` has no caller — the parameter would be left holding whatever \
+                         the stack came up with [mem.context/CC11]",
+                        entry
+                    ))
+            }
+
             SpawnOutsideBlock { span } => {
                 Diagnostic::error("`spawn` must be inside a `using Multitasking { ... }` block")
                     .with_code("E0352")

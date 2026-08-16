@@ -171,6 +171,7 @@ mod tests {
                     name: None,
                     ty: "Pool<Entity>".into(),
                     is_frozen: frozen,
+                    span: sp(),
                 }],
                 body,
                 is_pub,

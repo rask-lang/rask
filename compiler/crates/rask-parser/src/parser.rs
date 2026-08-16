@@ -867,6 +867,7 @@ impl Parser {
         let mut clauses = Vec::new();
         loop {
             self.skip_newlines();
+            let clause_start = self.current().span.start;
 
             // Check for `frozen` modifier
             let is_frozen = if let TokenKind::Ident(ref name) = self.current_kind().clone() {
@@ -896,8 +897,14 @@ impl Parser {
             };
 
             let ty = self.parse_type_name()?;
+            let clause_end = self.tokens[self.pos.saturating_sub(1)].span.end;
 
-            clauses.push(ContextClause { name, ty, is_frozen });
+            clauses.push(ContextClause {
+                name,
+                ty,
+                is_frozen,
+                span: self.span(clause_start, clause_end),
+            });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -2953,7 +2960,28 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             ForBinding::Tuple(names)
         } else {
-            ForBinding::Single(self.expect_ident()?)
+            let name = self.expect_ident()?;
+            // `for k, v in m` — the two-name form written without parentheses.
+            // Left to `expect(In)` this came out as "Expected 'in', found ','",
+            // which says nothing about the spelling that does work (#738).
+            if self.check(&TokenKind::Comma) {
+                let second = match self.peek(1) {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => "value".to_string(),
+                };
+                let mutate_kw = if mutate { "mutate " } else { "" };
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "two-name iteration needs parentheses".to_string(),
+                    hint: Some(format!("for {}({}, {}) in …", mutate_kw, name, second)),
+                    why: None,
+                }
+                .with_why(
+                    "one `for` binding is one name; a key and its value are a pair, \
+                     and the parentheses are what say so [ctrl.loops/LP13]",
+                ));
+            }
+            ForBinding::Single(name)
         };
 
         self.expect(&TokenKind::In)?;
@@ -4836,11 +4864,22 @@ impl Parser {
                 i += 1; // skip '{'
                 let expr_start = i;
                 let mut depth = 1;
+                // Braces inside a nested literal are text, not nesting —
+                // `{tag("}")}` used to end the hole at the quoted brace.
+                let mut in_string = false;
+                let mut escaped = false;
                 while i < chars.len() && depth > 0 {
-                    match chars[i] {
-                        '{' => depth += 1,
-                        '}' => depth -= 1,
-                        _ => {}
+                    if escaped {
+                        escaped = false;
+                    } else {
+                        match chars[i] {
+                            '\\' if in_string => escaped = true,
+                            '"' => in_string = !in_string,
+                            _ if in_string => {}
+                            '{' => depth += 1,
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
                     }
                     if depth > 0 { i += 1; }
                 }

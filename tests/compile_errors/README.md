@@ -79,6 +79,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
 | [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |
 | [context_unnamed_structural.rk](context_unnamed_structural.rk) | Unnamed context used as binding |
+| [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
 
 ## Running Tests
 

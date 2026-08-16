@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A string literal inside an interpolation hole (#642).
+//
+// An interpolation hole holds a real expression, and expressions contain string
+// literals, so `"{name ?? "unknown"}"` is one string — not three tokens with the
+// middle parsed as code. The lexer only reads a `"` that way inside a `{ }`
+// hole; braces used as plain text (a JSON writer's `"{\n"`) still end the
+// string at the first quote.
+//
+// Expected values are built from `open`/`close` rather than written as literals:
+// a `{` in a literal starts a hole, so the answer can't be spelled directly.
+
+func tag(s: string) -> string {
+    return s
+}
+
+const OPEN: string = "{"
+const CLOSE: string = "}"
+
+test "std.fmt/F1 — ?? fallback written as a literal in the hole" {
+    let hit: string? = "value"
+    let miss: string? = none
+    assert "{hit ?? "<none>"}" == "value"
+    assert "{miss ?? "<none>"}" == "<none>"
+}
+
+test "std.fmt/F1 — a call in the hole can take a string argument" {
+    assert "nested: {tag("inner")}" == "nested: inner"
+}
+
+test "std.fmt/F1 — braces inside a nested literal are that literal's text" {
+    assert "{tag("a{{b}}c")}" == "a{OPEN}b{CLOSE}c"
+}
+
+// The hole ends at the `}` that closes it, not at one quoted inside it.
+test "std.fmt/F1 — a quoted brace doesn't close the hole" {
+    assert "{tag("}")}" == CLOSE
+    assert "{tag("{{")}" == OPEN
+}
+
+test "std.fmt/F1 — a lone brace is still plain text" {
+    assert OPEN.len() == 1
+    assert "{OPEN}{CLOSE}".len() == 2
+    assert "{{not a hole}}" == "{OPEN}not a hole{CLOSE}"
+}
+
+test "std.fmt/F2 — format specs still parse alongside nested literals" {
+    let n = 42
+    assert "[{n:>6}]" == "[    42]"
+    assert "[{n:x}]" == "[2a]"
+    assert "[{tag("ab"):>4}]" == "[  ab]"
+}
+
+test "std.fmt/F1 — triple-quoted and raw strings are unaffected" {
+    let m = """a"b"""
+    assert m == "a\"b"
+    assert r"raw \n stays" == "raw \\n stays"
+    assert r#"has "quotes""# == "has \"quotes\""
+}
+
+func main() {}

@@ -131,6 +131,9 @@ pub struct ContextClause {
     pub name: Option<String>,
     pub ty: String,
     pub is_frozen: bool,
+    /// The clause itself — `players: Pool<Player>` — so a diagnostic about one
+    /// clause underlines it instead of the whole signature.
+    pub span: Span,
 }
 
 /// A function parameter.

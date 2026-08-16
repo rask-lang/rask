@@ -110,6 +110,31 @@ func check_death(h: Handle<Player>) using players: Pool<Player> {
 
 Both named and unnamed contexts satisfy context requirements — the name is local to the function.
 
+| Rule | Description |
+|------|-------------|
+| **CC11: Entry point declares none** | The entry point (`main`, or a function marked `@entry`) cannot declare a `using` clause — it has no caller to supply one |
+
+CC11 falls straight out of the desugaring below: a `using` clause becomes a
+parameter, and every caller fills it in. The process starts at the entry point,
+so there's no caller and no argument — the parameter would just hold whatever
+the stack came up with, and the first index through it reads garbage. Own the
+context in the entry point instead and let CC4 find it there:
+
+<!-- test: skip -->
+```rask
+func main() using players: Pool<Player> {   // error: nothing can supply this
+    spawn_wave(10)
+}
+
+// Instead — main owns the pool, the callee keeps the clause:
+func main() {
+    mut players: Pool<Player> = Pool.new()
+    spawn_wave(10)          // CC4 finds `players` in main's scope
+}
+
+func spawn_wave(n: i32) using players: Pool<Player> { … }
+```
+
 ## Compiler Desugaring
 
 <!-- test: skip -->
