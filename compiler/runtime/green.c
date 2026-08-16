@@ -685,6 +685,48 @@ int64_t rask_green_cancel_simple(void *handle) {
     return rask_green_cancel(handle, NULL);
 }
 
+// Shared tail for the two outcome-reporting entry points. `cancelled` says
+// whether a cancel was requested, which is what separates "the task stopped
+// early because we asked it to" from "it finished normally".
+static int64_t green_join_outcome(void *handle, int cancelled,
+                                  int64_t *value_out, RaskStr *msg_out) {
+    char *msg = NULL;
+    int64_t value = rask_green_join(handle, &msg);
+
+    if (msg) {
+        rask_string_from(msg_out, msg);
+        free(msg);
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_PANICKED;
+    }
+
+    rask_string_new(msg_out);
+    if (cancelled) {
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_CANCELLED;
+    }
+    if (value_out) *value_out = value;
+    return RASK_JOIN_OK;
+}
+
+int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
+    GreenHandle *h = (GreenHandle *)handle;
+    if (!h || !h->task) {
+        rask_panic("join on consumed TaskHandle");
+    }
+    int cancelled = atomic_load_explicit(&h->task->cancel_flag, memory_order_acquire);
+    return green_join_outcome(handle, cancelled, value_out, msg_out);
+}
+
+int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
+    GreenHandle *h = (GreenHandle *)handle;
+    if (!h || !h->task) {
+        rask_panic("cancel on consumed TaskHandle");
+    }
+    atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
+    return green_join_outcome(handle, 1, value_out, msg_out);
+}
+
 // ─── Yield helpers (called by state machines) ───────────────
 //
 // These submit an I/O op with a callback that re-enqueues the current task,

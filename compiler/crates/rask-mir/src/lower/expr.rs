@@ -4468,6 +4468,23 @@ impl<'a> MirLowerer<'a> {
                     ok: Box::new(self.ctx.resolve_type_str(target)),
                     err: Box::new(self.ctx.resolve_type_str("ParseError")),
                 }))
+        } else if matches!(qualified_name.as_str(),
+            "ThreadHandle_join" | "Thread_join" | "TaskHandle_join" | "TaskHandle_cancel"
+            | "join" | "cancel")
+        {
+            // join/cancel hand back `T or JoinError`. Every `T or E` stub loses
+            // its error side on the way to MIR — the metadata parser writes I64
+            // there unconditionally — so this typed as `i64 or i64`: an 8-byte
+            // payload where JoinError needs 24, and no enum identity for the
+            // match to switch on. `JoinError.Panicked(m)` then read the Err
+            // payload as an address and segfaulted (#677).
+            //
+            // The checker already worked the type out; take it, and only when it
+            // really is a Result over an enum, so a user-defined `join` that
+            // happens to share the name falls through to the normal path.
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| matches!(t,
+                    MirType::Result { err, .. } if matches!(**err, MirType::Enum(_))))
         } else {
             None
         }.unwrap_or_else(|| self

@@ -2004,6 +2004,27 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
+fn thread_join_reports_value_and_panic_on_both_backends() {
+    // #677/#683: native join() used to fold the value and the outcome into one
+    // number — every success reported 0, a task returning -1 looked like a
+    // panic, and a real panic came back as an Err whose payload was the -1
+    // itself, so matching JoinError.Panicked dereferenced it.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "thread_join_outcome.rk");
+        assert_eq!(code, 0, "{}: joining a panicked task must not kill the joiner: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.first(), Some(&"value 42"), "{}: join hands back the task's value: {:?}", mode, stdout);
+        assert_eq!(lines.get(1), Some(&"value -1"), "{}: -1 is a value, not a failure: {:?}", mode, stdout);
+        // The two backends word the message differently (interp prefixes
+        // "panic: ", native prefixes the source location) — tracked separately.
+        let panicked = lines.get(2).copied().unwrap_or_default();
+        assert!(panicked.starts_with("panicked") && panicked.contains("boom"),
+            "{}: a panicked task joins as JoinError.Panicked carrying its message: {:?}", mode, stdout);
+        assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
+    }
+}
+
+#[test]
 fn panic_ensure_runs_on_native_with_captured_receiver() {
     // U1 on native: an ensure calling a method on a captured receiver runs during
     // unwind, and the by-reference capture sees the pre-panic mutation (42, not 1).

@@ -700,8 +700,11 @@ int       rask_green_task_is_cancelled(void);
 
 typedef struct RaskTaskHandle RaskTaskHandle;
 
-// Function signature for spawned tasks: takes environment pointer.
-typedef void (*RaskTaskFn)(void *env);
+// Function signature for spawned tasks: takes environment pointer, hands back
+// the task's return value. A task body that returns nothing still matches this
+// on every ABI Rask targets — the unused return register is simply garbage,
+// and join() on a `ThreadHandle<void>` never looks at it.
+typedef int64_t (*RaskTaskFn)(void *env);
 
 // Spawn a new OS thread running func(env). Caller must join/detach/cancel.
 RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env);
@@ -733,6 +736,26 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);
+
+// ─── Join outcome (T or JoinError) ─────────────────────────
+// How a joined task ended. Codegen turns this into the Result tag and, for the
+// two failure cases, the JoinError variant tag — so the numbering here is the
+// only thing the two sides have to agree on besides the offsets.
+#define RASK_JOIN_OK        0
+#define RASK_JOIN_PANICKED  1
+#define RASK_JOIN_CANCELLED 2
+
+// Join and report the outcome separately from the value, so a task that
+// legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
+// task's return value (0 when it failed); `*msg_out` is always left a valid
+// string — the panic message, or empty. Consumes the handle.
+int64_t rask_task_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+
+// Same for the green scheduler's task handles.
+int64_t rask_green_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+
+// Cancel-then-join. Reports CANCELLED unless the task panicked on its way out.
+int64_t rask_green_cancel_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

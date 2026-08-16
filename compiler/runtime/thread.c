@@ -41,6 +41,7 @@ typedef struct {
     atomic_int   status;
     atomic_int   cancel_flag;
     char        *panic_msg;     // set on panic, owned by state
+    int64_t      result;        // task body's return value, read by join
     pthread_t    thread;
 
     // O4: guards `detached` and the decision to print an unjoined panic to
@@ -65,6 +66,7 @@ static RaskTaskState *state_new(void) {
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
     s->panic_msg = NULL;
+    s->result = 0;
     pthread_mutex_init(&s->report_lock, NULL);
     s->detached = 0;
     s->task_id = rask_next_task_id();
@@ -104,7 +106,7 @@ static void *task_thread_entry(void *arg) {
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        func(env);
+        state->result = func(env);
         atomic_store_explicit(&state->status, RASK_TASK_OK, memory_order_release);
     } else {
         // Returned via longjmp from rask_panic
@@ -165,7 +167,7 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     pthread_join(state->thread, NULL);
 
     int status = atomic_load_explicit(&state->status, memory_order_acquire);
-    int64_t result = 0;
+    int64_t result;
 
     if (status == RASK_TASK_PANICKED) {
         if (msg_out) {
@@ -173,13 +175,44 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
             state->panic_msg = NULL; // transfer ownership
         }
         result = -1;
-    } else if (msg_out) {
-        *msg_out = NULL;
+    } else {
+        result = state->result;
+        if (msg_out) *msg_out = NULL;
     }
 
     state_release(state);
     rask_free(h);
     return result;
+}
+
+// Join, splitting "how it ended" from "what it produced". The old shape folded
+// both into one int64_t, so a task returning -1 read back as a panic and a task
+// returning 42 read back as 0 (the value was never captured at all).
+int64_t rask_task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
+    RaskTaskHandle *h = (RaskTaskHandle *)handle;
+    if (!h || !h->state) {
+        rask_panic("join on consumed TaskHandle");
+    }
+
+    int cancelled = atomic_load_explicit(&h->state->cancel_flag, memory_order_acquire);
+
+    char *msg = NULL;
+    int64_t value = rask_task_join(h, &msg);
+
+    if (msg) {
+        rask_string_from(msg_out, msg);
+        rask_free(msg);
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_PANICKED;
+    }
+
+    rask_string_new(msg_out);
+    if (cancelled) {
+        if (value_out) *value_out = 0;
+        return RASK_JOIN_CANCELLED;
+    }
+    if (value_out) *value_out = value;
+    return RASK_JOIN_OK;
 }
 
 void rask_task_detach(RaskTaskHandle *h) {
@@ -250,19 +283,20 @@ typedef struct {
     void          *alloc_base;  // closure allocation to free after task
 } RaskSpawnCtx;
 
-static void closure_spawn_entry(void *arg) {
+static int64_t closure_spawn_entry(void *arg) {
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)arg;
     RaskTaskFn func = ctx->func;
     void *env = ctx->env;
     void *alloc_base = ctx->alloc_base;
     rask_free(ctx);
 
-    func(env);
+    int64_t result = func(env);
     rask_free(alloc_base);
+    return result;
 }
 
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
-    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
+    RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
