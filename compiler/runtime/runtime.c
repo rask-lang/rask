@@ -474,6 +474,48 @@ int32_t rask_libc_rename(const char *from, const char *to) { return rename(from,
 int32_t rask_libc_remove(const char *path) { return remove(path); }
 int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
 
+// ─── errno → IoError ──────────────────────────────────────────────
+//
+// The self-hosted `fs.*` functions used to throw errno away and hand back
+// `IoError.Other("could not open file")`, while the interpreter built the
+// real variant from Rust's std::io::Error — so one failure read two
+// different ways depending on the backend (#674). These three let the Rask
+// side rebuild what the interpreter produces. The interpreter is the
+// reference, so the wording below matches its `std::io::Error` output.
+
+#include <errno.h>
+
+// `errno` is a macro over a thread-local, so Rask can't name it directly.
+int32_t rask_io_errno(void) { return errno; }
+
+// IoError variant index for an errno, in stdlib/io.rk declaration order.
+// The E* values differ across platforms, so the mapping lives on this side
+// rather than as numbers hardcoded in Rask.
+int32_t rask_io_error_kind(int32_t err) {
+    switch (err) {
+        case ENOENT: return 0;                  // NotFound
+        case EACCES: case EPERM: return 1;      // PermissionDenied
+        case EEXIST: return 2;                  // AlreadyExists
+        case EPIPE: return 3;                   // BrokenPipe
+        case ECONNRESET: return 4;              // ConnectionReset
+        case ETIMEDOUT: return 5;               // TimedOut
+        default: return 7;                      // Other
+    }
+}
+
+// "No such file or directory (os error 2)" — the exact shape Rust's
+// std::io::Error prints, so both backends say the same thing. The buffer is
+// thread-local and the caller copies out of it immediately via string.from_raw.
+const char *rask_io_error_text(int32_t err) {
+    static _Thread_local char buf[256];
+    snprintf(buf, sizeof(buf), "%s (os error %d)", strerror(err), err);
+    return buf;
+}
+
+// strlen under a name Rask can declare without clashing with fs.rk's own
+// `strlen` extern — one C symbol may only be declared once across stdlib.
+uint64_t rask_io_cstr_len(const char *s) { return s ? (uint64_t)strlen(s) : 0; }
+
 #include <dirent.h>
 // Extract name from dirent (Rask can't access C struct fields)
 const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_name; }
