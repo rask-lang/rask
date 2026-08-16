@@ -9,14 +9,21 @@ use rask_ast::Span;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// How many sources the stdlib contributes to the `file_id` space.
+pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16;
+
 /// First `file_id` the stdlib's own sources use.
 ///
 /// Stubs are parsed separately from the user's package, so their ids can't come
-/// from the same running counter — they'd collide with the package's and a
-/// diagnostic raised inside a stdlib body would resolve against the user's
-/// file. A reserved range keeps the two apart; the number is far above any
-/// realistic package file count and the assertion below keeps it honest.
-pub const STDLIB_FILE_ID_BASE: u16 = 1000;
+/// from the same running counter — they'd collide, and a diagnostic raised
+/// inside a stdlib body would resolve against the user's file.
+///
+/// The two spaces are disjoint by construction: the package counts up from 0,
+/// the stdlib occupies the top of the range. Derived from the actual stub count
+/// rather than picked, so the only ceiling is `file_id`'s own width — a package
+/// would need ~65,500 files to reach it, and `parse_rk_files` reports that as an
+/// error rather than letting the two spaces overlap.
+pub const STDLIB_FILE_ID_BASE: u16 = u16::MAX - STDLIB_FILE_COUNT + 1;
 
 /// `(name, source, file_id)` for every stub, so a caller can register them with
 /// a `SourceMap` and have stdlib spans resolve against stdlib text.
@@ -29,9 +36,8 @@ pub fn stub_sources() -> impl Iterator<Item = (&'static str, &'static str, u16)>
 
 /// The `file_id` for the nth stub source.
 fn stub_file_id(index: usize) -> u16 {
-    let id = STDLIB_FILE_ID_BASE as usize + index;
-    debug_assert!(id <= u16::MAX as usize, "stdlib file ids overflowed u16");
-    id as u16
+    debug_assert!(index < STDLIB_FILE_COUNT as usize, "stub index out of range");
+    STDLIB_FILE_ID_BASE + index as u16
 }
 
 /// Embedded stub file sources.
