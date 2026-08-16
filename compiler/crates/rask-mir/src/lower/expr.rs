@@ -944,7 +944,15 @@ impl<'a> MirLowerer<'a> {
                         }));
                         return Ok((MirOperand::Local(result_local), MirType::I64));
                     }
-                    UnaryOp::Deref => (operand_ty.clone(), MirRValue::Deref(operand_op)),
+                    // A raw pointer needs the load. An `Owned<T>` doesn't —
+                    // it's transparent, so the operand already *is* the T, and
+                    // emitting a Deref read whatever address the value's first
+                    // word happened to look like (segfault on
+                    // `(*owned_point).x`). mem.owned/OW3, #737.
+                    UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                        (operand_ty.clone(), MirRValue::Deref(operand_op))
+                    }
+                    UnaryOp::Deref => (operand_ty.clone(), MirRValue::Use(operand_op)),
                     UnaryOp::Not => (MirType::Bool, MirRValue::UnaryOp {
                         op: lower_unaryop(*op),
                         operand: operand_op,

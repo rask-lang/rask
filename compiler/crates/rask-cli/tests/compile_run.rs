@@ -2091,6 +2091,24 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
+fn deref_of_owned_is_a_safe_borrow() {
+    // #737: `*x` was classified as a raw-pointer dereference by syntax alone,
+    // so `(*p).x` on an Owned needed an `unsafe` block — which made owned.md's
+    // own examples uncompilable. mem.owned/OW3 says it's an ordinary borrow.
+    // Neither backend could evaluate it either: the interpreter had no Deref
+    // arm, and native emitted a real load and segfaulted.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "owned_deref.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "read 1 2\nafter write 10\nstill owned 10 2\n",
+            "{}: read, write, and still-owned all through `*p`: {:?}", mode, stdout,
+        );
+    }
+}
+
+#[test]
 fn channel_element_type_reaches_the_receiving_end() {
     // #717: a channel created without an explicit element type gave its Sender
     // and Receiver empty type-argument lists, so nothing linked the two ends.

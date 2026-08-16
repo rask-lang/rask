@@ -240,6 +240,13 @@ impl Interpreter {
 
     pub(super) fn assign_target(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &target.kind {
+            // mem.owned/OW3: writing through `*owned` is a mutable borrow, and
+            // `Owned<T>` is transparent — the binding already holds the T. So
+            // `(*p).x = v` is `p.x = v`, and the deref peels off here. Raw
+            // pointers never reach the interpreter; `unsafe` is native-only.
+            ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, operand } => {
+                self.assign_target(operand, value)
+            }
             ExprKind::Ident(name) => {
                 let value = wrap_like(self.env.get(name), value);
                 if !self.env.assign(name, value) {
@@ -255,6 +262,14 @@ impl Interpreter {
                     current = object;
                 }
                 field_chain.reverse();
+
+                // `(*p).x` names the same storage as `p.x` — the deref is a
+                // borrow through a transparent `Owned`, not a step in the path.
+                while let ExprKind::Unary {
+                    op: rask_ast::expr::UnaryOp::Deref, operand,
+                } = &current.kind {
+                    current = operand;
+                }
 
                 match &current.kind {
                     ExprKind::Ident(var_name) => {

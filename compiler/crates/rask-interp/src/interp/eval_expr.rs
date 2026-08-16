@@ -957,6 +957,12 @@ impl Interpreter {
                             expr.span
                         )),
                     },
+                    // mem.owned/OW3: `*owned` is a borrow, not a raw-pointer
+                    // read. `Owned<T>` is transparent — the value already is
+                    // the T — so the deref hands it straight back. A raw
+                    // pointer never reaches the interpreter to begin with;
+                    // `unsafe` code is native-only.
+                    UnaryOp::Deref => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",

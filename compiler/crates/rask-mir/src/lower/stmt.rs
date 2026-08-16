@@ -149,8 +149,40 @@ impl<'a> MirLowerer<'a> {
                 let (foff, fty, fsize) = self.field_offset_ty_size(&oty, field)?;
                 Some((base, off + foff, fty, fsize))
             }
+            // A deref through an `Owned` is a borrow, and `Owned<T>` is
+            // transparent — `(*p).x` is the same place as `p.x` (mem.owned/OW3).
+            // A raw pointer keeps its deref; that load is real.
+            ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. } => {
+                let inner = self.peel_owned_deref(expr);
+                if std::ptr::eq(inner, expr) {
+                    None
+                } else {
+                    self.lower_place_chain(inner)
+                }
+            }
             _ => None,
         }
+    }
+
+    /// Strip derefs that are borrows through a transparent `Owned`, leaving a
+    /// raw-pointer deref alone. `Owned<T>` is `T` to the checker, so `*p` names
+    /// the same storage as `p`; treating it as a place of its own left the
+    /// store matching no arm at all and silently dropped it (#737).
+    pub(crate) fn peel_owned_deref<'e>(&self, expr: &'e Expr) -> &'e Expr {
+        let mut cur = expr;
+        while let ExprKind::Unary {
+            op: rask_ast::expr::UnaryOp::Deref, operand,
+        } = &cur.kind {
+            let operand_is_raw = matches!(
+                self.ctx.lookup_raw_type(operand.id).map(|t| self.ctx.type_to_mir(t)),
+                Some(MirType::Ptr)
+            );
+            if operand_is_raw {
+                return cur;
+            }
+            cur = operand;
+        }
+        cur
     }
 
     /// True when `expr` refers to a `Vec` collection (by local metadata or the
@@ -347,6 +379,12 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Assign { target, value } => {
+                // mem.owned/OW3: `*p = v` writes through a borrow of a
+                // transparent `Owned`, so it names the same place as `p = v`.
+                // Left as a Deref target it matched no arm below and the store
+                // was dropped on the floor — native printed the old value back
+                // with no error at all (#737).
+                let target = self.peel_owned_deref(target);
                 let (val_op, val_ty) = self.lower_expr(value)?;
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker

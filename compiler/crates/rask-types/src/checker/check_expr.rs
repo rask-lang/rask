@@ -278,15 +278,34 @@ impl TypeChecker {
                 let operand_ty = self.infer_expr(operand);
                 match op {
                     rask_ast::expr::UnaryOp::Deref => {
-                        self.unsafe_ops.push((expr.span, super::UnsafeCategory::PointerDeref));
-                        if !self.in_unsafe {
-                            self.errors.push(TypeError::UnsafeRequired {
-                                operation: "pointer dereference".to_string(),
-                                span: expr.span,
-                            });
-                        }
-                        // *ptr where ptr: *T should yield T
+                        // What `*x` means depends on what `x` is, not on the
+                        // `*`. mem.unsafe's rule is about raw pointers; on an
+                        // `Owned` it's an ordinary borrow that doesn't consume
+                        // (mem.owned/OW3), which is how owned.md's own examples
+                        // are written — and they didn't compile, because this
+                        // fired on the syntax alone (#737).
+                        //
+                        // An operand whose type isn't worked out yet still
+                        // demands `unsafe`: not knowing isn't the same as
+                        // knowing it's safe.
                         let resolved = self.ctx.apply(&operand_ty);
+                        let needs_unsafe = matches!(resolved, Type::RawPtr(_) | Type::Var(_));
+                        // `*p = v` is one operation. The assignment reports it
+                        // as a deref *write*, which is the more precise of the
+                        // two; reporting the read here as well printed two
+                        // errors on the same span for the same `*`.
+                        if needs_unsafe && !self.in_assign_target {
+                            self.unsafe_ops.push((expr.span, super::UnsafeCategory::PointerDeref));
+                            if !self.in_unsafe {
+                                self.errors.push(TypeError::UnsafeRequired {
+                                    operation: "pointer dereference".to_string(),
+                                    span: expr.span,
+                                });
+                            }
+                        }
+                        // *ptr where ptr: *T yields T. An `Owned<T>` is already
+                        // `T` to the checker, so a borrow through it yields the
+                        // same type it started with.
                         match resolved {
                             Type::RawPtr(inner) => *inner,
                             // The operand's type isn't settled yet — it came

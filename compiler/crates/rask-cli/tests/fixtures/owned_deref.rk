@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.owned/OW3: dereferencing an Owned is a borrow — safe, and it doesn't
+// consume. These are owned.md's own examples.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func main() {
+    mut p = own Point { x: 1, y: 2 }
+
+    // Borrow for read
+    println("read {(*p).x} {(*p).y}")
+
+    // Borrow for mutate
+    (*p).x = 10
+    println("after write {(*p).x}")
+
+    // The borrow didn't consume — p is still usable.
+    println("still owned {(*p).x} {(*p).y}")
+}
