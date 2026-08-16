@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A sort bug invisible on the inputs people usually try.
+// Two sort bugs that were invisible on the inputs people usually try.
 //
 // `Vec<string>.sort()` compared each element's first 8 bytes as an int64, which
 // for a 16-byte RaskStr is inline characters or a heap pointer — so the result
 // depended on the allocator.
+//
+// `sort_by`'s comparator crosses a C ABI that reads the return as a sign, but an
+// `Ordering` crosses it as its tag (Less 0, Equal 1, Greater 2). Reading the tag
+// as a sign makes Less look like "equal" and Equal look like "greater". That is
+// monotone in the true ordering, so ascending sorts still came out ascending —
+// which is why it hid. It shows up the moment a comparator answers Equal.
+
+struct Tagged {
+    public key: i64
+    public label: string
+}
 
 test "stdlib.collections — sorting a Vec<string> is lexicographic, not by bytes" {
     mut short = Vec.new()
@@ -34,4 +45,64 @@ test "stdlib.collections — sorting a Vec<string> is lexicographic, not by byte
     prefix.sort()
     assert prefix[0] == "ab"
     assert prefix[1] == "abc"
+}
+
+// Every pair compares Equal, so nothing has any reason to move. Native used to
+// reverse the vector outright: Equal reached the adapter as `1`, which reads as
+// "greater", so every comparison asked for a swap.
+test "stdlib.collections — a comparator that answers Equal leaves the order alone" {
+    mut v = Vec.new()
+    v.push(Tagged { key: 1, label: "a" })
+    v.push(Tagged { key: 1, label: "b" })
+    v.push(Tagged { key: 1, label: "c" })
+    v.push(Tagged { key: 1, label: "d" })
+
+    v.sort_by(|x, y| x.key.compare(y.key))
+
+    mut seen = ""
+    for t in v {
+        seen = "{seen}{t.label}"
+    }
+    assert seen == "abcd"
+}
+
+test "stdlib.collections — a comparator still orders ascending and descending" {
+    mut v = Vec.new()
+    v.push(30)
+    v.push(10)
+    v.push(20)
+
+    v.sort_by(|a, b| a.compare(b))
+    assert v[0] == 10
+    assert v[1] == 20
+    assert v[2] == 30
+
+    v.sort_by(|a, b| b.compare(a))
+    assert v[0] == 30
+    assert v[1] == 20
+    assert v[2] == 10
+}
+
+// A run with duplicates and a reversed input — the shape where a comparator
+// that can't say "less" would fall apart if the mapping were merely lucky.
+test "stdlib.collections — a comparator sorts a reversed run with duplicates" {
+    mut v = Vec.new()
+    mut i = 0
+    while i < 24 {
+        v.push((24 - i) / 2)
+        i = i + 1
+    }
+    v.sort_by(|a, b| a.compare(b))
+
+    mut ordered = true
+    mut j = 1
+    while j < v.len() {
+        if v[j] < v[j - 1] {
+            ordered = false
+        }
+        j = j + 1
+    }
+    assert ordered
+    assert v[0] == 0
+    assert v[23] == 12
 }

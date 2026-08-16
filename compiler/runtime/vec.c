@@ -538,6 +538,9 @@ int64_t rask_f64_compare_total(double a, double b) {
 // less is the value itself. That matches what the closure body compiles to —
 // `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
 // `Vec<i64>` compares plain integers. Returns <0 / 0 / >0.
+/* Ordering's tags, from rask-stdlib's ORDERING_VARIANTS: Less, Equal, Greater. */
+#define RASK_ORDERING_EQUAL 1
+
 typedef int64_t (*RaskCmpFn)(int64_t env, int64_t a, int64_t b);
 
 static __thread int64_t rask_sort_comparator;
@@ -554,10 +557,16 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
         va = *(const int64_t *)a;
         vb = *(const int64_t *)b;
     }
-    int64_t result = fn(env, va, vb);
-    if (result < 0) return -1;
-    if (result > 0) return 1;
-    return 0;
+    /* The comparator is declared `-> Ordering`, and an Ordering crosses this
+       boundary as its tag: Less 0, Equal 1, Greater 2. qsort wants the sign, so
+       the mapping is tag - 1.
+
+       Reading the tag as a sign instead — as this used to — makes Less look
+       like "equal" and Equal look like "greater", so a comparator that answers
+       Equal for every pair reversed the whole vector. Ascending sorts still
+       came out ascending, because (0, +, +) is monotone in the true ordering,
+       which is why it went unnoticed. */
+    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
 }
 
 void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
