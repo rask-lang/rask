@@ -86,6 +86,97 @@ impl<'a> MirLowerer<'a> {
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
 
+    /// Wrap a type's `compare` into a comparator closure for `sort_by`.
+    ///
+    /// `sort()` is defined as `T: Comparable` (std.collections/SO3), so an
+    /// element type that has a `compare` has to be sorted by it. This is the
+    /// bridge: the sort runtime takes a closure, `compare` is a plain function,
+    /// and the two disagree about the answer's shape — `compare` produces an
+    /// `Ordering` while the C comparator ABI reads an integer. Same conversion
+    /// the closure path does, for the same reason.
+    ///
+    /// Returns `None` when the type has no `compare`, leaving the caller on the
+    /// byte-comparing default.
+    pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
+        let sig = self.func_sigs.get(name)?;
+        let param_ty_strs = sig.param_ty_strs.clone();
+        let ret_ty = sig.ret_ty.clone();
+        if param_ty_strs.len() != 2 {
+            return None;
+        }
+
+        let wrapper_name = format!("{}__cmpval_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        {
+            let mut wb = BlockBuilder::new(wrapper_name.clone(), MirType::I64);
+            wb.add_param("__env".to_string(), MirType::Ptr);
+
+            let mut args = Vec::new();
+            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+                let ty = ty_str
+                    .as_deref()
+                    .map(|s| self.ctx.resolve_type_str(s))
+                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:cmp_param"));
+                let id = wb.add_param(format!("__c{}", i), ty);
+                args.push(MirOperand::Local(id));
+            }
+
+            let result = wb.alloc_temp(ret_ty.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+
+            // `compare` has two shapes in this codebase and the adapter reads
+            // one. A user-written one returns an `Ordering`, so take its tag. A
+            // derived one (derive.rs) is generated as `-1 / 0 / 1`, which is a
+            // sign, so shift it onto the same tag scale — Less 0, Equal 1,
+            // Greater 2 — and the adapter's `tag - 1` recovers the sign either
+            // way. Getting this wrong is not a wrong order but a crash: reading
+            // a tag out of an integer dereferences it.
+            let saved = std::mem::replace(&mut self.builder, wb);
+            let normalized = if self.is_ordering_ty(&ret_ty) {
+                self.emit_ordering_tag_i64(MirOperand::Local(result))
+            } else {
+                let shifted = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: shifted,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Add,
+                        left: MirOperand::Local(result),
+                        right: MirOperand::Constant(crate::operand::MirConst::Int(
+                            rask_stdlib::ORDERING_EQUAL,
+                        )),
+                    },
+                }));
+                shifted
+            };
+            let mut wb = std::mem::replace(&mut self.builder, saved);
+            wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(MirOperand::Local(normalized)),
+            }));
+
+            self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
+                ret_ty: MirType::I64,
+                scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            });
+            self.synthesized_functions.push(wb.finish());
+        }
+
+        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: result_local,
+            func_name: wrapper_name,
+            captures: Vec::new(),
+            heap: false,
+        }));
+        Some((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///

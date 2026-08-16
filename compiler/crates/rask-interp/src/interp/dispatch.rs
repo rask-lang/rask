@@ -281,7 +281,7 @@ impl Interpreter {
     /// The nominal type a value belongs to, for looking up its Rask methods.
     /// `Value::type_name` answers "struct"/"enum", which no method table is
     /// keyed by.
-    fn nominal_type_name(v: &Value) -> Option<String> {
+    pub(crate) fn nominal_type_name(v: &Value) -> Option<String> {
         Some(match v {
             Value::Struct(s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),

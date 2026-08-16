@@ -222,6 +222,24 @@ impl<'a> MirLowerer<'a> {
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
+    /// The `compare` function for this Vec's element type, when it has one.
+    ///
+    /// `sort()` is `T: Comparable` (std.collections/SO3), so an element type
+    /// that defines or derives `compare` has to be sorted by it. Only
+    /// aggregates ask this question — a scalar or a string is sorted by the
+    /// type-specific runtime comparator, which is the same order its `compare`
+    /// would give and cheaper to reach.
+    fn vec_elem_compare_fn(&self, object: &Expr) -> Option<String> {
+        let elem = Self::vec_tracking_key(object)
+            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))?;
+        if !matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
+            return None;
+        }
+        let name = format!("{}_compare", self.mir_type_name(&elem)?);
+        self.func_sigs.contains_key(&name).then_some(name)
+    }
+
     /// Does this Vec receiver hold floats? Picks the sort that uses the float
     /// total order rather than an integer compare over the bit patterns.
     fn vec_elem_is_float(&self, object: &Expr) -> bool {
@@ -4620,6 +4638,19 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Built before the chain below: emitting the wrapper mutates the
+        // builder, and the arms are an expression.
+        let sort_comparator = if qualified_name == "Vec_sort"
+            && !self.vec_elem_is_string(object)
+            && !self.vec_elem_is_float(object)
+        {
+            self.vec_elem_compare_fn(object)
+                .and_then(|name| self.lower_compare_as_comparator(&name))
+                .map(|(op, _)| op)
+        } else {
+            None
+        };
+
         // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
         // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
         let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
@@ -4643,6 +4674,19 @@ impl<'a> MirLowerer<'a> {
             // its inline bytes or its heap pointer, so `["pear", "apple"]`
             // came back in whatever order the allocator produced.
             ("Vec_sort_str".to_string(), all_args)
+        } else if qualified_name == "Vec_sort" && sort_comparator.is_some() {
+            // An aggregate with a `compare`: sort by it. The default runtime
+            // comparator reads the first eight bytes, which for a struct is
+            // whichever field landed there — `sort()` on a `{name, rank}`
+            // ordered by name however the type's own `compare` was written.
+            //
+            // Going through `sort_by` also picks up its stable merge sort,
+            // which is what SO1 asks for and what matters here: a comparator
+            // that reads one field of several has ties, and ties are where
+            // stability is observable.
+            let mut args = all_args;
+            args.push(sort_comparator.expect("checked above"));
+            ("Vec_sort_by".to_string(), args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.

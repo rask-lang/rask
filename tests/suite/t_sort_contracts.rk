@@ -21,6 +21,21 @@ struct Scored {
     public seq: i64
 }
 
+// A user-written `compare` orders by rank. The name field is deliberately
+// first and deliberately ordered the other way, so byte-comparing the element
+// or falling back to the derived field order both give the reverse.
+struct Ranked {
+    public name: string
+    public rank: i64
+}
+
+extend Ranked {
+    func compare(self, other: Ranked) -> Ordering {
+        return self.rank.compare(other.rank)
+    }
+}
+
+
 test "stdlib.collections — sorting a Vec<string> is lexicographic, not by bytes" {
     mut short = Vec.new()
     short.push("pear")
@@ -141,4 +156,22 @@ test "std.collections/SO1 — equal elements keep their relative order" {
     assert stable
     assert v[0].score == 0
     assert v[59].score == 2
+}
+
+// std.collections/SO3 says `sort()` is `T: Comparable`, so the type's own
+// `compare` decides the order. It didn't: the runtime comparator read each
+// element's first eight bytes, which for a struct is whichever field landed
+// there. Both backends sorted these by `name` and ignored the `compare` that
+// says `rank`.
+test "std.collections/SO3 — sort() uses the type's own compare" {
+    mut v = Vec.new()
+    v.push(Ranked { name: "aaa", rank: 3 })
+    v.push(Ranked { name: "bbb", rank: 2 })
+    v.push(Ranked { name: "ccc", rank: 1 })
+
+    v.sort()
+
+    assert v[0].rank == 1
+    assert v[1].rank == 2
+    assert v[2].rank == 3
 }
