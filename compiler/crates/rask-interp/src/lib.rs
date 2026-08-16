@@ -13,14 +13,28 @@ pub mod build_context;
 
 /// Spawn a thread to run interpreted Rask code.
 ///
-/// Tree-walking costs one Rust frame per nested expression, so an interpreted
-/// call sits far deeper on the stack than the compiled equivalent. The 2 MiB a
-/// bare `thread::spawn` gives is enough on a roomy dev box and not always
-/// enough elsewhere — CI overflowed on four threads printing in a loop, which
-/// is not a deep program. The main thread gets 8 MiB by default; spawned
-/// threads running the same interpreter should not get a quarter of that.
+/// One interpreted call costs roughly 30 KB of Rust stack — `eval_expr` is a
+/// single match over 80 expression kinds, and a frame is sized for the union of
+/// every arm's locals, so every call pays for all of them. Measured by
+/// recursing a Rask function until it aborts:
 ///
-/// `RUST_MIN_STACK` still wins if it asks for more.
+/// | stack  | max Rask recursion depth |
+/// |--------|--------------------------|
+/// |  2 MiB | ~65                      |
+/// |  8 MiB | ~275                     |
+/// | 16 MiB | ~525                     |
+///
+/// A bare `thread::spawn` gives 2 MiB, so an interpreted thread got ~65 frames
+/// of headroom while the main thread — running the same interpreter — got ~275.
+/// CI overflowed on four threads printing in a loop.
+///
+/// 16 MiB is a stopgap, not a fix: the frame size is the actual problem, and no
+/// stack setting makes ordinary recursive code work (#759). Erring high is right
+/// meanwhile, because exceeding it aborts the process with no Rask-level
+/// diagnostic at all. The reservation is lazily committed, so the headroom costs
+/// address space rather than memory.
+///
+/// `RUST_MIN_STACK` can still raise this; it can no longer lower it.
 pub(crate) fn spawn_interp_thread<F, T>(f: F) -> std::thread::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
