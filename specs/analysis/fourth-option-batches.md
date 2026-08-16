@@ -162,3 +162,54 @@ with world.batch() as w {
   one.
 - **Syntax is placeholder.** `world.batch()` reads acceptably; the name isn't
   settled.
+
+## B8 — `delete` must not mean two things
+
+A flaw caught after the first pass, and it's one this exploration already
+ruled against elsewhere. Under B1, `store.delete(x)` outside a batch happens
+immediately and `w.delete(x)` inside one is deferred — the same verb, two
+timings, distinguished only by which block encloses it.
+
+That's precisely the objection used to reject implicit delete-locked loops
+(`fourth-option.md`, option (b)): *"`store.delete(x)` would mean something
+different inside a loop than outside it, with no syntax marking the
+difference."* The reasoning doesn't get to apply to loops and not to batches.
+
+Two ways out.
+
+**(a) Deletes only exist inside batches.** Remove the immediate form
+entirely. `delete` then always means "at the end of this block" — one
+meaning, everywhere, and a reference is *never* invalidated under a holder's
+feet because there is no delete that can do it. The delete-locked scope stops
+being a property of batches and becomes a property of the language.
+
+The cost is ceremony on single deletes. `cache.rk`'s `evict_one` removes one
+node; it would need a batch block around it:
+
+<!-- test: skip -->
+```rask
+with self.blocks.batch() as b { b.delete(victim) }
+```
+
+Three lines where one would do, in a fairly common shape.
+
+**(b) The deferred one gets its own verb.** Keep `store.delete(x)` immediate,
+and name the batch's version for what it does — `retire`, `mark_deleted`,
+`schedule_delete`. The timing lands in the call rather than in the enclosing
+block, which is what the transparency argument asks for.
+
+**Leaning (a).** Uniformity is worth more than the saved lines, and it buys a
+property nothing else in the design provides: with no immediate delete, a
+node reference can never go stale while you hold it — anywhere, not just
+inside a batch. That subsumes the delete-locked scope, makes B7 unnecessary
+(there's no "pre-batch world" to distinguish), and removes a whole class of
+question about which construct you're in.
+
+The SQL analogy that seemed to license the dual meaning doesn't hold: inside
+a transaction *everything* defers, so there's one rule. Here inserts are
+immediate and deletes aren't, so a reader has to track which is which — the
+asymmetry is what makes the shared verb misleading, and (a) resolves it by
+making the deferred side universal rather than contextual.
+
+Not settled. If (b) wins, the verb needs choosing; if (a) wins, single-delete
+ergonomics need a second look.
