@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Leaving a `for mutate` body early still writes that iteration back (#650).
+//
+// `for mutate x in v` writes the binding into the collection at the end of each
+// iteration. `continue` and `break` reach that through the loop's own writeback
+// blocks; `return` and a failing `try` leave the function without passing
+// through any block, so the write has to be emitted at those exits too.
+
+struct Boom { why: string }
+
+extend Boom {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func first_bumped(mutate v: Vec<i64>) -> i64 {
+    for mutate item in v {
+        item = item + 100
+        return item
+    }
+    return -1
+}
+
+test "ctrl.loops/LP11 — return writes the current element back" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    let got = first_bumped(v)
+    assert got == 101
+    assert v[0] == 101
+    assert v[1] == 2
+}
+
+func bump_then_break(mutate v: Vec<i64>) -> i64 {
+    for mutate item in v {
+        item = item + 100
+        break
+    }
+    return 0
+}
+
+test "ctrl.loops/LP11 — break writes the current element back" {
+    mut v = Vec.new()
+    v.push(1)
+    v.push(2)
+    let got = bump_then_break(v)
+    assert got == 0
+    assert v[0] == 101
+    assert v[1] == 2
+}
+
+func return_under_if(mutate v: Vec<i64>) -> i64 {
+    for mutate item in v {
+        item = item + 100
+        if item > 0 {
+            return item
+        }
+    }
+    return -1
+}
+
+test "ctrl.loops/LP11 — return nested in an if still writes back" {
+    mut v = Vec.new()
+    v.push(1)
+    assert return_under_if(v) == 101
+    assert v[0] == 101
+}
+
+func inner_return(mutate m: Vec<Vec<i64>>) -> i64 {
+    for mutate row in m {
+        for mutate cell in row {
+            cell = cell + 100
+            return cell
+        }
+    }
+    return -1
+}
+
+// Returning from the inner loop owes two writebacks: the cell into its row, and
+// the row into the outer Vec. Innermost first, or the row written back is the
+// one from before the cell changed.
+test "ctrl.loops/LP11 — return from a nested for mutate writes both levels" {
+    mut inner = Vec.new()
+    inner.push(1)
+    mut outer = Vec.new()
+    outer.push(inner.clone())
+    assert inner_return(outer) == 101
+    assert outer[0][0] == 101
+}
+
+func reject_big(n: i64) -> i64 or Boom {
+    if n > 50 {
+        return Boom { why: "too big" }
+    }
+    return n
+}
+
+func propagate(mutate v: Vec<i64>) -> i64 or Boom {
+    for mutate item in v {
+        item = item + 100
+        let checked = try reject_big(item)
+        return checked
+    }
+    return 0
+}
+
+test "ctrl.loops/LP11 — a failing try writes the current element back" {
+    mut v = Vec.new()
+    v.push(1)
+    let r = propagate(v)
+    match r {
+        i64 as n => assert n == -1
+        Boom as e => assert e.why == "too big"
+    }
+    assert v[0] == 101
+}
+
+func bump_with_ensure(mutate v: Vec<i64>, mutate log: Vec<i64>) -> i64 {
+    for mutate item in v {
+        ensure log.push(9)
+        item = item + 100
+        return item
+    }
+    return -1
+}
+
+test "ctrl.loops/LP11 — writeback and ensure both run on return" {
+    mut v = Vec.new()
+    v.push(1)
+    mut log = Vec.new()
+    assert bump_with_ensure(v, log) == 101
+    assert v[0] == 101
+    assert log.len() == 1
+}
+
+func main() {}
