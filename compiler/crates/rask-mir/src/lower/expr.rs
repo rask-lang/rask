@@ -2013,13 +2013,6 @@ impl<'a> MirLowerer<'a> {
                 if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
                     return Ok((op, ty));
                 }
-                // `Boxed { value: "hi" }` and `Boxed<string> { … }` are both
-                // written as a name, and the name alone reaches only the
-                // placeholder layout — one word per type parameter. The checker
-                // knows which instantiation this is, so ask it first and fall
-                // back to the written name (#670).
-                let name = &self.ctx.instantiated_layout_name(expr.id)
-                    .unwrap_or_else(|| name.clone());
                 // Check for enum variant constructor: "EnumName.VariantName { ... }"
                 let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
                     let enum_name = &name[..dot_pos];

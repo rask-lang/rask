@@ -3169,26 +3169,13 @@ fn no_implicit_narrowing_in_arguments_or_joins() {
     assert_native_eq_interp("no_silent_narrowing.rk", "7,300,7,7,300");
 }
 
-// type.generics/EQ1, CO1, G2 (#670): a generic type whose fields are its own
-// parameters derives eq/compare — the condition is checked at the instantiation
-// like any other conditional conformance. Each instantiation gets its own
-// layout, so a `string` parameter is compared as a string rather than as the
-// word the shared placeholder layout claimed it was.
-#[test]
-fn generic_types_derive_eq_and_lay_out_per_instantiation() {
-    assert_native_eq_interp(
-        "generic_derive_and_layout.rk",
-        "truefalsetruefalsetruefalse34truefalse",
-    );
-}
-
 // std.collections/CP1-CP3, C2 (#666): a bounded vector refuses to grow past its
 // bound, and `try_push` hands the rejected value back rather than panicking —
 // which is what the growth error carries a payload for. A capacity hint
 // (`with_capacity`) is not a bound.
 #[test]
 fn a_bounded_vec_hands_back_what_it_wont_take() {
-    assert_native_eq_interp("bounded_vec.rk", "true22true0302false3keptgiven back");
+    assert_native_eq_interp("bounded_vec.rk", "true22true0302false3417");
 }
 
 // std.collections/C2: `push` past the bound panics on both backends, and

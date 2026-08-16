@@ -718,27 +718,12 @@ impl<'a> MirContext<'a> {
                     MirType::Ptr
                 }
             }
-            Type::Generic { base, args } => {
-                let Some(name) = self.type_names.get(base) else { return MirType::Ptr };
-                // Each instantiation has its own layout, so `Boxed<string>` is
-                // laid out at the size a string really is instead of sharing
-                // `Boxed`'s word-per-parameter placeholder (#670). An argument
-                // that isn't concrete yet has no key and falls back to it.
-                let concrete: Option<Vec<Type>> = args
-                    .iter()
-                    .map(|a| match a {
-                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if let Some(args) = concrete {
-                    if let Some(key) = rask_mono::instantiation_key(name, &args, self.type_names) {
-                        if self.find_struct(&key).is_some() || self.find_enum(&key).is_some() {
-                            return self.resolve_type_str(&key);
-                        }
-                    }
+            Type::Generic { base, .. } => {
+                if let Some(name) = self.type_names.get(base) {
+                    self.resolve_type_str(name)
+                } else {
+                    MirType::Ptr
                 }
-                self.resolve_type_str(name)
             }
             Type::UnresolvedGeneric { .. } => {
                 let type_str = format!("{}", ty);
@@ -781,32 +766,6 @@ impl<'a> MirContext<'a> {
             },
             // Should not reach MIR lowering
             Type::Var(_) | Type::Error => MirType::Ptr,
-        }
-    }
-
-    /// The instantiation key for a node whose checked type is a generic type
-    /// with a layout of its own — `Boxed<string>`, `Pair<i32>`.
-    ///
-    /// `None` when the node isn't a generic instantiation, or its arguments
-    /// aren't concrete, or no per-instantiation layout was built. Callers fall
-    /// back to the base name and its placeholder layout.
-    pub fn instantiated_layout_name(&self, node_id: NodeId) -> Option<String> {
-        let Type::Generic { base, args } = self.node_types.get(&node_id)? else {
-            return None;
-        };
-        let base_name = self.type_names.get(base)?;
-        let concrete: Option<Vec<Type>> = args
-            .iter()
-            .map(|a| match a {
-                rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
-            })
-            .collect();
-        let key = rask_mono::instantiation_key(base_name, &concrete?, self.type_names)?;
-        if self.find_struct(&key).is_some() || self.find_enum(&key).is_some() {
-            Some(key)
-        } else {
-            None
         }
     }
 

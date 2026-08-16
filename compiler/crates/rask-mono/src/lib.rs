@@ -24,147 +24,6 @@ use rask_ast::NodeId;
 use rask_types::{Type, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// The name one instantiation of a generic type stores its layout under —
-/// `Pair<i32>`, `Boxed<string>`.
-///
-/// A generic struct used to get a single layout built with `i64` standing in for
-/// every type parameter, on the reasoning that scalar parameters are all the
-/// same size. `string` isn't scalar: it's sixteen bytes, and native field-wise
-/// equality read off that shared layout compared a `Boxed<string>`'s field as a
-/// word — `s == t` answered false where the interpreter said true (#670). Each
-/// instantiation gets its own layout now, and this is the key.
-///
-/// `None` when an argument can't be spelled concretely (an inference variable,
-/// a type parameter still standing for itself). Those fall back to the base
-/// name's placeholder layout, which stays registered.
-pub fn instantiation_key(
-    base: &str,
-    args: &[Type],
-    type_names: &HashMap<rask_types::TypeId, String>,
-) -> Option<String> {
-    let mut parts = Vec::with_capacity(args.len());
-    for arg in args {
-        parts.push(type_key(arg, type_names)?);
-    }
-    Some(format!("{}<{}>", base_name(base), parts.join(",")))
-}
-
-/// A declared name without its parameter list. The parser keeps the parameters
-/// in the name — a generic struct is registered as `Boxed<T>` — and different
-/// callers hand us the name from different maps, some stripped and some not.
-/// Stripping here means both sides compute the same key.
-fn base_name(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name)
-}
-
-/// Canonical spelling of a type for use inside an instantiation key.
-fn type_key(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
-    Some(match ty {
-        Type::Bool => "bool".to_string(),
-        Type::I8 => "i8".to_string(),
-        Type::I16 => "i16".to_string(),
-        Type::I32 => "i32".to_string(),
-        Type::I64 => "i64".to_string(),
-        Type::I128 => "i128".to_string(),
-        Type::U8 => "u8".to_string(),
-        Type::U16 => "u16".to_string(),
-        Type::U32 => "u32".to_string(),
-        Type::U64 => "u64".to_string(),
-        Type::U128 => "u128".to_string(),
-        Type::F32 => "f32".to_string(),
-        Type::F64 => "f64".to_string(),
-        Type::Char => "char".to_string(),
-        Type::String => "string".to_string(),
-        Type::Named(id) => base_name(type_names.get(id)?).to_string(),
-        Type::Generic { base, args } => {
-            let base = type_names.get(base)?.clone();
-            let owned: Vec<Type> = args
-                .iter()
-                .map(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()?;
-            return instantiation_key(&base, &owned, type_names);
-        }
-        // Anything still open keeps the placeholder layout.
-        _ => return None,
-    })
-}
-
-/// Every concrete instantiation of a generic type the program's types mention.
-///
-/// Reads the checker's recorded types rather than re-deriving from the AST:
-/// every value that exists has a node type, so every instantiation that needs a
-/// layout appears here.
-fn collect_instantiations(
-    program: &TypedProgram,
-    type_names: &HashMap<rask_types::TypeId, String>,
-) -> Vec<(String, String, Vec<Type>)> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
-    let types = program
-        .node_types
-        .values()
-        .chain(program.span_types.values());
-    for ty in types {
-        walk_instantiations(ty, type_names, &mut seen, &mut out);
-    }
-    out
-}
-
-/// Collect `(key, base name, args)` for each generic instantiation in `ty`,
-/// including nested ones — `Vec<Pair<i32>>` needs `Pair<i32>` laid out too.
-fn walk_instantiations(
-    ty: &Type,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    seen: &mut HashSet<String>,
-    out: &mut Vec<(String, String, Vec<Type>)>,
-) {
-    match ty {
-        Type::Generic { base, args } => {
-            let owned: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            for arg in &owned {
-                walk_instantiations(arg, type_names, seen, out);
-            }
-            if owned.len() != args.len() {
-                return;
-            }
-            let Some(base_name) = type_names.get(base) else { return };
-            if let Some(key) = instantiation_key(base_name, &owned, type_names) {
-                if seen.insert(key.clone()) {
-                    out.push((key, base_name.clone(), owned));
-                }
-            }
-        }
-        Type::Array { elem, .. } | Type::Slice(elem) => {
-            walk_instantiations(elem, type_names, seen, out)
-        }
-        Type::Result { ok, err } => {
-            walk_instantiations(ok, type_names, seen, out);
-            walk_instantiations(err, type_names, seen, out);
-        }
-        Type::Tuple(elems) | Type::Union(elems) => {
-            for e in elems {
-                walk_instantiations(e, type_names, seen, out);
-            }
-        }
-        Type::Fn { params, ret } => {
-            for p in params {
-                walk_instantiations(p, type_names, seen, out);
-            }
-            walk_instantiations(ret, type_names, seen, out);
-        }
-        _ => {}
-    }
-}
-
 /// Monomorphized program with all generics eliminated
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
@@ -441,10 +300,10 @@ pub fn monomorphize_with_packages(
         }
     }
 
-    // A placeholder layout per generic type, with `i64` standing in for each
-    // parameter. It's what any path that only knows the base name gets, and
-    // it's right whenever the arguments are word-sized. Per-instantiation
-    // layouts follow and take precedence where the arguments are known.
+    // Compute layouts for generic struct/enum types. The 8-byte-everything
+    // layout model means all scalar type parameters produce the same field
+    // sizes, so a single layout per generic struct suffices. Use i64 as the
+    // placeholder type for each type parameter.
     for decl in decls {
         match &decl.kind {
             DeclKind::Struct(s) if !s.type_params.is_empty() => {
@@ -466,47 +325,6 @@ pub fn monomorphize_with_packages(
                 let base_name = e.name.split('<').next().unwrap_or(&e.name).to_string();
                 layout.name = base_name.clone();
                 layout_cache.insert(base_name, (layout.size, layout.align));
-                enum_layouts.push(layout);
-            }
-            _ => {}
-        }
-    }
-
-    // One layout per instantiation actually used, so a field typed by a
-    // parameter is laid out at the size the argument really is. Without this,
-    // `Boxed<string>` shared `Boxed`'s placeholder layout and its 16-byte field
-    // was read as a word (#670).
-    let type_names: HashMap<rask_types::TypeId, String> = (0..program.types.iter().count())
-        .map(|i| {
-            let id = rask_types::TypeId(i as u32);
-            (id, program.types.type_name(id))
-        })
-        .collect();
-    let generic_decls: HashMap<String, &Decl> = decls
-        .iter()
-        .filter_map(|d| match &d.kind {
-            DeclKind::Struct(s) if !s.type_params.is_empty() => {
-                Some((s.name.split('<').next().unwrap_or(&s.name).to_string(), d))
-            }
-            DeclKind::Enum(e) if !e.type_params.is_empty() => {
-                Some((e.name.split('<').next().unwrap_or(&e.name).to_string(), d))
-            }
-            _ => None,
-        })
-        .collect();
-    for (key, base_name, args) in collect_instantiations(program, &type_names) {
-        let Some(decl) = generic_decls.get(&base_name) else { continue };
-        match &decl.kind {
-            DeclKind::Struct(_) => {
-                let mut layout = compute_struct_layout(decl, &args, &layout_cache);
-                layout.name = key.clone();
-                layout_cache.insert(key, (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            DeclKind::Enum(_) => {
-                let mut layout = compute_enum_layout(decl, &args, &layout_cache);
-                layout.name = key.clone();
-                layout_cache.insert(key, (layout.size, layout.align));
                 enum_layouts.push(layout);
             }
             _ => {}

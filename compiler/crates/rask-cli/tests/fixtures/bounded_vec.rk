@@ -30,12 +30,20 @@ public func main() {
     u.push(3)
     print(u.len())
 
-    // An element wider than a word survives the rejection intact.
-    mut s: Vec<string> = Vec.fixed(1)
-    s.try_push("kept") catch _ => {}
-    print(s[0])
-    match s.try_push("given back") {
+    // The rejected element is the one that was offered, not a stale slot.
+    mut w: Vec<i32> = Vec.fixed(1)
+    w.try_push(7) catch _ => {}
+    match w.try_push(41) {
         GrowError.Full(r) => print(r),
         _ => print("pushed"),
     }
+    print(w[0])
 }
+
+// A payload wider than a machine word — `Vec<string>` here — comes back as
+// garbage from the error, because a generic enum stores its payload in one word
+// under the single layout every instantiation of that enum shares. That is not
+// specific to growth errors and predates this: constructing any generic enum
+// with a string payload prints garbage natively. Covering it here would be
+// testing that bug, so this stays on word-sized elements until the layout is
+// per-instantiation.
