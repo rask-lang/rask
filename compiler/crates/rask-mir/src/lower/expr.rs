@@ -1853,7 +1853,17 @@ impl<'a> MirLowerer<'a> {
 
             // Array literal
             ExprKind::Array(elems) => {
-                // Lower elements first to determine the element type
+                // The element type is the checker's, not the first element's.
+                // CV1a makes it the type every element fits, so `[small_u8,
+                // big_u64]` is a `[u64; 2]` — taking the first element's type
+                // laid the array out at one byte per slot and stored the u64
+                // truncated (#649).
+                let checked_elem = match self.ctx.node_types.get(&expr.id).cloned() {
+                    Some(rask_types::Type::Array { elem, .. }) => {
+                        Some(self.ctx.type_to_mir(&elem))
+                    }
+                    _ => None,
+                };
                 let mut lowered = Vec::new();
                 let mut elem_ty = MirType::I32;
                 for (i, elem) in elems.iter().enumerate() {
@@ -1862,6 +1872,9 @@ impl<'a> MirLowerer<'a> {
                         elem_ty = ty;
                     }
                     lowered.push(elem_op);
+                }
+                if let Some(ty) = checked_elem {
+                    elem_ty = ty;
                 }
                 let elem_size = elem_ty.size();
                 let array_ty = MirType::Array {

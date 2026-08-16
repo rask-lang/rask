@@ -3159,3 +3159,12 @@ fn grow_error_carries_the_rejected_value_on_both_backends() {
 fn try_attaches_to_the_fallible_step_of_a_chain() {
     assert_native_eq_interp("try_chain_placement.rk", "808080031608080");
 }
+
+// type.primitives/CV1a, CV2 (#649): narrowing never happens implicitly. A
+// method argument is a directional position like any other, and an array
+// literal's element type is the one every element fits — `[small_u8, big_u64]`
+// used to take `u8` and store 300 as 44 natively while the interpreter kept 300.
+#[test]
+fn no_implicit_narrowing_in_arguments_or_joins() {
+    assert_native_eq_interp("no_silent_narrowing.rk", "7,300,7,7,300");
+}

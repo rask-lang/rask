@@ -722,6 +722,11 @@ impl TypeChecker {
                             continue;
                         }
                         let substituted = Self::substitute_type_params(param_ty, &subst);
+                        // CV1a/CV2: the parameter is the slot, the argument the
+                        // value going into it — a direction plain unify doesn't
+                        // have, and without it `v.push(big_u64)` on a `Vec<u8>`
+                        // narrowed silently (#649).
+                        self.check_fits(arg, &substituted, span)?;
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
@@ -1082,6 +1087,8 @@ impl TypeChecker {
                         let substituted = Self::substitute_type_params(param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
+                        // CV1a/CV2: same direction as above (#649).
+                        self.check_fits(arg, &substituted, span)?;
                         if self.unify(&substituted, arg, span)? {
                             progress = true;
                         }
@@ -1371,6 +1378,8 @@ impl TypeChecker {
         let mut progress = false;
         for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
             let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
+            // CV1a/CV2: same direction as above (#649).
+            self.check_fits(arg, &substituted, span)?;
             if self.unify(&substituted, arg, span)? {
                 progress = true;
             }

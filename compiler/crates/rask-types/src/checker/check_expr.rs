@@ -809,9 +809,16 @@ impl TypeChecker {
                         len: 0,
                     }
                 } else {
-                    let first_ty = self.infer_expr(&elements[0]);
-                    for elem in &elements[1..] {
-                        let elem_ty = self.infer_expr(elem);
+                    let elem_types: Vec<Type> =
+                        elements.iter().map(|e| self.infer_expr(e)).collect();
+                    // CV1a: the element type is the one every element fits, not
+                    // whichever element came first. `[small_u8, big_u64]` took
+                    // `u8` and silently narrowed the second — the interpreter
+                    // read 300 back and native read 44 (#649).
+                    let first_ty = self
+                        .widest_integer(&elem_types)
+                        .unwrap_or_else(|| elem_types[0].clone());
+                    for elem_ty in elem_types.into_iter().skip(1) {
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             first_ty.clone(),
                             elem_ty,

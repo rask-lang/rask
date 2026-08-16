@@ -557,32 +557,12 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
-        // CV1a/CV2: this is the one place the *direction* of a coercion is known
-        // — `expected` is the position being filled, `ret_ty` is the value going
-        // into it — so it's where "does every value fit" can be enforced. The
-        // general `Equal` arm can't: it's reached with the two types in either
-        // order, so it tests widening both ways round and accepts narrowing as a
-        // result. `let small: u8 = big_u64` type-checked, and then the backends
-        // disagreed about what it meant (interp kept 300, native truncated to
-        // 44). That hole is #649; this closes it for the positions that carry a
-        // direction, which are the ones CV1a is about.
-        {
-            let resolved_ret = self.ctx.apply(&ret_ty);
-            if let (Some(_), Some(_)) = (
-                Self::int_shape(&resolved_ret),
-                Self::int_shape(&resolved_expected),
-            ) {
-                if resolved_ret != resolved_expected
-                    && !Self::is_integer_widening(&resolved_ret, &resolved_expected)
-                {
-                    return Err(TypeError::NarrowingNeedsPolicy {
-                        from: resolved_ret,
-                        to: resolved_expected,
-                        span,
-                    });
-                }
-            }
-        }
+        // CV1a/CV2: a position that carries a direction — `expected` is the slot
+        // being filled, `ret_ty` is the value going into it — is where "does
+        // every value fit" can be enforced. The general `Equal` arm can't: it's
+        // reached with the two types in either order, so it tests widening both
+        // ways round and accepts narrowing as a result (#649).
+        self.check_fits(&ret_ty, &resolved_expected, span)?;
 
         if let Type::Result { ok, err } = &resolved_expected {
             let resolved_ret = self.ctx.apply(&ret_ty);
@@ -1124,6 +1104,52 @@ impl TypeChecker {
                 ))
             }
         }
+    }
+
+    /// CV1a: the one of these types every other one fits into.
+    ///
+    /// `None` unless they're all resolved integers and one of them is that
+    /// type — a join with no such element (mixed signedness, say) is left to
+    /// ordinary unification so the mismatch is reported where it happens.
+    pub(super) fn widest_integer(&mut self, types: &[Type]) -> Option<Type> {
+        let resolved: Vec<Type> = types.iter().map(|t| self.ctx.apply(t)).collect();
+        if resolved.iter().any(|t| Self::int_shape(t).is_none()) {
+            return None;
+        }
+        resolved
+            .iter()
+            .find(|target| {
+                resolved
+                    .iter()
+                    .all(|src| src == *target || Self::is_integer_widening(src, target))
+            })
+            .cloned()
+    }
+
+    /// CV1a/CV2: reject a value that can't fit the slot it's going into.
+    ///
+    /// Only for positions that know which side is the source — assignment,
+    /// field, return, and a call's arguments. Plain `unify` sees the two types
+    /// in whichever order it happens to get them, so it can only ask "are these
+    /// related by widening", which is true of a narrowing read backwards. That
+    /// is how `v.push(big_u64)` on a `Vec<u8>` type-checked and then the
+    /// backends disagreed about it — the interpreter kept 300, native truncated
+    /// to 44 (#649).
+    pub(super) fn check_fits(
+        &mut self,
+        source: &Type,
+        target: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let source = self.ctx.apply(source);
+        let target = self.ctx.apply(target);
+        if Self::int_shape(&source).is_none() || Self::int_shape(&target).is_none() {
+            return Ok(());
+        }
+        if source == target || Self::is_integer_widening(&source, &target) {
+            return Ok(());
+        }
+        Err(TypeError::NarrowingNeedsPolicy { from: source, to: target, span })
     }
 
     /// Check if `from` can widen to `to` (same signedness, strictly narrower).
