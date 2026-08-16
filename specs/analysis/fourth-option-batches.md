@@ -211,5 +211,50 @@ immediate and deletes aren't, so a reader has to track which is which — the
 asymmetry is what makes the shared verb misleading, and (a) resolves it by
 making the deferred side universal rather than contextual.
 
-Not settled. If (b) wins, the verb needs choosing; if (a) wins, single-delete
-ergonomics need a second look.
+### Resolved: (a), and the sugar makes the rule uniform
+
+A single delete in its own batch **is** an immediate delete — the block opens
+and closes around one call, so the effect lands right there. So the bare form
+is sugar, not a second mechanism:
+
+<!-- test: skip -->
+```rask
+store.delete(x)                                  // sugar for:
+with store.batch() as b { b.delete(x) }
+```
+
+Which collapses the whole thing to one sentence:
+
+> **A delete takes effect at the end of its enclosing batch. A bare delete is
+> its own batch.**
+
+Nesting (B6) makes that hold everywhere: write `store.delete(x)` *inside* an
+explicit batch and it flattens into that batch and defers, exactly as the
+sentence says. No case is special, and the ergonomics objection to (a)
+evaporates — `evict_one` keeps its one-liner.
+
+### The word for the batch-scoped form
+
+With the timing rule uniform, one verb everywhere is defensible: the receiver
+already marks it (`w.delete` where `w` is bound by a batch block, versus
+`store.delete`), which is how ECS command buffers distinguish the two.
+
+But "the receiver marks it" is a weaker signal than putting it in the verb,
+and the honest reading of `w.delete(enemy)` in isolation is still "delete the
+enemy, now."
+
+| Candidate | For | Against |
+|---|---|---|
+| `delete` | one word, uniform rule, receiver marks it | reads as immediate in isolation |
+| `schedule_delete` | unambiguous | clunky; compound where Rask prefers a verb |
+| `queue_delete` / `defer_delete` | names the mechanism / the timing | same clunkiness |
+| **`retire`** | single plain verb; means "take out of service" with no implication of *now*; a retired thing still exists, which is exactly the node's state until apply | slightly soft |
+| `condemn` | most precise — a condemned building still stands and is going to come down | too dramatic for a systems language |
+
+**Lean: `retire`.** `w.retire(enemy)` reads honestly, stays a single plain
+verb in Rask's style, and its ordinary meaning matches the semantics
+precisely: still here, definitely going. `store.delete(x)` keeps the direct
+name for the one-shot sugar, where the effect really is immediate.
+
+Not settled — `retire` versus keeping `delete` on both is a judgement about
+whether the receiver is marker enough.
