@@ -182,13 +182,60 @@ for a problem that doesn't arise.
   they don't observe each other because they run in a parallel phase and
   apply at the join, not because anything enforces isolation.
 
+## B10 — Parallel inserts: an atomic bump, not a lock
+
+The hole B1 left: inserts are immediate, so workers in a parallel phase
+allocate concurrently, and the design's whole claim is that nothing on the
+hot path takes a lock.
+
+Four options were weighed. **Per-task arenas merged at the join** work but
+fragment the store and complicate iteration. **Deferring inserts too** breaks
+the case that motivated immediate inserts — you can't wire links to a node
+that doesn't exist yet — and any fix for that reconstructs per-task arenas
+with extra steps. **Pre-allocating** (`Store.with_capacity`) suits real-time
+and games but fails unbounded workloads.
+
+**Adopted: allocation is a single atomic bump.** Claiming a slot is one
+`fetch_add` on the arena's bump pointer — lock-free, a handful of nanoseconds,
+and the standard technique for parallel arena allocators.
+
+That satisfies the claim precisely: *no lock on the hot path*. An atomic RMW
+is not a lock, and inserts aren't the hot path anyway — reads are, and reads
+stay a plain deref.
+
+Two details make it work:
+
+- **Growth is chunked.** When a chunk fills, a worker atomically installs a
+  new one. The store becomes a list of chunks rather than one contiguous
+  arena — which slightly weakens the locality story, and is exactly what
+  `compact()` (explicit, never automatic) exists to fix.
+- **B2 does the rest.** Iteration reads the bump value captured at phase
+  start, so nodes allocated during the phase sit beyond it and are invisible
+  until the join publishes the new value. No separate publication mechanism
+  is needed.
+
+**B2 sharpened:** "private until apply" means private to *other workers* too,
+not just to iteration. A node inserted by worker A is linkable by A and
+unreachable by B until the join. Cross-worker visibility of fresh nodes would
+require a cross-worker write, which the tier rules already forbid.
+
+## B11 — Iteration guarantees
+
+Determined by B2 and B9 rather than chosen; stated because pools state theirs
+(`mem.pools/PF1`–`PF4`) and programs rely on them:
+
+| | Guarantee | Why |
+|---|---|---|
+| **I1** | Deleting the current node is safe | B9 — `delete` consumes the reference; iteration holds a position |
+| **I2** | Deleting other nodes is safe | position-based iteration; a freed slot elsewhere doesn't move the cursor |
+| **I3** | Nodes inserted during iteration are not visited | B2 — they sit beyond the captured bump value |
+| **I4** | Each node present at loop entry is visited at most once | positions are monotonic |
+
+Same four guarantees pools give today, reached without pools' per-loop
+snapshot allocation — the cursor is a position, so there is nothing to copy.
+
 ## Open, after this pass
 
-- **Parallel inserts need an allocation story.** B1 makes inserts immediate,
-  which means workers in a parallel phase allocate concurrently. Either the
-  store's allocator is per-task with a merge at the join, or inserts are the
-  one operation that *does* defer. This is the remaining hole and it's a real
-  one.
 - **Syntax is placeholder.** `world.batch()` reads acceptably; the name isn't
   settled.
 

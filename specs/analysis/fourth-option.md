@@ -44,7 +44,7 @@ a spec draft starts here.
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
 | Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site |
 | Ownership | Composition by value (`Entity { body: Body }`), not a policy |
-| Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Open: parallel inserts allocate concurrently |
+| Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Parallel inserts claim slots by atomic bump (B10) |
 | Atomicity | Batches — a region where **deletes** defer to the end. No validation step (required links are a compile-time check), no rollback needed. Also the delete-locked scope, and how required-link cycles get built. See [batches](fourth-option-batches.md) |
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
 | Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
@@ -172,9 +172,9 @@ writes are immediate, since neither can invalidate a reference), so a batch
 is precisely "a region where deletes are deferred" rather than a general
 command buffer; and required links are checked by definite assignment at
 compile time, which removes the validation step and the rejection path
-entirely. What's left open is one real hole: parallel inserts need an
-allocation story, since immediate inserts mean workers allocate
-concurrently.
+entirely. The one hole it left — parallel inserts allocating concurrently — is
+resolved in B10: allocation is a single atomic bump, which is lock-free and
+not a lock, with chunked growth and `compact()` to defragment.
 
 **4. Root link registration — dissolved, it's static.**
 "Root link" means a link stored on the struct that *owns* the store rather
@@ -195,9 +195,10 @@ that this field targets that store — the same schema closure that answers
 "who can point at `Entity`?" (A9) — so the fixup for root fields is emitted
 statically, like any other known link.
 
-**Specified nowhere yet, but no obvious difficulty:** iteration guarantees
-over a store (the `PF1`–`PF4` equivalents), the diagnostics for every new
-error path, and what `mem.relocatable` becomes when it's keys-only.
+**Specified nowhere yet, but no obvious difficulty:** the diagnostics for
+every new error path, and what `mem.relocatable` becomes when it's keys-only.
+(Iteration guarantees are now stated as B11 — they fell out of B2 and B9
+rather than needing a decision.)
 
 **Not a conflict after all:** `mem.boxes`' closed-family rule is about the set
 *growing* — it bars users from adding boxes. Merging `Cell` and `Mutex` into
