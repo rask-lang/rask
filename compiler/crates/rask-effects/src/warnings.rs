@@ -160,26 +160,32 @@ impl<'a> WarnContext<'a> {
 
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check qualified form
-                if let ExprKind::Ident(type_name) = &object.kind {
+                let is_pool_spawn = if let ExprKind::Ident(type_name) = &object.kind {
                     let qname = format!("{}.{}", type_name, method);
                     self.maybe_warn_io_call(&qname, expr.span, warnings);
-                }
+                    is_thread_pool(type_name) && method == "spawn"
+                } else {
+                    false
+                };
                 self.maybe_warn_io_call(method, expr.span, warnings);
                 self.check_expr(object, warnings);
-                for arg in args {
-                    self.check_expr(&arg.expr, warnings);
+                // CW1 only covers code that actually runs on a pool worker: the
+                // body of the closure handed to `ThreadPool.spawn(...)`, not
+                // whatever else happens to be lexically inside a `using
+                // ThreadPool { }` block (#590) — most of that block still runs
+                // on the caller's thread.
+                if is_pool_spawn {
+                    let was_in_tp = self.in_thread_pool;
+                    self.in_thread_pool = true;
+                    for arg in args {
+                        self.check_expr(&arg.expr, warnings);
+                    }
+                    self.in_thread_pool = was_in_tp;
+                } else {
+                    for arg in args {
+                        self.check_expr(&arg.expr, warnings);
+                    }
                 }
-            }
-
-            // CW1: ThreadPool.spawn — track context for body
-            ExprKind::UsingBlock { name, args, body } if is_thread_pool(name) => {
-                for arg in args {
-                    self.check_expr(&arg.expr, warnings);
-                }
-                let was_in_tp = self.in_thread_pool;
-                self.in_thread_pool = true;
-                self.check_stmts(body, warnings);
-                self.in_thread_pool = was_in_tp;
             }
 
             // Track Multitasking context (suppresses CW2)
@@ -389,7 +395,7 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
 mod tests {
     use super::*;
     use rask_ast::decl::{Decl, DeclKind, FnDecl};
-    use rask_ast::expr::{Expr, ExprKind};
+    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
     use rask_ast::stmt::{Stmt, StmtKind, ForBinding};
     use rask_ast::{NodeId, Span};
     use std::collections::HashMap;
@@ -433,6 +439,33 @@ mod tests {
         Stmt { id: NodeId(0), kind: StmtKind::Expr(e), span: sp() }
     }
 
+    /// `ThreadPool.spawn(|| { <inner> })` — the only place CW1 should fire.
+    fn pool_spawn(inner: Vec<Stmt>) -> Expr {
+        Expr {
+            id: NodeId(0),
+            kind: ExprKind::MethodCall {
+                object: Box::new(ident("ThreadPool")),
+                method: "spawn".into(),
+                type_args: None,
+                args: vec![CallArg {
+                    name: None,
+                    mode: ArgMode::Default,
+                    expr: Expr {
+                        id: NodeId(0),
+                        kind: ExprKind::Closure {
+                            params: vec![],
+                            ret_ty: None,
+                            body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
+                            is_own: false,
+                        },
+                        span: sp(),
+                    },
+                }],
+            },
+            span: sp(),
+        }
+    }
+
     fn make_fn(name: &str, body: Vec<Stmt>) -> Decl {
         Decl {
             id: NodeId(0),
@@ -472,8 +505,29 @@ mod tests {
     }
 
     #[test]
-    fn cw1_io_in_thread_pool() {
-        // ThreadPool.spawn { println() }
+    fn cw1_io_in_pool_spawn_closure() {
+        // using ThreadPool { ThreadPool.spawn(|| { println() }) }
+        let body = vec![expr_stmt(Expr {
+            id: NodeId(0),
+            kind: ExprKind::UsingBlock {
+                name: "ThreadPool".into(),
+                args: vec![],
+                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(call("println"))]))],
+            },
+            span: sp(),
+        })];
+        let decls = vec![make_fn("worker", body)];
+        let effects = effects_with_io("println");
+        let warnings = detect(&decls, &effects);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "comp.effects/CW1");
+        assert!(warnings[0].message.contains("println"));
+    }
+
+    #[test]
+    fn no_cw1_for_io_directly_in_using_threadpool_block() {
+        // using ThreadPool { println() } — runs on the main thread, not a
+        // pool worker, since it's never handed to ThreadPool.spawn (#590).
         let body = vec![expr_stmt(Expr {
             id: NodeId(0),
             kind: ExprKind::UsingBlock {
@@ -486,9 +540,7 @@ mod tests {
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
         let warnings = detect(&decls, &effects);
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, "comp.effects/CW1");
-        assert!(warnings[0].message.contains("println"));
+        assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
     #[test]
@@ -587,7 +639,7 @@ mod tests {
             kind: ExprKind::UsingBlock {
                 name: "ThreadPool".into(),
                 args: vec![],
-                body: vec![expr_stmt(field_call("File", "read"))],
+                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(field_call("File", "read"))]))],
             },
             span: sp(),
         })];
