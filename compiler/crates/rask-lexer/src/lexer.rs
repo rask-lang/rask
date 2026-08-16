@@ -289,10 +289,6 @@ enum RawToken {
     #[regex(r"'([^'\\]|\\.|\\u\{[0-9a-fA-F]{1,6}\})'")]
     Char,
 
-    // Multi-line string (triple quotes)
-    #[regex(r#""""([^"\\]|\\.|"[^"]|""[^"])*""""#)]
-    MultiLineString,
-
     // Raw string literal (r"..." — no escape processing)
     #[regex(r#"r"[^"]*""#)]
     RawString,
@@ -301,8 +297,10 @@ enum RawToken {
     #[token("r#", raw_hash_string)]
     RawHashString,
 
-    // Regular string (handles basic escapes and \u{XXXX} unicode escapes)
-    #[regex(r#""([^"\\]|\\.|\\u\{[0-9a-fA-F]{1,6}\})*""#)]
+    // Every double-quoted string: plain, interpolated, and triple-quoted.
+    // Scanned by hand because a `"` inside an interpolation hole doesn't end
+    // the string — see `double_quoted_string`.
+    #[token("\"", double_quoted_string)]
     String,
 
     // === Identifier (must come after keywords) ===
@@ -350,6 +348,124 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
     }
 
     false
+}
+
+/// Scan a double-quoted string; the opening `"` is already consumed.
+///
+/// An interpolation hole holds a real expression, and expressions contain
+/// string literals, so a `"` inside `{ }` opens a nested literal instead of
+/// closing the outer string. Without that,
+/// `"missing: {name ?? "unknown"}"` came out as three tokens and the middle
+/// of it got parsed as ordinary code (#642).
+///
+/// Braces are also plain text in plenty of strings — `out.push("{\n")` in the
+/// JSON writer — so the hole-aware pass is only believed when it closes the
+/// string on the same line and the hole it is reading has something in it
+/// before the quote. Otherwise the scan restarts with the old rule: stop at
+/// the first unescaped quote.
+fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+    let bytes = lexer.remainder().as_bytes();
+
+    let len = if bytes.starts_with(b"\"\"") {
+        scan_multi_line(bytes)
+    } else {
+        scan_hole_aware(bytes).or_else(|| scan_plain(bytes))
+    };
+
+    match len {
+        Some(n) => {
+            lexer.bump(n);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `"""..."""` — raw text up to the next triple quote. Two of the three opening
+/// quotes are in `bytes`; the third was consumed as the token start.
+fn scan_multi_line(bytes: &[u8]) -> Option<usize> {
+    let mut pos = 2;
+    while pos + 3 <= bytes.len() {
+        if &bytes[pos..pos + 3] == b"\"\"\"" {
+            return Some(pos + 3);
+        }
+        pos += 1;
+    }
+    None
+}
+
+/// The old rule: end at the first unescaped quote, braces be damned.
+fn scan_plain(bytes: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\\' => pos += 2,
+            b'"' => return Some(pos + 1),
+            _ => pos += 1,
+        }
+    }
+    None
+}
+
+/// End at the first unescaped quote that isn't inside a `{ }` hole.
+///
+/// Returns `None` when the reading doesn't hold together — an unclosed hole, a
+/// nested literal running past end of line, no closing quote at all — which
+/// means the braces were text and [`scan_plain`] has the right answer.
+fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
+    // Byte just past each open `{`, so a hole's contents can be inspected.
+    let mut holes: Vec<usize> = Vec::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\\' => {
+                pos += 2;
+                continue;
+            }
+            b'{' => {
+                holes.push(pos + 1);
+            }
+            b'}' => {
+                holes.pop();
+            }
+            b'"' => {
+                let Some(&hole_start) = holes.last() else {
+                    return Some(pos + 1);
+                };
+                // A hole that is empty so far isn't a hole — it's the `{"key":
+                // ...}` of a JSON body, and the string ended at this quote all
+                // along (#506).
+                if bytes[hole_start..pos].iter().all(|b| b.is_ascii_whitespace()) {
+                    return None;
+                }
+                pos = skip_nested_string(bytes, pos)?;
+                continue;
+            }
+            b'\n' if !holes.is_empty() => return None,
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    None
+}
+
+/// Step over a string literal nested in an interpolation hole. `pos` is its
+/// opening quote; the result is the byte just past its closing quote. `None`
+/// if the line ends first — a nested literal that never closes means these
+/// weren't holes to begin with.
+fn skip_nested_string(bytes: &[u8], pos: usize) -> Option<usize> {
+    let mut pos = pos + 1;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\\' => pos += 2,
+            b'"' => return Some(pos + 1),
+            b'\n' => return None,
+            _ => pos += 1,
+        }
+    }
+    None
 }
 
 /// Skip block comments, handling nesting.
@@ -664,15 +780,15 @@ impl<'a> Lexer<'a> {
                 let ch = parse_char(inner, start)?;
                 TokenKind::Char(ch)
             }
+            RawToken::String if slice.starts_with(r#"""""#) => {
+                // Triple-quoted: raw, no escape processing
+                let inner = &slice[3..slice.len() - 3];
+                TokenKind::String(inner.to_string())
+            }
             RawToken::String => {
                 let inner = &slice[1..slice.len() - 1]; // Remove quotes
                 let s = parse_string(inner, start)?;
                 TokenKind::String(s)
-            }
-            RawToken::MultiLineString => {
-                let inner = &slice[3..slice.len() - 3]; // Remove triple quotes
-                // Multi-line strings don't process escapes (raw)
-                TokenKind::String(inner.to_string())
             }
             RawToken::RawString => {
                 // r"content" — strip r" prefix and " suffix, no escape processing

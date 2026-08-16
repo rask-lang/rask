@@ -4836,11 +4836,22 @@ impl Parser {
                 i += 1; // skip '{'
                 let expr_start = i;
                 let mut depth = 1;
+                // Braces inside a nested literal are text, not nesting —
+                // `{tag("}")}` used to end the hole at the quoted brace.
+                let mut in_string = false;
+                let mut escaped = false;
                 while i < chars.len() && depth > 0 {
-                    match chars[i] {
-                        '{' => depth += 1,
-                        '}' => depth -= 1,
-                        _ => {}
+                    if escaped {
+                        escaped = false;
+                    } else {
+                        match chars[i] {
+                            '\\' if in_string => escaped = true,
+                            '"' => in_string = !in_string,
+                            _ if in_string => {}
+                            '{' => depth += 1,
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
                     }
                     if depth > 0 { i += 1; }
                 }
