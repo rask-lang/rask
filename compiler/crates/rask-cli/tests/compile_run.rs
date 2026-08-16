@@ -2657,6 +2657,32 @@ catchall(3) = some error
     }
 }
 
+// ─── Regression: a `mutate` write reaches the caller's storage ──────
+//
+// #702 fixed method receivers reached through a field. Two doors were left
+// open: a field passed to a *free* function (`bump(mutate h.c)`) still handed
+// over a copy, and a Vec element handed to anything that writes through it got
+// a copy with no write-back. On top of that, a Vec reached through a field, an
+// index, or a rebinding wasn't recognized as a Vec at all — the check compared
+// the checker's `Vec<T>` spelling against the string "Vec" — so even
+// `b.items[0].n += 1` wrote into a copy and read back 0.
+#[test]
+fn a_mutate_write_reaches_fields_and_collection_elements() {
+    let expected = concat!(
+        "field=2 (expect 2)\n",
+        "elem=2 (expect 2)\n",
+        "peek=2 (expect 2)\n",
+        "field elem=2 (expect 2)\n",
+        "nested elem=2 (expect 2)\n",
+        "looped=10 (expect 10)\n",
+    );
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "mutate_collection_element.rk");
+        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}: a mutate write went to a copy", mode);
+    }
+}
+
 // ─── Regression: issue #698 ─────────────────────────────────
 //
 // `self.last = title` in a `mutate self` method freed the caller's string. The
