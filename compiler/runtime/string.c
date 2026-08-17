@@ -417,31 +417,89 @@ void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t e
     str_make(out, d + start, end - start);
 }
 
-void rask_string_to_lowercase(RaskStr *out, const RaskStr *s) {
+// ─── UTF-8 scalar decode/encode ─────────────────────────────
+// One decoder, shared by `chars()` and case conversion. `chars()` walked bytes
+// once (#779's neighbour) and case conversion still did — a second hand-rolled
+// loop is how those drift apart.
+
+/// Decode the scalar at `i`, writing its width to `*width`. A truncated sequence
+/// at the end yields its lead byte rather than reading past the string.
+static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *width) {
+    unsigned char c = (unsigned char)d[i];
+    int64_t w = c < 0x80 ? 1
+              : (c & 0xE0) == 0xC0 ? 2
+              : (c & 0xF0) == 0xE0 ? 3
+              : (c & 0xF8) == 0xF0 ? 4
+              : 1;
+    if (i + w > len) w = 1;
+    uint32_t ch;
+    switch (w) {
+        case 2: ch = (uint32_t)(((c & 0x1F) << 6) | (d[i + 1] & 0x3F)); break;
+        case 3: ch = (uint32_t)(((c & 0x0F) << 12) | ((d[i + 1] & 0x3F) << 6)
+                              | (d[i + 2] & 0x3F)); break;
+        case 4: ch = (uint32_t)(((c & 0x07) << 18) | ((d[i + 1] & 0x3F) << 12)
+                              | ((d[i + 2] & 0x3F) << 6) | (d[i + 3] & 0x3F)); break;
+        default: ch = c; break;
+    }
+    *width = w;
+    return ch;
+}
+
+/// Encode `cp` at `out`, returning the bytes written.
+static int64_t str_encode_scalar(char *out, uint32_t cp) {
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/// Shared body of `to_uppercase` / `to_lowercase`.
+static void str_map_case(RaskStr *out, const RaskStr *s, int to_upper) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
-    // Build into a temp buffer, then make SSO or heap
-    char *buf = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        char c = d[i];
-        buf[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+    // `RASK_CASE_MAX_GROWTH` is the worst per-scalar growth in the generated
+    // tables, so this can't be short.
+    int64_t cap = len * RASK_CASE_MAX_GROWTH;
+    char *buf = (char *)rask_alloc(cap);
+    int64_t written = 0;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t width;
+        uint32_t cp = str_decode_at(d, len, i, &width);
+        uint32_t mapped[3];
+        int n = rask_case_map(cp, to_upper, mapped);
+        for (int k = 0; k < n; k++) {
+            written += str_encode_scalar(buf + written, mapped[k]);
+        }
+        i += width;
     }
-    str_make(out, buf, len);
-    rask_realloc(buf, len, 0);
+    str_make(out, buf, written);
+    rask_realloc(buf, cap, 0);
+}
+
+void rask_string_to_lowercase(RaskStr *out, const RaskStr *s) {
+    str_map_case(out, s, 0);
 }
 
 void rask_string_to_uppercase(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    char *buf = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)d[i];
-        buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
-    }
-    str_make(out, buf, len);
-    rask_realloc(buf, len, 0);
+    str_map_case(out, s, 1);
 }
 
 // StringView.to_string() — std.strings/V2, "copies out and releases the pin".
@@ -742,24 +800,8 @@ RaskVec *rask_string_chars(const RaskStr *s) {
     const char *d = str_data(s);
     int64_t i = 0;
     while (i < len) {
-        unsigned char c = (unsigned char)d[i];
-        int64_t width = c < 0x80 ? 1
-                      : (c & 0xE0) == 0xC0 ? 2
-                      : (c & 0xF0) == 0xE0 ? 3
-                      : (c & 0xF8) == 0xF0 ? 4
-                      : 1;
-        // A truncated sequence at the end: hand back the lead byte rather than
-        // reading past the string.
-        if (i + width > len) width = 1;
-        int64_t ch;
-        switch (width) {
-            case 2: ch = ((c & 0x1F) << 6) | (d[i + 1] & 0x3F); break;
-            case 3: ch = ((c & 0x0F) << 12) | ((d[i + 1] & 0x3F) << 6)
-                       | (d[i + 2] & 0x3F); break;
-            case 4: ch = ((c & 0x07) << 18) | ((d[i + 1] & 0x3F) << 12)
-                       | ((d[i + 2] & 0x3F) << 6) | (d[i + 3] & 0x3F); break;
-            default: ch = c; break;
-        }
+        int64_t width;
+        int64_t ch = (int64_t)str_decode_at(d, len, i, &width);
         rask_vec_push(v, &ch);
         i += width;
     }
@@ -1192,13 +1234,11 @@ int64_t rask_char_to_int(int32_t c) {
 }
 
 int64_t rask_char_to_uppercase(int32_t c) {
-    if (c >= 'a' && c <= 'z') return c - 32;
-    return c;
+    return (int64_t)rask_case_map_one((uint32_t)c, 1);
 }
 
 int64_t rask_char_to_lowercase(int32_t c) {
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    return c;
+    return (int64_t)rask_case_map_one((uint32_t)c, 0);
 }
 
 int64_t rask_char_len_utf8(int32_t c) {

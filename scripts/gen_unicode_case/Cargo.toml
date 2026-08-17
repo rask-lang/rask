@@ -1,0 +1,8 @@
+[package]
+name = "gen_unicode_case"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "gen_unicode_case"
+path = "main.rs"
