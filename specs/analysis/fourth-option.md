@@ -212,8 +212,14 @@ rather than needing a decision.)
   tree-walking interpreter can't price a deref against a checked deref.
   That needs native codegen. Delete cost *was* measured and is linear in
   in-degree, exactly as predicted.
-- **The borrow rule for links in locals is the real open question**, and the
-  prototype is what made that clear. `store.insert()` hands a link into a local,
+- **The locals rule follows from the type, and is the real open question.** A
+  local link is non-optional, so it asserts its target is alive; a delete
+  contradicts that and there is no `none` to fall back to, which makes
+  use-after-delete a type contradiction rather than only a memory hazard. That is
+  the same sentence that forces a *field* edge to be `Link<T>?`, resolved the other
+  way: the store can reach a field so it nulls it at runtime, and cannot reach a
+  local so the compiler must reject the use. The `?` is therefore the signal for
+  which discipline applies. Demonstrated in the prototype; not written down here. `store.insert()` hands a link into a local,
   which rule 1 forbids; without a rule reconciling those, a local link outlives
   its node and the checkless read isn't sound. Both obvious statements of the rule
   are things Rask chose against — last-use borrow ends is NLL, and

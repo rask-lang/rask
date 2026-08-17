@@ -69,20 +69,68 @@ store maintains it, a local one does not because nothing does. Where this docume
 says a local link "moves", it means the name is revoked, not that anything was
 transferred.
 
+### The rule, derived from the type rather than the mechanism
+
+Everything above argues from what the store can reach. There is a shorter route,
+and it gives the same answer from the other end.
+
+A link's type states whether it can be absent. `Link<T>?` says "this may be
+nothing"; `Link<T>` says "this always points at a live node". Deleting that node
+falsifies the second claim, and there is no `none` to fall back to — so
+**using a non-optional link after its target is deleted is not merely unsafe, it
+contradicts the type.** A contradiction in the type is something a compiler can
+reject.
+
+That is already the rule for fields: E0327 rejects a bare `Link<T>` field because
+delete would have nothing to put there. The same sentence applied to locals gives
+the locals rule, and which resolution you get depends only on whether the fixup can
+reach the slot:
+
+| Where the link lives | Store can reach it | Rule |
+|---|---|---|
+| A field — `entity.target`, `world.player`, a list element | yes | must be `Link<T>?`; delete nulls it at runtime |
+| A local variable | no | must be `Link<T>`; the compiler rejects use after delete |
+
+So the `?` is the signal for which discipline is in force: optional means the store
+maintains this slot, non-optional means the compiler guarantees liveness. One
+principle — *a link never points at a dead node* — with the mechanism chosen by
+reachability.
+
+It also sharpens what "checkless" claims, which is narrower than the phrase
+suggests:
+
+```rask
+for e in world.nodes() {       // e: Link<Entity> — non-optional, guaranteed live
+    if e.target? as t {         // one none-test, at the edge traversal
+        t.health -= e.damage    // every read and write through `t` is free
+    }
+}
+```
+
+One test per edge *follow*, then unlimited free access through the local. The
+handle version tests at every read — three times in that same loop. So the model
+does not remove checks; it moves them from every read to one per traversal, and the
+local is trustworthy precisely because delete-then-use won't compile.
+
+A corroboration that this is the right shape: under the compile-time experiment,
+`store.contains(n)` on a local link became an error. Correct — if the type
+guarantees liveness, asking whether it is live is a question with no meaning.
+
 ## The short version
 
 The model does what it claims for topology, and the flagship loop really does
 lose its staleness branch. Three findings, in the order they matter:
 
 1. **The checkless read isn't a property of `Link`** — it's `Link` plus a rule for
-   links in locals, and that rule is unwritten. Two obvious statements are things
-   Rask chose against (NLL; `with`-everywhere). Three others work, and the best is
-   **make `delete` consume the link and let the existing move checker catch
-   use-after-delete at compile time.** Tried: it needs no runtime check, the
-   flagship loop passes under it, and the machinery is nearly all already there.
-   The one gap is that affine links enrol in the aliasing tracker, which treats
-   them as owned aggregates and so rejects an ordinary list splice — a bounded fix,
-   not a new analysis.
+   links in locals, and that rule is unwritten. It follows from the type, though:
+   a local link is non-optional, so it asserts its target is alive, and a delete
+   would contradict that with no `none` to fall back to — **so use-after-delete is
+   a type contradiction the compiler can reject.** Same sentence that already
+   justifies E0327 for fields; the field gets nulled at runtime because the store
+   can reach it, the local gets rejected at compile time because it can't. Tried
+   it: no runtime check, and the flagship loop passes. The one gap is that affine
+   links enrol in the aliasing tracker, which treats them as owned aggregates and
+   rejects an ordinary list splice — a bounded fix, not a new analysis.
 2. **A link carries write permission, and an edge write mutates its target.**
    There is no read-only link, where a handle gave one for free. The fix has to be
    in the type — `mut Link<T>`, default read-only — because a link escapes the
