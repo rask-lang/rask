@@ -3554,6 +3554,10 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        if let Some(r) = self.try_lower_enum_from_value(object, method, args)? {
+            return Ok(r);
+        }
+
         if let Some(r) = self.try_lower_origin(object, method, args)? {
             return Ok(r);
         }
@@ -5052,6 +5056,93 @@ impl<'a> MirLowerer<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// `Enum.from_value(n)` on a fieldless enum → `Enum?`.
+    ///
+    /// E18: auto-generated for every fieldless enum, `none` when the number
+    /// isn't a discriminant. The checker implements it and the interpreter runs
+    /// it; native had no lowering, so a program using it type-checked, ran on
+    /// one backend, and failed codegen on the other with "Function not found:
+    /// Colour_from_value" (#795).
+    ///
+    /// A fieldless enum value *is* its discriminant, so the construction is:
+    /// test `n` against each variant's tag, and on a hit store `n` into the
+    /// option's payload. No per-variant construction needed.
+    fn try_lower_enum_from_value(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "from_value" || args.len() != 1 {
+            return Ok(None);
+        }
+        let ExprKind::Ident(enum_name) = &object.kind else {
+            return Ok(None);
+        };
+        if self.locals.contains_key(enum_name) {
+            return Ok(None);
+        }
+        let Some((layout_id, layout)) = self.ctx.find_enum(enum_name) else {
+            return Ok(None);
+        };
+        if !layout.variants.iter().all(|v| v.fields.is_empty()) {
+            return Ok(None);
+        }
+        let tags: Vec<u64> = layout.variants.iter().map(|v| v.tag).collect();
+        let enum_ty = MirType::Enum(crate::types::EnumLayoutId {
+            id: layout_id,
+            byte_size: layout.size,
+            align: layout.align,
+        });
+        let opt_ty = MirType::Option(Box::new(enum_ty));
+
+        let (n_op, _) = self.lower_expr(&args[0].expr)?;
+
+        let slot = self.builder.alloc_temp(opt_ty.clone());
+        let some_block = self.builder.create_block();
+        let none_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        // One case per discriminant. A switch rather than a chain of compares
+        // so the cost doesn't grow with the enum — raido's Opcode has 42.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: n_op.clone(),
+            cases: tags.iter().map(|t| (*t, some_block)).collect(),
+            default: none_block,
+        }));
+
+        self.builder.switch_to_block(some_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+            value: n_op,
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            value: MirOperand::Constant(crate::operand::MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(done_block);
+        Ok(Some((MirOperand::Local(slot), opt_ty)))
     }
 
     /// `reflect.<method><T>()` → the constant it answers.
