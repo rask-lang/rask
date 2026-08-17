@@ -30,6 +30,7 @@ On by default. Suppress with `@allow(warning_name)`.
 | **W4: unreachable_code** | W0902 | `unreachable_code` | Code after `return` or `break` |
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 | **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over `Mutex`/`Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
+| **W10: ensure_order** | W0908 | `ensure_order` | An `ensure` for a resource is registered after an `ensure` for something derived from it, so LIFO tears the dependency down first (`mem.resource-types/EO1`) |
 
 <!-- test: skip -->
 ```rask
@@ -41,6 +42,8 @@ func process(data: Vec<u8>) -> i32 {
 ```
 
 **W2 (unused_result) exceptions:** Not triggered by plain return types (no error to miss), `T?` values (intentional absence), or results assigned to a binding (that's W3's job).
+
+**W10 (ensure_order) scope:** Derivation is read off the calls themselves, function-locally: the dependency appeared as an argument to the call that produced the dependent, or it appears in the dependent's own cleanup call. Independent resources never warn regardless of order, and an alias (`let b = a`) is not a derivation. Anything smarter needs a false-positive budget first.
 
 **W9 (torn_lock_update) scope:** Fires on two or more field assignments to the locked binding in one `with` block. Mutating method calls (`q.push(a)` twice) don't trigger — method bodies are opaque, and flagging every call pair would drown the real signal. A panic between the flagged writes leaves survivors a broken invariant (`ctrl.panic/LK3–LK4`); `.staged()` makes the update panic-atomic.
 

@@ -1407,6 +1407,74 @@ fn error_try_shape_rule() {
     assert!(out.contains("catch _ => return none"), "the error side's fix: {}", out);
 }
 
+// EO1 (#584): `ensure` runs LIFO, so a resource derived from another needs its
+// cleanup registered *second* — source order reads backwards from run order.
+// Registered the other way, the dependency is torn down first and the
+// dependent's cleanup calls into it. Both orders are valid code and only one is
+// what anyone meant, so this is a warning, not an error.
+#[test]
+fn warns_when_ensure_order_inverts_a_derivation() {
+    let rask = rask_binary();
+    let fixture = fixture("ensure_order_inverted.rk");
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&fixture)
+        .output()
+        .expect("failed to run rask check");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    assert!(out.status.success(), "a warning must not fail the check: {}", combined);
+    assert!(
+        combined.contains("`w` is cleaned up before `b`, which needs it"),
+        "should name both resources: {}", combined,
+    );
+    // Exactly one — `correct`, `independent` and `mixed` in the same file must
+    // stay quiet, and the independent pair is the false positive worth pinning.
+    assert_eq!(
+        combined.matches("W0908").count(), 1,
+        "only the inverted function warns: {}", combined,
+    );
+    // The fix shows the reordered lines rather than describing the rule.
+    assert!(
+        combined.contains("ensure w.destroy()") && combined.contains("ensure b.close(w)"),
+        "the fix should show both lines in the right order: {}", combined,
+    );
+}
+
+// The behaviour behind the warning, on both backends: the inverted order really
+// does run the world's cleanup first.
+#[test]
+fn inverted_ensure_order_runs_cleanups_backwards() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "ensure_order_inverted.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        // inverted(): the world goes before the body that still needs it.
+        let inverted = stdout
+            .split("correct body")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let world = inverted.find("world gone");
+        let body = inverted.find("body gone");
+        assert!(
+            world < body,
+            "{mode}: the inverted order should tear the world down first: {stdout}",
+        );
+        // correct(): the body goes first, while the world is still alive.
+        let rest = stdout.split("correct body").nth(1).unwrap_or_default();
+        let world2 = rest.find("world gone");
+        let body2 = rest.find("body gone");
+        assert!(
+            body2 < world2,
+            "{mode}: the correct order should tear the body down first: {stdout}",
+        );
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

@@ -38,6 +38,7 @@ struct Connection {
 | **R3** | `mem.linear/L3` | Can borrow for reading without consuming |
 | **R4** | `mem.linear/L4` | Registering with `ensure` counts as consumption commitment |
 | **R5** | — | `Pool<Resource>` panics at runtime if non-empty when dropped |
+| **EO1** | — | `ensure` bodies run LIFO, so a resource derived from another has its `ensure` registered **second** — the source order reads backwards from the run order. Registered the other way round, the dependency is torn down while its dependent is still live and the dependent's cleanup calls into it; across an FFI boundary that's undefined behaviour the language otherwise makes impossible. Both orders are valid code, so this is a warning (`tool.warnings/W10`), not an error |
 
 A resource is consumed by calling a method with `take self`, passing to a `take` parameter, or explicit consumption (e.g., `file.close()`).
 

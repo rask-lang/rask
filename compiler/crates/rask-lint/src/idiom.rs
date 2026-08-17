@@ -305,156 +305,44 @@ fn check_expr_for_resource(
     }
 }
 
-/// idiom/ensure-ordering: Flag ensure registration order that doesn't match
-/// variable acquisition order. LIFO execution means misordered ensures clean
-/// up resources in the wrong sequence.
+/// idiom/ensure-ordering: cleanup order that tears a dependency down too early.
 ///
-/// Good (LIFO gives correct cleanup):
-///   let a = open("a")
-///   ensure a.close()       // registered 1st → runs LAST
-///   let b = open("b")
-///   ensure b.close()       // registered 2nd → runs FIRST
+/// `ensure` bodies run LIFO, so a resource derived from another has its
+/// `ensure` registered *second*:
 ///
-/// Bad (LIFO gives reversed cleanup):
-///   let a = open("a")
-///   let b = open("b")
-///   ensure b.close()       // registered 1st → runs LAST  (b closed after a!)
-///   ensure a.close()       // registered 2nd → runs FIRST (a closed before b!)
+///   let w = make_world()
+///   ensure w.destroy()          // registered 1st -> runs LAST
+///   let b = make_body(w)
+///   ensure b.close(w)           // registered 2nd -> runs FIRST
+///
+/// Swap the two and `b.close(w)` runs against a destroyed world.
+///
+/// This used to compare *creation order* as a proxy for derivation, which
+/// flagged two unrelated resources whose order genuinely doesn't matter — a
+/// world and a log file cleaned up in either sequence is fine, and the lint
+/// called it an error. It now shares its evidence with the W10 compiler warning
+/// (`rask_effects::ensure_order`, mem.resource-types/EO1) so `rask lint` and
+/// `rask check` can't disagree about the same two lines (#584).
 pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
-    let mut diags = Vec::new();
-
-    for decl in decls {
-        let body = match &decl.kind {
-            DeclKind::Fn(f) => &f.body,
-            _ => continue,
-        };
-        check_ensure_ordering_in_block(body, source, &mut diags);
-    }
-
-    diags
-}
-
-fn check_ensure_ordering_in_block(
-    stmts: &[Stmt],
-    source: &str,
-    diags: &mut Vec<LintDiagnostic>,
-) {
-    // Track binding order: variable name → position index
-    let mut binding_order: Vec<String> = Vec::new();
-    // Track ensure receivers in registration order
-    let mut ensure_receivers: Vec<(String, &Stmt)> = Vec::new();
-
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
-                binding_order.push(name.clone());
+    rask_effects::ensure_order::check(decls)
+        .into_iter()
+        .map(|w| {
+            let (line, col) = util::line_col(source, w.span.start);
+            let source_line = util::get_source_line(source, line);
+            LintDiagnostic {
+                rule: "idiom/ensure-ordering".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "`{}` is cleaned up before `{}`, which needs it — \
+                     `ensure` runs LIFO, so the dependency's ensure comes first \
+                     (mem.resource-types/EO1)",
+                    w.dependency, w.dependent
+                ),
+                location: LintLocation { line, column: col, source_line },
+                fix: w.fixed_order.replace('\n', " then "),
             }
-            StmtKind::Ensure { body, .. } => {
-                if let Some(receiver) = extract_ensure_receiver(body) {
-                    ensure_receivers.push((receiver, stmt));
-                }
-            }
-            // Recurse into nested blocks
-            StmtKind::While { body, .. }
-            | StmtKind::WhileLet { body, .. }
-            | StmtKind::For { body, .. }
-            | StmtKind::Loop { body, .. } => {
-                check_ensure_ordering_in_block(body, source, diags);
-            }
-            StmtKind::Expr(expr) => {
-                recurse_ensure_ordering_in_expr(expr, source, diags);
-            }
-            _ => {}
-        }
-    }
-
-    // Check: ensure receivers' binding positions must be non-decreasing.
-    // If receiver B (bound later) has its ensure registered before receiver A
-    // (bound earlier), LIFO will clean up A first — wrong.
-    if ensure_receivers.len() < 2 {
-        return;
-    }
-
-    let positions: Vec<Option<usize>> = ensure_receivers
-        .iter()
-        .map(|(name, _)| binding_order.iter().position(|b| b == name))
-        .collect();
-
-    let mut prev_pos: Option<usize> = None;
-    for (i, pos) in positions.iter().enumerate() {
-        let Some(current) = pos else { continue };
-        if let Some(prev) = prev_pos {
-            if *current < prev {
-                // Out of order: this ensure's variable was bound earlier
-                // than the previous ensure's variable, but registered later.
-                let (prev_name, _) = &ensure_receivers[i - 1];
-                let (curr_name, curr_stmt) = &ensure_receivers[i];
-
-                let (line, col) = util::line_col(source, curr_stmt.span.start);
-                let source_line = util::get_source_line(source, line);
-                diags.push(LintDiagnostic {
-                    rule: "idiom/ensure-ordering".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "`ensure {curr_name}...` registered after `ensure {prev_name}...`, \
-                         but `{curr_name}` was created first — \
-                         LIFO will close `{curr_name}` before `{prev_name}` (ctrl.ensure/EN2)"
-                    ),
-                    location: LintLocation {
-                        line,
-                        column: col,
-                        source_line,
-                    },
-                    fix: "interleave acquisition and ensure: \
-                          acquire → ensure → acquire → ensure"
-                        .to_string(),
-                });
-            }
-        }
-        prev_pos = Some(*current);
-    }
-}
-
-fn recurse_ensure_ordering_in_expr(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    match &expr.kind {
-        ExprKind::Block(stmts)
-        | ExprKind::UsingBlock { body: stmts, .. }
-        | ExprKind::Spawn { body: stmts }
-        | ExprKind::Unsafe { body: stmts }
-        | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. }
-        | ExprKind::Loop { body: stmts, .. } => {
-            check_ensure_ordering_in_block(stmts, source, diags);
-        }
-        _ => {}
-    }
-}
-
-/// Extract the receiver variable name from an ensure body.
-/// Handles `ensure x.method()` and `ensure x.method(args)`.
-/// Returns None for complex expressions we can't analyze.
-fn extract_ensure_receiver(body: &[Stmt]) -> Option<String> {
-    if body.len() != 1 {
-        return None;
-    }
-    let expr = match &body[0].kind {
-        StmtKind::Expr(e) => e,
-        _ => return None,
-    };
-    match &expr.kind {
-        ExprKind::MethodCall { object, .. } => match &object.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            _ => None,
-        },
-        ExprKind::Call { func, .. } => match &func.kind {
-            ExprKind::Field { object, .. } => match &object.kind {
-                ExprKind::Ident(name) => Some(name.clone()),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
+        })
+        .collect()
 }
 
 /// idiom/large-unsafe-block: Flag unsafe blocks with too many statements.

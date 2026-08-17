@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 rask-ast = { path = "../rask-ast" }
+rask-effects = { path = "../rask-effects" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 serde = { version = "1", features = ["derive"] }
