@@ -104,6 +104,19 @@ impl Interpreter {
                     let mut guard = s.lock().unwrap();
                     let value = wrap_like(guard.fields.get(field), value);
                     guard.fields.insert(field.clone(), value);
+                    drop(guard);
+                    // Writing a link into a struct may create a root edge — a
+                    // link held beside the store rather than inside a node.
+                    // Delete's fixup walk has to be able to reach it.
+                    crate::store::register_roots(obj, 0);
+                    return Ok(());
+                }
+                // Writing through a link: same as writing to the node, because
+                // the link *is* the node's address.
+                Value::Link { node, .. } => {
+                    let mut guard = node.lock().unwrap();
+                    let value = wrap_like(guard.fields.get(field), value);
+                    guard.fields.insert(field.clone(), value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
@@ -131,6 +144,21 @@ impl Interpreter {
                 })?;
                 drop(guard);
                 Self::assign_nested_field(&inner, &field_chain[1..], value)
+            }
+            Value::Link { node, .. } => {
+                let guard = node.lock().unwrap();
+                let inner = guard.fields.get(first).cloned().ok_or_else(|| {
+                    RuntimeError::TypeError(format!("no field '{}' on node", first))
+                })?;
+                drop(guard);
+                Self::assign_nested_field(&inner, &field_chain[1..], value)
+            }
+            // `world.player.health = x` — the edge is optional, so the chain
+            // steps through `Some(link)` transparently once it is known live.
+            Value::Enum { name, variant, fields, .. }
+                if name == "Option" && variant == "Some" && !fields.is_empty() =>
+            {
+                Self::assign_nested_field(&fields[0], field_chain, value)
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot access field '{}' on {}", first, obj.type_name()

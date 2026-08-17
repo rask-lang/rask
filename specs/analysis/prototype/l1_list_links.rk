@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L1 — doubly-linked list, with Store + Link.
+//
+// Two things to watch:
+//
+// 1. `head`/`tail` are ROOT EDGES — link fields on the struct that owns the
+//    store, not inside a node. Deleting the last node has to null them, so the
+//    delete's fixup walk must reach outside the store. That is the one piece
+//    the sketch had to add after this program was written down.
+//
+// 2. The splice is still hand-written. Delete-unlink maintains referential
+//    integrity — no field points at a dead node — but it does not maintain
+//    *your* invariants. A list wants its neighbours joined, and that is domain
+//    logic in both models. What links remove is the last line of `remove`
+//    (no manual head/tail nulling) and the whole class of "I nulled one
+//    direction and forgot the other" bugs.
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+    prev: Link<Node>?
+}
+
+struct List {
+    nodes: Store<Node>
+    head: Link<Node>?
+    tail: Link<Node>?
+}
+
+func push_back(mutate list: List, value: i32) -> Link<Node> {
+    let n = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+    if list.tail? as t {
+        t.next = n
+    } else {
+        list.head = n
+    }
+    list.tail = n
+    return n
+}
+
+// Splice, then delete. No `list.head = none` / `list.tail = none` case for
+// the last node: those are root edges, so the delete nulls them.
+func remove(mutate list: List, n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
+    list.nodes.delete(n)
+}
+
+func print_forward(list: List) {
+    mut out = "forward:"
+    mut cur = list.head
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.next
+    }
+    println(out)
+}
+
+func print_backward(list: List) {
+    mut out = "backward:"
+    mut cur = list.tail
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.prev
+    }
+    println(out)
+}
+
+func main() {
+    mut list = List { nodes: Store.new(), head: none, tail: none }
+
+    let n1 = push_back(list, 1)
+    let n2 = push_back(list, 2)
+    let n3 = push_back(list, 3)
+    let n4 = push_back(list, 4)
+
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the middle node (2)")
+    remove(list, n2)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the head (1)")
+    remove(list, n1)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the tail (4)")
+    remove(list, n4)
+    print_forward(list)
+    print_backward(list)
+
+    println("len = {list.nodes.len()}")
+    let _ = n3
+}

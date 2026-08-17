@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
@@ -374,6 +374,137 @@ impl PoolData {
     }
 }
 
+/// Global store ID counter. Each Store gets a unique ID.
+static NEXT_STORE_ID: AtomicU32 = AtomicU32::new(1);
+
+pub fn next_store_id() -> u32 {
+    NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Live stores by id, weakly held.
+///
+/// Root-edge registration needs to get from a link to its store at the moment
+/// the link is written into an outside field. In the real design that's static
+/// — the compiler knows which field targets which store — so this registry is
+/// prototype scaffolding, not part of the model. Nothing on the read path
+/// touches it.
+static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<StoreData>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn register_store(store: &Arc<Mutex<StoreData>>) {
+    let id = store.lock().unwrap().store_id;
+    let mut reg = STORE_REGISTRY.lock().unwrap();
+    reg.retain(|_, w| w.strong_count() > 0);
+    reg.insert(id, Arc::downgrade(store));
+}
+
+pub fn store_by_id(id: u32) -> Option<Arc<Mutex<StoreData>>> {
+    STORE_REGISTRY.lock().unwrap().get(&id).and_then(|w| w.upgrade())
+}
+
+/// A place outside the store that may hold links into it — a root edge
+/// (`analysis.fourth-option`, open question 4). The store keeps weak
+/// references so a delete's fixup walk can reach `world.player` and
+/// `editor.line_order`, which live beside the store rather than inside a node.
+///
+/// Weak on purpose: registering a root must not keep it alive.
+#[derive(Debug, Clone)]
+pub enum RootRef {
+    Struct(Weak<Mutex<StructData>>),
+    Vec(Weak<Mutex<VecData>>),
+    Map(Weak<Mutex<MapData>>),
+}
+
+impl RootRef {
+    /// Identity of the pointed-to allocation, for dedup. `Weak::as_ptr` stays
+    /// stable for the allocation's life, which is all dedup needs.
+    fn addr(&self) -> usize {
+        match self {
+            RootRef::Struct(w) => w.as_ptr() as usize,
+            RootRef::Vec(w) => w.as_ptr() as usize,
+            RootRef::Map(w) => w.as_ptr() as usize,
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        match self {
+            RootRef::Struct(w) => w.strong_count() > 0,
+            RootRef::Vec(w) => w.strong_count() > 0,
+            RootRef::Map(w) => w.strong_count() > 0,
+        }
+    }
+}
+
+/// Internal store storage — the arena half of `Store<T>` + `Link<T>`.
+///
+/// Unlike `PoolData` there are no generation counters, because there is no
+/// stale state to detect: `delete` walks every incoming edge and nulls it, so
+/// a link is either absent or valid. Slots hold the node's `Arc<Mutex<StructData>>`,
+/// and a `Value::Link` holds that same Arc — following a link is a pointer
+/// deref with nothing to check.
+#[derive(Debug, Clone)]
+pub struct StoreData {
+    pub store_id: u32,
+    /// Live nodes, in insertion order. `None` marks a freed slot.
+    pub slots: Vec<Option<Arc<Mutex<StructData>>>>,
+    pub free_list: Vec<u32>,
+    pub len: usize,
+    pub type_param: Option<String>,
+    /// Root edges: places outside the store that hold links into it.
+    pub roots: Vec<RootRef>,
+}
+
+impl StoreData {
+    pub fn new() -> Self {
+        Self {
+            store_id: next_store_id(),
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            len: 0,
+            type_param: None,
+            roots: Vec::new(),
+        }
+    }
+
+    pub fn with_type_param(type_param: Option<String>) -> Self {
+        Self { type_param, ..Self::new() }
+    }
+
+    /// Insert a node, returning its slot index.
+    pub fn insert(&mut self, node: Arc<Mutex<StructData>>) -> u32 {
+        self.len += 1;
+        if let Some(free_idx) = self.free_list.pop() {
+            self.slots[free_idx as usize] = Some(node);
+            free_idx
+        } else {
+            self.slots.push(Some(node));
+            (self.slots.len() - 1) as u32
+        }
+    }
+
+    /// Find a node's slot by pointer identity. Links carry the node pointer,
+    /// not an index, so structural ops look the index up here.
+    pub fn index_of(&self, node: &Arc<Mutex<StructData>>) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|s| s.as_ref().map_or(false, |n| Arc::ptr_eq(n, node)))
+    }
+
+    /// Register a place outside the store that holds a link into it. Idempotent;
+    /// also drops roots whose holder has died.
+    pub fn register_root(&mut self, root: RootRef) {
+        let addr = root.addr();
+        self.roots.retain(|r| r.is_live());
+        if !self.roots.iter().any(|r| r.addr() == addr) {
+            self.roots.push(root);
+        }
+    }
+
+    pub fn live_nodes(&self) -> Vec<Arc<Mutex<StructData>>> {
+        self.slots.iter().flatten().cloned().collect()
+    }
+}
+
 /// Built-in function kinds (global functions without module prefix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinKind {
@@ -405,6 +536,7 @@ pub enum TypeConstructorKind {
     String,
     Char,
     Pool,
+    Store,
     Cell,
     Channel,
     Shared,
@@ -792,6 +924,15 @@ pub enum Value {
     Cell(Arc<Mutex<Value>>),
     /// Pool (sparse storage with generation counters)
     Pool(Arc<Mutex<PoolData>>),
+    /// Store (arena of nodes; edges into it are fixed at delete)
+    Store(Arc<Mutex<StoreData>>),
+    /// Link — one edge to a node. Holds the node pointer directly, so following
+    /// it is a deref with no generation check and no store lookup. `store_id`
+    /// only names the owning store for structural ops and for delete's fixup.
+    Link {
+        store_id: u32,
+        node: Arc<Mutex<StructData>>,
+    },
     /// Handle (opaque reference into a pool)
     Handle {
         pool_id: u32,
@@ -1079,6 +1220,8 @@ impl Value {
             Value::Type(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
+            Value::Store(_) => "Store",
+            Value::Link { .. } => "Link",
             Value::Handle { .. } => "Handle",
             Value::WeakHandle { .. } => "WeakHandle",
             Value::ThreadHandle(_) => "ThreadHandle",
@@ -1353,6 +1496,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Char => "char",
                     TypeConstructorKind::Pool => "Pool",
+                    TypeConstructorKind::Store => "Store",
                     TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
@@ -1406,6 +1550,16 @@ impl fmt::Display for Value {
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
                 write!(f, "<Pool len={}>", pool.len)
+            }
+            Value::Store(s) => {
+                let store = s.lock().unwrap();
+                write!(f, "<Store len={}>", store.len)
+            }
+            // Print the node, not the address — a link is the node, as far as
+            // reading it goes.
+            Value::Link { node, .. } => {
+                let guard = node.lock().unwrap();
+                write!(f, "{}", Value::Struct(Arc::new(Mutex::new(guard.clone()))))
             }
             Value::Handle {
                 pool_id,

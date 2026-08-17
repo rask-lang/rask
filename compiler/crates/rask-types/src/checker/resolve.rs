@@ -113,6 +113,42 @@ impl TypeChecker {
         }
     }
 
+    /// The node type `T` of a `Link<T>`, or `None` for anything else.
+    ///
+    /// Unlike a handle, a link needs no `Pool<T>` in scope to be followed — it
+    /// names the node directly (analysis.fourth-option), so this is the whole
+    /// resolution story rather than the first half of one.
+    pub(super) fn link_node_type(&self, ty: &Type) -> Option<Type> {
+        let (name, args) = match ty {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if name != "Link" {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
+    /// The node type `T` of a `Store<T>`, or `None` for anything else.
+    pub(super) fn store_node_type(&self, ty: &Type) -> Option<Type> {
+        let (name, args) = match ty {
+            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
+            _ => return None,
+        };
+        if name != "Store" {
+            return None;
+        }
+        match args.first() {
+            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
+            _ => None,
+        }
+    }
+
     /// The element type `T` of a `Pool<T>`, or `None` for anything else.
     pub(super) fn pool_element_type(&self, ty: &Type) -> Option<Type> {
         let (name, args) = match ty {
@@ -146,6 +182,12 @@ impl TypeChecker {
         // `upgrade()`d first.
         if let Some(elem) = self.handle_element_type(&ty) {
             return self.resolve_field(elem, field, expected, span, self_type);
+        }
+
+        // `l.health` on a `Link<Entity>` is the node's field. No context clause
+        // and no liveness check: a link that exists points at a live node.
+        if let Some(node) = self.link_node_type(&ty) {
+            return self.resolve_field(node, field, expected, span, self_type);
         }
 
         match &ty {
@@ -906,6 +948,26 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "Pool" => {
                 self.resolve_pool_method(type_args, &method, &args, &ret, span)
             }
+            // Store<T>
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Store" => {
+                self.resolve_store_method(type_args, &method, &args, &ret, span)
+            }
+            // Link<T> — a reference. `eq`/`ne` compare node identity; anything
+            // else falls through to the node's own methods, the same way field
+            // access does.
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Link" => {
+                match method.as_str() {
+                    "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
+                    _ => {
+                        let node_ty = if let Some(GenericArg::Type(t)) = type_args.first() {
+                            *t.clone()
+                        } else {
+                            self.ctx.fresh_var()
+                        };
+                        self.resolve_method(node_ty, method, args, ret, span, None)
+                    }
+                }
+            }
             // Handle<T> — value type, eq/ne only
             Type::UnresolvedGeneric { name, .. } if name == "Handle" => {
                 match method.as_str() {
@@ -964,6 +1026,17 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Pool" => {
                 self.resolve_pool_static_method(&method, &args, &ret, span)
             }
+            // Store (bare, for Store.new())
+            Type::UnresolvedNamed(name) if name == "Store" => match method.as_str() {
+                "new" if args.is_empty() => {
+                    let store_ty = Type::UnresolvedGeneric {
+                        name: "Store".to_string(),
+                        args: vec![GenericArg::Type(Box::new(self.ctx.fresh_var()))],
+                    };
+                    self.unify(&ret, &store_ty, span)
+                }
+                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
+            },
             // Vec<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
                 self.resolve_vec_method(type_args, &method, &args, &ret, span)
@@ -2468,6 +2541,67 @@ impl TypeChecker {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
                         name: "Pool".to_string(),
+                        args: type_args.to_vec(),
+                    },
+                    method: method.to_string(),
+                    args: args.to_vec(),
+                    ret: ret.clone(),
+                    span,
+                    call_node: None,
+                });
+                Ok(false)
+            }
+        }
+    }
+
+    /// `Store<T>` methods (analysis.fourth-option).
+    ///
+    /// Note what is absent: no `get`. A pool hands out handles that must be
+    /// redeemed at the pool; a store hands out links that are followed
+    /// directly, so the only container-level operations left are structural.
+    pub(super) fn resolve_store_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let node_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+        let link_ty = Type::UnresolvedGeneric {
+            name: "Link".to_string(),
+            args: vec![GenericArg::Type(Box::new(node_type.clone()))],
+        };
+
+        match method {
+            // store.insert(node: T) -> Link<T>
+            "insert" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &node_type, span);
+                self.unify(ret, &link_ty, span)
+            }
+            // store.delete(l: Link<T>) -> ()
+            // Every edge pointing at the node becomes `none` here.
+            "delete" if args.len() == 1 => self.unify(ret, &Type::Unit, span),
+            "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
+            "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
+            "contains" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
+            "clear" if args.is_empty() => self.unify(ret, &Type::Unit, span),
+            // store.nodes() -> Vec<Link<T>>
+            "nodes" | "links" if args.is_empty() => {
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(link_ty))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
+            _ => {
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedGeneric {
+                        name: "Store".to_string(),
                         args: type_args.to_vec(),
                     },
                     method: method.to_string(),

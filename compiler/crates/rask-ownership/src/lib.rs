@@ -1815,10 +1815,15 @@ impl<'a> OwnershipChecker<'a> {
             }
 
             // Handle/WeakHandle are Copy: an 8-byte index+generation pair whose
-            // whole point is to be duplicated freely (mem.pools). Other generic
-            // containers stay conservative.
+            // whole point is to be duplicated freely (mem.pools). `Link` is Copy
+            // for the same reason — it's a pointer, and an edge written into two
+            // fields is two edges, not a moved one. Other generic containers stay
+            // conservative.
             Type::Generic { base, .. } => {
-                matches!(self.program.types.type_name(*base).as_str(), "Handle" | "WeakHandle")
+                matches!(
+                    self.program.types.type_name(*base).as_str(),
+                    "Handle" | "WeakHandle" | "Link"
+                )
             }
 
             // Function types are Copy (just a pointer)
@@ -1836,7 +1841,7 @@ impl<'a> OwnershipChecker<'a> {
             // Unresolved types: conservative, except Handle/WeakHandle, which are
             // Copy regardless of how the name was spelled.
             Type::UnresolvedGeneric { name, .. } => {
-                matches!(name.as_str(), "Handle" | "WeakHandle")
+                matches!(name.as_str(), "Handle" | "WeakHandle" | "Link")
             }
             Type::UnresolvedNamed(_) => false,
 

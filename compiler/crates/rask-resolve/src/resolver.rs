@@ -121,6 +121,8 @@ impl Resolver {
             ("Pool", BuiltinTypeKind::Pool),
             ("Cell", BuiltinTypeKind::Cell),
             ("Handle", BuiltinTypeKind::Handle),
+            ("Store", BuiltinTypeKind::Store),
+            ("Link", BuiltinTypeKind::Link),
             ("Atomic", BuiltinTypeKind::Atomic),
             ("AtomicBool", BuiltinTypeKind::Atomic),
             ("AtomicI8", BuiltinTypeKind::Atomic),

@@ -124,6 +124,10 @@ pub enum BuiltinTypeKind {
     Cell,
     /// Handle<T> - typed reference into a Pool<T>
     Handle,
+    /// Store<T> - arena whose incoming edges are fixed at delete
+    Store,
+    /// Link<T> - one edge to a node in a Store<T>
+    Link,
     /// Atomic<T> - atomic operations
     Atomic,
     /// Shared<T> - shared state with interior mutability

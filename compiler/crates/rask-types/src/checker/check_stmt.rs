@@ -154,12 +154,51 @@ impl TypeChecker {
                         ExprKind::Field { .. } | ExprKind::Index { .. }
                     ) {
                         self.lookup_local(&root)
+                            .map(|t| self.ctx.apply(&t))
                             .map(|t| self.resolve_named(&t))
                             .and_then(|t| self.handle_element_type(&t))
                     } else {
                         None
                     };
-                    let through_handle = handle_elem.is_some();
+                    // Same reasoning for a link, and more directly: a link is a
+                    // pointer, so `t.health -= 1` writes to the node and leaves
+                    // the binding alone. Without this the flagship loop
+                    // (`if e.target? as t { t.health -= e.damage }`) can't be
+                    // written at all — `as` bindings have no `mut` form.
+                    let through_link = matches!(
+                        &target.kind,
+                        ExprKind::Field { .. } | ExprKind::Index { .. }
+                    ) && self
+                        .lookup_local(&root)
+                        .map(|t| self.ctx.apply(&t))
+                        .map(|t| self.resolve_named(&t))
+                        .and_then(|t| self.link_node_type(&t))
+                        .is_some();
+                    let through_handle = handle_elem.is_some() || through_link;
+
+                    // A field/index write whose root type hasn't been solved yet
+                    // can't be judged here: `if e.target? as t { t.health -= 1 }`
+                    // binds `t` from a deferred `HasField`, so the link is still
+                    // a type variable at this point. Defer to
+                    // `validate_pending_mutations`, after constraint solving.
+                    let root_unresolved = matches!(
+                        &target.kind,
+                        ExprKind::Field { .. } | ExprKind::Index { .. }
+                    ) && self
+                        .lookup_local(&root)
+                        .map(|t| self.ctx.apply(&t))
+                        .is_some_and(|t| matches!(t, Type::Var(_)));
+                    if root_unresolved && !through_handle {
+                        if let Some(kind) = self.lookup_binding_kind(&root) {
+                            self.pending_mutations.push(super::PendingMutation {
+                                root: root.clone(),
+                                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                                kind,
+                                span: stmt.span,
+                            });
+                        }
+                    }
+                    let through_handle = through_handle || root_unresolved;
                     // mem.pools/PF5: a write through a handle whose element type is
                     // backed by a frozen context is rejected.
                     if let Some(elem) = &handle_elem {

@@ -42,6 +42,58 @@ public struct Handle<T> { }
 /// Use `upgrade()` to convert back to a Handle (returns none if invalidated).
 public struct WeakHandle<T> { }
 
+/// PROTOTYPE (analysis.fourth-option) — interpreter only, no native backend.
+///
+/// Arena of nodes whose incoming edges are fixed when a node is deleted.
+/// Where a `Pool` hands out handles that get validated at every use, a `Store`
+/// hands out links that are followed directly: `delete` walks every edge
+/// pointing at the dying node and sets it to `none`, so a dead link never
+/// exists to be checked.
+public struct Store<T> { }
+
+/// PROTOTYPE — one edge to a node in a `Store<T>`.
+///
+/// A link is a reference, not a ticket: `l.field` reads the node with no
+/// generation check and no `using` context. An edge that can die is declared
+/// `Link<T>?` and becomes `none` at the moment its target is deleted.
+public struct Link<T> { }
+
+extend Store<T> {
+    /// Create an empty store.
+    @native("rask_store_new")
+    public func new() -> Store<T> { }
+
+    /// Insert a node, returning a link to it.
+    @native("rask_store_insert")
+    public func insert(mutate self, node: T) -> Link<T> { }
+
+    /// Delete a node. Every edge pointing at it becomes `none` before this
+    /// returns — that is the whole model. Cost is proportional to how many
+    /// edges must be fixed.
+    @native("rask_store_delete")
+    public func delete(mutate self, link: Link<T>) -> void { }
+
+    /// Number of live nodes.
+    @native("rask_store_len")
+    public func len(self) -> usize { }
+
+    /// True if the store holds no nodes.
+    @native("rask_store_is_empty")
+    public func is_empty(self) -> bool { }
+
+    /// True if the link names a node in this store.
+    @native("rask_store_contains")
+    public func contains(self, link: Link<T>) -> bool { }
+
+    /// Links to every live node. This is what `for n in store` walks.
+    @native("rask_store_nodes")
+    public func nodes(self) -> Vec<Link<T>> { }
+
+    /// Remove every node.
+    @native("rask_store_clear")
+    public func clear(mutate self) -> void { }
+}
+
 extend WeakHandle<T> {
     /// Check if the weak handle is still valid (element hasn't been removed).
     @native

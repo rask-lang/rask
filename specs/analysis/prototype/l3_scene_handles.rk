@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L3 — scene tree, with Pool + Handle. Companion to l3_scene_links.rk.
+//
+// Same program, same output. The differences are all in `delete_subtree` and
+// in what the reader has to remember:
+//
+//   - the node must be removed from its parent's `children` by hand
+//   - `scene.selected` must be re-validated at every read, because the
+//     selected node may have been removed since it was set
+//
+// Both are correctness obligations the type doesn't state.
+
+struct SceneNode {
+    name: string
+    parent: Handle<SceneNode>?
+    children: Vec<Handle<SceneNode>>
+}
+
+struct Scene {
+    nodes: Pool<SceneNode>
+    root: Handle<SceneNode>?
+    selected: Handle<SceneNode>?
+}
+
+func add_child(mutate scene: Scene, parent: Handle<SceneNode>, name: string) -> Handle<SceneNode> {
+    let h = scene.nodes.insert(SceneNode { name: name, parent: parent, children: Vec.new() })
+    scene.nodes[parent].children.push(h)
+    return h
+}
+
+func reparent(mutate scene: Scene, n: Handle<SceneNode>, new_parent: Handle<SceneNode>) {
+    // `me` launders `n` through a local: an `own` closure capturing a Copy
+    // *parameter* inside a branch is wrongly reported as maybe-moved (#768).
+    let me = n
+    if scene.nodes[n].parent? as old {
+        scene.nodes[old].children = scene.nodes[old].children.filter(own |c| c != me)
+    }
+    scene.nodes[new_parent].children.push(n)
+    scene.nodes[n].parent = new_parent
+}
+
+// The unlink is manual on both counts: drop the node from its parent's list,
+// and clear the selection if it happened to name this node.
+func delete_subtree(mutate scene: Scene, n: Handle<SceneNode>) {
+    let me = n                       // see #768, as in reparent above
+    let kids = scene.nodes[n].children.clone()
+    for c in kids {
+        delete_subtree(scene, c)
+    }
+    if scene.nodes[n].parent? as p {
+        scene.nodes[p].children = scene.nodes[p].children.filter(own |c| c != me)
+    }
+    if scene.selected? as s {
+        if s == n {
+            scene.selected = none
+        }
+    }
+    scene.nodes.remove(n)
+}
+
+func print_tree(scene: Scene, h: Handle<SceneNode>, indent: string) {
+    if scene.nodes.get(h)? as n {
+        println("{indent}{n.name}")
+        for c in n.children {
+            print_tree(scene, c, "{indent}  ")
+        }
+    }
+}
+
+func report(scene: Scene) {
+    if scene.root? as r {
+        print_tree(scene, r, "   ")
+    }
+    mut sel = "none"
+    // Re-validate: the selection may name a removed node.
+    if scene.selected? as s {
+        if scene.nodes.get(s)? as sn {
+            sel = sn.name
+        }
+    }
+    println("   selected = {sel}, nodes = {scene.nodes.len()}")
+}
+
+func main() {
+    mut scene = Scene { nodes: Pool.new(), root: none, selected: none }
+
+    let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
+    scene.root = root
+
+    let a = add_child(scene, root, "a")
+    let b = add_child(scene, root, "b")
+    let a1 = add_child(scene, a, "a1")
+    let a2 = add_child(scene, a, "a2")
+
+    println("-- initial")
+    report(scene)
+
+    println("-- reparent a1 under b")
+    reparent(scene, a1, b)
+    report(scene)
+
+    println("-- select a2, then delete the subtree at a")
+    scene.selected = a2
+    report(scene)
+    delete_subtree(scene, a)
+    report(scene)
+    let _ = a2
+    let _ = b
+}

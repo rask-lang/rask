@@ -122,6 +122,10 @@ impl Interpreter {
             Value::Wide(w) => return self.call_wide_method(w, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Pool(p) => return self.call_pool_method(p, method, args),
+            Value::Store(s) => return self.call_store_method(s, method, args),
+            Value::Link { store_id, node } => {
+                return self.call_link_method(*store_id, node, method, args);
+            }
             Value::Handle { pool_id, index, generation, .. } => {
                 return self.call_handle_method(&receiver, *pool_id, *index, *generation, method, args);
             }

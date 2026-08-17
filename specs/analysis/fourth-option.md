@@ -206,16 +206,26 @@ rather than needing a decision.)
 
 **Untested, not unsolved:**
 
-- **Nothing is measured.** Every performance claim in these documents is
-  analytic. The read-path claim (a plain deref versus a checked one) is the
-  load-bearing one and the easiest to measure with a prototype.
+- **The read-path claim is still unmeasured.** An interpreter prototype now
+  exists ([prototype](fourth-option-prototype.md)) and confirms the *semantics*
+  — the litmus programs run both ways with identical output — but a
+  tree-walking interpreter can't price a deref against a checked deref.
+  That needs native codegen. Delete cost *was* measured and is linear in
+  in-degree, exactly as predicted.
+- **The borrow rule for links in locals is the real open question**, and the
+  prototype is what made that clear. `store.insert()` hands a link into a local,
+  which rule 1 forbids; without a rule reconciling those, a local link outlives
+  its node and the checkless read isn't sound. See the prototype document —
+  this now outranks `inverse`, cascade and `@lazy` on the open list.
 - **The `Local` default has no corpus example.** Not one program shares a
   mutable value between closures in a single task, so the case `Shared<T>`
   defaults to is unrepresented in the evidence.
 - **Migration cost is unsized.** Ten specs, two backends, the whole example
   corpus. Nobody has counted it.
 
-**Companion documents:** [batches](fourth-option-batches.md) ·
+**Companion documents:** [prototype](fourth-option-prototype.md) (**built and
+run** — the litmus programs both ways on the interpreter, and what that
+changed) · [batches](fourth-option-batches.md) ·
 [litmus](fourth-option-litmus.md) (three programs
 both ways, scored) · [in practice](fourth-option-in-practice.md) (worked
 example, costs, what it retires) · [adversarial](fourth-option-adversarial.md)

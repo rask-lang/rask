@@ -596,6 +596,7 @@ impl Interpreter {
 
         if let Some(entry) = registered.entry_fn {
             let value = self.call_function(&entry, vec![])?;
+            crate::store::print_stats();
             // struct.targets/EX4: an error out of main is exit status 1, not 0.
             // A `try` that propagates already lands in the error path; an
             // explicit `return SomeError` came back as an ordinary value and

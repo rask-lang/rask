@@ -508,7 +508,7 @@ impl TypeTable {
     /// `Pool` is the sanctioned resource container (RC2); `Handle`/`WeakHandle`
     /// are copyable references; `Vec`/`Map` are handled by the outer walk.
     fn is_nonlinear_wrapper(name: &str) -> bool {
-        matches!(name, "Handle" | "WeakHandle" | "Pool" | "Vec" | "Map")
+        matches!(name, "Handle" | "WeakHandle" | "Pool" | "Vec" | "Map" | "Link" | "Store")
     }
 
     /// RC1/RC3: find the first `Vec<T>` or `Map<K, V>` anywhere in `ty` whose

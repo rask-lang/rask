@@ -2336,7 +2336,7 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
             let base_name = name.split('<').next().unwrap_or(name);
-            if matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+            if matches!(base_name, "Vec" | "Map" | "Pool" | "Store" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                 || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
             {
                 let obj_ty = if name.contains('<') {
@@ -3729,6 +3729,15 @@ impl TypeChecker {
                         }),
                         None => ContainerElem::Deferred,
                     },
+                    // A store iterates its links — the same shape as a pool
+                    // iterating handles, minus the redemption step.
+                    Some("Store") => match arg(0) {
+                        Some(node) => ContainerElem::Known(Type::UnresolvedGeneric {
+                            name: "Link".to_string(),
+                            args: vec![GenericArg::Type(Box::new(node))],
+                        }),
+                        None => ContainerElem::Deferred,
+                    },
                     // A user generic may implement the iterator protocol, and
                     // its element type isn't readable from here.
                     _ => ContainerElem::Deferred,
@@ -3739,7 +3748,7 @@ impl TypeChecker {
     }
 
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
-        const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
+        const NAMES: [&str; 6] = ["Vec", "Map", "Pool", "Handle", "Store", "Link"];
         match ty {
             Type::UnresolvedGeneric { name, .. } => {
                 NAMES.iter().copied().find(|n| *n == name)
@@ -3754,6 +3763,40 @@ impl TypeChecker {
     /// #310: validate deferred index sites. Runs after constraint solving but
     /// before literal defaults, so an unsuffixed literal index is still a
     /// literal var — it can adapt to an integer Map key instead of forcing i32.
+    /// Judge the field/index writes that were deferred because their root type
+    /// was unresolved during the statement walk.
+    ///
+    /// A write through a `Handle<T>` or `Link<T>` targets the container's
+    /// storage, not the binding, so a read-only binding is fine there. Anything
+    /// else gets the read-only-binding error it would have got inline.
+    pub(super) fn validate_pending_mutations(&mut self) {
+        let pending = std::mem::take(&mut self.pending_mutations);
+        for pm in pending {
+            let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
+            if self.handle_element_type(&ty).is_some() || self.link_node_type(&ty).is_some() {
+                continue;
+            }
+            // Still unknown after solving — stay quiet rather than guess.
+            if matches!(ty, Type::Var(_) | Type::Error) {
+                continue;
+            }
+            let name = pm.root;
+            let span = pm.span;
+            match pm.kind {
+                super::BindingKind::Let => {
+                    self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::WithRead => {
+                    self.errors.push(TypeError::MutateWithBinding { name, span })
+                }
+                super::BindingKind::Param => {
+                    self.errors.push(TypeError::MutateReadOnlyParam { name, span })
+                }
+                super::BindingKind::Mut => {}
+            }
+        }
+    }
+
     pub(super) fn validate_pending_index(&mut self) {
         let pending = std::mem::take(&mut self.pending_index);
         for pi in pending {

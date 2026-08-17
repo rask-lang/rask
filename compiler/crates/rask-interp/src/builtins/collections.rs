@@ -6,7 +6,19 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, TypeConstructorKind, Value, VecData};
+use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, StoreData, StructData, TypeConstructorKind, Value, VecData};
+
+/// The node a link names, seeing through the `Link<T>?` optional that every
+/// edge field carries.
+pub(crate) fn link_node(v: &Value) -> Option<Arc<Mutex<StructData>>> {
+    match v {
+        Value::Link { node, .. } => Some(Arc::clone(node)),
+        Value::Enum { name, variant, fields, .. } if name == "Option" && variant == "Some" => {
+            fields.first().and_then(link_node)
+        }
+        _ => None,
+    }
+}
 
 /// Helper function to check if a value is truthy.
 fn is_truthy(val: &Value) -> bool {
@@ -59,7 +71,14 @@ impl Interpreter {
                         bound
                     )));
                 }
+                let is_link = matches!(item, Value::Link { .. });
                 guard.push(item);
+                drop(guard);
+                // An edge list held outside the store is a root edge; delete
+                // has to be able to drop entries from it.
+                if is_link {
+                    crate::store::register_roots(&Value::Vec(Arc::clone(v)), 0);
+                }
                 Ok(Value::Unit)
             }
             // C2: hands the value back rather than panicking. Native lowers the
@@ -689,6 +708,129 @@ impl Interpreter {
         }
     }
 
+    /// `Store<T>` methods — the arena side of the delete-time-fixup model
+    /// (analysis.fourth-option). Structural ops only; following a link never
+    /// comes here, because a link is a pointer.
+    pub(crate) fn call_store_method(
+        &mut self,
+        s: &Arc<Mutex<StoreData>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "insert" => {
+                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                // Nodes live in the store, so they keep their identity rather
+                // than being copied into it — links must observe writes made
+                // through any other link to the same node.
+                let node = match item {
+                    Value::Struct(st) => st,
+                    other => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "store.insert() expects a struct node, found {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                // A node inserted with edges already in its fields is fine —
+                // those links are inside the store, so the fixup walk finds
+                // them without any registration.
+                let (store_id, _idx) = {
+                    let mut store = s.lock().unwrap();
+                    let id = store.store_id;
+                    let idx = store.insert(Arc::clone(&node));
+                    (id, idx)
+                };
+                Ok(Value::Link { store_id, node })
+            }
+            "delete" => {
+                let target = args.first().ok_or_else(|| {
+                    RuntimeError::TypeError("store.delete() expects a Link".to_string())
+                })?;
+                let node = match link_node(target) {
+                    Some(n) => n,
+                    None => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "store.delete() expects a Link, found {}",
+                            target.type_name()
+                        )))
+                    }
+                };
+                match crate::store::delete_node(s, &node) {
+                    Some(_owned) => Ok(Value::Unit),
+                    // The node is already gone. Under the model a link to a
+                    // dead node cannot exist, so reaching this means the link
+                    // came from somewhere the fixup walk could not see.
+                    None => Err(RuntimeError::Panic(
+                        "store.delete(): link target is not in this store".to_string(),
+                    )),
+                }
+            }
+            "len" => Ok(Value::int(s.lock().unwrap().len as i64)),
+            "is_empty" => Ok(Value::Bool(s.lock().unwrap().len == 0)),
+            "contains" => {
+                let found = args
+                    .first()
+                    .and_then(link_node)
+                    .map(|n| s.lock().unwrap().index_of(&n).is_some())
+                    .unwrap_or(false);
+                Ok(Value::Bool(found))
+            }
+            // Every live node, as links. This is what `for n in store` walks.
+            "nodes" | "links" => {
+                let store = s.lock().unwrap();
+                let store_id = store.store_id;
+                let links: Vec<Value> = store
+                    .live_nodes()
+                    .into_iter()
+                    .map(|node| Value::Link { store_id, node })
+                    .collect();
+                Ok(Value::vec(links))
+            }
+            "clear" => {
+                let mut store = s.lock().unwrap();
+                store.slots.clear();
+                store.free_list.clear();
+                store.len = 0;
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "no method `{}` on Store; structural ops are insert, delete, len, is_empty, contains, nodes, clear",
+                method
+            ))),
+        }
+    }
+
+    /// `Link<T>` methods. Deliberately almost empty: a link's whole interface
+    /// is field access, which never routes through here.
+    pub(crate) fn call_link_method(
+        &mut self,
+        store_id: u32,
+        node: &Arc<Mutex<StructData>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            // Identity, not structural equality: two links are equal when they
+            // name the same node.
+            "eq" | "ne" => {
+                let same = args
+                    .first()
+                    .and_then(link_node)
+                    .map(|other| Arc::ptr_eq(node, &other))
+                    .unwrap_or(false);
+                Ok(Value::Bool(if method == "eq" { same } else { !same }))
+            }
+            _ => {
+                // Fall through to the node's own methods, so `l.take_damage(3)`
+                // works the way `l.health` does.
+                let recv = Value::Struct(Arc::clone(node));
+                let _ = store_id;
+                self.call_builtin_method(recv, method, args)
+            }
+        }
+    }
+
     /// Handle Pool method calls.
     pub(crate) fn call_pool_method(
         &mut self,
@@ -1175,7 +1317,14 @@ impl Interpreter {
             "insert" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let value = args.get(1).cloned().unwrap_or(Value::Unit).copy_on_bind();
+                let is_link = matches!(value, Value::Link { .. });
                 let old = m.lock().unwrap().insert(MapKey(key), value);
+                // A secondary index (`by_name: Map<string, Link<Task>>`) is a
+                // root edge: deleting the node drops its entry, which is the
+                // database's index-maintenance move.
+                if is_link {
+                    crate::store::register_roots(&Value::Map(Arc::clone(m)), 0);
+                }
                 Ok(option_of(old))
             }
             "get" => {
@@ -1408,6 +1557,11 @@ impl Interpreter {
                 // mem.pools/PL2: a with_capacity pool is bounded — enforce the limit.
                 pool.capacity = Some(cap);
                 Ok(Value::Pool(Arc::new(Mutex::new(pool))))
+            }
+            (TypeConstructorKind::Store, "new") => {
+                let store = Arc::new(Mutex::new(StoreData::with_type_param(type_param.clone())));
+                crate::value::register_store(&store);
+                Ok(Value::Store(store))
             }
             (TypeConstructorKind::Channel, "buffered") => {
                 let cap = self.expect_int(&args, 0)? as usize;

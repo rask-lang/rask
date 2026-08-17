@@ -619,6 +619,10 @@ impl Interpreter {
                         kind: TypeConstructorKind::Pool,
                         type_param,
                     }),
+                    "Store" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Store,
+                        type_param,
+                    }),
                     "Cell" => return Ok(Value::TypeConstructor {
                         kind: TypeConstructorKind::Cell,
                         type_param,
@@ -1326,7 +1330,11 @@ impl Interpreter {
                     None
                 };
 
-                Ok(Value::new_struct(concrete_name, field_values, resource_id))
+                let built = Value::new_struct(concrete_name, field_values, resource_id);
+                // `World { entities: store, player: link }` — a root edge born
+                // with the struct. Register it so a later delete can null it.
+                crate::store::register_roots(&built, 0);
+                Ok(built)
             }
 
             ExprKind::Field { object, field } => {
@@ -1366,6 +1374,13 @@ impl Interpreter {
                 match obj {
                     Value::Struct(ref s) => {
                         Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+                    }
+                    // Following a link: one deref, nothing to check. No store to
+                    // find, no generation to compare, no `using` context — the
+                    // link holds the node. This is the read path the fourth-option
+                    // model exists for; compare the Handle arm just below.
+                    Value::Link { ref node, .. } => {
+                        Ok(node.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
                     // mem.context/CC1: `h.field` auto-resolves through the active
                     // Pool<T> context — read the element's field. Same generation

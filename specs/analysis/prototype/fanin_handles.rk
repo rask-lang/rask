@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Fan-in stress, handle version. Companion to fanin_links.rk.
+//
+// The remove is O(1) — bump a generation, done — and that is the row handles
+// win. What it leaves behind is the interesting part: FANIN stale handles,
+// none of them fixed, every one of which costs a check at its next read and
+// has to be cleaned up by somebody.
+
+const FANIN: i32 = 200
+
+struct Node {
+    id: i32
+    hub: Handle<Node>?
+}
+
+func main() {
+    mut pool: Pool<Node> = Pool.new()
+
+    let hub = pool.insert(Node { id: 0, hub: none })
+
+    mut i = 1
+    while i <= FANIN {
+        let n = pool.insert(Node { id: i, hub: none })
+        pool[n].hub = hub
+        i += 1
+    }
+
+    println("fan-in = {FANIN}, nodes = {pool.len()}")
+
+    // O(1): one generation bump.
+    pool.remove(hub)
+
+    println("after removing the hub, nodes = {pool.len()}")
+
+    // ...but the edges are all still there, pointing at a dead slot. Finding
+    // that out costs a validated read per edge — the work the link version did
+    // at the delete, smeared across the readers instead.
+    mut stale = 0
+    for h in pool {
+        if pool[h].hub? as target {
+            if pool.get(target)? as _alive {
+                // still live
+            } else {
+                stale += 1
+            }
+        }
+    }
+    println("stale handles found at read time = {stale}")
+}
