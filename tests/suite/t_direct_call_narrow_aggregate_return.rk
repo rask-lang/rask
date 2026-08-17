@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function returning a struct smaller than a machine word hands back a
+// full 8-byte word (the callee's Return terminator always loads one), but
+// the caller's slot for that struct is only as wide as the struct itself.
+// The direct-call path used to store all 8 bytes into that narrower slot
+// regardless — safe only because Cranelift happens to pad explicit stack
+// slots, not because anything guaranteed it. Fixed by parking the word in
+// a scratch slot and copying out just the bytes that mean anything (#648).
+
+struct Pair8 {
+    public a: u8
+    public b: u8
+}
+
+struct Triple {
+    public a: u8
+    public b: u8
+    public c: u8
+}
+
+func make_pair() -> Pair8 {
+    return Pair8 { a: 1, b: 2 }
+}
+
+func make_triple() -> Triple {
+    return Triple { a: 5, b: 6, c: 7 }
+}
+
+test "a struct narrower than a word survives a direct call" {
+    let p = make_pair()
+    assert_eq(p.a, 1)
+    assert_eq(p.b, 2)
+}
+
+test "an odd-sized struct survives a direct call" {
+    let t = make_triple()
+    assert_eq(t.a, 5)
+    assert_eq(t.b, 6)
+    assert_eq(t.c, 7)
+}
+
+test "neighboring locals are untouched by a narrow struct return" {
+    let g1 = 111
+    let p = make_pair()
+    let g2 = 222
+    assert_eq(p.a, 1)
+    assert_eq(p.b, 2)
+    assert_eq(g1, 111)
+    assert_eq(g2, 222)
+}
+
+test "repeated narrow returns each land correctly" {
+    let p1 = make_pair()
+    let p2 = make_pair()
+    let p3 = make_pair()
+    assert_eq(p1.a + p2.a + p3.a, 3)
+    assert_eq(p1.b + p2.b + p3.b, 6)
+}

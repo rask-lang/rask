@@ -4611,11 +4611,29 @@ impl<'a> FunctionBuilder<'a> {
                 if ctx.internal_fns.contains(&func.name) {
                     // Internal function returns aggregate data loaded from its stack.
                     // Store directly into our stack slot (value, not pointer).
-                    if *size <= 8 {
-                        builder.ins().stack_store(final_val, *ss, 0);
-                    } else {
-                        // Larger aggregates: copy from returned pointer
-                        Self::copy_aggregate(builder, final_val, *ss, *size);
+                    match *size {
+                        8 => {
+                            builder.ins().stack_store(final_val, *ss, 0);
+                        }
+                        // The callee's Return terminator always loads a full word
+                        // for anything <= 8 bytes, so a sub-word slot still gets 8
+                        // bytes of value back. Storing all 8 into a slot smaller
+                        // than that runs off the end into whatever sits next to
+                        // it. Park the word somewhere that can hold it and copy
+                        // out just the bytes that mean anything. Same fix as the
+                        // closure call path (#611/#633).
+                        n if n < 8 => {
+                            let scratch = builder.create_sized_stack_slot(
+                                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0),
+                            );
+                            builder.ins().stack_store(final_val, scratch, 0);
+                            let scratch_ptr = builder.ins().stack_addr(types::I64, scratch, 0);
+                            Self::copy_aggregate(builder, scratch_ptr, *ss, n);
+                        }
+                        n => {
+                            // Larger aggregates: copy from returned pointer
+                            Self::copy_aggregate(builder, final_val, *ss, n);
+                        }
                     }
                 } else if ctx.adapt_table.get(&func.name)
                     .map(|(_, r)| *r == RetAdapt::NegErr)
