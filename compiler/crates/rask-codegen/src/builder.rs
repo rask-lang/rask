@@ -1631,6 +1631,23 @@ impl<'a> FunctionBuilder<'a> {
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
+                // A by-value aggregate element lives *in* its slot — the slots
+                // are `i * size` apart and everything downstream (field reads,
+                // tag reads, method receivers) wants the address. Loading eight
+                // bytes and treating them as the value's pointer is what made
+                // every element read of `[Pt { x: 1, y: 2 }, …]` segfault.
+                let elem_is_inline = Self::operand_mir_type(base, ctx.locals)
+                    .and_then(|t| match t {
+                        MirType::Array { elem, .. } => Some(matches!(
+                            *elem,
+                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                        )),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                if elem_is_inline {
+                    return Ok(addr);
+                }
                 let load_ty = expected_ty.unwrap_or(types::I64);
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, addr, 0))

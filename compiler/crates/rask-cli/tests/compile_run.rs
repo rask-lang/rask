@@ -3843,3 +3843,29 @@ neg min=-9 max=-2
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// An array literal of by-value aggregates segfaulted on any element read. The
+// slots are elem_size apart, so the value belongs *in* the slot, but the store
+// wrote one word (the source pointer) and the read loaded a word and treated it
+// as a pointer. A `string` element really is a pointer, so it keeps the word
+// store — hence struct/enum/tuple rather than "is an aggregate".
+#[test]
+fn an_array_of_aggregates_reads_back_on_both_backends() {
+    let expected = "\
+ps[0]=(1,2) ps[2]=(5,6)
+total=21
+area=12
+area=15
+area=0
+indexed area=15
+pairs[1]=(3,4)
+names[0]=alice names[2]=carol
+joined=alice,bob,carol,
+nums[1]=20
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "array_of_aggregates.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
