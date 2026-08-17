@@ -104,7 +104,7 @@ test "stdlib.collections — a string map value survives get through an accessor
 
     // Calls in between: the undersized option aliased the callee's frame, so
     // the damage only showed once something else had used that stack.
-    let noise = "x".concat("y").concat("z")
+    let noise = "xyz"
     assert noise == "xyz"
 
     let header = opt ?? "MISSING"

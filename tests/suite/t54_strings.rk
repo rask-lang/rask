@@ -99,7 +99,7 @@ test "std.strings/trim_start and trim_end" {
     assert "  hi  ".trim_end() == "  hi"
 }
 
-// --- substring / replace / concat ---
+// --- substring / replace / joining ---
 
 test "std.strings/substring" {
     let s = "hello world"
@@ -115,10 +115,17 @@ test "std.strings/replace" {
     assert s.replace("z", "!") == "hello world"
 }
 
-test "std.strings/concat" {
-    assert "ab".concat("cd") == "abcd"
-    assert "".concat("x") == "x"
-    assert "x".concat("") == "x"
+// Interpolation is the one way to combine strings — there is no public
+// `concat` (std.strings, #303/#690). It desugars to a compiler-internal
+// `__concat` chain, so this is what covers the concatenation runtime.
+test "std.strings/interpolation joins" {
+    let a = "ab"
+    let b = "cd"
+    let empty = ""
+    let x = "x"
+    assert "{a}{b}" == "abcd"
+    assert "{empty}{x}" == "x"
+    assert "{x}{empty}" == "x"
 }
 
 // --- iteration: split / lines / chars ---
@@ -128,8 +135,7 @@ test "std.strings/split counts and values" {
     mut joined = ""
     for part in "a,bb,ccc".split(",") {
         count = count + 1
-        joined = joined.concat(part)
-        joined = joined.concat("-")
+        joined = "{joined}{part}-"
     }
     assert count == 3
     assert joined == "a-bb-ccc-"
@@ -148,7 +154,7 @@ test "std.strings/lines" {
     mut joined = ""
     for line in "one\ntwo\nthree".lines() {
         count = count + 1
-        joined = joined.concat(line)
+        joined = "{joined}{line}"
     }
     assert count == 3
     assert joined == "onetwothree"

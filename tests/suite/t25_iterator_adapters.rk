@@ -5,7 +5,7 @@
 //
 // SPEC ISSUE: The iterator spec says adapters are lazy and monomorphized.
 // But the collect() terminal "defaults to Vec" (spec). What's the syntax
-// to collect into a Map or other type? The spec shows `.collect()` with no
+// to collect into a Map or other type? The spec shows `.to_vec()` with no
 // type parameter. Either inference handles it or there's a `.collect<Map>()`
 // syntax not documented.
 //
@@ -22,7 +22,7 @@ test "filter even numbers" {
     v.push(4)
     v.push(5)
 
-    let evens = v.filter(|x| x % 2 == 0).collect()
+    let evens = v.filter(|x| x % 2 == 0).to_vec()
     assert evens.len() == 2
     assert evens[0] == 2
     assert evens[1] == 4
@@ -36,7 +36,7 @@ test "map doubles" {
     v.push(2)
     v.push(3)
 
-    let doubled = v.map(|x| x * 2).collect()
+    let doubled = v.map(|x| x * 2).to_vec()
     assert doubled.len() == 3
     assert doubled[0] == 2
     assert doubled[1] == 4
@@ -51,7 +51,7 @@ test "filter then map" {
         v.push(i)
     }
 
-    let result = v.filter(|x| x > 2).map(|x| x * 10).collect()
+    let result = v.filter(|x| x > 2).map(|x| x * 10).to_vec()
     assert result.len() == 3
     assert result[0] == 30
     assert result[1] == 40
@@ -171,7 +171,7 @@ test "enumerate" {
     v.push("b")
     v.push("c")
 
-    let pairs = v.enumerate().collect()
+    let pairs = v.enumerate().to_vec()
     assert pairs.len() == 3
     let (i0, v0) = pairs[0]
     let (i1, v1) = pairs[1]
@@ -190,7 +190,7 @@ test "take first n" {
     v.push(30)
     v.push(40)
 
-    let first_two = v.take(2).collect()
+    let first_two = v.take(2).to_vec()
     assert first_two.len() == 2
     assert first_two[0] == 10
     assert first_two[1] == 20
@@ -205,7 +205,7 @@ test "skip first n" {
     v.push(30)
     v.push(40)
 
-    let rest = v.skip(2).collect()
+    let rest = v.skip(2).to_vec()
     assert rest.len() == 2
     assert rest[0] == 30
     assert rest[1] == 40

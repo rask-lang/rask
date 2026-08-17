@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `char` is a Unicode scalar — `char_at` and `len` already agree on that
+// (`len()` counts bytes, `char_at(i)` counts scalars). Native's `chars()` walked
+// bytes, so any non-ASCII string yielded the halves of each sequence as separate
+// Latin-1 chars: `"aöb".chars()` gave `[a][Ã][¶][b]`. Silent mojibake.
+
+func main() {
+    let ascii = "abc"
+    let two_byte = "aöb"
+    let three_byte = "a\u{4e2d}b"
+    let four_byte = "a\u{1F600}b"
+
+    println("ascii:      len={ascii.len()} chars={count(ascii)}")
+    println("two-byte:   len={two_byte.len()} chars={count(two_byte)}")
+    println("three-byte: len={three_byte.len()} chars={count(three_byte)}")
+    println("four-byte:  len={four_byte.len()} chars={count(four_byte)}")
+
+    println("round-trip: {render(two_byte)}")
+    println("code points: {code_points(two_byte)}")
+
+    // chars() and char_at() must agree about what index 1 is.
+    println("char_at(1)={two_byte.char_at(1) ?? '?'}")
+}
+
+func count(s: string) -> i64 {
+    mut n = 0
+    for c in s.chars() {
+        n = n + 1
+    }
+    return n
+}
+
+func render(s: string) -> string {
+    mut out = StringBuilder.new()
+    for c in s.chars() {
+        out.push("[{c}]")
+    }
+    return out.build()
+}
+
+func code_points(s: string) -> string {
+    mut out = StringBuilder.new()
+    for c in s.chars() {
+        out.push("{c as i64} ")
+    }
+    return out.build()
+}

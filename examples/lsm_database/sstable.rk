@@ -123,7 +123,7 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
     mut block_lines = Vec.new()
 
     for line in data.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
         if trimmed == "===" {
             if current_block == block_offset {
                 return parse_block_lines(block_lines, block_offset)
@@ -160,12 +160,12 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
 
     mut index = Vec.new()
     for line in content.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
         if trimmed == "---" { break }
         if !trimmed.starts_with("INDEX:") { continue }
 
         let entry = trimmed[6..].to_string()
-        let parts = entry.split("\t").collect()
+        let parts = entry.split("\t").to_vec()
         if parts.len() < 3 { continue }
 
         let offset = parts[1].trim().parse_int() is i64 as v else { continue }
@@ -185,7 +185,7 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
         catch e => return SstError.ReadFailure("cannot read bloom: {path}: {e}")
 
     for line in content.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
         if trimmed.starts_with("BLOOM:") {
             let data = trimmed[6..].to_string()
             return decode_bloom(data)
@@ -204,7 +204,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
 
     mut entries = Vec.new()
     for line in data.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
         if trimmed.is_empty() { continue }
         if trimmed == "===" { continue }
         let kv = decode_kv(trimmed) is KeyValue as entry else { continue }

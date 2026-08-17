@@ -27,7 +27,7 @@ struct Version {
 
 extend Version {
     func parse(s: string) -> Version or VersionError {
-        let parts = s.split(".").collect()
+        let parts = s.split(".").to_vec()
         if parts.len() != 3 {
             return VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}")
         }
@@ -281,7 +281,7 @@ func load_manifest(path: string) -> Manifest or FetchError {
 }
 
 func parse_manifest(content: string) -> Manifest or ManifestError {
-    let lines = content.lines().collect()
+    let lines = content.lines().to_vec()
     mut name = ""
     mut version_str = ""
     mut deps = Vec.new()

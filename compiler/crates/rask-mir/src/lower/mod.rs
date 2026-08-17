@@ -545,6 +545,29 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// `find_struct`, falling back to the name with any `<…>` stripped.
+    ///
+    /// A generic type's layout is stored under its base name, so a name written
+    /// with type arguments finds nothing. At a struct literal that meant
+    /// `One<i64> { only: 9 }` got no layout, its temp was typed `ptr` instead of
+    /// the struct, and the field store wrote through an uninitialised pointer.
+    /// `One { only: 9 }` and `let x: One<i64> = One { … }` both went through the
+    /// base name and worked.
+    ///
+    /// Only for names in literal position. Type *strings* reach `find_struct`
+    /// too, and there a stripped `Vec<Ctr>` would match whatever else is called
+    /// `Vec`.
+    pub fn find_struct_written(&self, name: &str) -> Option<(u32, &StructLayout)> {
+        if let Some(found) = self.find_struct(name) {
+            return Some(found);
+        }
+        let base = name.split('<').next()?.trim();
+        if base == name {
+            return None;
+        }
+        self.find_struct(base)
+    }
+
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
     /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
@@ -585,10 +608,6 @@ impl<'a> MirContext<'a> {
             "StringView" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
-                // "any TraitName" → TraitObject
-                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
-                    return MirType::TraitObject { trait_name: trait_name.to_string() };
-                }
                 // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
                 // these an annotated `const a: [i32; 5]` fell through to the
                 // pointer default, and the array's length was gone by the time
@@ -608,6 +627,23 @@ impl<'a> MirContext<'a> {
                         return MirType::Array { elem: Box::new(elem), len };
                     }
                     return MirType::Slice(Box::new(self.resolve_type_str(inner)));
+                }
+                // "(A | B)" → Union. Before the tuple branch: an error union is
+                // written in parentheses, so the tuple case claimed it and
+                // answered `Tuple([Ptr])` — the member types were gone by the
+                // time anything wanted to tell them apart (#776).
+                {
+                    let bare = if name.starts_with('(') && name.ends_with(')') {
+                        name[1..name.len() - 1].trim()
+                    } else {
+                        name
+                    };
+                    let parts = split_top_level_parens(bare, '|');
+                    if parts.len() > 1 {
+                        return MirType::Union(
+                            parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
+                        );
+                    }
                 }
                 // "(T1, T2, ...)" → Tuple
                 if name.starts_with('(') && name.ends_with(')') {
@@ -648,6 +684,18 @@ impl<'a> MirContext<'a> {
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
                     return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                }
+                // "any TraitName" → TraitObject. After the wrapper shapes above,
+                // not before: the parser normalizes `(any Shape)?` to
+                // `any Shape?`, and claiming that first made the trait's name
+                // "Shape?" instead of building an Option. Nothing then saw a
+                // depth mismatch to wrap, so `let a: (any Shape)? = c as any
+                // Shape` stored a bare fat pointer in the slot and the read took
+                // the data pointer's low bits for a tag — always `none` (#764).
+                // The checker's `parse_type_string` has the same two checks in
+                // this order, which is why only native was wrong.
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
+                    return MirType::TraitObject { trait_name: trait_name.to_string() };
                 }
                 // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
                 if name.starts_with("Vec<") || name == "Vec" {
@@ -3189,6 +3237,32 @@ impl<'a> MirLowerer<'a> {
         false
     }
 
+    /// Which member of a union a type is, by position as written.
+    pub(crate) fn union_member_index(&self, union_ty: &MirType, member: &MirType) -> Option<usize> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        if let Some(i) = members.iter().position(|m| m == member) {
+            return Some(i);
+        }
+        // A member that never got a layout lowers to something anonymous, so
+        // compare by nominal name when the types themselves don't match.
+        let name = self.mir_type_name(member)?;
+        members
+            .iter()
+            .position(|m| self.mir_type_name(m).as_deref() == Some(name.as_str()))
+    }
+
+    /// Which member of a union a *name* is, by position as written.
+    pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        members
+            .iter()
+            .position(|m| self.mir_type_name(m).as_deref() == Some(name))
+    }
+
     /// Look up the tag value for a variant name.
     ///
     /// Accepts both the bare and the qualified spelling. A pattern written
@@ -3340,7 +3414,15 @@ impl<'a> MirLowerer<'a> {
     fn mir_payload_is_aggregate(ty: &MirType) -> bool {
         matches!(
             ty,
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::String
+                // An error union lives in the payload area as
+                // `[member:8][member bytes]`, so it's addressed like any other
+                // aggregate. Loaded as a word instead, the member index came
+                // back as if it were the union's address (#776).
+                | MirType::Union(_)
         )
     }
 
@@ -4072,6 +4154,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
                 FloatSig::ToInt => MirType::I64,
+                FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
             };

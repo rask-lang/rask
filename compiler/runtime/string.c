@@ -732,13 +732,36 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
     return v;
 }
 
+// Unicode scalars, not bytes. `char_at` and `len` already agree that a `char`
+// is a scalar and `len()` counts bytes; this walked bytes, so `"aöb".chars()`
+// yielded four items and printed the two halves of `ö` as Latin-1 (`[a][Ã][¶][b]`).
+// Any program touching non-ASCII text got mojibake, silently.
 RaskVec *rask_string_chars(const RaskStr *s) {
     RaskVec *v = rask_vec_new(8);
     int64_t len = str_len(s);
     const char *d = str_data(s);
-    for (int64_t i = 0; i < len; i++) {
-        int64_t ch = (int64_t)(uint8_t)d[i];
+    int64_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)d[i];
+        int64_t width = c < 0x80 ? 1
+                      : (c & 0xE0) == 0xC0 ? 2
+                      : (c & 0xF0) == 0xE0 ? 3
+                      : (c & 0xF8) == 0xF0 ? 4
+                      : 1;
+        // A truncated sequence at the end: hand back the lead byte rather than
+        // reading past the string.
+        if (i + width > len) width = 1;
+        int64_t ch;
+        switch (width) {
+            case 2: ch = ((c & 0x1F) << 6) | (d[i + 1] & 0x3F); break;
+            case 3: ch = ((c & 0x0F) << 12) | ((d[i + 1] & 0x3F) << 6)
+                       | (d[i + 2] & 0x3F); break;
+            case 4: ch = ((c & 0x07) << 18) | ((d[i + 1] & 0x3F) << 12)
+                       | ((d[i + 2] & 0x3F) << 6) | (d[i + 3] & 0x3F); break;
+            default: ch = c; break;
+        }
         rask_vec_push(v, &ch);
+        i += width;
     }
     return v;
 }

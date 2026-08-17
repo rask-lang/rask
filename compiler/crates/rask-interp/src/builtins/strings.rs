@@ -79,7 +79,9 @@ impl Interpreter {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
             }
-            "concat" => {
+            // What interpolation desugars to. There is no public `concat` —
+            // interpolation is the one way to combine strings (std.strings).
+            "__concat" => {
                 let other = self.expect_string(&args, 0)?;
                 let mut result = s.lock().unwrap().clone();
                 result.push_str(&other);

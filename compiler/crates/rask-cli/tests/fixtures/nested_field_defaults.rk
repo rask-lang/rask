@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.structs FD1/FD2: a field default is filled in when the field is omitted.
+// It's an expression like any other, so whatever gets substituted needs the
+// defaults pass run over it too — `inner: Inner = Inner {}` has to have Inner's
+// own defaults filled in.
+//
+// It didn't. The defaults table is snapshotted before the walk starts, so the
+// copy handed to the call site was the un-desugared literal and FD4 rejected it
+// as missing a field. The same `Inner {}` written in a function body was fine,
+// which is what made defaults look finished (#311).
+
+const DEFAULT_PORT: u16 = 8080
+
+struct Inner {
+    n: i64 = 7
+}
+
+struct Middle {
+    inner: Inner = Inner {}
+    label: string = "middle"
+}
+
+struct Outer {
+    middle: Middle = Middle {}
+    port: u16 = DEFAULT_PORT
+    tags: Vec<string> = Vec.new()
+}
+
+func main() {
+    // Two levels of nesting, all defaulted.
+    let o = Outer {}
+    println("o: {o.middle.inner.n} {o.middle.label} {o.port} tags={o.tags.len()}")
+
+    // Overriding an outer field leaves the nested defaults alone.
+    let p = Outer { port: 1 }
+    println("p: {p.middle.inner.n} {p.middle.label} {p.port}")
+
+    // Overriding at the middle level.
+    let q = Outer { middle: Middle { label: "given" } }
+    println("q: {q.middle.inner.n} {q.middle.label} {q.port}")
+
+    // Directly, the case that always worked.
+    let direct = Inner {}
+    println("direct: {direct.n}")
+}

@@ -695,6 +695,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.sequence/SEQ29: `to_map` is defined only on a sequence of pairs.
+    #[error("`to_map` needs a sequence of pairs")]
+    ToMapNeedsPairs {
+        elem: Type,
+        span: Span,
+    },
+
+    /// type.generics/HA4: `f32`/`f64` are not Hashable, so they can't key a Map.
+    #[error("a float can't key a Map")]
+    FloatMapKey {
+        key: Type,
+        span: Span,
+    },
+
     /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
     /// whose index type doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -809,6 +823,8 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            FloatMapKey { key, .. } => *key = f(key),
+            ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
             DuplicateSumVariant { ty, variant, .. } => {
                 *ty = f(ty);

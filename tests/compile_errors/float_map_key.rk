@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.generics/HA4: `f32`/`f64` are not Hashable, so they can't key a Map —
+// `NaN != NaN` breaks the rule that equal keys hash equal. It used to be
+// accepted, and then a NaN key found its own entry natively and missed on the
+// interpreter (#306).
+
+func float_key() -> u64 {
+    mut m: Map<f64, string> = Map.new()   // ERROR: f64 is not Hashable
+    m.insert(1.5, "one-point-five")
+    return m.len()
+}
+
+func f32_key() -> u64 {
+    mut m: Map<f32, string> = Map.new()   // ERROR: f32 either
+    m.insert(1.5, "one-point-five")
+    return m.len()
+}
+
+// Nested counts too — the Map doesn't have to be the outer type.
+func nested_float_key() -> u64 {
+    mut v: Vec<Map<f64, string>> = Vec.new()   // ERROR: still a float key
+    return v.len()
+}
+
+// A float *value* is fine. Only the key position is excluded.
+func float_value() -> u64 {
+    mut m: Map<string, f64> = Map.new()
+    m.insert("pi", 3.14159)
+    return m.len()
+}
+
+func main() {}

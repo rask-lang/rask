@@ -26,6 +26,16 @@ pub enum FloatSig {
     ToString,
     /// `self -> i64`.
     ToInt,
+    /// `self -> u64` — the raw bit pattern.
+    ///
+    /// HA4 excludes floats from Hashable, so this is how a float becomes a Map
+    /// key: the caller decides what "the same key" means instead of inheriting
+    /// `NaN != NaN`.
+    ///
+    /// u64 at both widths. MIR mangles f32 and f64 receivers to the same
+    /// `f64_*` calls, so an f32's own 32-bit pattern isn't recoverable there,
+    /// and one width keeps the backends from disagreeing about what the key is.
+    ToBits,
 }
 
 /// One float method: its Rask name, the C symbol backing it natively, and its
@@ -94,6 +104,7 @@ pub const FLOAT_METHODS: &[FloatMethod] = &[
     // Conversion.
     m("to_string", Some("rask_f64_to_string"), FloatSig::ToString),
     m("to_int", None, FloatSig::ToInt),
+    m("to_bits", Some("rask_f64_to_bits"), FloatSig::ToBits),
 ];
 
 /// Look up a float method by name.

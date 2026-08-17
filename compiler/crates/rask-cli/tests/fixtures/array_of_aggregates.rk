@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An array literal of by-value aggregates: `[Pt { x: 1, y: 2 }, …]`. Reading any
+// element of one segfaulted natively.
+//
+// Two halves of the same mismatch. The slots are `i * elem_size` apart, so the
+// value is meant to live *in* its slot — but the store copied only a word (the
+// source's pointer), and the read loaded eight bytes from the slot and treated
+// them as the value's pointer. Either alone is wrong; together they dereferenced
+// whatever the first eight bytes happened to be.
+//
+// A `string` element is genuinely a pointer (#414), so it keeps the word store —
+// that's why the fix is keyed to struct/enum/tuple rather than "is an aggregate".
+
+struct Pt {
+    public x: i64
+    public y: i64
+}
+
+enum Shape {
+    Circle(f64)
+    Rect(w: f64, h: f64)
+    Point
+}
+
+extend Shape {
+    func area(self) -> f64 {
+        match self {
+            Shape.Circle(r) => return 3.0 * r * r,
+            Shape.Rect(w, h) => return w * h,
+            Shape.Point => return 0.0,
+        }
+    }
+}
+
+func main() {
+    // Structs: indexed.
+    let ps = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }, Pt { x: 5, y: 6 }]
+    println("ps[0]=({ps[0].x},{ps[0].y}) ps[2]=({ps[2].x},{ps[2].y})")
+
+    // Structs: iterated.
+    mut total = 0
+    for p in ps {
+        total = total + p.x + p.y
+    }
+    println("total={total}")
+
+    // Enums with payloads, through a method that matches on the tag.
+    let shapes = [Shape.Circle(2.0), Shape.Rect(w: 3.0, h: 5.0), Shape.Point]
+    for s in shapes {
+        println("area={s.area()}")
+    }
+    println("indexed area={shapes[1].area()}")
+
+    // Tuples.
+    let pairs = [(1, 2), (3, 4)]
+    println("pairs[1]=({pairs[1].0},{pairs[1].1})")
+
+    // Strings keep the pointer convention — this is the case the store size
+    // must NOT be applied to.
+    let names = ["alice", "bob", "carol"]
+    println("names[0]={names[0]} names[2]={names[2]}")
+    mut joined = StringBuilder.new()
+    for n in names {
+        joined.push("{n},")
+    }
+    println("joined={joined.build()}")
+
+    // Scalars, unchanged.
+    let nums = [10, 20, 30]
+    println("nums[1]={nums[1]}")
+}

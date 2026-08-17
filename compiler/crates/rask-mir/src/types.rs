@@ -5,6 +5,7 @@
 /// Result layout offsets — single source of truth in `rask_mono::abi`.
 pub use rask_mono::abi::{
     RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_OFFSET, RESULT_PAYLOAD_OFFSET, RESULT_TAG_OFFSET,
+    UNION_MEMBER_OFFSET, UNION_PAYLOAD_OFFSET,
 };
 
 /// MIR type - all sizes known, no generic type parameters
@@ -138,8 +139,12 @@ impl MirType {
                 // [tag:8][origin_file:8][origin_line:8][payload] — offsets in rask_mono::abi (ER15).
                 RESULT_PAYLOAD_OFFSET + ok.size().max(err.size())
             }
+            // [member:8][member bytes] — the members are nominally distinct
+            // types with nothing in their bytes to tell them apart, so the index
+            // is stored (#776). `UNION_MEMBER_OFFSET` / `UNION_PAYLOAD_OFFSET`
+            // name the two halves.
             MirType::Union(variants) => {
-                variants.iter().map(|v| v.size()).max().unwrap_or(0)
+                UNION_PAYLOAD_OFFSET + variants.iter().map(|v| v.size()).max().unwrap_or(0)
             }
             MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
@@ -167,6 +172,16 @@ impl MirType {
     /// True for unsigned integer types.
     pub fn is_unsigned(&self) -> bool {
         matches!(self, MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+    }
+
+    /// True for an integer primitive of either signedness — the set where a
+    /// mixed-signedness comparison is well-defined (type.operators/CMP-mixed).
+    pub fn is_int_like(&self) -> bool {
+        matches!(
+            self,
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+        )
     }
 }
 

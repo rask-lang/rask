@@ -86,7 +86,7 @@ func list_users() -> Response {
             id: u.id,
             name: u.name,
             email: u.email,
-        }).collect()
+        }).to_vec()
     }
     return Response.json(json.encode(users))
 }

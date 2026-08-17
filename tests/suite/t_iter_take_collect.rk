@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A fused `.iter().skip(n).take(m).map(…).collect()` chain.
+// A fused `.iter().skip(n).take(m).map(…).to_vec()` chain.
 //
 // Two bugs met here. `take(m)` set the loop's end bound to `skip + m` with no
 // regard for how long the source actually is, so taking 50 of three elements
-// ran to index 50 and panicked on the first read past the end. And `collect()`
-// built its Vec before the loop, when it didn't yet know what the closure
+// ran to index 50 and panicked on the first read past the end. And the terminal
+// (`collect()` at the time, `to_vec()` since SEQ31) built its Vec before the loop, when it didn't yet know what the closure
 // returns, so the Vec got the default 8-byte stride and 24-byte structs
 // overlapped each other.
 
@@ -32,7 +32,7 @@ test "stdlib.collections — take past the end yields what there is" {
         .skip(0)
         .take(50)
         .map(|r| r.view.clone())
-        .collect()
+        .to_vec()
 
     assert page.len() == 3
     assert page[0].id == 1
@@ -47,7 +47,7 @@ test "stdlib.collections — skip and take page a slice out of the middle" {
         .skip(1)
         .take(1)
         .map(|r| r.view.clone())
-        .collect()
+        .to_vec()
 
     assert page.len() == 1
     assert page[0].id == 2
@@ -60,7 +60,7 @@ test "stdlib.collections — skipping past the end yields nothing" {
         .skip(9)
         .take(50)
         .map(|r| r.view.clone())
-        .collect()
+        .to_vec()
 
     assert page.len() == 0
 }
@@ -73,7 +73,7 @@ test "stdlib.collections — a collected Vec of structs reads at the right strid
         .iter()
         .take(3)
         .map(|r| r.view.clone())
-        .collect()
+        .to_vec()
 
     assert page.len() == 3
     assert page[0].id == 1
@@ -93,7 +93,7 @@ test "a map closure knows its parameter's type from the source" {
     let titles = rows()
         .iter()
         .map(|r| r.view.title)
-        .collect()
+        .to_vec()
 
     assert titles.len() == 3
     assert titles[0] == "one"
@@ -105,7 +105,7 @@ test "a filter closure knows it too, and the chain keeps the element type" {
         .iter()
         .filter(|r| r.rank > 1)
         .map(|r| r.view.id)
-        .collect()
+        .to_vec()
 
     assert ids.len() == 2
     assert ids[0] == 1

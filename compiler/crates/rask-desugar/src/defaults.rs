@@ -554,6 +554,7 @@ impl DefaultDesugarer {
         };
         // Clone out so we don't hold a borrow on self.lookup while mutating.
         let defaults = defaults.clone();
+        let mut filled = 0usize;
         let next_id = &mut self.next_id;
         let mut id_gen = || {
             let id = NodeId(*next_id);
@@ -568,6 +569,21 @@ impl DefaultDesugarer {
                 name: field_name.clone(),
                 value: clone_expr_with_fresh_ids(default_expr, &mut id_gen),
             });
+            filled += 1;
+        }
+        // A default is an expression like any other, so what gets substituted in
+        // needs this same pass run over it: `inner: Inner = Inner {}` has to have
+        // *Inner's* own defaults filled in too. The snapshot in `lookup` is taken
+        // before the walk starts, so desugaring the stored default wouldn't help
+        // — the copy handed to the call site is what matters (#311).
+        let start = fields.len() - filled;
+        for i in start..fields.len() {
+            let mut value = std::mem::replace(
+                &mut fields[i].value,
+                Expr { id: NodeId(0), kind: ExprKind::Bool(false), span: rask_ast::Span::new(0, 0) },
+            );
+            self.desugar_expr(&mut value);
+            fields[i].value = value;
         }
     }
 

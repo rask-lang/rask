@@ -19,7 +19,7 @@ func main() {
     // Map - transform each element
     let doubled: Vec<i64> = numbers.iter()
         .map(|n| n * 2)
-        .collect()
+        .to_vec()
 
     print("Doubled: ")
     for n in doubled.iter() {
@@ -30,7 +30,7 @@ func main() {
 
     let squared: Vec<i64> = numbers.iter()
         .map(|n| n * n)
-        .collect()
+        .to_vec()
 
     print("Squared: ")
     for n in squared.iter() {
@@ -42,7 +42,7 @@ func main() {
     // Filter - keep only elements that match predicate
     let evens = numbers.iter()
         .filter(|n| n % 2 == 0)
-        .collect()
+        .to_vec()
 
     print("Even numbers: ")
     for n in evens.iter() {
@@ -53,7 +53,7 @@ func main() {
 
     let large = numbers.iter()
         .filter(|n| n > 5)
-        .collect()
+        .to_vec()
 
     print("Numbers > 5: ")
     for n in large.iter() {
@@ -66,7 +66,7 @@ func main() {
     let result: Vec<i64> = numbers.iter()
         .filter(|n| n % 2 == 0)  // Keep evens
         .map(|n| n * n)           // Square them
-        .collect()
+        .to_vec()
 
     print("Even numbers squared: ")
     for n in result.iter() {
@@ -79,7 +79,7 @@ func main() {
     let middle = numbers.iter()
         .skip(3)    // Skip first 3
         .take(4)    // Take next 4
-        .collect()
+        .to_vec()
 
     print("Middle section (skip 3, take 4): ")
     for n in middle.iter() {
@@ -94,7 +94,7 @@ func main() {
         .filter(|n| n < 8)        // Keep elements < 8
         .map(|n| n * 3)           // Triple them
         .filter(|n| n > 10)       // Keep only results > 10
-        .collect()
+        .to_vec()
 
     print("Complex chain result: ")
     for n in complex.iter() {
@@ -159,7 +159,7 @@ func main() {
 
     let uppercase: Vec<string> = words.iter()
         .map(|s| s.to_uppercase())
-        .collect()
+        .to_vec()
 
     print("Uppercase words: ")
     for word in uppercase.iter() {
@@ -170,7 +170,7 @@ func main() {
 
     let long_words = words.iter()
         .filter(|s| s.len() > 4)
-        .collect()
+        .to_vec()
 
     print("Words longer than 4 chars: ")
     for word in long_words.iter() {

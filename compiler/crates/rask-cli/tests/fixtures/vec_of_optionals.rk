@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value going into a container's element slot widens like any other argument
+// position, so `v.push(1)` on a `Vec<i32?>` stores a present option. Nothing
+// did that — a builtin collection method has no declared parameter type to
+// coerce against — so the bare int went into the 16-byte `[tag][payload]` slot
+// raw. Native read every element back as absent; the interpreter handed out a
+// bare i64 that `?` refused to test.
+//
+// Reading the elements back was a second bug on top: the element type was
+// tracked from whatever was pushed last, so `push(1)`, `push(none)`, `push(3)`
+// recorded `i32` and the loop took a tag out of a bare slot — a segfault on
+// three elements but not on two.
+
+func main() {
+    mut xs: Vec<i32?> = Vec.new()
+    xs.push(1)
+    xs.push(none)
+    xs.push(3)
+    println("len={xs.len()}")
+
+    for x in xs {
+        if x? {
+            println("present {x ?? -1}")
+        } else {
+            println("absent")
+        }
+    }
+
+    // Indexing, not just iteration.
+    println("[0]={xs[0] ?? -1} [1]={xs[1] ?? -1} [2]={xs[2] ?? -1}")
+
+    // set() writes an element slot too.
+    xs.set(1, 9)
+    println("after set [1]={xs[1] ?? -1}")
+
+    // Map values are the same position.
+    mut m: Map<string, i32?> = Map.new()
+    m.insert("a", 5)
+    m.insert("b", none)
+    let got = m.get("a")
+    println("map a present={got?}")
+
+    // A flat `??` chain reads left to right and keeps chaining (ER14a).
+    let p: i32? = none
+    let q: i32? = none
+    let r: i32? = 8
+    println("chain={p ?? q ?? r ?? 99}")
+    println("chain all none={p ?? q ?? 99}")
+}

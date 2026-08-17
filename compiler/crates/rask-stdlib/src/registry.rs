@@ -127,7 +127,7 @@ const VEC_METHODS: &[&str] = &[
     "push", "pop", "len", "get", "is_empty", "clear",
     "iter", "skip", "take", "first", "last", "contains",
     "reverse", "swap", "join", "eq", "ne", "clone", "to_vec",
-    "insert", "remove", "collect", "chunks",
+    "insert", "remove", "chunks",
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",
     "sort", "sort_by", "any", "all", "find", "position",

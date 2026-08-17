@@ -159,17 +159,18 @@ impl TypeChecker {
                         // The expectation only wins where the element actually
                         // coerced to it; anything else keeps its own type so a
                         // genuine mismatch is still reported downstream.
-                        // Integer coercion only, because that's all CV1a makes
-                        // implicit — if float widening joins it, this and MIR's
-                        // matching guard both have to widen or `(f64, f32)` goes
-                        // back to being laid out at its elements' widths (#660).
+                        // Any lossless scalar widening, not just integers. The
+                        // float case can't type-check yet, so it changes nothing
+                        // today — it's here so `(f64, f32)` doesn't go back to
+                        // being laid out at its elements' widths the moment #624
+                        // makes `f32` → `f64` implicit (#660).
                         let ty = Type::Tuple(
                             elem_types
                                 .iter()
                                 .zip(expected_elems.iter())
                                 .map(|(got, want)| {
                                     let got_r = self.ctx.apply(got);
-                                    if Self::is_integer_widening(&got_r, want) {
+                                    if Self::is_lossless_scalar_widening(&got_r, want) {
                                         want.clone()
                                     } else {
                                         got.clone()
@@ -221,6 +222,34 @@ impl TypeChecker {
             return;
         }
         if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
+            return;
+        }
+        // Only a value that actually implements the trait gets a vtable for it.
+        //
+        // The expected type arrives here already peeled of its wrappers, so a
+        // value that isn't destined for the `any Trait` side looks like one that
+        // is. Two ways that went wrong, both ending in a vtable that can't be
+        // built:
+        //
+        //   `-> (any Shape)?` with `return none` — expected peels to `any Shape`
+        //   and `none` is an `Option<_>`. MIR built the none Option, gave *that* a
+        //   vtable, and wrapped the box in a second Option: "vtable method
+        //   unknown.area".
+        //
+        //   `-> (any Shape) or Nope` with `return Nope {}` — the err branch, but
+        //   expected peels to the ok side: "vtable method Nope.area".
+        //
+        // A value that doesn't implement the trait is either the other branch or
+        // a type error reported elsewhere; boxing it is wrong either way (#764).
+        // Anything still unresolved keeps the old behaviour — `implements_trait`
+        // can't answer for a variable, and refusing on "don't know" would drop
+        // boxes the checker had accepted.
+        let resolved = self.ctx.apply(found);
+        let undecided = matches!(
+            resolved,
+            Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
+        );
+        if !undecided && !crate::traits::implements_trait(&self.types, &resolved, trait_name) {
             return;
         }
         self.trait_coercions.insert(expr.id, trait_name.clone());
@@ -394,14 +423,26 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Call { func, args } => self.check_call(expr.id, func, args, expr.span),
+            // `in_stmt_expr` describes the *call's* position, not its
+            // arguments'. It used to reach them, so in `out.push(if b: "1" else:
+            // "0")` — a bare expression statement — the argument's `if` decided
+            // it was in statement position and answered `void`. The same
+            // expression in `let s = out.push(…)` was fine, because a `let`
+            // never sets the flag.
+            ExprKind::Call { func, args } => {
+                self.in_stmt_expr = false;
+                self.check_call(expr.id, func, args, expr.span)
+            }
 
             ExprKind::MethodCall {
                 object,
                 method,
                 args,
                 type_args,
-            } => self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span),
+            } => {
+                self.in_stmt_expr = false;
+                self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span)
+            }
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
@@ -2294,6 +2335,18 @@ impl TypeChecker {
         }
     }
 
+    /// True when a variable of this name is in scope and holds an ordinary
+    /// value. `import os` also defines a local — a `__module_os` marker that
+    /// carries field access like `os.Command` — and that one is the namespace,
+    /// not a shadow of it.
+    pub(super) fn local_shadows_namespace(&self, name: &str) -> bool {
+        match self.lookup_local(name) {
+            Some(Type::UnresolvedNamed(n)) => !n.starts_with("__module_"),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         call_id: NodeId,
@@ -2303,9 +2356,12 @@ impl TypeChecker {
         type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
-        // Check if this is a builtin module method call (e.g., fs.open)
+        // Check if this is a builtin module method call (e.g., fs.open). A local
+        // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
+        // and routing `fs.len()` to the filesystem module reported "no method
+        // `len` found for type `fs`".
         if let ExprKind::Ident(name) = &object.kind {
-            if self.types.builtin_modules.is_module(name) {
+            if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
                 return self.check_module_method(name, method, args, type_args, span);
             }
         }
@@ -2336,8 +2392,14 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
             let base_name = name.split('<').next().unwrap_or(name);
-            if matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
-                || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
+            // A real local of the same name wins. The stub registry holds the
+            // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
+            // so `let fs = Vec.new()` used to land here and answer "no method
+            // `len` found for type `fs`".
+            let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
+            if !shadowed
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+                    || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
                     // Parse generic args, respecting nested angle brackets:

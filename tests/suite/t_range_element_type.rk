@@ -36,12 +36,12 @@ test "ctrl.ranges — adapter chains over such a Vec collect to a real type" {
         v.push(i)
     }
 
-    let doubled = v.map(|x| x * 2).collect()
+    let doubled = v.map(|x| x * 2).to_vec()
     assert doubled.len() == 5
     assert doubled[0] == 2
     assert doubled[4] == 10
 
-    let picked = v.filter(|x| x > 2).map(|x| x * 10).collect()
+    let picked = v.filter(|x| x > 2).map(|x| x * 10).to_vec()
     assert picked.len() == 3
     assert picked[0] == 30
     assert picked[2] == 50

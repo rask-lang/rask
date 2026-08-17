@@ -2330,11 +2330,13 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines.first(), Some(&"value 42"), "{}: join hands back the task's value: {:?}", mode, stdout);
         assert_eq!(lines.get(1), Some(&"value -1"), "{}: -1 is a value, not a failure: {:?}", mode, stdout);
-        // The two backends word the message differently (interp prefixes
-        // "panic: ", native prefixes the source location) — tracked separately.
+        // Both backends word it the same now (#748): the stored message is
+        // `file:line: msg`, with no reporter prefix baked in — `panic: ` belongs
+        // at print time, not in a string user code prints itself. The path is
+        // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked") && panicked.contains("boom"),
-            "{}: a panicked task joins as JoinError.Panicked carrying its message: {:?}", mode, stdout);
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:25: boom"),
+            "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
 }
@@ -3614,4 +3616,449 @@ read at eof is Eof: true
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }
+}
+
+// A value going into a container's element slot widens like any other argument
+// position, and reading one back uses the *declared* element type. Three bugs
+// stacked here: `v.push(1)` on a `Vec<i32?>` stored a bare int (builtin
+// collection methods have no declared parameter to coerce against); the element
+// type was then tracked from whichever push came last, so `push(1)`,
+// `push(none)`, `push(3)` recorded `i32`; and the payload rebind from
+// `if x? { … }` outlived its block, so the next `x` read a tag out of a bare
+// slot. Native segfaulted on three elements but not two.
+#[test]
+fn a_vec_of_optionals_reads_back_what_went_in_on_both_backends() {
+    let expected = "\
+len=3
+present 1
+absent
+present 3
+[0]=1 [1]=-1 [2]=3
+after set [1]=9
+map a present=true
+chain=8
+chain all none=99
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "vec_of_optionals.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// The payload rebind `if x?` installs is scoped to the branch. It used to leak
+// past the closing brace, so a second `if x?` on the same variable tested a tag
+// that wasn't there.
+#[test]
+fn a_presence_rebind_does_not_outlive_its_block() {
+    let expected = "first block\nsecond block\nas option: 5\nbound: 5\ndone\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "presence_rebind_scope.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// #699: `reflect.fields<T>()` inside a generic function needs to know what `T`
+// became at the call. Native monomorphizes, so `T` is already concrete by the
+// time MIR unrolls the loop; the interpreter doesn't, and the name reached
+// reflect as the literal "T" — "not a struct type". It records per-call type
+// bindings now, read off the arguments, with PC1's implicit `value: T` counting
+// as a declaration.
+#[test]
+fn reflect_through_a_generic_function_agrees_on_both_backends() {
+    let expected = "x y \ntext \ndirect:x direct:y \n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "reflect_through_generic.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// An `if` expression handed to a call is in value position, whatever position
+// the call is in. `in_stmt_expr` — the flag that makes a statement's trailing
+// `if` answer void — reached the arguments, so `out.push(if b: "1" else: "0")`
+// as a bare expression statement was "expected `string`, found `void`" while
+// `let s = out.push(…)` compiled. Found in examples/lsm_database.
+#[test]
+fn an_if_expression_can_be_a_call_argument_on_both_backends() {
+    let expected = "one\nzero\nbuilder: 10\nvec: yes\nstmt then\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "if_expr_as_argument.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// ctrl.panic/O4 + F1: a detached task's panic reaches stderr and names the task.
+// Native prefixed `task N panic at`; the interpreter printed the bare message
+// with no task id, and (before #748) its own `panic: ` in place of the location.
+#[test]
+fn a_detached_panic_is_reported_the_same_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "detached_panic_report.rk");
+        assert_eq!(code, 0, "{}: a detached task's panic doesn't kill main: {}", mode, stderr);
+        assert_eq!(stdout, "main still running\n", "{}", mode);
+        let report = stderr.trim_end();
+        assert!(report.starts_with("task 1 panic at ")
+                && report.ends_with("detached_panic_report.rk:12: detached boom"),
+            "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
+    }
+}
+
+// type.generics/HA4: floats aren't Hashable, so `to_bits()` is how a float
+// becomes a Map key — the caller decides what "the same key" means rather than
+// inheriting `NaN != NaN`. `Map<f64, V>` itself is rejected
+// (tests/compile_errors/float_map_key.rk); this is the way through.
+#[test]
+fn a_float_keys_a_map_through_its_bits_on_both_backends() {
+    let expected = "\
+len=2
+1.5 -> one-point-five
+-2.25 -> minus-two-and-a-quarter
+same key: true
+different: false
+bits(1.5)=4609434218613702656
+nan -> nan
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "float_key_by_bits.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// type.sequence SEQ28–SEQ31: a materializing terminal names what it builds.
+// `collect()` is gone; `to_vec()`, `to_map()` and `join(sep)` are the three
+// targets, and `to_map`/`join` were missing from the Iterator surface entirely —
+// only `Vec` had a `join`, and nothing had `to_map`.
+#[test]
+fn sequence_terminals_build_what_they_name_on_both_backends() {
+    let expected = "\
+to_vec: 3 alice carol
+to_map: 3
+  1 -> alice
+  3 -> carol
+collide: 1
+  0 -> carol
+join: alice, bob, carol
+filtered to_map: 2
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "sequence_terminals.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// type.structs FD1/FD2: a field default is an expression, so what gets
+// substituted needs the defaults pass run over it too. `inner: Inner = Inner {}`
+// was rejected as missing Inner's field — the defaults table is snapshotted
+// before the walk, so the copy handed to the call site was un-desugared. The
+// same literal in a function body always worked (#311).
+#[test]
+fn a_field_default_gets_its_own_defaults_filled_on_both_backends() {
+    let expected = "\
+o: 7 middle 8080 tags=0
+p: 7 middle 1
+q: 7 given 8080
+direct: 7
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "nested_field_defaults.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// #308: a comparison between integers of different signedness is answered by
+// value. Both operands widen to a 64-bit slot but don't read the same way there,
+// so one instruction can only be right for one case: native compared as unsigned
+// and said `5 > -1` was false, the interpreter compared as signed and said
+// `u64::MAX > 1` was false.
+#[test]
+fn a_mixed_signedness_comparison_is_answered_by_value_on_both_backends() {
+    let expected = "\
+u64 5  >  i32 -1 : true
+u64 5  <  i32 -1 : false
+i32 -1 <  u64 5  : true
+i32 -1 >  u64 5  : false
+u64 5  == i32 -1 : false
+u64 5  != i32 -1 : true
+u64 max >  i32 1 : true
+u64 max <  i32 1 : false
+i32 1   <  u64 max: true
+u64 5  == i32 5  : true
+u64 5  >= i32 5  : true
+u64 5  <= i32 5  : true
+u64 3  <  u64 7  : true
+i32 -5 <  i32 -2 : true
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "mixed_sign_compare.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// A `char` is a Unicode scalar, which `len()` (bytes) and `char_at(i)` (scalars)
+// already agree on. Native's `chars()` walked bytes, so `"aöb".chars()` yielded
+// four items and printed the halves of `ö` as Latin-1 — `[a][Ã][¶][b]`. Silent
+// mojibake for any non-ASCII text.
+#[test]
+fn string_chars_yields_scalars_on_both_backends() {
+    let expected = "\
+ascii:      len=3 chars=3
+two-byte:   len=4 chars=3
+three-byte: len=5 chars=3
+four-byte:  len=6 chars=3
+round-trip: [a][ö][b]
+code points: 97 246 98 
+char_at(1)=ö
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "string_chars_scalars.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `min`/`max` were the only iterator terminals with no native lowering, so
+// `v.iter().min()` reached codegen as a call to `Vec_iter` — "Function not
+// found". The fused loop keeps the running extreme, which has to start empty
+// rather than at zero, or an all-negative sequence answers 0.
+#[test]
+fn iter_min_and_max_are_fused_on_both_backends() {
+    let expected = "\
+min=-3 max=11
+empty min=999 max=999
+one min=7 max=7
+mapped max=3
+filtered min=5
+neg min=-9 max=-2
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "iter_min_max.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// An array literal of by-value aggregates segfaulted on any element read. The
+// slots are elem_size apart, so the value belongs *in* the slot, but the store
+// wrote one word (the source pointer) and the read loaded a word and treated it
+// as a pointer. A `string` element really is a pointer, so it keeps the word
+// store — hence struct/enum/tuple rather than "is an aggregate".
+#[test]
+fn an_array_of_aggregates_reads_back_on_both_backends() {
+    let expected = "\
+ps[0]=(1,2) ps[2]=(5,6)
+total=21
+area=12
+area=15
+area=0
+indexed area=15
+pairs[1]=(3,4)
+names[0]=alice names[2]=carol
+joined=alice,bob,carol,
+nums[1]=20
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "array_of_aggregates.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `let fs = Vec.from(…)` then `fs.len()` failed with "no method `len` found for
+// type `fs`". The method-call checker tried its namespace routes without asking
+// whether a local of that name existed, so an unimported module name beat the
+// variable. Imported module names can't be shadowed at all (E0209), so a local
+// always means "no module here".
+#[test]
+fn a_variable_named_after_a_module_wins_on_both_backends() {
+    let expected = "\
+fs=3
+time=4
+cli=0
+param=2
+http=1
+v=1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "module_name_as_variable.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `func lenof<T>(items: Vec<T>)` called with two element types died in codegen
+// with DuplicateDefinition("lenof$_"): `T` never bound, so both instantiations
+// mangled to the same name. Unify had no case for a container that's resolved on
+// one side and spelled by name on the other, which is exactly how a call's
+// argument meets its signature.
+#[test]
+fn a_type_param_inside_a_container_binds_on_both_backends() {
+    let expected = "\
+len=2 1
+len=2 2
+first=3
+first word=pear
+biggest=9
+biggest word=pear
+maps=0 0
+annotated=3
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_through_container.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `One<i64> { only: 9 }` segfaulted natively: a generic type's layout is stored
+// under its base name, so the literal found none, its temp was typed `ptr`
+// instead of the struct, and the field store wrote through an uninitialised
+// pointer. The retry is only for names in literal position — a stripped
+// `Vec<Ctr>` in a type string matches anything else called `Vec`.
+#[test]
+fn a_generic_struct_literal_with_type_args_works_on_both_backends() {
+    let expected = "\
+turbofish=9
+annotated=5 bare=7
+pair=1 one
+swapped=one 1
+string=hi
+holder=4
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_struct_turbofish.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// `r is ParseError` on a `T or (ParseError | DivError)` used to be answered by
+// the Result's own tag — first member read as Ok, second as Err — so every error
+// claimed to be whichever member was listed second, silently. And `e.message()`
+// on the union failed to lower at all. The union now carries its member index
+// alongside the payload: `is Member` tests both layers, and dispatch switches on
+// the index. Three members, so "the second one" can't accidentally be right.
+#[test]
+fn a_union_error_names_its_member_on_both_backends() {
+    let expected = "\
+parse: true false
+div:   false true
+ok:    true false false
+value=21
+a: true false false
+b: false true false
+c: false false true
+d: true
+plain: true
+msg: parse error: not a number
+msg: division by zero
+msg: ok(21)
+msg3: parse error: not a number
+msg3: division by zero
+msg3: over 10
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "union_error_member.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// Three native `any Trait` bugs in one program (#764 and neighbours):
+// `let a: (any Shape)? = c as any Shape` read back as `none` because MIR's type
+// resolver made a trait object named "Shape?" instead of an Option; `return none`
+// from a `-> (any Shape)?` (and `return Nope {}` from a `-> (any Shape) or Nope`)
+// asked for a vtable on a value that doesn't implement the trait; and a trait
+// object declared after a loop was dropped on the loop's back-edge, so the second
+// iteration double-freed.
+#[test]
+fn a_trait_object_in_an_optional_survives_on_both_backends() {
+    let expected = "\
+a = circle 12.56
+b = none
+pick(0) = circle 12.56
+pick(1) = square 9
+pick(2) = none
+c = square 16
+d = nope
+e = shape
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "trait_object_optional.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// An `own` closure capturing a Copy *parameter* inside a branch reported the
+// parameter maybe-moved at the next use (#768). The Copy check read
+// `binding_types`, which holds only let/mut bindings, so a parameter looked
+// non-Copy. `Handle<T>` needed one more step: resolving a parameter's type string
+// gave up on any generic spelling, so it never reached the rule that makes Handle
+// Copy.
+#[test]
+fn an_own_closure_capturing_a_copy_param_on_both_backends() {
+    let expected = "\
+scalar=kept=2 n=2
+scalar no branch=kept=0 n=2
+kept=1 id=20
+kept=0 id=10
+nocopy=1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "own_capture_of_param.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// The interpreter died at ~245 nested calls by overflowing the host stack —
+// SIGABRT, nothing printed, no exit code — where native manages millions (#759).
+// `main` and the test runner now run on the same 16 MiB stack every spawned task
+// already had (~245 → ~495), and running out is measured and reported instead.
+#[test]
+fn deep_recursion_runs_on_both_backends() {
+    let expected = "\
+down=300
+even=true odd=true
+sum=45150
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "deep_recursion.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// Unbounded recursion is a reported error, not a vanished process. The depth it
+// reaches depends on how heavy the frames are, so the test pins the diagnostic
+// and the exit code rather than a number.
+#[test]
+fn runaway_recursion_is_reported_not_aborted() {
+    let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
+    let out = format!("{}{}", stdout, stderr);
+    assert_eq!(code, 1, "should exit 1, not abort: {}", out);
+    assert!(out.contains("R0023"), "should be the recursion diagnostic: {}", out);
+    assert!(out.contains("recursion too deep"), "{}", out);
+    assert!(
+        out.contains("`down`"),
+        "should name the innermost function: {}", out,
+    );
+}
+
+// The other half: a non-Copy parameter really is moved by an `own` capture, so a
+// use after the branch stays an error. The #768 fix was to let a parameter's type
+// reach the Copy check, not to stop marking captures moved.
+#[test]
+fn error_own_capture_moves_a_noncopy_param() {
+    let (failed, out) = compile_error_output("own_capture_moves_noncopy.rk");
+    assert!(failed, "a moved 24-byte struct must still be rejected: {}", out);
+    assert!(out.contains("E0813"), "should be maybe-moved (E0813): {}", out);
+    assert!(out.contains("`big`"), "should name the moved binding: {}", out);
 }

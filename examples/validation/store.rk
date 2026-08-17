@@ -134,7 +134,7 @@ extend Store {
             .skip(filter.offset)
             .take(filter.limit)
             .map(|r| r.view.clone())
-            .collect()
+            .to_vec()
 
         return ListResponse { items: page, total: total, offset: filter.offset }
     }

@@ -1631,6 +1631,23 @@ impl<'a> FunctionBuilder<'a> {
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
+                // A by-value aggregate element lives *in* its slot — the slots
+                // are `i * size` apart and everything downstream (field reads,
+                // tag reads, method receivers) wants the address. Loading eight
+                // bytes and treating them as the value's pointer is what made
+                // every element read of `[Pt { x: 1, y: 2 }, …]` segfault.
+                let elem_is_inline = Self::operand_mir_type(base, ctx.locals)
+                    .and_then(|t| match t {
+                        MirType::Array { elem, .. } => Some(matches!(
+                            *elem,
+                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                        )),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                if elem_is_inline {
+                    return Ok(addr);
+                }
                 let load_ty = expected_ty.unwrap_or(types::I64);
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, addr, 0))
@@ -2566,6 +2583,73 @@ impl<'a> FunctionBuilder<'a> {
 
         let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
+        // A mixed-signedness comparison is answered by *value* (#308). Both
+        // operands widen to i64, but they don't read the same way there: the
+        // unsigned side is a bit pattern and the signed side a number, so one
+        // `icmp` can only be right for one of them. Native compared as unsigned
+        // and said `5 > -1` was false; the interpreter compared as signed and
+        // said `u64::MAX > 1` was false. Each got the other's case wrong.
+        //
+        // A negative signed operand is below every unsigned one, and once it
+        // isn't negative both sides are non-negative and unsigned order is
+        // right — a sign check and a compare, which is what the design predicted.
+        if is_comparison {
+            let lt = Self::operand_mir_type(left, ctx.locals);
+            let rt = Self::operand_mir_type(right, ctx.locals);
+            if let (Some(lty), Some(rty)) = (&lt, &rt) {
+                let mixed = lty.is_int_like() && rty.is_int_like()
+                    && lty.is_unsigned() != rty.is_unsigned();
+                if mixed {
+                    let signed_on_left = !lty.is_unsigned();
+                    // Widen each side the way its own type reads — zero-extend an
+                    // unsigned operand, sign-extend a signed one. Branch on the
+                    // value's *actual* Cranelift type: a local's declared MIR
+                    // width and the width it's held at don't always agree, and
+                    // extending an i64 is a verifier error.
+                    let widen = |b: &mut ClifFunctionBuilder, v: Value, ty: &MirType| -> Value {
+                        let have = b.func.dfg.value_type(v);
+                        if have == types::I64 || !have.is_int() {
+                            v
+                        } else if ty.is_unsigned() {
+                            b.ins().uextend(types::I64, v)
+                        } else {
+                            b.ins().sextend(types::I64, v)
+                        }
+                    };
+                    let l64 = widen(builder, lhs_val, lty);
+                    let r64 = widen(builder, rhs_val, rty);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let neg = if signed_on_left {
+                        builder.ins().icmp(IntCC::SignedLessThan, l64, zero)
+                    } else {
+                        builder.ins().icmp(IntCC::SignedLessThan, r64, zero)
+                    };
+                    let ucc = match op {
+                        BinOp::Eq => IntCC::Equal,
+                        BinOp::Ne => IntCC::NotEqual,
+                        BinOp::Lt => IntCC::UnsignedLessThan,
+                        BinOp::Le => IntCC::UnsignedLessThanOrEqual,
+                        BinOp::Gt => IntCC::UnsignedGreaterThan,
+                        BinOp::Ge => IntCC::UnsignedGreaterThanOrEqual,
+                        _ => unreachable!("checked by is_comparison"),
+                    };
+                    let ucmp = builder.ins().icmp(ucc, l64, r64);
+                    // What the answer is when the signed side *is* negative.
+                    let when_neg = match (op, signed_on_left) {
+                        (BinOp::Eq, _) => false,
+                        (BinOp::Ne, _) => true,
+                        (BinOp::Lt, true) | (BinOp::Le, true) => true,
+                        (BinOp::Gt, true) | (BinOp::Ge, true) => false,
+                        (BinOp::Lt, false) | (BinOp::Le, false) => false,
+                        (BinOp::Gt, false) | (BinOp::Ge, false) => true,
+                        _ => unreachable!("checked by is_comparison"),
+                    };
+                    let fixed = builder.ins().iconst(types::I8, i64::from(when_neg));
+                    return Ok(builder.ins().select(neg, fixed, ucmp));
+                }
+            }
+        }
+
         // Signedness lives in the MIR type — a Cranelift integer carries none.
         // A constant operand has no type to read, so take it from whichever side
         // does; both operands of an arithmetic operator share a type anyway.
@@ -2804,10 +2888,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 Ok(acc)
             }
-            // Unions carry no active-variant tag, so the only defined
-            // comparison is over the raw bytes of the widest variant.
+            // A union's bytes start with its member index, so a byte-wise
+            // comparison can't call two different members equal.
             MirType::Union(variants) => {
-                let size = variants.iter().map(|v| v.size()).max().unwrap_or(0);
+                let size = rask_mono::abi::UNION_PAYLOAD_OFFSET
+                    + variants.iter().map(|v| v.size()).max().unwrap_or(0);
                 Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
             }
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
@@ -5199,13 +5284,16 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::String => Some(16),
             MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
+            // `[member:8][member bytes]` — the index word counts, or the slot
+            // comes up 8 bytes short and the widest member's tail lands past its
+            // end (#776).
             MirType::Union(variants) => {
                 let max = variants.iter()
                     .map(|v| Self::resolve_type_alloc_size(v, struct_layouts, enum_layouts)
                         .unwrap_or(v.size()))
                     .max()
                     .unwrap_or(0);
-                Some(max)
+                Some(rask_mono::abi::UNION_PAYLOAD_OFFSET + max)
             }
             _ => None,
         }
@@ -5495,6 +5583,10 @@ impl<'a> FunctionBuilder<'a> {
                 // 8 bytes as a scalar kept the data pointer and dropped the
                 // vtable (#552).
                 | MirType::TraitObject { .. }
+                // An error union is `[member:8][member bytes]` in the payload
+                // area. Loaded as a word, the member index came back as if it
+                // were the union's address (#776).
+                | MirType::Union(_)
         )
     }
 
@@ -5974,11 +6066,19 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     types::I64
                 };
+                // The payload has to go in at the width the *reader* takes it
+                // out at, which is the slot's storage type, not the declared
+                // one: a float payload lives in the slot as an f64 and the read
+                // demotes. Converting to the declared f32 here wrote four bytes
+                // where eight were read, so `let a: f32 = "2.25".parse() ?? -1.0`
+                // came back 0 while the f64 spelling was fine.
                 let ok_ty = dst
                     .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
                     .and_then(|l| match &l.ty {
-                        MirType::Result { ok, .. } => mir_to_cranelift_type(ok).ok(),
-                        other => mir_to_cranelift_type(other).ok(),
+                        MirType::Result { ok, .. } => Self::slot_storage_type(ok)
+                            .or_else(|| mir_to_cranelift_type(ok).ok()),
+                        other => Self::slot_storage_type(other)
+                            .or_else(|| mir_to_cranelift_type(other).ok()),
                     })
                     .unwrap_or(writer_ty);
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(

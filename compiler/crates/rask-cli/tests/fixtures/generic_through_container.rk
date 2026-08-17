@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type parameter that only appears inside a container never bound.
+//
+//     func lenof<T>(items: Vec<T>) -> u64 { return items.len() }
+//     lenof(Vec.from([1, 2]))
+//     lenof(Vec.from(["a"]))
+//     // error: codegen 'lenof$_': DuplicateDefinition("lenof$_")
+//
+// Both calls left `T` a free variable, so both instantiations mangled to the
+// same `lenof$_` and the second definition collided with the first.
+//
+// Unify had a case for two resolved containers and a case for two spelled by
+// name, but not for the mix — and the argument's `Vec` arrives resolved to a
+// TypeId while the signature's `Vec<T>` is still spelled. So the pair deferred
+// on every pass and the element types never met. Annotating the argument
+// (`let a: Vec<i64> = …`) resolved both sides and hid it.
+
+func lenof<T>(items: Vec<T>) -> u64 {
+    return items.len()
+}
+
+func firstof<T>(items: Vec<T>) -> T? {
+    for it in items {
+        return it
+    }
+    return none
+}
+
+func biggest<T>(items: Vec<T>) -> T? where T: Comparable {
+    mut best: T? = none
+    for it in items {
+        if best? as b {
+            if it > b {
+                best = it
+            }
+        } else {
+            best = it
+        }
+    }
+    return best
+}
+
+func keys_of<K, V>(m: Map<K, V>) -> u64 {
+    return m.len()
+}
+
+func main() {
+    // The reported case: two instantiations, argument built inline.
+    println("len={lenof(Vec.from([1, 2]))} {lenof(Vec.from([\"a\"]))}")
+
+    // Through an unannotated local.
+    let nums = Vec.from([3, 9])
+    let words = Vec.from(["pear", "apple"])
+    println("len={lenof(nums)} {lenof(words)}")
+
+    // T in the return position too.
+    if firstof(nums)? as n {
+        println("first={n}")
+    }
+    if firstof(words)? as w {
+        println("first word={w}")
+    }
+
+    // With a bound, so the body needs the concrete type to compare.
+    if biggest(nums)? as b {
+        println("biggest={b}")
+    }
+    if biggest(words)? as b {
+        println("biggest word={b}")
+    }
+
+    // Two parameters through a two-arg container.
+    let m1: Map<string, i64> = Map.new()
+    let m2: Map<i64, bool> = Map.new()
+    println("maps={keys_of(m1)} {keys_of(m2)}")
+
+    // The annotated form that always worked, still works.
+    let a: Vec<i64> = Vec.from([1, 2, 3])
+    println("annotated={lenof(a)}")
+}

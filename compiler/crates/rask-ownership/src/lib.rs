@@ -1006,12 +1006,17 @@ impl<'a> OwnershipChecker<'a> {
                         if !resource_captures.contains(name) {
                             if self.bindings.contains_key(name) {
                                 // Copy types stay valid in the outer scope (VS1/VS2).
-                                let is_copy_capture = self
-                                    .binding_types
-                                    .get(name)
-                                    .map(|t| self.is_copy(t))
-                                    .unwrap_or(false);
-                                if !is_copy_capture {
+                                //
+                                // Through `capture_is_copy`, which also reads a
+                                // parameter's declared type. `binding_types` alone
+                                // holds only `let`/`mut` bindings, so a captured
+                                // *parameter* looked non-Copy and was marked moved:
+                                // `v.filter(own |c| c != n)` inside a branch then
+                                // reported `n` maybe-moved at the next use, while
+                                // the identical code with `n` a local was fine
+                                // (#768). Same lookup the non-`own` path below
+                                // already used.
+                                if !self.capture_is_copy(name) {
                                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                                 }
                             }
@@ -1721,10 +1726,25 @@ impl<'a> OwnershipChecker<'a> {
         false
     }
 
-    /// Resolve a simple type-annotation string to a `Type`. Handles primitives
-    /// and plain named types; generics/compound spellings return None (treated
-    /// as non-Copy, the safe default).
+    /// Resolve a simple type-annotation string to a `Type`. Handles primitives,
+    /// plain named types, and a generic spelling reduced to its base name;
+    /// anything else returns None (treated as non-Copy, the safe default).
     fn type_from_name(&self, name: &str) -> Option<Type> {
+        // `Handle<Item>` has to reach `is_copy`, which answers by base name for
+        // Handle/WeakHandle and stays conservative for every other container.
+        // Returning None here made a captured `n: Handle<Item>` parameter look
+        // non-Copy, so an `own` closure marked it moved (#768). The arguments
+        // aren't needed — nothing downstream inspects them.
+        if let Some(base) = name.split('<').next().filter(|b| *b != name) {
+            let base = base.trim();
+            if base.is_empty() {
+                return None;
+            }
+            return Some(Type::UnresolvedGeneric {
+                name: base.to_string(),
+                args: Vec::new(),
+            });
+        }
         Some(match name {
             "bool" => Type::Bool,
             "char" => Type::Char,
