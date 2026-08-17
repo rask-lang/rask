@@ -86,15 +86,37 @@ delete would have nothing to put there. The same sentence applied to locals give
 the locals rule, and which resolution you get depends only on whether the fixup can
 reach the slot:
 
-| Where the link lives | Store can reach it | Rule |
+| Where the link lives | Who keeps it honest | Rule |
 |---|---|---|
-| A field — `entity.target`, `world.player`, a list element | yes | must be `Link<T>?`; delete nulls it at runtime |
-| A local variable | no | must be `Link<T>`; the compiler rejects use after delete |
+| A field — `entity.target`, `world.player`, a list element | the store nulls it | must be `Link<T>?` |
+| A local, parameter or return | the compiler rejects use-after-delete | `Link<T>` is fine |
+| A module-level `const` | **nobody** | should be rejected; currently isn't |
 
 So the `?` is the signal for which discipline is in force: optional means the store
 maintains this slot, non-optional means the compiler guarantees liveness. One
 principle — *a link never points at a dead node* — with the mechanism chosen by
 reachability.
+
+Function parameters and return types are locals for this purpose, and already work
+unchanged: `func look(n: Link<Node>) -> i32` and
+`func first(s: Store<Node>) -> Link<Node>?` both run today, because the caller's
+and callee's bodies are exactly where the compiler can see the deletes.
+
+**A third position has neither keeper, and the prototype accepts it.** A
+module-level `const` is outside every function body, so no flow analysis reaches
+it, and it is not a field, so the store never wrote it down:
+
+```rask
+const ROOT: Link<Node> = Store.new().insert(Node { id: 1 })
+func main() { println("{ROOT.id}") }        // typechecks, prints 1
+```
+
+Worse than dangling-after-delete: the store here is a temporary that is gone by the
+time `main` runs, so `ROOT` points into a store that no longer exists. The
+prototype survives only because its nodes are refcounted; with the raw pointers the
+design specifies, this dangles from program start. The rule the table implies —
+*a link may live only where the store or the compiler can reach it* — forbids
+const links, and nothing currently enforces that.
 
 It also sharpens what "checkless" claims, which is narrower than the phrase
 suggests:
@@ -115,6 +137,33 @@ local is trustworthy precisely because delete-then-use won't compile.
 A corroboration that this is the right shape: under the compile-time experiment,
 `store.contains(n)` on a local link became an error. Correct — if the type
 guarantees liveness, asking whether it is live is a question with no meaning.
+
+### What a required edge in a field would need
+
+The table forbids a non-optional link in a field, which is E0327 today. Making one
+legal takes two things, and neither is `inverse`.
+
+**To destroy it: a delete policy — cascade or restrict.** When the target dies,
+delete has to do *something* with a field that cannot hold `none`. Either works,
+and one is enough:
+
+- **restrict** — the delete fails while a required edge points at the target. A
+  required edge becomes an ownership claim: you cannot delete the `Body` while an
+  `Entity` declares it needs one.
+- **cascade** — the delete propagates to the holder, so the field never outlives
+  its target.
+
+`inverse` does not help here and is a separate concern. It keeps two edges in sync
+(a `parent` and a `children` list naming each other); it says nothing about what
+goes in a required field when the target dies. Delete a parent and the child's
+`parent: Link<Node>` still has nothing to write — cascade is what saves that, not
+the inverse declaration.
+
+**To construct it: batches.** A required cycle cannot be built one field at a time,
+which is what killed required edges in the adversarial pass (A4) before batches
+reversed it. Both halves are needed, which is why the decision table's
+"set-to-`none` only, cascade and restrict deferred" cannot stand alongside
+admitting `Link<T>`.
 
 ## The short version
 
