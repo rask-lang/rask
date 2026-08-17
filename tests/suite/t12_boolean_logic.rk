@@ -48,28 +48,28 @@ func side_effect(mutate witness: Vec<i32>) -> bool {
 
 test "and short-circuits on false" {
     mut w = Vec<i32>.new()
-    let result = false && side_effect(w)
+    let result = false && side_effect(mutate w)
     assert !result
     assert w.len() == 0, "right side should not be evaluated"
 }
 
 test "or short-circuits on true" {
     mut w = Vec<i32>.new()
-    let result = true || side_effect(w)
+    let result = true || side_effect(mutate w)
     assert result
     assert w.len() == 0, "right side should not be evaluated"
 }
 
 test "and evaluates right when left is true" {
     mut w = Vec<i32>.new()
-    let result = true && side_effect(w)
+    let result = true && side_effect(mutate w)
     assert result
     assert w.len() == 1
 }
 
 test "or evaluates right when left is false" {
     mut w = Vec<i32>.new()
-    let result = false || side_effect(w)
+    let result = false || side_effect(mutate w)
     assert result
     assert w.len() == 1
 }

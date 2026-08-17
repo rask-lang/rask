@@ -76,11 +76,11 @@ extend Arena {
         if self.top + aligned > self.capacity {
             return ArenaError.Exhausted
         }
-        ensure_size(self.buf, self.top + aligned)
+        ensure_size(mutate self.buf, self.top + aligned)
         let offset = self.top
-        write_u8(self.buf, offset, kind as i64)
-        write_u8(self.buf, offset + 1, 0)
-        write_u16le(self.buf, offset + 2, body_size)
+        write_u8(mutate self.buf, offset, kind as i64)
+        write_u8(mutate self.buf, offset + 1, 0)
+        write_u16le(mutate self.buf, offset + 2, body_size)
         self.top = self.top + aligned
         return offset
     }
@@ -92,9 +92,9 @@ extend Arena {
         let len = bytes.len() truncate to i64
         let offset = try self.alloc(ObjectKind.String, 4 + len)
         let body = offset + HEADER_SIZE
-        write_u32le(self.buf, body, len)
+        write_u32le(mutate self.buf, body, len)
         for i in 0..len {
-            write_u8(self.buf, body + 4 + i, (bytes.get(i) ?? 0) truncate to i64)
+            write_u8(mutate self.buf, body + 4 + i, (bytes.get(i) ?? 0) truncate to i64)
         }
         return offset
     }
@@ -114,8 +114,8 @@ extend Arena {
         // Body: len(u32) | cap(u32) | values[cap] (each 8 bytes)
         let offset = try self.alloc(ObjectKind.Array, 8 + cap * VALUE_SIZE)
         let body = offset + HEADER_SIZE
-        write_u32le(self.buf, body, 0)
-        write_u32le(self.buf, body + 4, cap)
+        write_u32le(mutate self.buf, body, 0)
+        write_u32le(mutate self.buf, body + 4, cap)
         return offset
     }
 
@@ -132,7 +132,7 @@ extend Arena {
     }
 
     func array_set(self, offset: i64, idx: i64, val: i64) {
-        write_i64le(self.buf, offset + HEADER_SIZE + 8 + idx * VALUE_SIZE, val)
+        write_i64le(mutate self.buf, offset + HEADER_SIZE + 8 + idx * VALUE_SIZE, val)
     }
 
     func array_push(self, offset: i64, val: i64) -> i64 or ArenaError {
@@ -151,14 +151,14 @@ extend Arena {
             let new_body = new_offset + HEADER_SIZE
             for i in 0..len {
                 let v = read_i64le(self.buf, body + 8 + i * VALUE_SIZE)
-                write_i64le(self.buf, new_body + 8 + i * VALUE_SIZE, v)
+                write_i64le(mutate self.buf, new_body + 8 + i * VALUE_SIZE, v)
             }
-            write_i64le(self.buf, new_body + 8 + len * VALUE_SIZE, val)
-            write_u32le(self.buf, new_body, len + 1)
+            write_i64le(mutate self.buf, new_body + 8 + len * VALUE_SIZE, val)
+            write_u32le(mutate self.buf, new_body, len + 1)
             return new_offset
         }
-        write_i64le(self.buf, body + 8 + len * VALUE_SIZE, val)
-        write_u32le(self.buf, body, len + 1)
+        write_i64le(mutate self.buf, body + 8 + len * VALUE_SIZE, val)
+        write_u32le(mutate self.buf, body, len + 1)
         return offset
     }
 
@@ -173,7 +173,7 @@ extend Arena {
     }
 
     func struct_set_field(self, offset: i64, idx: i64, val: i64) {
-        write_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
+        write_i64le(mutate self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
     }
 
     func alloc_enum(self, field_count: i64) -> i64 or ArenaError {
@@ -188,7 +188,7 @@ extend Arena {
     }
 
     func enum_set_field(self, offset: i64, idx: i64, val: i64) {
-        write_i64le(self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
+        write_i64le(mutate self.buf, offset + HEADER_SIZE + idx * VALUE_SIZE, val)
     }
 
     func alloc_map(self, cap: i64) -> i64 or ArenaError {
@@ -200,11 +200,11 @@ extend Arena {
         let body_size = 8 + cap * 4 + cap * MAP_ENTRY_SIZE
         let offset = try self.alloc(ObjectKind.Map, body_size)
         let body = offset + HEADER_SIZE
-        write_u32le(self.buf, body, 0)
-        write_u32le(self.buf, body + 4, cap)
+        write_u32le(mutate self.buf, body, 0)
+        write_u32le(mutate self.buf, body + 4, cap)
         let idx_start = body + 8
         for i in 0..cap {
-            write_u32le(self.buf, idx_start + i * 4, EMPTY_SLOT)
+            write_u32le(mutate self.buf, idx_start + i * 4, EMPTY_SLOT)
         }
         return offset
     }
@@ -262,17 +262,17 @@ extend Arena {
             let entry_idx = read_u32le(self.buf, idx_start + slot * 4)
             if entry_idx == EMPTY_SLOT {
                 let entry_base = entries_start + live * MAP_ENTRY_SIZE
-                write_i64le(self.buf, entry_base, key)
-                write_i64le(self.buf, entry_base + 8, val)
-                write_u32le(self.buf, entry_base + 16, hash)
-                write_u32le(self.buf, entry_base + 20, 0)
-                write_u32le(self.buf, idx_start + slot * 4, live)
-                write_u32le(self.buf, body, live + 1)
+                write_i64le(mutate self.buf, entry_base, key)
+                write_i64le(mutate self.buf, entry_base + 8, val)
+                write_u32le(mutate self.buf, entry_base + 16, hash)
+                write_u32le(mutate self.buf, entry_base + 20, 0)
+                write_u32le(mutate self.buf, idx_start + slot * 4, live)
+                write_u32le(mutate self.buf, body, live + 1)
                 return offset
             }
             let entry_base = entries_start + entry_idx * MAP_ENTRY_SIZE
             if read_i64le(self.buf, entry_base) == key {
-                write_i64le(self.buf, entry_base + 8, val)
+                write_i64le(mutate self.buf, entry_base + 8, val)
                 return offset
             }
             slot = (slot + 1) % cap
@@ -304,13 +304,13 @@ extend Arena {
             }
 
             let dst = new_entries + i * MAP_ENTRY_SIZE
-            write_i64le(self.buf, dst, k)
-            write_i64le(self.buf, dst + 8, v)
-            write_u32le(self.buf, dst + 16, h)
-            write_u32le(self.buf, dst + 20, 0)
-            write_u32le(self.buf, new_idx_start + slot * 4, i)
+            write_i64le(mutate self.buf, dst, k)
+            write_i64le(mutate self.buf, dst + 8, v)
+            write_u32le(mutate self.buf, dst + 16, h)
+            write_u32le(mutate self.buf, dst + 20, 0)
+            write_u32le(mutate self.buf, new_idx_start + slot * 4, i)
         }
-        write_u32le(self.buf, new_body, old_live)
+        write_u32le(mutate self.buf, new_body, old_live)
         return new_offset
     }
 }

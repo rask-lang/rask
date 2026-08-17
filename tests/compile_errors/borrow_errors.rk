@@ -81,7 +81,7 @@ func test_overlapping_borrow() {
     mut p = Player { health: 50, score: 10 }
     // Passing p.health as mutate, then p as borrow — whole-object
     // conflicts with field-level borrow (F3)
-    boost(p.health)
+    boost(mutate p.health)
     // After boost completes, p is usable again. But simultaneous would fail.
 }
 

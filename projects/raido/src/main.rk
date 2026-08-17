@@ -52,7 +52,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 } else {
                     bx
                 }
-                reg_set(regs, a, Value.Int(val))
+                reg_set(mutate regs, a, Value.Int(val))
             }
             Opcode.ADD => {
                 let b = decode_b(instr)
@@ -60,7 +60,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 let lhs = reg_get(regs, b)
                 let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
-                    (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Int(x + y))
+                    (Value.Int(x), Value.Int(y)) => reg_set(mutate regs, a, Value.Int(x + y))
                     _ => print("TypeError: cannot add\n")
                 }
             }
@@ -70,7 +70,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 let lhs = reg_get(regs, b)
                 let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
-                    (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Int(x - y))
+                    (Value.Int(x), Value.Int(y)) => reg_set(mutate regs, a, Value.Int(x - y))
                     _ => print("TypeError: cannot sub\n")
                 }
             }
@@ -80,8 +80,8 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
                 let lhs = reg_get(regs, b)
                 let rhs = reg_get(regs, c)
                 match (lhs, rhs) {
-                    (Value.Int(x), Value.Int(y)) => reg_set(regs, a, Value.Bool(x < y))
-                    _ => reg_set(regs, a, Value.Bool(false))
+                    (Value.Int(x), Value.Int(y)) => reg_set(mutate regs, a, Value.Bool(x < y))
+                    _ => reg_set(mutate regs, a, Value.Bool(false))
                 }
             }
             Opcode.JMP => {

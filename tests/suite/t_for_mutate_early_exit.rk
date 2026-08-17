@@ -26,7 +26,7 @@ test "ctrl.loops/LP11 — return writes the current element back" {
     mut v = Vec.new()
     v.push(1)
     v.push(2)
-    let got = first_bumped(v)
+    let got = first_bumped(mutate v)
     assert got == 101
     assert v[0] == 101
     assert v[1] == 2
@@ -44,7 +44,7 @@ test "ctrl.loops/LP11 — break writes the current element back" {
     mut v = Vec.new()
     v.push(1)
     v.push(2)
-    let got = bump_then_break(v)
+    let got = bump_then_break(mutate v)
     assert got == 0
     assert v[0] == 101
     assert v[1] == 2
@@ -63,7 +63,7 @@ func return_under_if(mutate v: Vec<i64>) -> i64 {
 test "ctrl.loops/LP11 — return nested in an if still writes back" {
     mut v = Vec.new()
     v.push(1)
-    assert return_under_if(v) == 101
+    assert return_under_if(mutate v) == 101
     assert v[0] == 101
 }
 
@@ -85,7 +85,7 @@ test "ctrl.loops/LP11 — return from a nested for mutate writes both levels" {
     inner.push(1)
     mut outer = Vec.new()
     outer.push(inner.clone())
-    assert inner_return(outer) == 101
+    assert inner_return(mutate outer) == 101
     assert outer[0][0] == 101
 }
 
@@ -108,7 +108,7 @@ func propagate(mutate v: Vec<i64>) -> i64 or Boom {
 test "ctrl.loops/LP11 — a failing try writes the current element back" {
     mut v = Vec.new()
     v.push(1)
-    let r = propagate(v)
+    let r = propagate(mutate v)
     match r {
         i64 as n => assert n == -1
         Boom as e => assert e.why == "too big"
@@ -129,7 +129,7 @@ test "ctrl.loops/LP11 — writeback and ensure both run on return" {
     mut v = Vec.new()
     v.push(1)
     mut log = Vec.new()
-    assert bump_with_ensure(v, log) == 101
+    assert bump_with_ensure(mutate v, mutate log) == 101
     assert v[0] == 101
     assert log.len() == 1
 }

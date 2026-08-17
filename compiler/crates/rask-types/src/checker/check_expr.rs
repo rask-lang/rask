@@ -2243,6 +2243,21 @@ impl TypeChecker {
         }
     }
 
+    /// The argument as the reader wrote it, for PM4's message and its fix.
+    ///
+    /// Only the shapes a `mutate` argument can be — a name or a field path.
+    /// Anything else has no place to write the value back to, so it can't reach
+    /// a `mutate` parameter in the first place.
+    fn argument_text(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::argument_text(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
             | "assert" | "debug" | "format" | "fence" | "compiler_fence"
@@ -2269,6 +2284,11 @@ impl TypeChecker {
         let param_ids = match &sym.kind {
             SymbolKind::Function { params, .. } => params.clone(),
             _ => return,
+        };
+
+        let callee_name = match &func.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => sym.name.clone(),
         };
 
         // Validate each argument annotation
@@ -2318,8 +2338,24 @@ impl TypeChecker {
             }
 
             match (&arg.mode, is_take, is_mutate) {
-                // Missing annotations are OK — call-site markers are optional.
-                // IDE shows ghost annotations for visibility (spec decision).
+                // PM4: an argument going into a `mutate` parameter is written
+                // `mutate arg`. The checker backstops a misread *move* — using
+                // a value after it's moved is an error — but nothing backstops
+                // a misread *mutation*: both readings are legal code, so the
+                // one the compiler can't catch is the one that gets marked.
+                //
+                // `own` on a `take` argument stays optional (PM4), because a
+                // wrong reading there does get caught.
+                (ArgMode::Default, false, true) => {
+                    let arg_text = Self::argument_text(&arg.expr)
+                        .unwrap_or_else(|| param_name.clone());
+                    self.errors.push(TypeError::MissingMutateMarker {
+                        callee: callee_name.clone(),
+                        arg: arg_text,
+                        param_name: param_name.clone(),
+                        span: arg.expr.span,
+                    });
+                }
                 (ArgMode::Default, true, _) => {}
                 (ArgMode::Default, _, true) => {}
                 // Correct annotations are fine

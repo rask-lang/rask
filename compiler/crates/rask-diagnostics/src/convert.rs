@@ -1008,6 +1008,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("annotations must match parameter declarations")
             }
 
+            MissingMutateMarker { callee, arg, param_name, span } => {
+                Diagnostic::error(format!(
+                    "`{}` mutates `{}` — mark it at the call site",
+                    callee, arg
+                ))
+                    .with_code("E0373")
+                    .with_primary(*span, format!("passed to the `mutate {}` parameter", param_name))
+                    .with_fix(format!("{}(mutate {}, …)", callee, arg))
+                    .with_why("the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]")
+            }
+
             TryOnNonResult { found, span } => {
                 Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
                     .with_code("E0329")

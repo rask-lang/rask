@@ -23,8 +23,8 @@ func write_u32le(mutate buf: Vec<u8>, offset: i64, val: i64) {
 }
 
 func write_i64le(mutate buf: Vec<u8>, offset: i64, val: i64) {
-    write_u32le(buf, offset, val & 0xFFFFFFFF)
-    write_u32le(buf, offset + 4, ((val >> 32) & 0xFFFFFFFF))
+    write_u32le(mutate buf, offset, val & 0xFFFFFFFF)
+    write_u32le(mutate buf, offset + 4, ((val >> 32) & 0xFFFFFFFF))
 }
 
 // --- Read ---

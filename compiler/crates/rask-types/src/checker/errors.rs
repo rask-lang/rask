@@ -316,6 +316,15 @@ pub enum TypeError {
         param_index: usize,
         span: Span,
     },
+    /// PM4: an argument going into a `mutate` parameter is written
+    /// `mutate arg`. Method receivers are exempt.
+    #[error("`{callee}` mutates `{arg}` — mark it at the call site")]
+    MissingMutateMarker {
+        callee: String,
+        arg: String,
+        param_name: String,
+        span: Span,
+    },
     #[error("`try` requires a Result or Option type, found {found}")]
     TryOnNonResult {
         found: Type,
@@ -917,6 +926,7 @@ impl TypeError {
             | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
+            | MissingMutateMarker { .. }
             | UnsafeRequired { .. }
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }

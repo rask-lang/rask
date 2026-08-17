@@ -1358,6 +1358,35 @@ fn module_names_can_be_bound_as_locals() {
     }
 }
 
+// #530 / PM4: an argument going into a `mutate` parameter is written
+// `mutate arg`. The asymmetry is the point — a misread *move* is caught by the
+// use-after-move check, a misread mutation isn't, so the uncatchable one gets
+// written down.
+#[test]
+fn error_missing_call_site_mutate_marker() {
+    let (failed, out) = compile_error_output("mutate_marker_required.rk");
+    assert!(failed, "a `mutate` argument needs its marker: {}", out);
+    assert!(
+        out.contains("`apply_damage` mutates `player` — mark it at the call site"),
+        "should name callee and argument: {}", out,
+    );
+    // PM5: the marker follows the signature, not the argument's size.
+    assert!(
+        out.contains("`bump_scalar` mutates `count`"),
+        "a Copy argument is no exception: {}", out,
+    );
+    // A field path is a legal `mutate` argument, and the message quotes it whole.
+    assert!(
+        out.contains("`bump_scalar` mutates `c.n`"),
+        "a field path should be named as written: {}", out,
+    );
+    // The receiver is exempt — `c.bump()` must not be flagged.
+    assert!(
+        !out.contains("mutates `c` —"),
+        "a method receiver takes no marker: {}", out,
+    );
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

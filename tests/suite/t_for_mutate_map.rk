@@ -72,7 +72,7 @@ func bump_first(mutate m: Map<string, i64>) -> i64 {
 test "ctrl.loops/LP13 — return writes the current entry back" {
     mut m: Map<string, i64> = Map.new()
     m.insert("only", 1)
-    assert bump_first(m) == 101
+    assert bump_first(mutate m) == 101
     assert m["only"] == 101
 }
 
