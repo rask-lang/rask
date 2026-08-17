@@ -305,9 +305,21 @@ impl Interpreter {
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
-            // E9: .discriminant() returns variant index as u16
-            Value::Enum { variant_index, .. } if method == "discriminant" => {
-                return Ok(Value::int(*variant_index as i64));
+            // E9: `.discriminant()` is the variant's *discriminant value*, and
+            // E15 says `Variant = N` assigns that value — so on an enum with
+            // explicit values it's N, not the position. This answered the
+            // position, so `Opcode.ADD.discriminant()` was 1 here and 6
+            // natively, while `Opcode.ADD as i64` was 6 here (E18 reads the
+            // declared value) — the same enum giving two different numbers
+            // through two spellings of the same question.
+            Value::Enum { name, variant, variant_index, .. } if method == "discriminant" => {
+                let disc = self
+                    .enums
+                    .get(name)
+                    .and_then(|decl| decl.variants.iter().find(|v| &v.name == variant))
+                    .and_then(|v| v.discriminant)
+                    .unwrap_or(*variant_index as i128);
+                return Ok(Value::int(disc as i64));
             }
             _ => {}
         }

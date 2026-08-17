@@ -173,7 +173,7 @@ func encode_abx(op: Opcode, a: i64, bx: i64) -> u32 {
 
 func encode_asbx(op: Opcode, a: i64, sbx: i64) -> u32 {
     let o = op as i64
-    let biased = sbx + 32768 & 0xFFFF
+    let biased = (sbx + 32768) & 0xFFFF
     return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | biased) truncate to u32
 }
 
@@ -204,7 +204,7 @@ func decode_bx(instr: u32) -> i64 {
 }
 
 func decode_sbx(instr: u32) -> i64 {
-    return instr as i64 & 0xFFFF - 32768
+    return (instr as i64 & 0xFFFF) - 32768
 }
 
 // --- Disassembler ---

@@ -2909,8 +2909,28 @@ impl<'a> MirLowerer<'a> {
                     return Ok(self.emit_trait_box(val, &concrete_mir_ty, &trait_name));
                 }
 
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, source_ty) = self.lower_expr(expr)?;
                 let target_ty = self.ctx.resolve_type_str(ty);
+
+                // E18: `e as i64` on a fieldless enum extracts the discriminant.
+                // An enum value is passed by address, so casting it directly
+                // handed back the *address* — 140726462192184 where the tag was
+                // wanted, and a different number every run. `& 0xFF` in a wire
+                // encoder masks that into a plausible wrong byte, so a packed
+                // instruction came out with an arbitrary opcode and nothing
+                // crashed (#796). Read the tag the way `.discriminant()` does,
+                // then cast that.
+                let val = if matches!(source_ty, MirType::Enum(_)) && target_ty.is_int_like() {
+                    let tag_local = self.builder.alloc_temp(MirType::U16);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: tag_local,
+                        rvalue: MirRValue::EnumTag { value: val },
+                    }));
+                    MirOperand::Local(tag_local)
+                } else {
+                    val
+                };
+
                 let result_local = self.builder.alloc_temp(target_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
