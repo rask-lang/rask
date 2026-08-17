@@ -18,6 +18,18 @@ pub const RESULT_PAYLOAD_OFFSET: u32 = 24;
 pub const OPTION_TAG_OFFSET: u32 = 0;
 pub const OPTION_PAYLOAD_OFFSET: u32 = 8;
 
+/// An error union `(A | B)`: `[member:8][member bytes:max(A, B)]`.
+///
+/// The members are nominally distinct types and nothing in their bytes tells
+/// them apart, so which one is held has to be written down. Before this the
+/// union collapsed to a bare pointer and `r is ParseError` on a
+/// `T or (ParseError | DivError)` was answered by the Result's own tag — every
+/// error read as whichever member was listed second (#776).
+///
+/// The index is the member's position in the union as written.
+pub const UNION_MEMBER_OFFSET: u32 = 0;
+pub const UNION_PAYLOAD_OFFSET: u32 = 8;
+
 /// `none` for a niche-optimized `Handle<T>?`. That option carries no tag — the
 /// handle itself is the value — so `none` is an all-bits-set handle
 /// (index=UINT32_MAX, gen=UINT32_MAX), which no live slot can ever produce.

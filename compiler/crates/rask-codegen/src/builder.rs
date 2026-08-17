@@ -5579,6 +5579,10 @@ impl<'a> FunctionBuilder<'a> {
                 // 8 bytes as a scalar kept the data pointer and dropped the
                 // vtable (#552).
                 | MirType::TraitObject { .. }
+                // An error union is `[member:8][member bytes]` in the payload
+                // area. Loaded as a word, the member index came back as if it
+                // were the union's address (#776).
+                | MirType::Union(_)
         )
     }
 

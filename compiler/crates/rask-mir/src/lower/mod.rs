@@ -632,6 +632,23 @@ impl<'a> MirContext<'a> {
                     }
                     return MirType::Slice(Box::new(self.resolve_type_str(inner)));
                 }
+                // "(A | B)" → Union. Before the tuple branch: an error union is
+                // written in parentheses, so the tuple case claimed it and
+                // answered `Tuple([Ptr])` — the member types were gone by the
+                // time anything wanted to tell them apart (#776).
+                {
+                    let bare = if name.starts_with('(') && name.ends_with(')') {
+                        name[1..name.len() - 1].trim()
+                    } else {
+                        name
+                    };
+                    let parts = split_top_level_parens(bare, '|');
+                    if parts.len() > 1 {
+                        return MirType::Union(
+                            parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
+                        );
+                    }
+                }
                 // "(T1, T2, ...)" → Tuple
                 if name.starts_with('(') && name.ends_with(')') {
                     let inner = &name[1..name.len() - 1];
@@ -3212,6 +3229,32 @@ impl<'a> MirLowerer<'a> {
         false
     }
 
+    /// Which member of a union a type is, by position as written.
+    pub(crate) fn union_member_index(&self, union_ty: &MirType, member: &MirType) -> Option<usize> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        if let Some(i) = members.iter().position(|m| m == member) {
+            return Some(i);
+        }
+        // A member that never got a layout lowers to something anonymous, so
+        // compare by nominal name when the types themselves don't match.
+        let name = self.mir_type_name(member)?;
+        members
+            .iter()
+            .position(|m| self.mir_type_name(m).as_deref() == Some(name.as_str()))
+    }
+
+    /// Which member of a union a *name* is, by position as written.
+    pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        members
+            .iter()
+            .position(|m| self.mir_type_name(m).as_deref() == Some(name))
+    }
+
     /// Look up the tag value for a variant name.
     ///
     /// Accepts both the bare and the qualified spelling. A pattern written
@@ -3363,7 +3406,15 @@ impl<'a> MirLowerer<'a> {
     fn mir_payload_is_aggregate(ty: &MirType) -> bool {
         matches!(
             ty,
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::String
+                // An error union lives in the payload area as
+                // `[member:8][member bytes]`, so it's addressed like any other
+                // aggregate. Loaded as a word instead, the member index came
+                // back as if it were the union's address (#776).
+                | MirType::Union(_)
         )
     }
 

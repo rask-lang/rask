@@ -5529,8 +5529,54 @@ impl<'a> MirLowerer<'a> {
             }));
             return result;
         }
+        // A union err side: "is it the err side" is only half the question. Both
+        // members answer yes to that, so the member index decides which (#776).
+        if let Some((union_ty, member_index)) = self.union_member_of_result(pattern, val_ty) {
+            let payload = self.emit_option_payload(val.clone(), union_ty, is_niche);
+            let member = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(payload),
+                    field_index: 0,
+                    byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            let is_err = self.emit_eq_const(tag, 1);
+            let is_member = self.emit_eq_const(member, member_index);
+            let result = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::And,
+                    left: MirOperand::Local(is_err),
+                    right: MirOperand::Local(is_member),
+                },
+            }));
+            return result;
+        }
         let expected = self.pattern_tag_in_type_context(pattern, val_ty);
         self.emit_eq_const(tag, expected)
+    }
+
+    /// The union type and member index when `pattern` names a member of a
+    /// Result's error union, rather than one of the Result's own two sides.
+    fn union_member_of_result(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Option<(MirType, i64)> {
+        let MirType::Result { err, .. } = val_ty else {
+            return None;
+        };
+        if !matches!(err.as_ref(), MirType::Union(_)) {
+            return None;
+        }
+        let name = super::match_lower::pattern_name(pattern)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        let index = self.union_member_index_by_name(err.as_ref(), bare)?;
+        Some((err.as_ref().clone(), index as i64))
     }
 
     /// `local == k` as a fresh bool temp.

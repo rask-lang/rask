@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `r is ParseError` on a `T or (ParseError | DivError)` answered the wrong
+// member, silently (#776).
+//
+//     native:  is ParseError: false      is DivError: true      ← both wrong
+//     interp:  is ParseError: true       is DivError: false
+//
+// Two things were missing. The union type never reached MIR — an error union is
+// written in parentheses, so the tuple branch of the type-string resolver
+// claimed it and answered `Tuple([Ptr])`. And even with the type there, a union
+// carries nothing in its bytes to say which member it holds, so the test fell
+// back to the Result's own tag: first name read as Ok, second as Err. That's why
+// every failure answered "yes" to whichever member was listed second.
+//
+// A union now lives in the Result's payload area as `[member:8][member bytes]`.
+// `is Member` tests both layers — err side *and* member index.
+
+struct DivError {}
+
+extend DivError {
+    func message(self) -> string {
+        return "division by zero"
+    }
+}
+
+struct ParseError {
+    detail: string
+}
+
+extend ParseError {
+    func message(self) -> string {
+        return "parse error: {self.detail}"
+    }
+}
+
+struct RangeError {
+    limit: i64
+}
+
+extend RangeError {
+    func message(self) -> string {
+        return "over {self.limit}"
+    }
+}
+
+func parse_number(s: string) -> i32 or ParseError {
+    if s == "42" { return 42 }
+    return ParseError { detail: "not a number" }
+}
+
+func safe_div(a: i32, b: i32) -> i32 or DivError {
+    if b == 0 { return DivError {} }
+    return a / b
+}
+
+func check_range(n: i32) -> i32 or RangeError {
+    if n > 10 { return RangeError { limit: 10 } }
+    return n
+}
+
+func combined(s: string, b: i32) -> i32 or (ParseError | DivError) {
+    let n = try parse_number(s)
+    return try safe_div(n, b)
+}
+
+// Three members, so "the second one" can't accidentally be right.
+func three(s: string, b: i32) -> i32 or (ParseError | DivError | RangeError) {
+    let n = try parse_number(s)
+    let d = try safe_div(n, b)
+    return try check_range(d)
+}
+
+func main() {
+    let parse_fail = combined("bad", 2)
+    println("parse: {parse_fail is ParseError} {parse_fail is DivError}")
+
+    let div_fail = combined("42", 0)
+    println("div:   {div_fail is ParseError} {div_fail is DivError}")
+
+    let ok = combined("42", 2)
+    println("ok:    {ok is i32} {ok is ParseError} {ok is DivError}")
+
+    // The payload still reads back through the ok side.
+    if ok is i32 as v {
+        println("value={v}")
+    }
+
+    // Three members: each answers only for itself.
+    let a = three("bad", 2)
+    println("a: {a is ParseError} {a is DivError} {a is RangeError}")
+    let b = three("42", 0)
+    println("b: {b is ParseError} {b is DivError} {b is RangeError}")
+    let c = three("42", 2)
+    println("c: {c is ParseError} {c is DivError} {c is RangeError}")
+    let d = three("42", 42)
+    println("d: {d is i32}")
+
+    // A single-member err side is unchanged.
+    let plain = parse_number("bad")
+    println("plain: {plain is ParseError}")
+}

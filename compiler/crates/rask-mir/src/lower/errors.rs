@@ -262,6 +262,11 @@ impl<'a> MirLowerer<'a> {
             None => (err_val, err_store_size),
         };
 
+        // Propagating a `T or A` out of a `T or (A | B)` — the error has to say
+        // which member it is, because nothing in its bytes does (#776).
+        let (err_val, err_store_size) =
+            self.wrap_union_member(err_val, err_store_size, &err_ty);
+
         // An optional-returning function propagates *absence*, and an Option is
         // a tag with nothing beside it — no origin fields, no payload. The
         // Result construction below writes origin at offsets 8 and 16 and a
@@ -373,6 +378,52 @@ impl<'a> MirLowerer<'a> {
         self.terminate_return(Some(MirOperand::Local(ret_result)));
 
         self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block)
+    }
+
+    /// Put a concrete error into the union slot the enclosing function returns.
+    ///
+    /// A union's members are nominally distinct types with nothing in their bytes
+    /// to tell them apart, so which one is held is written alongside them:
+    /// `[member:8][member bytes]`. Anything that discriminates — `is Member`,
+    /// method dispatch — reads that index.
+    ///
+    /// A no-op unless the return's err side really is a union and `err_ty` really
+    /// is one of its members. A `T or (A | B)` propagated whole into another
+    /// `T or (A | B)` is already indexed and passes straight through.
+    fn wrap_union_member(
+        &mut self,
+        err_val: crate::LocalId,
+        err_store_size: Option<u32>,
+        err_ty: &MirType,
+    ) -> (crate::LocalId, Option<u32>) {
+        let MirType::Result { err: ret_err, .. } = self.builder.ret_ty() else {
+            return (err_val, err_store_size);
+        };
+        let MirType::Union(members) = ret_err.as_ref() else {
+            return (err_val, err_store_size);
+        };
+        if matches!(err_ty, MirType::Union(_)) {
+            return (err_val, err_store_size);
+        }
+        let union_ty = ret_err.as_ref().clone();
+        let Some(index) = self.union_member_index(&union_ty, err_ty) else {
+            return (err_val, err_store_size);
+        };
+        let member_size = members.get(index).map(|m| m.size()).unwrap_or(8);
+        let slot = self.builder.alloc_temp(union_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_MEMBER_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(index as i64)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_PAYLOAD_OFFSET,
+            value: MirOperand::Local(err_val),
+            store_size: if member_size > 8 { Some(member_size) } else { err_store_size },
+        }));
+        (slot, Some(union_ty.size()))
     }
 
     /// The Ok side of a `try`: read the payload and continue at `merge_block`.

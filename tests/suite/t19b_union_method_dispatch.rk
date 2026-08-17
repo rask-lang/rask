@@ -8,18 +8,21 @@
 //
 //   1. Shared-method dispatch: `e.message()` on a value of union type `A | B`
 //      must dispatch to whichever variant it holds. The type checker accepts
-//      it (rask#211, closed), but a union error carries no runtime
-//      discriminant, so MIR lowering can't pick a target and errors out — the
-//      whole file fails to compile on native.
+//      it (rask#211, closed); MIR lowering still can't pick a target and errors
+//      out, so the whole file fails to compile on native.
 //
-//      The missing discriminant has a sharper end that *does* compile (#776):
-//      `r is ParseError` on a `T or (A | B)` lowers to a test against the Ok
-//      tag, so a ParseError answers `is ParseError: false, is DivError: true`.
-//      Every failure reads as whichever member is listed second, silently.
+//      The discriminant it needs now exists: a union sits in the Result's
+//      payload area as `[member:8][member bytes]`. Dispatch has to switch on
+//      that index and call the member's own method, which it doesn't yet do.
 //
 //   2. A function returning `i32 or (A | B)`, compiled alongside other code,
 //      corrupts memory: every test passes but the process exits non-zero
 //      (order/layout-dependent). Tracked with #375.
+//
+// Fixed since this file was written (#776): `r is ParseError` on a
+// `T or (A | B)` used to be answered by the Result's own tag, so every failure
+// claimed to be whichever member was listed second — silently. Witnessed now by
+// `union_error_member.rk` in the compile_run fixtures.
 //
 // Spec: type.errors (ER4, ER31)
 
