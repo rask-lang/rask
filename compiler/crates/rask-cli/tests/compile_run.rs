@@ -3596,3 +3596,22 @@ eof is NotFound: false
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// structure.modules/IM2: a dotted import binds its last segment, so
+// `import std.math` names the math module. The interpreter special-cased
+// `std.reflect` alone and read every other `std.*` form as a member of `std`,
+// binding nothing — the program compiled natively and died at runtime on the
+// interpreter with "type math has no method 'ln'".
+#[test]
+fn a_dotted_stdlib_import_binds_the_module_on_both_backends() {
+    let expected = "\
+ln(16) = 2.772588722239781
+to_degrees = 0
+read at eof is Eof: true
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture_no_stdin(mode, "import_std_module.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
