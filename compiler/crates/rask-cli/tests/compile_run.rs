@@ -1328,55 +1328,11 @@ fn store_link_litmus_pairs_agree() {
 
 // ─── Store<T> + Link<T> (analysis.fourth-option prototype) ───
 //
-// Interpreter-only: there is no native lowering for `Store`/`Link` yet, so these
-// assert `--interp`. Exact stdout rather than substrings — the whole point of the
-// model is *which* edges are `none` afterwards, and a substring check would pass
-// on a fixup that nulled too much.
-
-#[test]
-fn store_link_semantics() {
-    let (stdout, code) = run_interp("store_link_semantics.rk");
-    assert_eq!(code, 0, "store/link semantics fixture should run: {}", stdout);
-    let expected = "\
-scalar: a.peer=none len=1
-shared: a.hits=6
-identity: a==a true, a==b false, self-edge true
-root: before=7 after=none
-overwrite: after deleting first, holder.peer=2
-overwrite: after deleting second, holder.peer=none
-born-with-edge: tail.peer=none
-empty: is_empty=true len=0
-iterate: sum=6 contains_a=true
-after delete b: sum=4 contains_b=false len=2
-cleared: len=0 is_empty=true
-cross-store: l.peer=none left=1 right=0
-";
-    assert_eq!(stdout, expected, "store/link semantics changed");
-}
-
-// Every way of removing an element from an edge list or index without telling the
-// store. A container's backlink names the container and no position, so these are
-// where the fixup could plausibly null too much or too little.
-#[test]
-fn store_link_container_churn() {
-    let (stdout, code) = run_interp("store_link_container_churn.rk");
-    assert_eq!(code, 0, "container churn fixture should run: {}", stdout);
-    let expected = "\
-after pop+delete b: list=[1 ] len=1
-after delete a:     list=[] len=0
-c twice:            list=[3 3 ] len=2
-after delete c:     list=[] len=0
-two lists:          list len=0 other len=0
-after clear+delete: list len=0
-filtered:           other=[7 ]
-after delete g:     other len=0
-nested:             inner len=0
-index after k1 del: len=1
-index after k2 del: len=0
-store len = 1
-";
-    assert_eq!(stdout, expected, "container churn behaviour changed");
-}
+// The *semantics* live in tests/suite/p11_store_link.rk and
+// p12_store_link_churn.rk as self-asserting `test` blocks, so the differential
+// harness runs them on both backends and reports the day native support lands.
+// What's left here is what a single self-asserting program can't express:
+// stderr instrumentation, and comparing two programs against each other.
 
 // The delete cost the analysis flags as the model's one regression: linear in
 // in-degree, and independent of store size. `RASK_STORE_STATS=1` reports the

@@ -1,0 +1,164 @@
+// PENDING analysis.fourth-option — edge lists and indexes under churn.
+// Interpreter-only like p11_store_link.rk; expected RED on native until codegen
+// learns `Store`/`Link`.
+//
+// Why this file exists separately: a scalar edge's backlink names its slot
+// exactly, but a container's names the container and no position — positions
+// shift under insertion and rehashing. So every way of removing an edge without
+// telling the store is a chance for the fixup to null too much or too little.
+// Each test below churns a list or index and then deletes.
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+}
+
+struct Holder {
+    store: Store<Node>
+    list: Vec<Link<Node>>
+    other: Vec<Link<Node>>
+    nested: Vec<Vec<Link<Node>>>
+    index: Map<string, Link<Node>>
+}
+
+func fresh() -> Holder {
+    return Holder {
+        store: Store.new(),
+        list: Vec.new(),
+        other: Vec.new(),
+        nested: Vec.new(),
+        index: Map.new(),
+    }
+}
+
+func main() {}
+
+test "an entry popped before the delete leaves the survivors alone" {
+    mut h = fresh()
+    let a = h.store.insert(Node { id: 1, peer: none })
+    let b = h.store.insert(Node { id: 2, peer: none })
+    h.list.push(a)
+    h.list.push(b)
+
+    let _popped = h.list.pop()          // b leaves the list without the store knowing
+    h.store.delete(b)
+
+    // The fixup visits the list, finds nothing pointing at b, and must not
+    // disturb a's entry.
+    assert_eq(h.list.len(), 1)
+    if h.list.get(0)? as first {
+        assert_eq(first.id, 1)
+    } else {
+        assert false
+    }
+
+    // The still-listed node does get dropped.
+    h.store.delete(a)
+    assert_eq(h.list.len(), 0)
+}
+
+test "the same target twice in one list loses both entries" {
+    mut h = fresh()
+    let c = h.store.insert(Node { id: 3, peer: none })
+    h.list.push(c)
+    h.list.push(c)
+    assert_eq(h.list.len(), 2)
+
+    h.store.delete(c)
+
+    // One backlink per (list, target) pair, but it has to drop *every* match.
+    assert_eq(h.list.len(), 0)
+}
+
+test "one target in two lists is fixed in both" {
+    mut h = fresh()
+    let d = h.store.insert(Node { id: 4, peer: none })
+    h.list.push(d)
+    h.other.push(d)
+
+    h.store.delete(d)
+
+    assert_eq(h.list.len(), 0)
+    assert_eq(h.other.len(), 0)
+}
+
+test "a cleared list before the delete is harmless" {
+    mut h = fresh()
+    let e = h.store.insert(Node { id: 5, peer: none })
+    h.list.push(e)
+    h.list.clear()
+
+    h.store.delete(e)
+
+    assert_eq(h.list.len(), 0)
+}
+
+test "a list replaced by filter has its new entries registered" {
+    mut h = fresh()
+    let f = h.store.insert(Node { id: 6, peer: none })
+    let g = h.store.insert(Node { id: 7, peer: none })
+    h.other.push(f)
+    h.other.push(g)
+
+    // `filter` builds a NEW Vec. Nothing pushed into it, so its entries were
+    // never recorded by the pushes that filled the old one — the assignment has
+    // to register them.
+    h.other = h.other.filter(|n| n.id != 6)
+    assert_eq(h.other.len(), 1)
+
+    h.store.delete(g)
+    assert_eq(h.other.len(), 0)
+}
+
+test "an edge two containers deep is still found" {
+    mut h = fresh()
+    let i1 = h.store.insert(Node { id: 8, peer: none })
+    mut inner: Vec<Link<Node>> = Vec.new()
+    inner.push(i1)
+    h.nested.push(inner)
+
+    h.store.delete(i1)
+
+    if h.nested.get(0)? as first {
+        assert_eq(first.len(), 0)
+    } else {
+        assert false
+    }
+}
+
+test "an index drops the deleted node's entry" {
+    mut h = fresh()
+    let k = h.store.insert(Node { id: 9, peer: none })
+    h.index.insert("k", k)
+    assert_eq(h.index.len(), 1)
+
+    h.store.delete(k)
+
+    // The database's index-maintenance move: the entry goes, it doesn't become
+    // a `none` value under a live key.
+    assert_eq(h.index.len(), 0)
+    if h.index.get("k")? as _v {
+        assert false
+    }
+}
+
+test "overwriting an index key unlinks only the displaced target" {
+    mut h = fresh()
+    let k1 = h.store.insert(Node { id: 9, peer: none })
+    let k2 = h.store.insert(Node { id: 10, peer: none })
+    h.index.insert("slot", k1)
+    h.index.insert("slot", k2)          // k1 displaced
+
+    // k1 is no longer in the index, so its delete must not disturb the entry
+    // k2 now holds under that key.
+    h.store.delete(k1)
+    assert_eq(h.index.len(), 1)
+    if h.index.get("slot")? as v {
+        assert_eq(v.id, 10)
+    } else {
+        assert false
+    }
+
+    h.store.delete(k2)
+    assert_eq(h.index.len(), 0)
+}

@@ -21,19 +21,28 @@ each fail exactly one of those tests, so they check what they claim to.
 ## The short version
 
 The model does what it claims for topology, and the flagship loop really does
-lose its staleness branch. But the prototype turned up one thing the analysis
-underrates and one thing it misses entirely:
+lose its staleness branch. Three findings, in the order they matter:
 
-- **Underrated:** the checkless read isn't a property of `Link`. It's a
-  property of `Link` *plus* a rule that forbids links in locals — and that rule
-  forbids the first line of every program that uses a store. Nobody has written
-  the rule that makes both work.
-- **Missed:** a link carries write permission with it. Under handles, writing
-  needs `mutate pool` at every frame that writes. Under links, holding a link is
-  enough. That's a real loss of control, and I had to add a compiler rule to
-  make the flagship loop compile at all.
+1. **The checkless read isn't a property of `Link`.** It's `Link` plus a borrow
+   rule for links in locals, and that rule is unwritten. Both obvious ways to
+   state it are things Rask chose against — NLL, or `with`-everywhere. There is a
+   third way and it works, but it costs you the ability to keep a reference to
+   what you just inserted, which brings `Key<T>` back into ordinary code. The
+   pattern underneath: **complexity is conserved.** Handles pay at read time with
+   a runtime check; links pay at compile time with an aliasing discipline. Rask
+   picked its side of that trade once, on purpose.
+2. **A link carries write permission, and an edge write mutates its target.**
+   There is no read-only link, where a handle gave one for free. And
+   `a.target = b` modifies `b` — a hidden write through what reads as a plain
+   assignment.
+3. **This bets against [#626](https://github.com/rask-lang/rask/issues/626).**
+   Links are pointers, so `mem.relocatable`'s founding sentence stops being true
+   and tier-A zero-copy persistence dies for anything with edges. That trade is
+   made in a one-line representation footnote and belongs to whoever owns the
+   reliability direction.
 
-Everything else the analysis says about function and ergonomics held up.
+Everything the analysis says about function and day-to-day ergonomics held up.
+What it underprices is the bill on the other three counts.
 
 ## What actually got built
 
@@ -50,7 +59,8 @@ Everything else the analysis says about function and ergonomics held up.
 | Unlink on overwrite — a rewritten field drops its old backlink | works |
 | Required edges (`Link<T>`, no `?`) | rejected for now (E0327) |
 | `inverse(...)`, `@cascade`, `@lazy`, batches, `Key<T>` | not built |
-| Borrow rule forbidding links in locals | **not built — see below** |
+| Borrow rule for links in locals | **not built — the load-bearing gap, see below** |
+| `ReadLink<T>` — a link that can't write its node | not built; not designed |
 
 **Delete follows backlinks, it doesn't scan.** Each node carries the list of
 places pointing at it, so a delete visits exactly those. The measured cost is
@@ -182,86 +192,151 @@ The whole-program gap is smaller than the hot-loop gap, which is what the
 litmus predicted: the ceremony concentrates on reference-following paths, and
 the rest of a program doesn't care which model it's under.
 
-## The finding that matters: links in locals
+## Finding 1, load-bearing: the locals rule, and what it costs
 
 The model's headline claim is that a dead link cannot exist. In the prototype it
-can, and trivially:
-
-```rask
-let a = s.insert(Node { name: "a", next: none })
-let b = s.insert(Node { name: "b", next: none })
-a.next = b
-s.delete(b)
-
-if a.next? as t { ... } else { println("a.next = none (fixed)") }   // fixed
-println("but the local link still reads: {b.name}")                 // reads "b"
-b.health = 99                                                       // and writes
-```
-
-Output:
+can, and trivially — `prototype/stale_link_hole.rk`:
 
 ```
-a.next = none (fixed)
-but the local link still reads: b health=2
+a.next = none (fixed)               <- an edge inside a node
+local link still reads: b health=2  <- a link in a local
 and still writes: 99
 ```
 
-`a.next` was fixed because it lives in a node. `b` is a local, so the fixup walk
-never saw it. In the real design that's a use-after-free, not a stale read —
-links compile to raw pointers.
+`a.next` was fixed because it lives in a node. `b` is a local, so no backlink
+records it. With raw pointers that is a use-after-free.
 
-The analysis knows about this. Rule 1 says links live only in node fields, and
-locals hold block-scoped borrows. The problem is what that means in practice:
+So the checkless read is not a property of `Link`. It is `Link` **plus** a rule
+that makes a local link a live borrow of the store, with delete-while-borrowed a
+compile error. That rule is the load-bearing piece, and it is unwritten.
 
-**`store.insert()` returns a link into a local. So does every traversal step.**
-Every program starts by putting a link somewhere the rule forbids. The rule
-can't mean "no links in locals" literally; it has to mean "a link in a local is
-a borrow of the store, and `delete` while one is live is a compile error."
+### Why the two obvious statements are both poison
 
-That rule is not written anywhere, and it's the load-bearing one. Two things
-make it hard:
+Under block-scoped borrows a local link borrows to end of block, so
+`let b = s.insert(…)` then `s.delete(b)` in the same block is an error — the
+first program anyone writes. The two ways out are both things Rask chose against:
 
-1. **Rask's borrows are block-scoped for growable sources, and a `Store` is
-   growable.** Under block scoping, `let b = s.insert(…)` borrows until the end
-   of the block, so `s.delete(b)` in the same block is an error — which is most
-   of the programs anyone would write. Making this usable needs last-use borrow
-   ends, which Rask deliberately doesn't have, or `with`-scoped access for every
-   node touch, which puts the ceremony straight back.
+- **Last-use borrow ends** is NLL: the lifetime-shaped, non-local analysis this
+  language was founded to refuse. "Code that looks fine explodes twenty lines
+  later" is the argument Rask exists to answer.
+- **`with`-scoped access on every node touch** puts back exactly the ceremony
+  the model exists to delete, and takes the flagship loop with it.
 
-2. **The cost lands exactly where links looked cheapest.** Handles need no such
-   rule: a stale handle is *safe*, just false. Handles trade a read check for
-   never needing a borrow rule at all. That trade doesn't show up in the
-   litmus scorecard, and it should — it's the same trade in a different
-   currency.
+Underneath is the pattern the litmus scorecard misses: **complexity is
+conserved.** Handles pay at read time, with a runtime check. Links pay at compile
+time, with an aliasing discipline. Rask already picked its side of that trade
+deliberately, so "links are strictly better" can only be true if the aliasing
+discipline is free — and it isn't.
 
-So the honest statement of the model is: *the read is checkless because the
-borrow checker proved no link outlives its node.* The pointer being self-nulling
-handles fields; the borrow checker has to handle locals. Only half of that is
-designed.
+### There is a third statement, and it is livable
 
-## The other finding: links carry write permission
+Neither escape is needed, because traversal already obeys the rule: `if x? as n`
+binds a *borrow*, not a link value. The only place a link escaped into a local
+was `insert`'s return. So state it there:
 
-The flagship loop doesn't compile without a new rule, and the reason is worth
-stating plainly. `if e.target? as t { t.health -= e.damage }` binds `t` from an
-optional narrowing, and `as` bindings have no `mut` form — so `t` is immutable
-and the write is rejected.
+> An `insert` result must be stored into a field. Links are fields and borrows,
+> never local values.
 
-There is precedent to follow: writing through a `Handle` already doesn't count
-as mutating the handle binding, because the write lands in pool storage. I
-extended that to links, which is the same reasoning and more directly true — a
-link *is* the node's address.
+`prototype/l1_list_links_no_locals.rk` is L1 written that way, and it produces
+byte-identical output to the handle version. `push_back` stores the new node's
+link straight into a field and reads it back out for the second use:
 
-But the consequence differs. A handle needs `mutate pool` in scope to write
-through; permission comes from the container. A link needs nothing; permission
-travels with the reference. In L2 that showed up as `mutate` vanishing from
-`combat_round`'s signature — which reads like a win, and partly is, but it also
-means **there is no read-only link.** Any function you hand a link to can write
-to the node. Handles let you hand out read access by not passing the pool
-mutably; links have no such distinction.
+```rask
+func push_back(mutate list: List, value: i32) {
+    if list.tail? as t {
+        t.next = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+        list.tail = t.next                       // read it back from the field
+    } else {
+        list.head = list.nodes.insert(Node { value: value, next: none, prev: none })
+        list.tail = list.head
+    }
+}
+```
 
-That's a real capability the model gives up, and I don't see it discussed. If
-it needs answering, the answer is probably a separate read-only link type,
-which puts a type back on the "day one" page that the census had removed.
+So the rule is statable without NLL and without `with`-everywhere. Good — but it
+relocates the cost rather than removing it, and where it lands is the finding:
+
+**You cannot keep a reference to what you just inserted.** `push_back` can no
+longer return the new node, so acting on a specific node later means finding it
+again:
+
+```rask
+let n2 = push_back(list, 2)     // ordinary version: O(1) later access
+remove(list, n2)
+
+push_back(list, 2)              // no-locals version: no reference handed back
+remove_value(list, 2)           // so: walk the list, O(n)
+```
+
+That is a third currency for the same conserved complexity — not a read check,
+not a borrow rule, but a search. And it lands squarely on the census's claim
+that "effectively 100% of handle uses are topology — none would need a `Key`."
+Under the locals rule, *any* code that inserts a node and later acts on that
+specific node needs a search or a key. L1's `main` is exactly that shape, and it
+needed the search. `Key<T>` comes back into ordinary in-process code, not just at
+the serialization boundary.
+
+**What the proposal owes:** the locals rule written down in the third form, with
+the search-or-key cost admitted, and a judgement on whether that cost is smaller
+than the read check it replaces. Until then the model has not met the language's
+own founding constraint — it has only moved where the constraint bites.
+
+## Finding 2: links carry write permission, and edge writes mutate their target
+
+Two things, both about a link being more powerful than it looks.
+
+**There is no read-only link.** Hold one and you can write the node. A handle
+gives read-only access for free — don't pass the pool mutably and nothing can
+write through it. The link version of L2 lost `mutate` from `combat_round`'s
+signature, which reads like a win and is half of one: the other half is that
+nothing *can* be marked read-only any more. The fix is a `ReadLink<T>`, which
+hands back one of the types the census had deleted — so the type count the
+proposal claims to shrink goes back up by one.
+
+I had to add a compiler rule for this to work at all. `if e.target? as t { … }`
+binds `t` immutably and `as` has no `mut` form, so the flagship loop doesn't
+compile unless writing through a link is defined as not-mutating-the-binding.
+There is precedent — a handle write already lands in pool storage, not the
+handle — but the handle case borrows its permission from `mutate pool`, and the
+link case has nothing to borrow it from.
+
+**`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
+an assignment that reads as touching `a` also modifies `b`. In the real design
+that is a store into `b`'s intrusive-list header. In this prototype it is a write
+to a third object neither name mentions — the store's backlink index — which is
+arguably the worse of the two for reading. Either way, Transparency of Cost
+should be made to bless this explicitly rather than inherit it: an edge write is
+not the integer copy a handle write is, and the litmus already prices it at ~4–8
+stores against 1–2.
+
+## Finding 3: this bets against #626, in a one-line footnote
+
+`fourth-option.md` decides representation in a sentence: links compile to raw
+pointers, and `mem.relocatable` "stays a keys-only feature," declined because the
+relocatability story is "narrow in practice."
+
+It is not narrow, and the demotion is bigger than the wording admits.
+[mem.relocatable](../memory/relocatable.md) opens on the premise:
+
+> Rask's "no storable references" design means user-visible types contain only
+> owned values and integer handles — **never pointers**. This makes pool state
+> relocatable.
+
+Links are pointers. So links do not narrow that spec — they falsify its first
+sentence. And [#626](https://github.com/rask-lang/rask/issues/626), the durable-state
+design, defines its tiers *around handles specifically*: tier-A `Persistable` is
+"pointer-free data — primitives, **handles**, enums/structs of those," and its
+snapshot semantics are "handles must survive the round-trip and stale handles
+must stay stale." Links have no generations and no round-trip; there is no link
+analogue of that property to specify.
+
+The consequence, stated plainly: **adopt links and tier-A zero-copy persistence
+dies for anything with edges.** Graphs keep tier C — an `Encode` walk — and mmap
+survives only for edge-free pools. That may well be the right trade; checkpoint
+plus input log is one story and checkless traversal is another, and a language
+can prefer the second. But it is a north-star-adjacent trade (#626's own words)
+being made in a representation footnote, and it belongs to whoever owns the
+reliability direction, not to this document.
 
 ## Delete cost, measured
 
@@ -344,19 +419,26 @@ needs native codegen.
 ## Where this leaves the design
 
 The parts the analysis called decided are decided, and the prototype supports
-them. What it changes is the ranking of what's left open.
+them: delete-time fixup works, root edges need no separate machinery, and the
+flagship loop really does lose its dance.
 
-Before: the open questions were `inverse` multiplicities, cascade policies,
-`@lazy`, and batches — features. After running it, those are all still
-accessories. The one that decides whether the model ships is **the borrow rule
-for links in locals**, and it isn't on the list at all. It should be first,
-because if it can't be made ergonomic under Rask's block-scoped borrowing, the
-checkless read isn't real and the whole advantage collapses back to "handles
-with extra steps."
+What changes is the ranking of what's left. Before, the open list was `inverse`
+multiplicities, cascade policies, `@lazy` and batches — features. After running
+it, those are all accessories. Three things outrank them, and none was on the
+list:
 
-Concretely, the next artifact should answer: what is the scope of a link held in
-a local, when does `delete` conflict with one, and what does the error say?
-Everything else can wait.
+1. **The locals borrow rule.** Statable without NLL or `with`-everywhere (see
+   Finding 1), at the price of search-or-key for post-insert access. Needs
+   writing down, and needs a judgement on whether that price beats the read check
+   it replaces. If it doesn't, the model is handles with extra steps.
+2. **Read-only links.** `ReadLink<T>` or an argued decision to live without
+   read-only access to a node.
+3. **The #626 trade.** An explicit call on tier-A persistence, made by whoever
+   owns the reliability direction, not inherited from a representation footnote.
+
+Two smaller ones the fixup surfaced: required edges need a delete policy the
+moment batches admit them (cascade/restrict stops being deferrable), and edge
+writes need Transparency of Cost to bless them explicitly.
 
 ## Running it
 

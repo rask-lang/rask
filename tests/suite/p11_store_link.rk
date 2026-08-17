@@ -1,0 +1,172 @@
+// PENDING analysis.fourth-option — `Store<T>` + `Link<T>`, the delete-time edge
+// fixup. Implemented on the interpreter only; there is no native lowering, so
+// this is expected RED on native until codegen learns the types. Interp is the
+// reference for what the answers should be.
+//
+// The model: deleting a node sets every edge pointing at it to `none` before the
+// delete returns, so a dead link never exists and following a live one needs no
+// check. Everything below is a consequence of that.
+
+struct Node {
+    id: i32
+    hits: i32
+    peer: Link<Node>?
+}
+
+struct World {
+    store: Store<Node>
+    focus: Link<Node>?          // root edge: beside the store, not in a node
+}
+
+func main() {}
+
+test "a scalar edge becomes none at its target's delete" {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = b
+    b.peer = a
+    assert s.len() == 2
+
+    s.delete(b)
+
+    assert s.len() == 1
+    // The edge is `none` — not stale, not a panic on read. There is no third
+    // state to check for.
+    if a.peer? as _p {
+        assert false           // a.peer survived its target's delete
+    }
+}
+
+test "a link is the node's address, so writes through it are shared" {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    b.peer = a
+
+    // Writing through b's edge and writing through `a` hit the same node: the
+    // node lives in the store, it is not copied into it.
+    if b.peer? as through { through.hits += 5 }
+    a.hits += 1
+    assert_eq(a.hits, 6)
+}
+
+test "link equality is node identity" {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    assert a == a
+    assert a != b
+
+    // A self-edge is legal, and reads back as the same node.
+    a.peer = a
+    if a.peer? as p {
+        assert p == a
+    } else {
+        assert false
+    }
+}
+
+test "a root edge — a link beside the store — is fixed too" {
+    mut w = World { store: Store.new(), focus: none }
+    let n = w.store.insert(Node { id: 7, hits: 0, peer: none })
+    w.focus = n
+    if w.focus? as f {
+        assert_eq(f.id, 7)
+    } else {
+        assert false
+    }
+
+    // Nothing in `delete_subtree`-style code says "clear the focus". The edge
+    // lives outside the store, and it still gets nulled.
+    w.store.delete(n)
+
+    if w.focus? as _f {
+        assert false           // root edge survived the delete
+    }
+}
+
+test "re-pointing an edge forgets its old target" {
+    mut s: Store<Node> = Store.new()
+    let holder = s.insert(Node { id: 0, hits: 0, peer: none })
+    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+    let second = s.insert(Node { id: 2, hits: 0, peer: none })
+
+    holder.peer = first
+    holder.peer = second
+    holder.peer = holder.peer      // self-assign must not drop what it re-adds
+
+    // `first` is no longer pointed at, so its delete must leave `holder.peer`
+    // alone rather than nulling it.
+    s.delete(first)
+    if holder.peer? as p {
+        assert_eq(p.id, 2)
+    } else {
+        assert false
+    }
+
+    s.delete(second)
+    if holder.peer? as _p {
+        assert false
+    }
+}
+
+test "a node inserted with edges already in its fields is registered" {
+    mut s: Store<Node> = Store.new()
+    let head = s.insert(Node { id: 1, hits: 0, peer: none })
+    // The edge exists in the literal before the node has an identity; `insert`
+    // is where it gets recorded.
+    let tail = s.insert(Node { id: 2, hits: 0, peer: head })
+
+    s.delete(head)
+
+    if tail.peer? as _p {
+        assert false
+    }
+}
+
+test "iteration and the structural ops" {
+    mut s: Store<Node> = Store.new()
+    assert s.is_empty()
+    assert_eq(s.len(), 0)
+
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let c = s.insert(Node { id: 3, hits: 0, peer: none })
+
+    mut sum = 0
+    for n in s.nodes() { sum += n.id }
+    assert_eq(sum, 6)
+    assert s.contains(a)
+
+    s.delete(b)
+    mut after = 0
+    for n in s.nodes() { after += n.id }
+    assert_eq(after, 4)
+    assert s.contains(b) == false
+    assert_eq(s.len(), 2)
+
+    s.clear()
+    assert s.is_empty()
+    let _ = a
+    let _ = c
+}
+
+test "a delete in one store leaves another store's edges alone" {
+    mut left: Store<Node> = Store.new()
+    mut right: Store<Node> = Store.new()
+    let l = left.insert(Node { id: 1, hits: 0, peer: none })
+    let r = right.insert(Node { id: 2, hits: 0, peer: none })
+
+    // A cross-store edge. Deleting the target still fixes it — the fixup keys on
+    // the node, and the edge is found through the target's own backlink list
+    // rather than by walking the holder's store.
+    l.peer = r
+    right.delete(r)
+
+    assert_eq(left.len(), 1)
+    assert_eq(right.len(), 0)
+    if l.peer? as _p {
+        assert false
+    }
+}

@@ -215,8 +215,26 @@ rather than needing a decision.)
 - **The borrow rule for links in locals is the real open question**, and the
   prototype is what made that clear. `store.insert()` hands a link into a local,
   which rule 1 forbids; without a rule reconciling those, a local link outlives
-  its node and the checkless read isn't sound. See the prototype document —
-  this now outranks `inverse`, cascade and `@lazy` on the open list.
+  its node and the checkless read isn't sound. Both obvious statements of the rule
+  are things Rask chose against — last-use borrow ends is NLL, and
+  `with`-everywhere restores the ceremony the model removes. A third statement
+  works ("an `insert` result must be stored into a field"), demonstrated in
+  `prototype/l1_list_links_no_locals.rk`, but it costs the ability to keep a
+  reference to what you just inserted — so `Key<T>` returns to ordinary code, not
+  just the serialization boundary, against the census's claim that no in-process
+  use needs one.
+- **There is no read-only link.** A handle gives read-only access by not passing
+  the pool mutably; a link carries write permission wherever it goes. Answering
+  it means `ReadLink<T>`, which puts back a type the census deleted.
+- **Representation bets against #626.** Declining pointer-freedom is one line
+  here, but `mem.relocatable` opens by asserting user-visible types hold "owned
+  values and integer handles — never pointers", and #626's tier-A `Persistable`
+  is defined around handles surviving a round-trip. Links are pointers, so
+  tier-A zero-copy persistence dies for anything with edges. Possibly the right
+  trade; not one a representation footnote should make.
+
+  These three outrank `inverse`, cascade and `@lazy` on the open list. See the
+  prototype document.
 - **The `Local` default has no corpus example.** Not one program shares a
   mutable value between closures in a single task, so the case `Shared<T>`
   defaults to is unrepresented in the evidence.
