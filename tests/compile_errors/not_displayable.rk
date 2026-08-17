@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: `{}` on a type that can't render itself (std.fmt/D3, D4).
+// Compile Error: rendering a type that can't render itself (std.fmt/D3, D4).
 //
 // Structs and enums opt into Displayable; optionals and results never have it,
 // because there may be nothing to show. This used to slip through to runtime
 // and answer differently on each backend — the interpreter printed a debug
 // rendering or died with "no method to_string on Option", native printed the
 // address of the value's storage (#539).
+//
+// `print(x)` takes the same check as `{x}` (#772). It didn't: `print` was a
+// builtin whose arguments nothing looked at, so it accepted anything and the
+// two backends answered differently again — native an address, the interpreter
+// a debug form. D3's reasoning is about rendering a value, not about which
+// spelling reached the renderer.
 
 struct Point { x: i64, y: i64 }
 
@@ -17,4 +23,12 @@ func main() {
     let maybe: i64? = 5
     // ERROR: `i64?` does not implement `Displayable`
     println("{maybe}")
+
+    // Same two through `print` as a call, and through `println` as a call.
+    // ERROR: `Point` does not implement `Displayable`
+    print(p)
+    // ERROR: `i64?` does not implement `Displayable`
+    print(maybe)
+    // ERROR: `Point` does not implement `Displayable`
+    println(p)
 }

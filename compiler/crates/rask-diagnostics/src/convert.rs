@@ -409,11 +409,12 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0826")
                 .with_primary(*span, format!("`{}` has no `to_string()`", ty))
-                .with_why(
-                    "`{}` renders a value through `Displayable`. Structs and enums opt in, \
+                .with_why(format!(
+                    "{} renders this value through `Displayable`. Structs and enums opt in, \
                      so the compiler never invents output that looks intentional but isn't \
                      [std.fmt/D3, D4]",
-                );
+                    if *interpolated { "`{}`" } else { "`print`" },
+                ));
                 // The two cases have genuinely different fixes.
                 if ty.ends_with('?') || ty.contains(" or ") {
                     diag = diag

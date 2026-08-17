@@ -47,7 +47,7 @@ let table = format("{:<10} {:>8}", "Name", "Score")
 | **D1: Trait** | `trait Displayable { func to_string(self) -> string }` |
 | **D2: Primitives** | All primitive types implement `Displayable` by default |
 | **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `extend Type with Displayable` |
-| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Displayable` not implemented |
+| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `to_string()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
 | **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `to_string()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
 <!-- test: parse -->

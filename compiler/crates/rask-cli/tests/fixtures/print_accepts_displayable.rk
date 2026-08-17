@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #772 gave `print(x)` the same Displayable check `{x}` has. This is what it
+// still has to accept: every primitive, a `string`, a type that opted in, an
+// error type bridging through `message()` (D5), and a narrowed optional payload.
+struct Point { x: i64, y: i64 }
+
+extend Point with Displayable {
+    func to_string(self) -> string {
+        return "({self.x}, {self.y})"
+    }
+}
+
+struct Bare { n: i64 }
+
+// std.fmt/D5: a type with `message()` bridges to Displayable with no
+// `to_string` of its own.
+struct ParseFailed { detail: string }
+
+extend ParseFailed {
+    func message(self) -> string {
+        return "parse failed: {self.detail}"
+    }
+}
+
+func main() {
+    // Primitives
+    print(1)
+    print(" ")
+    print(2.5)
+    print(" ")
+    print(true)
+    print(" ")
+    print('c')
+    print("\n")
+
+    // An unsuffixed literal is still a type variable when the check runs, so
+    // this is the case the deferral exists for.
+    let n = 42
+    print(n)
+    print("\n")
+
+    // A declared conformance, and the error bridge
+    print(Point { x: 1, y: 2 })
+    print("\n")
+    let f = ParseFailed { detail: "loose wire" }
+    print(f)
+    print("\n")
+
+    // A narrowed optional payload — the shape the four gate examples now use
+    let maybe: i64? = 7
+    if maybe? as v {
+        print("payload ")
+        print(v)
+        print("\n")
+    }
+
+    // A type with no rendering at all is still constructible and readable —
+    // only handing it to the renderer is the error.
+    let b = Bare { n: 3 }
+    print(b.n)
+    print("\n")
+
+    // Multiple arguments in one call
+    print("multi ", 1, " ", true, "\n")
+}

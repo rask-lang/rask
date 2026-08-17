@@ -404,8 +404,39 @@ impl Desugarer {
             }
             ExprKind::Call { func, args } => {
                 self.desugar_expr(func);
-                for arg in args {
+                for arg in args.iter_mut() {
                     self.desugar_expr(&mut arg.expr);
+                }
+                // std.fmt/D3/D4: `print(x)` renders x, so it goes through
+                // `to_string` exactly like `{x}` does. It didn't, and each
+                // backend had its own idea of what to print — native the
+                // address of an aggregate's storage and a char's code point,
+                // the interpreter a debug rendering that ignored the type's own
+                // `to_string`. Both wrong even for a type that opted in: a
+                // `Point` with a Displayable impl printed 140729371079408
+                // natively and `Point { x: 1, y: 2 }` on interp, where `{p}`
+                // gave `(1, 2)` on both (#772).
+                //
+                // Desugaring rather than teaching two renderers about
+                // Displayable keeps one renderer, and gets the type check for
+                // free — a value that can't render fails on the `to_string`
+                // call, with the message interpolation already produces.
+                if Self::is_render_builtin(func) {
+                    for arg in args.iter_mut() {
+                        if Self::already_a_string_literal(&arg.expr) {
+                            continue;
+                        }
+                        let arg_span = arg.expr.span;
+                        let inner = std::mem::replace(
+                            &mut arg.expr,
+                            Expr {
+                                id: rask_ast::NodeId::DUMMY,
+                                kind: ExprKind::String(String::new()),
+                                span: arg_span,
+                            },
+                        );
+                        arg.expr = self.render_expr(inner, None);
+                    }
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
@@ -932,6 +963,24 @@ impl Desugarer {
     /// it's already the final text, braces and all.
     fn string_lit(&mut self, text: String, span: rask_ast::Span) -> Expr {
         Expr { id: self.fresh_id(), kind: ExprKind::String(text), span }
+    }
+
+    /// `print` / `println` — the builtins that turn each argument into text.
+    ///
+    /// Not `panic`/`todo`/`unreachable`/`assert`: those take a message that is
+    /// already a string, usually an interpolation whose placeholders were
+    /// rendered on the way in. `format` is the same.
+    fn is_render_builtin(func: &Expr) -> bool {
+        matches!(&func.kind, ExprKind::Ident(n) if n == "print" || n == "println")
+    }
+
+    /// A bare string literal is already the text — wrapping it in `to_string()`
+    /// would allocate a copy of every `print("\n")` in the program for nothing.
+    /// An interpolation has already become a `__concat` chain by this point, so
+    /// it isn't a `String` node and does get wrapped; `string.to_string()` is
+    /// identity, and skipping it would need a type the desugar pass doesn't have.
+    fn already_a_string_literal(e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::String(_))
     }
 
     /// Render one value as a string: `to_string()` when there's no spec,

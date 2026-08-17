@@ -35,7 +35,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [unknown_type_name.rk](unknown_type_name.rk) | Typo'd type name in signature (PC2) — errors instead of becoming a generic |
 | [type_called_as_function.rk](type_called_as_function.rk) | A struct or enum name in call position (E0345) — `Name(value)` is the nominal-type constructor (T7), structs have no tuple form (S1) |
 | [single_letter_type_name.rk](single_letter_type_name.rk) | Single-letter concrete type names are reserved for type parameters (PC3) |
-| [not_displayable.rk](not_displayable.rk) | `{}` on a type that can't render itself: a struct that never opted in, an optional with no missing case (D3, D4) |
+| [not_displayable.rk](not_displayable.rk) | Rendering a type that can't render itself: a struct that never opted in, an optional with no missing case (D3, D4) — through `{}` and through `print`/`println` as a call (#772) |
 | [unimplemented_module_fn.rk](unimplemented_module_fn.rk) | A stdlib module function marked `@unimplemented` — caught at the call instead of segfaulting there (#506) |
 | [nominal_trait_not_listed.rk](nominal_trait_not_listed.rk) | A nominal newtype inherits only the traits its `with (…)` clause lists (T10) |
 | [missing_return.rk](missing_return.rk) | Function without return statement |

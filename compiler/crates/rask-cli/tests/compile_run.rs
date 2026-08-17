@@ -1286,6 +1286,52 @@ fn binding_read_and_write_back_forms_agree() {
     }
 }
 
+// #772: `print(x)` renders x, so it takes the same Displayable check `{x}` does.
+// It was a builtin whose arguments nothing looked at, so it accepted anything —
+// and the two backends then rendered whatever they liked.
+#[test]
+fn error_print_of_a_non_displayable_type() {
+    let (failed, out) = compile_error_output("not_displayable.rk");
+    assert!(failed, "print of a non-Displayable type must not compile: {}", out);
+    // Two spellings, same rule: `{p}` and `print(p)`.
+    assert!(
+        out.matches("`Point` does not implement `Displayable`").count() >= 2,
+        "both the placeholder and the call should be caught: {}", out,
+    );
+    assert!(
+        out.matches("`i64?` does not implement `Displayable`").count() >= 2,
+        "an optional is rejected at a call as well as in a placeholder: {}", out,
+    );
+    // The message names which spelling reached the renderer.
+    assert!(
+        out.contains("`print` renders this value"),
+        "the call form should say `print`, not `{{}}`: {}", out,
+    );
+}
+
+// The other half of #772, and the more surprising one: `print(p)` on a type that
+// *had* opted into Displayable didn't call its `to_string` either. Native printed
+// the address of the aggregate's storage and a char's code point; the interpreter
+// printed a debug form that ignored the impl. `{p}` was right on both, so
+// desugaring `print(x)` to `x.to_string()` is what makes the two spellings agree.
+#[test]
+fn print_renders_through_displayable_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "print_accepts_displayable.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(
+            stdout,
+            "1 2.5 true c\n42\n(1, 2)\nparse failed: loose wire\npayload 7\n3\n\
+             multi  1   true \n",
+            "{mode}: {stdout}",
+        );
+        // The two that were wrong natively: an aggregate printed its address and
+        // a char printed its code point.
+        assert!(!stdout.contains("140"), "{mode}: an address leaked out: {stdout}");
+        assert!(!stdout.contains("99"), "{mode}: a char printed as a number: {stdout}");
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

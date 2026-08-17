@@ -53,6 +53,13 @@ extend Method {
         return none
     }
 
+}
+
+// std.fmt/D3: an enum opts into Displayable by declaring the conformance — a
+// bare `extend` with a `to_string` in it doesn't count. Without this header
+// `format_http_request` couldn't call `req.method.to_string()`, so `rask check
+// stdlib/fmt.rk` failed on a stdlib file.
+extend Method with Displayable {
     // Serialize to the standard HTTP method string.
     public func to_string(self) -> string {
         match self {

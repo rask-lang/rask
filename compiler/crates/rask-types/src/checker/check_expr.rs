@@ -1983,6 +1983,9 @@ impl TypeChecker {
             }
 
             if self.is_builtin_function(name) {
+                // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
+                // rewrites each argument to `x.to_string()` — the same shape
+                // `{x}` becomes. Nothing to check here (#772).
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
@@ -2245,6 +2248,7 @@ impl TypeChecker {
             | "assert" | "debug" | "format" | "fence" | "compiler_fence"
             | "assert_eq" | "skip" | "expect_fail")
     }
+
 
     /// Validate that call-site annotations match parameter declarations.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
