@@ -3530,6 +3530,10 @@ impl<'a> MirLowerer<'a> {
             return Ok(result);
         }
 
+        if let Some(r) = self.try_lower_reflect_call(object, method, type_args)? {
+            return Ok(r);
+        }
+
         if let Some(r) = self.try_lower_origin(object, method, args)? {
             return Ok(r);
         }
@@ -5028,6 +5032,81 @@ impl<'a> MirLowerer<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// `reflect.<method><T>()` → the constant it answers.
+    ///
+    /// Every reflect method is compile-time known once mono has picked `T`
+    /// (std.reflect/R5), so there is nothing to call — the answer becomes a
+    /// literal here. Only `reflect.fields()` was handled before, and only as the
+    /// iterable of a `comptime for`; everywhere else the `reflect` name was left
+    /// for ordinary local lookup to trip over, and the failure came out as
+    /// "unresolved variable `reflect`" — a diagnosis pointing at name
+    /// resolution, which was fine (#775).
+    ///
+    /// The answers come from `rask_types::reflect` so the interpreter folds the
+    /// same ones. Where neither backend can answer — anything needing layout —
+    /// it says so instead of picking a number.
+    fn try_lower_reflect_call(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        type_args: &Option<Vec<String>>,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        use rask_types::reflect::{self, ReflectAnswer};
+
+        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
+            return Ok(None);
+        }
+        // `fields` is the unrolled `comptime for` iterable, handled in stmt.rs.
+        if method == "fields" {
+            return Ok(None);
+        }
+
+        let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.{method}() needs the type it's asking about: \
+                 write `reflect.{method}<T>()`"
+            )));
+        };
+
+        struct MirDecls<'a, 'b>(&'a super::MirContext<'b>);
+        impl reflect::ReflectDecls for MirDecls<'_, '_> {
+            fn declares_struct(&self, name: &str) -> bool {
+                self.0.find_struct(name).is_some()
+            }
+            fn declares_enum(&self, name: &str) -> bool {
+                self.0.find_enum(name).is_some()
+            }
+        }
+
+        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
+        Ok(Some(match answer {
+            ReflectAnswer::Bool(b) => (
+                MirOperand::Constant(crate::operand::MirConst::Bool(b)),
+                MirType::Bool,
+            ),
+            ReflectAnswer::Int(n) => (
+                MirOperand::Constant(crate::operand::MirConst::Int(n as i64)),
+                MirType::U64,
+            ),
+            ReflectAnswer::Str(s) => (
+                MirOperand::Constant(crate::operand::MirConst::String(s)),
+                MirType::String,
+            ),
+            ReflectAnswer::Unsupported(why) => {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "reflect.{method}<{type_name}>() isn't implemented on either \
+                     backend — {why} (#791)"
+                )));
+            }
+            ReflectAnswer::NoSuchMethod => {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "no reflect method `{method}` — see specs/stdlib/reflect.md \
+                     for the surface"
+                )));
+            }
+        }))
     }
 
     /// `.origin()` on a Result → formatted origin string.

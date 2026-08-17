@@ -6,6 +6,7 @@
 mod types;
 mod checker;
 mod traits;
+pub mod reflect;
 
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{

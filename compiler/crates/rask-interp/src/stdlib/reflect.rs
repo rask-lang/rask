@@ -4,8 +4,24 @@
 use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
+use rask_types::reflect;
+
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{StructData, Value};
+
+/// The interpreter's answer to "does the program declare this name" — its
+/// declaration maps, which is all the shared classifier asks for.
+struct InterpDecls<'a>(&'a Interpreter);
+
+impl reflect::ReflectDecls for InterpDecls<'_> {
+    fn declares_struct(&self, name: &str) -> bool {
+        self.0.struct_decls.contains_key(name)
+    }
+
+    fn declares_enum(&self, name: &str) -> bool {
+        self.0.enums.contains_key(name)
+    }
+}
 
 impl Interpreter {
     pub(crate) fn call_reflect_method(
@@ -23,15 +39,22 @@ impl Interpreter {
             }
         };
 
-        match method {
-            "fields" => self.reflect_fields(&type_name),
-            "name_of" => Ok(Value::String(Arc::new(Mutex::new(type_name)))),
-            "is_struct" => Ok(Value::Bool(self.struct_decls.contains_key(&type_name))),
-            "is_enum" => Ok(Value::Bool(self.enums.contains_key(&type_name))),
-            "size_of" | "align_of" => Ok(Value::int(0)), // Placeholder
-            "is_copy" | "is_resource" | "is_flat" => Ok(Value::Bool(false)), // Placeholder
-            "is_optional" | "is_vec" | "is_map" | "is_integer" | "is_float" => Ok(Value::Bool(false)),
-            _ => Err(RuntimeError::NoSuchMethod {
+        if method == "fields" {
+            return self.reflect_fields(&type_name);
+        }
+
+        // The rules are in rask-types so native folds the same answers — each
+        // backend deriving its own is how `is_integer<i32>()` came back `false`
+        // here while native couldn't lower the call at all (#775).
+        let decls = InterpDecls(self);
+        match reflect::answer(method, &type_name, &decls) {
+            reflect::ReflectAnswer::Bool(b) => Ok(Value::Bool(b)),
+            reflect::ReflectAnswer::Int(n) => Ok(Value::int(n as i64)),
+            reflect::ReflectAnswer::Str(s) => Ok(Value::String(Arc::new(Mutex::new(s)))),
+            reflect::ReflectAnswer::Unsupported(why) => Err(RuntimeError::TypeError(format!(
+                "reflect.{method}<{type_name}>() isn't implemented on either backend — {why} (#791)"
+            ))),
+            reflect::ReflectAnswer::NoSuchMethod => Err(RuntimeError::NoSuchMethod {
                 ty: "reflect".to_string(),
                 method: method.to_string(),
             }),

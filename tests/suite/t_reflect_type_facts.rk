@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #775: native lowered exactly one reflect thing — `reflect.fields()` as the
+// iterable of a `comptime for`. Every other reflect call left the `reflect` name
+// for ordinary local lookup, which failed with "unresolved variable `reflect`"
+// — a diagnosis pointing at name resolution, which was never the problem.
+//
+// The interpreter answered these, but four of them wrongly: `is_integer<i32>()`
+// came back `false`, and so did `is_float`, `is_vec` and `is_optional`. Both
+// backends now fold the same constants from one classifier
+// (rask-types/src/reflect.rs), which is what this gates.
+import std.reflect
+
+struct Point { public x: f64, public y: f64 }
+
+enum Colour { Red, Green }
+
+func field_names() -> string {
+    mut out = ""
+    comptime for field in reflect.fields<Point>() {
+        out = "{out}{field.name}:{field.type_name} "
+    }
+    return out
+}
+
+func main() {}
+
+test "std.reflect/name_of hands back the type's spelling" {
+    assert reflect.name_of<Point>() == "Point"
+    assert reflect.name_of<Colour>() == "Colour"
+}
+
+test "std.reflect/is_struct and is_enum split declared types" {
+    assert reflect.is_struct<Point>()
+    assert !reflect.is_struct<Colour>()
+    assert reflect.is_enum<Colour>()
+    assert !reflect.is_enum<Point>()
+}
+
+test "std.reflect/is_integer covers the integer primitives" {
+    assert reflect.is_integer<i32>()
+    assert reflect.is_integer<u8>()
+    assert reflect.is_integer<i64>()
+    assert reflect.is_integer<usize>()
+    assert !reflect.is_integer<f64>()
+    assert !reflect.is_integer<Point>()
+}
+
+test "std.reflect/is_float is the two float widths" {
+    assert reflect.is_float<f64>()
+    assert reflect.is_float<f32>()
+    assert !reflect.is_float<i32>()
+}
+
+test "std.reflect/container predicates match the base name" {
+    assert reflect.is_vec<Vec<i32>>()
+    assert !reflect.is_vec<Point>()
+    assert reflect.is_map<Map<string, i32>>()
+    assert !reflect.is_map<Vec<i32>>()
+}
+
+test "std.reflect/is_optional sees the wrapper, not the payload" {
+    assert reflect.is_optional<Point?>()
+    assert reflect.is_optional<i32?>()
+    assert !reflect.is_optional<Point>()
+}
+
+test "std.reflect/fields still unrolls in a comptime for" {
+    assert field_names() == "x:f64 y:f64 "
+}
