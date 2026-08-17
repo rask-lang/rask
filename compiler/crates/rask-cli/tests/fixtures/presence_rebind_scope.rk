@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `if x?` rebinds `x` to the payload inside the branch. That rebind belongs to
+// the branch: `lower_block` snapshots the locals map, but it did so *after* the
+// bind, so the narrowed name outlived its block and the next `if x?` read a tag
+// out of a bare i32. Native segfaulted; the interpreter answered.
+
+func main() {
+    let x: i32? = 5
+
+    if x? {
+        println("first block")
+    }
+    if x? {
+        println("second block")
+    }
+
+    // Inside the branch the rebind is in force, and `??` on the already-narrowed
+    // value hands it straight back rather than reading a tag off it.
+    if x? {
+        println("as option: {x ?? -1}")
+    }
+
+    // An explicit binder names the payload without touching `x`.
+    if x? as v {
+        println("bound: {v}")
+    }
+
+    println("done")
+}

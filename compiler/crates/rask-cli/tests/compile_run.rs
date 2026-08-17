@@ -3615,3 +3615,44 @@ read at eof is Eof: true
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// A value going into a container's element slot widens like any other argument
+// position, and reading one back uses the *declared* element type. Three bugs
+// stacked here: `v.push(1)` on a `Vec<i32?>` stored a bare int (builtin
+// collection methods have no declared parameter to coerce against); the element
+// type was then tracked from whichever push came last, so `push(1)`,
+// `push(none)`, `push(3)` recorded `i32`; and the payload rebind from
+// `if x? { … }` outlived its block, so the next `x` read a tag out of a bare
+// slot. Native segfaulted on three elements but not two.
+#[test]
+fn a_vec_of_optionals_reads_back_what_went_in_on_both_backends() {
+    let expected = "\
+len=3
+present 1
+absent
+present 3
+[0]=1 [1]=-1 [2]=3
+after set [1]=9
+map a present=true
+chain=8
+chain all none=99
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "vec_of_optionals.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// The payload rebind `if x?` installs is scoped to the branch. It used to leak
+// past the closing brace, so a second `if x?` on the same variable tested a tag
+// that wasn't there.
+#[test]
+fn a_presence_rebind_does_not_outlive_its_block() {
+    let expected = "first block\nsecond block\nas option: 5\nbound: 5\ndone\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "presence_rebind_scope.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

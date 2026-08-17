@@ -2517,6 +2517,18 @@ impl<'a> MirLowerer<'a> {
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
                 let (val, val_ty) = self.lower_expr(value)?;
+                // Nothing to fall back from. `if x? { … x ?? -1 … }` rebinds `x`
+                // to the payload inside the block, so by the time `??` sees it
+                // the value is a bare `i32` — and reading a tag out of one and
+                // dereferencing at that offset segfaulted. The interpreter hands
+                // the value straight back, so that is the answer.
+                let is_two_branch = matches!(
+                    val_ty,
+                    MirType::Option(_) | MirType::Result { .. }
+                ) || self.option_is_niche(value, &val_ty);
+                if !is_two_branch {
+                    return Ok((val, val_ty));
+                }
                 let is_niche = self.option_is_niche(value, &val_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
@@ -4370,15 +4382,52 @@ impl<'a> MirLowerer<'a> {
             .cloned()
             .unwrap_or(qualified_name);
 
+        // A value going into a container's element slot is an argument position,
+        // so it gains wrapper layers the same way any other one does. Nothing
+        // did that here: a stdlib method has no `param_ty_strs` to coerce
+        // against, so `v.push(1)` on a `Vec<i32?>` stored a bare 1 into a
+        // 16-byte `[tag][payload]` slot. Reading it back said absent natively
+        // and handed the interpreter a bare i64.
+        if let Some((arg_index, type_arg_index)) = match qualified_name.as_str() {
+            "Vec_push" | "Vec_remove_item" => Some((0usize, 0usize)),
+            "Vec_set" | "Vec_insert" => Some((1, 0)),
+            "Map_insert" => Some((1, 1)),
+            _ => None,
+        } {
+            // all_args[0] is the receiver.
+            if let (Some(elem_ty), Some(src_ty)) = (
+                self.container_elem_mir_type(object.id, type_arg_index),
+                arg_types.get(arg_index).cloned(),
+            ) {
+                if let Some(slot) = all_args.get(arg_index + 1).cloned() {
+                    all_args[arg_index + 1] = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Argument,
+                        slot,
+                        &src_ty,
+                        &elem_ty,
+                    );
+                }
+            }
+        }
+
         // Track collection element types from push/insert so get returns the right type.
         // Handles both `v.push(x)` and `self.field.push(x)`.
         // Writes to both per-function and shared cross-function maps.
+        //
+        // Tracking is last-write-wins across every push in the function, so the
+        // *declared* element type gets first refusal: `Vec<i32?>` fed `push(1)`,
+        // `push(none)`, `push(3)` recorded `i32` because the last bare literal
+        // overwrote the option, and reading an element then took a tag out of a
+        // bare slot. It crashed on three elements and not two, decided entirely
+        // by which push came last.
         if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set" | "Pool_insert") {
-            if let Some(arg_ty) = arg_types.first() {
+            let declared = self.container_elem_mir_type(object.id, 0);
+            if let Some(arg_ty) = declared.as_ref().or_else(|| arg_types.first()) {
                 if !matches!(arg_ty, MirType::I64) {
+                    let arg_ty = arg_ty.clone();
                     if let Some(key) = Self::vec_tracking_key(object) {
                         self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                        self.ctx.record_shared_elem(key, arg_ty.clone());
+                        self.ctx.record_shared_elem(key, arg_ty);
                     }
                 }
             }
@@ -4406,10 +4455,19 @@ impl<'a> MirLowerer<'a> {
 
         // Use tracked element type for Vec_get/index return instead of default I64.
         // Checks per-function map first, then shared cross-function map.
+        //
+        // The receiver's declared element type comes first, because tracking is
+        // last-write-wins over every push in the function and a `Vec<i32?>` fed
+        // `push(1)`, `push(none)`, `push(3)` ended up recorded as `i32`: the
+        // final bare literal overwrote the option. Reading an element then took
+        // a tag out of a bare i32 slot and the loop segfaulted — on three
+        // elements but not two, purely by which push happened to be last.
         let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-            Self::vec_tracking_key(object).and_then(|key| {
-                self.meta(&key).and_then(|m| m.elem_type.clone())
-                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+            self.container_elem_mir_type(object.id, 0).or_else(|| {
+                Self::vec_tracking_key(object).and_then(|key| {
+                    self.meta(&key).and_then(|m| m.elem_type.clone())
+                        .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                })
             })
         } else {
             None
@@ -6328,12 +6386,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         // Then: bind the present payload as the narrow name, lower body.
+        //
+        // The bind is scoped to the branch. `lower_block` snapshots `locals`,
+        // but it does that *after* this bind, so the narrowed name used to
+        // outlive its block — a second `if x?` further down then read a tag out
+        // of the bare payload and segfaulted, where the interpreter answered.
         self.builder.switch_to_block(then_block);
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
+        let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
             self.bind_presence_payload(name, &val, &payload_ty, is_niche);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
+        self.locals = outer_locals;
         let result_local = self.builder.alloc_temp(then_ty.clone());
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -6348,6 +6413,7 @@ impl<'a> MirLowerer<'a> {
         // Else: for Result, bind the err payload (field 0) as the else name.
         // For Option, None has no payload so skip the bind.
         self.builder.switch_to_block(else_block);
+        let outer_locals = self.locals.clone();
         let else_err_ty = self.extract_err_type(inner)
             .or_else(|| match &scrutinee_ty {
                 MirType::Result { err, .. } => Some((**err).clone()),
@@ -6384,6 +6450,7 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        self.locals = outer_locals;
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), then_ty))
     }

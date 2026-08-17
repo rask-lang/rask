@@ -363,7 +363,7 @@ fn wrap_optional_layers(value: Value, ty: &str) -> Value {
 }
 
 /// How many optional layers a value already carries at its head.
-fn option_depth(value: &Value) -> usize {
+pub(crate) fn option_depth(value: &Value) -> usize {
     match value {
         Value::Enum { name, fields, .. } if name == "Option" => {
             1 + fields.first().map_or(0, option_depth)

@@ -223,6 +223,31 @@ impl Interpreter {
         self.node_types = node_types;
     }
 
+    /// How many optional layers a container's Nth type argument declares —
+    /// `Vec<i32?>` at index 0 answers 1, `Map<string, i32??>` at index 1
+    /// answers 2. `None` when the receiver's type isn't a resolved container.
+    pub(crate) fn container_elem_option_depth(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<usize> {
+        use rask_types::{GenericArg, Type};
+        fn depth(ty: &Type) -> usize {
+            match ty {
+                Type::Result { ok, err } if **err == Type::None => 1 + depth(ok),
+                _ => 0,
+            }
+        }
+        let args = match self.node_types.get(&node_id)? {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let GenericArg::Type(inner) = args.get(index)? else {
+            return None;
+        };
+        Some(depth(inner))
+    }
+
     /// ER31a: supply the `try` sites whose error gets wrapped in the enclosing
     /// function's error enum. Without this, those errors propagate unwrapped and
     /// the caller's `match` on the boundary enum finds a variant it doesn't know.

@@ -2589,8 +2589,13 @@ impl TypeChecker {
         };
 
         match method {
+            // The element slot is an argument position like any other, so it
+            // widens a bare `T` into a `T?` element. Plain unify accepted the
+            // bare value without recording the coercion, so `Vec<i32?>` stored
+            // raw ints — every read then came back absent natively and as a
+            // bare i64 on the interpreter.
             "push" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[0], span);
                 self.unify(ret, &Type::Unit, span)
             }
             "pop" if args.is_empty() => {
@@ -2607,7 +2612,7 @@ impl TypeChecker {
             }
             "set" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.unify(&args[1], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[1], span);
                 self.unify(ret, &Type::Unit, span)
             }
             "clear" if args.is_empty() => {
@@ -2622,7 +2627,7 @@ impl TypeChecker {
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.unify(&args[1], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[1], span);
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove(index) -> T

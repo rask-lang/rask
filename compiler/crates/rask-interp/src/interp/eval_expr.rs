@@ -913,6 +913,31 @@ impl Interpreter {
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
+                // A value going into a container's element slot widens the way a
+                // declared parameter does: `v.push(1)` on a `Vec<i32?>` stores
+                // `Some(1)`, not a bare 1. Builtin collection methods take their
+                // arguments untyped, so nothing else was doing this and the
+                // element came back as an i64 that `?` refused to test.
+                if let Some((arg_index, type_arg_index)) = match (&receiver, method.as_str()) {
+                    (Value::Vec(_), "push") => Some((0usize, 0usize)),
+                    (Value::Vec(_), "set") | (Value::Vec(_), "insert") => Some((1, 0)),
+                    (Value::Map(_), "insert") => Some((1, 1)),
+                    _ => None,
+                } {
+                    let want = self.container_elem_option_depth(object.id, type_arg_index);
+                    if let (Some(want), Some(slot)) = (want, arg_vals.get_mut(arg_index)) {
+                        for _ in super::call::option_depth(slot)..want {
+                            *slot = Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![slot.clone()],
+                                variant_index: 0,
+                                origin: None,
+                            };
+                        }
+                    }
+                }
+
                 // Inject type_args for generic methods (e.g. json.decode<T>, reflect.fields<T>)
                 if let Some(ta) = type_args {
                     if let Some(first_type) = ta.first() {
