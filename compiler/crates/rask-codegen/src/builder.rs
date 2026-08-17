@@ -1631,17 +1631,16 @@ impl<'a> FunctionBuilder<'a> {
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
-                // A by-value aggregate element lives *in* its slot — the slots
-                // are `i * size` apart and everything downstream (field reads,
-                // tag reads, method receivers) wants the address. Loading eight
-                // bytes and treating them as the value's pointer is what made
-                // every element read of `[Pt { x: 1, y: 2 }, …]` segfault.
+                // An element that lives *in* its slot comes back as an address —
+                // everything downstream (field reads, tag reads, method
+                // receivers) wants that. Loading eight bytes and treating them as
+                // the value's pointer is what made every element read of
+                // `[Pt { x: 1, y: 2 }, …]` segfault. The rule is
+                // `MirType::stored_inline_in_array`, shared with the store in MIR
+                // lowering, because the two only work as a pair.
                 let elem_is_inline = Self::operand_mir_type(base, ctx.locals)
                     .and_then(|t| match t {
-                        MirType::Array { elem, .. } => Some(matches!(
-                            *elem,
-                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                        )),
+                        MirType::Array { elem, .. } => Some(elem.stored_inline_in_array()),
                         _ => None,
                     })
                     .unwrap_or(false);

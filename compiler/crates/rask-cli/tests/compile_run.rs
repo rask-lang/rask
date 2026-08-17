@@ -4062,3 +4062,30 @@ fn error_own_capture_moves_a_noncopy_param() {
     assert!(out.contains("E0813"), "should be maybe-moved (E0813): {}", out);
     assert!(out.contains("`big`"), "should name the moved binding: {}", out);
 }
+
+// `r is MyErr.Worse as w` was rejected as "not a branch of `i64 or MyErr` — this
+// test can never be true", while the bare `is MyErr.Worse` right next to it
+// worked. The two spellings take different paths: the bare one is a constructor
+// pattern and skips the branch check, the bound one is a type pattern and was
+// compared against the scrutinee's own branches, which never include a variant
+// name. `match` has always dispatched at variant granularity on a `T or E`
+// (#766). Three halves: the checker accepts it and types the binder as the
+// variant's payload, the interpreter matches the inner variant instead of
+// descending past it, and MIR reads at the variant's offset inside the err payload
+// rather than binding the whole error.
+#[test]
+fn is_on_an_error_variant_binds_its_payload_on_both_backends() {
+    let expected = "\
+0: ok(7)
+1: bad
+2: worse(disk)
+3: code(42)
+4: pair(sector,9)
+whole: worse: disk
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "is_error_variant_payload.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
