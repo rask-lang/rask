@@ -2888,10 +2888,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 Ok(acc)
             }
-            // Unions carry no active-variant tag, so the only defined
-            // comparison is over the raw bytes of the widest variant.
+            // A union's bytes start with its member index, so a byte-wise
+            // comparison can't call two different members equal.
             MirType::Union(variants) => {
-                let size = variants.iter().map(|v| v.size()).max().unwrap_or(0);
+                let size = rask_mono::abi::UNION_PAYLOAD_OFFSET
+                    + variants.iter().map(|v| v.size()).max().unwrap_or(0);
                 Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
             }
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
@@ -5283,13 +5284,16 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::String => Some(16),
             MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
+            // `[member:8][member bytes]` — the index word counts, or the slot
+            // comes up 8 bytes short and the widest member's tail lands past its
+            // end (#776).
             MirType::Union(variants) => {
                 let max = variants.iter()
                     .map(|v| Self::resolve_type_alloc_size(v, struct_layouts, enum_layouts)
                         .unwrap_or(v.size()))
                     .max()
                     .unwrap_or(0);
-                Some(max)
+                Some(rask_mono::abi::UNION_PAYLOAD_OFFSET + max)
             }
             _ => None,
         }

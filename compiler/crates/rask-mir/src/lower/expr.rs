@@ -4295,6 +4295,16 @@ impl<'a> MirLowerer<'a> {
             arg_types.push(ty);
         }
 
+        // A union receiver has no single target — the member it holds decides.
+        // Switch on the member index and call that member's own method.
+        if let MirType::Union(_) = &obj_ty {
+            if let Some(handled) =
+                self.lower_union_method(expr, &obj_op, &obj_ty, method.as_str(), &all_args)?
+            {
+                return Ok(handled);
+            }
+        }
+
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -5558,6 +5568,103 @@ impl<'a> MirLowerer<'a> {
         }
         let expected = self.pattern_tag_in_type_context(pattern, val_ty);
         self.emit_eq_const(tag, expected)
+    }
+
+    /// `e.message()` where `e` is a union — dispatch by member index.
+    ///
+    /// Every member satisfies the same obligation (ER4: an error type provides
+    /// `message`), so there is one method per member and they agree on the return
+    /// type. Which one to call is a runtime fact, so this is a switch on the
+    /// member index with one arm per member, each calling `{Member}_{method}` on
+    /// the member's own bytes.
+    ///
+    /// `None` when any member has no nominal name to mangle — better to fall
+    /// through to the ordinary dispatch error, which names the method, than to
+    /// emit a call to a symbol that doesn't exist.
+    fn lower_union_method(
+        &mut self,
+        expr: &Expr,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+        method: &str,
+        all_args: &[MirOperand],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let MirType::Union(members) = obj_ty else {
+            return Ok(None);
+        };
+        let names: Option<Vec<String>> =
+            members.iter().map(|m| self.mir_type_name(m)).collect();
+        let Some(names) = names else {
+            return Ok(None);
+        };
+        if names.is_empty() {
+            return Ok(None);
+        }
+
+        // The member's bytes sit past the index.
+        let payload = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                access: FieldAccess::InPlace(8),
+            },
+        }));
+        let member = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: member,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                access: FieldAccess::Sized(8),
+            },
+        }));
+
+        // The checker typed the call, so the result slot is known before any arm
+        // is built — the arms only have to agree with it, which ER4 guarantees.
+        let ret_ty = self
+            .ctx
+            .lookup_node_type(expr.id)
+            .unwrap_or(MirType::String);
+        let result = self.builder.alloc_temp(ret_ty.clone());
+
+        let merge_block = self.builder.create_block();
+        let arm_blocks: Vec<crate::BlockId> =
+            names.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> = arm_blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (i as u64, *b))
+            .collect();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(member),
+            cases,
+            // Member 0's arm, not `unreachable`: the index is written by the
+            // compiler at every production site, so an out-of-range one is a
+            // compiler bug, and trapping on it would turn that into a SIGILL
+            // with nothing to read.
+            default: arm_blocks[0],
+        }));
+
+        for (i, name) in names.iter().enumerate() {
+            self.builder.switch_to_block(arm_blocks[i]);
+            let mut args = vec![MirOperand::Local(payload)];
+            args.extend(all_args.iter().skip(1).cloned());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: crate::operand::FunctionRef::internal(format!("{}_{}", name, method)),
+                args,
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok(Some((MirOperand::Local(result), ret_ty)))
     }
 
     /// The union type and member index when `pattern` names a member of a

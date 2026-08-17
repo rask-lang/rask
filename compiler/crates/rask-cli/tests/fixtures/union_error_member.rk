@@ -98,4 +98,31 @@ func main() {
     // A single-member err side is unchanged.
     let plain = parse_number("bad")
     println("plain: {plain is ParseError}")
+
+    // ER4: every member provides `message`, so `e.message()` on the union
+    // dispatches by member index to that member's own method.
+    println("msg: {described("bad", 2)}")
+    println("msg: {described("42", 0)}")
+    println("msg: {described("42", 2)}")
+    println("msg3: {described3("bad", 2)}")
+    println("msg3: {described3("42", 0)}")
+    println("msg3: {described3("42", 2)}")
+}
+
+func described(s: string, b: i32) -> string {
+    let r = combined(s, b)
+    if r is i32 as v {
+        return "ok({v})"
+    } else as e {
+        return e.message()
+    }
+}
+
+func described3(s: string, b: i32) -> string {
+    let r = three(s, b)
+    if r is i32 as v {
+        return "ok({v})"
+    } else as e {
+        return e.message()
+    }
 }

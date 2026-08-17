@@ -10,12 +10,15 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-t19b_union_method_dispatch.rk # native has no runtime discriminant on a union err payload, so
-#   `e.message()` can't pick a target (fails to compile) and — the sharper end — `r is ParseError`
-#   on a `T or (A | B)` compiles and asks "is it Ok?", so every failure reads as the *second*
-#   member. Silent wrong answer, diagnosed in #776. Also #375, rask#211 (native)
+# (none right now)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
+#
+# Pruned 2026-08-17, fixed and re-verified on native before removing the line:
+#   t19b_union_method_dispatch.rk — #776. A union err payload now carries its
+#     member index, so `r is ParseError` tests the member instead of the Result's
+#     own tag, and `e.message()` switches on the index to reach the member's own
+#     method. All 4 tests pass on both backends.
 #
 # Pruned 2026-08-08, both fixed and re-verified on native before removing the line:
 #   t_try_coalesce_diverge.rk — #635, which turned out not to be the `continue` at

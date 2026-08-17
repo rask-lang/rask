@@ -3940,9 +3940,10 @@ holder=4
 
 // `r is ParseError` on a `T or (ParseError | DivError)` used to be answered by
 // the Result's own tag — first member read as Ok, second as Err — so every error
-// claimed to be whichever member was listed second, silently. The union now
-// carries its member index alongside the payload and `is Member` tests both
-// layers. Three members, so "the second one" can't accidentally be right.
+// claimed to be whichever member was listed second, silently. And `e.message()`
+// on the union failed to lower at all. The union now carries its member index
+// alongside the payload: `is Member` tests both layers, and dispatch switches on
+// the index. Three members, so "the second one" can't accidentally be right.
 #[test]
 fn a_union_error_names_its_member_on_both_backends() {
     let expected = "\
@@ -3955,6 +3956,12 @@ b: false true false
 c: false false true
 d: true
 plain: true
+msg: parse error: not a number
+msg: division by zero
+msg: ok(21)
+msg3: parse error: not a number
+msg3: division by zero
+msg3: over 10
 ";
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "union_error_member.rk");
