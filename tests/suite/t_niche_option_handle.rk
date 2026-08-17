@@ -42,3 +42,23 @@ test "a present handle reads back" {
     assert p[b].next?
     assert p[p[b].next!].v == 7
 }
+
+// #733: the field initializer above (`next: a`) passes a bare `Handle<Node>`,
+// which already worked. Passing an already-optional `Handle<Node>?` — the
+// shape every `prev: self.tail`-style doubly-linked insert uses — took a
+// different path that discarded the value and stored `none` instead.
+test "an already-optional handle survives a struct-literal field initializer" {
+    mut p: Pool<Node> = Pool.new()
+    let a = p.insert(Node { v: 7, next: none })
+    let wrapped: Handle<Node>? = a
+    let b = p.insert(Node { v: 8, next: wrapped })
+    assert p[b].next?
+    assert p[p[b].next!].v == 7
+}
+
+test "an already-optional none handle stays none through a struct literal" {
+    mut p: Pool<Node> = Pool.new()
+    let empty: Handle<Node>? = none
+    let b = p.insert(Node { v: 9, next: empty })
+    assert p[b].next? == false
+}

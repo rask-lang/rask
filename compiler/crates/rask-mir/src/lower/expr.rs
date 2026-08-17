@@ -280,7 +280,15 @@ impl<'a> MirLowerer<'a> {
     ) -> MirOperand {
         let Some(field_ty) = field_ty else { return val };
         if matches!(field_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
-            if matches!(val_ty, MirType::Option(_)) {
+            // A source already carrying `Option(Handle)` is already
+            // niche-encoded — the same sentinel scheme the field uses — so its
+            // operand IS the value to store, real handle or sentinel alike.
+            // Only a `none` that slipped through the generic tagged-Option
+            // path (its inner type isn't Handle, so the niche check missed it
+            // before this field's type was known) needs converting to the
+            // sentinel here; storing a real `Handle?` value used to be
+            // overwritten by this same branch and silently became `none` (#733).
+            if matches!(val_ty, MirType::Option(inner) if !matches!(**inner, MirType::Handle)) {
                 return MirOperand::Constant(MirConst::Int(crate::lower::HANDLE_NONE_SENTINEL));
             }
             return val;
