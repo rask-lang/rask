@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// IM2: a dotted import binds its last segment, so `import std.math` names the
+// math module. The interpreter special-cased `std.reflect` and treated every
+// other `std.*` form as a member of `std`, binding nothing — so these calls
+// compiled natively and died at runtime on the interpreter.
+import std.math
+import std.io
+
+func main() {
+    println("ln(16) = {math.ln(16.0)}")
+    println("to_degrees = {math.to_degrees(0.0)}")
+
+    // The io module reached the same way; EOF here, stdin is closed.
+    let line = io.read_line()
+    println("read at eof is Eof: {line is IoError.UnexpectedEof}")
+}

@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A comparison between integers of different signedness is answered by *value*.
+//
+// Both operands widen to a 64-bit slot, but they don't read the same way there:
+// the unsigned side is a bit pattern and the signed side a number, so one
+// comparison instruction can only be right for one of them. Native compared as
+// unsigned and said `5 > -1` was false; the interpreter compared as signed and
+// said `u64::MAX > 1` was false. Each got the other's case wrong (#308).
+//
+// A negative signed operand is below every unsigned one, and once it isn't
+// negative both sides are non-negative and unsigned order is right.
+
+func main() {
+    let five: u64 = 5
+    let minus_one: i32 = -1
+
+    println("u64 5  >  i32 -1 : {five > minus_one}")
+    println("u64 5  <  i32 -1 : {five < minus_one}")
+    println("i32 -1 <  u64 5  : {minus_one < five}")
+    println("i32 -1 >  u64 5  : {minus_one > five}")
+    println("u64 5  == i32 -1 : {five == minus_one}")
+    println("u64 5  != i32 -1 : {five != minus_one}")
+
+    // The other end: a u64 whose bit pattern reads as a negative i64.
+    let big: u64 = 18446744073709551615
+    let one: i32 = 1
+    println("u64 max >  i32 1 : {big > one}")
+    println("u64 max <  i32 1 : {big < one}")
+    println("i32 1   <  u64 max: {one < big}")
+
+    // Equal values across signedness.
+    let s: i32 = 5
+    println("u64 5  == i32 5  : {five == s}")
+    println("u64 5  >= i32 5  : {five >= s}")
+    println("u64 5  <= i32 5  : {five <= s}")
+
+    // Same-signedness pairs must not have changed.
+    let u_a: u64 = 3
+    let u_b: u64 = 7
+    println("u64 3  <  u64 7  : {u_a < u_b}")
+    let i_a: i32 = -5
+    let i_b: i32 = -2
+    println("i32 -5 <  i32 -2 : {i_a < i_b}")
+}

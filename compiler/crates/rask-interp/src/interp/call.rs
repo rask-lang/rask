@@ -11,7 +11,35 @@ use crate::value::Value;
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(crate) fn call_function(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    /// Refuse to recurse when the host stack is nearly gone, and say so.
+    ///
+    /// The interpreter evaluates one Rask call per host stack frame, and those
+    /// frames are large — `eval_expr` is a single match over 80 expression kinds
+    /// and Rust sizes a frame for the union of every arm's locals. Running out
+    /// used to mean SIGABRT: no message, no diagnostic, no exit code (#759).
+    ///
+    /// Measured rather than counted. One Rask frame costs anywhere from a few KB
+    /// to tens of KB depending on how deeply nested the expressions in the body
+    /// are, so a fixed depth limit is either wrong for a heavy body or needlessly
+    /// low for a light one. Comparing the stack pointer against where interpreting
+    /// started answers the question that actually matters.
+    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+        if crate::stack_nearly_exhausted() {
+            return Err(RuntimeDiagnostic::new(
+                RuntimeError::RecursionTooDeep {
+                    function: func.name.clone(),
+                    depth: self.call_depth,
+                },
+                func.span,
+            ));
+        }
+        self.call_depth += 1;
+        let result = self.call_function_at_depth(func, args);
+        self.call_depth -= 1;
+        result
+    }
+
+    fn call_function_at_depth(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -40,6 +68,31 @@ impl Interpreter {
         }
 
         self.env.push_scope();
+
+        // What this call's type parameters resolved to, read off the arguments:
+        // `value: T` given a `Point` means `T = "Point"` for the body. Scoped to
+        // the call, like `env`. Without it `reflect.fields<T>()` inside a generic
+        // body saw the literal "T" (#699).
+        //
+        // PC1 makes a single uppercase letter a type parameter wherever it
+        // appears, so `func print_fields(value: T)` declares one without writing
+        // `<T>` — reading only `type_params` found nothing to bind.
+        let mut type_frame: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (idx, param) in func.params.iter().enumerate() {
+            let declared = param.ty.trim();
+            let named_here = func
+                .type_params
+                .iter()
+                .any(|tp| !tp.is_comptime && tp.name == declared);
+            if !(named_here || is_type_param_name(declared)) {
+                continue;
+            }
+            if let Some(concrete) = args.get(idx).and_then(Self::runtime_type_name) {
+                type_frame.entry(declared.to_string()).or_insert(concrete);
+            }
+        }
+        self.type_bindings.push(type_frame);
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
             // A by-value parameter receives an independent copy (VS1): mutating
@@ -87,6 +140,7 @@ impl Interpreter {
             if matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::Panic(_))) {
                 self.report_secondary_panic(&guard_diag);
             } else {
+                self.type_bindings.pop();
                 self.env.pop_scope();
                 return Err(guard_diag);
             }
@@ -100,6 +154,7 @@ impl Interpreter {
             .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
             .collect();
 
+        self.type_bindings.pop();
         self.env.pop_scope();
 
         let value = match result {
@@ -323,6 +378,13 @@ impl Interpreter {
     }
 }
 
+/// PC1: a single uppercase ASCII letter is a type parameter wherever it appears
+/// in a signature, whether or not the function also writes `<T>`.
+fn is_type_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+}
+
 /// The T of a `Result<T, E>` string, as written.
 fn result_ok_type(ret_ty: &str) -> Option<String> {
     let rest = ret_ty.trim().strip_prefix("Result<")?.strip_suffix('>')?;
@@ -363,7 +425,7 @@ fn wrap_optional_layers(value: Value, ty: &str) -> Value {
 }
 
 /// How many optional layers a value already carries at its head.
-fn option_depth(value: &Value) -> usize {
+pub(crate) fn option_depth(value: &Value) -> usize {
     match value {
         Value::Enum { name, fields, .. } if name == "Option" => {
             1 + fields.first().map_or(0, option_depth)

@@ -168,14 +168,21 @@ impl Interpreter {
                 }
                 DeclKind::Import(import) => {
                     if let Some(module_name) = import.path.first() {
-                        // Handle std.reflect as a special two-component module
-                        if module_name == "std"
-                            && import.path.len() >= 2
-                            && import.path[1] == "reflect"
-                        {
-                            let alias = import.alias.clone().unwrap_or_else(|| "reflect".to_string());
-                            imports.push((alias, ModuleKind::Reflect));
-                            continue;
+                        // IM2: a dotted path binds its *last* segment, so
+                        // `import std.io` names the io module — not a member of
+                        // std. Only `std.reflect` had been special-cased here,
+                        // so every other `std.*` form bound nothing and each
+                        // call died at runtime while native compiled it fine.
+                        if import.path.len() >= 2 && !import.is_glob {
+                            let last = import.path.last().unwrap();
+                            if let Some(kind) = ModuleKind::from_name(last) {
+                                let alias = import.alias.clone().unwrap_or_else(|| last.clone());
+                                if kind != ModuleKind::Reflect {
+                                    Self::register_glob_companions(&mut self.env, kind);
+                                }
+                                imports.push((alias, kind));
+                                continue;
+                            }
                         }
 
                         // `reflect` is reached as `std.reflect`, handled above.

@@ -191,15 +191,31 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
 
 
 impl<'a> MirLowerer<'a> {
-    /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
-    /// what an unsubstituted generic parameter looks like by the time it reaches
-    /// MIR, and it must never be mistaken for a real layout.
+    /// A scalar whose layout is known here and now. Deliberately not `Ptr` or
+    /// any aggregate: `Ptr` is what an unsubstituted generic parameter looks like
+    /// by the time it reaches MIR, and taking it for a real layout gave a
+    /// monomorphized tuple a slot shaped for neither instantiation.
     ///
-    /// Integers only because they're the only implicit coercion today (CV1a). If
-    /// float widening ever becomes implicit, this has to widen with it or the
-    /// tuple-literal layout bug comes back for `(f64, f32)` — the `Ptr` exclusion
-    /// is the part that must survive, not the integer restriction (#660).
-    fn is_int_scalar(ty: &MirType) -> bool {
+    /// Floats are in the set even though float widening isn't implicit yet. The
+    /// restriction that mattered was always the `Ptr` exclusion; keying it to
+    /// integers was incidental, and left `(f64, f32)` primed to reproduce the
+    /// tuple-literal layout bug the moment #624 makes `f32` → `f64` implicit —
+    /// 4-and-8 element offsets against a declared 0-and-8 shape, which reads
+    /// back as a plausible wrong number rather than a crash (#660).
+    /// Whether an array element of this type lives *inline* in its slot.
+    ///
+    /// By-value aggregates do: the slots are `i * size` apart and the reader
+    /// takes the slot address. A `string` doesn't — an array of strings holds
+    /// pointers, and the read path depends on that (#414). Scalars need no size
+    /// on the store either way.
+    fn stores_inline_in_array(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+        )
+    }
+
+    fn is_sized_scalar(ty: &MirType) -> bool {
         matches!(
             ty,
             MirType::I8
@@ -210,6 +226,10 @@ impl<'a> MirLowerer<'a> {
                 | MirType::U16
                 | MirType::U32
                 | MirType::U64
+                | MirType::F32
+                | MirType::F64
+                | MirType::Bool
+                | MirType::Char
         )
     }
 
@@ -1928,6 +1948,7 @@ impl<'a> MirLowerer<'a> {
                     elem_ty = ty;
                 }
                 let elem_size = elem_ty.size();
+                let elem_ty_for_store = elem_ty.clone();
                 let array_ty = MirType::Array {
                     elem: Box::new(elem_ty),
                     len: elems.len() as u32,
@@ -1938,13 +1959,23 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
-                        // Deliberately unsized: an array of strings holds
-                        // *pointers* to 16-byte values, not inline ones, and the
-                        // whole read path expects that. Passing elem_size here
-                        // makes codegen copy the value inline instead, which
-                        // reads correctly right up until something indexes the
-                        // array — see #414 for why the two disagree.
-                        store_size: None,
+                        // A `string` element is a *pointer* to its 16-byte value,
+                        // not an inline copy, and the whole read path expects
+                        // that — passing a size here copies it inline and then
+                        // indexing the array reads the wrong thing (#414).
+                        //
+                        // A struct/enum/tuple element is the other way round: the
+                        // slots are already `i * elem_size` apart, so the reader
+                        // takes the slot address and expects the value to be
+                        // *there*. Storing only a word put the source pointer in
+                        // the slot instead, and reading any element of
+                        // `[Pt { x: 1, y: 2 }, …]` dereferenced it — SIGSEGV,
+                        // silently, for every array literal of aggregates.
+                        store_size: if Self::stores_inline_in_array(&elem_ty_for_store) {
+                            Some(elem_size)
+                        } else {
+                            None
+                        },
                     }));
                 }
                 Ok((MirOperand::Local(result_local), array_ty))
@@ -1993,7 +2024,7 @@ impl<'a> MirLowerer<'a> {
                         .into_iter()
                         .zip(target.into_iter())
                         .map(|(got, want)| {
-                            if Self::is_int_scalar(&got) && Self::is_int_scalar(&want) {
+                            if Self::is_sized_scalar(&got) && Self::is_sized_scalar(&want) {
                                 want
                             } else {
                                 got
@@ -2068,12 +2099,12 @@ impl<'a> MirLowerer<'a> {
                         let variant_info = el.variants.iter().find(|v| v.name == variant_name)
                             .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
                         (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
-                    } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                    } else if let Some((idx, sl)) = self.ctx.find_struct_written(name) {
                         (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                     } else {
                         (MirType::Ptr, None, None)
                     }
-                } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                } else if let Some((idx, sl)) = self.ctx.find_struct_written(name) {
                     (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                 } else {
                     (MirType::Ptr, None, None)
@@ -2219,20 +2250,11 @@ impl<'a> MirLowerer<'a> {
                 let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                // Compare tag against expected variant. Use type-context
-                // resolution so `if r is ErrEnum [as e]` against `T or ErrEnum`
-                // routes to the err side (tag 1) instead of falling through to
-                // 0 like the bare `pattern_tag` does.
-                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-                let matches = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: matches,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(MirConst::Int(expected)),
-                    },
-                }));
+                // Type-context resolution, so `if r is ErrEnum [as e]` against
+                // `T or ErrEnum` routes to the err side (tag 1) instead of
+                // falling through to 0 like the bare `pattern_tag` does — and a
+                // variant of that error enum tests both layers.
+                let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
 
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
@@ -2395,16 +2417,8 @@ impl<'a> MirLowerer<'a> {
                 let (val, val_ty) = self.lower_expr(inner)?;
                 let is_niche = self.option_is_niche(inner, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
-                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-                let result = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(MirConst::Int(expected)),
-                    },
-                }));
+
+                let result = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
                 Ok((MirOperand::Local(result), MirType::Bool))
             }
 
@@ -2534,6 +2548,18 @@ impl<'a> MirLowerer<'a> {
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
                 let (val, val_ty) = self.lower_expr(value)?;
+                // Nothing to fall back from. `if x? { … x ?? -1 … }` rebinds `x`
+                // to the payload inside the block, so by the time `??` sees it
+                // the value is a bare `i32` — and reading a tag out of one and
+                // dereferencing at that offset segfaulted. The interpreter hands
+                // the value straight back, so that is the answer.
+                let is_two_branch = matches!(
+                    val_ty,
+                    MirType::Option(_) | MirType::Result { .. }
+                ) || self.option_is_niche(value, &val_ty);
+                if !is_two_branch {
+                    return Ok((val, val_ty));
+                }
                 let is_niche = self.option_is_niche(value, &val_ty);
                 let tag_local = self.emit_option_tag(&val, is_niche);
 
@@ -4269,6 +4295,16 @@ impl<'a> MirLowerer<'a> {
             arg_types.push(ty);
         }
 
+        // A union receiver has no single target — the member it holds decides.
+        // Switch on the member index and call that member's own method.
+        if let MirType::Union(_) = &obj_ty {
+            if let Some(handled) =
+                self.lower_union_method(expr, &obj_op, &obj_ty, method.as_str(), &all_args)?
+            {
+                return Ok(handled);
+            }
+        }
+
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -4387,15 +4423,52 @@ impl<'a> MirLowerer<'a> {
             .cloned()
             .unwrap_or(qualified_name);
 
+        // A value going into a container's element slot is an argument position,
+        // so it gains wrapper layers the same way any other one does. Nothing
+        // did that here: a stdlib method has no `param_ty_strs` to coerce
+        // against, so `v.push(1)` on a `Vec<i32?>` stored a bare 1 into a
+        // 16-byte `[tag][payload]` slot. Reading it back said absent natively
+        // and handed the interpreter a bare i64.
+        if let Some((arg_index, type_arg_index)) = match qualified_name.as_str() {
+            "Vec_push" | "Vec_remove_item" => Some((0usize, 0usize)),
+            "Vec_set" | "Vec_insert" => Some((1, 0)),
+            "Map_insert" => Some((1, 1)),
+            _ => None,
+        } {
+            // all_args[0] is the receiver.
+            if let (Some(elem_ty), Some(src_ty)) = (
+                self.container_elem_mir_type(object.id, type_arg_index),
+                arg_types.get(arg_index).cloned(),
+            ) {
+                if let Some(slot) = all_args.get(arg_index + 1).cloned() {
+                    all_args[arg_index + 1] = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Argument,
+                        slot,
+                        &src_ty,
+                        &elem_ty,
+                    );
+                }
+            }
+        }
+
         // Track collection element types from push/insert so get returns the right type.
         // Handles both `v.push(x)` and `self.field.push(x)`.
         // Writes to both per-function and shared cross-function maps.
+        //
+        // Tracking is last-write-wins across every push in the function, so the
+        // *declared* element type gets first refusal: `Vec<i32?>` fed `push(1)`,
+        // `push(none)`, `push(3)` recorded `i32` because the last bare literal
+        // overwrote the option, and reading an element then took a tag out of a
+        // bare slot. It crashed on three elements and not two, decided entirely
+        // by which push came last.
         if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set" | "Pool_insert") {
-            if let Some(arg_ty) = arg_types.first() {
+            let declared = self.container_elem_mir_type(object.id, 0);
+            if let Some(arg_ty) = declared.as_ref().or_else(|| arg_types.first()) {
                 if !matches!(arg_ty, MirType::I64) {
+                    let arg_ty = arg_ty.clone();
                     if let Some(key) = Self::vec_tracking_key(object) {
                         self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                        self.ctx.record_shared_elem(key, arg_ty.clone());
+                        self.ctx.record_shared_elem(key, arg_ty);
                     }
                 }
             }
@@ -4423,10 +4496,19 @@ impl<'a> MirLowerer<'a> {
 
         // Use tracked element type for Vec_get/index return instead of default I64.
         // Checks per-function map first, then shared cross-function map.
+        //
+        // The receiver's declared element type comes first, because tracking is
+        // last-write-wins over every push in the function and a `Vec<i32?>` fed
+        // `push(1)`, `push(none)`, `push(3)` ended up recorded as `i32`: the
+        // final bare literal overwrote the option. Reading an element then took
+        // a tag out of a bare i32 slot and the loop segfaulted — on three
+        // elements but not two, purely by which push happened to be last.
         let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-            Self::vec_tracking_key(object).and_then(|key| {
-                self.meta(&key).and_then(|m| m.elem_type.clone())
-                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+            self.container_elem_mir_type(object.id, 0).or_else(|| {
+                Self::vec_tracking_key(object).and_then(|key| {
+                    self.meta(&key).and_then(|m| m.elem_type.clone())
+                        .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                })
             })
         } else {
             None
@@ -4684,7 +4766,22 @@ impl<'a> MirLowerer<'a> {
 
         // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
         // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
-        let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
+        let (final_name, final_args) = if qualified_name.starts_with("string_parse")
+            && matches!(&ret_ty, MirType::Result { ok, .. }
+                if matches!(**ok, MirType::F32 | MirType::F64))
+        {
+            // The parse variant has to agree with the slot it writes into. The
+            // name comes from the turbofish and the slot from inference, and
+            // those can disagree: `"2.25".parse<f32>() ?? -1.0` with no
+            // annotation is an `f64 or E` slot (the fallback literal is f64),
+            // so `string_parse_f32` wrote four bytes where eight were read.
+            // The slot's own payload type decides.
+            let by_slot = match &ret_ty {
+                MirType::Result { ok, .. } if matches!(**ok, MirType::F32) => "string_parse_f32",
+                _ => "string_parse_f64",
+            };
+            (by_slot.to_string(), all_args)
+        } else if qualified_name == "Pool_alloc" && all_args.len() == 2 {
             ("Pool_insert".to_string(), all_args)
         } else if qualified_name == "Vec_get" {
             // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
@@ -5411,6 +5508,219 @@ impl<'a> MirLowerer<'a> {
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
+    /// `value is <pattern>` as a bool local.
+    ///
+    /// A pattern naming a variant of the error enum needs *two* tags: the
+    /// value's own tag says ok vs err, and the variant tag lives one layer down
+    /// in the payload. Comparing the variant tag against the outer tag put
+    /// `MyErr.Bad`'s 0 up against the ok tag 0, so the test answered about the
+    /// wrong layer — the same two-layer mixup `match` had in #677.
+    fn emit_two_layer_pattern_test(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        tag: crate::LocalId,
+        is_niche: bool,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> crate::LocalId {
+        if let Some((err_ty, variant_tag)) = self.err_variant_of_result(pattern, val_ty) {
+            let payload = self.emit_option_payload(val.clone(), err_ty, is_niche);
+            let inner_tag = self.emit_enum_tag(MirOperand::Local(payload));
+            let is_err = self.emit_eq_const(tag, 1);
+            let is_variant = self.emit_eq_const(inner_tag, variant_tag);
+            let result = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::And,
+                    left: MirOperand::Local(is_err),
+                    right: MirOperand::Local(is_variant),
+                },
+            }));
+            return result;
+        }
+        // A union err side: "is it the err side" is only half the question. Both
+        // members answer yes to that, so the member index decides which (#776).
+        if let Some((union_ty, member_index)) = self.union_member_of_result(pattern, val_ty) {
+            let payload = self.emit_option_payload(val.clone(), union_ty, is_niche);
+            let member = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(payload),
+                    field_index: 0,
+                    byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            let is_err = self.emit_eq_const(tag, 1);
+            let is_member = self.emit_eq_const(member, member_index);
+            let result = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::And,
+                    left: MirOperand::Local(is_err),
+                    right: MirOperand::Local(is_member),
+                },
+            }));
+            return result;
+        }
+        let expected = self.pattern_tag_in_type_context(pattern, val_ty);
+        self.emit_eq_const(tag, expected)
+    }
+
+    /// `e.message()` where `e` is a union — dispatch by member index.
+    ///
+    /// Every member satisfies the same obligation (ER4: an error type provides
+    /// `message`), so there is one method per member and they agree on the return
+    /// type. Which one to call is a runtime fact, so this is a switch on the
+    /// member index with one arm per member, each calling `{Member}_{method}` on
+    /// the member's own bytes.
+    ///
+    /// `None` when any member has no nominal name to mangle — better to fall
+    /// through to the ordinary dispatch error, which names the method, than to
+    /// emit a call to a symbol that doesn't exist.
+    fn lower_union_method(
+        &mut self,
+        expr: &Expr,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+        method: &str,
+        all_args: &[MirOperand],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let MirType::Union(members) = obj_ty else {
+            return Ok(None);
+        };
+        let names: Option<Vec<String>> =
+            members.iter().map(|m| self.mir_type_name(m)).collect();
+        let Some(names) = names else {
+            return Ok(None);
+        };
+        if names.is_empty() {
+            return Ok(None);
+        }
+
+        // The member's bytes sit past the index.
+        let payload = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                access: FieldAccess::InPlace(8),
+            },
+        }));
+        let member = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: member,
+            rvalue: MirRValue::Field {
+                base: obj_op.clone(),
+                field_index: 0,
+                byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                access: FieldAccess::Sized(8),
+            },
+        }));
+
+        // The checker typed the call, so the result slot is known before any arm
+        // is built — the arms only have to agree with it, which ER4 guarantees.
+        let ret_ty = self
+            .ctx
+            .lookup_node_type(expr.id)
+            .unwrap_or(MirType::String);
+        let result = self.builder.alloc_temp(ret_ty.clone());
+
+        let merge_block = self.builder.create_block();
+        let arm_blocks: Vec<crate::BlockId> =
+            names.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> = arm_blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (i as u64, *b))
+            .collect();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(member),
+            cases,
+            // Member 0's arm, not `unreachable`: the index is written by the
+            // compiler at every production site, so an out-of-range one is a
+            // compiler bug, and trapping on it would turn that into a SIGILL
+            // with nothing to read.
+            default: arm_blocks[0],
+        }));
+
+        for (i, name) in names.iter().enumerate() {
+            self.builder.switch_to_block(arm_blocks[i]);
+            let mut args = vec![MirOperand::Local(payload)];
+            args.extend(all_args.iter().skip(1).cloned());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result),
+                func: crate::operand::FunctionRef::internal(format!("{}_{}", name, method)),
+                args,
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: merge_block,
+            }));
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok(Some((MirOperand::Local(result), ret_ty)))
+    }
+
+    /// The union type and member index when `pattern` names a member of a
+    /// Result's error union, rather than one of the Result's own two sides.
+    fn union_member_of_result(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Option<(MirType, i64)> {
+        let MirType::Result { err, .. } = val_ty else {
+            return None;
+        };
+        if !matches!(err.as_ref(), MirType::Union(_)) {
+            return None;
+        }
+        let name = super::match_lower::pattern_name(pattern)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        let index = self.union_member_index_by_name(err.as_ref(), bare)?;
+        Some((err.as_ref().clone(), index as i64))
+    }
+
+    /// `local == k` as a fresh bool temp.
+    fn emit_eq_const(&mut self, local: crate::LocalId, k: i64) -> crate::LocalId {
+        let result = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(local),
+                right: MirOperand::Constant(MirConst::Int(k)),
+            },
+        }));
+        result
+    }
+
+    /// The err type and variant tag when `pattern` names a variant of a
+    /// Result's error enum, rather than one of the Result's own two sides.
+    fn err_variant_of_result(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Option<(MirType, i64)> {
+        let err_ty = match val_ty {
+            MirType::Result { err, .. } => err.as_ref().clone(),
+            _ => return None,
+        };
+        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &err_ty else {
+            return None;
+        };
+        let name = super::match_lower::pattern_name(pattern)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        let layout = self.ctx.enum_layouts.get(*id as usize)?;
+        let tag = layout.variants.iter().find(|v| v.name == bare)?.tag as i64;
+        Some((err_ty, tag))
+    }
+
     fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
         let tag = self.builder.alloc_temp(MirType::U16);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -5617,7 +5927,7 @@ impl<'a> MirLowerer<'a> {
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
         // concat(): string concatenation from interpolation
-        if method == "concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
+        if method == "__concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
             let (arg_op, _) = self.lower_expr(&args[0].expr)?;
             let result_local = self.builder.alloc_temp(MirType::String);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -6159,17 +6469,7 @@ impl<'a> MirLowerer<'a> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         let is_niche = self.option_is_niche(scrutinee, &val_ty);
         let tag = self.emit_option_tag(&val, is_niche);
-        let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-
-        let matches = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: matches,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Eq,
-                left: MirOperand::Local(tag),
-                right: MirOperand::Constant(MirConst::Int(expected)),
-            },
-        }));
+        let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
 
         let bind_block = self.builder.create_block();
         let short_block = self.builder.create_block();
@@ -6285,12 +6585,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         // Then: bind the present payload as the narrow name, lower body.
+        //
+        // The bind is scoped to the branch. `lower_block` snapshots `locals`,
+        // but it does that *after* this bind, so the narrowed name used to
+        // outlive its block — a second `if x?` further down then read a tag out
+        // of the bare payload and segfaulted, where the interpreter answered.
         self.builder.switch_to_block(then_block);
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
+        let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
             self.bind_presence_payload(name, &val, &payload_ty, is_niche);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
+        self.locals = outer_locals;
         let result_local = self.builder.alloc_temp(then_ty.clone());
         if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -6305,6 +6612,7 @@ impl<'a> MirLowerer<'a> {
         // Else: for Result, bind the err payload (field 0) as the else name.
         // For Option, None has no payload so skip the bind.
         self.builder.switch_to_block(else_block);
+        let outer_locals = self.locals.clone();
         let else_err_ty = self.extract_err_type(inner)
             .or_else(|| match &scrutinee_ty {
                 MirType::Result { err, .. } => Some((**err).clone()),
@@ -6341,6 +6649,7 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        self.locals = outer_locals;
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), then_ty))
     }

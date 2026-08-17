@@ -200,7 +200,7 @@ impl Interpreter {
                 // Iterator.iter() returns self — already an iterator
                 Ok(Value::Iterator(Arc::clone(iter)))
             }
-            "collect" => {
+            "to_vec" => {
                 let mut result = Vec::new();
                 loop {
                     match self.iter_next(iter)? {
@@ -209,6 +209,47 @@ impl Interpreter {
                     }
                 }
                 Ok(Value::vec(result))
+            }
+            // SEQ30: drain to strings and join them.
+            "join" => {
+                let sep = match args.first() {
+                    Some(Value::String(s)) => s.lock().unwrap().clone(),
+                    _ => String::new(),
+                };
+                let mut parts: Vec<String> = Vec::new();
+                loop {
+                    let Some(item) = self.iter_next(iter)? else { break };
+                    match &item {
+                        Value::String(s) => parts.push(s.lock().unwrap().clone()),
+                        other => return Err(RuntimeError::TypeError(format!(
+                            "join needs a sequence of strings, got {}",
+                            other.type_name()
+                        ))),
+                    }
+                }
+                Ok(Value::String(std::sync::Arc::new(Mutex::new(parts.join(&sep)))))
+            }
+            // SEQ29: a sequence of pairs becomes a Map, later keys overwriting
+            // earlier ones — the same as repeated `insert`. The checker has
+            // already rejected a non-pair element type.
+            "to_map" => {
+                let mut map = crate::value::MapData::new();
+                loop {
+                    let Some(item) = self.iter_next(iter)? else { break };
+                    let pair = match &item {
+                        Value::Vec(v) => v.lock().unwrap().items.clone(),
+                        _ => return Err(RuntimeError::TypeError(
+                            "to_map needs a sequence of (key, value) pairs".to_string(),
+                        )),
+                    };
+                    if pair.len() != 2 {
+                        return Err(RuntimeError::TypeError(
+                            "to_map needs a sequence of (key, value) pairs".to_string(),
+                        ));
+                    }
+                    map.insert(crate::value::MapKey(pair[0].clone()), pair[1].clone());
+                }
+                Ok(Value::Map(std::sync::Arc::new(Mutex::new(map))))
             }
             "map" => {
                 let mapper = args.into_iter().next().unwrap_or(Value::Unit);

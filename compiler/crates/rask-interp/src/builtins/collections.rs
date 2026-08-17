@@ -295,10 +295,6 @@ impl Interpreter {
                 let removed = vec.remove(idx);
                 Ok(removed)
             }
-            "collect" => {
-                // No-op: Vec is already collected
-                Ok(Value::Vec(Arc::clone(v)))
-            }
             "chunks" => {
                 let chunk_size = self.expect_int(&args, 0)? as usize;
                 if chunk_size == 0 {

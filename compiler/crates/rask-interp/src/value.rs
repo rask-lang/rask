@@ -684,6 +684,15 @@ pub struct ThreadHandleInner {
     pub handle: Mutex<Option<std::thread::JoinHandle<Result<Value, String>>>>,
     /// Result channel (used for tasks submitted to a thread pool)
     pub receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
+    /// ctrl.panic/F1: which task this is, for the detached-panic report.
+    pub task_id: i64,
+}
+
+/// Task ids, handed out in spawn order like the runtime's `rask_next_task_id`.
+pub fn next_task_id() -> i64 {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl fmt::Debug for ThreadHandleInner {

@@ -48,16 +48,22 @@ impl Interpreter {
 
                         let join_handle = crate::spawn_interp_thread(move || {
                             let mut interp = child;
-                            match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                            match interp.eval_expr(&body) {
                                 Ok(val) => Ok(val),
-                                Err(RuntimeError::Return(val)) => Ok(val),
-                                Err(e) => Err(format!("{}", e)),
+                                Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                                    match diag.error {
+                                        RuntimeError::Return(val) => Ok(val),
+                                        _ => unreachable!("checked above"),
+                                    }
+                                }
+                                Err(diag) => Err(interp.task_failure_message(&diag)),
                             }
                         });
 
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
                             receiver: Mutex::new(None),
+                            task_id: crate::value::next_task_id(),
                         });
 
                         // Register for affine tracking (conc.async/H1)
@@ -185,16 +191,22 @@ impl Interpreter {
 
                         let join_handle = crate::spawn_interp_thread(move || {
                             let mut interp = child;
-                            match interp.eval_expr(&body_clone).map_err(|diag| diag.error) {
+                            match interp.eval_expr(&body_clone) {
                                 Ok(val) => Ok(val),
-                                Err(RuntimeError::Return(val)) => Ok(val),
-                                Err(e) => Err(format!("{}", e)),
+                                Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                                    match diag.error {
+                                        RuntimeError::Return(val) => Ok(val),
+                                        _ => unreachable!("checked above"),
+                                    }
+                                }
+                                Err(diag) => Err(interp.task_failure_message(&diag)),
                             }
                         });
 
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
                             receiver: Mutex::new(None),
+                            task_id: crate::value::next_task_id(),
                         });
 
                         tasks.lock().unwrap().push(Value::TaskHandle(handle_inner));

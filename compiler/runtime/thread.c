@@ -55,6 +55,7 @@ typedef struct RaskTaskState {
     // success path never contends on it. Also the mutex done_cond waits on.
     pthread_mutex_t report_lock;
     int              detached;
+    int              counted_detached;  // in detached_outstanding
 
     int64_t      task_id;        // ctrl.panic/F1
 } RaskTaskState;
@@ -65,6 +66,12 @@ struct RaskTaskHandle {
 
 // Per-thread cancel flag pointer (points into the task's state).
 static __thread atomic_int *current_cancel_flag;
+
+// O4: detached tasks still running. A detached task's panic *must* reach
+// stderr, and a task racing process exit doesn't satisfy that — the report just
+// vanishes, which is the failure O4 exists to prevent. `main` waits for this to
+// reach zero before returning (rask_await_detached_tasks).
+static atomic_int detached_outstanding;
 
 static RaskTaskState *state_new(void) {
     RaskTaskState *s = (RaskTaskState *)rask_alloc(sizeof(RaskTaskState));
@@ -77,6 +84,7 @@ static RaskTaskState *state_new(void) {
     pthread_cond_init(&s->done_cond, NULL);
     pthread_mutex_init(&s->report_lock, NULL);
     s->detached = 0;
+    s->counted_detached = 0;
     s->task_id = rask_next_task_id();
     return s;
 }
@@ -132,6 +140,16 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
         }
         pthread_mutex_unlock(&state->report_lock);
     }
+
+    // O4: this task is done reporting either way, so `main` no longer has to
+    // wait for it. Outside the panic branch — a detached task that returns
+    // normally has to clear its count too, or the wait never ends.
+    pthread_mutex_lock(&state->report_lock);
+    if (state->counted_detached) {
+        state->counted_detached = 0;
+        atomic_fetch_sub_explicit(&detached_outstanding, 1, memory_order_release);
+    }
+    pthread_mutex_unlock(&state->report_lock);
 
     rask_panic_set_task_id(0);
     rask_panic_remove();
@@ -258,6 +276,10 @@ void rask_task_detach(RaskTaskHandle *h) {
 
     pthread_mutex_lock(&state->report_lock);
     state->detached = 1;
+    if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_RUNNING) {
+        atomic_fetch_add_explicit(&detached_outstanding, 1, memory_order_relaxed);
+        state->counted_detached = 1;
+    }
     // O4: the task may have already panicked and finished before detach()
     // ran — same "report now, nobody will join" rule applies.
     if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_PANICKED
@@ -368,4 +390,17 @@ void rask_task_state_release(RaskTaskState *state) {
 
 int64_t rask_task_join_simple(void *h) {
     return rask_task_join((RaskTaskHandle *)h, NULL);
+}
+
+// O4: wait for detached tasks to finish reporting. Called from `main` after
+// rask_main returns, so a detached panic can't be lost to process exit. Only
+// waits for tasks that were still running when they were detached, so a program
+// with none pays nothing.
+void rask_await_detached_tasks(void) {
+    // A detached task can't be joined, so poll. The wait is bounded by the
+    // task's own runtime, not by this interval.
+    while (atomic_load_explicit(&detached_outstanding, memory_order_acquire) > 0) {
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 200000 };  // 0.2 ms
+        nanosleep(&ts, NULL);
+    }
 }

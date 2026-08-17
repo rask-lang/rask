@@ -67,7 +67,7 @@ extend Db {
         for meta in discovered {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
             if meta.level < MAX_LEVELS {
-                with levels[meta.level as usize] as level_ssts {
+                with levels[meta.level truncate to usize] as level_ssts {
                     level_ssts.push(meta)
                 }
             }
@@ -244,8 +244,8 @@ extend Db {
         self.cache.invalidate(b.id)
 
         with self.levels[level_idx] as ssts {
-            ssts.remove_at(0)
-            ssts.remove_at(0)
+            let _ = ssts.remove(0)
+            let _ = ssts.remove(0)
         }
 
         let next_level_idx = (level + 1) truncate to usize
@@ -260,14 +260,14 @@ extend Db {
         mut total_sst = 0
         mut level_counts = Vec.new()
         for level in self.levels {
-            level_counts.push(level.len() as i32)
+            level_counts.push(level.len() truncate to i32)
             total_sst += level.len()
         }
 
         return DbStats {
             memtable_entries: self.memtable.entries.len() truncate to i32,
             memtable_bytes: self.memtable.size_bytes,
-            sst_count: total_sst as i32,
+            sst_count: total_sst truncate to i32,
             level_counts: level_counts,
             cache_entries: self.cache.count() truncate to i32,
             cache_accesses: self.cache.access_counter,

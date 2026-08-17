@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A variable may be named after a module that wasn't imported.
+//
+//     let fs = Vec.from([1, 2, 3])
+//     fs.len()        // "no method `len` found for type `fs`"
+//
+// The method-call checker tries a few namespace routes before treating the
+// receiver as an ordinary value, and the stub registry holds `fs`, `io`, `cli`
+// and `http` as types. Neither of the two routes that matched asked whether a
+// local of that name existed, so the namespace won and the receiver's real type
+// was never consulted — hence a "type" named `fs`.
+//
+// When the module *is* imported the resolver rejects the shadow up front
+// (E0209), so a local can only ever mean "no module here".
+
+func show(io: Vec<i64>) -> u64 {
+    return io.len()
+}
+
+func main() {
+    let fs = Vec.from([1, 2, 3])
+    println("fs={fs.len()}")
+
+    let time = "noon"
+    println("time={time.len()}")
+
+    let cli: Map<string, i64> = Map.new()
+    println("cli={cli.len()}")
+
+    // A parameter, not a let.
+    println("param={show(Vec.from([7, 8]))}")
+
+    // Nested scope.
+    if true {
+        let http = Vec.from([1])
+        println("http={http.len()}")
+    }
+
+    // Shadowing doesn't disturb the real type namespaces.
+    let v = Vec.from([9])
+    println("v={v.len()}")
+}

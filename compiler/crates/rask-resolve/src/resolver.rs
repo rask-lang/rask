@@ -1254,8 +1254,24 @@ impl Resolver {
                     ));
                     return;
                 }
-                // IM4: selective import — register with correct symbol kind.
-                if self.scopes.lookup(&binding_name).is_none() {
+                // IM2: `import std.io` names a module, not a symbol inside one, so
+                // it has to bind the namespace exactly like a bare `import io`.
+                // Without this the name kept whatever the stdlib had already put
+                // in scope and the module's companion types never registered — the
+                // program then compiled natively and died on the interpreter.
+                if let Some(module_kind) = BuiltinModuleKind::from_name(symbol_name.as_str()) {
+                    let sym_id = self.symbols.insert(
+                        binding_name.clone(),
+                        SymbolKind::BuiltinModule { module: module_kind },
+                        None,
+                        span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                        self.errors.push(e);
+                    }
+                    self.register_module_companions(module_kind, span);
+                } else if self.scopes.lookup(&binding_name).is_none() {
                     // Enums need special handling (register variants too)
                     if let Some(variants) = Self::stdlib_enum_variants(pkg_name, symbol_name) {
                         self.register_builtin_enum(symbol_name, variants);

@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic struct literal that spells its type arguments segfaulted natively.
+//
+//     let c = One<i64> { only: 9 }
+//     println("{c.only}")        // SIGSEGV
+//
+// A generic type's layout is stored under its base name — `One`, not `One<i64>`
+// — so the literal's name found nothing. With no layout the temp was typed
+// `ptr` rather than the struct, and codegen read that as a pointer *value*:
+// `*(_0+0) = 9` stored through an uninitialised pointer.
+//
+// `One { only: 9 }` and `let c: One<i64> = One { … }` both reach the lookup by
+// base name and always worked, which is why this survived.
+//
+// The retry is only for names in literal position. Type strings go through the
+// same lookup, and there a stripped `Vec<Ctr>` would match anything else called
+// `Vec` — which turned a growable Vec into a bound-0 one.
+
+struct One<A> {
+    public only: A
+}
+
+struct Pair<A, B> {
+    public first: A
+    public second: B
+}
+
+extend Pair<A, B> {
+    func swapped(self) -> Pair<B, A> {
+        return Pair<B, A> { first: self.second, second: self.first }
+    }
+}
+
+enum Holder<T> {
+    Empty
+    Full(T)
+}
+
+func main() {
+    // The reported case.
+    let c = One<i64> { only: 9 }
+    println("turbofish={c.only}")
+
+    // The two forms that already worked.
+    let a: One<i64> = One { only: 5 }
+    let b = One { only: 7 }
+    println("annotated={a.only} bare={b.only}")
+
+    // Two type parameters, and the type arguments written in a return
+    // expression inside a method.
+    let p = Pair<i64, string> { first: 1, second: "one" }
+    println("pair={p.first} {p.second}")
+    let q = p.swapped()
+    println("swapped={q.first} {q.second}")
+
+    // A string type argument.
+    let s = One<string> { only: "hi" }
+    println("string={s.only}")
+
+    // A generic enum variant. Writing the type arguments on one of these
+    // (`Holder<i64>.Full(4)`) is rejected — see #782.
+    let h = Holder.Full(4)
+    match h {
+        Holder.Full(v) => println("holder={v}"),
+        Holder.Empty => println("holder=empty"),
+    }
+}

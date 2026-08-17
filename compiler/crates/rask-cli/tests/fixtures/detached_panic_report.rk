@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/O4 + F1: a detached task's panic reaches stderr — nobody is going
+// to join it and read the message — and says which task died.
+//
+// Both backends report it, but they didn't word it the same: native prefixed
+// `task N panic at`, the interpreter printed the bare message with no task id
+// (#298 F1, #748).
+
+func main() {
+    using Multitasking {
+        let h = Thread.spawn(|| {
+            panic("detached boom")
+            return 0
+        })
+        h.detach()
+    }
+    println("main still running")
+}

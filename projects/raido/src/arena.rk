@@ -18,6 +18,15 @@ enum ArenaError {
     ObjectTooLarge
 }
 
+extend ArenaError {
+    public func message(self) -> string {
+        match self {
+            ArenaError.Exhausted => return "arena is full",
+            ArenaError.ObjectTooLarge => return "object body exceeds {MAX_BODY} bytes",
+        }
+    }
+}
+
 const HEADER_SIZE: i64 = 4
 
 const VALUE_SIZE: i64 = 8

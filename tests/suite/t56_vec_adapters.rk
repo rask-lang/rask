@@ -50,9 +50,9 @@ test "adapters chain without an explicit iter()" {
     assert out[1] == 8
 }
 
-test "explicit iter().map().collect() agrees" {
+test "explicit iter().map().to_vec() agrees" {
     let v = Vec.from([1, 2, 3])
-    let out: Vec<i64> = v.iter().map(|x| { return x + 1 }).collect()
+    let out: Vec<i64> = v.iter().map(|x| { return x + 1 }).to_vec()
     assert out.len() == 3
     assert out[0] == 2
     assert out[2] == 4

@@ -25,15 +25,6 @@ extend string {
     @native("rask_string_from_char")
     public func from_char(c: char) -> string { }
 
-    // NOTE (#302 rename sweep): spec drops this as a public method — string
-    // interpolation desugars to a `.concat()` chain (rask-desugar's
-    // `concat_chain`), so removing it breaks every `"{x}"` in the language.
-    // Needs the desugar target renamed to a non-public method first; left
-    // in place rather than half-fixing it. See PR notes.
-    /// Concatenate two strings. Allocates.
-    @native("rask_string_concat")
-    public func concat(self, other: string) -> string { }
-
     // ── Length and properties ────────────────────────────────
 
     /// Byte length. O(1).

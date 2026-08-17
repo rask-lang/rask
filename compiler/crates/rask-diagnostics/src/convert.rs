@@ -353,6 +353,23 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("struct field access is checked at compile time — only declared fields exist")
             }
 
+            // SEQ31: `collect` was removed, so the bare "no method" reads as if
+            // it were a typo. Name the replacement instead.
+            NoSuchMethod { ty, method, span } if method == "collect" => {
+                Diagnostic::error(format!("no method `collect` on `{}`", ty))
+                    .with_code("E0313")
+                    .with_primary(*span, "materializing terminals name what they build")
+                    .with_fix(
+                        "`to_vec()` for a Vec, `to_map()` for a Map of pairs, `join(sep)` for a string"
+                            .to_string(),
+                    )
+                    .with_why(
+                        "`collect` didn't say what it produced, so it needed an annotation to \
+                         mean anything — the named terminals say it at the call [type.sequence/SEQ31]"
+                            .to_string(),
+                    )
+            }
+
             NoSuchMethod { ty, method, span } => {
                 Diagnostic::error(format!(
                     "no method `{}` found for type `{}`",
@@ -1565,6 +1582,36 @@ impl ToDiagnostic for rask_types::TypeError {
                         ty = ty,
                     ))
             }
+            ToMapNeedsPairs { elem, span } => {
+                Diagnostic::error(format!(
+                    "`to_map` needs a sequence of pairs, got a sequence of `{}`",
+                    elem
+                ))
+                .with_code("E0830")
+                .with_primary(*span, "each item must be a (K, V) tuple")
+                .with_fix(
+                    "produce the pairs first — `.map(|u| (u.id, u))` — then `to_map()`".to_string(),
+                )
+                .with_why(
+                    "a Map needs a key per value, and `to_map` reads the key out of the first tuple slot rather than inventing one [type.sequence/SEQ29]"
+                        .to_string(),
+                )
+            }
+
+            FloatMapKey { key, span } => {
+                let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
+                Diagnostic::error(format!("`{}` can't be a Map key", key))
+                    .with_code("E0829")
+                    .with_primary(*span, format!("`{}` is not Hashable", key))
+                    .with_fix(format!(
+                        "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
+                    ))
+                    .with_why(
+                        "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
+                            .to_string(),
+                    )
+            }
+
             LinearInContainer { container, elem, span } => {
                 let rule = if container == "Map" { "RC3" } else { "RC1" };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);
@@ -2182,6 +2229,25 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_primary(self.span, "no entry point")
                     .with_help("add `func main()` or mark a function with `@entry`")
                     .with_why("programs need an entry point to start execution")
+            }
+
+            RuntimeError::RecursionTooDeep { function, depth } => {
+                Diagnostic::error(format!(
+                    "recursion too deep: {} nested calls and the stack is nearly gone",
+                    depth
+                ))
+                .with_code("R0023")
+                .with_primary(self.span, format!("`{}` called at the limit", function))
+                .with_fix(
+                    "check the base case if this was meant to terminate; otherwise \
+                     rewrite it as a loop, or run it natively with `rask run`, which \
+                     has no such limit",
+                )
+                .with_why(
+                    "the interpreter evaluates one Rask call per host stack frame, and \
+                     each of those is large; the limit is reported here rather than left \
+                     to overflow the stack, which killed the process with nothing printed",
+                )
             }
 
             RuntimeError::AssertionFailed(msg) => {

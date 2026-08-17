@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Native union-error handling — the parts of the `T or (A | B)` story the
-// native backend still gets wrong. Split out of t19 so the rest of that file
-// stays green; this file is the KNOWN-FAIL witness. The interpreter is correct
-// throughout (its runtime values carry their own concrete type).
+// Union errors — `T or (A | B)`. Split out of t19 when this was the KNOWN-FAIL
+// witness; it passes on both backends now (#776).
 //
-// Two native gaps, both in the union-error family (#375 / rask#211):
+// What was missing was a runtime discriminant. A union's members are nominally
+// distinct types with nothing in their bytes to tell them apart, so a union in
+// the Result's payload area is laid out `[member:8][member bytes]` and the index
+// is written where the error is produced. Two things read it:
 //
-//   1. Shared-method dispatch: `e.message()` on a value of union type `A | B`
-//      must dispatch to whichever variant it holds. The type checker accepts
-//      it (rask#211, closed), but a union error carries no runtime
-//      discriminant, so MIR lowering can't pick a target and errors out — the
-//      whole file fails to compile on native.
+//   `r is ParseError` tests err-side *and* member index. It used to be answered
+//   by the Result's own tag alone — first member name read as "is it Ok?", second
+//   as "is it Err?" — so every failure claimed to be whichever member was listed
+//   second. Silently. `union_error_member.rk` in the compile_run fixtures is the
+//   sharper witness for that, with three members.
 //
-//   2. A function returning `i32 or (A | B)`, compiled alongside other code,
-//      corrupts memory: every test passes but the process exits non-zero
-//      (order/layout-dependent). Tracked with #375.
+//   `e.message()` switches on the index and calls that member's own method. This
+//   is the part that used to fail loudly: MIR lowering couldn't pick a target and
+//   the whole file failed to compile on native.
+//
+// Still open: a function returning `i32 or (A | B)`, compiled alongside other
+// code, has been seen to corrupt memory — every test passes but the process
+// exits non-zero, order- and layout-dependent (#375).
 //
 // Spec: type.errors (ER4, ER31)
+//
 
 struct DivError {}
 

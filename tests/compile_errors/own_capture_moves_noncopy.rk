@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The other half of #768: an `own` closure capturing a *non*-Copy parameter does
+// move it, so a use after the branch is still an error. The fix there was to let
+// a parameter's declared type reach the Copy check at all — not to stop marking
+// captures moved.
+//
+// `Big` is 24 bytes, past the 16-byte copy threshold, so it's moved by the
+// capture. Using it after the branch has to report E0813.
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func doit(big: Big, v: Vec<i64>, flag: bool) {
+    if flag {
+        let kept = v.filter(own |c| c != big.a)
+        println("{kept.len()}")
+    }
+    println("{big.a}")     // ERROR: `big` was moved into the closure on one path
+}
+
+func main() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    doit(Big { a: 1, b: 2, c: 3 }, v, true)
+}

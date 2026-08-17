@@ -57,7 +57,7 @@ func recover_wal(path: string) -> Vec<KeyValue> or WalError {
 
     mut entries = Vec.new()
     for line in content.lines() {
-        let trimmed = line.trim()
+        let trimmed = line.trim().to_string()
         if trimmed.is_empty() { continue }
         // Skip corrupt tail entries — partial writes from crash
         let kv = decode_kv(trimmed) is KeyValue as entry else { continue }

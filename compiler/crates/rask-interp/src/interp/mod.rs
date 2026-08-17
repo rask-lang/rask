@@ -98,6 +98,23 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// What each generic function's type parameters resolved to for the call
+    /// currently on the stack, innermost last.
+    ///
+    /// The interpreter doesn't monomorphize, so `T` inside a generic body is
+    /// just a name. Anything comptime that asks "what is `T` right now" —
+    /// `reflect.fields<T>()` above all — got the literal "T" and gave up (#699).
+    /// Inferred from the runtime argument bound to a parameter declared as that
+    /// bare name, and scoped like `env`.
+    pub(crate) type_bindings: Vec<HashMap<String, String>>,
+    /// Nested Rask calls currently on the host stack.
+    ///
+    /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
+    /// match with 80 arms and Rust sizes the frame for the union of every arm's
+    /// locals — so the host stack runs out at a few hundred Rask frames. It used
+    /// to run out by overflowing: SIGABRT, no message, no exit code (#759).
+    /// Counted here so the limit is reported instead.
+    pub(crate) call_depth: usize,
     /// ER31a: `try` sites whose error the checker decided to wrap in a variant
     /// of the enclosing function's error enum, keyed by the `try` expression.
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
@@ -140,6 +157,8 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
+            call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -161,6 +180,8 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
+            call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -188,6 +209,8 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
+            call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -216,11 +239,87 @@ impl Interpreter {
         }
     }
 
+    /// What a failed task's message should say when *user code* reads it back
+    /// out of `JoinError.Panicked(msg)`.
+    ///
+    /// Not `Display`: that renders a panic as `panic: boom`, and
+    /// `JoinError.message()` wraps it again as `task panicked: panic: boom`.
+    /// The reporter's own wording belongs at print time, not baked into a
+    /// string a program is going to print itself (#748). The location is what
+    /// you want when a background task dies, so that's what it carries —
+    /// `file:line:col: boom`, matching native.
+    pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
+        let RuntimeError::Panic(msg) = &diag.error else {
+            return format!("{}", diag);
+        };
+        match &self.source_info {
+            Some(info) => {
+                // file:line, no column — see the note in the runtime's
+                // rask_panic_at: the two backends point their columns at
+                // different sub-expressions, and the line is the useful half.
+                let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
+                format!("{}:{}: {}", info.file_name, line, msg)
+            }
+            None => msg.clone(),
+        }
+    }
+
     /// Supply the checker's static expression types, enabling width-aware
     /// integer overflow checks (type.overflow). Without this the interpreter
     /// falls back to unchecked i64 arithmetic.
     pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
         self.node_types = node_types;
+    }
+
+    /// The nominal type name of a runtime value, for matching against a generic
+    /// function's type parameter. `None` for values with no name to give.
+    pub(crate) fn runtime_type_name(value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(s) => Some(s.lock().unwrap().name.clone()),
+            Value::Enum { name, .. } => Some(name.clone()),
+            Value::Bool(_) => Some("bool".to_string()),
+            Value::Int(_, _) => Some("i64".to_string()),
+            Value::Float(_, _) => Some("f64".to_string()),
+            Value::Char(_) => Some("char".to_string()),
+            Value::String(_) => Some("string".to_string()),
+            _ => None,
+        }
+    }
+
+    /// What `name` resolved to for the innermost generic call that bound it, or
+    /// `name` itself when nothing did.
+    pub(crate) fn resolve_type_param(&self, name: &str) -> String {
+        for frame in self.type_bindings.iter().rev() {
+            if let Some(concrete) = frame.get(name) {
+                return concrete.clone();
+            }
+        }
+        name.to_string()
+    }
+
+    /// How many optional layers a container's Nth type argument declares —
+    /// `Vec<i32?>` at index 0 answers 1, `Map<string, i32??>` at index 1
+    /// answers 2. `None` when the receiver's type isn't a resolved container.
+    pub(crate) fn container_elem_option_depth(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<usize> {
+        use rask_types::{GenericArg, Type};
+        fn depth(ty: &Type) -> usize {
+            match ty {
+                Type::Result { ok, err } if **err == Type::None => 1 + depth(ok),
+                _ => 0,
+            }
+        }
+        let args = match self.node_types.get(&node_id)? {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let GenericArg::Type(inner) = args.get(index)? else {
+            return None;
+        };
+        Some(depth(inner))
     }
 
     /// ER31a: supply the `try` sites whose error gets wrapped in the enclosing
@@ -279,6 +378,10 @@ impl Interpreter {
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        // A task that panics reports `file:line:col`, so the child needs the
+        // source it's running (#748). Without this a spawned task's message
+        // came back as bare text while the main thread's carried a location.
+        child.source_info = self.source_info.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);
         }
@@ -314,16 +417,22 @@ impl Interpreter {
 
                 let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                    match interp.eval_expr(&body) {
                         Ok(val) => Ok(val),
-                        Err(RuntimeError::Return(val)) => Ok(val),
-                        Err(e) => Err(format!("{}", e)),
+                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                            match diag.error {
+                                RuntimeError::Return(val) => Ok(val),
+                                _ => unreachable!("checked above"),
+                            }
+                        }
+                        Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
                 });
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -371,10 +480,15 @@ impl Interpreter {
 
                 let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                    match interp.eval_expr(&body) {
                         Ok(val) => Ok(val),
-                        Err(RuntimeError::Return(val)) => Ok(val),
-                        Err(e) => Err(format!("{}", e)),
+                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                            match diag.error {
+                                RuntimeError::Return(val) => Ok(val),
+                                _ => unreachable!("checked above"),
+                            }
+                        }
+                        Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
                 });
 
@@ -382,6 +496,7 @@ impl Interpreter {
                 let handle_inner = Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 });
 
                 // Register handle for affine tracking (conc.async/H1)
@@ -440,16 +555,20 @@ impl Interpreter {
                 let task = PoolTask {
                     work: Box::new(move || {
                         let mut interp = child;
-                        match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                        match interp.eval_expr(&body) {
                             Ok(val) => {
                                 let _ = result_tx.send(Ok(val));
                             }
-                            Err(RuntimeError::Return(val)) => {
-                                let _ = result_tx.send(Ok(val));
-                            }
-                            Err(e) => {
-                                let _ = result_tx.send(Err(format!("{}", e)));
-                            }
+                            Err(diag) => match diag.error {
+                                RuntimeError::Return(val) => {
+                                    let _ = result_tx.send(Ok(val));
+                                }
+                                _ => {
+                                    let _ = result_tx.send(
+                                        Err(interp.task_failure_message(&diag)),
+                                    );
+                                }
+                            },
                         }
                     }),
                 };
@@ -477,6 +596,7 @@ impl Interpreter {
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -595,8 +715,20 @@ impl Interpreter {
             .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
 
         if let Some(entry) = registered.entry_fn {
-            let value = self.call_function(&entry, vec![])?;
+            // On a big stack, like every spawned task. `main` ran on the process
+            // main thread's 8 MiB, so it managed ~245 nested Rask calls where a
+            // task got ~450 on its 16 MiB — the same program, a different depth
+            // depending on which thread ran it (#759).
+            let value = crate::on_interp_stack(|| self.call_function(&entry, vec![]));
+            // O4: a detached task's panic has to reach stderr, and a reaper
+            // racing process exit doesn't satisfy that — the report just
+            // vanishes, which is the failure O4 exists to prevent. Wait here,
+            // whichever way main finished.
+            crate::join_detached_reapers();
+            // Before the `?`, so a program that ends in an error still reports
+            // its store stats.
             crate::store::print_stats();
+            let value = value?;
             // struct.targets/EX4: an error out of main is exit status 1, not 0.
             // A `try` that propagates already lands in the error path; an
             // explicit `return SomeError` came back as an ordinary value and
@@ -730,27 +862,31 @@ impl Interpreter {
             }
         };
 
-        let mut results = Vec::new();
+        // Same stack as `main` and every spawned task, so a test's recursion
+        // depth doesn't depend on which entry point ran it (#759).
+        crate::on_interp_stack(|| {
+            let mut results = Vec::new();
 
-        for test_decl in &registered.tests {
-            if let Some(pat) = filter {
-                if !test_decl.name.contains(pat) {
-                    continue;
+            for test_decl in &registered.tests {
+                if let Some(pat) = filter {
+                    if !test_decl.name.contains(pat) {
+                        continue;
+                    }
                 }
+                results.push(self.run_single_test(&test_decl.name, &test_decl.body));
             }
-            results.push(self.run_single_test(&test_decl.name, &test_decl.body));
-        }
 
-        for test_fn in &registered.test_fns {
-            if let Some(pat) = filter {
-                if !test_fn.name.contains(pat) {
-                    continue;
+            for test_fn in &registered.test_fns {
+                if let Some(pat) = filter {
+                    if !test_fn.name.contains(pat) {
+                        continue;
+                    }
                 }
+                results.push(self.run_test_function(test_fn));
             }
-            results.push(self.run_test_function(&test_fn));
-        }
 
-        results
+            results
+        })
     }
 
     /// Run all benchmarks in the program.
@@ -828,6 +964,11 @@ pub enum RuntimeError {
 
     #[error("no entry point found; add `func main()` or use `@entry`")]
     NoEntryPoint,
+
+    /// The interpreter ran out of call depth. Reported rather than left to
+    /// overflow the host stack, which killed the process with nothing printed.
+    #[error("recursion too deep: {depth} nested calls, innermost `{function}`")]
+    RecursionTooDeep { function: String, depth: usize },
 
     /// struct.targets/EX4: main returned the error branch of its `T or E`.
     #[error("{0}")]

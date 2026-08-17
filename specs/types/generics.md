@@ -295,7 +295,8 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | **HA1: Auto-derive** | Primitives, structs with all Hashable fields, enums (tag + payload hash): auto-derived |
 | **HA2: Override** | `extend Type with Hashable { ... }` overrides the auto-derived version |
 | **HA3: Hash combine** | Field-wise hash uses deterministic combine (order matches declaration order) |
-| **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract) |
+| **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
+| **HA5: Bits as the hatch** | `x.to_bits() -> u64` reinterprets a float's bit pattern, so a caller who wants a float-keyed Map spells out what "the same key" means. u64 at both widths. Distinct values get distinct keys, and unlike a float key a NaN can be looked up again |
 
 | Type | Hashable Status |
 |------|-----------------|

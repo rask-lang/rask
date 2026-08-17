@@ -165,3 +165,26 @@ test "type.tuples — a mixed-width tuple with no coercion is unchanged" {
     assert b.0 == 7
     assert b.1 == 3000000000
 }
+
+// #660: the guard that decides whether a tuple literal adopts the annotated
+// element type is "is this a lossless scalar widening", not "is this an integer".
+// A same-width float pair goes through the coercion path now, so the layout is
+// taken from the declared shape rather than the elements' — which is what keeps
+// `(f64, f32)` from reproducing the integer layout bug when #624 makes
+// `f32` → `f64` implicit. Float *widening* still isn't implicit, so the mixed
+// pair can't be written yet; this is the same-width twin, and it must hold.
+test "type.tuples — a float tuple is laid out at its declared shape" {
+    let x: f64 = 2.5
+    let y: f64 = -0.75
+    let t: (f64, f64) = (x, y)
+    assert t.0 == 2.5
+    assert t.1 == -0.75
+}
+
+test "type.tuples — a bool/char tuple keeps its elements" {
+    let b: bool = true
+    let c: char = 'q'
+    let t: (bool, char) = (b, c)
+    assert t.0 == true
+    assert t.1 == 'q'
+}

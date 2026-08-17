@@ -618,6 +618,15 @@ impl TypeChecker {
             return Ok(progress);
         }
 
+        // `__concat` is what interpolation desugars to (std.strings has no
+        // public `concat`). string in, string out — the receiver is already
+        // known to be a string wherever the desugarer emits it.
+        if method == "__concat" && args.len() == 1 {
+            let progress = self.unify(&ret, &Type::String, span)?;
+            let _ = self.unify(&args[0], &Type::String, span)?;
+            return Ok(progress);
+        }
+
         // ER16: .origin() on any type returns the error origin string.
         // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
         if method == "origin" && args.is_empty() {
@@ -1567,12 +1576,55 @@ impl TypeChecker {
                 self.unify(ret, &Type::option(elem), span)
             }
             "iter" if args.is_empty() => self.unify(ret, &self_ty, span),
-            "collect" if args.is_empty() => {
+            // SEQ28/SEQ31: the target is named, and `Vec<T>` is the only thing
+            // it can be. There is no `collect()`.
+            "to_vec" if args.is_empty() => {
                 let vec_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(elem))],
                 };
                 self.unify(ret, &vec_ty, span)
+            }
+            // SEQ30: the third materializing target, on a sequence of strings.
+            "join" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::String, span);
+                let _ = self.unify(&elem, &Type::String, span);
+                self.unify(ret, &Type::String, span)
+            }
+            // SEQ29: only on a sequence of pairs. A Map needs a key per value,
+            // and `to_map` reads it out of the first tuple slot rather than
+            // inventing one — so a non-pair element is an error at the call.
+            "to_map" if args.is_empty() => {
+                let resolved = self.ctx.apply(&elem);
+                match &resolved {
+                    Type::Tuple(parts) if parts.len() == 2 => {
+                        let map_ty = Type::UnresolvedGeneric {
+                            name: "Map".to_string(),
+                            args: vec![
+                                GenericArg::Type(Box::new(parts[0].clone())),
+                                GenericArg::Type(Box::new(parts[1].clone())),
+                            ],
+                        };
+                        self.unify(ret, &map_ty, span)
+                    }
+                    // Still a variable — the element type may settle into a pair
+                    // once the chain ahead of it is solved.
+                    Type::Var(_) => {
+                        self.ctx.add_constraint(TypeConstraint::HasMethod {
+                            ty: self_ty.clone(),
+                            method: "to_map".to_string(),
+                            args: args.to_vec(),
+                            ret: ret.clone(),
+                            span,
+                            call_node: None,
+                        });
+                        Ok(false)
+                    }
+                    other => Err(TypeError::ToMapNeedsPairs {
+                        elem: other.clone(),
+                        span,
+                    }),
+                }
             }
             "count" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "sum" if args.is_empty() => self.unify(ret, &elem, span),
@@ -2723,8 +2775,13 @@ impl TypeChecker {
         };
 
         match method {
+            // The element slot is an argument position like any other, so it
+            // widens a bare `T` into a `T?` element. Plain unify accepted the
+            // bare value without recording the coercion, so `Vec<i32?>` stored
+            // raw ints — every read then came back absent natively and as a
+            // bare i64 on the interpreter.
             "push" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[0], span);
                 self.unify(ret, &Type::Unit, span)
             }
             "pop" if args.is_empty() => {
@@ -2741,7 +2798,7 @@ impl TypeChecker {
             }
             "set" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.unify(&args[1], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[1], span);
                 self.unify(ret, &Type::Unit, span)
             }
             "clear" if args.is_empty() => {
@@ -2756,7 +2813,7 @@ impl TypeChecker {
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.unify(&args[1], &inner_type, span);
+                let _ = self.coerce_arg(&inner_type, &args[1], span);
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove(index) -> T
@@ -2794,9 +2851,6 @@ impl TypeChecker {
             }
             "limit" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
-            }
-            "collect" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
             }
             // vec.first() -> Option<T>
@@ -3599,6 +3653,8 @@ impl TypeChecker {
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),
+            // u64 at both widths — see the note on FloatSig::ToBits.
+            FloatSig::ToBits => self.unify(ret, &Type::U64, span),
         }
     }
 

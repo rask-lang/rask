@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Recursion that never terminates. Interpreted, this used to overflow the host
+// stack and abort the process — SIGABRT, nothing printed, no exit code (#759).
+// It's now a reported error with an exit code.
+//
+// Interpreter-only: native has no such limit and would run until the OS killed it.
+
+func down(n: i64) -> i64 {
+    return 1 + down(n + 1)
+}
+
+func main() {
+    println("never {down(0)}")
+}

@@ -632,6 +632,36 @@ impl<'a> MirLowerer<'a> {
         size.unwrap_or(8)
     }
 
+    /// The MIR type of a container's Nth type argument — `Vec<i32?>` at index 0
+    /// is `i32?`.
+    ///
+    /// Element *size* has a helper already (`generic_arg_slot_size`); the full
+    /// type is what a value going into the slot has to be coerced to, and a size
+    /// can't say whether the slot wants a wrapper layer added.
+    pub(super) fn container_elem_mir_type(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<MirType> {
+        use rask_types::{GenericArg, Type};
+        let ty = self.ctx.lookup_raw_type(node_id)?;
+        let container = match ty {
+            Type::Tuple(elems) => elems.first()?,
+            other => other,
+        };
+        let args = match container {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        let GenericArg::Type(inner) = args.get(index)? else {
+            return None;
+        };
+        match inner.as_ref() {
+            rask_types::Type::Var(_) => None,
+            resolved => Some(self.ctx.type_to_mir(resolved)),
+        }
+    }
+
     /// How wide one channel element is, for the receive buffer.
     ///
     /// The tracked size comes from the `Channel.buffered()` call site, which

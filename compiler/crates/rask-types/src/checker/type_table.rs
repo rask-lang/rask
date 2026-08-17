@@ -519,6 +519,56 @@ impl TypeTable {
     /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,
     /// `Map<string, File>` inside a tuple, a `Vec<File>` return of a `func`
     /// type) are caught at their innermost violation.
+    /// HA4: the float key of a `Map` nested anywhere in this type, if there is
+    /// one. `f32`/`f64` are not Hashable — `NaN != NaN` breaks the contract that
+    /// equal keys hash equal — so they can't key a Map.
+    pub fn find_float_map_key(&self, ty: &Type) -> Option<Type> {
+        let args = match ty {
+            Type::Generic { base, args } => {
+                let full = self.type_name(*base);
+                if full.split('<').next() == Some("Map") {
+                    if let Some(GenericArg::Type(k)) = args.first() {
+                        if matches!(**k, Type::F32 | Type::F64) {
+                            return Some((**k).clone());
+                        }
+                    }
+                }
+                Some(args)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                if name.split('<').next() == Some("Map") {
+                    if let Some(GenericArg::Type(k)) = args.first() {
+                        if matches!(**k, Type::F32 | Type::F64) {
+                            return Some((**k).clone());
+                        }
+                    }
+                }
+                Some(args)
+            }
+            _ => None,
+        };
+        // Nested: a Vec of Maps, a Map whose value is a Map, a tuple of them.
+        let mut nested: Vec<&Type> = Vec::new();
+        if let Some(args) = args {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    nested.push(t);
+                }
+            }
+        }
+        match ty {
+            Type::Tuple(elems) | Type::Union(elems) => nested.extend(elems.iter()),
+            Type::Slice(inner) | Type::RawPtr(inner) => nested.push(inner),
+            Type::Array { elem, .. } => nested.push(elem),
+            Type::Result { ok, err } => {
+                nested.push(ok);
+                nested.push(err);
+            }
+            _ => {}
+        }
+        nested.into_iter().find_map(|t| self.find_float_map_key(t))
+    }
+
     pub fn find_linear_container(&self, ty: &Type) -> Option<(String, Type)> {
         // Check this node if it's a Vec/Map, then always recurse into children so
         // nested violations surface at their innermost container.

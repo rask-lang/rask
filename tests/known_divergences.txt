@@ -10,9 +10,15 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (A|B) codegen — #375, rask#211 (native)
+# (none right now)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
+#
+# Pruned 2026-08-17, fixed and re-verified on native before removing the line:
+#   t19b_union_method_dispatch.rk — #776. A union err payload now carries its
+#     member index, so `r is ParseError` tests the member instead of the Result's
+#     own tag, and `e.message()` switches on the index to reach the member's own
+#     method. All 4 tests pass on both backends.
 #
 # Pruned 2026-08-08, both fixed and re-verified on native before removing the line:
 #   t_try_coalesce_diverge.rk — #635, which turned out not to be the `continue` at
@@ -24,7 +30,9 @@ t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (
 # (none right now)
 
 # --- shared / both-backend bugs ---
-t_parse_float.rk # `"3.5".parse()` with the target from the binding always misses; only the turbofish form works — #610 (both)
+# (none right now — t_parse_float was the last one, fixed in #610: a float
+#  payload sits in a Result slot as an f64, and the parse adapter was writing
+#  it at the declared width, so an f32 target read four bytes of eight.)
 
 # --- new regression witnesses (this session) ---
 

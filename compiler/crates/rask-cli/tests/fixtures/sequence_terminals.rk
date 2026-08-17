@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.sequence SEQ28–SEQ31: a materializing terminal names what it builds.
+// There is no `collect()` — it didn't say what it produced, so it needed an
+// annotation to mean anything. The three named targets are `to_vec()`,
+// `to_map()` and `join(sep)`.
+//
+// `to_map` is fused the same way `to_vec` is: one loop, `Map_insert` per pair
+// instead of a push, with the key and value slots sized from the pair type the
+// adapters actually produce.
+
+struct User {
+    public id: u64
+    public name: string
+}
+
+func main() {
+    mut users: Vec<User> = Vec.new()
+    users.push(User { id: 1, name: "alice" })
+    users.push(User { id: 2, name: "bob" })
+    users.push(User { id: 3, name: "carol" })
+
+    // SEQ28
+    let names = users.iter().map(|u| u.name).to_vec()
+    println("to_vec: {names.len()} {names[0]} {names[2]}")
+
+    // SEQ29
+    let by_id = users.iter().map(|u| (u.id, u.name)).to_map()
+    println("to_map: {by_id.len()}")
+    if by_id.get(1) is string as n {
+        println("  1 -> {n}")
+    }
+    if by_id.get(3) is string as n {
+        println("  3 -> {n}")
+    }
+
+    // SEQ29: later keys overwrite earlier ones, like repeated insert.
+    let collide = users.iter().map(|u| (0, u.name)).to_map()
+    println("collide: {collide.len()}")
+    if collide.get(0) is string as n {
+        println("  0 -> {n}")
+    }
+
+    // SEQ30
+    let joined = users.iter().map(|u| u.name).join(", ")
+    println("join: {joined}")
+
+    // A filter ahead of the terminal, so the fused loop has an adapter to skip.
+    let some = users.iter().filter(|u| u.id > 1).map(|u| (u.id, u.name)).to_map()
+    println("filtered to_map: {some.len()}")
+}

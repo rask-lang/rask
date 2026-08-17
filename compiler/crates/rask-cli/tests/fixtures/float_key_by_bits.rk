@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// HA4 keeps floats out of Map keys, and `to_bits()` is the way in: the caller
+// decides what "the same key" means instead of inheriting `NaN != NaN`.
+//
+// The bits are the f64 pattern at both widths — MIR mangles f32 and f64
+// receivers to the same `f64_*` calls, so one width is what keeps the two
+// backends agreeing about what the key is.
+
+func main() {
+    mut m: Map<u64, string> = Map.new()
+    let x = 1.5
+    let y = -2.25
+    m.insert(x.to_bits(), "one-point-five")
+    m.insert(y.to_bits(), "minus-two-and-a-quarter")
+    println("len={m.len()}")
+
+    if m.get(x.to_bits()) is string as v {
+        println("1.5 -> {v}")
+    }
+    if m.get(y.to_bits()) is string as v {
+        println("-2.25 -> {v}")
+    }
+
+    // Distinct values get distinct keys; equal values the same one.
+    let same = 1.5
+    println("same key: {x.to_bits() == same.to_bits()}")
+    println("different: {x.to_bits() == y.to_bits()}")
+
+    // The bit pattern itself, so a regression in the reinterpret shows up.
+    println("bits(1.5)={x.to_bits()}")
+
+    // A NaN key is reachable this way, and reachable *again* — which is the
+    // whole reason it can't be a plain float key.
+    let nan = 0.0 / 0.0
+    m.insert(nan.to_bits(), "nan")
+    if m.get(nan.to_bits()) is string as v {
+        println("nan -> {v}")
+    }
+}

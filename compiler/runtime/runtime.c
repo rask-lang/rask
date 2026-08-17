@@ -1949,5 +1949,7 @@ int main(int argc, char **argv) {
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();
+    // O4: a detached task's panic report can't be lost to process exit.
+    rask_await_detached_tasks();
     return 0;
 }
