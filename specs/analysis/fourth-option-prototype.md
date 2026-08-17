@@ -31,11 +31,11 @@ lose its staleness branch. Three findings, in the order they matter:
    stashing, and costs one none-test per *local* read while edges stay checkless —
    complexity still conserved, but landing on the cold path instead of the hot one.
 2. **A link carries write permission, and an edge write mutates its target.**
-   There is no read-only link, where a handle gave one for free. The fix isn't a
-   new `ReadLink<T>` type: Rask already rules that read-only comes from the
-   *source*, not the reference — and the proposal deletes `frozen`, which was that
-   mechanism. Separately, `a.target = b` modifies `b`, a hidden write through what
-   reads as a plain assignment.
+   There is no read-only link, where a handle gave one for free. The fix has to be
+   in the type — `mut Link<T>`, default read-only — because a link escapes the
+   context that produced it, so no `frozen`-style mechanism can constrain it.
+   Separately, `a.target = b` modifies `b`, a hidden write through what reads as a
+   plain assignment.
 3. **Representation retires `mem.relocatable`'s founding premise** — links are
    pointers, so zero-copy persistence dies for flat graphs and graph `Encode` has
    to assign ids. Smaller than it sounds: tier A's flatness rule already excluded
@@ -61,7 +61,7 @@ bill is on those three counts, and only the first one is load-bearing.
 | Required edges (`Link<T>`, no `?`) | rejected for now (E0327) |
 | `inverse(...)`, `@cascade`, `@lazy`, batches, `Key<T>` | not built |
 | Borrow rule for links in locals | **not built — the load-bearing gap, see below** |
-| `ReadLink<T>` — a link that can't write its node | not built; not designed |
+| `mut Link<T>` — writability in the type | not built; shape argued below |
 
 **Delete follows backlinks, it doesn't scan.** Each node carries the list of
 places pointing at it, so a delete visits exactly those. The measured cost is
@@ -325,34 +325,55 @@ write through it. The link version of L2 lost `mutate` from `combat_round`'s
 signature, which reads like a win and is half of one: the other half is that
 nothing *can* be marked read-only any more.
 
-The fix is **not** a `ReadLink<T>` — Rask has already ruled on where read-only
-comes from, and the parser says so out loud. Writing `with c as mut inner` is
-rejected with:
+**The fix has to be in the type.** Two weaker answers look tempting and both fail.
 
+*Not a context.* Rask's existing rule is that read-only comes from the source —
+the parser says so when it rejects `with c as mut inner`: "bindings are mutable;
+read-only access comes from the source (`.read()`, frozen pools)". Applied to
+links that would mean a read-only store, which is what `using frozen Pool<T>` was.
+But a link outlives the context that produced it, so the context cannot constrain
+it:
+
+```rask
+// `s` is not `mutate` — this function has read-only access to the store
+func find_first(s: Store<Node>) -> Link<Node>? {
+    for n in s.nodes() { return n }
+    return none
+}
+
+if find_first(s)? as n { n.id = 99 }     // writes the node anyway
 ```
-error: with-bindings take a bare name
-  = fix: bindings are mutable; read-only access comes from the source
-         (`.read()`, frozen pools) — write `as name`
+
+That runs, and prints 99. Whatever permission the store parameter carried is gone
+by the time the link is used, which is the difference between a link and a handle:
+a handle is inert without its pool, so restricting the pool restricts the handle. A
+link needs nothing.
+
+*Not the binding.* Making the write depend on `mut` at the binding doesn't work
+either, and the reason exposes an inconsistency that exists today independent of
+links: `with c as inner { inner.n += 1 }` is accepted, `if opt? as t { t.n += 1 }`
+is rejected as "cannot mutate `t` — declared `let`". Same `as`, opposite
+mutability — filed as [#788](https://github.com/rask-lang/rask/issues/788). Even if that were settled, a binding is local — it says nothing about
+the link a function hands back.
+
+So writability belongs on the type, which is what "why not a mutable `Link`?"
+proposes. Following Rask's own defaults — parameters read-only until `mutate`,
+bindings immutable until `mut` — that reads:
+
+```rask
+struct Entity {
+    target: mut Link<Entity>?        // writes allowed through this edge
+    home:   Link<Region>?            // read-only through this one
+}
+
+func report(e: Link<Entity>)         // cannot write the node
+func damage(e: mut Link<Entity>)     // can
 ```
 
-So read-only is a property of *how you obtained the thing*, never of the reference
-type. Applied to links, that means a read-only **store** — which is exactly what
-`using frozen Pool<T>` was, and which
-[fourth-option.md](fourth-option.md) deletes: "Also gone, though they aren't
-types: `using Pool<T>` context clauses, **`frozen`**, and the generation-coalescing
-compiler pass."
-
-The proposal removes the mechanism that answers this question and then has no
-answer. Keeping a frozen-equivalent on `Store<T>` costs no new type and no new
-concept; adding `ReadLink<T>` costs both, and contradicts the rule the error
-message states.
-
-I had to add a compiler rule for this to work at all. `if e.target? as t { … }`
-binds `t` immutably and `as` has no `mut` form, so the flagship loop doesn't
-compile unless writing through a link is defined as not-mutating-the-binding.
-There is precedent — a handle write already lands in pool storage, not the
-handle — but the handle case borrows its permission from `mutate pool`, and the
-link case has nothing to borrow it from.
+The cost is a `mut` on every edge you write through, which is visible at the
+declaration and at every signature — the legibility that a context-based answer
+can't provide, since nothing at the use site would say the link is restricted. It
+is one modifier, not the extra type `ReadLink<T>` would have been.
 
 **`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
 an assignment that reads as touching `a` also modifies `b`. In the real design
@@ -486,6 +507,10 @@ needs native codegen.
   capturing a Copy *parameter* inside a branch is wrongly reported as
   maybe-moved. Hit while writing the handle version of L3; unrelated to this
   work.
+- [#788](https://github.com/rask-lang/rask/issues/788) — `with x as v` and
+  `x? as v` disagree on whether the binding is mutable, and the diagnostic for the
+  second suggests a fix that doesn't parse. Found while checking whether a binding
+  mode could express read-only links.
 
 ## Where this leaves the design
 
@@ -503,9 +528,10 @@ list:
    track-the-locals keeps stashing, costs a none-test per local read, and makes
    `delete(n)` empty `n`. Measured, the second wins on every axis. Neither is
    written down anywhere yet.
-2. **Read-only links** — keep a `frozen`-equivalent on `Store<T>` (the mechanism
-   the proposal deletes), rather than adding the `ReadLink<T>` type Rask's own
-   read-only rule argues against.
+2. **Read-only links** — put writability in the type (`mut Link<T>`, default
+   read-only, matching `let`/`mut` and parameter modes). Not a context: a link
+   escapes the context that made it, demonstrated above. Not a binding mode: local,
+   and `with … as` versus `? as` don't even agree on mutability today.
 3. **The representation note** — say plainly that flat-graph zero-copy
    persistence is what's being traded away, and that graph `Encode` gains an id
    assignment pass. No escalation needed; the tier was already narrow.
