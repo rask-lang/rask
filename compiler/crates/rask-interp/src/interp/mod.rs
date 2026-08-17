@@ -228,6 +228,31 @@ impl Interpreter {
         }
     }
 
+    /// What a failed task's message should say when *user code* reads it back
+    /// out of `JoinError.Panicked(msg)`.
+    ///
+    /// Not `Display`: that renders a panic as `panic: boom`, and
+    /// `JoinError.message()` wraps it again as `task panicked: panic: boom`.
+    /// The reporter's own wording belongs at print time, not baked into a
+    /// string a program is going to print itself (#748). The location is what
+    /// you want when a background task dies, so that's what it carries —
+    /// `file:line:col: boom`, matching native.
+    pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
+        let RuntimeError::Panic(msg) = &diag.error else {
+            return format!("{}", diag);
+        };
+        match &self.source_info {
+            Some(info) => {
+                // file:line, no column — see the note in the runtime's
+                // rask_panic_at: the two backends point their columns at
+                // different sub-expressions, and the line is the useful half.
+                let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
+                format!("{}:{}: {}", info.file_name, line, msg)
+            }
+            None => msg.clone(),
+        }
+    }
+
     /// Supply the checker's static expression types, enabling width-aware
     /// integer overflow checks (type.overflow). Without this the interpreter
     /// falls back to unchecked i64 arithmetic.
@@ -342,6 +367,10 @@ impl Interpreter {
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        // A task that panics reports `file:line:col`, so the child needs the
+        // source it's running (#748). Without this a spawned task's message
+        // came back as bare text while the main thread's carried a location.
+        child.source_info = self.source_info.clone();
         for (name, value) in captured_vars {
             child.env.define(name, value);
         }
@@ -377,10 +406,15 @@ impl Interpreter {
 
                 let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                    match interp.eval_expr(&body) {
                         Ok(val) => Ok(val),
-                        Err(RuntimeError::Return(val)) => Ok(val),
-                        Err(e) => Err(format!("{}", e)),
+                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                            match diag.error {
+                                RuntimeError::Return(val) => Ok(val),
+                                _ => unreachable!("checked above"),
+                            }
+                        }
+                        Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
                 });
 
@@ -434,10 +468,15 @@ impl Interpreter {
 
                 let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                    match interp.eval_expr(&body) {
                         Ok(val) => Ok(val),
-                        Err(RuntimeError::Return(val)) => Ok(val),
-                        Err(e) => Err(format!("{}", e)),
+                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                            match diag.error {
+                                RuntimeError::Return(val) => Ok(val),
+                                _ => unreachable!("checked above"),
+                            }
+                        }
+                        Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
                 });
 
@@ -503,16 +542,20 @@ impl Interpreter {
                 let task = PoolTask {
                     work: Box::new(move || {
                         let mut interp = child;
-                        match interp.eval_expr(&body).map_err(|diag| diag.error) {
+                        match interp.eval_expr(&body) {
                             Ok(val) => {
                                 let _ = result_tx.send(Ok(val));
                             }
-                            Err(RuntimeError::Return(val)) => {
-                                let _ = result_tx.send(Ok(val));
-                            }
-                            Err(e) => {
-                                let _ = result_tx.send(Err(format!("{}", e)));
-                            }
+                            Err(diag) => match diag.error {
+                                RuntimeError::Return(val) => {
+                                    let _ = result_tx.send(Ok(val));
+                                }
+                                _ => {
+                                    let _ = result_tx.send(
+                                        Err(interp.task_failure_message(&diag)),
+                                    );
+                                }
+                            },
                         }
                     }),
                 };

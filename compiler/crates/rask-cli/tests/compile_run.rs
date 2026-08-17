@@ -2330,11 +2330,13 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines.first(), Some(&"value 42"), "{}: join hands back the task's value: {:?}", mode, stdout);
         assert_eq!(lines.get(1), Some(&"value -1"), "{}: -1 is a value, not a failure: {:?}", mode, stdout);
-        // The two backends word the message differently (interp prefixes
-        // "panic: ", native prefixes the source location) — tracked separately.
+        // Both backends word it the same now (#748): the stored message is
+        // `file:line: msg`, with no reporter prefix baked in — `panic: ` belongs
+        // at print time, not in a string user code prints itself. The path is
+        // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked") && panicked.contains("boom"),
-            "{}: a panicked task joins as JoinError.Panicked carrying its message: {:?}", mode, stdout);
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:25: boom"),
+            "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
 }

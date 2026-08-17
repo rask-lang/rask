@@ -2139,7 +2139,7 @@ impl Interpreter {
                     for stmt in &body {
                         match interp.exec_stmt(stmt) {
                             Ok(val) => result = val,
-                            Err(e) => return Err(format!("{}", e)),
+                            Err(e) => return Err(interp.task_failure_message(&e)),
                         }
                     }
                     Ok(result)
@@ -2179,7 +2179,7 @@ impl Interpreter {
                             match interp.exec_stmt(stmt) {
                                 Ok(val) => result = val,
                                 Err(e) => {
-                                    let _ = result_tx.send(Err(format!("{}", e)));
+                                    let _ = result_tx.send(Err(interp.task_failure_message(&e)));
                                     return;
                                 }
                             }
@@ -2374,7 +2374,7 @@ impl Interpreter {
                             match interp.exec_stmt(stmt) {
                                 Ok(val) => result = val,
                                 Err(e) => {
-                                    let _ = result_tx.send(Err(format!("{}", e)));
+                                    let _ = result_tx.send(Err(interp.task_failure_message(&e)));
                                     return;
                                 }
                             }

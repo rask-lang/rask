@@ -291,9 +291,16 @@ _Noreturn void rask_panic(const char *msg) {
 
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
                              const char *msg) {
+    // `file:line:` — no column. The message is stored and handed to user code
+    // through `JoinError.Panicked(msg)`, so both backends have to agree on it,
+    // and they point their columns at different sub-expressions: codegen's is
+    // the last MIR statement (the panic's argument), the interpreter's is the
+    // call. The line is the useful half either way, and ER15's `origin`
+    // strings are already file:line (#748).
+    (void)col;
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf), "%s:%d:%d: %s",
-             file ? file : "<unknown>", line, col,
+    snprintf(buf, sizeof(buf), "%s:%d: %s",
+             file ? file : "<unknown>", line,
              msg ? msg : "(unknown panic)");
 
     if (ffi_boundary_depth > 0) {
