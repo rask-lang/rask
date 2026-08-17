@@ -684,6 +684,28 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
             }
 
+            MixedSignednessArithmetic { op, left, right, span } => {
+                Diagnostic::error(format!(
+                    "`{}` between `{}` and `{}` — one is signed, the other isn't",
+                    op, left, right
+                ))
+                    .with_code("E0371")
+                    .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
+                    .with_fix(format!(
+                        "bring the `{}` over to `{}`, and say what happens when it doesn't fit: \
+                         `x saturate to {}` clamps to the range, `x truncate to {}` keeps the \
+                         low bits, `try x convert to {}` hands back a `{}?`",
+                        right, left, left, left, left, left
+                    ))
+                    .with_why(format!(
+                        "there is no result type that holds both — `{}` can't hold every `{}` \
+                         and `{}` can't hold every `{}`, so widening one silently would be a \
+                         guess. Comparison is the exception: `a < b` has an answer by value even \
+                         across signedness, and arithmetic doesn't [type.operators/ORD4]",
+                        left, right, right, left
+                    ))
+            }
+
             NoAutoWrapOutsideReturn { value, target, span } => {
                 Diagnostic::error(format!(
                     "a `{}` doesn't become a `{}` here — auto-wrap only fires at `return`",

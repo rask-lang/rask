@@ -1209,6 +1209,38 @@ fn error_literal_wrong_type() {
     );
 }
 
+// #778: `5u64 + (-10i32)` used to type-check and print 18446744073709551611 on
+// both backends. `resolve_integer_method` unified the operand with the receiver
+// and discarded the failure, so the signed side's bits got reinterpreted.
+// Comparison keeps crossing signedness (ORD4) — that half is the exception, and
+// the test below pins it so the fix doesn't take it out too.
+#[test]
+fn error_mixed_signedness_arithmetic() {
+    let (failed, out) = compile_error_output("mixed_signedness_arithmetic.rk");
+    assert!(failed, "mixed-signedness arithmetic must not compile: {}", out);
+    for op in ["`+`", "`-`", "`*`", "`/`", "`%`", "`&`", "`|`", "`^`", "`<<`", "`>>`"] {
+        assert!(
+            out.contains(&format!("{} between", op)),
+            "should reject {}: {}", op, out,
+        );
+    }
+    // One error per site — a mixed-sign operator pins its result to the
+    // receiver on the way out, so no "couldn't work out the type" behind it.
+    assert!(
+        !out.contains("E0361"),
+        "the rejection shouldn't drag a second error along: {}", out,
+    );
+}
+
+// The other half of ORD4: comparison across signedness stays legal and answers
+// by value. Enforcing the arithmetic half must not touch it.
+#[test]
+fn mixed_signedness_comparison_still_compiles() {
+    let (stdout, stderr, code) = run_capture("--interp", "mixed_signedness_compare.rk");
+    assert_eq!(code, 0, "comparison across signedness is legal: {stdout}{stderr}");
+    assert_eq!(stdout, "true true false\n", "{stdout}");
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

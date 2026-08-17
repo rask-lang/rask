@@ -96,7 +96,7 @@ trait Equal {
 |------|-------------|
 | **ORD1: Comparable trait** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
 | **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type with Comparable` |
-| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer (the arithmetic half is not yet enforced — #778). Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
+| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer. The bitwise operators and the shifts go with arithmetic, not with comparison. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
 | **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 
 <!-- test: skip -->
@@ -136,7 +136,8 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 | `[3.0, NaN, 1.0].sort()` | ORD3 | `[1.0, 3.0, NaN]` — total order, no lost elements. A *negative* NaN sorts first, ahead of `-inf`, per IEEE totalOrder |
 | `5u64 > -1i32` | ORD4 | `true` — by value, not by reinterpreting either operand |
 | `u64::MAX > 1i32` | ORD4 | `true` — the bit pattern is not read as a negative number |
-| `5u64 + 1i32` | ORD4 | Compile error — comparison is the exception, arithmetic isn't (not yet enforced, #778) |
+| `5u64 + 1i32` | ORD4 | Compile error (E0371) — comparison is the exception, arithmetic isn't |
+| `5u64 << 1i32` | ORD4 | Compile error (E0371) — a shift count's signedness isn't decoration; a negative one is a bug |
 | Shift exceeding bit width | BW2 | Panic |
 | Comparison chaining | P2 | Compile error |
 | Struct with float field | ORD2 | Auto-derives — the float field compares by the total order |

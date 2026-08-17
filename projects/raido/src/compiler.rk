@@ -213,16 +213,20 @@ extend Compiler {
         let idx = self.proto.code.len()
         self.emit(encode_asbx(op, a, 0))
         // offset 0 = placeholder
-        return idx as i64
+        return idx truncate to i64
     }
 
     func patch_jump(self, idx: i64) {
         // Patch a previously-emitted jump to land at the current position.
-        let offset = self.proto.code.len() - idx - 1
+        // A jump offset is signed, so the subtraction has to happen in i64 —
+        // done in the length's u64 it wraps to a huge number the moment the
+        // target is behind us.
+        let here = (self.proto.code.len() truncate to i64)
+        let offset = here - idx - 1
         let instr = self.proto.code.get(idx)!
         let op = decode_opcode(instr)!
         let a = decode_a(instr)
-        self.proto.code.set(idx, encode_asbx(op, a as i64, offset as i64) as u32)
+        self.proto.code.set(idx, encode_asbx(op, a as i64, offset) as u32)
     }
 
     func declare_local(self, name: string) -> i64 {
@@ -241,10 +245,12 @@ extend Compiler {
 
     func resolve_local(self, name: string) -> i64 {
         // Look up a variable by name. Returns the register, or -1 if not found.
-        // Search backwards (innermost scope first)
-        mut i = self.scope.locals.len() - 1
+        // Search backwards (innermost scope first). The counter is i64 because
+        // the loop runs off the front end — in the length's u64, `i >= 0` is
+        // always true and `i - 1` at zero wraps to u64::MAX.
+        mut i = (self.scope.locals.len() truncate to i64) - 1
         while i >= 0 {
-            let local = self.scope.locals.get(i as i64)
+            let local = self.scope.locals.get(i)
             if local? {
                 if local.name == name {
                     return local.reg

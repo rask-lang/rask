@@ -157,6 +157,11 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// ORD4: arithmetic between a signed and an unsigned integer. Comparison is
+    /// the one operator family that crosses signedness, because it has an
+    /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
+    #[error("`{op}` between `{left}` and `{right}` — one is signed, the other isn't")]
+    MixedSignednessArithmetic { op: &'static str, left: Type, right: Type, span: Span },
     /// ER11: `T or E` (E ≠ none) only auto-wraps at `return`.
     #[error("`{value}` doesn't become a `{target}` here — auto-wrap is return-only")]
     NoAutoWrapOutsideReturn { value: Type, target: Type, span: Span },
@@ -849,6 +854,11 @@ impl TypeError {
             NarrowingNeedsPolicy { from, to, .. } => {
                 *from = f(from);
                 *to = f(to);
+            }
+
+            MixedSignednessArithmetic { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
             }
 
             NoAutoWrapOutsideReturn { value, target, .. } => {
