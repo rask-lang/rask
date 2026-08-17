@@ -48,6 +48,37 @@ where
         .expect("failed to spawn interpreter thread")
 }
 
+/// Reaper threads waiting on a detached task's result (ctrl.panic/O4).
+///
+/// O4 says a detached task's panic *must* reach stderr. A reaper racing process
+/// exit doesn't satisfy that — the report just vanishes, which is exactly the
+/// failure mode O4 exists to prevent. They're registered here and joined before
+/// the program is done.
+static DETACHED_REAPERS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a reaper so `join_detached_reapers` can wait for it.
+pub(crate) fn register_detached_reaper(jh: std::thread::JoinHandle<()>) {
+    if let Ok(mut v) = DETACHED_REAPERS.lock() {
+        v.push(jh);
+    }
+}
+
+/// Wait for every detached-task reaper to finish reporting.
+///
+/// Called once the program's own work is done. A reaper only blocks on a task
+/// that was already spawned, so this waits for exactly as long as the slowest
+/// detached task — which is what "the panic reaches stderr" costs.
+pub fn join_detached_reapers() {
+    let pending: Vec<_> = match DETACHED_REAPERS.lock() {
+        Ok(mut v) => std::mem::take(&mut *v),
+        Err(_) => return,
+    };
+    for jh in pending {
+        let _ = jh.join();
+    }
+}
+
 pub use build_context::BuildState;
 pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, SourceInfo, TestResult};
 

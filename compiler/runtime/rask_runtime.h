@@ -758,6 +758,10 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out);
 // Detach the task (fire-and-forget). Consumes the handle.
 void rask_task_detach(RaskTaskHandle *h);
 
+// ctrl.panic/O4: block until every detached task has finished reporting, so a
+// detached panic can't be lost to process exit. Called from `main`.
+void rask_await_detached_tasks(void);
+
 // Request cooperative cancellation, then wait for the task to finish.
 // Returns 0 on success, -1 on panic. Consumes the handle.
 int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);

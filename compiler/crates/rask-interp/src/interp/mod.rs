@@ -704,7 +704,13 @@ impl Interpreter {
             .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
 
         if let Some(entry) = registered.entry_fn {
-            let value = self.call_function(&entry, vec![])?;
+            let value = self.call_function(&entry, vec![]);
+            // O4: a detached task's panic has to reach stderr, and a reaper
+            // racing process exit doesn't satisfy that — the report just
+            // vanishes, which is the failure O4 exists to prevent. Wait here,
+            // whichever way main finished.
+            crate::join_detached_reapers();
+            let value = value?;
             // struct.targets/EX4: an error out of main is exit status 1, not 0.
             // A `try` that propagates already lands in the error path; an
             // explicit `return SomeError` came back as an ordinary value and

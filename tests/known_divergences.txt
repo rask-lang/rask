@@ -10,7 +10,10 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-t19b_union_method_dispatch.rk # native union error message() dispatch + i32 or (A|B) codegen — #375, rask#211 (native)
+t19b_union_method_dispatch.rk # native has no runtime discriminant on a union err payload, so
+#   `e.message()` can't pick a target (fails to compile) and — the sharper end — `r is ParseError`
+#   on a `T or (A | B)` compiles and asks "is it Ok?", so every failure reads as the *second*
+#   member. Silent wrong answer, diagnosed in #776. Also #375, rask#211 (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 #

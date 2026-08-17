@@ -12,6 +12,11 @@
 //      discriminant, so MIR lowering can't pick a target and errors out — the
 //      whole file fails to compile on native.
 //
+//      The missing discriminant has a sharper end that *does* compile (#776):
+//      `r is ParseError` on a `T or (A | B)` lowers to a test against the Ok
+//      tag, so a ParseError answers `is ParseError: false, is DivError: true`.
+//      Every failure reads as whichever member is listed second, silently.
+//
 //   2. A function returning `i32 or (A | B)`, compiled alongside other code,
 //      corrupts memory: every test passes but the process exits non-zero
 //      (order/layout-dependent). Tracked with #375.
