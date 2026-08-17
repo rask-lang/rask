@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `r is MyErr.Bad` names a variant of the error enum, which sits one layer
+// below the value's own ok/err tag. Comparing the variant tag against the outer
+// tag put `Bad`'s 0 against the ok tag 0, so every such test answered about the
+// wrong layer — true for the ok value, and one variant off for the errors.
+import io
+
+enum MyErr {
+    Bad
+    Worse(string)
+}
+
+extend MyErr {
+    public func message(self) -> string {
+        match self {
+            MyErr.Bad => return "bad",
+            MyErr.Worse(w) => return "worse: {w}",
+        }
+    }
+}
+
+func fails() -> string or MyErr {
+    return MyErr.Bad
+}
+
+func worse() -> string or MyErr {
+    return MyErr.Worse("disk")
+}
+
+func ok() -> string or MyErr {
+    return "fine"
+}
+
+func main() {
+    let a = fails()
+    println("bad is Bad:      {a is MyErr.Bad}")
+    println("bad is Worse:    {a is MyErr.Worse}")
+
+    let w = worse()
+    println("worse is Bad:    {w is MyErr.Bad}")
+    println("worse is Worse:  {w is MyErr.Worse}")
+
+    let b = ok()
+    println("ok is Bad:       {b is MyErr.Bad}")
+    println("ok is Worse:     {b is MyErr.Worse}")
+
+    // The `if` form takes a different lowering path than the bare expression.
+    if b is MyErr.Bad {
+        println("if: ok took the Bad arm")
+    } else {
+        println("if: ok skipped the Bad arm")
+    }
+    if a is MyErr.Bad {
+        println("if: bad took the Bad arm")
+    } else {
+        println("if: bad skipped the Bad arm")
+    }
+
+    // Naming the whole error side still tests the outer tag only.
+    println("bad is MyErr:    {a is MyErr}")
+    println("ok is MyErr:     {b is MyErr}")
+
+    // The stdlib's own error enum, reached through a real read at EOF.
+    let line = io.read_line()
+    println("eof is Eof:      {line is IoError.UnexpectedEof}")
+    println("eof is NotFound: {line is IoError.NotFound}")
+}

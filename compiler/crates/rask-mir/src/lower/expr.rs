@@ -2219,20 +2219,11 @@ impl<'a> MirLowerer<'a> {
                 let is_niche = self.option_is_niche(expr, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
 
-                // Compare tag against expected variant. Use type-context
-                // resolution so `if r is ErrEnum [as e]` against `T or ErrEnum`
-                // routes to the err side (tag 1) instead of falling through to
-                // 0 like the bare `pattern_tag` does.
-                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-                let matches = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: matches,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(MirConst::Int(expected)),
-                    },
-                }));
+                // Type-context resolution, so `if r is ErrEnum [as e]` against
+                // `T or ErrEnum` routes to the err side (tag 1) instead of
+                // falling through to 0 like the bare `pattern_tag` does — and a
+                // variant of that error enum tests both layers.
+                let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
 
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
@@ -2395,16 +2386,8 @@ impl<'a> MirLowerer<'a> {
                 let (val, val_ty) = self.lower_expr(inner)?;
                 let is_niche = self.option_is_niche(inner, &val_ty);
                 let tag = self.emit_option_tag(&val, is_niche);
-                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-                let result = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(MirConst::Int(expected)),
-                    },
-                }));
+
+                let result = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
                 Ok((MirOperand::Local(result), MirType::Bool))
             }
 
@@ -5411,6 +5394,76 @@ impl<'a> MirLowerer<'a> {
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
+    /// `value is <pattern>` as a bool local.
+    ///
+    /// A pattern naming a variant of the error enum needs *two* tags: the
+    /// value's own tag says ok vs err, and the variant tag lives one layer down
+    /// in the payload. Comparing the variant tag against the outer tag put
+    /// `MyErr.Bad`'s 0 up against the ok tag 0, so the test answered about the
+    /// wrong layer — the same two-layer mixup `match` had in #677.
+    fn emit_two_layer_pattern_test(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        tag: crate::LocalId,
+        is_niche: bool,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> crate::LocalId {
+        if let Some((err_ty, variant_tag)) = self.err_variant_of_result(pattern, val_ty) {
+            let payload = self.emit_option_payload(val.clone(), err_ty, is_niche);
+            let inner_tag = self.emit_enum_tag(MirOperand::Local(payload));
+            let is_err = self.emit_eq_const(tag, 1);
+            let is_variant = self.emit_eq_const(inner_tag, variant_tag);
+            let result = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::And,
+                    left: MirOperand::Local(is_err),
+                    right: MirOperand::Local(is_variant),
+                },
+            }));
+            return result;
+        }
+        let expected = self.pattern_tag_in_type_context(pattern, val_ty);
+        self.emit_eq_const(tag, expected)
+    }
+
+    /// `local == k` as a fresh bool temp.
+    fn emit_eq_const(&mut self, local: crate::LocalId, k: i64) -> crate::LocalId {
+        let result = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(local),
+                right: MirOperand::Constant(MirConst::Int(k)),
+            },
+        }));
+        result
+    }
+
+    /// The err type and variant tag when `pattern` names a variant of a
+    /// Result's error enum, rather than one of the Result's own two sides.
+    fn err_variant_of_result(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Option<(MirType, i64)> {
+        let err_ty = match val_ty {
+            MirType::Result { err, .. } => err.as_ref().clone(),
+            _ => return None,
+        };
+        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &err_ty else {
+            return None;
+        };
+        let name = super::match_lower::pattern_name(pattern)?;
+        let bare = name.rsplit('.').next().unwrap_or(name);
+        let layout = self.ctx.enum_layouts.get(*id as usize)?;
+        let tag = layout.variants.iter().find(|v| v.name == bare)?.tag as i64;
+        Some((err_ty, tag))
+    }
+
     fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
         let tag = self.builder.alloc_temp(MirType::U16);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -6159,17 +6212,7 @@ impl<'a> MirLowerer<'a> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         let is_niche = self.option_is_niche(scrutinee, &val_ty);
         let tag = self.emit_option_tag(&val, is_niche);
-        let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-
-        let matches = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: matches,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Eq,
-                left: MirOperand::Local(tag),
-                right: MirOperand::Constant(MirConst::Int(expected)),
-            },
-        }));
+        let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
 
         let bind_block = self.builder.create_block();
         let short_block = self.builder.create_block();
