@@ -940,7 +940,10 @@ impl Interpreter {
 
                 // Inject type_args for generic methods (e.g. json.decode<T>, reflect.fields<T>)
                 if let Some(ta) = type_args {
-                    if let Some(first_type) = ta.first() {
+                    // Inside a generic body the written type is a parameter name.
+                    // Hand over what this call bound it to, not the letter (#699).
+                    let first_resolved = ta.first().map(|t| self.resolve_type_param(t));
+                    if let Some(first_type) = first_resolved.as_ref() {
                         if let Value::Module(ModuleKind::Json) = &receiver {
                             if method == "decode" || method == "from_value" {
                                 arg_vals.insert(

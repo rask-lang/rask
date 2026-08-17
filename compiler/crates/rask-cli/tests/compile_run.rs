@@ -3656,3 +3656,19 @@ fn a_presence_rebind_does_not_outlive_its_block() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// #699: `reflect.fields<T>()` inside a generic function needs to know what `T`
+// became at the call. Native monomorphizes, so `T` is already concrete by the
+// time MIR unrolls the loop; the interpreter doesn't, and the name reached
+// reflect as the literal "T" — "not a struct type". It records per-call type
+// bindings now, read off the arguments, with PC1's implicit `value: T` counting
+// as a declaration.
+#[test]
+fn reflect_through_a_generic_function_agrees_on_both_backends() {
+    let expected = "x y \ntext \ndirect:x direct:y \n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "reflect_through_generic.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

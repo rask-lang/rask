@@ -98,6 +98,15 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// What each generic function's type parameters resolved to for the call
+    /// currently on the stack, innermost last.
+    ///
+    /// The interpreter doesn't monomorphize, so `T` inside a generic body is
+    /// just a name. Anything comptime that asks "what is `T` right now" —
+    /// `reflect.fields<T>()` above all — got the literal "T" and gave up (#699).
+    /// Inferred from the runtime argument bound to a parameter declared as that
+    /// bare name, and scoped like `env`.
+    pub(crate) type_bindings: Vec<HashMap<String, String>>,
     /// ER31a: `try` sites whose error the checker decided to wrap in a variant
     /// of the enclosing function's error enum, keyed by the `try` expression.
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
@@ -140,6 +149,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -161,6 +171,7 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -188,6 +199,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            type_bindings: Vec::new(),
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
@@ -221,6 +233,32 @@ impl Interpreter {
     /// falls back to unchecked i64 arithmetic.
     pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
         self.node_types = node_types;
+    }
+
+    /// The nominal type name of a runtime value, for matching against a generic
+    /// function's type parameter. `None` for values with no name to give.
+    pub(crate) fn runtime_type_name(value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(s) => Some(s.lock().unwrap().name.clone()),
+            Value::Enum { name, .. } => Some(name.clone()),
+            Value::Bool(_) => Some("bool".to_string()),
+            Value::Int(_, _) => Some("i64".to_string()),
+            Value::Float(_, _) => Some("f64".to_string()),
+            Value::Char(_) => Some("char".to_string()),
+            Value::String(_) => Some("string".to_string()),
+            _ => None,
+        }
+    }
+
+    /// What `name` resolved to for the innermost generic call that bound it, or
+    /// `name` itself when nothing did.
+    pub(crate) fn resolve_type_param(&self, name: &str) -> String {
+        for frame in self.type_bindings.iter().rev() {
+            if let Some(concrete) = frame.get(name) {
+                return concrete.clone();
+            }
+        }
+        name.to_string()
     }
 
     /// How many optional layers a container's Nth type argument declares —

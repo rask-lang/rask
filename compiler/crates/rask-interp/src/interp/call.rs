@@ -41,6 +41,31 @@ impl Interpreter {
 
         self.env.push_scope();
 
+        // What this call's type parameters resolved to, read off the arguments:
+        // `value: T` given a `Point` means `T = "Point"` for the body. Scoped to
+        // the call, like `env`. Without it `reflect.fields<T>()` inside a generic
+        // body saw the literal "T" (#699).
+        //
+        // PC1 makes a single uppercase letter a type parameter wherever it
+        // appears, so `func print_fields(value: T)` declares one without writing
+        // `<T>` — reading only `type_params` found nothing to bind.
+        let mut type_frame: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (idx, param) in func.params.iter().enumerate() {
+            let declared = param.ty.trim();
+            let named_here = func
+                .type_params
+                .iter()
+                .any(|tp| !tp.is_comptime && tp.name == declared);
+            if !(named_here || is_type_param_name(declared)) {
+                continue;
+            }
+            if let Some(concrete) = args.get(idx).and_then(Self::runtime_type_name) {
+                type_frame.entry(declared.to_string()).or_insert(concrete);
+            }
+        }
+        self.type_bindings.push(type_frame);
+
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
             // A by-value parameter receives an independent copy (VS1): mutating
             // it inside the callee can't alias the caller's value. `mutate`/`self`
@@ -87,6 +112,7 @@ impl Interpreter {
             if matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::Panic(_))) {
                 self.report_secondary_panic(&guard_diag);
             } else {
+                self.type_bindings.pop();
                 self.env.pop_scope();
                 return Err(guard_diag);
             }
@@ -100,6 +126,7 @@ impl Interpreter {
             .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
             .collect();
 
+        self.type_bindings.pop();
         self.env.pop_scope();
 
         let value = match result {
@@ -321,6 +348,13 @@ impl Interpreter {
             self.env.pop_scope();
         }
     }
+}
+
+/// PC1: a single uppercase ASCII letter is a type parameter wherever it appears
+/// in a signature, whether or not the function also writes `<T>`.
+fn is_type_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }
 
 /// The T of a `Result<T, E>` string, as written.
