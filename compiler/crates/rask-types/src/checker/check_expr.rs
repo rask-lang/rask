@@ -224,6 +224,34 @@ impl TypeChecker {
         if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
             return;
         }
+        // Only a value that actually implements the trait gets a vtable for it.
+        //
+        // The expected type arrives here already peeled of its wrappers, so a
+        // value that isn't destined for the `any Trait` side looks like one that
+        // is. Two ways that went wrong, both ending in a vtable that can't be
+        // built:
+        //
+        //   `-> (any Shape)?` with `return none` — expected peels to `any Shape`
+        //   and `none` is an `Option<_>`. MIR built the none Option, gave *that* a
+        //   vtable, and wrapped the box in a second Option: "vtable method
+        //   unknown.area".
+        //
+        //   `-> (any Shape) or Nope` with `return Nope {}` — the err branch, but
+        //   expected peels to the ok side: "vtable method Nope.area".
+        //
+        // A value that doesn't implement the trait is either the other branch or
+        // a type error reported elsewhere; boxing it is wrong either way (#764).
+        // Anything still unresolved keeps the old behaviour — `implements_trait`
+        // can't answer for a variable, and refusing on "don't know" would drop
+        // boxes the checker had accepted.
+        let resolved = self.ctx.apply(found);
+        let undecided = matches!(
+            resolved,
+            Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
+        );
+        if !undecided && !crate::traits::implements_trait(&self.types, &resolved, trait_name) {
+            return;
+        }
         self.trait_coercions.insert(expr.id, trait_name.clone());
     }
 

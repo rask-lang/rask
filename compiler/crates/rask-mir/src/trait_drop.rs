@@ -295,11 +295,28 @@ fn collect_backedge_drops(
     if !dom.dominates(target, source) {
         return;
     }
-    // Drop trait objects whose definition is inside the loop — dominated by
-    // its header. Using block-index range here would have the same
-    // false-positive risk as above.
+    // Drop trait objects whose definition is inside the loop. Two conditions,
+    // and the second was missing:
+    //
+    //   The header dominates the definition — so it isn't something created
+    //   before the loop, which is still live after it.
+    //
+    //   The definition dominates the block that jumps back — so the value really
+    //   is written on every iteration. The loop's *exit* block is dominated by
+    //   the header too, so the first check alone claimed anything defined after
+    //   the loop. `let c: any Shape = …` written after a `while` was dropped on
+    //   every back-edge, freeing whatever the uninitialised slot held; the second
+    //   iteration then double-freed and the process segfaulted at the `i = i + 1`
+    //   line (#764's neighbour).
+    //
+    // A trait object created in only one arm of a branch inside the loop doesn't
+    // dominate the back-edge and so leaks rather than being dropped on a path
+    // that never wrote it — the same trade the return path takes.
     let to_drop: Vec<LocalId> = defined_in_block.iter()
-        .filter(|(_, &def_idx)| dom.dominates(target, blocks[def_idx].id))
+        .filter(|(_, &def_idx)| {
+            let def = blocks[def_idx].id;
+            dom.dominates(target, def) && dom.dominates(def, source)
+        })
         .map(|(&id, _)| id)
         .collect();
     if !to_drop.is_empty() {

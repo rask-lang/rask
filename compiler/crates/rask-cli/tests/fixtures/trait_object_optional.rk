@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Three native bugs around `any Trait`, all in the same program.
+//
+// 1. `let a: (any Shape)? = c as any Shape` read back as `none` (#764). MIR's
+//    type-string resolver checked `any Trait` before the wrapper suffixes, so
+//    `any Shape?` — how the parser spells `(any Shape)?` — made a trait object
+//    whose *name* was "Shape?" rather than an Option. Nothing then saw a depth
+//    mismatch to wrap, the bare fat pointer landed in the slot, and the read took
+//    the data pointer's low bits for a tag. The checker has the two checks the
+//    other way round, which is why only native was wrong.
+//
+// 2. `return none` from a `-> (any Shape)?` function asked for a vtable on the
+//    absence: "vtable method unknown.area". The expected type reaches the
+//    coercion check already peeled to `any Shape`, so a value that isn't destined
+//    for that side looks like one that is. Same shape one layer over: `return
+//    Nope {}` from `-> (any Shape) or Nope` asked for "vtable method Nope.area".
+//    The check now boxes only a value that actually implements the trait.
+//
+// 3. A trait object declared *after* a loop was dropped on the loop's back-edge,
+//    freeing whatever its uninitialised slot held — the second iteration
+//    double-freed and the process segfaulted. The back-edge test asked only
+//    whether the loop header dominated the definition, and the loop's exit block
+//    is dominated by the header too.
+
+trait Shape {
+    func area(self) -> f64
+    func message(self) -> string
+}
+
+struct Circle { r: f64 }
+extend Circle with Shape {
+    func area(self) -> f64 { return 3.14 * self.r * self.r }
+    func message(self) -> string { return "circle" }
+}
+
+struct Square { s: f64 }
+extend Square with Shape {
+    func area(self) -> f64 { return self.s * self.s }
+    func message(self) -> string { return "square" }
+}
+
+struct Nope {}
+extend Nope {
+    func message(self) -> string { return "nope" }
+}
+
+func pick(n: i64) -> (any Shape)? {
+    if n == 0 { return Circle { r: 2.0 } as any Shape }
+    if n == 1 { return Square { s: 3.0 } as any Shape }
+    return none
+}
+
+func wrapped(n: i64) -> (any Shape) or Nope {
+    if n == 0 { return Circle { r: 1.0 } as any Shape }
+    return Nope {}
+}
+
+func main() {
+    // 1: the annotated optional binding.
+    let a: (any Shape)? = Circle { r: 2.0 } as any Shape
+    if a? as shape {
+        println("a = {shape.message()} {shape.area()}")
+    } else {
+        println("a = none")
+    }
+
+    // Explicit none in the same shape.
+    let b: (any Shape)? = none
+    if b? as shape {
+        println("b = {shape.message()}")
+    } else {
+        println("b = none")
+    }
+
+    // 2: `return none` and a present return from the same function.
+    mut i = 0
+    while i < 3 {
+        if pick(i)? as s {
+            println("pick({i}) = {s.message()} {s.area()}")
+        } else {
+            println("pick({i}) = none")
+        }
+        i = i + 1
+    }
+
+    // 3: a trait object declared after the loop above.
+    let c: any Shape = Square { s: 4.0 } as any Shape
+    println("c = {c.message()} {c.area()}")
+
+    // 2 again, one layer over: the err branch of `(any Shape) or Nope`.
+    let d = wrapped(1)
+    if d is Nope as n {
+        println("d = {n.message()}")
+    }
+    let e = wrapped(0)
+    if e is Nope as n {
+        println("e = {n.message()}")
+    } else {
+        println("e = shape")
+    }
+}

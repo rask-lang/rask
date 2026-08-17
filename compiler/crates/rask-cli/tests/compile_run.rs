@@ -3969,3 +3969,29 @@ msg3: over 10
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// Three native `any Trait` bugs in one program (#764 and neighbours):
+// `let a: (any Shape)? = c as any Shape` read back as `none` because MIR's type
+// resolver made a trait object named "Shape?" instead of an Option; `return none`
+// from a `-> (any Shape)?` (and `return Nope {}` from a `-> (any Shape) or Nope`)
+// asked for a vtable on a value that doesn't implement the trait; and a trait
+// object declared after a loop was dropped on the loop's back-edge, so the second
+// iteration double-freed.
+#[test]
+fn a_trait_object_in_an_optional_survives_on_both_backends() {
+    let expected = "\
+a = circle 12.56
+b = none
+pick(0) = circle 12.56
+pick(1) = square 9
+pick(2) = none
+c = square 16
+d = nope
+e = shape
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "trait_object_optional.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

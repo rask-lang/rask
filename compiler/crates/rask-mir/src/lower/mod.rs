@@ -608,10 +608,6 @@ impl<'a> MirContext<'a> {
             "StringView" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
-                // "any TraitName" → TraitObject
-                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
-                    return MirType::TraitObject { trait_name: trait_name.to_string() };
-                }
                 // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
                 // these an annotated `const a: [i32; 5]` fell through to the
                 // pointer default, and the array's length was gone by the time
@@ -688,6 +684,18 @@ impl<'a> MirContext<'a> {
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
                     return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                }
+                // "any TraitName" → TraitObject. After the wrapper shapes above,
+                // not before: the parser normalizes `(any Shape)?` to
+                // `any Shape?`, and claiming that first made the trait's name
+                // "Shape?" instead of building an Option. Nothing then saw a
+                // depth mismatch to wrap, so `let a: (any Shape)? = c as any
+                // Shape` stored a bare fat pointer in the slot and the read took
+                // the data pointer's low bits for a tag — always `none` (#764).
+                // The checker's `parse_type_string` has the same two checks in
+                // this order, which is why only native was wrong.
+                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
+                    return MirType::TraitObject { trait_name: trait_name.to_string() };
                 }
                 // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
                 if name.starts_with("Vec<") || name == "Vec" {
