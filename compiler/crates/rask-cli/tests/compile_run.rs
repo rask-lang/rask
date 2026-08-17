@@ -3750,3 +3750,23 @@ filtered to_map: 2
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// type.structs FD1/FD2: a field default is an expression, so what gets
+// substituted needs the defaults pass run over it too. `inner: Inner = Inner {}`
+// was rejected as missing Inner's field — the defaults table is snapshotted
+// before the walk, so the copy handed to the call site was un-desugared. The
+// same literal in a function body always worked (#311).
+#[test]
+fn a_field_default_gets_its_own_defaults_filled_on_both_backends() {
+    let expected = "\
+o: 7 middle 8080 tags=0
+p: 7 middle 1
+q: 7 given 8080
+direct: 7
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "nested_field_defaults.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
