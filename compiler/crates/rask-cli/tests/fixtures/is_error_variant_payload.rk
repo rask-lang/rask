@@ -21,12 +21,15 @@
 // payload; the interpreter matches the inner enum's variant rather than
 // descending past it; MIR reads at the variant's own offset inside the err
 // payload rather than binding the whole error (it bound a `MyErr` where a
-// `string` was named, so `{w}` printed the tag — "payload: 1").
+// `string` was named, so `{w}` printed the tag — "payload: 1"). A variant with
+// several fields binds a tuple, which MIR builds rather than reads: the variant's
+// fields sit at the enum's offsets and the tuple's at its own.
 
 enum MyErr {
     Bad
     Worse(string)
     Code(i64)
+    Pair(string, i64)
 }
 
 extend MyErr {
@@ -35,6 +38,7 @@ extend MyErr {
             MyErr.Bad => return "bad",
             MyErr.Worse(w) => return "worse: {w}",
             MyErr.Code(c) => return "code {c}",
+            MyErr.Pair(a, b) => return "pair {a} {b}",
         }
     }
 }
@@ -43,7 +47,8 @@ func pick(n: i64) -> i64 or MyErr {
     if n == 0 { return 7 }
     if n == 1 { return MyErr.Bad }
     if n == 2 { return MyErr.Worse("disk") }
-    return MyErr.Code(42)
+    if n == 3 { return MyErr.Code(42) }
+    return MyErr.Pair("sector", 9)
 }
 
 func describe(n: i64) -> string {
@@ -55,6 +60,11 @@ func describe(n: i64) -> string {
     // A different payload type, so the offsets can't be shared by accident.
     if r is MyErr.Code as c {
         return "code({c})"
+    }
+    // Several fields bind a tuple, which has to be built — the variant's fields
+    // sit at the enum's offsets and the tuple's at its own.
+    if r is MyErr.Pair as p {
+        return "pair({p.0},{p.1})"
     }
     // The bare form that always worked.
     if r is MyErr.Bad {
@@ -69,7 +79,7 @@ func describe(n: i64) -> string {
 
 func main() {
     mut i = 0
-    while i < 4 {
+    while i < 5 {
         println("{i}: {describe(i)}")
         i = i + 1
     }

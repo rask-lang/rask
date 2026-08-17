@@ -4080,6 +4080,7 @@ fn is_on_an_error_variant_binds_its_payload_on_both_backends() {
 1: bad
 2: worse(disk)
 3: code(42)
+4: pair(sector,9)
 whole: worse: disk
 ";
     for mode in ["--interp", "--native"] {

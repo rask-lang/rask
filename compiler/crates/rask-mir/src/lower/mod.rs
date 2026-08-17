@@ -3502,17 +3502,13 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
-    /// `Enum.Variant` naming a variant of a Result's error enum: the sole field's
+    /// `Enum.Variant` naming a variant of a Result's error enum: each field's
     /// type, its offset *within the err payload*, and its size.
-    ///
-    /// Only the single-field case. A multi-field variant would bind a tuple, which
-    /// needs a slot built rather than a field read — `is MyErr.Pair as p` falls
-    /// through to the ordinary payload binding until then.
-    fn err_variant_field(
+    fn err_variant_fields(
         &self,
         scrutinee_ty: &MirType,
         ty_name: &str,
-    ) -> Option<(MirType, u32, u32)> {
+    ) -> Option<Vec<(MirType, u32, u32)>> {
         let MirType::Result { err, .. } = scrutinee_ty else { return None };
         let (enum_name, variant_name) = ty_name.split_once('.')?;
         let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = err.as_ref() else {
@@ -3523,15 +3519,22 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
-        let field = match variant.fields.as_slice() {
-            [only] => only,
-            _ => return None,
-        };
-        Some((
-            self.ctx.type_to_mir(&field.ty),
-            variant.payload_offset + field.offset,
-            field.size,
-        ))
+        if variant.fields.is_empty() {
+            return None;
+        }
+        Some(
+            variant
+                .fields
+                .iter()
+                .map(|f| {
+                    (
+                        self.ctx.type_to_mir(&f.ty),
+                        variant.payload_offset + f.offset,
+                        f.size,
+                    )
+                })
+                .collect(),
+        )
     }
 
     /// Bind pattern payload variables into the current scope.
@@ -3623,21 +3626,57 @@ impl<'a> MirLowerer<'a> {
                 // is reading at the variant's own offset inside the err payload.
                 // Binding `payload_ty` handed over a `MyErr` where a `string` was
                 // named, and `{w}` printed the enum's tag (#766).
-                if let Some((field_ty, offset, size)) =
-                    self.err_variant_field(scrutinee_ty, ty_name)
-                {
-                    let local = self.builder.alloc_local(name.clone(), field_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local,
-                        rvalue: MirRValue::Field {
-                            base: value.clone(),
-                            field_index: 0,
-                            byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + offset),
-                            access: FieldAccess::for_field(&field_ty, size),
-                        },
-                    }));
-                    self.locals.insert(name.clone(), (local, field_ty.clone()));
-                    if let Some(prefix) = self.mir_type_name(&field_ty) {
+                if let Some(fields) = self.err_variant_fields(scrutinee_ty, ty_name) {
+                    let bound_ty = match fields.as_slice() {
+                        [(ty, _, _)] => ty.clone(),
+                        many => MirType::Tuple(many.iter().map(|(t, _, _)| t.clone()).collect()),
+                    };
+                    let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
+                    match fields.as_slice() {
+                        // One field binds directly.
+                        [(field_ty, offset, size)] => {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: local,
+                                rvalue: MirRValue::Field {
+                                    base: value.clone(),
+                                    field_index: 0,
+                                    byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + *offset),
+                                    access: FieldAccess::for_field(field_ty, *size),
+                                },
+                            }));
+                        }
+                        // Several bind a tuple, which has to be built: the
+                        // variant's fields sit at the enum's offsets, the tuple's
+                        // at its own, and the two don't line up.
+                        many => {
+                            let mut tuple_offset = 0u32;
+                            for (field_ty, src_offset, size) in many {
+                                let align = field_ty.align().max(1);
+                                tuple_offset = (tuple_offset + align - 1) & !(align - 1);
+                                let read = self.builder.alloc_temp(field_ty.clone());
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: read,
+                                    rvalue: MirRValue::Field {
+                                        base: value.clone(),
+                                        field_index: 0,
+                                        byte_offset: Some(
+                                            crate::types::RESULT_PAYLOAD_OFFSET + *src_offset,
+                                        ),
+                                        access: FieldAccess::for_field(field_ty, *size),
+                                    },
+                                }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: local,
+                                    offset: tuple_offset,
+                                    value: MirOperand::Local(read),
+                                    store_size: Some(field_ty.size()),
+                                }));
+                                tuple_offset += field_ty.size();
+                            }
+                        }
+                    }
+                    self.locals.insert(name.clone(), (local, bound_ty.clone()));
+                    if let Some(prefix) = self.mir_type_name(&bound_ty) {
                         self.meta_mut(name).type_prefix = Some(prefix);
                     }
                     return;
