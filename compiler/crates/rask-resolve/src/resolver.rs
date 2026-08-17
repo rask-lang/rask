@@ -2044,6 +2044,26 @@ impl Resolver {
     // Expression Resolution
     // =========================================================================
 
+    /// A stdlib module is in scope only where it was imported
+    /// (structure.modules/IM1).
+    ///
+    /// The stdlib's own source is resolved alongside the program, and a module
+    /// is declared there as a plain type — `struct math { }` — so its name
+    /// landed in global scope whether the program imported it or not. That made
+    /// `math.sin(x)` with no `import math` compile and run natively, while the
+    /// interpreter, which binds a module only when it sees the import
+    /// declaration, rejected the same program at runtime (#723).
+    ///
+    /// Only names the stdlib itself defined count, so a program's own `math` is
+    /// untouched; and only module names, so `Vec` and the other types that are
+    /// genuinely always in scope are untouched too.
+    fn stdlib_module_needs_import(&self, name: &str, sym_id: SymbolId) -> bool {
+        !self.stdlib_mode
+            && self.stdlib_symbols.contains(&sym_id)
+            && !self.imported_symbols.contains(name)
+            && rask_stdlib::mir_metadata::stdlib_module_names().contains(name)
+    }
+
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
@@ -2051,6 +2071,11 @@ impl Resolver {
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {
+                        if self.stdlib_module_needs_import(name, sym_id) {
+                            self.errors.push(ResolveError::module_not_imported(
+                                name.clone(), expr.span,
+                            ));
+                        }
                         self.resolutions.insert(expr.id, sym_id);
                     }
                     None => {

@@ -9,6 +9,10 @@ import async.Channel
 import time.Duration
 import os
 import fs
+// `math.clamp` below is the error under test; the import is what makes the
+// receiver resolve at all, so the missing-method error is the one that fires
+// rather than a missing-import one (#723).
+import math
 
 // Channel.recv → receive
 func old_recv(rx: Receiver<i64>) {

@@ -418,7 +418,23 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 void        rask_file_close(int64_t file);
-int64_t     rask_file_read_all(RaskStr *out, int64_t file);  // 0 = ok, 1 = read failed
+// ─── String-out-param calls ────────────────────────────────
+// A call that hands a string back through an out-param says how it ended, and
+// carries the reason when it failed. It used to return a bare 0/1, and codegen
+// turned every 1 into `IoError.UnexpectedEof` — right for `read_line`, wrong
+// for a file read, which reported "unexpected end of file" for a descriptor
+// that was write-only (#682).
+// "Bad file descriptor (os error 9)" — the exact shape Rust's std::io::Error
+// prints, which is what the interpreter reports, so both backends say the same
+// thing. Defined further down runtime.c; declared here because the string-out
+// calls above it need it.
+const char *rask_io_error_text(int32_t err);
+
+#define RASK_STROUT_OK    0
+#define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
+#define RASK_STROUT_EOF   2   // input ran out → IoError.UnexpectedEof
+
+int64_t     rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out);
 int64_t     rask_file_read_bytes(int64_t file);
 void        rask_file_write(int64_t file, const RaskStr *content);
 void        rask_file_write_all(int64_t file, const RaskStr *content);
@@ -427,7 +443,7 @@ void        rask_file_write_line(int64_t file, const RaskStr *content);
 RaskVec    *rask_file_lines(int64_t file);
 
 // ─── IO module ──────────────────────────────────────────────
-int64_t     rask_io_read_line(RaskStr *out);  // 0 = line, 1 = EOF
+int64_t     rask_io_read_line(RaskStr *out, RaskStr *err_out);
 int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
 
 // ─── Time module ────────────────────────────────────────────

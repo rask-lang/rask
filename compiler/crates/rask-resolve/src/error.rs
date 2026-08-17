@@ -20,6 +20,14 @@ impl ResolveError {
         }
     }
 
+    /// A stdlib module used without importing it (structure.modules/IM1).
+    pub fn module_not_imported(name: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::ModuleNotImported { name },
+            span,
+        }
+    }
+
     pub fn duplicate(name: String, span: Span, previous: Span) -> Self {
         Self {
             kind: ResolveErrorKind::DuplicateDefinition { name, previous },
@@ -140,6 +148,9 @@ impl ResolveError {
 pub enum ResolveErrorKind {
     #[error("undefined symbol: {name}")]
     UndefinedSymbol { name: String },
+    /// A stdlib module name used with no `import` for it.
+    #[error("`{name}` is used but never imported")]
+    ModuleNotImported { name: String },
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },

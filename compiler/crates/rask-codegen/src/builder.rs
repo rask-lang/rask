@@ -134,8 +134,9 @@ enum CallAdapt {
     /// Same idea for a string out-param: the call returned 0/1 and wrote a
     /// 16-byte RaskStr into the given slot. Build a `string or E` — status==0
     /// → Ok(string), else Err. Used by `io.read_line`, where the error case is
-    /// end of input.
-    StringResult(StackSlot),
+    /// end of input. The second slot carries the failure message, so a real
+    /// `IoError.Other(msg)` can be built instead of a guessed variant.
+    StringResult(StackSlot, StackSlot),
     /// join/cancel: the call returned how the task ended and wrote its value
     /// into the first slot and any panic message into the second (a 16-byte
     /// RaskStr). Build a `T or JoinError` in dst.
@@ -150,6 +151,10 @@ const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
 /// `RASK_JOIN_*` defines in runtime/rask_runtime.h.
 const RASK_JOIN_OK: i64 = 0;
 const RASK_JOIN_PANICKED: i64 = 1;
+
+/// How a string-out-param call ended, as the runtime reports it. Mirrors the
+/// `RASK_STROUT_*` defines in runtime/rask_runtime.h.
+const RASK_STROUT_EOF: i64 = 2;
 
 pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
@@ -4411,7 +4416,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().iconst(types::I64, 0)
                 }
-                CallAdapt::StringResult(value_ss) => {
+                CallAdapt::StringResult(value_ss, err_ss) => {
                     // status → `string or E`. 0 → Ok(the 16-byte RaskStr the
                     // callee wrote), 1 → Err. Before this the runtime returned
                     // the string alone and nothing wrote the tag, so the caller
@@ -4445,18 +4450,19 @@ impl<'a> FunctionBuilder<'a> {
                         );
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err(IoError.UnexpectedEof). The payload has to be a
-                        // real variant index — leaving it unwritten means the
-                        // `catch` matches on whatever was in the slot, which
-                        // traps as an out-of-range tag.
+                        // The failure the runtime actually reported. It says
+                        // which kind, and hands back the OS text for the one
+                        // that carries a message — so a read on a write-only
+                        // descriptor says "Bad file descriptor (os error 9)"
+                        // like the interpreter does, instead of the fixed
+                        // "unexpected end of file" every failure used to get.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
                         let one = builder.ins().iconst(types::I64, 1);
                         builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
                         Self::zero_result_origin(builder, dst_ss);
-                        let eof = builder.ins().iconst(types::I64, IO_ERROR_UNEXPECTED_EOF);
-                        builder.ins().stack_store(
-                            eof, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
+                        Self::build_io_error_payload(
+                            builder, dst_ss, status, err_ss, dst_id, ctx,
                         );
                         builder.ins().jump(merge_block, &[]);
 
@@ -5292,6 +5298,76 @@ impl<'a> FunctionBuilder<'a> {
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
     }
 
+    /// Write the `IoError` payload for a failed string-out-param call.
+    ///
+    /// `status` is the runtime's `RASK_STROUT_*`: 2 means the input ran out,
+    /// anything else non-zero means a real error whose message the runtime put
+    /// in `err_ss`. Those become `IoError.UnexpectedEof` and
+    /// `IoError.Other(msg)` — the two shapes the interpreter produces.
+    ///
+    /// Variant tags and the message field's offset come from the destination's
+    /// own error layout, so reordering `enum IoError` in stdlib/io.rk can't
+    /// silently change what gets built.
+    fn build_io_error_payload(
+        builder: &mut ClifFunctionBuilder,
+        dst_ss: StackSlot,
+        status: Value,
+        err_ss: StackSlot,
+        dst_id: &LocalId,
+        ctx: &CodegenCtx,
+    ) {
+        let err_layout = ctx.locals.iter()
+            .find(|l| l.id == *dst_id)
+            .and_then(|l| match &l.ty {
+                MirType::Result { err, .. } => match err.as_ref() {
+                    MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize),
+                    _ => None,
+                },
+                _ => None,
+            });
+        let variant = |name: &str, fallback: i64| -> (i64, i32) {
+            err_layout
+                .and_then(|l| l.variants.iter().find(|v| v.name == name))
+                .map(|v| {
+                    let field_off = v.fields.first().map(|f| f.offset).unwrap_or(0);
+                    (v.tag as i64, (v.payload_offset + field_off) as i32)
+                })
+                .unwrap_or((fallback, 8))
+        };
+        let (other_tag, msg_offset) = variant("Other", 7);
+        let (eof_tag, _) = variant("UnexpectedEof", IO_ERROR_UNEXPECTED_EOF);
+
+        let eof_block = builder.create_block();
+        let other_block = builder.create_block();
+        let done_block = builder.create_block();
+
+        let eof_code = builder.ins().iconst(types::I64, RASK_STROUT_EOF);
+        let is_eof = builder.ins().icmp(IntCC::Equal, status, eof_code);
+        builder.ins().brif(is_eof, eof_block, &[], other_block, &[]);
+
+        builder.switch_to_block(eof_block);
+        builder.seal_block(eof_block);
+        let v = builder.ins().iconst(types::I64, eof_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        builder.ins().jump(done_block, &[]);
+
+        builder.switch_to_block(other_block);
+        builder.seal_block(other_block);
+        let v = builder.ins().iconst(types::I64, other_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
+        let src = builder.ins().stack_addr(types::I64, err_ss, 0);
+        let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+        Self::copy_bytes(
+            builder, src, 0, dst_addr,
+            crate::layouts::RESULT_PAYLOAD_OFFSET + msg_offset,
+            crate::layouts::STRING_SIZE as u32,
+        );
+        builder.ins().jump(done_block, &[]);
+
+        builder.switch_to_block(done_block);
+        builder.seal_block(done_block);
+    }
+
     /// Assemble a `T or JoinError` from what the runtime reported.
     ///
     /// `outcome` is RASK_JOIN_OK / _PANICKED / _CANCELLED; `value_ss` holds the
@@ -5794,11 +5870,19 @@ impl<'a> FunctionBuilder<'a> {
 
             ArgAdapt::StringResultOutParam => {
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 16, 0,
+                    StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 args.insert(0, addr);
-                CallAdapt::StringResult(ss)
+                // A second out-param for *why* it failed. Without it the call
+                // reported only that it failed, and codegen had to invent a
+                // variant — every failure became `IoError.UnexpectedEof`,
+                // including a read on a write-only descriptor (#682).
+                let err_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, err_ss, 0));
+                CallAdapt::StringResult(ss, err_ss)
             }
 
             ArgAdapt::StringClone => {

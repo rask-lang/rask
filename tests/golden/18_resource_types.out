@@ -1,0 +1,39 @@
+=== Linear Resources ===
+Resources marked with @resource must be consumed
+Use 'ensure' for automatic cleanup
+
+=== Successful Payment ===
+Processing payment...
+Committing transaction 1 for $100
+
+=== Failed Payment ===
+Processing payment...
+Payment failed!
+Rolling back transaction 2
+
+=== Network Operation ===
+Sending: Hello to example.com
+Sending: World to example.com
+Closing connection to example.com:8080
+
+=== Manual Close ===
+Sending: GET /data to api.example.com
+Closing connection to api.example.com:443
+After manual close
+
+=== Files as Resources ===
+Error: Bad file descriptor (os error 9)
+
+=== Key Points ===
+- @resource types must be explicitly consumed
+- Prevents resource leaks at compile time
+- 'ensure' guarantees cleanup on all exit paths
+- Methods with 'take self' consume the resource
+- Compiler error if resource not consumed
+
+=== What This Prevents ===
+- Forgetting to close files
+- Forgetting to commit/rollback transactions
+- Forgetting to release locks
+- Forgetting to close network connections
+- All checked at compile time!

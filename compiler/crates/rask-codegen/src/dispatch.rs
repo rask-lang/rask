@@ -863,7 +863,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // it (#654).
         StdlibEntry {
             mir_name: "File_read_text", c_name: "rask_file_read_all",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            // (out, file, err_out) — the third is the failure message (#682).
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // read_bytes/write_bytes return/take a Vec<u8> pointer directly — a
@@ -898,7 +899,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── IO module ───────────────────────────────────────────
         StdlibEntry {
             mir_name: "io_read_line", c_name: "rask_io_read_line",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            // (out, err_out) — the second is the failure message (#682).
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
