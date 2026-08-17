@@ -3869,3 +3869,25 @@ nums[1]=20
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// `let fs = Vec.from(…)` then `fs.len()` failed with "no method `len` found for
+// type `fs`". The method-call checker tried its namespace routes without asking
+// whether a local of that name existed, so an unimported module name beat the
+// variable. Imported module names can't be shadowed at all (E0209), so a local
+// always means "no module here".
+#[test]
+fn a_variable_named_after_a_module_wins_on_both_backends() {
+    let expected = "\
+fs=3
+time=4
+cli=0
+param=2
+http=1
+v=1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "module_name_as_variable.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

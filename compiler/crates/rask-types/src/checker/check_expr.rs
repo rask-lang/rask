@@ -2307,6 +2307,18 @@ impl TypeChecker {
         }
     }
 
+    /// True when a variable of this name is in scope and holds an ordinary
+    /// value. `import os` also defines a local — a `__module_os` marker that
+    /// carries field access like `os.Command` — and that one is the namespace,
+    /// not a shadow of it.
+    pub(super) fn local_shadows_namespace(&self, name: &str) -> bool {
+        match self.lookup_local(name) {
+            Some(Type::UnresolvedNamed(n)) => !n.starts_with("__module_"),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         call_id: NodeId,
@@ -2316,9 +2328,12 @@ impl TypeChecker {
         type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
-        // Check if this is a builtin module method call (e.g., fs.open)
+        // Check if this is a builtin module method call (e.g., fs.open). A local
+        // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
+        // and routing `fs.len()` to the filesystem module reported "no method
+        // `len` found for type `fs`".
         if let ExprKind::Ident(name) = &object.kind {
-            if self.types.builtin_modules.is_module(name) {
+            if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
                 return self.check_module_method(name, method, args, type_args, span);
             }
         }
@@ -2349,8 +2364,14 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
             let base_name = name.split('<').next().unwrap_or(name);
-            if matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
-                || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
+            // A real local of the same name wins. The stub registry holds the
+            // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
+            // so `let fs = Vec.new()` used to land here and answer "no method
+            // `len` found for type `fs`".
+            let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
+            if !shadowed
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+                    || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
                     // Parse generic args, respecting nested angle brackets:
