@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+#
+# Files under projects/ that tests/projects_gate.sh expects NOT to check.
+# One repo-relative path per line, each with its tracking issue. A file listed
+# here that starts checking fails the gate as an UNEXPECTED-PASS — drop the line
+# when you fix it.
+#
+# Empty as of #774: raido and tiwaz both check. The gate exists so the next rule
+# change shows up as one line rather than as a 48-error pile a year later.

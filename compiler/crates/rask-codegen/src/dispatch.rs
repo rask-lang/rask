@@ -614,6 +614,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_split", "rask_string_split", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_split_whitespace", "rask_string_split_whitespace", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_chars", "rask_string_chars", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_bytes", "rask_string_bytes", &[types::I64], Some(types::I64), false),
 
         // ── Conversion to string (out-param) ──────────────────
         StdlibEntry {

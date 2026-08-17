@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.strings/S4: `string.from_utf8(bytes)` was `@unimplemented`, and it's the
+// only way in from bytes — StringBuilder has no raw byte entry point on purpose,
+// so a program holding a `Vec<u8>` had nowhere to go. `projects/raido`'s arena
+// stores strings as length-prefixed UTF-8 and couldn't read them back (#774).
+//
+// Written in Rask so both backends run the same validation: which byte sequences
+// are legal is exactly the thing they must not disagree about. The rejected cases
+// below are the ones a lenient decoder waves through — overlong forms, surrogates,
+// and past U+10FFFF all have the right *width*, so only checking widths accepts
+// them and hands back a `string` whose bytes aren't UTF-8.
+
+func of(bs: Vec<i64>) -> Vec<u8> {
+    mut v: Vec<u8> = Vec.new()
+    for b in bs {
+        v.push(b truncate to u8)
+    }
+    return v
+}
+
+func decoded(bs: Vec<i64>) -> string {
+    return string.from_utf8(of(bs)) catch _ => "REJECTED"
+}
+
+func rejected_at(bs: Vec<i64>) -> i64 {
+    let r = string.from_utf8(of(bs))
+    if r is Utf8Error as e {
+        match e {
+            Utf8Error.InvalidByte(pos) => return pos truncate to i64,
+        }
+    }
+    return -1
+}
+
+func main() {}
+
+test "std.strings/S4 accepts every sequence width" {
+    mut one: Vec<i64> = Vec.new()
+    one.push(65)
+    assert decoded(one) == "A"
+
+    mut two: Vec<i64> = Vec.new()
+    two.push(0xC3)
+    two.push(0xA6)
+    assert decoded(two) == "æ"
+
+    mut three: Vec<i64> = Vec.new()
+    three.push(0xE2)
+    three.push(0x82)
+    three.push(0xAC)
+    assert decoded(three) == "€"
+
+    mut four: Vec<i64> = Vec.new()
+    four.push(0xF0)
+    four.push(0x9F)
+    four.push(0x92)
+    four.push(0xA9)
+    assert decoded(four).len() == 4
+}
+
+test "std.strings/S4 round-trips through bytes()" {
+    let original = "Hei på deg — 世界 🌍"
+    let bytes: Vec<u8> = original.bytes().to_vec()
+    let back = string.from_utf8(bytes) catch _ => "REJECTED"
+    assert back == original
+}
+
+test "std.strings/S4 empty input is the empty string" {
+    mut none_bytes: Vec<i64> = Vec.new()
+    assert decoded(none_bytes) == ""
+}
+
+test "std.strings/S4 rejects a stray continuation byte" {
+    mut stray: Vec<i64> = Vec.new()
+    stray.push(0x80)
+    assert decoded(stray) == "REJECTED"
+    assert rejected_at(stray) == 0
+}
+
+test "std.strings/S4 rejects overlong forms" {
+    // C0 80 and C1 BF encode values that fit in one byte.
+    mut c0: Vec<i64> = Vec.new()
+    c0.push(0xC0)
+    c0.push(0x80)
+    assert decoded(c0) == "REJECTED"
+
+    mut c1: Vec<i64> = Vec.new()
+    c1.push(0xC1)
+    c1.push(0xBF)
+    assert decoded(c1) == "REJECTED"
+
+    // E0 80 80 is three bytes for a value below U+0800.
+    mut e0: Vec<i64> = Vec.new()
+    e0.push(0xE0)
+    e0.push(0x80)
+    e0.push(0x80)
+    assert decoded(e0) == "REJECTED"
+
+    // F0 80 80 80 is four bytes for a value below U+10000.
+    mut f0: Vec<i64> = Vec.new()
+    f0.push(0xF0)
+    f0.push(0x80)
+    f0.push(0x80)
+    f0.push(0x80)
+    assert decoded(f0) == "REJECTED"
+}
+
+test "std.strings/S4 rejects surrogates and past U+10FFFF" {
+    // ED A0 80 is U+D800, a surrogate — not a scalar value.
+    mut sur: Vec<i64> = Vec.new()
+    sur.push(0xED)
+    sur.push(0xA0)
+    sur.push(0x80)
+    assert decoded(sur) == "REJECTED"
+
+    // F4 90 80 80 is U+110000, one past the last scalar.
+    mut past: Vec<i64> = Vec.new()
+    past.push(0xF4)
+    past.push(0x90)
+    past.push(0x80)
+    past.push(0x80)
+    assert decoded(past) == "REJECTED"
+
+    // F4 8F BF BF is U+10FFFF itself, which is legal.
+    mut max: Vec<i64> = Vec.new()
+    max.push(0xF4)
+    max.push(0x8F)
+    max.push(0xBF)
+    max.push(0xBF)
+    assert decoded(max) != "REJECTED"
+
+    // F5 can't lead any sequence.
+    mut f5: Vec<i64> = Vec.new()
+    f5.push(0xF5)
+    f5.push(0x80)
+    f5.push(0x80)
+    f5.push(0x80)
+    assert decoded(f5) == "REJECTED"
+}
+
+test "std.strings/S4 rejects truncated and malformed sequences" {
+    // A three-byte lead with only one continuation.
+    mut cut: Vec<i64> = Vec.new()
+    cut.push(0xE2)
+    cut.push(0x82)
+    assert decoded(cut) == "REJECTED"
+    assert rejected_at(cut) == 0
+
+    // A continuation slot holding something that isn't one — the position
+    // reported is the bad byte, not the lead.
+    mut bad: Vec<i64> = Vec.new()
+    bad.push(0xC3)
+    bad.push(0x28)
+    assert decoded(bad) == "REJECTED"
+    assert rejected_at(bad) == 1
+}

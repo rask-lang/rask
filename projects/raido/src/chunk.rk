@@ -68,14 +68,15 @@ extend Prototype {
         // For now, always add (deduplication is an optimization)
         let idx = self.constants.len()
         self.constants.push(val)
-        return idx as i64
+        return idx truncate to i64
     }
 
     func disassemble(self) -> string {
         // Disassemble the whole prototype to a string
         mut out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
-        mut i = 0
-        while i < self.code.len() {
+        mut i: i64 = 0
+        let count = self.code.len() truncate to i64
+        while i < count {
             let instr = self.code.get(i) ?? break
             out = "{out}{disassemble_instr(instr, i)}\n"
             i = i + 1

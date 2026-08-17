@@ -2958,6 +2958,7 @@ impl<'a> MirLowerer<'a> {
             match method.as_str() {
                 "split" | "split_whitespace" | "lines" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
+                "bytes" => return Some(MirType::U8),
                 _ => {}
             }
             if let ExprKind::Ident(name) = &object.kind {

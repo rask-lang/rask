@@ -7,17 +7,17 @@ func reg_get(regs: Vec<Value>, idx: i64) -> Value {
     return regs.get(idx) ?? Value.None
 }
 
-func reg_set(regs: Vec<Value>, idx: i64, val: Value) {
+func reg_set(mutate regs: Vec<Value>, idx: i64, val: Value) {
     regs.set(idx, val)
 }
 
 func code_get(code: Vec<u32>, idx: i64) -> u32 {
-    return code.get(idx) ?? 0 as u32
+    return code.get(idx) ?? 0
 }
 
 // Minimal VM loop for testing — uses opcodes and Value from the package
 func vm_run(code: Vec<u32>, fuel: i64) -> Value {
-    let regs = Vec.new()
+    mut regs = Vec.new()
     mut i: i64 = 0
     while i < 256 {
         regs.push(Value.None)
@@ -26,7 +26,7 @@ func vm_run(code: Vec<u32>, fuel: i64) -> Value {
 
     mut pc: i64 = 0
     mut remaining = fuel
-    let code_len = code.len() as i64
+    let code_len = code.len() truncate to i64
 
     while pc < code_len {
         if remaining <= 0 {
@@ -139,7 +139,7 @@ func test_encoding() {
 
 func test_42() {
     print("--- 40 + 2 ---\n")
-    let code: Vec<u32> = Vec.new()
+    mut code: Vec<u32> = Vec.new()
     code.push(encode_abx(Opcode.LOAD_INT, 0, 40))
     code.push(encode_abx(Opcode.LOAD_INT, 1, 2))
     code.push(encode_abc(Opcode.ADD, 2, 0, 1))
@@ -161,7 +161,7 @@ func test_42() {
 
 func test_countdown() {
     print("--- Sum 10 to 1 ---\n")
-    let code: Vec<u32> = Vec.new()
+    mut code: Vec<u32> = Vec.new()
     code.push(encode_abx(Opcode.LOAD_INT, 0, 10))
     code.push(encode_abx(Opcode.LOAD_INT, 1, 0))
     code.push(encode_abx(Opcode.LOAD_INT, 2, 1))

@@ -808,6 +808,22 @@ RaskVec *rask_string_chars(const RaskStr *s) {
     return v;
 }
 
+// Raw bytes, one item per byte — the counterpart to `chars()`, which yields
+// scalars. `from_utf8` is the way back, so this pair is the round trip a
+// byte-oriented program needs; before #774 the declaration had a bare `@native`
+// with no symbol behind it and codegen failed with "Function not found:
+// string_bytes".
+RaskVec *rask_string_bytes(const RaskStr *s) {
+    int64_t len = str_len(s);
+    RaskVec *v = rask_vec_new(len < 8 ? 8 : len);
+    const char *d = str_data(s);
+    for (int64_t i = 0; i < len; i++) {
+        int64_t b = (int64_t)(unsigned char)d[i];
+        rask_vec_push(v, &b);
+    }
+    return v;
+}
+
 // ─── Builder operations (out-param) ─────────────────────────
 // Builder always works in heap mode. Promotes SSO to heap on first use.
 
