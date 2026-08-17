@@ -394,14 +394,26 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Call { func, args } => self.check_call(expr.id, func, args, expr.span),
+            // `in_stmt_expr` describes the *call's* position, not its
+            // arguments'. It used to reach them, so in `out.push(if b: "1" else:
+            // "0")` — a bare expression statement — the argument's `if` decided
+            // it was in statement position and answered `void`. The same
+            // expression in `let s = out.push(…)` was fine, because a `let`
+            // never sets the flag.
+            ExprKind::Call { func, args } => {
+                self.in_stmt_expr = false;
+                self.check_call(expr.id, func, args, expr.span)
+            }
 
             ExprKind::MethodCall {
                 object,
                 method,
                 args,
                 type_args,
-            } => self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span),
+            } => {
+                self.in_stmt_expr = false;
+                self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span)
+            }
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 

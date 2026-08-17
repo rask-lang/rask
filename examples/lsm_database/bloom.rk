@@ -50,7 +50,7 @@ extend BloomFilter {
 func bloom_hash(key: string, seed: i32) -> usize {
     mut hash: i64 = 2166136261 + (seed as i64) * 16777619
     for ch in key.chars() {
-        hash = hash ^ (ch.to_int() as i64)
+        hash = hash ^ (ch as i64)
         hash = (hash * 16777619) % 4294967296
     }
     return hash.abs() truncate to usize

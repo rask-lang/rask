@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `if` expression handed to a call is in value position, whatever position
+// the call itself is in. `in_stmt_expr` — the flag that makes a statement's
+// trailing `if` answer void and leaves its branches unconstrained — was reaching
+// the arguments, so a bare expression statement poisoned them:
+//
+//     out.push(if b: "1" else: "0")   // expected `string`, found `void`
+//
+// while the identical expression under a `let` was fine, because a `let` never
+// sets the flag. Found in examples/lsm_database's bloom encoder.
+
+func takes(s: string) -> string {
+    return s
+}
+
+func main() {
+    let b = true
+    let f = false
+
+    // Argument of a user function, in a bare expression statement.
+    println(takes(if b: "one" else: "zero"))
+    println(takes(if f: "one" else: "zero"))
+
+    // Argument of a stdlib method — the shape that failed.
+    mut out = StringBuilder.new()
+    out.push(if b: "1" else: "0")
+    out.push(if f: "1" else: "0")
+    println("builder: {out.build()}")
+
+    mut v: Vec<string> = Vec.new()
+    v.push(if b: "yes" else: "no")
+    println("vec: {v[0]}")
+
+    // A statement-position `if` still doesn't constrain its branches to agree.
+    if b {
+        println("stmt then")
+    } else {
+        println("stmt else")
+    }
+}

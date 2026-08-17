@@ -3672,3 +3672,18 @@ fn reflect_through_a_generic_function_agrees_on_both_backends() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// An `if` expression handed to a call is in value position, whatever position
+// the call is in. `in_stmt_expr` — the flag that makes a statement's trailing
+// `if` answer void — reached the arguments, so `out.push(if b: "1" else: "0")`
+// as a bare expression statement was "expected `string`, found `void`" while
+// `let s = out.push(…)` compiled. Found in examples/lsm_database.
+#[test]
+fn an_if_expression_can_be_a_call_argument_on_both_backends() {
+    let expected = "one\nzero\nbuilder: 10\nvec: yes\nstmt then\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "if_expr_as_argument.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
