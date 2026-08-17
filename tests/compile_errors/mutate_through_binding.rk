@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: writing through a name a test or a pattern introduced
+// ERROR: it's a binding, not a slot
+//
+// `as v` names the payload a test proved present (OPT19 binds a let), and a
+// plain `for` yields elements read-only (std.iteration/I1). Neither name is a
+// slot you can write to. Only the optional bind was checked before #788, and
+// the other two forms compiled and then the backends disagreed:
+//
+//   for c in xs { c.n += 1 }          interp 2, native 1
+//   match s { Shape.Round(r) => r.n += 1 }   interp 3, native 2 — through a `let`!
+//
+// The fix each form actually has is different, which is why they don't share one
+// message: `for mutate x in xs` for an element, write-back through the original
+// for a payload. "Add `mut`" is what E0322 used to suggest, and it isn't
+// writable at any of these sites — `if opt? as mut t` doesn't parse.
+
+struct Counter { n: i32 }
+
+enum Shape {
+    Round(Counter)
+    Flat
+}
+
+func bump(mutate c: Counter) {
+    c.n += 1
+}
+
+func main() {
+    // 1. optional payload bind — field write
+    mut opt: Counter? = Counter { n: 5 }
+    if opt? as t {
+        t.n += 1
+    }
+
+    // 2. optional payload bind — passed to a `mutate` parameter
+    if opt? as t2 {
+        bump(mutate t2)
+    }
+
+    // 3. `for` element in the default read-only mode
+    mut xs: Vec<Counter> = Vec.new()
+    xs.push(Counter { n: 1 })
+    for c in xs {
+        c.n += 1
+    }
+
+    // 4. match-arm payload bind — the scrutinee is a `let`, so this write would
+    //    have gone straight through deep immutability
+    let s = Shape.Round(Counter { n: 2 })
+    match s {
+        Shape.Round(r) => r.n += 1,
+        Shape.Flat => println("flat"),
+    }
+
+    // 5. `while cond? as v` — same bind, loop form
+    mut queue: Counter? = Counter { n: 9 }
+    while queue? as item {
+        item.n += 1
+        queue = none
+    }
+}

@@ -221,6 +221,15 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    /// OPT19 / std.iteration/I1: a name a test or a pattern introduced. Same
+    /// immutability as `let`, but "add `mut`" isn't writable at any of these
+    /// sites, so the remedy comes from `from`.
+    #[error("cannot mutate `{name}` — it's a binding, not a slot")]
+    MutateBoundName {
+        name: String,
+        from: crate::checker::BoundFrom,
+        span: Span,
+    },
     #[error("`string` has no `{method}` — strings are immutable")]
     StringIsImmutable {
         method: String,
@@ -897,6 +906,7 @@ impl TypeError {
             | FrozenContextWrite { .. }
             | MutateConst { .. }
             | MutateWithBinding { .. }
+            | MutateBoundName { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | StringSliceStored { .. }

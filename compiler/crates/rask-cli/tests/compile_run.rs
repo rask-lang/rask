@@ -1241,6 +1241,51 @@ fn mixed_signedness_comparison_still_compiles() {
     assert_eq!(stdout, "true true false\n", "{stdout}");
 }
 
+// #788: `as v` and a `for` element name a value a test or a pattern produced,
+// not a slot. Only the optional bind was checked; the other two forms compiled
+// and the backends then disagreed about what the write meant —
+// `for c in xs { c.n += 1 }` gave 2 on interp and 1 natively, and a match arm
+// wrote straight through a `let` scrutinee on interp (3) while native dropped
+// it (2). All three are rejected now.
+#[test]
+fn error_mutate_through_a_binding() {
+    let (failed, out) = compile_error_output("mutate_through_binding.rk");
+    assert!(failed, "a write through a bind must not compile: {}", out);
+    for name in ["`t`", "`t2`", "`c`", "`r`", "`item`"] {
+        assert!(
+            out.contains(&format!("cannot mutate {} — it's a binding", name)),
+            "should reject the write to {}: {}", name, out,
+        );
+    }
+    // The old message suggested a fix that isn't writable at any of these
+    // sites: there is no `let t`, and `if opt? as mut t` doesn't parse.
+    assert!(
+        !out.contains("with `mut "),
+        "must not suggest `mut`, which none of these forms accept: {}", out,
+    );
+    // A `for` element gets the remedy it actually has.
+    assert!(
+        out.contains("for mutate c in"),
+        "a read-only element should point at `for mutate`: {}", out,
+    );
+}
+
+// The read side of the same rule, and the two write-back forms that stay legal:
+// `for mutate`, and a `mutate self` method on the original. Both backends.
+#[test]
+fn binding_read_and_write_back_forms_agree() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "binding_read_write_forms.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(
+            stdout,
+            "read 5 call 10\nwritten back 7\nfor mutate 2\nread-only walk 4\n\
+             arm 7\nshadowed 3\noriginal 11\n",
+            "{mode}: {stdout}",
+        );
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

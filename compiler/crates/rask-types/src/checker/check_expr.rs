@@ -511,7 +511,11 @@ impl TypeChecker {
 
                 if let Some((ref name, ref payload_ty, _)) = presence_binding {
                     self.push_scope();
-                    self.define_local_const(name.clone(), payload_ty.clone());
+                    self.define_local_bound(
+                        name.clone(),
+                        payload_ty.clone(),
+                        super::BoundFrom::Payload,
+                    );
                 }
                 let then_ty = self.infer_expr(then_branch);
                 if presence_binding.is_some() {
@@ -582,7 +586,7 @@ impl TypeChecker {
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
-                        self.define_local_const(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
                 }
                 let then_ty = self.infer_expr(then_branch);
@@ -595,7 +599,7 @@ impl TypeChecker {
                         .and_then(|name| self.complement_branch(pattern, &value_ty).map(|t| (name.clone(), t)));
                     if let Some((name, ty)) = complement {
                         self.push_scope();
-                        self.define_local_const(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     } else if let Some(name) = else_binding {
                         self.errors.push(TypeError::ElseBindingNotResult {
                             name: name.clone(),
@@ -677,7 +681,7 @@ impl TypeChecker {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
                     for (name, ty) in bindings {
-                        self.define_local(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
                     if let Some(guard) = &arm.guard {
                         let guard_ty = self.infer_expr(guard);
@@ -1081,7 +1085,11 @@ impl TypeChecker {
                         .unwrap_or_else(|| self.ctx.fresh_var());
                     self.push_scope();
                     if !clause.is_discard() {
-                        self.define_local_const(clause.binder.clone(), err_ty);
+                        self.define_local_bound(
+                            clause.binder.clone(),
+                            err_ty,
+                            super::BoundFrom::Payload,
+                        );
                     }
                     let handler_ty = self.infer_expr(&clause.body);
                     self.pop_scope();
@@ -1130,7 +1138,11 @@ impl TypeChecker {
 
                 self.push_scope();
                 if !clause.is_discard() {
-                    self.define_local_const(clause.binder.clone(), err_ty);
+                    self.define_local_bound(
+                        clause.binder.clone(),
+                        err_ty,
+                        super::BoundFrom::Payload,
+                    );
                 }
                 let body_ty = self.infer_expr(&clause.body);
                 self.pop_scope();
@@ -2289,6 +2301,13 @@ impl TypeChecker {
                                 span: arg.expr.span,
                             });
                         }
+                        Some(super::BindingKind::Bound(from)) => {
+                            self.errors.push(TypeError::MutateBoundName {
+                                name: arg_name.clone(),
+                                from,
+                                span: arg.expr.span,
+                            });
+                        }
                         _ => {}
                     }
                 }
@@ -2517,6 +2536,13 @@ impl TypeChecker {
                     Some(super::BindingKind::Param) => {
                         self.errors.push(TypeError::MutateReadOnlyParam {
                             name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    Some(super::BindingKind::Bound(from)) => {
+                        self.errors.push(TypeError::MutateBoundName {
+                            name: var_name.clone(),
+                            from,
                             span: object.span,
                         });
                     }

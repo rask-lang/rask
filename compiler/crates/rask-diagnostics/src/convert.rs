@@ -815,6 +815,38 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
             }
 
+            MutateBoundName { name, from, span } => {
+                use rask_types::BoundFrom;
+                let d = Diagnostic::error(format!(
+                    "cannot mutate `{}` — it's a binding, not a slot",
+                    name
+                ))
+                    .with_code("E0372");
+                match from {
+                    BoundFrom::Payload => d
+                        .with_primary(*span, format!(
+                            "`{}` is the value the test proved was there, read out of the original",
+                            name
+                        ))
+                        .with_help("write through the original, or build a new value and put it back")
+                        .with_fix(format!(
+                            "read what you need inside the block and assign back outside it — \
+                             `mut copy = {}.field` … `original = …` — or give the type a method \
+                             that takes `mutate self` and call it on the original",
+                            name
+                        ))
+                        .with_why("`as v` names the payload a test proved present, and there is no `let` here to make `mut`. The payload is read out of the scrutinee, so a write to `v` would land on the copy and be lost — the compiler rejects it instead of dropping it silently [type.optionals/OPT19]"),
+                    BoundFrom::Element => d
+                        .with_primary(*span, format!(
+                            "`{}` is a read-only element of the collection being walked",
+                            name
+                        ))
+                        .with_help("add `mutate` to the loop to write through the element")
+                        .with_fix(format!("for mutate {} in … {{ … }}", name))
+                        .with_why("a plain `for` yields elements read-only; `for mutate x in xs` is the mode whose writes reach the collection. Without it the two backends disagreed about what the write meant — the interpreter wrote through and native dropped it [std.iteration/I1, I4]"),
+                }
+            }
+
             MutateWithBinding { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — bound from a shared read lock", name))
                     .with_code("E0360")
