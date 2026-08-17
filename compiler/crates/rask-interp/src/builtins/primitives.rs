@@ -286,6 +286,15 @@ impl Interpreter {
                 k.format(a),
             )))),
             "to_int" => Ok(Value::int(a as i64)),
+            // HA4's escape hatch: the raw bit pattern, so a caller who wants a
+            // float-keyed Map decides for itself what "the same key" means.
+            //
+            // Always the f64 pattern, at both widths. MIR mangles f32 and f64
+            // receivers to the same `f64_*` calls, so an f32's own 32-bit
+            // pattern isn't recoverable there — and one width keeps the two
+            // backends from disagreeing about what the key is. Distinct values
+            // still get distinct keys, which is all the hatch has to do.
+            "to_bits" => Ok(Value::Int(a.to_bits() as i64, crate::value::IntKind::U64)),
             "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.powf(b)), k)) }
             "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(a.powi(b as i32)), k)) }
             "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.rem_euclid(b)), k)) }

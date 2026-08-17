@@ -4072,6 +4072,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
                 FloatSig::ToInt => MirType::I64,
+                FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
             };

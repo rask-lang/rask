@@ -1556,6 +1556,20 @@ impl ToDiagnostic for rask_types::TypeError {
                         ty = ty,
                     ))
             }
+            FloatMapKey { key, span } => {
+                let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
+                Diagnostic::error(format!("`{}` can't be a Map key", key))
+                    .with_code("E0829")
+                    .with_primary(*span, format!("`{}` is not Hashable", key))
+                    .with_fix(format!(
+                        "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
+                    ))
+                    .with_why(
+                        "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
+                            .to_string(),
+                    )
+            }
+
             LinearInContainer { container, elem, span } => {
                 let rule = if container == "Map" { "RC3" } else { "RC1" };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);

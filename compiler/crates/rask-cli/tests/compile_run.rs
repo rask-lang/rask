@@ -3705,3 +3705,25 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
             "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
     }
 }
+
+// type.generics/HA4: floats aren't Hashable, so `to_bits()` is how a float
+// becomes a Map key — the caller decides what "the same key" means rather than
+// inheriting `NaN != NaN`. `Map<f64, V>` itself is rejected
+// (tests/compile_errors/float_map_key.rk); this is the way through.
+#[test]
+fn a_float_keys_a_map_through_its_bits_on_both_backends() {
+    let expected = "\
+len=2
+1.5 -> one-point-five
+-2.25 -> minus-two-and-a-quarter
+same key: true
+different: false
+bits(1.5)=4609434218613702656
+nan -> nan
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "float_key_by_bits.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

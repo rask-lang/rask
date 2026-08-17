@@ -3479,6 +3479,8 @@ impl TypeChecker {
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),
+            // u64 at both widths — see the note on FloatSig::ToBits.
+            FloatSig::ToBits => self.unify(ret, &Type::U64, span),
         }
     }
 

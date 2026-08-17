@@ -695,6 +695,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.generics/HA4: `f32`/`f64` are not Hashable, so they can't key a Map.
+    #[error("a float can't key a Map")]
+    FloatMapKey {
+        key: Type,
+        span: Span,
+    },
+
     /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
     /// whose index type doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -809,6 +816,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            FloatMapKey { key, .. } => *key = f(key),
 
             DuplicateSumVariant { ty, variant, .. } => {
                 *ty = f(ty);

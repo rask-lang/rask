@@ -7,6 +7,7 @@
 
 #include "rask_runtime.h"
 #include <math.h>
+#include <string.h>
 
 // M_PI is not in strict c11; the build uses -std=c11.
 #define RASK_PI 3.14159265358979323846
@@ -48,3 +49,11 @@ double math_to_degrees(double radians) { return radians * (180.0 / RASK_PI); }
 int8_t math_is_nan(double x) { return isnan(x) ? 1 : 0; }
 int8_t math_is_inf(double x) { return isinf(x) ? 1 : 0; }
 int8_t math_is_finite(double x) { return isfinite(x) ? 1 : 0; }
+
+// HA4's escape hatch: a float's raw bit pattern, so a caller can key a Map on
+// it. Reinterpret, not convert — `1.5 to_int` is 1, this is 0x3FF8000000000000.
+int64_t rask_f64_to_bits(double d) {
+    int64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    return bits;
+}

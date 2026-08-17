@@ -1384,6 +1384,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             // primitives' to_string entries.
             FloatSig::ToString => continue,
             // No C symbol, so unreachable — the `else` above skipped them.
+            // Reinterprets its argument, so it needs a real (memcpy) call
+            // rather than an instruction — Cast would convert the value.
+            FloatSig::ToBits => {
+                StdlibEntry::simple(mir_name, c_symbol, &[types::F64], Some(types::I64), false)
+            }
             FloatSig::Comparison | FloatSig::Compare | FloatSig::ToInt => continue,
         };
         entries.push(entry);
