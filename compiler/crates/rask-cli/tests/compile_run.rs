@@ -3995,3 +3995,36 @@ e = shape
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// An `own` closure capturing a Copy *parameter* inside a branch reported the
+// parameter maybe-moved at the next use (#768). The Copy check read
+// `binding_types`, which holds only let/mut bindings, so a parameter looked
+// non-Copy. `Handle<T>` needed one more step: resolving a parameter's type string
+// gave up on any generic spelling, so it never reached the rule that makes Handle
+// Copy.
+#[test]
+fn an_own_closure_capturing_a_copy_param_on_both_backends() {
+    let expected = "\
+scalar=kept=2 n=2
+scalar no branch=kept=0 n=2
+kept=1 id=20
+kept=0 id=10
+nocopy=1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "own_capture_of_param.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// The other half: a non-Copy parameter really is moved by an `own` capture, so a
+// use after the branch stays an error. The #768 fix was to let a parameter's type
+// reach the Copy check, not to stop marking captures moved.
+#[test]
+fn error_own_capture_moves_a_noncopy_param() {
+    let (failed, out) = compile_error_output("own_capture_moves_noncopy.rk");
+    assert!(failed, "a moved 24-byte struct must still be rejected: {}", out);
+    assert!(out.contains("E0813"), "should be maybe-moved (E0813): {}", out);
+    assert!(out.contains("`big`"), "should name the moved binding: {}", out);
+}
