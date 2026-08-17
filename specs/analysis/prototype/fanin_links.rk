@@ -5,10 +5,12 @@
 // regression: `delete` is O(in-degree), against a handle remove's O(1).
 //
 // Run with RASK_STORE_STATS=1 to see the fixup work:
-//     edges_fixed   = what a backlinked implementation would pay (the model)
-//     nodes_scanned = what this prototype pays instead (the shortcut)
+//     holders_visited = incoming edges walked
+//     edges_fixed     = edges actually rewritten
 //
-// Vary the fan-in by editing FANIN below and compare the two numbers.
+// Both track FANIN exactly. Vary FANIN below to see it stay linear. Compare
+// sparse_delete_links.rk, where in-degree is 1 in a 500-node store and the
+// delete visits one holder — the cost follows in-degree, not store size.
 
 const FANIN: i32 = 200
 

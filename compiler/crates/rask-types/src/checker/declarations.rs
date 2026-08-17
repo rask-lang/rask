@@ -908,6 +908,23 @@ impl TypeChecker {
     // Pass 2: Check Declarations
     // ------------------------------------------------------------------------
 
+    /// A scalar edge must be optional: `Link<T>?`, never bare `Link<T>`.
+    ///
+    /// Delete's whole job is to set incoming edges to `none`, and a
+    /// non-optional field has no `none` to be set to. The fourth-option
+    /// analysis reached the same conclusion from the other end — non-optional
+    /// edges can't be constructed under cycles, because there's no valid value
+    /// to give the field before its target exists.
+    ///
+    /// A bare link inside a container is fine and stays allowed:
+    /// `Vec<Link<T>>` and `Map<K, Link<T>>` lose the *entry* at delete rather
+    /// than nulling it, which is what a list of live things means.
+    fn reject_non_optional_link(&mut self, ty: &Type, span: Span) {
+        if self.link_node_type(ty).is_some() {
+            self.errors.push(TypeError::NonOptionalLink { span });
+        }
+    }
+
     pub(super) fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
@@ -918,6 +935,7 @@ impl TypeChecker {
                 for field in &s.fields {
                     if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                         self.validate_signature_names(&ty, &allowed, field.name_span);
+                        self.reject_non_optional_link(&ty, field.name_span);
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
@@ -933,6 +951,7 @@ impl TypeChecker {
                     for field in &variant.fields {
                         if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
+                            self.reject_non_optional_link(&ty, field.name_span);
                         }
                     }
                 }

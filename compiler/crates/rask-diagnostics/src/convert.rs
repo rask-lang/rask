@@ -767,6 +767,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a `using frozen Pool<T>` context is read-only (mem.pools/PF5) — it allows reads through handles but no writes, inserts, removes, or clears")
             }
 
+            NonOptionalLink { span } => {
+                Diagnostic::error("a `Link<T>` field must be optional")
+                    .with_code("E0327")
+                    .with_primary(*span, "this edge has no `none` to fall back to")
+                    .with_help("write the field as `Link<T>?`")
+                    .with_fix("add `?` — `target: Link<Entity>?`")
+                    .with_why("deleting a node sets every edge pointing at it to `none`, so an edge field has to be able to hold `none`. A non-optional edge also can't be built in the first place: a cycle needs one side written before its target exists. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine — delete drops the entry instead of nulling it")
+            }
+
             MutateConst { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — declared `let`", name))
                     .with_code("E0322")

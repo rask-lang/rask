@@ -3763,20 +3763,31 @@ impl TypeChecker {
     /// #310: validate deferred index sites. Runs after constraint solving but
     /// before literal defaults, so an unsuffixed literal index is still a
     /// literal var — it can adapt to an integer Map key instead of forcing i32.
-    /// Judge the field/index writes that were deferred because their root type
-    /// was unresolved during the statement walk.
+    /// Judge every field/index write against its root binding, now that the
+    /// root's type is resolved.
     ///
-    /// A write through a `Handle<T>` or `Link<T>` targets the container's
-    /// storage, not the binding, so a read-only binding is fine there. Anything
-    /// else gets the read-only-binding error it would have got inline.
+    /// Writing through a reference is not mutating the binding that holds it: a
+    /// `Handle<T>` write lands in pool storage (mem.context/CC1) and a `Link<T>`
+    /// write lands in the node, so a read-only binding is fine for both. Any
+    /// other root gets the read-only-binding error.
+    ///
+    /// This runs after constraint solving because the answer depends on the
+    /// root's type, and during the statement walk that type is often still a
+    /// variable — a link bound by `if e.target? as t` comes from a deferred
+    /// `HasField`, and a handle can arrive the same way.
     pub(super) fn validate_pending_mutations(&mut self) {
         let pending = std::mem::take(&mut self.pending_mutations);
         for pm in pending {
+            if matches!(pm.kind, super::BindingKind::Mut) {
+                continue;
+            }
             let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
             if self.handle_element_type(&ty).is_some() || self.link_node_type(&ty).is_some() {
                 continue;
             }
-            // Still unknown after solving — stay quiet rather than guess.
+            // Still unknown after solving — stay quiet rather than guess. An
+            // unresolved root has its own diagnostic; guessing here would stack
+            // a second, wronger one on top.
             if matches!(ty, Type::Var(_) | Type::Error) {
                 continue;
             }
@@ -3793,6 +3804,24 @@ impl TypeChecker {
                     self.errors.push(TypeError::MutateReadOnlyParam { name, span })
                 }
                 super::BindingKind::Mut => {}
+            }
+        }
+    }
+
+    /// mem.pools/PF5: a write through a handle whose element type is backed by a
+    /// `using frozen Pool<T>` context is rejected. Deferred alongside the
+    /// read-only check for the same reason — it needs the handle's element type.
+    pub(super) fn validate_pending_frozen_writes(&mut self) {
+        let pending = std::mem::take(&mut self.pending_frozen_writes);
+        for pfw in pending {
+            let ty = self.resolve_named(&self.ctx.apply(&pfw.ty));
+            let Some(elem) = self.handle_element_type(&ty) else { continue };
+            if self.frozen_context_elems.iter().any(|e| *e == elem) {
+                self.errors.push(TypeError::FrozenContextWrite {
+                    op: "write".to_string(),
+                    elem: self.fmt_ty(&elem),
+                    span: pfw.span,
+                });
             }
         }
     }

@@ -145,50 +145,23 @@ impl TypeChecker {
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
-                    // mem.context/CC1: writing `h.field = v` through a `Handle<T>`
-                    // mutates pool storage, not the handle binding, so a read-only
-                    // handle is fine. Only a bare rebind (`h = other`) is a real
-                    // binding mutation.
-                    let handle_elem = if matches!(
+                    // Writing *through* a reference is not mutating the binding
+                    // that holds it: `h.field = v` on a `Handle<T>` lands in pool
+                    // storage (mem.context/CC1), and `l.field = v` on a `Link<T>`
+                    // lands in the node, because a link is the node's address.
+                    // Only a bare rebind (`h = other`) mutates the binding.
+                    //
+                    // Whether the root is such a reference depends on its type,
+                    // and at this point the type is often still a variable — a
+                    // link bound by `if e.target? as t` comes from a deferred
+                    // `HasField`. So field and index writes are always judged in
+                    // `validate_pending_mutations`, after solving, and never here.
+                    // One decision site, reading a resolved type.
+                    let writes_through_place = matches!(
                         &target.kind,
                         ExprKind::Field { .. } | ExprKind::Index { .. }
-                    ) {
-                        self.lookup_local(&root)
-                            .map(|t| self.ctx.apply(&t))
-                            .map(|t| self.resolve_named(&t))
-                            .and_then(|t| self.handle_element_type(&t))
-                    } else {
-                        None
-                    };
-                    // Same reasoning for a link, and more directly: a link is a
-                    // pointer, so `t.health -= 1` writes to the node and leaves
-                    // the binding alone. Without this the flagship loop
-                    // (`if e.target? as t { t.health -= e.damage }`) can't be
-                    // written at all — `as` bindings have no `mut` form.
-                    let through_link = matches!(
-                        &target.kind,
-                        ExprKind::Field { .. } | ExprKind::Index { .. }
-                    ) && self
-                        .lookup_local(&root)
-                        .map(|t| self.ctx.apply(&t))
-                        .map(|t| self.resolve_named(&t))
-                        .and_then(|t| self.link_node_type(&t))
-                        .is_some();
-                    let through_handle = handle_elem.is_some() || through_link;
-
-                    // A field/index write whose root type hasn't been solved yet
-                    // can't be judged here: `if e.target? as t { t.health -= 1 }`
-                    // binds `t` from a deferred `HasField`, so the link is still
-                    // a type variable at this point. Defer to
-                    // `validate_pending_mutations`, after constraint solving.
-                    let root_unresolved = matches!(
-                        &target.kind,
-                        ExprKind::Field { .. } | ExprKind::Index { .. }
-                    ) && self
-                        .lookup_local(&root)
-                        .map(|t| self.ctx.apply(&t))
-                        .is_some_and(|t| matches!(t, Type::Var(_)));
-                    if root_unresolved && !through_handle {
+                    );
+                    if writes_through_place {
                         if let Some(kind) = self.lookup_binding_kind(&root) {
                             self.pending_mutations.push(super::PendingMutation {
                                 root: root.clone(),
@@ -197,20 +170,7 @@ impl TypeChecker {
                                 span: stmt.span,
                             });
                         }
-                    }
-                    let through_handle = through_handle || root_unresolved;
-                    // mem.pools/PF5: a write through a handle whose element type is
-                    // backed by a frozen context is rejected.
-                    if let Some(elem) = &handle_elem {
-                        if self.frozen_context_elems.iter().any(|e| e == elem) {
-                            self.errors.push(TypeError::FrozenContextWrite {
-                                op: "write".to_string(),
-                                elem: self.fmt_ty(elem),
-                                span: stmt.span,
-                            });
-                        }
-                    }
-                    if !through_handle {
+                    } else {
                         match self.lookup_binding_kind(&root) {
                             Some(super::BindingKind::Let) => {
                                 self.errors.push(TypeError::MutateConst {
@@ -232,6 +192,15 @@ impl TypeChecker {
                             }
                             _ => {}
                         }
+                    }
+                    // mem.pools/PF5: a write through a handle whose element type is
+                    // backed by a frozen context is rejected. Needs the element
+                    // type, so it waits for solving too.
+                    if writes_through_place {
+                        self.pending_frozen_writes.push(super::PendingFrozenWrite {
+                            ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                            span: stmt.span,
+                        });
                     }
                     // ESAD Phase 2: Reject mutation of persistently borrowed sources
                     if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {

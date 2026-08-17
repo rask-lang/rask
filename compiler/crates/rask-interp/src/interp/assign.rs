@@ -100,30 +100,27 @@ impl Interpreter {
         if field_chain.len() == 1 {
             let field = &field_chain[0];
             match obj {
-                Value::Struct(s) => {
+                // A struct field and a node field are the same write. Writing a
+                // link into either creates an incoming edge, and the target's
+                // delete has to be able to find it — so both record a backlink.
+                // (`world.player = e` and `entity.target = e` differ only in
+                // where the holder lives.)
+                Value::Struct(s) | Value::Link { node: s, .. } => {
                     let mut guard = s.lock().unwrap();
                     let value = wrap_like(guard.fields.get(field), value);
-                    guard.fields.insert(field.clone(), value);
+                    guard.fields.insert(field.clone(), value.clone());
                     drop(guard);
-                    // Writing a link into a struct may create a root edge — a
-                    // link held beside the store rather than inside a node.
-                    // Delete's fixup walk has to be able to reach it.
-                    crate::store::register_roots(obj, 0);
-                    return Ok(());
-                }
-                // Writing through a link: same as writing to the node, because
-                // the link *is* the node's address.
-                Value::Link { node, .. } => {
-                    let mut guard = node.lock().unwrap();
-                    let value = wrap_like(guard.fields.get(field), value);
-                    guard.fields.insert(field.clone(), value);
+                    crate::store::register_field(s, field, &value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
                     let idx = field.parse::<usize>().unwrap();
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        vec[idx] = wrap_like(Some(&vec[idx]), value);
+                        let value = wrap_like(Some(&vec[idx]), value);
+                        vec[idx] = value.clone();
+                        drop(vec);
+                        crate::store::register_element(v, &value);
                         return Ok(());
                     }
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });

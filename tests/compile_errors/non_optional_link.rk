@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A scalar edge must be optional. Deleting a node sets every edge pointing at
+// it to `none`, so a bare `Link<T>` field has nothing to fall back to — and it
+// can't be built in the first place, because a cycle needs one side written
+// before its target exists (analysis.fourth-option, E0327).
+//
+// Inside a container a bare link is fine: delete drops the entry.
+
+struct Entity {
+    name: string
+    target: Link<Entity>          // ERROR: E0327 — needs `?`
+}
+
+struct Ok1 {
+    name: string
+    target: Link<Ok1>?            // fine: the edge can hold `none`
+    children: Vec<Link<Ok1>>      // fine: delete drops the entry
+    index: Map<string, Link<Ok1>> // fine: delete drops the entry
+}
+
+enum Event {
+    Died(Link<Entity>)            // ERROR: E0327 — payload edge needs `?`
+    Nothing
+}
+
+func main() {
+    println("does not compile")
+}

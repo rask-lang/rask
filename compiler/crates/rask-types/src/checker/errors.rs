@@ -206,6 +206,11 @@ pub enum TypeError {
         elem: String,
         span: Span,
     },
+    /// A scalar edge field declared bare `Link<T>` instead of `Link<T>?`.
+    #[error("a `Link<T>` field must be optional")]
+    NonOptionalLink {
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -870,6 +875,7 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }

@@ -40,30 +40,33 @@ Everything else the analysis says about function and ergonomics held up.
 | Delete drops entries from indexes (`by_name: Map<K, Link<T>>`) | works |
 | Root edges — link fields on the struct that *owns* the store | works |
 | `for n in store` | works |
+| Backlinks — each node knows who points at it, delete is O(in-degree) | works |
+| A scalar edge must be `Link<T>?` (E0327) | enforced |
 | `inverse(...)`, `@cascade`, `@lazy`, batches, `Key<T>` | not built |
 | Borrow rule forbidding links in locals | **not built — see below** |
 
-Two deliberate shortcuts, both labelled in the code:
-
-**The fixup scans instead of following backlinks.** A real implementation keeps
-an intrusive incoming-edge list per node and pays O(in-degree) at delete. The
-prototype walks every live node plus every registered root. Same answer,
-different cost. The instrumentation reports both numbers separately so the
-model's cost and the shortcut's cost never get confused:
+**Delete follows backlinks, it doesn't scan.** Each node carries the list of
+places pointing at it, so a delete visits exactly those. The measured cost is
+in-degree, not store size — deleting a node with in-degree 1 out of 500:
 
 ```
-$ RASK_STORE_STATS=1 rask run --interp fanin_links.rk
-store stats: deletes=1 edges_fixed=200 nodes_scanned=200
+$ RASK_STORE_STATS=1 rask run --interp sparse.rk
+store stats: deletes=1 edges_fixed=1 holders_visited=1
 ```
 
-`edges_fixed` is what the model costs. `nodes_scanned` is what the prototype
-costs. Deleting a node with in-degree 1 from a 500-node store: `edges_fixed=1
-nodes_scanned=499`.
+A backlink names a holder — a struct field, an edge list, an index — and never a
+position, because positions shift under insertion and rehashing. The fixup
+re-checks each candidate before rewriting it, which makes the index safe to
+*over*-approximate: a backlink left behind after its edge was overwritten costs
+one wasted visit, not a wrong answer. A missing backlink would be unsound, so
+registration errs toward recording. That asymmetry is why the write path can
+stay cheap without an unlink-on-overwrite step.
 
-**Root edges are discovered at the write, not statically.** The real design has
-the compiler emit root fixups from the schema. The prototype registers a weak
-reference whenever a link is stored into a struct field, pushed onto a `Vec`, or
-inserted into a `Map`. Same reachability, discovered later.
+**A node field and a root field are the same thing to this code.** That fell
+out of keying backlinks on the holder rather than on "is it inside the store":
+`world.player` and `entity.target` are both a struct field holding a link. Root
+edges needed no separate mechanism, which is a small point in the design's
+favour — the analysis treats them as an addition, and they aren't one.
 
 ## What the programs show
 
@@ -236,15 +239,16 @@ which puts a type back on the "day one" page that the census had removed.
 
 Fan-in sweep, one delete of a hub with N incoming edges:
 
-| N | edges fixed |
-|---|---|
-| 50 | 50 |
-| 100 | 100 |
-| 200 | 200 |
-| 400 | 400 |
-| 800 | 800 |
+| N | holders visited | edges fixed |
+|---|---|---|
+| 50 | 50 | 50 |
+| 100 | 100 | 100 |
+| 200 | 200 | 200 |
+| 400 | 400 | 400 |
+| 800 | 800 | 800 |
 
-Exactly linear, exactly as predicted. The interesting half is the handle
+Exactly linear in in-degree, exactly as predicted, and independent of store
+size — a node with in-degree 1 in a 500-node store visits one holder. The interesting half is the handle
 comparison. `pool.remove(hub)` is O(1) — and then:
 
 ```
@@ -271,6 +275,13 @@ needs native codegen.
   `tail`, `selected`, and the `by_name` index are all links living outside the
   store. Whatever schema closure answers "who can point at `T`?" has to cover
   every struct that can hold a link, not just node types.
+- **Non-optional edges had to become a compile error** (E0327). The adversarial
+  pass killed them on constructibility grounds — a cycle needs one side written
+  before its target exists. Implementing the fixup gives the same answer from
+  the other end: there is nothing to write into a non-optional field when its
+  target dies. A bare link stays legal *inside* a container, where delete drops
+  the entry rather than nulling it, and that asymmetry is worth stating in the
+  eventual spec because it is not obvious from "every edge is optional".
 - **Links have to be Copy**, like handles. An edge written into two fields is
   two edges, not a moved one.
 - **Identity comparison is pointer equality.** `c == n` on links compares nodes,

@@ -71,14 +71,12 @@ impl Interpreter {
                         bound
                     )));
                 }
-                let is_link = matches!(item, Value::Link { .. });
+                let pushed = item.clone();
                 guard.push(item);
                 drop(guard);
-                // An edge list held outside the store is a root edge; delete
-                // has to be able to drop entries from it.
-                if is_link {
-                    crate::store::register_roots(&Value::Vec(Arc::clone(v)), 0);
-                }
+                // Pushing onto an edge list creates an incoming edge; record it
+                // so the target's delete can drop the entry.
+                crate::store::register_element(v, &pushed);
                 Ok(Value::Unit)
             }
             // C2: hands the value back rather than panicking. Native lowers the
@@ -732,15 +730,17 @@ impl Interpreter {
                         )))
                     }
                 };
-                // A node inserted with edges already in its fields is fine —
-                // those links are inside the store, so the fixup walk finds
-                // them without any registration.
                 let (store_id, _idx) = {
                     let mut store = s.lock().unwrap();
                     let id = store.store_id;
                     let idx = store.insert(Arc::clone(&node));
                     (id, idx)
                 };
+                // A node can arrive with edges already in its fields
+                // (`Node { prev: list.tail, .. }`). Record them now — the
+                // struct literal that built it registered what it could see,
+                // but the node's own identity only exists from here.
+                crate::store::register_nested(&Value::Struct(Arc::clone(&node)), 0);
                 Ok(Value::Link { store_id, node })
             }
             "delete" => {
@@ -1317,14 +1317,12 @@ impl Interpreter {
             "insert" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let value = args.get(1).cloned().unwrap_or(Value::Unit).copy_on_bind();
-                let is_link = matches!(value, Value::Link { .. });
+                let inserted = value.clone();
                 let old = m.lock().unwrap().insert(MapKey(key), value);
-                // A secondary index (`by_name: Map<string, Link<Task>>`) is a
-                // root edge: deleting the node drops its entry, which is the
+                // A secondary index (`by_name: Map<string, Link<Task>>`) holds
+                // edges: deleting the node drops its entry, which is the
                 // database's index-maintenance move.
-                if is_link {
-                    crate::store::register_roots(&Value::Map(Arc::clone(m)), 0);
-                }
+                crate::store::register_entry(m, &inserted);
                 Ok(option_of(old))
             }
             "get" => {

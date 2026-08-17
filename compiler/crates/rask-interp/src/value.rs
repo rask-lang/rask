@@ -402,37 +402,61 @@ pub fn store_by_id(id: u32) -> Option<Arc<Mutex<StoreData>>> {
     STORE_REGISTRY.lock().unwrap().get(&id).and_then(|w| w.upgrade())
 }
 
-/// A place outside the store that may hold links into it — a root edge
-/// (`analysis.fourth-option`, open question 4). The store keeps weak
-/// references so a delete's fixup walk can reach `world.player` and
-/// `editor.line_order`, which live beside the store rather than inside a node.
+/// One place that holds an edge — a *backlink*. The store keeps, per node, the
+/// list of places pointing at it, so `delete` can find and fix every incoming
+/// edge without looking at anything else (analysis.fourth-option, rule 2).
 ///
-/// Weak on purpose: registering a root must not keep it alive.
+/// Three kinds because an edge can be held three ways: a scalar field
+/// (`target: Link<T>?`), an element of an edge list (`children: Vec<Link<T>>`),
+/// or a value in an index (`by_name: Map<K, Link<T>>`). A node field and a root
+/// field are the same kind here — a root edge is just an edge whose holder
+/// happens to live outside the store, which is why root edges need no separate
+/// mechanism.
+///
+/// Weak throughout: recording a backlink must not keep the holder alive.
+///
+/// List and map holders carry no position. Positions shift under insertion and
+/// rehashing, and the fixup re-checks each candidate slot before rewriting it
+/// anyway, so a holder is precise enough and can't go stale the way an index
+/// would.
 #[derive(Debug, Clone)]
-pub enum RootRef {
-    Struct(Weak<Mutex<StructData>>),
-    Vec(Weak<Mutex<VecData>>),
-    Map(Weak<Mutex<MapData>>),
+pub enum Backlink {
+    /// A named field of a struct — a node's edge, or a root edge.
+    Field(Weak<Mutex<StructData>>, String),
+    /// An element of an edge list.
+    Element(Weak<Mutex<VecData>>),
+    /// A value in an index.
+    Entry(Weak<Mutex<MapData>>),
 }
 
-impl RootRef {
-    /// Identity of the pointed-to allocation, for dedup. `Weak::as_ptr` stays
-    /// stable for the allocation's life, which is all dedup needs.
-    fn addr(&self) -> usize {
+impl Backlink {
+    /// Holder identity plus field name, for dedup. `Weak::as_ptr` is stable for
+    /// the allocation's life, which is all dedup needs.
+    fn key(&self) -> (usize, Option<&str>) {
         match self {
-            RootRef::Struct(w) => w.as_ptr() as usize,
-            RootRef::Vec(w) => w.as_ptr() as usize,
-            RootRef::Map(w) => w.as_ptr() as usize,
+            Backlink::Field(w, f) => (w.as_ptr() as usize, Some(f.as_str())),
+            Backlink::Element(w) => (w.as_ptr() as usize, None),
+            Backlink::Entry(w) => (w.as_ptr() as usize, None),
         }
     }
 
     pub fn is_live(&self) -> bool {
         match self {
-            RootRef::Struct(w) => w.strong_count() > 0,
-            RootRef::Vec(w) => w.strong_count() > 0,
-            RootRef::Map(w) => w.strong_count() > 0,
+            Backlink::Field(w, _) => w.strong_count() > 0,
+            Backlink::Element(w) => w.strong_count() > 0,
+            Backlink::Entry(w) => w.strong_count() > 0,
         }
     }
+}
+
+/// Node identity used to key the backlink index. A link carries the node's
+/// `Arc`, so this is available at O(1) wherever a link is.
+///
+/// Sound as a key because the store holds a strong reference to every live
+/// node: the allocation can't be freed and its address reused while the node is
+/// still in the store, so two live nodes never share a key.
+pub fn node_key(node: &Arc<Mutex<StructData>>) -> usize {
+    Arc::as_ptr(node) as usize
 }
 
 /// Internal store storage — the arena half of `Store<T>` + `Link<T>`.
@@ -450,8 +474,11 @@ pub struct StoreData {
     pub free_list: Vec<u32>,
     pub len: usize,
     pub type_param: Option<String>,
-    /// Root edges: places outside the store that hold links into it.
-    pub roots: Vec<RootRef>,
+    /// Incoming edges per node: who points at me. This is what makes `delete`
+    /// cost O(in-degree) instead of a scan.
+    pub incoming: HashMap<usize, Vec<Backlink>>,
+    /// Slot index per node, so `delete` doesn't scan `slots` to find one.
+    pub slot_of: HashMap<usize, u32>,
 }
 
 impl StoreData {
@@ -462,7 +489,8 @@ impl StoreData {
             free_list: Vec::new(),
             len: 0,
             type_param: None,
-            roots: Vec::new(),
+            incoming: HashMap::new(),
+            slot_of: HashMap::new(),
         }
     }
 
@@ -473,31 +501,45 @@ impl StoreData {
     /// Insert a node, returning its slot index.
     pub fn insert(&mut self, node: Arc<Mutex<StructData>>) -> u32 {
         self.len += 1;
-        if let Some(free_idx) = self.free_list.pop() {
+        let key = node_key(&node);
+        let idx = if let Some(free_idx) = self.free_list.pop() {
             self.slots[free_idx as usize] = Some(node);
             free_idx
         } else {
             self.slots.push(Some(node));
             (self.slots.len() - 1) as u32
-        }
+        };
+        self.slot_of.insert(key, idx);
+        // A reused slot must not inherit the previous occupant's backlinks.
+        self.incoming.remove(&key);
+        idx
     }
 
-    /// Find a node's slot by pointer identity. Links carry the node pointer,
-    /// not an index, so structural ops look the index up here.
+    /// Slot index of a node, or `None` if it isn't in this store. O(1).
     pub fn index_of(&self, node: &Arc<Mutex<StructData>>) -> Option<usize> {
-        self.slots
-            .iter()
-            .position(|s| s.as_ref().map_or(false, |n| Arc::ptr_eq(n, node)))
+        self.slot_of.get(&node_key(node)).map(|i| *i as usize)
     }
 
-    /// Register a place outside the store that holds a link into it. Idempotent;
-    /// also drops roots whose holder has died.
-    pub fn register_root(&mut self, root: RootRef) {
-        let addr = root.addr();
-        self.roots.retain(|r| r.is_live());
-        if !self.roots.iter().any(|r| r.addr() == addr) {
-            self.roots.push(root);
+    /// Record that `holder` points at `target`. Idempotent, and drops entries
+    /// whose holder has died.
+    ///
+    /// Over-approximating is safe: a backlink left behind after its edge was
+    /// overwritten costs the fixup one wasted visit, because the fixup re-checks
+    /// that the slot really points at the dying node before rewriting it. A
+    /// *missing* backlink would be unsound, so registration errs toward
+    /// recording.
+    pub fn register_backlink(&mut self, target: &Arc<Mutex<StructData>>, holder: Backlink) {
+        let entry = self.incoming.entry(node_key(target)).or_default();
+        entry.retain(|b| b.is_live());
+        let key = holder.key();
+        if !entry.iter().any(|b| b.key() == key) {
+            entry.push(holder);
         }
+    }
+
+    /// Take a node's incoming-edge list, for the delete that is about to fix it.
+    pub fn take_incoming(&mut self, node: &Arc<Mutex<StructData>>) -> Vec<Backlink> {
+        self.incoming.remove(&node_key(node)).unwrap_or_default()
     }
 
     pub fn live_nodes(&self) -> Vec<Arc<Mutex<StructData>>> {
