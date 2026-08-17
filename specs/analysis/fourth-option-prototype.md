@@ -18,6 +18,57 @@ documented hole, and the litmus pairs' agreement. Two deliberate mutations —
 skipping the unlink, and dropping only the first matching list element —
 each fail exactly one of those tests, so they check what they claim to.
 
+## What a link is, and what the store does
+
+Everything below depends on these three paragraphs, so they come first.
+
+**A link is a pointer to a node.** At runtime, literally
+`Link { store_id, node: <pointer to the node> }`. Reading `l.health` follows the
+pointer and reads the field; that is the entire type. It is not a copy of the
+node, not an index, not a ticket. Copying a link copies the pointer — the node is
+never duplicated:
+
+```rask
+let a = s.insert(Node { id: 1, hits: 0 })
+let b = a                 // second pointer to the same node
+a.hits += 1
+b.hits += 1
+// hits through a = 2, through b = 2, store len = 1
+```
+
+A `Handle` is the opposite kind of thing: a number (slot + generation). It can't
+be followed on its own — the pool turns the number into an address, and checks the
+generation while doing it. That check is what the whole model is trying to remove.
+
+**The store does three things.** `insert` puts a node in the store and hands back a
+pointer. It writes down every place that holds a pointer to each node — "who points
+at me?". And `delete(n)` looks up everyone pointing at `n`, sets each of them to
+`none`, then frees `n`. That third step is the model: after a delete, no pointer to
+a dead node exists *anywhere the store wrote down*, so following a link needs no
+check — it is `none`, or it is live.
+
+**The problem is that last phrase.** The store can write down a link held in a
+*field* — `entity.target`, `world.player`, an element of `children` — because it
+knows where the field is. It cannot write down a link held in a *local variable*,
+because a local is on the stack and the store has no way to name it. So:
+
+```rask
+let n = store.insert(...)   // pointer now sits where the store can't see it
+store.delete(n)             // fixes every field; cannot touch `n`
+n.name                      // follows a pointer to freed memory
+```
+
+A link in a local is a pointer the store can't find, so delete can't fix it. That
+one sentence is Finding 1, and everything in it is a candidate answer.
+
+A note on vocabulary, because the obvious framing is wrong: assigning a link
+*always* copies a pointer, in every position, and never copies the node. So the
+choice is not between copying and moving data. It is whether **the compiler keeps
+trusting the old variable name** — a field-held link stays trustworthy because the
+store maintains it, a local one does not because nothing does. Where this document
+says a local link "moves", it means the name is revoked, not that anything was
+transferred.
+
 ## The short version
 
 The model does what it claims for topology, and the flagship loop really does
@@ -303,9 +354,10 @@ Tried it, and most of the machinery is already in place. Three changes:
 
 1. `delete(mutate self, take link: Link<T>)` — an existing parameter mode.
 2. `Link<T>` stops being `Copy`, so it is affine among locals.
-3. Assigning a link **into a field** copies instead of moving. Justified exactly:
-   a field-held link is an edge the fixup maintains, so the copy is safe there and
-   nowhere else.
+3. Assigning a link **into a field** leaves the source name usable, while
+   assigning into another local revokes it. Both copy the same pointer; the
+   difference is who maintains it afterwards — the store maintains a field, and
+   nothing maintains a local.
 
 With those, use-after-delete becomes a compile error and no runtime check remains:
 
