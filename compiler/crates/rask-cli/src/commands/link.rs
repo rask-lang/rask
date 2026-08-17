@@ -14,6 +14,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "map.c",
     "pool.c",
     "string.c",
+    "unicode_case.c",
     "random.c",
     "time.c",
     "atomic.c",

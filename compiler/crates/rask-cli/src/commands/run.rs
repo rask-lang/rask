@@ -1344,7 +1344,7 @@ fn run_c_baseline(c_path: &std::path::Path, opt_level: &str, format: Format) -> 
 
     // Compile with cc, linking needed runtime sources (not runtime.c — it has its own main)
     let runtime_sources = ["bench.c", "vec.c", "map.c", "pool.c", "string.c",
-                           "alloc.c", "panic.c", "args.c", "ptr.c"];
+                           "unicode_case.c", "alloc.c", "panic.c", "args.c", "ptr.c"];
     let mut cmd = process::Command::new("cc");
     cmd.arg(opt_level);
     cmd.arg(c_path);

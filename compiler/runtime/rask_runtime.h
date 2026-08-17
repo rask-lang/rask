@@ -269,6 +269,37 @@ int64_t rask_char_to_lowercase(int32_t c);
 int64_t rask_char_len_utf8(int32_t c);
 int64_t rask_char_eq(int32_t a, int32_t b);
 
+// ─── Unicode case mapping (generated: unicode_case.c) ───────
+//
+// Case conversion used to be ASCII-only here, so `"aöb".to_uppercase()` came
+// back `AöB` and Greek was left untouched entirely, while the interpreter — which
+// uses Rust's std — answered `AÖB` and `αβγ` (#779). The tables are generated
+// from that same source, so the two can't drift.
+
+/// One scalar in, one scalar out.
+typedef struct {
+    uint32_t from;
+    uint32_t to;
+} RaskCaseSimple;
+
+/// One scalar in, up to three out — `ß` uppercases to `SS`, `İ` lowercases to
+/// `i` followed by a combining dot.
+typedef struct {
+    uint32_t from;
+    uint8_t n;
+    uint32_t to[3];
+} RaskCaseMulti;
+
+/// The most a single scalar can grow in bytes under either mapping.
+extern const int RASK_CASE_MAX_GROWTH;
+
+/// Map `cp`, writing up to three scalars into `out`. Returns the count, always at
+/// least 1 — an unmapped scalar maps to itself.
+int rask_case_map(uint32_t cp, int to_upper, uint32_t out[3]);
+
+/// The single-scalar answer, for `char.to_uppercase()`/`to_lowercase()`.
+uint32_t rask_case_map_one(uint32_t cp, int to_upper);
+
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);

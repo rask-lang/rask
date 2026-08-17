@@ -10,7 +10,10 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-# (none right now)
+t_i128_arithmetic.rk # native has no MIR type for i128/u128, so they lower as i64: the
+#   overflow check fires at 64 bits (`i128` addition past the boundary panics) and the
+#   unsigned case wraps instead (`u128` sum compares as -2 > -1). The interpreter is
+#   correct as of #762's first half. 2 of 6 tests pass natively (native)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 #

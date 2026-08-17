@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Case conversion was ASCII-only natively (#779):
+//
+//     "aöb".to_uppercase()   →  AöB   natively,  AÖB   on the interpreter
+//     "ΑΒΓ".to_lowercase()   →  ΑΒΓ   natively,  αβγ   on the interpreter
+//
+// Every non-ASCII scalar was left untouched — not just the accented Latin ones in
+// the title, but whole scripts.
+//
+// The interpreter uses Rust's std, so the native tables are *generated* from that
+// same source (`scripts/gen_unicode_case` → `compiler/runtime/unicode_case.c`)
+// rather than transcribed. There's nothing for the two to disagree about, and the
+// one-to-many mappings come along for free: `ß` uppercases to `SS` and `İ`
+// lowercases to `i` plus a combining dot, so the output can be longer in bytes
+// *and* in scalars than the input.
+//
+// `char` case conversion was ASCII-only too. A char holds one scalar, so a
+// one-to-many mapping has to pick one — the interpreter takes the first, which is
+// why `'ß'.to_uppercase()` is `S` and not `SS`.
+
+func main() {
+    // Latin-1 Supplement, both directions.
+    let a = "aöb"
+    let b = "AÖB"
+    println("{a.to_uppercase()} {b.to_lowercase()}")
+
+    // Greek — a script that was left entirely alone.
+    let g = "ΑΒΓδεζ"
+    println("{g.to_lowercase()} {g.to_uppercase()}")
+
+    // Cyrillic.
+    let c = "Привет"
+    println("{c.to_uppercase()} {c.to_lowercase()}")
+
+    // One-to-many: ß → SS grows the string.
+    let sharp = "straße"
+    let up = sharp.to_uppercase()
+    println("{up} len {sharp.len()}->{up.len()}")
+
+    // Turkish dotted capital I lowercases to two scalars.
+    let dotted = "İ"
+    let lo = dotted.to_lowercase()
+    println("dotted len {dotted.len()}->{lo.len()} chars {lo.chars().count()}")
+
+    // Mixed scripts in one string.
+    let mixed = "año-ΔΕΛΤΑ-Тест-abc"
+    println("{mixed.to_uppercase()}")
+    println("{mixed.to_lowercase()}")
+
+    // ASCII is unchanged.
+    let h = "Hello, World! 123"
+    println("{h.to_uppercase()} / {h.to_lowercase()}")
+
+    // Empty string.
+    let e = ""
+    println("empty [{e.to_uppercase()}][{e.to_lowercase()}]")
+
+    // char, including the one-to-many case that has to pick a scalar.
+    let scalars = "ßöΑa1"
+    for ch in scalars.chars() {
+        println("{ch} up {ch.to_uppercase()} lo {ch.to_lowercase()}")
+    }
+}

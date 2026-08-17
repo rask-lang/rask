@@ -604,6 +604,26 @@ impl Interpreter {
 /// inner slot" (OPT29).
 pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
     let ty = ty.trim();
+    // `i128`/`u128` are 16-byte types (type.primitives), and the interpreter has
+    // a value variant for each with full 128-bit arithmetic behind it. What was
+    // missing was ever *producing* one: `IntKind` is a tag on an i64 payload and
+    // has no 128-bit width, so `let a: i128 = …` bound a plain `Value::Int` and
+    // `a + a` wrapped at 64 bits — `i64::MAX + i64::MAX` came back as -2,
+    // silently (#762). The annotation is where the width is known.
+    if let Value::Int(n, kind) = value {
+        // A literal above `i64::MAX` is carried as its *bit pattern* in an i64
+        // with an unsigned kind (that's how `u64::MAX` became writable at all —
+        // #517), so widening it has to go through u64 or `18446744073709551615`
+        // arrives as -1.
+        let widened = if kind.signed() { n as i128 } else { n as u64 as i128 };
+        match ty {
+            "i128" => return Value::Int128(widened),
+            // A genuinely negative value has no u128 to widen into; leave it for
+            // the ordinary signedness check rather than wrapping it here.
+            "u128" if widened >= 0 => return Value::Uint128(widened as u128),
+            _ => {}
+        }
+    }
     if ty.ends_with('?') && !ty.starts_with('(') {
         if rhs_is_none_literal {
             return value;

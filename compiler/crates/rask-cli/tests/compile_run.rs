@@ -4089,3 +4089,33 @@ whole: worse: disk
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// Case conversion was ASCII-only natively: `"aöb".to_uppercase()` came back
+// `AöB`, and Greek was left untouched entirely (#779). The native tables are now
+// generated from Rust's own Unicode data — the same source the interpreter uses —
+// so the one-to-many mappings come along too: `ß` uppercases to `SS`, and `İ`
+// lowercases to `i` plus a combining dot, growing in both bytes and scalars.
+#[test]
+fn unicode_case_conversion_agrees_on_both_backends() {
+    let expected = "\
+AÖB aöb
+αβγδεζ ΑΒΓΔΕΖ
+ПРИВЕТ привет
+STRASSE len 7->7
+dotted len 2->3 chars 2
+AÑO-ΔΕΛΤΑ-ТЕСТ-ABC
+año-δελτα-тест-abc
+HELLO, WORLD! 123 / hello, world! 123
+empty [][]
+ß up S lo ß
+ö up Ö lo ö
+Α up Α lo α
+a up A lo a
+1 up 1 lo 1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "unicode_case.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
