@@ -7,7 +7,7 @@
 
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    operand::MirConst, BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt,
+    operand::MirConst, BlockId, FieldAccess, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
@@ -206,6 +206,36 @@ impl<'a> MirLowerer<'a> {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_collect(&chain)?;
                     return Ok(Some(result));
+                }
+            }
+            // SEQ29: same fused loop, `Map_insert` per pair instead of a push.
+            // The checker has already rejected a non-pair element type.
+            "to_map" if args.is_empty() => {
+                if let Some(chain) = self.try_parse_iter_chain(object) {
+                    let result = self.lower_iter_to_map(&chain)?;
+                    return Ok(Some(result));
+                }
+            }
+            // SEQ30: materialize the chain, then the existing string join. The
+            // separator is the one argument.
+            //
+            // Only for a real chain. `try_parse_iter_chain` also succeeds on a
+            // bare Vec, and `Vec.join` already picks between the string and i64
+            // runtime by element type — taking this path for `numbers.join(", ")`
+            // on a `Vec<i64>` sent it to the string one and printed nothing.
+            "join" if args.len() == 1 => {
+                if let Some(chain) = self.try_parse_iter_chain(object)
+                    .filter(|c| !c.adapters.is_empty())
+                {
+                    let (vec_op, _) = self.lower_iter_collect(&chain)?;
+                    let (sep_op, _) = self.lower_expr(&args[0].expr)?;
+                    let dst = self.builder.alloc_temp(MirType::String);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(dst),
+                        func: FunctionRef::internal("Vec_join".to_string()),
+                        args: vec![vec_op, sep_op],
+                    }));
+                    return Ok(Some((MirOperand::Local(dst), MirType::String)));
                 }
             }
             "fold" if args.len() == 2 => {
@@ -642,6 +672,87 @@ impl<'a> MirLowerer<'a> {
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
         Ok((MirOperand::Local(result_vec), MirType::I64))
+    }
+
+    /// `.to_map()` — the collect loop, inserting each pair instead of pushing.
+    ///
+    /// Later keys overwrite earlier ones, which is what repeated `insert` does
+    /// anyway (SEQ29). The element is a 2-tuple, so the key and value come out
+    /// of its two slots.
+    pub(super) fn lower_iter_to_map(
+        &mut self,
+        chain: &super::IterChain<'_>,
+    ) -> Result<TypedOperand, LoweringError> {
+        let result_map = self.builder.alloc_temp(MirType::I64);
+        let map_new_pos = self.builder.next_stmt_pos();
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(result_map),
+            func: FunctionRef::internal("Map_new".to_string()),
+            args: vec![],
+        }));
+
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        let (key_ty, val_ty) = match &final_ty {
+            MirType::Tuple(parts) if parts.len() == 2 => (parts[0].clone(), parts[1].clone()),
+            other => {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "to_map needs a sequence of pairs, got {:?}",
+                    other
+                )))
+            }
+        };
+        // `Map_new` sizes its key and value slots the way `Vec_new` sizes its
+        // element — from the type the loop actually produces, filled in here
+        // because the adapters decide it.
+        self.builder.set_call_args(
+            map_new_pos.0,
+            map_new_pos.1,
+            "Map_new",
+            vec![
+                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty))),
+                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&val_ty))),
+            ],
+        );
+
+        let key = self.builder.alloc_temp(key_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: key,
+            rvalue: MirRValue::Field {
+                base: final_op.clone(),
+                field_index: 0,
+                byte_offset: Some(0),
+                access: FieldAccess::Word,
+            },
+        }));
+        let val = self.builder.alloc_temp(val_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: val,
+            rvalue: MirRValue::Field {
+                base: final_op,
+                field_index: 1,
+                byte_offset: Some(Self::mir_slot_size(&key_ty) as u32),
+                access: FieldAccess::Word,
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Map_insert".to_string()),
+            args: vec![
+                MirOperand::Local(result_map),
+                MirOperand::Local(key),
+                MirOperand::Local(val),
+            ],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+        Ok((MirOperand::Local(result_map), MirType::I64))
     }
 
     /// .fold(init, |acc, x| body) — fused loop with accumulator.

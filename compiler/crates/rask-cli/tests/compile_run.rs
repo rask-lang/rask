@@ -3727,3 +3727,26 @@ nan -> nan
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// type.sequence SEQ28–SEQ31: a materializing terminal names what it builds.
+// `collect()` is gone; `to_vec()`, `to_map()` and `join(sep)` are the three
+// targets, and `to_map`/`join` were missing from the Iterator surface entirely —
+// only `Vec` had a `join`, and nothing had `to_map`.
+#[test]
+fn sequence_terminals_build_what_they_name_on_both_backends() {
+    let expected = "\
+to_vec: 3 alice carol
+to_map: 3
+  1 -> alice
+  3 -> carol
+collide: 1
+  0 -> carol
+join: alice, bob, carol
+filtered to_map: 2
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "sequence_terminals.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

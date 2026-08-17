@@ -1512,6 +1512,47 @@ impl TypeChecker {
                 };
                 self.unify(ret, &vec_ty, span)
             }
+            // SEQ30: the third materializing target, on a sequence of strings.
+            "join" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::String, span);
+                let _ = self.unify(&elem, &Type::String, span);
+                self.unify(ret, &Type::String, span)
+            }
+            // SEQ29: only on a sequence of pairs. A Map needs a key per value,
+            // and `to_map` reads it out of the first tuple slot rather than
+            // inventing one — so a non-pair element is an error at the call.
+            "to_map" if args.is_empty() => {
+                let resolved = self.ctx.apply(&elem);
+                match &resolved {
+                    Type::Tuple(parts) if parts.len() == 2 => {
+                        let map_ty = Type::UnresolvedGeneric {
+                            name: "Map".to_string(),
+                            args: vec![
+                                GenericArg::Type(Box::new(parts[0].clone())),
+                                GenericArg::Type(Box::new(parts[1].clone())),
+                            ],
+                        };
+                        self.unify(ret, &map_ty, span)
+                    }
+                    // Still a variable — the element type may settle into a pair
+                    // once the chain ahead of it is solved.
+                    Type::Var(_) => {
+                        self.ctx.add_constraint(TypeConstraint::HasMethod {
+                            ty: self_ty.clone(),
+                            method: "to_map".to_string(),
+                            args: args.to_vec(),
+                            ret: ret.clone(),
+                            span,
+                            call_node: None,
+                        });
+                        Ok(false)
+                    }
+                    other => Err(TypeError::ToMapNeedsPairs {
+                        elem: other.clone(),
+                        span,
+                    }),
+                }
+            }
             "count" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "sum" if args.is_empty() => self.unify(ret, &elem, span),
             "min" | "max" if args.is_empty() => self.unify(ret, &Type::option(elem), span),

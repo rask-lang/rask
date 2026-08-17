@@ -1573,6 +1573,22 @@ impl ToDiagnostic for rask_types::TypeError {
                         ty = ty,
                     ))
             }
+            ToMapNeedsPairs { elem, span } => {
+                Diagnostic::error(format!(
+                    "`to_map` needs a sequence of pairs, got a sequence of `{}`",
+                    elem
+                ))
+                .with_code("E0830")
+                .with_primary(*span, "each item must be a (K, V) tuple")
+                .with_fix(
+                    "produce the pairs first — `.map(|u| (u.id, u))` — then `to_map()`".to_string(),
+                )
+                .with_why(
+                    "a Map needs a key per value, and `to_map` reads the key out of the first tuple slot rather than inventing one [type.sequence/SEQ29]"
+                        .to_string(),
+                )
+            }
+
             FloatMapKey { key, span } => {
                 let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
                 Diagnostic::error(format!("`{}` can't be a Map key", key))
