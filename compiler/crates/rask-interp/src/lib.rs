@@ -19,11 +19,11 @@ pub mod build_context;
 /// body costs ~30 KB and a heavy one several times that. Measured by recursing a
 /// one-line Rask function until it dies:
 ///
-/// | stack  | max Rask recursion depth |
-/// |--------|--------------------------|
-/// |  2 MiB | ~65                      |
-/// |  8 MiB | ~245                     |
-/// | 16 MiB | ~495                     |
+/// | stack  | max Rask recursion depth (release) |
+/// |--------|-----------------------------------|
+/// |  2 MiB | ~65                               |
+/// |  8 MiB | ~245                              |
+/// | 16 MiB | ~495                              |
 ///
 /// A bare `thread::spawn` gives 2 MiB, so an interpreted thread got ~65 frames of
 /// headroom while the main thread — running the same interpreter — got ~245. CI
@@ -31,7 +31,13 @@ pub mod build_context;
 /// `main` and the test runner on this same size, so the depth no longer depends
 /// on which entry point ran the code.
 ///
-/// 16 MiB is a stopgap, not a fix: the frame size is the actual problem (#759).
+/// Unoptimized, a frame costs about 550 KB rather than 30 KB — nothing is
+/// overlapped or inlined — so 16 MiB gets a debug build only ~27 frames. That is
+/// why `INTERP_STACK_BYTES` is profile-dependent: the same program has to be able
+/// to recurse as deep whichever way the compiler was built, or a test passes
+/// locally under `--release` and dies in a debug CI job.
+///
+/// The size is a stopgap either way: the frame size is the actual problem (#759).
 /// Erring high is right meanwhile. The reservation is lazily committed, so the
 /// headroom costs address space rather than memory.
 ///
@@ -57,14 +63,27 @@ where
         .expect("failed to spawn interpreter thread")
 }
 
+
+/// Stack for a thread running interpreted Rask code.
+///
+/// Sized so that both profiles reach a comparable Rask recursion depth (~465),
+/// because a debug frame costs roughly 17× an optimized one.
+#[cfg(not(debug_assertions))]
 pub(crate) const INTERP_STACK_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(debug_assertions)]
+pub(crate) const INTERP_STACK_BYTES: usize = 288 * 1024 * 1024;
 
 /// Stack left in reserve when the interpreter refuses to recurse further.
 ///
 /// The refusal itself has work to do: unwind out of every frame, build the
 /// diagnostic, format it with its source snippet. That has to fit in what's
-/// left, or reporting the overflow overflows.
+/// left, or reporting the overflow overflows. Scaled with the profile for the
+/// same reason the stack size is — a debug frame is ~17× an optimized one, so a
+/// megabyte of headroom there is barely two frames.
+#[cfg(not(debug_assertions))]
 const STACK_RESERVE_BYTES: usize = 1024 * 1024;
+#[cfg(debug_assertions)]
+const STACK_RESERVE_BYTES: usize = 24 * 1024 * 1024;
 
 thread_local! {
     /// Address of a local in the frame that started interpreting on this thread.
