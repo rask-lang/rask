@@ -58,6 +58,58 @@ enum Opcode: u8 {
 }
 
 extend Opcode {
+    // Tag back to variant. This was called from `decode_opcode` and never
+    // defined — it type-checked only because `json.from_value<T>` exists and the
+    // unqualified name matched it, then codegen had no `Opcode_from_value` to
+    // call (#795).
+    func from_value(v: u8) -> Opcode? {
+        match v truncate to i64 {
+            0 => return Opcode.LOAD_TRUE
+            1 => return Opcode.LOAD_FALSE
+            2 => return Opcode.LOAD_INT
+            3 => return Opcode.LOAD_CONST
+            4 => return Opcode.LOAD_NONE
+            5 => return Opcode.MOVE
+            6 => return Opcode.ADD
+            7 => return Opcode.SUB
+            8 => return Opcode.MUL
+            9 => return Opcode.DIV
+            10 => return Opcode.MOD
+            11 => return Opcode.NEG
+            12 => return Opcode.EQ
+            13 => return Opcode.LT
+            14 => return Opcode.LE
+            15 => return Opcode.NOT
+            16 => return Opcode.LEN
+            17 => return Opcode.CONCAT
+            18 => return Opcode.NEW_ARRAY
+            19 => return Opcode.NEW_MAP
+            20 => return Opcode.GET_INDEX
+            21 => return Opcode.SET_INDEX
+            22 => return Opcode.NEW_STRUCT
+            23 => return Opcode.GET_STRUCT_FIELD
+            24 => return Opcode.SET_STRUCT_FIELD
+            25 => return Opcode.ENUM_TAG
+            26 => return Opcode.GET_FIELD
+            27 => return Opcode.SET_FIELD
+            28 => return Opcode.JMP
+            29 => return Opcode.JMP_IF
+            30 => return Opcode.JMP_IF_NOT
+            31 => return Opcode.CALL
+            32 => return Opcode.TAIL_CALL
+            33 => return Opcode.RETURN
+            34 => return Opcode.FUNC_REF
+            35 => return Opcode.IS_SOME
+            36 => return Opcode.UNWRAP
+            37 => return Opcode.WRAP_SOME
+            38 => return Opcode.COROUTINE
+            39 => return Opcode.YIELD
+            40 => return Opcode.RESUME
+            41 => return Opcode.TRY
+            _ => return none
+        }
+    }
+
     func name(self) -> string {
         match self {
             Opcode.LOAD_TRUE => return "LOAD_TRUE"

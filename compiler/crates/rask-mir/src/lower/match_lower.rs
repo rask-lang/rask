@@ -931,6 +931,13 @@ impl<'a> MirLowerer<'a> {
             // the GET arm and answered with the task list.
             let mut variant_checks: Vec<(usize, u64)> = Vec::new();
             let mut checks: Vec<(usize, Pattern)> = Vec::new();
+            // A tuple element that names a variant *and* binds its payload —
+            // `(Value.Int(x), Value.Int(y))`. Same tag test as a bare variant
+            // name, plus the payload reads. This arm fell into the catch-all
+            // below, so no test ran and `x` was never defined: MIR lowering
+            // failed with "unresolved variable `x`" while the interpreter
+            // answered fine (#793).
+            let mut payload_binds: Vec<(usize, u64, String, Vec<Pattern>)> = Vec::new();
             for (j, pat) in sub_patterns.iter().enumerate() {
                 match pat {
                     Pattern::Literal(_) => checks.push((j, pat.clone())),
@@ -940,10 +947,18 @@ impl<'a> MirLowerer<'a> {
                             variant_checks.push((j, tag));
                         }
                     }
+                    Pattern::Constructor { name, fields } => {
+                        let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
+                        if let Some(tag) = self.tuple_variant_tag(name, elem_ty) {
+                            payload_binds.push((j, tag, name.clone(), fields.clone()));
+                        }
+                    }
                     Pattern::Wildcard => {}
                     _ => {}
                 }
             }
+            // The tag test is the same shape for both, so they share the loop.
+            variant_checks.extend(payload_binds.iter().map(|(j, tag, _, _)| (*j, *tag)));
 
             // Emit the tag tests before anything else in the arm.
             for (j, want_tag) in &variant_checks {
@@ -972,6 +987,15 @@ impl<'a> MirLowerer<'a> {
             }
             let variant_tested: std::collections::HashSet<usize> =
                 variant_checks.iter().map(|(j, _)| *j).collect();
+
+            // Every tag test has passed by now, so the payloads are the right
+            // variant's. Read each bound field out of the element at its exact
+            // offset — mixed variants share field indices, so codegen must not
+            // be left to guess which variant a field index belongs to.
+            for (j, _, variant_path, fields) in &payload_binds {
+                let (elem_op, elem_ty) = tuple_elems[*j].clone();
+                self.bind_tuple_element_payload(&elem_op, &elem_ty, variant_path, fields)?;
+            }
 
             if checks.is_empty() && !matches!(&arm.pattern, Pattern::Wildcard) {
                 for (j, pat) in sub_patterns.iter().enumerate() {
@@ -1266,6 +1290,86 @@ impl<'a> MirLowerer<'a> {
     /// Accepts both the qualified form (`Method.Get`) and a bare variant name,
     /// resolved against the element's own enum layout — which is also what proves
     /// the name is a variant and not a variable.
+    /// Bind the fields a constructor sub-pattern named, reading them out of one
+    /// tuple element. Called after that element's tag test has passed, so the
+    /// variant is known and its payload offsets apply.
+    ///
+    /// A nested pattern (`Value.Pair(Value.Int(n), _)`) isn't handled: only a
+    /// plain binding or `_` per field. Nesting would need the whole match tree
+    /// rebuilt for tuple scrutinees, and it reports rather than binding the
+    /// wrong bytes.
+    fn bind_tuple_element_payload(
+        &mut self,
+        elem_op: &MirOperand,
+        elem_ty: &MirType,
+        variant_path: &str,
+        fields: &[rask_ast::expr::Pattern],
+    ) -> Result<(), LoweringError> {
+        use rask_ast::expr::Pattern;
+        let variant_name = variant_path.rsplit('.').next().unwrap_or(variant_path);
+        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = elem_ty else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "`{variant_path}(…)` in a tuple pattern needs an enum element, \
+                 found `{elem_ty:?}`"
+            )));
+        };
+        // (mir type, absolute byte offset within the enum, field size)
+        let variant_fields: Vec<(MirType, u32, u32)> = self
+            .ctx
+            .enum_layouts
+            .get(*id as usize)
+            .and_then(|layout| {
+                layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
+                    v.fields
+                        .iter()
+                        .map(|f| {
+                            (self.ctx.type_to_mir(&f.ty), v.payload_offset + f.offset, f.size)
+                        })
+                        .collect()
+                })
+            })
+            .ok_or_else(|| {
+                LoweringError::InvalidConstruct(format!(
+                    "no variant `{variant_name}` to read a payload from"
+                ))
+            })?;
+
+        for (j, field_pat) in fields.iter().enumerate() {
+            let binding = match field_pat {
+                Pattern::Ident(name) => name,
+                Pattern::Wildcard => continue,
+                other => {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "`{variant_path}(…)` inside a tuple pattern binds names or \
+                         `_` per field; `{other:?}` would need a nested match"
+                    )));
+                }
+            };
+            let Some((field_ty, offset, size)) = variant_fields.get(j).cloned() else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "`{variant_path}` has {} fields, pattern binds {}",
+                    variant_fields.len(),
+                    fields.len()
+                )));
+            };
+            let payload_local = self.builder.alloc_local(binding.clone(), field_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: payload_local,
+                rvalue: MirRValue::Field {
+                    base: elem_op.clone(),
+                    field_index: j as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(&field_ty, size),
+                },
+            }));
+            if let Some(prefix) = self.mir_type_name(&field_ty) {
+                self.meta_mut(binding).type_prefix = Some(prefix);
+            }
+            self.locals.insert(binding.clone(), (payload_local, field_ty));
+        }
+        Ok(())
+    }
+
     fn tuple_variant_tag(&self, name: &str, elem_ty: Option<&MirType>) -> Option<u64> {
         if let Some(tag) = self.resolve_pattern_tag(name) {
             return Some(tag);
