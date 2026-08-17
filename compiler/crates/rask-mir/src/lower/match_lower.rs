@@ -1303,7 +1303,7 @@ impl<'a> MirLowerer<'a> {
 }
 
 /// The type-or-variant name a pattern matches on, if it names one.
-fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<&str> {
+pub(crate) fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<&str> {
     use rask_ast::expr::Pattern;
     match pattern {
         Pattern::Ident(name)

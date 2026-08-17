@@ -236,7 +236,13 @@ func main() -> void or Error {
 
     loop {
         print("> ")
-        let input = try io.read_line()
+        // Closed stdin is a normal way to leave a REPL, not a failure.
+        let line = io.read_line()
+        if line is IoError.UnexpectedEof {
+            println("")
+            break
+        }
+        let input = try line
 
         let cmd = parse_command(input) ?? {
             println("Unknown command. Type 'help' for usage.")

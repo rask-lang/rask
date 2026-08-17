@@ -246,6 +246,24 @@ fn run_capture(mode: &str, fixture_name: &str) -> (String, String, i32) {
     )
 }
 
+/// Like `run_capture`, but with stdin closed — a fixture that reads a line
+/// gets a deterministic EOF instead of whatever the test runner was attached to.
+fn run_capture_no_stdin(mode: &str, fixture_name: &str) -> (String, String, i32) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .args(["run", mode])
+        .arg(fixture(fixture_name))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run rask");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
 // ─── Wide<T> data-parallel tests ─────────────────────────────
 
 const WIDE_EXPECTED: &str = "10\n20\n300\n2, 4, 6, 8\n1\n4\n24\n";
@@ -3549,4 +3567,32 @@ fn push_past_the_bound_panics_on_both_backends() {
     assert_eq!(icode, 101, "interp should panic at the bound: {}", iout);
     assert!(!nout.contains("99"), "native ran past the panic: {}", nout);
     assert!(!iout.contains("99"), "interp ran past the panic: {}", iout);
+}
+
+// #659 family: `r is MyErr.Bad` names a variant of the error enum, which lives
+// one layer below the value's own ok/err tag. Native compared the variant tag
+// against the outer tag, so `Bad` (variant 0) matched the *ok* tag 0 and the
+// answer was wrong for every case — `match` had the same mixup in #677 and got
+// a two-level switch; the three `is` sites never did.
+#[test]
+fn is_on_an_error_variant_reads_the_inner_tag_on_both_backends() {
+    let expected = "\
+bad is Bad:      true
+bad is Worse:    false
+worse is Bad:    false
+worse is Worse:  true
+ok is Bad:       false
+ok is Worse:     false
+if: ok skipped the Bad arm
+if: bad took the Bad arm
+bad is MyErr:    true
+ok is MyErr:     false
+eof is Eof:      true
+eof is NotFound: false
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture_no_stdin(mode, "is_error_variant.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
 }
