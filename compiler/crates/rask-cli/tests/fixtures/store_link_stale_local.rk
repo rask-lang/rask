@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The hole the prototype documents rather than fixes.
+//
+// An edge inside a node is fixed at delete. A link held in a *local* is not,
+// because the fixup can only reach declared fields — and `store.insert()` hands
+// links straight into locals, which is exactly the case the missing borrow rule
+// has to cover (analysis.fourth-option-prototype).
+//
+// In the real design links are raw pointers, so the reads below are a
+// use-after-free. If this program's second line ever stops printing, the borrow
+// rule landed.
+
+struct Node {
+    name: string
+    health: i32
+    next: Link<Node>?
+}
+
+func main() {
+    mut store: Store<Node> = Store.new()
+    let a = store.insert(Node { name: "a", health: 1, next: none })
+    let b = store.insert(Node { name: "b", health: 2, next: none })
+    a.next = b
+
+    store.delete(b)
+
+    mut edge = "none"
+    if a.next? as t { edge = t.name }
+    println("edge in a node: {edge}")
+    println("local link reads: {b.name} health={b.health}")
+    println("store len = {store.len()}")
+}

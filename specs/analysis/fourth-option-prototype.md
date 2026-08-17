@@ -12,6 +12,12 @@ Everything below comes from running them rather than from reasoning about them.
 Programs live in [prototype/](prototype/). Native codegen is not implemented —
 this is `rask run --interp` only.
 
+Everything claimed below is asserted in CI (`compile_run.rs`, the `store_link_*`
+tests): the semantics, the container-churn cases, the delete-cost numbers, the
+documented hole, and the litmus pairs' agreement. Two deliberate mutations —
+skipping the unlink, and dropping only the first matching list element —
+each fail exactly one of those tests, so they check what they claim to.
+
 ## The short version
 
 The model does what it claims for topology, and the flagship loop really does
@@ -72,6 +78,14 @@ A container backlink names the container and no position, so it is one entry per
 pointing at T and the entry survives until T is deleted, when the visit finds
 nothing — one check, once, because the list is discarded by the delete that read
 it. Nothing here grows.
+
+That coarseness is the one place the prototype is less precise than an intrusive
+list would be, so it is the part with the most tests rather than the most
+argument. `store_link_container_churn.rk` covers every way of removing an edge
+without telling the store — pop, remove-by-value, clear, a `filter` that builds
+a fresh list, the same target twice in one list, one target in two lists, a list
+nested two deep, and an index key overwritten — and the fixup gets all of them
+right. The asymmetry costs a wasted check; it does not cost correctness.
 
 Registration and unlinking are both O(1): the index is a map keyed by slot, not
 a list to scan. Building a hub of in-degree 25,600 is linear.

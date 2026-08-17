@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Store<T>` + `Link<T>` semantics (analysis.fourth-option).
+//
+// The model: deleting a node sets every edge pointing at it to `none` before
+// the delete returns, so a dead link never exists and following a live one
+// needs no check. Everything here is a consequence of that.
+
+struct Node {
+    id: i32
+    hits: i32
+    peer: Link<Node>?
+}
+
+struct World {
+    store: Store<Node>
+    focus: Link<Node>?          // root edge: beside the store, not in a node
+}
+
+func main() {
+    scalar_edge_nulled()
+    writes_through_a_link_are_shared()
+    identity_is_the_node()
+    root_edge_nulled()
+    overwrite_unlinks()
+    node_inserted_with_edges()
+    iteration_and_structural_ops()
+    stores_are_independent()
+}
+
+// A scalar edge becomes `none` at its target's delete — the whole model.
+func scalar_edge_nulled() {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = b
+    b.peer = a
+    s.delete(b)
+    mut a_peer = "none"
+    if a.peer? as p { a_peer = "{p.id}" }
+    println("scalar: a.peer={a_peer} len={s.len()}")
+}
+
+// A link is the node's address, so two links to one node see each other's
+// writes. Nodes are not copied into the store.
+func writes_through_a_link_are_shared() {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    b.peer = a
+    if b.peer? as through { through.hits += 5 }
+    a.hits += 1
+    println("shared: a.hits={a.hits}")
+}
+
+// `==` on links compares nodes, which is what edge-list removal needs.
+func identity_is_the_node() {
+    mut s: Store<Node> = Store.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = a
+    mut self_ref = false
+    if a.peer? as p { self_ref = p == a }
+    println("identity: a==a {a == a}, a==b {a == b}, self-edge {self_ref}")
+}
+
+// A link held on the struct that *owns* the store is an edge like any other.
+func root_edge_nulled() {
+    mut w = World { store: Store.new(), focus: none }
+    let n = w.store.insert(Node { id: 7, hits: 0, peer: none })
+    w.focus = n
+    mut before = "none"
+    if w.focus? as f { before = "{f.id}" }
+    w.store.delete(n)
+    mut after = "none"
+    if w.focus? as f { after = "{f.id}" }
+    println("root: before={before} after={after}")
+}
+
+// Re-pointing an edge forgets the old target. Deleting what it used to point at
+// must not disturb where it points now.
+func overwrite_unlinks() {
+    mut s: Store<Node> = Store.new()
+    let holder = s.insert(Node { id: 0, hits: 0, peer: none })
+    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+    let second = s.insert(Node { id: 2, hits: 0, peer: none })
+    holder.peer = first
+    holder.peer = second
+    holder.peer = holder.peer          // must not drop what it re-adds
+    s.delete(first)
+    mut still = "none"
+    if holder.peer? as p { still = "{p.id}" }
+    println("overwrite: after deleting first, holder.peer={still}")
+    s.delete(second)
+    mut now = "none"
+    if holder.peer? as p { now = "{p.id}" }
+    println("overwrite: after deleting second, holder.peer={now}")
+}
+
+// A node can arrive with edges already in its fields — the node's identity only
+// exists from `insert`, so that's where those get recorded.
+func node_inserted_with_edges() {
+    mut s: Store<Node> = Store.new()
+    let head = s.insert(Node { id: 1, hits: 0, peer: none })
+    let tail = s.insert(Node { id: 2, hits: 0, peer: head })
+    s.delete(head)
+    mut tail_peer = "none"
+    if tail.peer? as p { tail_peer = "{p.id}" }
+    println("born-with-edge: tail.peer={tail_peer}")
+}
+
+func iteration_and_structural_ops() {
+    mut s: Store<Node> = Store.new()
+    println("empty: is_empty={s.is_empty()} len={s.len()}")
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let c = s.insert(Node { id: 3, hits: 0, peer: none })
+    mut sum = 0
+    for n in s.nodes() {
+        sum += n.id
+    }
+    println("iterate: sum={sum} contains_a={s.contains(a)}")
+    s.delete(b)
+    mut after = 0
+    for n in s.nodes() {
+        after += n.id
+    }
+    println("after delete b: sum={after} contains_b={s.contains(b)} len={s.len()}")
+    s.clear()
+    println("cleared: len={s.len()} is_empty={s.is_empty()}")
+    let _ = a
+    let _ = c
+}
+
+// A delete in one store must not touch edges into another.
+func stores_are_independent() {
+    mut left: Store<Node> = Store.new()
+    mut right: Store<Node> = Store.new()
+    let l = left.insert(Node { id: 1, hits: 0, peer: none })
+    let r = right.insert(Node { id: 2, hits: 0, peer: none })
+    // A node in `left` pointing at a node in `right` — a cross-store edge.
+    l.peer = r
+    right.delete(r)
+    mut l_peer = "none"
+    if l.peer? as p { l_peer = "{p.id}" }
+    println("cross-store: l.peer={l_peer} left={left.len()} right={right.len()}")
+}

@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Container churn against the delete-time fixup (analysis.fourth-option).
+//
+// A container's backlink names the container and no position, so every way of
+// removing an element without telling the store is a chance for the fixup to
+// get it wrong. Each case below churns an edge list or index and then deletes,
+// checking what survives.
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+}
+
+struct Holder {
+    store: Store<Node>
+    list: Vec<Link<Node>>
+    other: Vec<Link<Node>>
+    nested: Vec<Vec<Link<Node>>>
+    index: Map<string, Link<Node>>
+}
+
+func ids(list: Vec<Link<Node>>) -> string {
+    mut out = ""
+    for n in list {
+        out = "{out}{n.id} "
+    }
+    return out
+}
+
+func main() {
+    mut h = Holder {
+        store: Store.new(),
+        list: Vec.new(),
+        other: Vec.new(),
+        nested: Vec.new(),
+        index: Map.new(),
+    }
+
+    // -- popped element, then delete: the entry is gone already, and the
+    //    fixup must leave the rest of the list alone.
+    let a = h.store.insert(Node { id: 1, peer: none })
+    let b = h.store.insert(Node { id: 2, peer: none })
+    h.list.push(a)
+    h.list.push(b)
+    let _popped = h.list.pop()
+    h.store.delete(b)
+    println("after pop+delete b: list=[{ids(h.list)}] len={h.list.len()}")
+
+    // Deleting the still-listed node must drop it.
+    h.store.delete(a)
+    println("after delete a:     list=[{ids(h.list)}] len={h.list.len()}")
+
+    // -- the same target twice in one list: both entries must go.
+    let c = h.store.insert(Node { id: 3, peer: none })
+    h.list.push(c)
+    h.list.push(c)
+    println("c twice:            list=[{ids(h.list)}] len={h.list.len()}")
+    h.store.delete(c)
+    println("after delete c:     list=[{ids(h.list)}] len={h.list.len()}")
+
+    // -- one target in two different lists: both must be fixed.
+    let d = h.store.insert(Node { id: 4, peer: none })
+    h.list.push(d)
+    h.other.push(d)
+    h.store.delete(d)
+    println("two lists:          list len={h.list.len()} other len={h.other.len()}")
+
+    // -- cleared list, then delete: nothing to fix, nothing to break.
+    let e = h.store.insert(Node { id: 5, peer: none })
+    h.list.push(e)
+    h.list.clear()
+    h.store.delete(e)
+    println("after clear+delete: list len={h.list.len()}")
+
+    // -- a replaced list. `filter` builds a NEW Vec, so the entries in it were
+    //    never registered by the push that filled the old one.
+    let f = h.store.insert(Node { id: 6, peer: none })
+    let g = h.store.insert(Node { id: 7, peer: none })
+    h.other.clear()
+    h.other.push(f)
+    h.other.push(g)
+    h.other = h.other.filter(|n| n.id != 6)
+    println("filtered:           other=[{ids(h.other)}]")
+    h.store.delete(g)
+    println("after delete g:     other len={h.other.len()}")
+
+    // -- nested lists: the edge lives two containers deep.
+    let i1 = h.store.insert(Node { id: 8, peer: none })
+    mut inner: Vec<Link<Node>> = Vec.new()
+    inner.push(i1)
+    h.nested.push(inner)
+    h.store.delete(i1)
+    if h.nested.get(0)? as first {
+        println("nested:             inner len={first.len()}")
+    }
+
+    // -- index: overwriting a key, then deleting the displaced target.
+    let k1 = h.store.insert(Node { id: 9, peer: none })
+    let k2 = h.store.insert(Node { id: 10, peer: none })
+    h.index.insert("slot", k1)
+    h.index.insert("slot", k2)      // k1 displaced
+    h.store.delete(k1)
+    println("index after k1 del: len={h.index.len()}")
+    h.store.delete(k2)
+    println("index after k2 del: len={h.index.len()}")
+
+    println("store len = {h.store.len()}")
+}

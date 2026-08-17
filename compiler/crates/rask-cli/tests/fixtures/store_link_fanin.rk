@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Fan-in stress: N nodes all pointing at one hub, then delete the hub.
+//
+// This is the workload the fourth-option analysis names as its genuine
+// regression: `delete` is O(in-degree), against a handle remove's O(1).
+//
+// Run with RASK_STORE_STATS=1 to see the fixup work:
+//     holders_visited = incoming edges walked
+//     edges_fixed     = edges actually rewritten
+//
+// Both track FANIN exactly. Vary FANIN below to see it stay linear. Compare
+// sparse_delete_links.rk, where in-degree is 1 in a 500-node store and the
+// delete visits one holder — the cost follows in-degree, not store size.
+
+const FANIN: i32 = 200
+
+struct Node {
+    id: i32
+    hub: Link<Node>?
+}
+
+func main() {
+    mut store: Store<Node> = Store.new()
+
+    let hub = store.insert(Node { id: 0, hub: none })
+
+    mut i = 1
+    while i <= FANIN {
+        let n = store.insert(Node { id: i, hub: none })
+        n.hub = hub
+        i += 1
+    }
+
+    println("fan-in = {FANIN}, nodes = {store.len()}")
+
+    // One delete. Every one of the FANIN edges must be found and nulled.
+    store.delete(hub)
+
+    println("after deleting the hub, nodes = {store.len()}")
+
+    mut dangling = 0
+    for n in store.nodes() {
+        if n.hub? as _h {
+            dangling += 1
+        }
+    }
+    println("edges still pointing at the deleted hub = {dangling}")
+}

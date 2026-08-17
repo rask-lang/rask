@@ -1266,6 +1266,184 @@ fn error_frozen_pool_write() {
     assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
 }
 
+/// Run a .rk file given by repo-relative path via `rask run --interp`.
+///
+/// For the comparison programs in `specs/analysis/prototype/`: the documented
+/// programs are the tested ones, so the write-up can't drift from what runs.
+fn run_interp_repo_path(rel: &str) -> (String, i32) {
+    let rask = rask_binary();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join(rel);
+    let out = Command::new(&rask)
+        .args(["run", "--interp"])
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run --interp");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+// The litmus comparison's headline claim: the same program written with
+// `Pool`+`Handle` and with `Store`+`Link` produces the same output. That is what
+// makes the ergonomics comparison in the write-up a comparison rather than two
+// unrelated programs, so it is asserted rather than eyeballed.
+#[test]
+fn store_link_litmus_pairs_agree() {
+    let pairs = [
+        ("L1 doubly-linked list", "l1_list_handles.rk", "l1_list_links.rk"),
+        ("L3 scene tree", "l3_scene_handles.rk", "l3_scene_links.rk"),
+    ];
+    for (label, handles, links) in pairs {
+        let (h_out, h_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{handles}"));
+        let (l_out, l_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{links}"));
+        assert_eq!(h_code, 0, "{label}: handle version should run: {h_out}");
+        assert_eq!(l_code, 0, "{label}: link version should run: {l_out}");
+        assert!(!h_out.trim().is_empty(), "{label}: handle version printed nothing");
+        assert_eq!(
+            h_out, l_out,
+            "{label}: the two memory models must agree.\nhandles:\n{h_out}\nlinks:\n{l_out}"
+        );
+    }
+
+    // L2 is the flagship and deliberately does *not* match line-for-line: the
+    // handle version can still ask about a removed node, the link version has
+    // nothing left to ask. Both must run, and both must reach round 2 with the
+    // dead target's edges cleared.
+    for name in ["l2_targeting_handles.rk", "l2_targeting_links.rk"] {
+        let (out, code) = run_interp_repo_path(&format!("specs/analysis/prototype/{name}"));
+        assert_eq!(code, 0, "{name} should run: {out}");
+        assert!(out.contains("-- round 2"), "{name} should reach round 2: {out}");
+        assert!(
+            out.contains("a: health=100 target=none"),
+            "{name}: a's edge to the dead target should be cleared by round 2: {out}"
+        );
+    }
+}
+
+// ─── Store<T> + Link<T> (analysis.fourth-option prototype) ───
+//
+// Interpreter-only: there is no native lowering for `Store`/`Link` yet, so these
+// assert `--interp`. Exact stdout rather than substrings — the whole point of the
+// model is *which* edges are `none` afterwards, and a substring check would pass
+// on a fixup that nulled too much.
+
+#[test]
+fn store_link_semantics() {
+    let (stdout, code) = run_interp("store_link_semantics.rk");
+    assert_eq!(code, 0, "store/link semantics fixture should run: {}", stdout);
+    let expected = "\
+scalar: a.peer=none len=1
+shared: a.hits=6
+identity: a==a true, a==b false, self-edge true
+root: before=7 after=none
+overwrite: after deleting first, holder.peer=2
+overwrite: after deleting second, holder.peer=none
+born-with-edge: tail.peer=none
+empty: is_empty=true len=0
+iterate: sum=6 contains_a=true
+after delete b: sum=4 contains_b=false len=2
+cleared: len=0 is_empty=true
+cross-store: l.peer=none left=1 right=0
+";
+    assert_eq!(stdout, expected, "store/link semantics changed");
+}
+
+// Every way of removing an element from an edge list or index without telling the
+// store. A container's backlink names the container and no position, so these are
+// where the fixup could plausibly null too much or too little.
+#[test]
+fn store_link_container_churn() {
+    let (stdout, code) = run_interp("store_link_container_churn.rk");
+    assert_eq!(code, 0, "container churn fixture should run: {}", stdout);
+    let expected = "\
+after pop+delete b: list=[1 ] len=1
+after delete a:     list=[] len=0
+c twice:            list=[3 3 ] len=2
+after delete c:     list=[] len=0
+two lists:          list len=0 other len=0
+after clear+delete: list len=0
+filtered:           other=[7 ]
+after delete g:     other len=0
+nested:             inner len=0
+index after k1 del: len=1
+index after k2 del: len=0
+store len = 1
+";
+    assert_eq!(stdout, expected, "container churn behaviour changed");
+}
+
+// The delete cost the analysis flags as the model's one regression: linear in
+// in-degree, and independent of store size. `RASK_STORE_STATS=1` reports the
+// fixup work on stderr.
+#[test]
+fn store_link_delete_cost_follows_in_degree() {
+    let rask = rask_binary();
+    let run = |name: &str| -> String {
+        let out = Command::new(&rask)
+            .args(["run", "--interp"])
+            .arg(fixture(name))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("RASK_STORE_STATS", "1")
+            .output()
+            .expect("failed to run rask");
+        assert!(out.status.success(), "{} should run", name);
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    // 200 nodes all pointing at one hub: 200 edges to fix.
+    let fanin = run("store_link_fanin.rk");
+    assert!(
+        fanin.contains("deletes=1 edges_fixed=200 holders_visited=200"),
+        "fan-in delete should walk its 200 incoming edges: {}",
+        fanin
+    );
+
+    // In-degree 1 in a 500-node store: one holder, not 499. This is the
+    // assertion that a scan would fail.
+    let sparse = run("store_link_sparse_delete.rk");
+    assert!(
+        sparse.contains("deletes=1 edges_fixed=1 holders_visited=1"),
+        "a low-degree delete must not scale with store size: {}",
+        sparse
+    );
+
+    // A field rewritten 50 times leaves one backlink, not 50 stale ones, and
+    // deleting a target it was re-pointed away from visits nobody.
+    let unlink = run("store_link_unlink_on_overwrite.rk");
+    assert!(
+        unlink.contains("deletes=2 edges_fixed=1 holders_visited=1"),
+        "overwriting an edge should unlink the old backlink: {}",
+        unlink
+    );
+}
+
+// The hole the prototype documents rather than fixes: a link in a *local*
+// outlives its node, because the fixup can only reach declared fields. Asserted
+// so the day someone adds the missing borrow rule, this test fails and says so.
+#[test]
+fn store_link_local_outlives_its_node() {
+    let (stdout, code) = run_interp("store_link_stale_local.rk");
+    assert_eq!(code, 0, "stale-local fixture should run: {}", stdout);
+    assert!(
+        stdout.contains("edge in a node: none"),
+        "an edge inside a node must still be fixed at delete: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("local link reads: b"),
+        "documenting the hole: a local link still reaches its deleted node. If \
+         this now fails, the links-in-locals borrow rule landed — update the \
+         write-up in specs/analysis/fourth-option-prototype.md: {}",
+        stdout
+    );
+}
+
 // analysis.fourth-option: a required edge (`Link<T>`, no `?`) is unsupported for
 // now — it needs a batch to construct and a cascade/restrict delete policy to
 // destroy, and neither is built. A bare link inside a Vec/Map stays legal,
