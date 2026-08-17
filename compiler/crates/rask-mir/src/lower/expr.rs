@@ -191,15 +191,18 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand>
 
 
 impl<'a> MirLowerer<'a> {
-    /// A concrete integer type. Deliberately not `Ptr` or any aggregate: `Ptr` is
-    /// what an unsubstituted generic parameter looks like by the time it reaches
-    /// MIR, and it must never be mistaken for a real layout.
+    /// A scalar whose layout is known here and now. Deliberately not `Ptr` or
+    /// any aggregate: `Ptr` is what an unsubstituted generic parameter looks like
+    /// by the time it reaches MIR, and taking it for a real layout gave a
+    /// monomorphized tuple a slot shaped for neither instantiation.
     ///
-    /// Integers only because they're the only implicit coercion today (CV1a). If
-    /// float widening ever becomes implicit, this has to widen with it or the
-    /// tuple-literal layout bug comes back for `(f64, f32)` — the `Ptr` exclusion
-    /// is the part that must survive, not the integer restriction (#660).
-    fn is_int_scalar(ty: &MirType) -> bool {
+    /// Floats are in the set even though float widening isn't implicit yet. The
+    /// restriction that mattered was always the `Ptr` exclusion; keying it to
+    /// integers was incidental, and left `(f64, f32)` primed to reproduce the
+    /// tuple-literal layout bug the moment #624 makes `f32` → `f64` implicit —
+    /// 4-and-8 element offsets against a declared 0-and-8 shape, which reads
+    /// back as a plausible wrong number rather than a crash (#660).
+    fn is_sized_scalar(ty: &MirType) -> bool {
         matches!(
             ty,
             MirType::I8
@@ -210,6 +213,10 @@ impl<'a> MirLowerer<'a> {
                 | MirType::U16
                 | MirType::U32
                 | MirType::U64
+                | MirType::F32
+                | MirType::F64
+                | MirType::Bool
+                | MirType::Char
         )
     }
 
@@ -1993,7 +2000,7 @@ impl<'a> MirLowerer<'a> {
                         .into_iter()
                         .zip(target.into_iter())
                         .map(|(got, want)| {
-                            if Self::is_int_scalar(&got) && Self::is_int_scalar(&want) {
+                            if Self::is_sized_scalar(&got) && Self::is_sized_scalar(&want) {
                                 want
                             } else {
                                 got

@@ -159,17 +159,18 @@ impl TypeChecker {
                         // The expectation only wins where the element actually
                         // coerced to it; anything else keeps its own type so a
                         // genuine mismatch is still reported downstream.
-                        // Integer coercion only, because that's all CV1a makes
-                        // implicit — if float widening joins it, this and MIR's
-                        // matching guard both have to widen or `(f64, f32)` goes
-                        // back to being laid out at its elements' widths (#660).
+                        // Any lossless scalar widening, not just integers. The
+                        // float case can't type-check yet, so it changes nothing
+                        // today — it's here so `(f64, f32)` doesn't go back to
+                        // being laid out at its elements' widths the moment #624
+                        // makes `f32` → `f64` implicit (#660).
                         let ty = Type::Tuple(
                             elem_types
                                 .iter()
                                 .zip(expected_elems.iter())
                                 .map(|(got, want)| {
                                     let got_r = self.ctx.apply(got);
-                                    if Self::is_integer_widening(&got_r, want) {
+                                    if Self::is_lossless_scalar_widening(&got_r, want) {
                                         want.clone()
                                     } else {
                                         got.clone()

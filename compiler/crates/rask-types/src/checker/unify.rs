@@ -1446,6 +1446,24 @@ impl TypeChecker {
     /// operators are homogeneous, so `a + b` on mixed types is still an error.
     /// That's the line C's "usual arithmetic conversions" crossed, and it's why
     /// `-1 < 1u` is true there.
+    /// A scalar coercion that cannot lose information — the set where a tuple
+    /// literal may adopt the annotated element type rather than its own.
+    ///
+    /// Integer widening plus `f32` → `f64`. The float case can't type-check yet
+    /// (CV1a doesn't make it implicit), so it changes nothing today; it's here so
+    /// that when #624 does make it implicit, the tuple-literal layout bug doesn't
+    /// come back for `(f64, f32)` — element-derived offsets of 0 and 4 against a
+    /// declared 0 and 8, which reads back as a plausible wrong number rather than
+    /// a crash (#660). MIR's `is_sized_scalar` is the other half of the pair.
+    pub(super) fn is_lossless_scalar_widening(from: &Type, to: &Type) -> bool {
+        if matches!((from, to), (Type::F32, Type::F64) | (Type::F32, Type::F32)
+            | (Type::F64, Type::F64))
+        {
+            return true;
+        }
+        Self::is_integer_widening(from, to)
+    }
+
     pub(super) fn is_integer_widening(from: &Type, to: &Type) -> bool {
         let (Some((from_bits, from_signed)), Some((to_bits, to_signed))) =
             (Self::int_shape(from), Self::int_shape(to))
