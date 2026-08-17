@@ -11,20 +11,22 @@ use crate::value::{ThreadHandleInner, Value};
 /// ctrl.panic/O4: a detached task's panic prints to stderr instead of
 /// disappearing. `detach()` can't block on the result, so a reaper thread
 /// waits for it in the background — the process keeps running either way.
-fn report_detached_panic(jh: std::thread::JoinHandle<Result<Value, String>>) {
+fn report_detached_panic(task_id: i64, jh: std::thread::JoinHandle<Result<Value, String>>) {
     crate::spawn_interp_thread(move || {
         if let Ok(Err(msg)) = jh.join() {
-            eprintln!("{}", msg);
+            // F1: say which task, since a runtime task is what died and nobody
+            // is going to join it and read the message. Same line as native's.
+            eprintln!("task {} panic at {}", task_id, msg);
         }
     });
 }
 
 /// Same as `report_detached_panic`, for tasks submitted to a thread pool
 /// (result arrives over a channel instead of a JoinHandle).
-fn report_detached_panic_recv(rx: mpsc::Receiver<Result<Value, String>>) {
+fn report_detached_panic_recv(task_id: i64, rx: mpsc::Receiver<Result<Value, String>>) {
     crate::spawn_interp_thread(move || {
         if let Ok(Err(msg)) = rx.recv() {
-            eprintln!("{}", msg);
+            eprintln!("task {} panic at {}", task_id, msg);
         }
     });
 }
@@ -103,7 +105,7 @@ impl Interpreter {
             "detach" => {
                 self.consume_handle(handle);
                 if let Some(jh) = handle.handle.lock().unwrap().take() {
-                    report_detached_panic(jh);
+                    report_detached_panic(handle.task_id, jh);
                 }
                 Ok(Value::Unit)
             }
@@ -216,9 +218,9 @@ impl Interpreter {
                 // still has to reach stderr — hand it to a reaper thread
                 // instead of dropping the result.
                 if let Some(rx) = handle.receiver.lock().unwrap().take() {
-                    report_detached_panic_recv(rx);
+                    report_detached_panic_recv(handle.task_id, rx);
                 } else if let Some(jh) = handle.handle.lock().unwrap().take() {
-                    report_detached_panic(jh);
+                    report_detached_panic(handle.task_id, jh);
                 }
                 Ok(Value::Unit)
             }

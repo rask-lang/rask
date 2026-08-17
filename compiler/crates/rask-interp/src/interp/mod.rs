@@ -421,6 +421,7 @@ impl Interpreter {
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -484,6 +485,7 @@ impl Interpreter {
                 let handle_inner = Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 });
 
                 // Register handle for affine tracking (conc.async/H1)
@@ -583,6 +585,7 @@ impl Interpreter {
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
                     receiver: Mutex::new(None),
+                    task_id: crate::value::next_task_id(),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(

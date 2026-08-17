@@ -3689,3 +3689,19 @@ fn an_if_expression_can_be_a_call_argument_on_both_backends() {
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// ctrl.panic/O4 + F1: a detached task's panic reaches stderr and names the task.
+// Native prefixed `task N panic at`; the interpreter printed the bare message
+// with no task id, and (before #748) its own `panic: ` in place of the location.
+#[test]
+fn a_detached_panic_is_reported_the_same_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "detached_panic_report.rk");
+        assert_eq!(code, 0, "{}: a detached task's panic doesn't kill main: {}", mode, stderr);
+        assert_eq!(stdout, "main still running\n", "{}", mode);
+        let report = stderr.trim_end();
+        assert!(report.starts_with("task 1 panic at ")
+                && report.ends_with("detached_panic_report.rk:12: detached boom"),
+            "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
+    }
+}

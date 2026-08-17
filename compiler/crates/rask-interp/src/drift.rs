@@ -86,10 +86,12 @@ fn dummy_value(type_name: &str) -> Value {
         "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
             handle: Mutex::new(None),
             receiver: Mutex::new(None),
+            task_id: crate::value::next_task_id(),
         })),
         "TaskHandle" => Value::TaskHandle(Arc::new(ThreadHandleInner {
             handle: Mutex::new(None),
             receiver: Mutex::new(None),
+            task_id: crate::value::next_task_id(),
         })),
         "Sender" => {
             let (tx, _rx) = mpsc::sync_channel(1);

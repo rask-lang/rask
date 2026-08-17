@@ -63,6 +63,7 @@ impl Interpreter {
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
                             receiver: Mutex::new(None),
+                            task_id: crate::value::next_task_id(),
                         });
 
                         // Register for affine tracking (conc.async/H1)
@@ -205,6 +206,7 @@ impl Interpreter {
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
                             receiver: Mutex::new(None),
+                            task_id: crate::value::next_task_id(),
                         });
 
                         tasks.lock().unwrap().push(Value::TaskHandle(handle_inner));
