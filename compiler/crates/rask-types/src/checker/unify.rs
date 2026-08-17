@@ -1102,6 +1102,25 @@ impl TypeChecker {
                 Ok(progress)
             }
 
+            // Same container, one side already resolved to a TypeId and the other
+            // still spelled by name. There were cases for both-resolved and
+            // both-by-name but not for the mix, so the constraint deferred
+            // forever and the args never met: `func lenof<T>(items: Vec<T>)`
+            // called twice left `T` free, both instantiations mangled to
+            // `lenof$_`, and codegen died on DuplicateDefinition.
+            (Type::Generic { base, args: ga }, Type::UnresolvedGeneric { name, args: ua })
+            | (Type::UnresolvedGeneric { name, args: ua }, Type::Generic { base, args: ga })
+                if self.types.get_type_id(name) == Some(*base) && ga.len() == ua.len() =>
+            {
+                let mut progress = false;
+                for (arg1, arg2) in ga.iter().zip(ua.iter()) {
+                    if self.unify_generic_arg(arg1, arg2, span)? {
+                        progress = true;
+                    }
+                }
+                Ok(progress)
+            }
+
             // Function types
             (
                 Type::Fn {

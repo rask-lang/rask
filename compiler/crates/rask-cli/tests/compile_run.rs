@@ -3891,3 +3891,27 @@ v=1
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// `func lenof<T>(items: Vec<T>)` called with two element types died in codegen
+// with DuplicateDefinition("lenof$_"): `T` never bound, so both instantiations
+// mangled to the same name. Unify had no case for a container that's resolved on
+// one side and spelled by name on the other, which is exactly how a call's
+// argument meets its signature.
+#[test]
+fn a_type_param_inside_a_container_binds_on_both_backends() {
+    let expected = "\
+len=2 1
+len=2 2
+first=3
+first word=pear
+biggest=9
+biggest word=pear
+maps=0 0
+annotated=3
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_through_container.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
