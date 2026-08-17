@@ -492,6 +492,15 @@ impl Resolver {
 
     fn is_builtin_name(&self, name: &str) -> bool {
         if let Some(sym_id) = self.scopes.lookup(name) {
+            // A module the *stdlib* imported for its own use isn't reserved for
+            // the program. `stdlib/http.rk` imports `net`, and that binding
+            // lands in the shared scope — so without this, `let net = …` was
+            // rejected while `let fs = …` was fine, for no reason a reader
+            // could see (#780). A name needs its own import here, which is
+            // IM1's rule and what E0210 reports.
+            if self.stdlib_symbols.contains(&sym_id) {
+                return false;
+            }
             if let Some(sym) = self.symbols.get(sym_id) {
                 return matches!(
                     sym.kind,
@@ -1132,6 +1141,17 @@ impl Resolver {
                     span,
                     false,
                 );
+                // Stdlib decls share one scope with user code, so an import
+                // *inside* the stdlib landed in the user's scope too — and
+                // `stdlib/http.rk` imports `net` and `json`. That's why those
+                // two, alone among the modules, worked with no import and were
+                // reserved words a program couldn't name a local after (#780).
+                // Marking the binding stdlib-owned puts them back under IM1:
+                // `stdlib_module_needs_import` reports the missing import, and
+                // `is_builtin_name` lets a user bind the name.
+                if self.stdlib_mode {
+                    self.stdlib_symbols.insert(sym_id);
+                }
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
@@ -1168,7 +1188,14 @@ impl Resolver {
                 return;
             }
 
-            self.imported_symbols.insert(binding_name.clone());
+            // Not in stdlib_mode: `imported_symbols` records what the *program*
+            // imported, and `stdlib/http.rk`'s own `import net` is not that.
+            // Recording it satisfied the import requirement for every user
+            // program, so `net.tcp_listen(…)` compiled with no import while
+            // every other module needed one (#780).
+            if !self.stdlib_mode {
+                self.imported_symbols.insert(binding_name.clone());
+            }
 
             if import_decl.is_lazy {
                 self.lazy_imports.insert(binding_name, path.clone());
@@ -1301,7 +1328,14 @@ impl Resolver {
                 }
             }
 
-            self.imported_symbols.insert(binding_name.clone());
+            // Not in stdlib_mode: `imported_symbols` records what the *program*
+            // imported, and `stdlib/http.rk`'s own `import net` is not that.
+            // Recording it satisfied the import requirement for every user
+            // program, so `net.tcp_listen(…)` compiled with no import while
+            // every other module needed one (#780).
+            if !self.stdlib_mode {
+                self.imported_symbols.insert(binding_name.clone());
+            }
 
             if import_decl.is_lazy {
                 self.lazy_imports.insert(binding_name, path.clone());

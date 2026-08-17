@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #780's other half: a program can name a local after any stdlib module it
+// hasn't imported. `net` and `json` were rejected as shadowing a built-in while
+// `fs`, `io`, `time` and the rest were fine — because `stdlib/http.rk` imports
+// `net` and `json`, and stdlib decls share one scope with user code.
+//
+// `let net = …` for a network handle is a name someone would reach for, and it
+// being the blocked one was arbitrary.
+func main() {
+    let json = 1
+    let net = 2
+    let fs = 3
+    let io = 4
+    let cli = 5
+    let time = 6
+    let math = 7
+    let os = 8
+    let http = 9
+    let random = 10
+
+    println("{json} {net} {fs} {io} {cli} {time} {math} {os} {http} {random}")
+}

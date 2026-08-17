@@ -1332,6 +1332,32 @@ fn print_renders_through_displayable_on_both_backends() {
     }
 }
 
+// #780: `json` and `net` worked with no import and the other modules didn't.
+// Not a prelude decision — `stdlib/http.rk` imports them, and stdlib decls share
+// one scope with user code, so that import satisfied every program's.
+#[test]
+fn error_module_used_without_its_import() {
+    let (failed, out) = compile_error_output("module_needs_import.rk");
+    assert!(failed, "a module needs its own import: {}", out);
+    for m in ["`json`", "`net`", "`fs`"] {
+        assert!(
+            out.contains(&format!("{} is used but never imported", m)),
+            "{} should need an import like every other module: {}", m, out,
+        );
+    }
+}
+
+// The other half: the two leaked names were also *reserved*, so `let net = 1`
+// was rejected as shadowing a built-in while `let fs = 1` was fine.
+#[test]
+fn module_names_can_be_bound_as_locals() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "module_names_are_bindable.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(stdout, "1 2 3 4 5 6 7 8 9 10\n", "{mode}: {stdout}");
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

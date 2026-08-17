@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a stdlib module used with no import for it
+// ERROR: is used but never imported
+//
+// IM1: a module's name comes from its import. `json` and `net` were the two
+// exceptions and nothing said why — `json.parse("{}")` type-checked with no
+// import while `fs.exists(…)` didn't (#780).
+//
+// The cause wasn't a prelude decision. `stdlib/http.rk` does `import net`, and
+// stdlib decls share one scope with user code, so that import landed in every
+// program's scope and satisfied the import requirement for all of them. `json`
+// rode in the same way on an `import json` in http.rk that nothing used.
+//
+// The other half was that those two names became reserved: `let net = 1` was
+// rejected as shadowing a built-in while `let fs = 1` was fine. That's covered
+// in the fixture's twin, compiler/crates/rask-cli/tests/fixtures/
+// module_names_are_bindable.rk — a program can name a local after any module it
+// hasn't imported.
+
+func main() {
+    // ERROR: `json` is used but never imported
+    let v = json.parse("{}")
+
+    // ERROR: `net` is used but never imported
+    let l = net.tcp_listen("127.0.0.1:0")
+
+    // ERROR: `fs` is used but never imported
+    let e = fs.exists("/tmp")
+
+    println("{v} {l} {e}")
+}
