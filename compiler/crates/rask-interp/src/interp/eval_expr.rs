@@ -2436,209 +2436,7 @@ impl Interpreter {
             }
 
             ExprKind::WithAs { bindings, body } => {
-                // Classify each binding source
-                enum WithSource {
-                    /// pool[handle] — index-based collection access
-                    Index { collection: Value, key: Value },
-                    /// Mutex — exclusive lock
-                    Mutex(Arc<Mutex<Value>>),
-                    /// Cell<T> — exclusive access (CE4/CE5)
-                    Cell(Arc<Mutex<Value>>),
-                    /// Shared.read() — shared read lock
-                    SharedRead(Arc<RwLock<Value>>),
-                    /// Shared.write() — exclusive write lock
-                    SharedWrite(Arc<RwLock<Value>>),
-                }
-
-                struct WithInfo {
-                    source: WithSource,
-                    name: String,
-                }
-
-                let mut infos: Vec<WithInfo> = Vec::new();
-
-                for binding in bindings {
-                    let source = if let ExprKind::Index { object, index } = &binding.source.kind {
-                        // pool[handle] pattern
-                        let collection = self.eval_expr(object)?;
-                        let key = self.eval_expr(index)?;
-                        WithSource::Index { collection, key }
-                    } else if let ExprKind::MethodCall { object, method, .. } = &binding.source.kind {
-                        // shared.read() or shared.write()
-                        let obj = self.eval_expr(object)?;
-                        match (&obj, method.as_str()) {
-                            (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
-                            (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
-                            (Value::RaskMutex(m), "lock") => WithSource::Mutex(Arc::clone(m)),
-                            _ => {
-                                return Err(RuntimeDiagnostic::new(
-                                    RuntimeError::TypeError(format!(
-                                        "with...as: unsupported method call .{}() on {}",
-                                        method, obj.type_name()
-                                    )),
-                                    expr.span,
-                                ));
-                            }
-                        }
-                    } else {
-                        // Plain expression — evaluate and check type
-                        let val = self.eval_expr(&binding.source)?;
-                        match val {
-                            Value::RaskMutex(m) => WithSource::Mutex(m),
-                            Value::Cell(c) => WithSource::Cell(c),
-                            _ => {
-                                return Err(RuntimeDiagnostic::new(
-                                    RuntimeError::TypeError(format!(
-                                        "with...as: expected Cell, Mutex, Shared, or collection index, got {}",
-                                        val.type_name()
-                                    )),
-                                    expr.span,
-                                ));
-                            }
-                        }
-                    };
-
-                    infos.push(WithInfo {
-                        source,
-                        name: binding.name.clone(),
-                    });
-                }
-
-                // Check aliasing for index-based bindings
-                for i in 0..infos.len() {
-                    for j in (i + 1)..infos.len() {
-                        if let (
-                            WithSource::Index { collection: c1, key: k1 },
-                            WithSource::Index { collection: c2, key: k2 },
-                        ) = (&infos[i].source, &infos[j].source) {
-                            if Self::value_eq(c1, c2) && Self::value_eq(k1, k2) {
-                                return Err(RuntimeDiagnostic::new(
-                                    RuntimeError::Panic(
-                                        "with...as: duplicate key in same collection (aliasing)".to_string(),
-                                    ),
-                                    expr.span,
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                // Acquire locks and bind values
-                self.env.push_scope();
-
-                // Hold lock guards in scope for Mutex/Shared
-                let mut mutex_guards: Vec<(String, std::sync::MutexGuard<'_, Value>)> = Vec::new();
-                let mut rw_read_guards: Vec<std::sync::RwLockReadGuard<'_, Value>> = Vec::new();
-                let mut rw_write_guards: Vec<(String, std::sync::RwLockWriteGuard<'_, Value>)> = Vec::new();
-
-                for info in &infos {
-                    match &info.source {
-                        WithSource::Index { collection, key } => {
-                            let elem = self.index_into(collection, key)
-                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                            self.env.define(info.name.clone(), elem);
-                        }
-                        WithSource::Mutex(m) => {
-                            let guard = m.lock().map_err(|e| RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
-                                expr.span,
-                            ))?;
-                            self.env.define(info.name.clone(), guard.clone());
-                            mutex_guards.push((info.name.clone(), guard));
-                        }
-                        WithSource::Cell(c) => {
-                            let guard = c.lock().map_err(|_| RuntimeDiagnostic::new(
-                                RuntimeError::Panic(
-                                    "Cell is exclusively borrowed — recursive access in with block".to_string(),
-                                ),
-                                expr.span,
-                            ))?;
-                            self.env.define(info.name.clone(), guard.clone());
-                            mutex_guards.push((info.name.clone(), guard));
-                        }
-                        WithSource::SharedRead(s) => {
-                            let guard = s.read().map_err(|e| RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!("Shared.read: poisoned: {}", e)),
-                                expr.span,
-                            ))?;
-                            self.env.define(info.name.clone(), guard.clone());
-                            rw_read_guards.push(guard);
-                        }
-                        WithSource::SharedWrite(s) => {
-                            let guard = s.write().map_err(|e| RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
-                                expr.span,
-                            ))?;
-                            self.env.define(info.name.clone(), guard.clone());
-                            rw_write_guards.push((info.name.clone(), guard));
-                        }
-                    }
-                }
-
-                // Execute body. Capture the exit instead of `?`-returning: unwind
-                // releases access but keeps writes (ctrl.panic/U2), so the
-                // writeback and scope-pop below must run even on panic.
-                let mut body_result: Result<Value, RuntimeDiagnostic> = Ok(Value::Unit);
-                for stmt in body {
-                    match self.exec_stmt(stmt) {
-                        Ok(v) => body_result = Ok(v),
-                        Err(e) => { body_result = Err(e); break; }
-                    }
-                }
-
-                // Writeback (U2: mutations made before the panic are flushed,
-                // not rolled back). Read locks never write back — the checker
-                // rejects mutation through them (conc.sync/R1).
-                let mut writeback_err: Option<RuntimeDiagnostic> = None;
-                for info in &infos {
-                    if !matches!(info.source, WithSource::SharedRead(_)) {
-                        if let Some(updated) = self.env.get(&info.name).cloned() {
-                            match &info.source {
-                                WithSource::Index { collection, key } => {
-                                    if let Err(e) = self.write_back_index(collection, key, updated) {
-                                        if writeback_err.is_none() {
-                                            writeback_err = Some(RuntimeDiagnostic::new(e, expr.span));
-                                        }
-                                    }
-                                }
-                                WithSource::Mutex(_) | WithSource::Cell(_) | WithSource::SharedWrite(_) => {
-                                    // Writeback handled via guards below
-                                }
-                                WithSource::SharedRead(_) => {
-                                    // Read-only, no writeback
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Write back to Mutex/Cell guards
-                for (name, mut guard) in mutex_guards {
-                    if let Some(updated) = self.env.get(&name) {
-                        *guard = updated.clone();
-                    }
-                }
-
-                // Write back to Shared write guards
-                for (name, mut guard) in rw_write_guards {
-                    if let Some(updated) = self.env.get(&name) {
-                        *guard = updated.clone();
-                    }
-                }
-
-                // Read guards dropped automatically
-                drop(rw_read_guards);
-
-                self.env.pop_scope();
-
-                // A body panic/error wins; otherwise surface a writeback failure.
-                match body_result {
-                    Err(e) => Err(e),
-                    Ok(v) => match writeback_err {
-                        Some(e) => Err(e),
-                        None => Ok(v),
-                    },
-                }
+                self.eval_with_as(expr, bindings, body)
             }
 
             ExprKind::Comptime { body } => {
@@ -2658,184 +2456,415 @@ impl Interpreter {
 
             // Select: channel multiplexing (conc.select/A1-A3, P1-P2)
             ExprKind::Select { arms, is_priority } => {
-                use rask_ast::expr::SelectArmKind;
-
-                if arms.is_empty() {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic("select with zero arms [conc.select/P3]".to_string()),
-                        expr.span,
-                    ));
-                }
-
-                // Evaluate channel expressions up front
-                struct SelectEntry {
-                    kind: EvalSelectKind,
-                    arm_idx: usize,
-                }
-                #[allow(dead_code)]
-                enum EvalSelectKind {
-                    Recv {
-                        rx: Arc<Mutex<mpsc::Receiver<Value>>>,
-                        binding: String,
-                    },
-                    Send {
-                        tx: Arc<Mutex<mpsc::SyncSender<Value>>>,
-                        value: Value,
-                    },
-                    Default,
-                }
-
-                let mut entries = Vec::new();
-                let mut default_idx: Option<usize> = None;
-
-                for (i, arm) in arms.iter().enumerate() {
-                    match &arm.kind {
-                        SelectArmKind::Recv { channel, binding } => {
-                            let ch_val = self.eval_expr(channel)?;
-                            match ch_val {
-                                Value::Receiver(rx) => {
-                                    entries.push(SelectEntry {
-                                        kind: EvalSelectKind::Recv {
-                                            rx,
-                                            binding: binding.clone(),
-                                        },
-                                        arm_idx: i,
-                                    });
-                                }
-                                _ => {
-                                    return Err(RuntimeDiagnostic::new(
-                                        RuntimeError::TypeError(format!(
-                                            "select recv arm expects Receiver, got {}",
-                                            ch_val.type_name()
-                                        )),
-                                        expr.span,
-                                    ));
-                                }
-                            }
-                        }
-                        SelectArmKind::Send { channel, value } => {
-                            let ch_val = self.eval_expr(channel)?;
-                            let send_val = self.eval_expr(value)?;
-                            match ch_val {
-                                Value::Sender(tx) => {
-                                    entries.push(SelectEntry {
-                                        kind: EvalSelectKind::Send {
-                                            tx,
-                                            value: send_val,
-                                        },
-                                        arm_idx: i,
-                                    });
-                                }
-                                _ => {
-                                    return Err(RuntimeDiagnostic::new(
-                                        RuntimeError::TypeError(format!(
-                                            "select send arm expects Sender, got {}",
-                                            ch_val.type_name()
-                                        )),
-                                        expr.span,
-                                    ));
-                                }
-                            }
-                        }
-                        SelectArmKind::Default => {
-                            default_idx = Some(i);
-                        }
-                    }
-                }
-
-                // Build poll order: sequential for priority, shuffled for fair
-                let mut poll_order: Vec<usize> = (0..entries.len()).collect();
-                if !is_priority {
-                    // Simple shuffle using system time as seed (P1: random fair)
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .subsec_nanos() as u64;
-                    let mut rng = seed;
-                    for i in (1..poll_order.len()).rev() {
-                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-                        let j = (rng as usize) % (i + 1);
-                        poll_order.swap(i, j);
-                    }
-                }
-
-                // Poll loop with backoff
-                let mut backoff_us: u64 = 10; // start at 10μs
-                let max_backoff_us: u64 = 1000; // cap at 1ms
-
-                loop {
-                    let mut all_closed = true;
-
-                    for &entry_idx in &poll_order {
-                        let entry = &entries[entry_idx];
-                        match &entry.kind {
-                            EvalSelectKind::Recv { rx, binding } => {
-                                let rx_guard = rx.lock().unwrap();
-                                match rx_guard.try_recv() {
-                                    Ok(val) => {
-                                        drop(rx_guard);
-                                        // Execute this arm's body with binding
-                                        self.env.push_scope();
-                                        self.env.define(binding.clone(), val);
-                                        let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                        self.env.pop_scope();
-                                        return Ok(result);
-                                    }
-                                    Err(mpsc::TryRecvError::Empty) => {
-                                        all_closed = false;
-                                    }
-                                    Err(mpsc::TryRecvError::Disconnected) => {
-                                        // Channel closed, skip
-                                    }
-                                }
-                            }
-                            EvalSelectKind::Send { tx, value } => {
-                                let tx_guard = tx.lock().unwrap();
-                                match tx_guard.try_send(value.clone()) {
-                                    Ok(()) => {
-                                        drop(tx_guard);
-                                        let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                        return Ok(result);
-                                    }
-                                    Err(mpsc::TrySendError::Full(_)) => {
-                                        all_closed = false;
-                                    }
-                                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                                        // Channel closed
-                                    }
-                                }
-                            }
-                            EvalSelectKind::Default => unreachable!(),
-                        }
-                    }
-
-                    // All channels closed (CL1). This used to hand back an
-                    // `Err(...)` — but a select's type is its arms' type, so a
-                    // Result appearing there is a value nothing can use:
-                    // `const got: i64 = select { … }` would be holding an enum.
-                    // Native panics here, and now so does this.
-                    if all_closed && default_idx.is_none() {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::Panic(
-                                "select: every channel is closed [conc.select/CL1]".to_string(),
-                            ),
-                            expr.span,
-                        ));
-                    }
-
-                    // Default arm fires if nothing ready (A3)
-                    if let Some(idx) = default_idx {
-                        return self.eval_expr(&arms[idx].body);
-                    }
-
-                    // Backoff
-                    std::thread::sleep(std::time::Duration::from_micros(backoff_us));
-                    backoff_us = (backoff_us * 2).min(max_backoff_us);
-                }
+                self.eval_select(expr, arms, *is_priority)
             }
 
             _ => Ok(Value::Unit),
         }
     }
+    /// `with a as x, b as y { … }` — the box family's scoped access.
+    ///
+    /// Its own function so its locals stay out of `eval_expr`'s frame. Rust
+    /// sizes a frame for the union of every arm's locals, so a 200-line arm is
+    /// paid for by every interpreted call, however trivial (#759).
+    #[inline(never)]
+    fn eval_with_as(
+        &mut self,
+        expr: &Expr,
+        bindings: &[rask_ast::expr::WithBinding],
+        body: &[rask_ast::stmt::Stmt],
+    ) -> Result<Value, RuntimeDiagnostic> {
+            // Classify each binding source
+            enum WithSource {
+                /// pool[handle] — index-based collection access
+                Index { collection: Value, key: Value },
+                /// Mutex — exclusive lock
+                Mutex(Arc<Mutex<Value>>),
+                /// Cell<T> — exclusive access (CE4/CE5)
+                Cell(Arc<Mutex<Value>>),
+                /// Shared.read() — shared read lock
+                SharedRead(Arc<RwLock<Value>>),
+                /// Shared.write() — exclusive write lock
+                SharedWrite(Arc<RwLock<Value>>),
+            }
+
+            struct WithInfo {
+                source: WithSource,
+                name: String,
+            }
+
+            let mut infos: Vec<WithInfo> = Vec::new();
+
+            for binding in bindings {
+                let source = if let ExprKind::Index { object, index } = &binding.source.kind {
+                    // pool[handle] pattern
+                    let collection = self.eval_expr(object)?;
+                    let key = self.eval_expr(index)?;
+                    WithSource::Index { collection, key }
+                } else if let ExprKind::MethodCall { object, method, .. } = &binding.source.kind {
+                    // shared.read() or shared.write()
+                    let obj = self.eval_expr(object)?;
+                    match (&obj, method.as_str()) {
+                        (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
+                        (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
+                        (Value::RaskMutex(m), "lock") => WithSource::Mutex(Arc::clone(m)),
+                        _ => {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "with...as: unsupported method call .{}() on {}",
+                                    method, obj.type_name()
+                                )),
+                                expr.span,
+                            ));
+                        }
+                    }
+                } else {
+                    // Plain expression — evaluate and check type
+                    let val = self.eval_expr(&binding.source)?;
+                    match val {
+                        Value::RaskMutex(m) => WithSource::Mutex(m),
+                        Value::Cell(c) => WithSource::Cell(c),
+                        _ => {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "with...as: expected Cell, Mutex, Shared, or collection index, got {}",
+                                    val.type_name()
+                                )),
+                                expr.span,
+                            ));
+                        }
+                    }
+                };
+
+                infos.push(WithInfo {
+                    source,
+                    name: binding.name.clone(),
+                });
+            }
+
+            // Check aliasing for index-based bindings
+            for i in 0..infos.len() {
+                for j in (i + 1)..infos.len() {
+                    if let (
+                        WithSource::Index { collection: c1, key: k1 },
+                        WithSource::Index { collection: c2, key: k2 },
+                    ) = (&infos[i].source, &infos[j].source) {
+                        if Self::value_eq(c1, c2) && Self::value_eq(k1, k2) {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(
+                                    "with...as: duplicate key in same collection (aliasing)".to_string(),
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Acquire locks and bind values
+            self.env.push_scope();
+
+            // Hold lock guards in scope for Mutex/Shared
+            let mut mutex_guards: Vec<(String, std::sync::MutexGuard<'_, Value>)> = Vec::new();
+            let mut rw_read_guards: Vec<std::sync::RwLockReadGuard<'_, Value>> = Vec::new();
+            let mut rw_write_guards: Vec<(String, std::sync::RwLockWriteGuard<'_, Value>)> = Vec::new();
+
+            for info in &infos {
+                match &info.source {
+                    WithSource::Index { collection, key } => {
+                        let elem = self.index_into(collection, key)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                        self.env.define(info.name.clone(), elem);
+                    }
+                    WithSource::Mutex(m) => {
+                        let guard = m.lock().map_err(|e| RuntimeDiagnostic::new(
+                            RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
+                            expr.span,
+                        ))?;
+                        self.env.define(info.name.clone(), guard.clone());
+                        mutex_guards.push((info.name.clone(), guard));
+                    }
+                    WithSource::Cell(c) => {
+                        let guard = c.lock().map_err(|_| RuntimeDiagnostic::new(
+                            RuntimeError::Panic(
+                                "Cell is exclusively borrowed — recursive access in with block".to_string(),
+                            ),
+                            expr.span,
+                        ))?;
+                        self.env.define(info.name.clone(), guard.clone());
+                        mutex_guards.push((info.name.clone(), guard));
+                    }
+                    WithSource::SharedRead(s) => {
+                        let guard = s.read().map_err(|e| RuntimeDiagnostic::new(
+                            RuntimeError::Panic(format!("Shared.read: poisoned: {}", e)),
+                            expr.span,
+                        ))?;
+                        self.env.define(info.name.clone(), guard.clone());
+                        rw_read_guards.push(guard);
+                    }
+                    WithSource::SharedWrite(s) => {
+                        let guard = s.write().map_err(|e| RuntimeDiagnostic::new(
+                            RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
+                            expr.span,
+                        ))?;
+                        self.env.define(info.name.clone(), guard.clone());
+                        rw_write_guards.push((info.name.clone(), guard));
+                    }
+                }
+            }
+
+            // Execute body. Capture the exit instead of `?`-returning: unwind
+            // releases access but keeps writes (ctrl.panic/U2), so the
+            // writeback and scope-pop below must run even on panic.
+            let mut body_result: Result<Value, RuntimeDiagnostic> = Ok(Value::Unit);
+            for stmt in body {
+                match self.exec_stmt(stmt) {
+                    Ok(v) => body_result = Ok(v),
+                    Err(e) => { body_result = Err(e); break; }
+                }
+            }
+
+            // Writeback (U2: mutations made before the panic are flushed,
+            // not rolled back). Read locks never write back — the checker
+            // rejects mutation through them (conc.sync/R1).
+            let mut writeback_err: Option<RuntimeDiagnostic> = None;
+            for info in &infos {
+                if !matches!(info.source, WithSource::SharedRead(_)) {
+                    if let Some(updated) = self.env.get(&info.name).cloned() {
+                        match &info.source {
+                            WithSource::Index { collection, key } => {
+                                if let Err(e) = self.write_back_index(collection, key, updated) {
+                                    if writeback_err.is_none() {
+                                        writeback_err = Some(RuntimeDiagnostic::new(e, expr.span));
+                                    }
+                                }
+                            }
+                            WithSource::Mutex(_) | WithSource::Cell(_) | WithSource::SharedWrite(_) => {
+                                // Writeback handled via guards below
+                            }
+                            WithSource::SharedRead(_) => {
+                                // Read-only, no writeback
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Write back to Mutex/Cell guards
+            for (name, mut guard) in mutex_guards {
+                if let Some(updated) = self.env.get(&name) {
+                    *guard = updated.clone();
+                }
+            }
+
+            // Write back to Shared write guards
+            for (name, mut guard) in rw_write_guards {
+                if let Some(updated) = self.env.get(&name) {
+                    *guard = updated.clone();
+                }
+            }
+
+            // Read guards dropped automatically
+            drop(rw_read_guards);
+
+            self.env.pop_scope();
+
+            // A body panic/error wins; otherwise surface a writeback failure.
+            match body_result {
+                Err(e) => Err(e),
+                Ok(v) => match writeback_err {
+                    Some(e) => Err(e),
+                    None => Ok(v),
+                },
+            }
+    }
+
+    /// Channel multiplexing (conc.select/A1-A3, P1-P2).
+    ///
+    /// Its own function so its locals stay out of `eval_expr`'s frame — Rust
+    /// sizes one frame for the union of every arm's locals (#759).
+    #[inline(never)]
+    fn eval_select(
+        &mut self,
+        expr: &Expr,
+        arms: &[rask_ast::expr::SelectArm],
+        is_priority: bool,
+    ) -> Result<Value, RuntimeDiagnostic> {
+            use rask_ast::expr::SelectArmKind;
+
+            if arms.is_empty() {
+                return Err(RuntimeDiagnostic::new(
+                    RuntimeError::Panic("select with zero arms [conc.select/P3]".to_string()),
+                    expr.span,
+                ));
+            }
+
+            // Evaluate channel expressions up front
+            struct SelectEntry {
+                kind: EvalSelectKind,
+                arm_idx: usize,
+            }
+            #[allow(dead_code)]
+            enum EvalSelectKind {
+                Recv {
+                    rx: Arc<Mutex<mpsc::Receiver<Value>>>,
+                    binding: String,
+                },
+                Send {
+                    tx: Arc<Mutex<mpsc::SyncSender<Value>>>,
+                    value: Value,
+                },
+                Default,
+            }
+
+            let mut entries = Vec::new();
+            let mut default_idx: Option<usize> = None;
+
+            for (i, arm) in arms.iter().enumerate() {
+                match &arm.kind {
+                    SelectArmKind::Recv { channel, binding } => {
+                        let ch_val = self.eval_expr(channel)?;
+                        match ch_val {
+                            Value::Receiver(rx) => {
+                                entries.push(SelectEntry {
+                                    kind: EvalSelectKind::Recv {
+                                        rx,
+                                        binding: binding.clone(),
+                                    },
+                                    arm_idx: i,
+                                });
+                            }
+                            _ => {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "select recv arm expects Receiver, got {}",
+                                        ch_val.type_name()
+                                    )),
+                                    expr.span,
+                                ));
+                            }
+                        }
+                    }
+                    SelectArmKind::Send { channel, value } => {
+                        let ch_val = self.eval_expr(channel)?;
+                        let send_val = self.eval_expr(value)?;
+                        match ch_val {
+                            Value::Sender(tx) => {
+                                entries.push(SelectEntry {
+                                    kind: EvalSelectKind::Send {
+                                        tx,
+                                        value: send_val,
+                                    },
+                                    arm_idx: i,
+                                });
+                            }
+                            _ => {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "select send arm expects Sender, got {}",
+                                        ch_val.type_name()
+                                    )),
+                                    expr.span,
+                                ));
+                            }
+                        }
+                    }
+                    SelectArmKind::Default => {
+                        default_idx = Some(i);
+                    }
+                }
+            }
+
+            // Build poll order: sequential for priority, shuffled for fair
+            let mut poll_order: Vec<usize> = (0..entries.len()).collect();
+            if !is_priority {
+                // Simple shuffle using system time as seed (P1: random fair)
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos() as u64;
+                let mut rng = seed;
+                for i in (1..poll_order.len()).rev() {
+                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let j = (rng as usize) % (i + 1);
+                    poll_order.swap(i, j);
+                }
+            }
+
+            // Poll loop with backoff
+            let mut backoff_us: u64 = 10; // start at 10μs
+            let max_backoff_us: u64 = 1000; // cap at 1ms
+
+            loop {
+                let mut all_closed = true;
+
+                for &entry_idx in &poll_order {
+                    let entry = &entries[entry_idx];
+                    match &entry.kind {
+                        EvalSelectKind::Recv { rx, binding } => {
+                            let rx_guard = rx.lock().unwrap();
+                            match rx_guard.try_recv() {
+                                Ok(val) => {
+                                    drop(rx_guard);
+                                    // Execute this arm's body with binding
+                                    self.env.push_scope();
+                                    self.env.define(binding.clone(), val);
+                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                    self.env.pop_scope();
+                                    return Ok(result);
+                                }
+                                Err(mpsc::TryRecvError::Empty) => {
+                                    all_closed = false;
+                                }
+                                Err(mpsc::TryRecvError::Disconnected) => {
+                                    // Channel closed, skip
+                                }
+                            }
+                        }
+                        EvalSelectKind::Send { tx, value } => {
+                            let tx_guard = tx.lock().unwrap();
+                            match tx_guard.try_send(value.clone()) {
+                                Ok(()) => {
+                                    drop(tx_guard);
+                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                    return Ok(result);
+                                }
+                                Err(mpsc::TrySendError::Full(_)) => {
+                                    all_closed = false;
+                                }
+                                Err(mpsc::TrySendError::Disconnected(_)) => {
+                                    // Channel closed
+                                }
+                            }
+                        }
+                        EvalSelectKind::Default => unreachable!(),
+                    }
+                }
+
+                // All channels closed (CL1). This used to hand back an
+                // `Err(...)` — but a select's type is its arms' type, so a
+                // Result appearing there is a value nothing can use:
+                // `const got: i64 = select { … }` would be holding an enum.
+                // Native panics here, and now so does this.
+                if all_closed && default_idx.is_none() {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(
+                            "select: every channel is closed [conc.select/CL1]".to_string(),
+                        ),
+                        expr.span,
+                    ));
+                }
+
+                // Default arm fires if nothing ready (A3)
+                if let Some(idx) = default_idx {
+                    return self.eval_expr(&arms[idx].body);
+                }
+
+                // Backoff
+                std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+                backoff_us = (backoff_us * 2).min(max_backoff_us);
+            }
+    }
+
 }
 

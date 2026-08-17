@@ -2222,6 +2222,25 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("programs need an entry point to start execution")
             }
 
+            RuntimeError::RecursionTooDeep { function, depth } => {
+                Diagnostic::error(format!(
+                    "recursion too deep: {} nested calls and the stack is nearly gone",
+                    depth
+                ))
+                .with_code("R0023")
+                .with_primary(self.span, format!("`{}` called at the limit", function))
+                .with_fix(
+                    "check the base case if this was meant to terminate; otherwise \
+                     rewrite it as a loop, or run it natively with `rask run`, which \
+                     has no such limit",
+                )
+                .with_why(
+                    "the interpreter evaluates one Rask call per host stack frame, and \
+                     each of those is large; the limit is reported here rather than left \
+                     to overflow the stack, which killed the process with nothing printed",
+                )
+            }
+
             RuntimeError::AssertionFailed(msg) => {
                 Diagnostic::error(format!("assertion failed: {}", msg))
                     .with_code("R0014")

@@ -4018,6 +4018,40 @@ nocopy=1
     }
 }
 
+// The interpreter died at ~245 nested calls by overflowing the host stack —
+// SIGABRT, nothing printed, no exit code — where native manages millions (#759).
+// `main` and the test runner now run on the same 16 MiB stack every spawned task
+// already had (~245 → ~495), and running out is measured and reported instead.
+#[test]
+fn deep_recursion_runs_on_both_backends() {
+    let expected = "\
+down=300
+even=true odd=true
+sum=45150
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "deep_recursion.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// Unbounded recursion is a reported error, not a vanished process. The depth it
+// reaches depends on how heavy the frames are, so the test pins the diagnostic
+// and the exit code rather than a number.
+#[test]
+fn runaway_recursion_is_reported_not_aborted() {
+    let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
+    let out = format!("{}{}", stdout, stderr);
+    assert_eq!(code, 1, "should exit 1, not abort: {}", out);
+    assert!(out.contains("R0023"), "should be the recursion diagnostic: {}", out);
+    assert!(out.contains("recursion too deep"), "{}", out);
+    assert!(
+        out.contains("`down`"),
+        "should name the innermost function: {}", out,
+    );
+}
+
 // The other half: a non-Copy parameter really is moved by an `own` capture, so a
 // use after the branch stays an error. The #768 fix was to let a parameter's type
 // reach the Copy check, not to stop marking captures moved.

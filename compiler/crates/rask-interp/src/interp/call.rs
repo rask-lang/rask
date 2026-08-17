@@ -11,7 +11,35 @@ use crate::value::Value;
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(crate) fn call_function(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    /// Refuse to recurse when the host stack is nearly gone, and say so.
+    ///
+    /// The interpreter evaluates one Rask call per host stack frame, and those
+    /// frames are large — `eval_expr` is a single match over 80 expression kinds
+    /// and Rust sizes a frame for the union of every arm's locals. Running out
+    /// used to mean SIGABRT: no message, no diagnostic, no exit code (#759).
+    ///
+    /// Measured rather than counted. One Rask frame costs anywhere from a few KB
+    /// to tens of KB depending on how deeply nested the expressions in the body
+    /// are, so a fixed depth limit is either wrong for a heavy body or needlessly
+    /// low for a light one. Comparing the stack pointer against where interpreting
+    /// started answers the question that actually matters.
+    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+        if crate::stack_nearly_exhausted() {
+            return Err(RuntimeDiagnostic::new(
+                RuntimeError::RecursionTooDeep {
+                    function: func.name.clone(),
+                    depth: self.call_depth,
+                },
+                func.span,
+            ));
+        }
+        self.call_depth += 1;
+        let result = self.call_function_at_depth(func, args);
+        self.call_depth -= 1;
+        result
+    }
+
+    fn call_function_at_depth(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
