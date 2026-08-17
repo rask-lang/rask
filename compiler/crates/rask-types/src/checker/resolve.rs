@@ -576,6 +576,15 @@ impl TypeChecker {
             return Ok(progress);
         }
 
+        // `__concat` is what interpolation desugars to (std.strings has no
+        // public `concat`). string in, string out — the receiver is already
+        // known to be a string wherever the desugarer emits it.
+        if method == "__concat" && args.len() == 1 {
+            let progress = self.unify(&ret, &Type::String, span)?;
+            let _ = self.unify(&args[0], &Type::String, span)?;
+            return Ok(progress);
+        }
+
         // ER16: .origin() on any type returns the error origin string.
         // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
         if method == "origin" && args.is_empty() {

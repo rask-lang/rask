@@ -995,7 +995,10 @@ impl Desugarer {
                 id: self.fresh_id(),
                 kind: ExprKind::MethodCall {
                     object: Box::new(result),
-                    method: "concat".to_string(),
+                    // Compiler-internal, like `__fmt`. Interpolation is the one
+                    // way to combine strings, so there is no public `concat`
+                    // for this to target (std.strings, #303).
+                    method: "__concat".to_string(),
                     type_args: None,
                     args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
                 },
@@ -1061,14 +1064,14 @@ impl Desugarer {
             return Some(exprs.remove(0).kind);
         }
 
-        // Chain with concat: first.concat(second).concat(third)...
+        // Chain with the internal concat: first.__concat(second)...
         let mut result = exprs.remove(0);
         for seg_expr in exprs {
             result = Expr {
                 id: self.fresh_id(),
                 kind: ExprKind::MethodCall {
                     object: Box::new(result),
-                    method: "concat".to_string(),
+                    method: "__concat".to_string(),
                     type_args: None,
                     args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
                 },

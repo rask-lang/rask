@@ -5743,7 +5743,7 @@ impl<'a> MirLowerer<'a> {
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
         // concat(): string concatenation from interpolation
-        if method == "concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
+        if method == "__concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
             let (arg_op, _) = self.lower_expr(&args[0].expr)?;
             let result_local = self.builder.alloc_temp(MirType::String);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

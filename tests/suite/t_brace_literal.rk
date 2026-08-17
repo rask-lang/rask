@@ -17,7 +17,7 @@ test "type.strings — a lone brace is one character" {
 // literal would be read as interpolation, so it has to be assembled.
 test "type.strings — a lone brace is a usable prefix" {
     let open = "{"
-    let obj = open.concat("\"a\":1")
+    let obj = "{open}\"a\":1"
     assert obj.len() == 6
     assert obj.starts_with(open)
     assert !obj.starts_with("}")
