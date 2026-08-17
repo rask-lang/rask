@@ -202,7 +202,7 @@ impl<'a> MirLowerer<'a> {
         args: &[rask_ast::expr::CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
         match method {
-            "collect" if args.is_empty() => {
+            "to_vec" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_collect(&chain)?;
                     return Ok(Some(result));

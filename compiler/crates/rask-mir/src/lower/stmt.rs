@@ -1272,7 +1272,7 @@ impl<'a> MirLowerer<'a> {
         }
         // Iterator terminal .collect() returns a Vec
         if let ExprKind::MethodCall { method, .. } = &init.kind {
-            if method == "collect" {
+            if method == "to_vec" {
                 self.meta_mut(name).type_prefix = Some("Vec".to_string());
             }
         }

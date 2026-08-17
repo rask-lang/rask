@@ -1503,7 +1503,9 @@ impl TypeChecker {
                 self.unify(ret, &Type::option(elem), span)
             }
             "iter" if args.is_empty() => self.unify(ret, &self_ty, span),
-            "collect" if args.is_empty() => {
+            // SEQ28/SEQ31: the target is named, and `Vec<T>` is the only thing
+            // it can be. There is no `collect()`.
+            "to_vec" if args.is_empty() => {
                 let vec_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(elem))],
@@ -2674,9 +2676,6 @@ impl TypeChecker {
             }
             "limit" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
-            }
-            "collect" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
             }
             // vec.first() -> Option<T>

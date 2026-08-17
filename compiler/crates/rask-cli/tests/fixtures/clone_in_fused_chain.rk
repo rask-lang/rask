@@ -26,6 +26,6 @@ func rows() -> Vec<Ranked> {
 }
 
 func main() {
-  let views = rows().iter().map(|r| r.view.clone()).collect()
+  let views = rows().iter().map(|r| r.view.clone()).to_vec()
   println("{views.len()} {views[0].title} {views[1].id}")
 }

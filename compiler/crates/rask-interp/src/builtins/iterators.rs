@@ -200,7 +200,7 @@ impl Interpreter {
                 // Iterator.iter() returns self — already an iterator
                 Ok(Value::Iterator(Arc::clone(iter)))
             }
-            "collect" => {
+            "to_vec" => {
                 let mut result = Vec::new();
                 loop {
                     match self.iter_next(iter)? {

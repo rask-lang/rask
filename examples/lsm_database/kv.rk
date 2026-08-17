@@ -27,7 +27,7 @@ func encode_kv(kv: KeyValue) -> string {
 }
 
 func decode_kv(line: string) -> KeyValue or WalError {
-    let parts = line.split("\t").collect()
+    let parts = line.split("\t").to_vec()
     if parts.len() < 4 {
         return WalError.CorruptEntry(0, "expected 4 tab-separated fields")
     }

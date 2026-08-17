@@ -353,6 +353,23 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("struct field access is checked at compile time — only declared fields exist")
             }
 
+            // SEQ31: `collect` was removed, so the bare "no method" reads as if
+            // it were a typo. Name the replacement instead.
+            NoSuchMethod { ty, method, span } if method == "collect" => {
+                Diagnostic::error(format!("no method `collect` on `{}`", ty))
+                    .with_code("E0313")
+                    .with_primary(*span, "materializing terminals name what they build")
+                    .with_fix(
+                        "`to_vec()` for a Vec, `to_map()` for a Map of pairs, `join(sep)` for a string"
+                            .to_string(),
+                    )
+                    .with_why(
+                        "`collect` didn't say what it produced, so it needed an annotation to \
+                         mean anything — the named terminals say it at the call [type.sequence/SEQ31]"
+                            .to_string(),
+                    )
+            }
+
             NoSuchMethod { ty, method, span } => {
                 Diagnostic::error(format!(
                     "no method `{}` found for type `{}`",

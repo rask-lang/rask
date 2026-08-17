@@ -68,7 +68,7 @@ func encode_bloom(filter: BloomFilter) -> string {
 }
 
 func decode_bloom(data: string) -> BloomFilter or SstError {
-    let parts = data.split(",").collect()
+    let parts = data.split(",").to_vec()
     if parts.len() != BLOOM_BITS {
         return SstError.BloomFilterCorrupt(
             "expected {BLOOM_BITS} bits, got {parts.len()}"
