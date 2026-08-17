@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `r is MyErr.Worse as w` — testing a `T or E` against one variant of the error
+// enum *and binding its payload*.
+//
+// The bare form worked; adding the binder was rejected outright:
+//
+//     error[E0346]: `MyErr.Worse` is not a branch of `i64 or MyErr` — this test
+//                   can never be true
+//
+// The two forms took different paths: `is MyErr.Worse` parses as a constructor
+// pattern and never reached the branch check, while `is MyErr.Worse as w` parses
+// as a type pattern and was compared against the scrutinee's own branches (`i64`,
+// `MyErr`). A variant name is never one of those, so it could never pass — while
+// the bare form next to it proved the test can be true (#766).
+//
+// `match` has always dispatched at variant granularity on a `T or E` — the spec's
+// own example does it — and ER30 makes covering every variant of E the
+// exhaustiveness rule. So `is` was the odd one out.
+//
+// Three halves: the checker accepts it and types the binder as the variant's
+// payload; the interpreter matches the inner enum's variant rather than
+// descending past it; MIR reads at the variant's own offset inside the err
+// payload rather than binding the whole error (it bound a `MyErr` where a
+// `string` was named, so `{w}` printed the tag — "payload: 1").
+
+enum MyErr {
+    Bad
+    Worse(string)
+    Code(i64)
+}
+
+extend MyErr {
+    public func message(self) -> string {
+        match self {
+            MyErr.Bad => return "bad",
+            MyErr.Worse(w) => return "worse: {w}",
+            MyErr.Code(c) => return "code {c}",
+        }
+    }
+}
+
+func pick(n: i64) -> i64 or MyErr {
+    if n == 0 { return 7 }
+    if n == 1 { return MyErr.Bad }
+    if n == 2 { return MyErr.Worse("disk") }
+    return MyErr.Code(42)
+}
+
+func describe(n: i64) -> string {
+    let r = pick(n)
+    // A payload variant, bound.
+    if r is MyErr.Worse as w {
+        return "worse({w})"
+    }
+    // A different payload type, so the offsets can't be shared by accident.
+    if r is MyErr.Code as c {
+        return "code({c})"
+    }
+    // The bare form that always worked.
+    if r is MyErr.Bad {
+        return "bad"
+    }
+    // The ok side still binds.
+    if r is i64 as v {
+        return "ok({v})"
+    }
+    return "unreached"
+}
+
+func main() {
+    mut i = 0
+    while i < 4 {
+        println("{i}: {describe(i)}")
+        i = i + 1
+    }
+
+    // Naming the enum rather than a variant still binds the whole error.
+    let r = pick(2)
+    if r is MyErr as e {
+        println("whole: {e.message()}")
+    }
+}

@@ -3502,6 +3502,38 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
+    /// `Enum.Variant` naming a variant of a Result's error enum: the sole field's
+    /// type, its offset *within the err payload*, and its size.
+    ///
+    /// Only the single-field case. A multi-field variant would bind a tuple, which
+    /// needs a slot built rather than a field read — `is MyErr.Pair as p` falls
+    /// through to the ordinary payload binding until then.
+    fn err_variant_field(
+        &self,
+        scrutinee_ty: &MirType,
+        ty_name: &str,
+    ) -> Option<(MirType, u32, u32)> {
+        let MirType::Result { err, .. } = scrutinee_ty else { return None };
+        let (enum_name, variant_name) = ty_name.split_once('.')?;
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = err.as_ref() else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
+        if layout.name != enum_name {
+            return None;
+        }
+        let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
+        let field = match variant.fields.as_slice() {
+            [only] => only,
+            _ => return None,
+        };
+        Some((
+            self.ctx.type_to_mir(&field.ty),
+            variant.payload_offset + field.offset,
+            field.size,
+        ))
+    }
+
     /// Bind pattern payload variables into the current scope.
     ///
     /// After confirming a tag match, extracts payload fields from the
@@ -3584,7 +3616,32 @@ impl<'a> MirLowerer<'a> {
             // only caller (WhileLet) already routed control flow via
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
-            Pattern::TypePat { ty_name: _, binding: Some(name) } => {
+            Pattern::TypePat { ty_name, binding: Some(name) } => {
+                // ER23 at variant granularity: `r is MyErr.Worse as w` binds the
+                // *variant's* payload, not the whole error. The test is already
+                // two-layer — err tag, then the variant tag — so all that's needed
+                // is reading at the variant's own offset inside the err payload.
+                // Binding `payload_ty` handed over a `MyErr` where a `string` was
+                // named, and `{w}` printed the enum's tag (#766).
+                if let Some((field_ty, offset, size)) =
+                    self.err_variant_field(scrutinee_ty, ty_name)
+                {
+                    let local = self.builder.alloc_local(name.clone(), field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Field {
+                            base: value.clone(),
+                            field_index: 0,
+                            byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + offset),
+                            access: FieldAccess::for_field(&field_ty, size),
+                        },
+                    }));
+                    self.locals.insert(name.clone(), (local, field_ty.clone()));
+                    if let Some(prefix) = self.mir_type_name(&field_ty) {
+                        self.meta_mut(name).type_prefix = Some(prefix);
+                    }
+                    return;
+                }
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
                     crate::fallback::i64_fallback("lower/mod:typepat_payload")
                 });

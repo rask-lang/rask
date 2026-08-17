@@ -244,6 +244,30 @@ impl Interpreter {
                         }
                     }
                     let Some(inner) = fields.first() else { return None };
+                    // ER23 at variant granularity: `r is MyErr.Worse as w` names
+                    // one variant of the error enum and binds *that variant's*
+                    // payload. `match` has always dispatched this way on a
+                    // `T or E`; `is` compared the whole error type against
+                    // "MyErr.Worse", never matched, and descended into the payload
+                    // looking for another two-branch value — so the test answered
+                    // "no match" for the value it was written for (#766).
+                    if let Some((enum_name, variant_name)) = ty_name.split_once('.') {
+                        if let Value::Enum { name, variant: v, fields: payload, .. } = inner {
+                            if name == enum_name && v == variant_name {
+                                let mut bindings = HashMap::new();
+                                if let Some(n) = binding {
+                                    bindings.insert(n.clone(), variant_payload(payload));
+                                }
+                                return Some(bindings);
+                            }
+                            // Right enum, wrong variant — this test is false, and
+                            // descending into the payload would answer a different
+                            // question.
+                            if name == enum_name {
+                                return None;
+                            }
+                        }
+                    }
                     if runtime_type_matches(inner, ty_name) {
                         let mut bindings = HashMap::new();
                         if let Some(n) = binding {
@@ -437,6 +461,17 @@ impl Interpreter {
 /// Does the runtime `value` have type `ty_name`?
 /// Handles primitives (`i32`, `f64`, `string`, `bool`, `char`) and named
 /// enum/struct types. Used by ER27 match type patterns.
+/// What a binder on an enum variant sees: the one field, a tuple of several, or
+/// unit when the variant carries nothing. A tuple is a `Vec` value here, the same
+/// as `ExprKind::Tuple` builds.
+fn variant_payload(fields: &[Value]) -> Value {
+    match fields.len() {
+        0 => Value::Unit,
+        1 => fields[0].clone(),
+        _ => Value::vec(fields.to_vec()),
+    }
+}
+
 fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
     match value {
         Value::Bool(_) => ty_name == "bool",
