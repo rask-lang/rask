@@ -3800,3 +3800,25 @@ i32 -5 <  i32 -2 : true
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// A `char` is a Unicode scalar, which `len()` (bytes) and `char_at(i)` (scalars)
+// already agree on. Native's `chars()` walked bytes, so `"aöb".chars()` yielded
+// four items and printed the halves of `ö` as Latin-1 — `[a][Ã][¶][b]`. Silent
+// mojibake for any non-ASCII text.
+#[test]
+fn string_chars_yields_scalars_on_both_backends() {
+    let expected = "\
+ascii:      len=3 chars=3
+two-byte:   len=4 chars=3
+three-byte: len=5 chars=3
+four-byte:  len=6 chars=3
+round-trip: [a][ö][b]
+code points: 97 246 98 
+char_at(1)=ö
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "string_chars_scalars.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
