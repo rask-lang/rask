@@ -329,6 +329,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_optional_trait_object_in_parens() {
+        // `(any Shape)?` — the parenthesized form must parse (#606); the ambiguous
+        // bare `any Shape?` stays rejected on purpose.
+        let result = parse("trait Shape { func area(self) -> f64 }\nfunc f() -> (any Shape)? { return none }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+
+        let result = parse("trait Shape { func area(self) -> f64 }\nfunc f() -> any Shape? { return none }");
+        assert!(!result.errors.is_empty(), "Expected bare `any Shape?` to stay ambiguous");
+    }
+
+    #[test]
+    fn parse_optional_result_in_parens() {
+        // `(T or E)?` must parse with the trailing `?` attached to the whole
+        // parenthesized result, not dropped (#606).
+        let result = parse("func f() -> (i64 or string)? { return none }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
     fn parse_rejects_paren_unit_type() {
         // () in type position is an error (type.primitives/P6)
         let result = parse("func f() -> () { }");

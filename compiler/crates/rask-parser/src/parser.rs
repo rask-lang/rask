@@ -1086,11 +1086,11 @@ impl Parser {
                         why: None,
                     });
                 }
-                return Ok(format!("({})", types.join(", ")));
+                return Ok(self.parse_optional_suffix(format!("({})", types.join(", "))));
             }
             // Parenthesized type: (T) — not a tuple
             self.expect(&TokenKind::RParen)?;
-            return Ok(first_ty);
+            return Ok(self.parse_optional_suffix(first_ty));
         }
 
         // `void` keyword: zero-sized unit type (type.primitives/P6)
@@ -1257,21 +1257,24 @@ impl Parser {
             name.push('>');
         }
 
-        // Optional markers stack: `T?`, `T??`, … Each `?` adds a `none` layer
-        // (type.optionals/OPT28, OPT31). The lexer hands back `??` as one token
-        // — in type position there is no coalescing operator, so it is just two
-        // markers.
+        Ok(self.parse_optional_suffix(name))
+    }
+
+    /// Consume trailing `?`/`??` optional markers and append them to `base`.
+    /// `T?`, `T??`, … each `?` adds a `none` layer (type.optionals/OPT28,
+    /// OPT31). The lexer hands back `??` as one token — in type position
+    /// there is no coalescing operator, so it is just two markers.
+    fn parse_optional_suffix(&mut self, mut base: String) -> String {
         loop {
             if self.match_token(&TokenKind::QuestionQuestion) {
-                name.push_str("??");
+                base.push_str("??");
             } else if self.match_token(&TokenKind::Question) {
-                name.push('?');
+                base.push('?');
             } else {
                 break;
             }
         }
-
-        Ok(name)
+        base
     }
 
     /// Parse type parameters like `<T, comptime N: usize>`.
