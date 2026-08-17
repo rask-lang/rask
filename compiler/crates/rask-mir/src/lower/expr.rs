@@ -2146,6 +2146,42 @@ impl<'a> MirLowerer<'a> {
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
                     let offset = field_layout.map(|f| f.offset).unwrap_or(0);
                     let store_size = field_layout.map(|f| f.size);
+                    // A generic type gets one layout for every instantiation, laid
+                    // out with a word-sized placeholder per type parameter. An
+                    // aggregate type argument is bigger than that, so the store
+                    // runs past its own slot and the read comes back garbage —
+                    // `One { only: Big { … } }` with a 24-byte Big segfaulted,
+                    // silently (#781). Refuse instead, at the field whose two
+                    // sizes disagree.
+                    //
+                    // Only when the value is stored *inline*. A field that holds a
+                    // reference has a word-sized slot on purpose and its value's
+                    // own size says nothing about it:
+                    //
+                    //   `Owned<T>` heap-allocates just below, so any size fits.
+                    //   `Handle<T>?` is a niche — the handle *is* the value and
+                    //   `none` is the all-ones sentinel — so it occupies 8 bytes
+                    //   even though `Option(Handle).size()` reports 16.
+                    let stores_a_reference = field_layout
+                        .is_some_and(|f| self.owned_payload(&f.ty).is_some())
+                        || matches!(&val_ty, MirType::Option(inner) if **inner == MirType::Handle);
+                    if let Some(fl) = field_layout {
+                        let value_size = val_ty.size();
+                        if !stores_a_reference
+                            && val_ty.passed_by_address()
+                            && !matches!(val_ty, MirType::String)
+                            && value_size > fl.size
+                        {
+                            return Err(LoweringError::InvalidConstruct(format!(
+                                "field `{}` holds {} bytes but its slot is {} — a generic \
+                                 type is laid out once for every instantiation, with a \
+                                 word-sized placeholder per type parameter, so an \
+                                 aggregate type argument doesn't fit. Box it, or use a \
+                                 concrete type here (#781)",
+                                field.name, value_size, fl.size
+                            )));
+                        }
+                    }
                     // A `T?` or `T or E` field given a plain `T` has to be
                     // wrapped here. Stored bare, the value landed where the tag
                     // belongs — `Row { name: "bo" }` for a `string?` field put

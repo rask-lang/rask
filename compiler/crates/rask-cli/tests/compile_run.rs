@@ -4119,3 +4119,29 @@ a up A lo a
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// A generic type is laid out once for every instantiation, with a word-sized
+// placeholder per type parameter, so an aggregate type argument doesn't fit its
+// slot: `One { only: Big { … } }` with a 24-byte Big stored past the slot and read
+// back garbage — SIGSEGV, silently (#781).
+//
+// A workaround, not the fix: the crash is now an error that says what's wrong. The
+// fix needs per-instantiation layouts, which needs the checker to record the type
+// arguments a generic struct was instantiated with — it discards them today, so a
+// struct literal's node type is a bare `Named(TypeId)`.
+//
+// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
+#[test]
+fn error_generic_struct_with_an_aggregate_type_arg() {
+    let (stdout, stderr, code) = run_capture("--native", "generic_aggregate_type_arg.rk");
+    let out = format!("{}{}", stdout, stderr);
+    assert_ne!(code, 0, "should be rejected, not run: {}", out);
+    assert!(
+        out.contains("doesn't fit") && out.contains("#781"),
+        "should name the limitation and the issue: {}", out,
+    );
+    assert!(
+        out.contains("`only`"),
+        "should name the field whose sizes disagree: {}", out,
+    );
+}
