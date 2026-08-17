@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L1 with the fourth statement of the locals rule: A VARIABLE IS A LINK, SO THE
+// STORE FIXES IT TOO.
+//
+// Run with RASK_STORE_TRACK_LOCALS=1. The delete's fixup walks the live bindings
+// as well as the registered backlinks, so a local link to a deleted node becomes
+// `none` instead of dangling. No borrow rule, no NLL, no `with`-everywhere — and
+// you keep the ability to stash what you inserted, which the
+// insert-must-go-in-a-field rule took away (compare l1_list_links_no_locals.rk).
+//
+// What it costs is visible on every line that touches a stashed link: the local
+// is now `Link<Node>?`, because a delete can empty it, so it has to be unwrapped
+// before use. That is a none-test per local read — the same check a handle pays,
+// except handles pay it on *every* reference and this pays it only on locals.
+// Edges inside nodes stay checkless, which is where traversal happens.
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+    prev: Link<Node>?
+}
+
+struct List {
+    nodes: Store<Node>
+    head: Link<Node>?
+    tail: Link<Node>?
+}
+
+// Returns an optional, because between the caller receiving it and using it, the
+// node may have been deleted. Under handles this returned a plain `Handle<Node>`
+// and the optional appeared later, at `pool.get(h)`.
+func push_back(mutate list: List, value: i32) -> Link<Node>? {
+    let n = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+    if list.tail? as t {
+        t.next = n
+    } else {
+        list.head = n
+    }
+    list.tail = n
+    return n
+}
+
+func remove(mutate list: List, n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
+    list.nodes.delete(n)
+}
+
+func print_forward(list: List) {
+    mut out = "forward:"
+    mut cur = list.head
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.next
+    }
+    println(out)
+}
+
+func print_backward(list: List) {
+    mut out = "backward:"
+    mut cur = list.tail
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.prev
+    }
+    println(out)
+}
+
+func main() {
+    mut list = List { nodes: Store.new(), head: none, tail: none }
+
+    // The stash survives — this is what the no-locals rule forbade.
+    let n1 = push_back(list, 1)
+    let n2 = push_back(list, 2)
+    let n3 = push_back(list, 3)
+    let n4 = push_back(list, 4)
+
+    print_forward(list)
+    print_backward(list)
+
+    // Using a stashed link needs one unwrap. That is the whole added ceremony.
+    println("-- remove the middle node (2)")
+    if n2? as n { remove(list, n) }
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the head (1)")
+    if n1? as n { remove(list, n) }
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the tail (4)")
+    if n4? as n { remove(list, n) }
+    print_forward(list)
+    print_backward(list)
+
+    println("len = {list.nodes.len()}")
+
+    // And the payoff: a stashed link to a deleted node reads as absent rather
+    // than as freed memory. No check was written here that a handle version
+    // wouldn't also need.
+    if n2? as _still_there {
+        println("n2 still points at a live node -- WRONG")
+    } else {
+        println("n2 is none -- the local was fixed at delete")
+    }
+    let _ = n3
+}

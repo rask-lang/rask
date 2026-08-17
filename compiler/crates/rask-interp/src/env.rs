@@ -24,6 +24,22 @@ impl Environment {
         }
     }
 
+    /// Rewrite every binding in scope through `f`, in place.
+    ///
+    /// Exists for one caller: `store.delete` treating a *variable* holding a link
+    /// as an edge it has to fix. A local link is on the stack, so nothing can
+    /// register a backlink to it — the delete finds it by walking the live
+    /// bindings instead, which is a precise collector's root scan.
+    pub fn rewrite_bindings<F: FnMut(&Value) -> Option<Value>>(&mut self, mut f: F) {
+        for scope in self.scopes.iter_mut() {
+            for value in scope.bindings.values_mut() {
+                if let Some(replacement) = f(value) {
+                    *value = replacement;
+                }
+            }
+        }
+    }
+
     /// Push a new scope.
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope::default());
