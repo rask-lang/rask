@@ -208,13 +208,6 @@ impl<'a> MirLowerer<'a> {
     /// takes the slot address. A `string` doesn't — an array of strings holds
     /// pointers, and the read path depends on that (#414). Scalars need no size
     /// on the store either way.
-    fn stores_inline_in_array(ty: &MirType) -> bool {
-        matches!(
-            ty,
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-        )
-    }
-
     fn is_sized_scalar(ty: &MirType) -> bool {
         matches!(
             ty,
@@ -1959,19 +1952,11 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
-                        // A `string` element is a *pointer* to its 16-byte value,
-                        // not an inline copy, and the whole read path expects
-                        // that — passing a size here copies it inline and then
-                        // indexing the array reads the wrong thing (#414).
-                        //
-                        // A struct/enum/tuple element is the other way round: the
-                        // slots are already `i * elem_size` apart, so the reader
-                        // takes the slot address and expects the value to be
-                        // *there*. Storing only a word put the source pointer in
-                        // the slot instead, and reading any element of
-                        // `[Pt { x: 1, y: 2 }, …]` dereferenced it — SIGSEGV,
-                        // silently, for every array literal of aggregates.
-                        store_size: if Self::stores_inline_in_array(&elem_ty_for_store) {
+                        // `MirType::stored_inline_in_array` owns this rule, paired
+                        // with the read in codegen's `ArrayIndex`. A value that
+                        // occupies its slot is copied in whole; a `string` or a
+                        // niche `Handle<T>?` is a pointer and keeps the word store.
+                        store_size: if elem_ty_for_store.stored_inline_in_array() {
                             Some(elem_size)
                         } else {
                             None

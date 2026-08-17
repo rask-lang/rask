@@ -164,6 +164,26 @@ impl MirType {
         }
     }
 
+    /// Does an array element of this type live *in* its slot?
+    ///
+    /// The slots of `[T; N]` are `i * T::size()` apart, so a value that occupies
+    /// its slot is copied in whole and read back by address. One store rule and
+    /// one read rule, both from here, because they only work as a pair: a store
+    /// that writes a word where the reader expects a value in place hands back the
+    /// address of whatever the first eight bytes were.
+    ///
+    /// Struct, enum and tuple only, deliberately — not every type that is
+    /// `passed_by_address`. A `string` is a pointer to its 16 bytes and the whole
+    /// read path expects that (#414). A wrapper element (`[i32?; 3]`) would want
+    /// to be inline but isn't supported end to end: its size isn't a multiple of
+    /// 8, and the `??` and tag reads expect a loaded value rather than an address,
+    /// so indexing one hands back the slot address as if it were the payload
+    /// (#783). Widening this without those is how that turns from "doesn't
+    /// compile" into "compiles and prints an address".
+    pub fn stored_inline_in_array(&self) -> bool {
+        matches!(self, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+    }
+
     /// True for F32 and F64.
     pub fn is_float(&self) -> bool {
         matches!(self, MirType::F32 | MirType::F64)
