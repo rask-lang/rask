@@ -3915,3 +3915,25 @@ annotated=3
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// `One<i64> { only: 9 }` segfaulted natively: a generic type's layout is stored
+// under its base name, so the literal found none, its temp was typed `ptr`
+// instead of the struct, and the field store wrote through an uninitialised
+// pointer. The retry is only for names in literal position — a stripped
+// `Vec<Ctr>` in a type string matches anything else called `Vec`.
+#[test]
+fn a_generic_struct_literal_with_type_args_works_on_both_backends() {
+    let expected = "\
+turbofish=9
+annotated=5 bare=7
+pair=1 one
+swapped=one 1
+string=hi
+holder=4
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_struct_turbofish.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

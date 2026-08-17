@@ -2099,12 +2099,12 @@ impl<'a> MirLowerer<'a> {
                         let variant_info = el.variants.iter().find(|v| v.name == variant_name)
                             .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
                         (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
-                    } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                    } else if let Some((idx, sl)) = self.ctx.find_struct_written(name) {
                         (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                     } else {
                         (MirType::Ptr, None, None)
                     }
-                } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                } else if let Some((idx, sl)) = self.ctx.find_struct_written(name) {
                     (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                 } else {
                     (MirType::Ptr, None, None)

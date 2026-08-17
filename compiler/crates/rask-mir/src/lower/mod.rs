@@ -545,6 +545,29 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// `find_struct`, falling back to the name with any `<…>` stripped.
+    ///
+    /// A generic type's layout is stored under its base name, so a name written
+    /// with type arguments finds nothing. At a struct literal that meant
+    /// `One<i64> { only: 9 }` got no layout, its temp was typed `ptr` instead of
+    /// the struct, and the field store wrote through an uninitialised pointer.
+    /// `One { only: 9 }` and `let x: One<i64> = One { … }` both went through the
+    /// base name and worked.
+    ///
+    /// Only for names in literal position. Type *strings* reach `find_struct`
+    /// too, and there a stripped `Vec<Ctr>` would match whatever else is called
+    /// `Vec`.
+    pub fn find_struct_written(&self, name: &str) -> Option<(u32, &StructLayout)> {
+        if let Some(found) = self.find_struct(name) {
+            return Some(found);
+        }
+        let base = name.split('<').next()?.trim();
+        if base == name {
+            return None;
+        }
+        self.find_struct(base)
+    }
+
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
     /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
