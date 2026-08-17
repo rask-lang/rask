@@ -171,15 +171,13 @@ The model does what it claims for topology, and the flagship loop really does
 lose its staleness branch. Three findings, in the order they matter:
 
 1. **The checkless read isn't a property of `Link`** — it's `Link` plus a rule for
-   links in locals, and that rule is unwritten. It follows from the type, though:
-   a local link is non-optional, so it asserts its target is alive, and a delete
-   would contradict that with no `none` to fall back to — **so use-after-delete is
-   a type contradiction the compiler can reject.** Same sentence that already
-   justifies E0327 for fields; the field gets nulled at runtime because the store
-   can reach it, the local gets rejected at compile time because it can't. Tried
-   it: no runtime check, and the flagship loop passes. The one gap is that affine
-   links enrol in the aliasing tracker, which treats them as owned aggregates and
-   rejects an ordinary list splice — a bounded fix, not a new analysis.
+   links in locals. That rule follows from the type: a local link is non-optional,
+   so it asserts its target is alive, and a delete would contradict that with no
+   `none` to fall back to — **so use-after-delete is a type contradiction the
+   compiler can reject.** Same sentence that justifies E0327 for fields, resolved
+   the other way because the store can reach a field and can't reach a local.
+   **Implemented**: `delete` takes the link, the move checker reports the use, no
+   runtime check anywhere, and all thirteen comparison programs pass.
 2. **A link carries write permission, and an edge write mutates its target.**
    There is no read-only link, where a handle gave one for free. The fix has to be
    in the type — `mut Link<T>`, default read-only — because a link escapes the
@@ -210,7 +208,8 @@ bill is on those three counts, and only the first one is load-bearing.
 | Unlink on overwrite — a rewritten field drops its old backlink | works |
 | Required edges (`Link<T>`, no `?`) | rejected for now (E0327) |
 | `inverse(...)`, `@cascade`, `@lazy`, batches, `Key<T>` | not built |
-| Borrow rule for links in locals | **not built — the load-bearing gap, see below** |
+| Locals rule — use-after-delete is a compile error | **works** (E0800) |
+| Deletes the compiler can't see (a call that deletes inside) | not built |
 | `mut Link<T>` — writability in the type | not built; shape argued below |
 
 **Delete follows backlinks, it doesn't scan.** Each node carries the list of
@@ -410,53 +409,10 @@ stashed handle was `O(1)`. That contradicts the census's "effectively 100% of
 handle uses are topology, none would need a `Key`": under this statement, any
 insert-then-act-on-that-node code needs a search or a key.
 
-### A fourth statement: let the delete fix the variable too
+### The rule, implemented
 
-The three above all assume the fixup can't reach a local. It can — a local lives
-on the stack so no backlink can name it, but the delete can walk the live bindings
-instead, which is what a precise collector does with its roots.
-`null_local_links` implements it behind `RASK_STORE_TRACK_LOCALS=1`:
-
-```
-$ rask run --interp stale_link_hole.rk                      # default
-local link still reads:  name=b health=2                    <- use-after-free
-
-$ RASK_STORE_TRACK_LOCALS=1 rask run --interp stale_link_hole.rk
-store stats: … locals_nulled=1
-error[R0005]: cannot access field on enum                    <- `b` became none
-```
-
-No borrow rule at all, and stashing keeps working
-(`prototype/l1_list_links_tracked_locals.rk`). But a local link can now be
-emptied, so it is `Link<T>?` and reading one costs a none-test — and the shape
-that produces is odd:
-
-```rask
-let n2 = push_back(list, 2)      // just made it
-if n2? as n { remove(list, n) }  // …and immediately have to ask if it's there
-```
-
-That check is real — a delete elsewhere could have emptied it — but it reads as
-ceremony at the point where the answer is obviously yes.
-
-### The fifth, and the one to build: track the deletes at compile time
-
-The check above is only needed because the compiler doesn't know whether a delete
-has happened. Within one function body it *does* know — every `delete` is right
-there in the source. So make the delete consume the link and let the existing move
-checker do the rest. This is not NLL: the invalidation point is a statement you
-wrote, not a last use the compiler inferred.
-
-Tried it, and most of the machinery is already in place. Three changes:
-
-1. `delete(mutate self, take link: Link<T>)` — an existing parameter mode.
-2. `Link<T>` stops being `Copy`, so it is affine among locals.
-3. Assigning a link **into a field** leaves the source name usable, while
-   assigning into another local revokes it. Both copy the same pointer; the
-   difference is who maintains it afterwards — the store maintains a field, and
-   nothing maintains a local.
-
-With those, use-after-delete becomes a compile error and no runtime check remains:
+Use-after-delete is now a compile error, and no runtime check was added anywhere.
+`delete` takes the link, so the existing move checker reports it:
 
 ```
 error[E0800]: use of moved value: `b`
@@ -466,49 +422,54 @@ error[E0800]: use of moved value: `b`
     |              ^ value used here after move
 ```
 
-Two other things fell out, both good: a second `insert` while a link is live is
-fine (nodes are individually allocated, so an insert invalidates nothing), and an
-ordinary non-`take` parameter borrows rather than consumes, so read-only passing
-works unchanged.
+This is not lifetime inference. The invalidation point is the `delete` statement
+in the source, not a last use the compiler worked out, so the analysis stays
+inside one function body and needs no annotations.
 
-**Where it stands, measured.** Across the ten link programs and suite files:
+Four changes, three of them one-liners against machinery that already existed:
 
-| Result | Count |
-|---|---|
-| Pass unchanged — including the flagship L2, fan-in, sparse, unlink, churn | 5 |
-| Fail on aliasing (E0801) | 18 errors across 3 files |
-| Fail on closure capture (E0813) | 1 |
-| Correctly rejected use-after-delete | 1 |
+1. `delete(mutate self, take link: Link<T>)` — an existing parameter mode.
+2. `Link<T>` is no longer `Copy`, so it is affine among locals.
+3. Assigning a link **into a field** leaves the source name usable; assigning into
+   another local revokes it. Both copy the same pointer — the difference is who
+   keeps it honest afterwards, and only a field has the store doing that.
+4. Reading a link *out of* a field borrows nothing, and capturing one in a closure
+   does not scope-limit the closure.
 
-The last row is the feature working: `s.delete(b)` followed by `s.contains(b)` is
-now an error, and the test asserting the old behaviour is what caught it.
+The fourth is the one that took finding. Making a link affine enrolled it in the
+borrow tracker, which treated it as owned data: reading `n.next` looked like an
+exclusive borrow of `n` (right when the field is owned data being moved out, wrong
+when it is a pointer being copied), so the ordinary splice
+`if n.prev? as p { p.next = n.next }` collided with the borrow the `if` already
+held. The same mistake rejected `children.filter(|c| c != n)`. Both dissolve once
+the tracker knows a link read is a pointer copy — which is what `is_copy` already
+tells it about integers, for the same reason.
 
-**The one gap.** All 18 aliasing errors are a single shape — the list splice:
+All thirteen comparison programs and both suite files pass under this, including
+the flagship L2 and the L1/L3 pairs that still match the handle versions
+byte-for-byte.
 
-```rask
-if n.prev? as p { p.next = n.next }
-```
-```
-error[E0801]: cannot write to `n` while it is being read
-```
+**Two runtime alternatives were tried first and are worse.** Requiring an
+`insert` result to be stored into a field (`prototype/l1_list_links_no_locals.rk`)
+works but means you cannot keep a reference to what you inserted, so acting on it
+later becomes a search and `Key<T>` returns to ordinary code. Letting the delete
+null local variables too — a precise collector's root scan — also works, but makes
+every local link optional, so the code reads
+`let n2 = push_back(list, 2)` immediately followed by `if n2? as n`, asking whether
+something you just made exists. Both are checks at runtime for something the
+compiler can prove. Neither is kept.
 
-Making a link affine enrols it in the borrow/alias tracker, and that tracker
-treats it like an owned aggregate: reading `n.next` borrows `n`, and writing
-through `p` (derived from `n.prev`) looks like a conflicting write to the same
-value. But a link is a *reference* — projecting through one should not borrow the
-link. Until the tracker knows that, ordinary graph manipulation is rejected.
+**What it costs.** `delete(n)` revokes `n`, including a parameter just handed in,
+so `func kill(mutate s: Store<Node>, n: Link<Node>) { s.delete(n); n.id }` is
+rejected on the second statement. That is the rule working, but it means a function
+that deletes has to say so by taking the link, and callers see their name go away.
 
-**What the proposal owes, revised.** Not "show the rule can be stated without
-either escape" — three statements work, and this is the one to build. It owes one
-bounded piece of compiler work: teach the aliasing checker that a link is a
-reference. Not a new analysis, and not a language-shaped concession. None of the
-three statements appears in the design documents.
-
-The experiment is reverted on this branch, because it breaks five working
-programs. It is three edits to reproduce: `take` on `delete` in
-`stdlib/memory.rk`, dropping `"Link"` from `is_copy` in
-`rask-ownership/src/lib.rs`, and skipping `handle_assignment` when a link is
-assigned into a field.
+**What it does not cover.** Deletes the compiler cannot see: a call that takes the
+store mutably and deletes inside. Rask's existing exclusivity rule is the shape of
+the answer — a live local link should conflict with handing the store to something
+that could delete — and it is not implemented here. `insert` must stay exempt, and
+already behaves that way, since nodes are allocated individually and an insert
+invalidates nothing.
 
 ## Finding 2: links carry write permission, and edge writes mutate their target
 
@@ -718,10 +679,10 @@ multiplicities, cascade policies, `@lazy` and batches — features. After runnin
 it, those are all accessories. Three things outrank them, and none was on the
 list:
 
-1. **The locals rule** — adopt compile-time delete tracking (`delete` consumes the
-   link; links affine among locals; links copy into fields), and fund the aliasing
-   change it needs. The two runtime alternatives are worse and are described above
-   for comparison. None of the three is written down anywhere yet.
+1. **The locals rule is settled and built** — compile-time delete tracking. What
+   remains is the case the compiler can't see: a call taking the store mutably that
+   deletes inside. Rask's exclusivity rule is the right shape; `insert` stays
+   exempt.
 2. **Read-only links** — put writability in the type (`mut Link<T>`, default
    read-only, matching `let`/`mut` and parameter modes). Not a context: a link
    escapes the context that made it, demonstrated above. Not a binding mode: local,

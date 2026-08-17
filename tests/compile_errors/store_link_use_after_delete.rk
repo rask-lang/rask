@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Using a link after its node is deleted is a compile error (analysis.fourth-option).
+//
+// Why it can be: a local link is non-optional, so its type asserts the target is
+// alive. A delete falsifies that, and there is no `none` to fall back to — the use
+// contradicts the type. `delete` takes the link, so the existing move checker
+// reports it, and no runtime check is needed anywhere.
+//
+// This is not lifetime inference: the invalidation point is the `delete` statement
+// you wrote, not a last use the compiler worked out.
+
+struct Node {
+    name: string
+    next: Link<Node>?
+}
+
+func read_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let a = store.insert(Node { name: "a", next: none })
+    let b = store.insert(Node { name: "b", next: none })
+    a.next = b                  // fine: the field is an edge the store maintains
+
+    store.delete(b)
+
+    println("{b.name}")         // ERROR: E0800 — `b` was consumed by the delete
+}
+
+func write_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let n = store.insert(Node { name: "n", next: none })
+    store.delete(n)
+    n.name = "zombie"           // ERROR: E0800 — same, for a write
+}
+
+func ask_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let n = store.insert(Node { name: "n", next: none })
+    store.delete(n)
+    // Also an error, and correctly so: if the type guarantees liveness, asking
+    // whether it is live is a question with no meaning.
+    println("{store.contains(n)}")   // ERROR: E0800
+}
+
+func main() {
+    read_after_delete()
+    write_after_delete()
+    ask_after_delete()
+}

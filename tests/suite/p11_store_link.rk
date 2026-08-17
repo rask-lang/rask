@@ -139,11 +139,14 @@ test "iteration and the structural ops" {
     assert_eq(sum, 6)
     assert s.contains(a)
 
+    // `contains` before the delete, not after: `delete` takes the link, so asking
+    // about it afterwards doesn't compile — and shouldn't, since a non-optional
+    // link's type already asserts the node is alive.
+    assert s.contains(b)
     s.delete(b)
     mut after = 0
     for n in s.nodes() { after += n.id }
     assert_eq(after, 4)
-    assert s.contains(b) == false
     assert_eq(s.len(), 2)
 
     s.clear()

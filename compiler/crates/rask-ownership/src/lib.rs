@@ -497,8 +497,24 @@ impl<'a> OwnershipChecker<'a> {
                         false
                     }
                 };
-                // Assignments move the value
-                self.handle_assignment(value, stmt.span, true);
+                // Assignments move the value — except a link into a field.
+                //
+                // A link is a pointer, so both cases copy the same pointer; what
+                // differs is who keeps it honest afterwards. The store maintains a
+                // field-held link (it nulls it at delete), so the source name stays
+                // good. Nothing maintains a local, so a local-to-local copy revokes
+                // the source and `delete` takes it — which is what makes
+                // use-after-delete a compile error (analysis.fourth-option).
+                let link_into_field = !reinit_target
+                    && self
+                        .program
+                        .node_types
+                        .get(&value.id)
+                        .cloned()
+                        .is_some_and(|ty| self.is_link_type(&ty));
+                if !link_into_field {
+                    self.handle_assignment(value, stmt.span, true);
+                }
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
@@ -1504,6 +1520,26 @@ impl<'a> OwnershipChecker<'a> {
     /// Copy types (VS1/VS2): implicit bitwise copy, source stays valid.
     /// Non-Copy + `let` (is_mutable=true): move, source invalidated.
     /// Non-Copy + `const` (is_mutable=false): block-scoped borrow.
+
+    /// Is this a `Link<T>`? Both spellings: `Link` resolves to a declared stdlib
+    /// struct, so the type arrives as `Generic` after resolution and
+    /// `UnresolvedGeneric` before it.
+    fn is_link_type(&self, ty: &rask_types::Type) -> bool {
+        // `Link<T>?` counts too — an edge field is optional, so reading one out
+        // yields the optional shape rather than a bare link, and it is still just
+        // a pointer being copied.
+        if let Some(inner) = ty.as_option() {
+            return self.is_link_type(inner);
+        }
+        match ty {
+            rask_types::Type::UnresolvedGeneric { name, .. } => name == "Link",
+            rask_types::Type::Generic { base, .. } => {
+                self.program.types.type_name(*base) == "Link"
+            }
+            _ => false,
+        }
+    }
+
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
             // Copy types: both source and target remain valid (VS1/VS2)
@@ -1517,6 +1553,16 @@ impl<'a> OwnershipChecker<'a> {
             let (root, projection) = Self::extract_root_and_fields(expr);
             if let Some(source_name) = root {
                 if projection.is_some() {
+                    // Reading a link out of a field copies a pointer and leaves the
+                    // field exactly as it was — so it borrows nothing, the same way
+                    // a Copy value above borrows nothing. Without this, the ordinary
+                    // graph splice `p.next = n.next` reads as an exclusive borrow of
+                    // `n` (correct when the field is owned data being moved out) and
+                    // collides with the shared borrow `if n.prev? as p` already
+                    // holds (analysis.fourth-option).
+                    if self.is_link_type(ty) {
+                        return;
+                    }
                     // F1: Field-projected — borrow the source
                     let mode = if is_mutable { BorrowMode::Exclusive } else { BorrowMode::Shared };
                     self.create_borrow_with_projection(source_name, mode, span, projection);
@@ -1715,15 +1761,24 @@ impl<'a> OwnershipChecker<'a> {
     /// Copy-ness of a captured name. Locals carry a resolved `Type`; a bare
     /// parameter only has its type-annotation string, so fall back to that.
     fn capture_is_copy(&self, name: &str) -> bool {
+        // A link counts here for the same reason a Copy value does: capturing one
+        // copies a pointer into the closure, so it can't dangle and must not
+        // scope-limit the closure. Without this, `children.filter(|c| c != n)` —
+        // the ordinary "drop this child" idiom — is rejected because `n` reads as
+        // a scoped borrow (analysis.fourth-option).
         if let Some(t) = self.binding_types.get(name) {
-            return self.is_copy(t);
+            return self.is_copy(t) || self.is_link_type(t);
         }
         if let Some(tn) = self.param_type_strings.get(name) {
             if let Some(t) = self.type_from_name(tn) {
-                return self.is_copy(&t);
+                return self.is_copy(&t) || self.is_link_type(&t);
             }
         }
-        false
+        // A parameter whose annotation didn't resolve: fall back to the spelling,
+        // so a `Link<T>` param behaves the same as a resolved one.
+        self.param_type_strings
+            .get(name)
+            .is_some_and(|tn| tn.starts_with("Link<"))
     }
 
     /// Resolve a simple type-annotation string to a `Type`. Handles primitives,
@@ -1842,7 +1897,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Generic { base, .. } => {
                 matches!(
                     self.program.types.type_name(*base).as_str(),
-                    "Handle" | "WeakHandle" | "Link"
+                    "Handle" | "WeakHandle"
                 )
             }
 
@@ -1861,7 +1916,7 @@ impl<'a> OwnershipChecker<'a> {
             // Unresolved types: conservative, except Handle/WeakHandle, which are
             // Copy regardless of how the name was spelled.
             Type::UnresolvedGeneric { name, .. } => {
-                matches!(name.as_str(), "Handle" | "WeakHandle" | "Link")
+                matches!(name.as_str(), "Handle" | "WeakHandle")
             }
             Type::UnresolvedNamed(_) => false,
 

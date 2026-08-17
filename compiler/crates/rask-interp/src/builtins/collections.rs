@@ -753,17 +753,7 @@ impl Interpreter {
                     }
                 };
                 match crate::store::delete_node(s, &node) {
-                    Some(_owned) => {
-                        // Opt-in: the fourth statement of the locals rule — treat a
-                        // variable holding a link as an edge and null it too. Off by
-                        // default so `stale_link_hole.rk` keeps demonstrating the gap
-                        // the real design has to close by some means.
-                        if std::env::var("RASK_STORE_TRACK_LOCALS").is_ok() {
-                            let store_id = s.lock().unwrap().store_id;
-                            crate::store::null_local_links(&mut self.env, store_id, &node);
-                        }
-                        Ok(Value::Unit)
-                    }
+                    Some(_owned) => Ok(Value::Unit),
                     // The node is already gone. Under the model a link to a
                     // dead node cannot exist, so reaching this means the link
                     // came from somewhere the fixup walk could not see.

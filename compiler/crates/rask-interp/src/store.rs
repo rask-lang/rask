@@ -36,8 +36,6 @@ use crate::value::{node_key, Backlink, BacklinkKey, MapKey, StoreData, StructDat
 pub static EDGES_FIXED: AtomicUsize = AtomicUsize::new(0);
 pub static HOLDERS_VISITED: AtomicUsize = AtomicUsize::new(0);
 pub static DELETES: AtomicUsize = AtomicUsize::new(0);
-/// Local variables nulled by the root scan — the cost of closing the locals hole.
-pub static LOCALS_NULLED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn stats_enabled() -> bool {
     std::env::var("RASK_STORE_STATS").is_ok()
@@ -48,11 +46,10 @@ pub fn print_stats() {
         return;
     }
     eprintln!(
-        "store stats: deletes={} edges_fixed={} holders_visited={} locals_nulled={}",
+        "store stats: deletes={} edges_fixed={} holders_visited={}",
         DELETES.load(Ordering::Relaxed),
         EDGES_FIXED.load(Ordering::Relaxed),
         HOLDERS_VISITED.load(Ordering::Relaxed),
-        LOCALS_NULLED.load(Ordering::Relaxed),
     );
 }
 
@@ -327,30 +324,6 @@ fn fix_container(v: &Value, store_id: u32, dead: &Arc<Mutex<StructData>>, depth:
         }
         _ => {}
     }
-}
-
-/// Null any *local variable* holding a link to the dead node.
-///
-/// A local link is on the stack, so no backlink can name it and the fixup walk
-/// can't reach it — that is the hole `stale_link_hole.rk` documents. This closes
-/// it by scanning the live bindings instead, which is what a precise garbage
-/// collector does with its roots.
-///
-/// Worth being clear about what it buys and what it costs, because the two are
-/// the same thing. It buys safety: after this, no local link points at a freed
-/// node. It costs a *check on every read of a local link*, because a variable
-/// that can become `none` has to be tested before use — which is exactly the
-/// check handles pay, moved from every reference to just the local ones. Edges
-/// inside nodes stay checkless; locals don't.
-pub fn null_local_links(env: &mut crate::env::Environment, store_id: u32, dead: &Arc<Mutex<StructData>>) {
-    env.rewrite_bindings(|v| {
-        if is_link_to(v, store_id, dead) {
-            EDGES_FIXED.fetch_add(1, Ordering::Relaxed);
-            LOCALS_NULLED.fetch_add(1, Ordering::Relaxed);
-            return Some(option_none());
-        }
-        None
-    });
 }
 
 /// Delete a node: unlink every edge pointing at it, then free the slot.

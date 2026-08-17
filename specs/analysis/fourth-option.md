@@ -40,7 +40,7 @@ a spec draft starts here.
 | Types | `Store<T>` (where nodes live), `Link<T>` (one reference). No plural type — `Vec<Link<T>>` and `Map<K, Link<T>>` are edge-aware underneath |
 | Reference semantics | An edge goes `none` when its target dies. That's the whole model |
 | Representation | Raw pointers. `mem.relocatable` stays keys-only |
-| Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. Not locals (block-scoped borrows instead) |
+| Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. **Locals hold links too**, kept honest by the compiler rather than the store: `delete` takes the link, so use-after-delete is a move error (not a borrow rule, not lifetime inference). A `const` can hold neither |
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
 | Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site. Note this is only complete while every edge is optional — a required edge has no `none` to be set to, so admitting `Link<T>` (see below) makes one of cascade/restrict mandatory rather than deferred |
 | Ownership | Composition by value (`Entity { body: Body }`), not a policy |
@@ -212,7 +212,13 @@ rather than needing a decision.)
   tree-walking interpreter can't price a deref against a checked deref.
   That needs native codegen. Delete cost *was* measured and is linear in
   in-degree, exactly as predicted.
-- **The locals rule follows from the type, and is the real open question.** A
+- **The locals rule is settled: use-after-delete is a compile error.** `delete`
+  takes the link, so the existing move checker reports the use — no runtime check,
+  and not lifetime inference either, since the invalidation point is the `delete`
+  statement rather than an inferred last use. Built and passing on every comparison
+  program. The reasoning below is why it is the right rule; what remains open is
+  the delete the compiler can't see (a call taking the store mutably that deletes
+  inside), for which Rask's existing exclusivity rule is the right shape. A
   local link is non-optional, so it asserts its target is alive; a delete
   contradicts that and there is no `none` to fall back to, which makes
   use-after-delete a type contradiction rather than only a memory hazard. That is

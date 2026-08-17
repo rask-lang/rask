@@ -68,10 +68,11 @@ extend Store<T> {
     public func insert(mutate self, node: T) -> Link<T> { }
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
-    /// returns — that is the whole model. Cost is proportional to how many
-    /// edges must be fixed.
+    /// returns. Takes the link: after this the caller's name for that node is
+    /// revoked, which is what makes use-after-delete a compile error rather
+    /// than a runtime check.
     @native("rask_store_delete")
-    public func delete(mutate self, link: Link<T>) -> void { }
+    public func delete(mutate self, take link: Link<T>) -> void { }
 
     /// Number of live nodes.
     @native("rask_store_len")

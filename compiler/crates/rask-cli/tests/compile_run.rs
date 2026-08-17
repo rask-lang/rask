@@ -1379,75 +1379,22 @@ fn store_link_delete_cost_follows_in_degree() {
     );
 }
 
-// The fourth statement of the locals rule: a variable holding a link is a link,
-// so `delete` fixes it too. Closes the hole above with no borrow rule, at the cost
-// of a local link being optional. Opt-in via RASK_STORE_TRACK_LOCALS so the
-// default keeps demonstrating the gap.
+// Using a link after its node is deleted is a compile error. `delete` takes the
+// link, so the existing move checker reports it — no runtime check, and not
+// lifetime inference either: the invalidation point is the `delete` statement in
+// the source, not a last use the compiler worked out.
 #[test]
-fn store_link_tracking_locals_closes_the_hole() {
-    let rask = rask_binary();
-    let run = |track: bool| -> (String, String) {
-        let mut cmd = Command::new(&rask);
-        cmd.args(["run", "--interp"])
-            .arg(fixture("store_link_stale_local.rk"))
-            .env("RASK_RUNTIME_DIR", runtime_dir())
-            .env("RASK_STORE_STATS", "1");
-        if track {
-            cmd.env("RASK_STORE_TRACK_LOCALS", "1");
-        }
-        let out = cmd.output().expect("failed to run rask");
-        (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
-        )
-    };
-
-    // Off: the local still reaches its deleted node, and no local was nulled.
-    let (plain_out, plain_err) = run(false);
-    assert!(
-        plain_out.contains("local link reads: b"),
-        "default should still show the hole: {plain_out}"
-    );
-    assert!(
-        plain_err.contains("locals_nulled=0"),
-        "default should null no locals: {plain_err}"
-    );
-
-    // On: the local is emptied, so reading it as a node fails instead of reading
-    // freed memory. Safe — and the failure is what makes the local optional.
-    let (tracked_out, tracked_err) = run(true);
-    assert!(
-        tracked_out.contains("edge in a node: none"),
-        "the edge inside a node is fixed either way: {tracked_out}"
-    );
-    assert!(
-        !tracked_out.contains("local link reads: b"),
-        "with tracking the local must not reach the deleted node: {tracked_out}"
-    );
-    assert!(
-        tracked_err.contains("locals_nulled=1"),
-        "exactly the one local should be nulled: {tracked_err}"
-    );
-}
-
-// The hole the prototype documents rather than fixes: a link in a *local*
-// outlives its node, because the fixup can only reach declared fields. Asserted
-// so the day someone adds the missing borrow rule, this test fails and says so.
-#[test]
-fn store_link_local_outlives_its_node() {
-    let (stdout, code) = run_interp("store_link_stale_local.rk");
-    assert_eq!(code, 0, "stale-local fixture should run: {}", stdout);
-    assert!(
-        stdout.contains("edge in a node: none"),
-        "an edge inside a node must still be fixed at delete: {}",
-        stdout
-    );
-    assert!(
-        stdout.contains("local link reads: b"),
-        "documenting the hole: a local link still reaches its deleted node. If \
-         this now fails, the links-in-locals borrow rule landed — update the \
-         write-up in specs/analysis/fourth-option-prototype.md: {}",
-        stdout
+fn error_store_link_use_after_delete() {
+    let (failed, out) = compile_error_output("store_link_use_after_delete.rk");
+    assert!(failed, "using a link after its delete must be rejected: {}", out);
+    assert!(out.contains("E0800"), "should be a use-after-move error (E0800): {}", out);
+    // A read, a write, and `contains` — the last is correct too: a non-optional
+    // link's type already asserts the node is alive, so asking is meaningless.
+    assert_eq!(
+        out.matches("error[E0800]").count(),
+        3,
+        "exactly the three uses after delete rejected: {}",
+        out
     );
 }
 
