@@ -9,8 +9,8 @@ test "type.primitives — parse<f64> with the type written out" {
     assert ("junk".parse<f64>() ?? -1.0) == -1.0
 }
 
-// The annotation-driven target is broken (#610) — the turbofish form above
-// is the working one.
+// Both spellings run the same parse now (#610): the target reaches it from
+// the annotation as well as from the turbofish, at f32 as well as f64.
 test "type.primitives — parse to a float inferred from the binding" {
     let a: f64 = "3.5".parse() ?? -1.0
     assert a == 3.5

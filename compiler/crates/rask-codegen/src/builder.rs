@@ -5974,11 +5974,19 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     types::I64
                 };
+                // The payload has to go in at the width the *reader* takes it
+                // out at, which is the slot's storage type, not the declared
+                // one: a float payload lives in the slot as an f64 and the read
+                // demotes. Converting to the declared f32 here wrote four bytes
+                // where eight were read, so `let a: f32 = "2.25".parse() ?? -1.0`
+                // came back 0 while the f64 spelling was fine.
                 let ok_ty = dst
                     .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
                     .and_then(|l| match &l.ty {
-                        MirType::Result { ok, .. } => mir_to_cranelift_type(ok).ok(),
-                        other => mir_to_cranelift_type(other).ok(),
+                        MirType::Result { ok, .. } => Self::slot_storage_type(ok)
+                            .or_else(|| mir_to_cranelift_type(ok).ok()),
+                        other => Self::slot_storage_type(other)
+                            .or_else(|| mir_to_cranelift_type(other).ok()),
                     })
                     .unwrap_or(writer_ty);
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(

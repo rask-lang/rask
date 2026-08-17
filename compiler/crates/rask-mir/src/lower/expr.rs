@@ -4725,7 +4725,22 @@ impl<'a> MirLowerer<'a> {
 
         // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
         // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
-        let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
+        let (final_name, final_args) = if qualified_name.starts_with("string_parse")
+            && matches!(&ret_ty, MirType::Result { ok, .. }
+                if matches!(**ok, MirType::F32 | MirType::F64))
+        {
+            // The parse variant has to agree with the slot it writes into. The
+            // name comes from the turbofish and the slot from inference, and
+            // those can disagree: `"2.25".parse<f32>() ?? -1.0` with no
+            // annotation is an `f64 or E` slot (the fallback literal is f64),
+            // so `string_parse_f32` wrote four bytes where eight were read.
+            // The slot's own payload type decides.
+            let by_slot = match &ret_ty {
+                MirType::Result { ok, .. } if matches!(**ok, MirType::F32) => "string_parse_f32",
+                _ => "string_parse_f64",
+            };
+            (by_slot.to_string(), all_args)
+        } else if qualified_name == "Pool_alloc" && all_args.len() == 2 {
             ("Pool_insert".to_string(), all_args)
         } else if qualified_name == "Vec_get" {
             // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
