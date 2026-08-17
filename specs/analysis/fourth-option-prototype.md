@@ -41,7 +41,8 @@ Everything else the analysis says about function and ergonomics held up.
 | Root edges — link fields on the struct that *owns* the store | works |
 | `for n in store` | works |
 | Backlinks — each node knows who points at it, delete is O(in-degree) | works |
-| A scalar edge must be `Link<T>?` (E0327) | enforced |
+| Unlink on overwrite — a rewritten field drops its old backlink | works |
+| Required edges (`Link<T>`, no `?`) | rejected for now (E0327) |
 | `inverse(...)`, `@cascade`, `@lazy`, batches, `Key<T>` | not built |
 | Borrow rule forbidding links in locals | **not built — see below** |
 
@@ -55,12 +56,25 @@ store stats: deletes=1 edges_fixed=1 holders_visited=1
 ```
 
 A backlink names a holder — a struct field, an edge list, an index — and never a
-position, because positions shift under insertion and rehashing. The fixup
-re-checks each candidate before rewriting it, which makes the index safe to
-*over*-approximate: a backlink left behind after its edge was overwritten costs
-one wasted visit, not a wrong answer. A missing backlink would be unsound, so
-registration errs toward recording. That asymmetry is why the write path can
-stay cheap without an unlink-on-overwrite step.
+position, because positions shift under insertion and rehashing.
+
+A struct field names its slot exactly, so overwriting `a.target` unlinks the old
+target's backlink precisely. Rewriting one field fifty times leaves one backlink
+on its current target and none on the forty-nine it passed through:
+
+```
+$ RASK_STORE_STATS=1 rask run --interp unlink_on_overwrite_links.rk
+store stats: deletes=2 edges_fixed=1 holders_visited=1
+```
+
+A container backlink names the container and no position, so it is one entry per
+(container, target) pair however many elements match. Pop the last element
+pointing at T and the entry survives until T is deleted, when the visit finds
+nothing — one check, once, because the list is discarded by the delete that read
+it. Nothing here grows.
+
+Registration and unlinking are both O(1): the index is a map keyed by slot, not
+a list to scan. Building a hub of in-degree 25,600 is linear.
 
 **A node field and a root field are the same thing to this code.** That fell
 out of keying backlinks on the holder rather than on "is it inside the store":
@@ -246,6 +260,7 @@ Fan-in sweep, one delete of a hub with N incoming edges:
 | 200 | 200 | 200 |
 | 400 | 400 | 400 |
 | 800 | 800 | 800 |
+| 25600 | 25600 | 25600 |
 
 Exactly linear in in-degree, exactly as predicted, and independent of store
 size — a node with in-degree 1 in a 500-node store visits one holder. The interesting half is the handle
@@ -275,13 +290,27 @@ needs native codegen.
   `tail`, `selected`, and the `by_name` index are all links living outside the
   store. Whatever schema closure answers "who can point at `T`?" has to cover
   every struct that can hold a link, not just node types.
-- **Non-optional edges had to become a compile error** (E0327). The adversarial
-  pass killed them on constructibility grounds — a cycle needs one side written
-  before its target exists. Implementing the fixup gives the same answer from
-  the other end: there is nothing to write into a non-optional field when its
-  target dies. A bare link stays legal *inside* a container, where delete drops
-  the entry rather than nulling it, and that asymmetry is worth stating in the
-  eventual spec because it is not obvious from "every edge is optional".
+- **The specs disagree about whether required edges exist, and the entry point
+  is the stale one.** The adversarial pass killed `Link<T>` without `?` on
+  constructibility grounds (A4: a cycle needs one side written before its target
+  exists). [concurrency](fourth-option-concurrency.md) then *reversed* that,
+  conditional on batches — a staged batch gives the cycle a legal transient
+  state, so "`Link<T>` and `Link<T>?` both live". But
+  [fourth-option.md](fourth-option.md) still asserted the kill, which is the
+  document a reader starts from. Fixed there, with a pointer to the reversal.
+
+  Implementing the fixup adds a second requirement the reversal doesn't mention:
+  a required edge needs a **delete policy**, because there is no `none` to set it
+  to when its target dies. So cascade/restrict stops being deferrable the moment
+  required edges are admitted — the decision table said "set-to-`none` only,
+  cascade and restrict deferred", and those two lines can't both hold. Noted in
+  the table.
+
+  The prototype rejects required edges (E0327) for exactly those two missing
+  pieces, and the diagnostic says so rather than claiming a language rule. A bare
+  link stays legal *inside* a container, where delete drops the entry rather than
+  nulling it — an asymmetry worth stating in the eventual spec, because it does
+  not follow from either position on required edges.
 - **Links have to be Copy**, like handles. An edge written into two fields is
   two edges, not a moved one.
 - **Identity comparison is pointer equality.** `c == n` on links compares nodes,

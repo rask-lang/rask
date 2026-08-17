@@ -402,8 +402,22 @@ pub fn store_by_id(id: u32) -> Option<Arc<Mutex<StoreData>>> {
     STORE_REGISTRY.lock().unwrap().get(&id).and_then(|w| w.upgrade())
 }
 
+/// Which slot holds an edge, for dedup and for unlinking on overwrite.
+///
+/// Owned rather than borrowed so it can key a map: registration is then O(1),
+/// which matters because a hub with N incoming edges gets N registrations and a
+/// linear dedup scan would make building it quadratic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BacklinkKey {
+    /// Holder allocation address. Stable for the allocation's life.
+    pub holder: usize,
+    /// Field name for a struct slot; `None` for a container, whose backlink
+    /// names the container rather than a position.
+    pub field: Option<String>,
+}
+
 /// One place that holds an edge — a *backlink*. The store keeps, per node, the
-/// list of places pointing at it, so `delete` can find and fix every incoming
+/// set of places pointing at it, so `delete` can find and fix every incoming
 /// edge without looking at anything else (analysis.fourth-option, rule 2).
 ///
 /// Three kinds because an edge can be held three ways: a scalar field
@@ -415,10 +429,11 @@ pub fn store_by_id(id: u32) -> Option<Arc<Mutex<StoreData>>> {
 ///
 /// Weak throughout: recording a backlink must not keep the holder alive.
 ///
-/// List and map holders carry no position. Positions shift under insertion and
-/// rehashing, and the fixup re-checks each candidate slot before rewriting it
-/// anyway, so a holder is precise enough and can't go stale the way an index
-/// would.
+/// A struct slot is named exactly, so overwriting `a.target` unlinks the old
+/// target's backlink precisely. A container backlink names the container and no
+/// position, because positions shift under insertion and rehashing — so it is
+/// one entry per (container, target) pair however many elements match, and it is
+/// dropped when a fixup visit finds the container no longer holds that edge.
 #[derive(Debug, Clone)]
 pub enum Backlink {
     /// A named field of a struct — a node's edge, or a root edge.
@@ -430,21 +445,14 @@ pub enum Backlink {
 }
 
 impl Backlink {
-    /// Holder identity plus field name, for dedup. `Weak::as_ptr` is stable for
-    /// the allocation's life, which is all dedup needs.
-    fn key(&self) -> (usize, Option<&str>) {
+    pub fn key(&self) -> BacklinkKey {
         match self {
-            Backlink::Field(w, f) => (w.as_ptr() as usize, Some(f.as_str())),
-            Backlink::Element(w) => (w.as_ptr() as usize, None),
-            Backlink::Entry(w) => (w.as_ptr() as usize, None),
-        }
-    }
-
-    pub fn is_live(&self) -> bool {
-        match self {
-            Backlink::Field(w, _) => w.strong_count() > 0,
-            Backlink::Element(w) => w.strong_count() > 0,
-            Backlink::Entry(w) => w.strong_count() > 0,
+            Backlink::Field(w, f) => BacklinkKey {
+                holder: w.as_ptr() as usize,
+                field: Some(f.clone()),
+            },
+            Backlink::Element(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
+            Backlink::Entry(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
         }
     }
 }
@@ -476,7 +484,11 @@ pub struct StoreData {
     pub type_param: Option<String>,
     /// Incoming edges per node: who points at me. This is what makes `delete`
     /// cost O(in-degree) instead of a scan.
-    pub incoming: HashMap<usize, Vec<Backlink>>,
+    /// Keyed by slot so registration and unlinking are both O(1) — a hub with
+    /// N incoming edges takes N registrations, and a linear dedup scan would
+    /// make building it quadratic. `IndexMap` rather than `HashMap` so the
+    /// fixup visits holders in a deterministic order.
+    pub incoming: HashMap<usize, IndexMap<BacklinkKey, Backlink>>,
     /// Slot index per node, so `delete` doesn't scan `slots` to find one.
     pub slot_of: HashMap<usize, u32>,
 }
@@ -529,17 +541,33 @@ impl StoreData {
     /// *missing* backlink would be unsound, so registration errs toward
     /// recording.
     pub fn register_backlink(&mut self, target: &Arc<Mutex<StructData>>, holder: Backlink) {
-        let entry = self.incoming.entry(node_key(target)).or_default();
-        entry.retain(|b| b.is_live());
-        let key = holder.key();
-        if !entry.iter().any(|b| b.key() == key) {
-            entry.push(holder);
+        self.incoming
+            .entry(node_key(target))
+            .or_default()
+            .insert(holder.key(), holder);
+    }
+
+    /// Forget that `slot` points at `target` — the old half of an overwrite.
+    ///
+    /// Exact for a struct field, which names its slot. A container slot names
+    /// only the container, so its backlink is dropped when the container stops
+    /// holding *any* edge to the target, not when one element changes.
+    pub fn unregister_backlink(&mut self, target: &Arc<Mutex<StructData>>, slot: &BacklinkKey) {
+        let key = node_key(target);
+        if let Some(entry) = self.incoming.get_mut(&key) {
+            entry.shift_remove(slot);
+            if entry.is_empty() {
+                self.incoming.remove(&key);
+            }
         }
     }
 
     /// Take a node's incoming-edge list, for the delete that is about to fix it.
     pub fn take_incoming(&mut self, node: &Arc<Mutex<StructData>>) -> Vec<Backlink> {
-        self.incoming.remove(&node_key(node)).unwrap_or_default()
+        self.incoming
+            .remove(&node_key(node))
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default()
     }
 
     pub fn live_nodes(&self) -> Vec<Arc<Mutex<StructData>>> {

@@ -785,12 +785,12 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             NonOptionalLink { span } => {
-                Diagnostic::error("a `Link<T>` field must be optional")
+                Diagnostic::error("a required `Link<T>` edge is not supported yet")
                     .with_code("E0327")
-                    .with_primary(*span, "this edge has no `none` to fall back to")
-                    .with_help("write the field as `Link<T>?`")
+                    .with_primary(*span, "this edge is required, so delete has no `none` to set it to")
+                    .with_help("write the field as `Link<T>?` for now")
                     .with_fix("add `?` — `target: Link<Entity>?`")
-                    .with_why("deleting a node sets every edge pointing at it to `none`, so an edge field has to be able to hold `none`. A non-optional edge also can't be built in the first place: a cycle needs one side written before its target exists. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine — delete drops the entry instead of nulling it")
+                    .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
             MutateConst { name, span } => {

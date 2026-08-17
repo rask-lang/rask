@@ -1317,8 +1317,10 @@ impl Interpreter {
                 let old = m.lock().unwrap().insert(MapKey(key), value);
                 // A secondary index (`by_name: Map<string, Link<Task>>`) holds
                 // edges: deleting the node drops its entry, which is the
-                // database's index-maintenance move.
-                crate::store::register_entry(m, &inserted);
+                // database's index-maintenance move. Overwriting a key can
+                // remove the map's last edge to the displaced target, so the old
+                // value goes in too.
+                crate::store::register_entry(m, old.as_ref(), &inserted);
                 Ok(option_of(old))
             }
             "get" => {

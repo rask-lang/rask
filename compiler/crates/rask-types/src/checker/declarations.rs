@@ -908,15 +908,24 @@ impl TypeChecker {
     // Pass 2: Check Declarations
     // ------------------------------------------------------------------------
 
-    /// A scalar edge must be optional: `Link<T>?`, never bare `Link<T>`.
+    /// A required edge — bare `Link<T>` rather than `Link<T>?` — is rejected in
+    /// this prototype, because neither half of its lifecycle is implemented.
     ///
-    /// Delete's whole job is to set incoming edges to `none`, and a
-    /// non-optional field has no `none` to be set to. The fourth-option
-    /// analysis reached the same conclusion from the other end — non-optional
-    /// edges can't be constructed under cycles, because there's no valid value
-    /// to give the field before its target exists.
+    /// It can't be *built*: a required cycle needs one side written before its
+    /// target exists, which the design answers with batches (a staged region
+    /// gives the cycle a legal transient state, constraints checked at apply).
+    /// Batches aren't built here.
     ///
-    /// A bare link inside a container is fine and stays allowed:
+    /// It can't be *destroyed*: delete's whole job is to set incoming edges to
+    /// `none`, and a required field has no `none` to be set to. The design's
+    /// answer is a declared delete policy — cascade or restrict — and neither is
+    /// built here.
+    ///
+    /// So this is a prototype limit, not a language rule. The adversarial pass
+    /// did once kill required edges outright (A4), but batches reversed that;
+    /// `Link<T>` and `Link<T>?` are both meant to exist.
+    ///
+    /// A bare link inside a container is a different thing and stays allowed:
     /// `Vec<Link<T>>` and `Map<K, Link<T>>` lose the *entry* at delete rather
     /// than nulling it, which is what a list of live things means.
     fn reject_non_optional_link(&mut self, ty: &Type, span: Span) {

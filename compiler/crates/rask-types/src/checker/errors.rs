@@ -206,8 +206,9 @@ pub enum TypeError {
         elem: String,
         span: Span,
     },
-    /// A scalar edge field declared bare `Link<T>` instead of `Link<T>?`.
-    #[error("a `Link<T>` field must be optional")]
+    /// A required edge (`Link<T>`, no `?`) — needs batches to build and a delete
+    /// policy to destroy, neither of which the prototype has.
+    #[error("a required `Link<T>` edge is not supported yet — write `Link<T>?`")]
     NonOptionalLink {
         span: Span,
     },

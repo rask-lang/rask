@@ -1266,20 +1266,21 @@ fn error_frozen_pool_write() {
     assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
 }
 
-// analysis.fourth-option: a scalar edge must be `Link<T>?`. A bare `Link<T>`
-// field has no `none` for delete to set it to, and can't be built under a cycle.
-// A bare link inside a Vec/Map is legal — delete drops the entry instead.
+// analysis.fourth-option: a required edge (`Link<T>`, no `?`) is unsupported for
+// now — it needs a batch to construct and a cascade/restrict delete policy to
+// destroy, and neither is built. A bare link inside a Vec/Map stays legal,
+// because delete drops the entry instead of nulling it.
 #[test]
 fn error_non_optional_link() {
     let (failed, out) = compile_error_output("non_optional_link.rk");
-    assert!(failed, "a non-optional `Link<T>` field must be rejected: {}", out);
+    assert!(failed, "a required `Link<T>` edge must be rejected for now: {}", out);
     assert!(out.contains("E0327"), "should be a non-optional-link error (E0327): {}", out);
     // The struct field and the enum payload, and nothing else: the `Link<T>?`
     // field and the Vec/Map-of-link fields in the same file must pass.
     assert_eq!(
         out.matches("error[E0327]").count(),
         2,
-        "exactly the two non-optional edges rejected: {}",
+        "exactly the two required edges rejected: {}",
         out
     );
 }

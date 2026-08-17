@@ -42,7 +42,7 @@ a spec draft starts here.
 | Representation | Raw pointers. `mem.relocatable` stays keys-only |
 | Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. Not locals (block-scoped borrows instead) |
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
-| Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site |
+| Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site. Note this is only complete while every edge is optional — a required edge has no `none` to be set to, so admitting `Link<T>` (see below) makes one of cascade/restrict mandatory rather than deferred |
 | Ownership | Composition by value (`Entity { body: Body }`), not a policy |
 | Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Parallel inserts claim slots by atomic bump (B10) |
 | Atomicity | Batches — a region where **deletes** defer to the end. No validation step (required links are a compile-time check), no rollback needed. Also the delete-locked scope, and how required-link cycles get built. See [batches](fourth-option-batches.md) |
@@ -584,9 +584,13 @@ non-none pointer → load the target's header flag → if dead, self-heal to
 not be there" the programmer already acknowledged by writing `?` is the only
 place the runtime needs. (An earlier draft carved out non-optional edges as
 eager-only; the adversarial pass then killed non-optional edges entirely —
-they can't be constructed under cycles — so every edge has a `?` site and
-lazy covers the whole model uniformly. See
-[fourth-option-adversarial.md](fourth-option-adversarial.md), A4.)
+they can't be constructed under cycles — so every edge had a `?` site and lazy
+covered the whole model uniformly. See
+[fourth-option-adversarial.md](fourth-option-adversarial.md), A4. **That kill
+was later reversed**: batches give a required cycle a legal transient state, so
+`Link<T>` and `Link<T>?` both live and lazy has a non-optional case to answer
+for again — see [concurrency](fourth-option-concurrency.md), "Delta to the
+earlier docs".)
 
 ### Open
 

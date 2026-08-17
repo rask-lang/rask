@@ -107,10 +107,11 @@ impl Interpreter {
                 // where the holder lives.)
                 Value::Struct(s) | Value::Link { node: s, .. } => {
                     let mut guard = s.lock().unwrap();
-                    let value = wrap_like(guard.fields.get(field), value);
+                    let previous = guard.fields.get(field).cloned();
+                    let value = wrap_like(previous.as_ref(), value);
                     guard.fields.insert(field.clone(), value.clone());
                     drop(guard);
-                    crate::store::register_field(s, field, &value);
+                    crate::store::register_field(s, field, previous.as_ref(), &value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
@@ -120,6 +121,8 @@ impl Interpreter {
                         let value = wrap_like(Some(&vec[idx]), value);
                         vec[idx] = value.clone();
                         drop(vec);
+                        // A list backlink names the list, not the slot, so the
+                        // displaced element needs no unlinking — see store.rs.
                         crate::store::register_element(v, &value);
                         return Ok(());
                     }

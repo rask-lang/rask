@@ -18,14 +18,21 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::value::{node_key, Backlink, MapKey, StoreData, StructData, Value};
+use crate::value::{node_key, Backlink, BacklinkKey, MapKey, StoreData, StructData, Value};
 
 /// Fixup work, for the delete-cost question the analysis flags as the model's
 /// one real regression. `RASK_STORE_STATS=1` prints the totals at exit.
 ///
 /// `HOLDERS_VISITED` is the in-degree actually walked; `EDGES_FIXED` is the
-/// edges rewritten. They differ only by backlinks left behind after an edge was
-/// overwritten — visits that find nothing and cost one check.
+/// edges rewritten. A struct field unlinks exactly on overwrite, so the two
+/// agree for scalar edges.
+///
+/// They can differ for a container holder, whose backlink names the container
+/// rather than a position: pop the last element pointing at T and the entry
+/// stays until T is deleted, at which point the visit finds nothing. That costs
+/// one check, once, because the entry is deduped per (container, target) and the
+/// list is discarded by the delete that read it — so there is nothing here that
+/// grows.
 pub static EDGES_FIXED: AtomicUsize = AtomicUsize::new(0);
 pub static HOLDERS_VISITED: AtomicUsize = AtomicUsize::new(0);
 pub static DELETES: AtomicUsize = AtomicUsize::new(0);
@@ -92,9 +99,32 @@ fn option_none() -> Value {
 // Registration — recording who points at whom, as links are stored
 // ---------------------------------------------------------------------------
 
-/// Record the edge in `value` held by `holder.field`, and any edges nested
-/// inside it. O(1) for the common case of a scalar link.
-pub fn register_field(holder: &Arc<Mutex<StructData>>, field: &str, value: &Value) {
+/// Record the edge `value` puts in `holder.field`, and forget whatever edge the
+/// field held before.
+///
+/// This is the exact case: a struct field names its slot, so an overwrite
+/// unlinks the old target precisely and nothing accumulates however many times
+/// the field is written. `old` is the value being replaced — pass `None` when
+/// the field is newly created and held nothing.
+pub fn register_field(
+    holder: &Arc<Mutex<StructData>>,
+    field: &str,
+    old: Option<&Value>,
+    value: &Value,
+) {
+    let slot = BacklinkKey { holder: Arc::as_ptr(holder) as usize, field: Some(field.to_string()) };
+
+    // Unlink first: `a.target = a.target` must not drop the backlink it re-adds.
+    if let Some((store_id, previous)) = old.and_then(any_link) {
+        if let Some(store) = crate::value::store_by_id(store_id) {
+            let same = any_link(value)
+                .is_some_and(|(sid, next)| sid == store_id && Arc::ptr_eq(&next, &previous));
+            if !same {
+                store.lock().unwrap().unregister_backlink(&previous, &slot);
+            }
+        }
+    }
+
     if let Some((store_id, target)) = any_link(value) {
         if let Some(store) = crate::value::store_by_id(store_id) {
             store.lock().unwrap().register_backlink(
@@ -107,7 +137,13 @@ pub fn register_field(holder: &Arc<Mutex<StructData>>, field: &str, value: &Valu
     register_nested(value, 0);
 }
 
-/// Record an edge pushed onto an edge list.
+/// Record an edge pushed onto or written into an edge list.
+///
+/// A list backlink names the list, not a position, so it is one entry per
+/// (list, target) pair however many elements match. Nothing accumulates from
+/// repeated pushes of the same target, and an entry left behind after the last
+/// matching element goes away is dropped by `fix_elements` on the visit that
+/// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
     if let Some((store_id, target)) = any_link(value) {
         if let Some(store) = crate::value::store_by_id(store_id) {
@@ -119,8 +155,28 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
     }
 }
 
-/// Record an edge inserted into an index.
-pub fn register_entry(map: &Arc<Mutex<crate::value::MapData>>, value: &Value) {
+/// Record an edge inserted into an index. Same one-per-(map, target) shape as
+/// `register_element`; `old` is the displaced value when a key is overwritten.
+pub fn register_entry(
+    map: &Arc<Mutex<crate::value::MapData>>,
+    old: Option<&Value>,
+    value: &Value,
+) {
+    let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
+    if let Some((store_id, previous)) = old.and_then(any_link) {
+        if let Some(store) = crate::value::store_by_id(store_id) {
+            // Only if no other entry still points there — the backlink covers
+            // the whole map, not this one key.
+            let still_held = map
+                .lock()
+                .unwrap()
+                .values()
+                .any(|v| link_target(v, store_id).is_some_and(|n| Arc::ptr_eq(&n, &previous)));
+            if !still_held {
+                store.lock().unwrap().unregister_backlink(&previous, &slot);
+            }
+        }
+    }
     if let Some((store_id, target)) = any_link(value) {
         if let Some(store) = crate::value::store_by_id(store_id) {
             store
@@ -148,7 +204,7 @@ pub fn register_nested(value: &Value, depth: usize) {
                 guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
             };
             for (name, v) in &fields {
-                register_field(s, name, v);
+                register_field(s, name, None, v);
             }
         }
         Value::Vec(vec) => {
@@ -161,7 +217,7 @@ pub fn register_nested(value: &Value, depth: usize) {
         Value::Map(map) => {
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
-                register_entry(map, it);
+                register_entry(map, None, it);
                 register_nested(it, depth + 1);
             }
         }
@@ -213,6 +269,7 @@ fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, store_id: u32, dead: &A
         **guard = kept;
     }
 }
+
 
 /// Drop index entries pointing at the dying node — the database's
 /// index-maintenance move.
