@@ -3822,3 +3822,24 @@ char_at(1)=ö
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// `min`/`max` were the only iterator terminals with no native lowering, so
+// `v.iter().min()` reached codegen as a call to `Vec_iter` — "Function not
+// found". The fused loop keeps the running extreme, which has to start empty
+// rather than at zero, or an all-negative sequence answers 0.
+#[test]
+fn iter_min_and_max_are_fused_on_both_backends() {
+    let expected = "\
+min=-3 max=11
+empty min=999 max=999
+one min=7 max=7
+mapped max=3
+filtered min=5
+neg min=-9 max=-2
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "iter_min_max.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

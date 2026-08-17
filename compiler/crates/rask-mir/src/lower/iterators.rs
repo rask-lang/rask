@@ -238,6 +238,16 @@ impl<'a> MirLowerer<'a> {
                     return Ok(Some((MirOperand::Local(dst), MirType::String)));
                 }
             }
+            // `min`/`max` — the same fused loop, keeping the running extreme.
+            // They were the only iterator terminals without a lowering, so
+            // `v.iter().min()` reached codegen as a call to `Vec_iter`, which
+            // doesn't exist: "Function not found: Vec_iter".
+            "min" | "max" if args.is_empty() => {
+                if let Some(chain) = self.try_parse_iter_chain(object) {
+                    let result = self.lower_iter_extreme(&chain, method == "max")?;
+                    return Ok(Some(result));
+                }
+            }
             "fold" if args.len() == 2 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_fold(&chain, &args[0].expr, &args[1].expr)?;
@@ -985,6 +995,108 @@ impl<'a> MirLowerer<'a> {
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
         Ok((MirOperand::Local(acc), MirType::I64))
+    }
+
+    /// `.min()` / `.max()` — fused loop keeping the running extreme, `none` for
+    /// an empty sequence.
+    ///
+    /// The comparison is on the element as the loop produces it, so an adapter
+    /// ahead of the terminal is already applied — `.map(f).max()` is the max of
+    /// the mapped values, not of the sources.
+    pub(super) fn lower_iter_extreme(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        want_max: bool,
+    ) -> Result<TypedOperand, LoweringError> {
+        let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
+        // none until the first element lands (tag 1).
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, _) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        // Take this element when the slot is still empty, or when it beats what's
+        // there. Reading the tag is how "still empty" is asked.
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(result) },
+        }));
+        let is_empty = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_empty,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        let current = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: current,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(result),
+                field_index: 0,
+                byte_offset: Some(8),
+                access: FieldAccess::Word,
+            },
+        }));
+        let beats = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: beats,
+            rvalue: MirRValue::BinaryOp {
+                op: if want_max {
+                    crate::operand::BinOp::Gt
+                } else {
+                    crate::operand::BinOp::Lt
+                },
+                left: final_op.clone(),
+                right: MirOperand::Local(current),
+            },
+        }));
+        let take = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: take,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Or,
+                left: MirOperand::Local(is_empty),
+                right: MirOperand::Local(beats),
+            },
+        }));
+
+        let store_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(take),
+            then_block: store_block,
+            else_block: setup.inc_block,
+        }));
+
+        self.builder.switch_to_block(store_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)), // present
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 8,
+            value: final_op,
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+        Ok((MirOperand::Local(result), MirType::Option(Box::new(MirType::I64))))
     }
 
     /// .find(|x| pred) — fused loop, return Some on first match, None otherwise.

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `min`/`max` on a chain: the only iterator terminals with no native lowering,
+// so `v.iter().min()` reached codegen as a call to `Vec_iter` (found by
+// diffing the backends). The comparison is on the element the loop produces, so
+// an adapter ahead of the terminal is already applied.
+
+func main() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(5)
+    v.push(-3)
+    v.push(11)
+    v.push(0)
+    println("min={v.iter().min() ?? 999} max={v.iter().max() ?? 999}")
+
+    // Empty: none, not a bogus extreme.
+    mut e: Vec<i64> = Vec.new()
+    println("empty min={e.iter().min() ?? 999} max={e.iter().max() ?? 999}")
+
+    // One element is both.
+    mut one: Vec<i64> = Vec.new()
+    one.push(7)
+    println("one min={one.iter().min() ?? 999} max={one.iter().max() ?? 999}")
+
+    // Adapters ahead of the terminal apply first.
+    println("mapped max={v.iter().map(|x| 0 - x).max() ?? 999}")
+    println("filtered min={v.iter().filter(|x| x > 0).min() ?? 999}")
+
+    // All negative — the running extreme must not start at zero.
+    mut neg: Vec<i64> = Vec.new()
+    neg.push(-5)
+    neg.push(-2)
+    neg.push(-9)
+    println("neg min={neg.iter().min() ?? 999} max={neg.iter().max() ?? 999}")
+}
