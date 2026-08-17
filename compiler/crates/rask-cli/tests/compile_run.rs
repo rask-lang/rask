@@ -1387,6 +1387,26 @@ fn error_missing_call_site_mutate_marker() {
     );
 }
 
+// ER47 (#598): bare `try` sends the operand's other branch out unchanged, so
+// that branch has to fit the return. The two ways to get it wrong have different
+// fixes — an absence isn't an error, and an error isn't an absence.
+#[test]
+fn error_try_shape_rule() {
+    let (failed, out) = compile_error_output("try_shape_rule.rk");
+    assert!(failed, "a mismatched `try` shape must not compile: {}", out);
+    assert!(
+        out.contains("would propagate `none`, and this function has no absent branch"),
+        "an optional operand in a `T or E` function: {}", out,
+    );
+    assert!(
+        out.contains("would propagate an error, and this function only returns absence"),
+        "a result operand in a `T?` function: {}", out,
+    );
+    // Each names the fix that belongs to its direction.
+    assert!(out.contains("x ?? return"), "the absence side's fix: {}", out);
+    assert!(out.contains("catch _ => return none"), "the error side's fix: {}", out);
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

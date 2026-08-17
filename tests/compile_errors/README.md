@@ -27,6 +27,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
+| [try_shape_rule.rk](try_shape_rule.rk) | Bare `try` whose other branch doesn't fit the return (ER47, E0360/E0361) — an absence in a `T or E` function, an error in a `T?` function (#598) |
 | [ambiguous_error_wrap.rk](ambiguous_error_wrap.rk) | Two variants of the error enum wrap the same error (ER31a, E0359) — `try` asks which instead of picking |
 | [optional_operators_need_optionals.rk](optional_operators_need_optionals.rk) | `??`, `!` and `take` on something that can never be absent (OPT3/OPT11/OPT13/OPT32, E0831/E0832/E0365) — including `m[k] ?? d`, which points at `.get(k)` |
 | [trait_bound_messages.rk](trait_bound_messages.rk) | What a failed trait requirement says, per source: a numeric bound (E0333, members not methods), an ordinary generic bound, a conformance header, an `as any Trait` cast, and a bound naming a trait nobody declared (E0833, did-you-mean) |
