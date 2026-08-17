@@ -168,6 +168,16 @@ impl MirType {
     pub fn is_unsigned(&self) -> bool {
         matches!(self, MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
     }
+
+    /// True for an integer primitive of either signedness — the set where a
+    /// mixed-signedness comparison is well-defined (type.operators/CMP-mixed).
+    pub fn is_int_like(&self) -> bool {
+        matches!(
+            self,
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -31,6 +31,33 @@ impl Interpreter {
     }
 
     /// Evaluate a binary operation directly (bypasses desugaring). Integer
+    /// Order two integers by *value*, whatever widths and signedness they carry.
+    ///
+    /// An unsigned value lives in the signed i64 slot as its bit pattern, so
+    /// u64::MAX is stored as -1. Comparing the slots directly is right only when
+    /// both sides read the same way; a mixed pair needs the values (#308). A
+    /// negative signed value is below every unsigned one, and two non-negatives
+    /// compare as unsigned.
+    pub(crate) fn int_value_cmp(
+        a: i64,
+        ka: crate::value::IntKind,
+        b: i64,
+        kb: crate::value::IntKind,
+    ) -> std::cmp::Ordering {
+        match (ka.is_unsigned(), kb.is_unsigned()) {
+            (false, false) => a.cmp(&b),
+            (true, true) => (a as u64).cmp(&(b as u64)),
+            // One side unsigned: a negative signed operand is the smaller one,
+            // and otherwise both are non-negative so unsigned order is right.
+            (true, false) => {
+                if b < 0 { std::cmp::Ordering::Greater } else { (a as u64).cmp(&(b as u64)) }
+            }
+            (false, true) => {
+                if a < 0 { std::cmp::Ordering::Less } else { (a as u64).cmp(&(b as u64)) }
+            }
+        }
+    }
+
     /// arithmetic reads the width from the operand values' IntKind and is
     /// width-aware checked (type.overflow). Used for the interpolation path
     /// that skips desugaring.
@@ -100,10 +127,18 @@ impl Interpreter {
             }
             (BinOp::Eq, _, _) => Ok(Value::Bool(Self::value_eq(&l, &r))),
             (BinOp::Ne, _, _) => Ok(Value::Bool(!Self::value_eq(&l, &r))),
-            (BinOp::Lt, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a < b)),
-            (BinOp::Gt, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a > b)),
-            (BinOp::Le, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a <= b)),
-            (BinOp::Ge, Value::Int(a, _), Value::Int(b, _)) => Ok(Value::Bool(a >= b)),
+            // An unsigned value is carried in the signed i64 slot as its bit
+            // pattern, so `<` on the slots is only right when both sides read the
+            // same way. Comparing by value is what makes a mixed pair correct
+            // (#308): u64::MAX is not -1, and 5 > -1.
+            (BinOp::Lt, Value::Int(a, ka), Value::Int(b, kb)) =>
+                Ok(Value::Bool(Self::int_value_cmp(*a, *ka, *b, *kb) == std::cmp::Ordering::Less)),
+            (BinOp::Gt, Value::Int(a, ka), Value::Int(b, kb)) =>
+                Ok(Value::Bool(Self::int_value_cmp(*a, *ka, *b, *kb) == std::cmp::Ordering::Greater)),
+            (BinOp::Le, Value::Int(a, ka), Value::Int(b, kb)) =>
+                Ok(Value::Bool(Self::int_value_cmp(*a, *ka, *b, *kb) != std::cmp::Ordering::Greater)),
+            (BinOp::Ge, Value::Int(a, ka), Value::Int(b, kb)) =>
+                Ok(Value::Bool(Self::int_value_cmp(*a, *ka, *b, *kb) != std::cmp::Ordering::Less)),
             (BinOp::Lt, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a < b)),
             (BinOp::Gt, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a > b)),
             (BinOp::Le, Value::Float(a, _), Value::Float(b, _)) => Ok(Value::Bool(a <= b)),

@@ -3770,3 +3770,33 @@ direct: 7
         assert_eq!(stdout, expected, "{}", mode);
     }
 }
+
+// #308: a comparison between integers of different signedness is answered by
+// value. Both operands widen to a 64-bit slot but don't read the same way there,
+// so one instruction can only be right for one case: native compared as unsigned
+// and said `5 > -1` was false, the interpreter compared as signed and said
+// `u64::MAX > 1` was false.
+#[test]
+fn a_mixed_signedness_comparison_is_answered_by_value_on_both_backends() {
+    let expected = "\
+u64 5  >  i32 -1 : true
+u64 5  <  i32 -1 : false
+i32 -1 <  u64 5  : true
+i32 -1 >  u64 5  : false
+u64 5  == i32 -1 : false
+u64 5  != i32 -1 : true
+u64 max >  i32 1 : true
+u64 max <  i32 1 : false
+i32 1   <  u64 max: true
+u64 5  == i32 5  : true
+u64 5  >= i32 5  : true
+u64 5  <= i32 5  : true
+u64 3  <  u64 7  : true
+i32 -5 <  i32 -2 : true
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "mixed_sign_compare.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}

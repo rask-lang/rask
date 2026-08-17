@@ -55,6 +55,14 @@ impl Interpreter {
             Some(Value::Int(_, k)) => kind.unify(*k),
             _ => kind,
         };
+        // For a comparison, the other operand's kind stands on its own —
+        // `unify` picks one and erases the very difference being compared.
+        fn other_kind(args: &[Value], fallback: crate::value::IntKind) -> crate::value::IntKind {
+            match args.first() {
+                Some(Value::Int(_, k)) if *k != crate::value::IntKind::Untyped => *k,
+                _ => fallback,
+            }
+        }
         if let Some(op) = ArithOp::from_method(method) {
             let b = self.expect_int(args, 0)?;
             let k = arg_kind(args);
@@ -63,11 +71,35 @@ impl Interpreter {
         match method {
             "neg" => checked_neg(kind, a).map(|v| Value::Int(v, kind)),
             "eq" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a == b)) }
-            "lt" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a < b)) }
-            "le" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a <= b)) }
-            "gt" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a > b)) }
-            "ge" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a >= b)) }
-            "compare" => { let b = self.expect_int(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
+            // Ordered by *value*, not by the i64 slot: an unsigned value is
+            // carried in that slot as its bit pattern, so u64::MAX reads as -1
+            // and `>` on the slots got it backwards. A mixed-signedness pair is
+            // the interesting case and has an obviously-correct answer — a
+            // negative signed value is below every unsigned one (#308).
+            "lt" => {
+                let b = self.expect_int(args, 0)?;
+                Ok(Value::Bool(Self::int_value_cmp(a, kind, b, other_kind(args, kind))
+                    == std::cmp::Ordering::Less))
+            }
+            "le" => {
+                let b = self.expect_int(args, 0)?;
+                Ok(Value::Bool(Self::int_value_cmp(a, kind, b, other_kind(args, kind))
+                    != std::cmp::Ordering::Greater))
+            }
+            "gt" => {
+                let b = self.expect_int(args, 0)?;
+                Ok(Value::Bool(Self::int_value_cmp(a, kind, b, other_kind(args, kind))
+                    == std::cmp::Ordering::Greater))
+            }
+            "ge" => {
+                let b = self.expect_int(args, 0)?;
+                Ok(Value::Bool(Self::int_value_cmp(a, kind, b, other_kind(args, kind))
+                    != std::cmp::Ordering::Less))
+            }
+            "compare" => {
+                let b = self.expect_int(args, 0)?;
+                Ok(ordering_value(Self::int_value_cmp(a, kind, b, other_kind(args, kind))))
+            }
             "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b, arg_kind(args))) }
             "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b, arg_kind(args))) }
             "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b, arg_kind(args))) }

@@ -2566,6 +2566,73 @@ impl<'a> FunctionBuilder<'a> {
 
         let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
+        // A mixed-signedness comparison is answered by *value* (#308). Both
+        // operands widen to i64, but they don't read the same way there: the
+        // unsigned side is a bit pattern and the signed side a number, so one
+        // `icmp` can only be right for one of them. Native compared as unsigned
+        // and said `5 > -1` was false; the interpreter compared as signed and
+        // said `u64::MAX > 1` was false. Each got the other's case wrong.
+        //
+        // A negative signed operand is below every unsigned one, and once it
+        // isn't negative both sides are non-negative and unsigned order is
+        // right — a sign check and a compare, which is what the design predicted.
+        if is_comparison {
+            let lt = Self::operand_mir_type(left, ctx.locals);
+            let rt = Self::operand_mir_type(right, ctx.locals);
+            if let (Some(lty), Some(rty)) = (&lt, &rt) {
+                let mixed = lty.is_int_like() && rty.is_int_like()
+                    && lty.is_unsigned() != rty.is_unsigned();
+                if mixed {
+                    let signed_on_left = !lty.is_unsigned();
+                    // Widen each side the way its own type reads — zero-extend an
+                    // unsigned operand, sign-extend a signed one. Branch on the
+                    // value's *actual* Cranelift type: a local's declared MIR
+                    // width and the width it's held at don't always agree, and
+                    // extending an i64 is a verifier error.
+                    let widen = |b: &mut ClifFunctionBuilder, v: Value, ty: &MirType| -> Value {
+                        let have = b.func.dfg.value_type(v);
+                        if have == types::I64 || !have.is_int() {
+                            v
+                        } else if ty.is_unsigned() {
+                            b.ins().uextend(types::I64, v)
+                        } else {
+                            b.ins().sextend(types::I64, v)
+                        }
+                    };
+                    let l64 = widen(builder, lhs_val, lty);
+                    let r64 = widen(builder, rhs_val, rty);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let neg = if signed_on_left {
+                        builder.ins().icmp(IntCC::SignedLessThan, l64, zero)
+                    } else {
+                        builder.ins().icmp(IntCC::SignedLessThan, r64, zero)
+                    };
+                    let ucc = match op {
+                        BinOp::Eq => IntCC::Equal,
+                        BinOp::Ne => IntCC::NotEqual,
+                        BinOp::Lt => IntCC::UnsignedLessThan,
+                        BinOp::Le => IntCC::UnsignedLessThanOrEqual,
+                        BinOp::Gt => IntCC::UnsignedGreaterThan,
+                        BinOp::Ge => IntCC::UnsignedGreaterThanOrEqual,
+                        _ => unreachable!("checked by is_comparison"),
+                    };
+                    let ucmp = builder.ins().icmp(ucc, l64, r64);
+                    // What the answer is when the signed side *is* negative.
+                    let when_neg = match (op, signed_on_left) {
+                        (BinOp::Eq, _) => false,
+                        (BinOp::Ne, _) => true,
+                        (BinOp::Lt, true) | (BinOp::Le, true) => true,
+                        (BinOp::Gt, true) | (BinOp::Ge, true) => false,
+                        (BinOp::Lt, false) | (BinOp::Le, false) => false,
+                        (BinOp::Gt, false) | (BinOp::Ge, false) => true,
+                        _ => unreachable!("checked by is_comparison"),
+                    };
+                    let fixed = builder.ins().iconst(types::I8, i64::from(when_neg));
+                    return Ok(builder.ins().select(neg, fixed, ucmp));
+                }
+            }
+        }
+
         // Signedness lives in the MIR type — a Cranelift integer carries none.
         // A constant operand has no type to read, so take it from whichever side
         // does; both operands of an arithmetic operator share a type anyway.
