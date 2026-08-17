@@ -1748,11 +1748,53 @@ impl ToDiagnostic for rask_types::TraitError {
 // Ownership Errors
 // ============================================================================
 
+/// Using a `Link<T>` after its node was deleted.
+///
+/// The move checker is what proves this, but nothing moved: `delete` freed the
+/// node, so every name for it is dead. Saying "moved" here would be wrong, and
+/// the generic advice — "add `.clone()`" — would hand back a second dead pointer.
+fn link_deleted_diagnostic(
+    name: &str,
+    deleted_at: rask_ast::Span,
+    use_span: rask_ast::Span,
+    maybe: bool,
+) -> Diagnostic {
+    let headline = if maybe {
+        format!("`{}` may name a deleted node — possible use after free", name)
+    } else {
+        format!("`{}` names a deleted node — this is a use after free", name)
+    };
+    let primary = if maybe {
+        format!("`{}` is dead on at least one path reaching here", name)
+    } else {
+        format!("`{}` points at freed memory from here on", name)
+    };
+    Diagnostic::error(headline)
+        .with_code("E0328")
+        .with_primary(use_span, primary)
+        .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
+        .with_help("read what you need before the delete, or keep the reference in a field so the store can null it")
+        .with_fix("move the reads above the `delete`, or store the link in a `Link<T>?` field")
+        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the store nulls it and the `?` makes you check; a local can't, so the compiler proves you never follow one instead of checking at runtime the way a handle does")
+}
+
 impl ToDiagnostic for rask_ownership::OwnershipError {
     fn to_diagnostic(&self) -> Diagnostic {
         use rask_ownership::OwnershipErrorKind::*;
 
         match &self.kind {
+            UseAfterMove { name, moved_at, reason }
+                if matches!(reason, rask_ownership::MoveReason::LinkDeleted) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, false)
+            }
+
+            UseAfterMaybeMove { name, moved_at, reason }
+                if matches!(reason, rask_ownership::MoveReason::LinkDeleted) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, true)
+            }
+
             UseAfterMove { name, moved_at, reason } => {
                 use rask_ownership::MoveReason;
                 let (note, help) = match reason {
@@ -1786,6 +1828,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     MoveReason::Resource { type_name } => (
                         format!("`{}` is @resource — must be consumed exactly once", type_name),
                         "restructure so the resource is only used once".to_string(),
+                    ),
+                    MoveReason::LinkDeleted => (
+                        // Unreachable — the guarded arm above handles it.
+                        format!("`{}` names a deleted node", name),
+                        "read the node before deleting it".to_string(),
                     ),
                     MoveReason::Unknown => (
                         format!("`{}` was moved — assignment transfers ownership", name),

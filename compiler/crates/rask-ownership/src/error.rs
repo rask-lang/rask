@@ -22,6 +22,10 @@ pub enum MoveReason {
     Unique { type_name: String },
     /// Type is marked @resource.
     Resource { type_name: String },
+    /// A `Link<T>` whose node was deleted. Not a move at all: the pointer stayed
+    /// put and the thing it pointed at was freed, so every name for it is dead.
+    /// The move checker is only the mechanism that proves it (analysis.fourth-option).
+    LinkDeleted,
     /// Unknown or generic type.
     Unknown,
 }

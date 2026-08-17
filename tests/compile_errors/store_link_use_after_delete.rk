@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Using a link after its node is deleted is a compile error (analysis.fourth-option).
+// Using a link after its node is deleted is a compile error (E0328).
 //
-// Why it can be: a local link is non-optional, so its type asserts the target is
-// alive. A delete falsifies that, and there is no `none` to fall back to — the use
-// contradicts the type. `delete` takes the link, so the existing move checker
-// reports it, and no runtime check is needed anywhere.
+// A `Link<T>` is a pointer to a node, and `delete` frees the node — so this is a
+// use after free, proven rather than checked. Nothing is moved anywhere: the move
+// checker is only the mechanism that tracks which names died.
 //
-// This is not lifetime inference: the invalidation point is the `delete` statement
-// you wrote, not a last use the compiler worked out.
+// Not lifetime inference either: the invalidation point is the `delete` statement
+// you wrote, not a last use the compiler worked out, so the analysis never leaves
+// this function body.
 
 struct Node {
     name: string
@@ -22,14 +22,14 @@ func read_after_delete() {
 
     store.delete(b)
 
-    println("{b.name}")         // ERROR: E0800 — `b` was consumed by the delete
+    println("{b.name}")         // ERROR: E0328 — reading a freed node
 }
 
 func write_after_delete() {
     mut store: Store<Node> = Store.new()
     let n = store.insert(Node { name: "n", next: none })
     store.delete(n)
-    n.name = "zombie"           // ERROR: E0800 — same, for a write
+    n.name = "zombie"           // ERROR: E0328 — same, for a write
 }
 
 func ask_after_delete() {
@@ -38,7 +38,7 @@ func ask_after_delete() {
     store.delete(n)
     // Also an error, and correctly so: if the type guarantees liveness, asking
     // whether it is live is a question with no meaning.
-    println("{store.contains(n)}")   // ERROR: E0800
+    println("{store.contains(n)}")   // ERROR: E0328
 }
 
 func main() {

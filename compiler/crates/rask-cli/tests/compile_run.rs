@@ -1379,19 +1379,29 @@ fn store_link_delete_cost_follows_in_degree() {
     );
 }
 
-// Using a link after its node is deleted is a compile error. `delete` takes the
-// link, so the existing move checker reports it — no runtime check, and not
-// lifetime inference either: the invalidation point is the `delete` statement in
-// the source, not a last use the compiler worked out.
+// Using a link after its node is deleted is a compile error. The move checker is
+// the mechanism, but the report has to say what actually happened: `delete` freed
+// the node, so this is a use after free, proven rather than checked. Reporting it
+// as a move would be wrong — nothing moved — and the generic move advice
+// ("add `.clone()`") would hand back a second dead pointer.
 #[test]
 fn error_store_link_use_after_delete() {
     let (failed, out) = compile_error_output("store_link_use_after_delete.rk");
     assert!(failed, "using a link after its delete must be rejected: {}", out);
-    assert!(out.contains("E0800"), "should be a use-after-move error (E0800): {}", out);
+    assert!(
+        out.contains("E0328") && out.contains("use after free"),
+        "should be reported as a use after free, not a move: {}",
+        out
+    );
+    assert!(
+        !out.contains("clone()"),
+        "must not suggest cloning — that would be a second dead pointer: {}",
+        out
+    );
     // A read, a write, and `contains` — the last is correct too: a non-optional
     // link's type already asserts the node is alive, so asking is meaningless.
     assert_eq!(
-        out.matches("error[E0800]").count(),
+        out.matches("error[E0328]").count(),
         3,
         "exactly the three uses after delete rejected: {}",
         out

@@ -1967,6 +1967,11 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Determine why a type is move-only (not Copy).
     fn move_reason(&self, ty: &Type) -> MoveReason {
+        // A link isn't moved anywhere — `delete` frees its node, which kills every
+        // name for it. Report it as what it is rather than as a transfer.
+        if self.is_link_type(ty) {
+            return MoveReason::LinkDeleted;
+        }
         let type_name = format!("{}", self.program.types.resolve_type_names(ty));
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached

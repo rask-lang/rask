@@ -411,25 +411,36 @@ insert-then-act-on-that-node code needs a search or a key.
 
 ### The rule, implemented
 
-Use-after-delete is now a compile error, and no runtime check was added anywhere.
-`delete` takes the link, so the existing move checker reports it:
+Use-after-delete is now a compile error, and no runtime check was added anywhere:
 
 ```
-error[E0800]: use of moved value: `b`
- 29 |     store.delete(b)
-    |                  - value moved here
- 39 |     println("{b.name}")
-    |              ^ value used here after move
+error[E0328]: `b` names a deleted node — this is a use after free
+ 23 |     store.delete(b)
+    |                  - the node `b` names was deleted here
+ 25 |     println("{b.name}")
+    |               ^ `b` points at freed memory from here on
+    = fix: move the reads above the `delete`, or store the link in a `Link<T>?` field
 ```
 
-This is not lifetime inference. The invalidation point is the `delete` statement
-in the source, not a last use the compiler worked out, so the analysis stays
-inside one function body and needs no annotations.
+**The move checker is the mechanism, not the concept.** `delete` takes the link,
+so the existing move machinery does the tracking — that reuse is why this was four
+small changes instead of a new analysis. But nothing moves: the pointer stays where
+it is and the thing it points at is freed, so every name for that node dies at
+once. That is a use after free, proven rather than checked.
+
+Reporting it as a move would be wrong, and dangerously so — the generic move
+advice is "add `.clone()`", which for a link hands back a second dead pointer. So
+`MoveReason::LinkDeleted` splits the diagnostic off (E0328) while sharing all the
+detection.
+
+It is not lifetime inference either. The invalidation point is the `delete`
+statement in the source, not a last use the compiler worked out, so the analysis
+stays inside one function body and needs no annotations.
 
 Four changes, three of them one-liners against machinery that already existed:
 
 1. `delete(mutate self, take link: Link<T>)` — an existing parameter mode.
-2. `Link<T>` is no longer `Copy`, so it is affine among locals.
+2. `Link<T>` is no longer `Copy`, so the move checker tracks which names are dead.
 3. Assigning a link **into a field** leaves the source name usable; assigning into
    another local revokes it. Both copy the same pointer — the difference is who
    keeps it honest afterwards, and only a field has the store doing that.
