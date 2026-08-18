@@ -135,6 +135,20 @@ extend Version with Hashable {
     func hash(self) -> u64 { return self.major.hash() }
 }
 
+// The unsigned half of it: `hash` is declared `-> u64` and FNV-1a fills the range,
+// so half the answers have the top bit set. A stdlib return type used to collapse
+// to `i64` on its way into MIR — every width did — so those printed as the signed
+// reading of their bits (#823).
+test "std.fmt — a hash in the top half of u64 renders unsigned" {
+    // "a" hashes to 12638187200555641996, which is above i64::MAX.
+    assert "a".hash() > 9223372036854775807
+    assert "{\"a\".hash()}" == "12638187200555641996"
+
+    // The same for an integer receiver, which never went through that path.
+    let n: i8 = -1
+    assert "{n.hash()}" == "12638352127299873646"
+}
+
 test "a custom Hashable can delegate to an integer's hash" {
     let a = Version { major: 1, minor: 0 }
     let b = Version { major: 1, minor: 9 }

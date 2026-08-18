@@ -4565,6 +4565,22 @@ fn ret_category_to_mir_type_in(
         RetCategory::Void => MirType::Void,
         RetCategory::Bool => MirType::Bool,
         RetCategory::I64 => MirType::I64,
+        RetCategory::Int(w) => {
+            use rask_stdlib::mir_metadata::IntWidth;
+            match w {
+                IntWidth::I8 => MirType::I8,
+                IntWidth::I16 => MirType::I16,
+                IntWidth::I32 => MirType::I32,
+                IntWidth::I128 => MirType::I128,
+                IntWidth::U8 => MirType::U8,
+                IntWidth::U16 => MirType::U16,
+                IntWidth::U32 => MirType::U32,
+                IntWidth::U64 => MirType::U64,
+                IntWidth::U128 => MirType::U128,
+                IntWidth::Usize => MirType::usize_ty(),
+                IntWidth::Isize => MirType::isize_ty(),
+            }
+        }
         RetCategory::F64 => MirType::F64,
         RetCategory::String => MirType::String,
         RetCategory::Char => MirType::Char,

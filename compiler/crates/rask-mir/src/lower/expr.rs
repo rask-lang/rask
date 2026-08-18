@@ -5930,20 +5930,6 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Option<super::TypedOperand> {
-        // `string.hash()` has a runtime function of its own — it hashes the
-        // contents, not the 16-byte header. Routed here anyway so the result is
-        // typed `u64`, which is what the signature says: taken from the stdlib
-        // metadata it came back `i64` and the top half of the range printed as a
-        // negative number, while `u64.hash()` beside it printed unsigned (#813).
-        if matches!(obj_ty, MirType::String) {
-            let out = self.builder.alloc_temp(MirType::U64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(out),
-                func: FunctionRef::internal("string_hash".to_string()),
-                args: vec![obj_op.clone()],
-            }));
-            return Some((MirOperand::Local(out), MirType::U64));
-        }
         let width = match obj_ty {
             MirType::Bool | MirType::I8 | MirType::U8 => 1,
             MirType::I16 | MirType::U16 => 2,
