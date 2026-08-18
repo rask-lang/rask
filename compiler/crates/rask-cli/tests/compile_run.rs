@@ -4501,3 +4501,47 @@ fn error_generic_struct_with_an_aggregate_type_arg() {
         "should name the field whose sizes disagree: {}", out,
     );
 }
+
+// #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
+// annotation type-checked clean. The annotation's whole job is to move the
+// break from the call sites to the declaration, so an unenforced one is worse
+// than none: it reads as a guarantee and isn't.
+#[test]
+fn error_small_size_fence() {
+    let (failed, out) = compile_error_output("small_size_fence.rk");
+    assert!(failed, "`@small` over the threshold must not compile: {}", out);
+    assert!(
+        out.contains("E0374") && out.contains("`TooBig`") && out.contains("24 bytes"),
+        "should name the type and its size: {}", out,
+    );
+    assert!(
+        out.contains("`c` is the 8-byte field that took it over 16"),
+        "should name the field that crossed the line: {}", out,
+    );
+    // Two strings are 32 bytes — the threshold isn't only about field count.
+    assert!(
+        out.contains("`WideNames`") && out.contains("32 bytes"),
+        "should catch the string pair too: {}", out,
+    );
+    // SM3: the generic half, checked per instantiation.
+    assert!(
+        out.contains("E0375") && out.contains("`Pair<string>`"),
+        "should name the offending instantiation: {}", out,
+    );
+    assert!(
+        !out.contains("`Pair<i64>`"),
+        "`Pair<i64>` is 16 bytes and must not be flagged: {}", out,
+    );
+}
+
+// The other side of the fence: SM1 says it's a pure size assertion, so a
+// `@small` struct of Copy fields still copies implicitly, and SM4 says it
+// composes with `@unique` — layout and copy semantics are separate questions.
+#[test]
+fn small_fence_keeps_copy_and_unique() {
+    for backend in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(backend, "small_fence.rk");
+        assert_eq!(code, 0, "{backend}: {stdout}{stderr}");
+        assert_eq!(stdout, "6 7\n42\n30 3\n", "{backend}: {stdout}");
+    }
+}

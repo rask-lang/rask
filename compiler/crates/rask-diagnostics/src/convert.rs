@@ -1810,6 +1810,56 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
         use rask_ownership::OwnershipErrorKind::*;
 
         match &self.kind {
+            SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {
+                let label = match offending_field {
+                    Some((field, field_size, field_ty)) => format!(
+                        "{} bytes at `{}` — `{}` is a `{}` there, {} of them",
+                        size, type_name, field, field_ty, field_size
+                    ),
+                    None => format!("{} bytes at `{}`, and the limit is 16", size, type_name),
+                };
+                Diagnostic::error(format!(
+                    "`@small` type `{}` outgrew the copy threshold at `{}`",
+                    base_name, type_name
+                ))
+                .with_code("E0375")
+                .with_primary(self.span, label)
+                .with_fix(format!(
+                    "don't instantiate `{}` with a type that big — or drop `@small`, \
+                     since the fence can't hold for every type argument",
+                    base_name
+                ))
+                .with_why("`@small` is read at the definition but it's a promise about every instantiation. The same source text is 16 bytes at one type argument and 32 at another, and only the second one breaks the promise — so the check runs per instantiation, like any other generic bound [mem.value/SM3, type.generics/G2]")
+            }
+
+            SmallTypeTooBig { type_name, size, offending_field } => {
+                let label = match offending_field {
+                    Some((field, field_size)) => format!(
+                        "{} bytes — `{}` is the {}-byte field that took it over 16",
+                        size, field, field_size
+                    ),
+                    None => format!("{} bytes, and the limit is 16", size),
+                };
+                let fix = match offending_field {
+                    Some((field, _)) => format!(
+                        "shrink or move out `{}` — or drop `@small` and let the \
+                         move errors at the call sites stand",
+                        field
+                    ),
+                    None => "shrink the type — or drop `@small` and let the move \
+                             errors at the call sites stand"
+                        .to_string(),
+                };
+                Diagnostic::error(format!(
+                    "`@small` type `{}` outgrew the copy threshold",
+                    type_name
+                ))
+                .with_code("E0374")
+                .with_primary(self.span, label)
+                .with_fix(fix)
+                .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
+            }
+
             UseAfterMove { name, moved_at, reason } => {
                 use rask_ownership::MoveReason;
                 let (note, help) = match reason {
