@@ -130,39 +130,49 @@ test "iteration and the structural ops" {
     assert s.is_empty()
     assert_eq(s.len(), 0)
 
-    let a = s.insert(Node { id: 1, hits: 0, peer: none })
-    let b = s.insert(Node { id: 2, hits: 0, peer: none })
-    let c = s.insert(Node { id: 3, hits: 0, peer: none })
+    // The links live in a scope of their own. `clear` deletes without naming a
+    // victim, so it conflicts with any link view still open — and every view
+    // opened here is closed at the brace before it.
+    {
+        let a = s.insert(Node { id: 1, hits: 0, peer: none })
+        let b = s.insert(Node { id: 2, hits: 0, peer: none })
+        let c = s.insert(Node { id: 3, hits: 0, peer: none })
 
-    mut sum = 0
-    for n in s.nodes() { sum += n.id }
-    assert_eq(sum, 6)
-    assert s.contains(a)
+        mut sum = 0
+        for n in s.nodes() { sum += n.id }
+        assert_eq(sum, 6)
+        assert s.contains(a)
+        assert s.contains(c)
 
-    // `contains` before the delete, not after: `delete` takes the link, so asking
-    // about it afterwards doesn't compile — and shouldn't, since a non-optional
-    // link's type already asserts the node is alive.
-    assert s.contains(b)
-    s.delete(b)
-    mut after = 0
-    for n in s.nodes() { after += n.id }
-    assert_eq(after, 4)
-    assert_eq(s.len(), 2)
+        // `contains` before the delete, not after: `delete` takes the link, so
+        // asking about it afterwards doesn't compile — and shouldn't, since a
+        // non-optional link's type already asserts the node is alive. Deleting
+        // `b` while `a` and `c` are live is fine: it names its victim, so it
+        // ends exactly one view.
+        assert s.contains(b)
+        s.delete(b)
+        mut after = 0
+        for n in s.nodes() { after += n.id }
+        assert_eq(after, 4)
+        assert_eq(s.len(), 2)
+    }
 
-    // `clear` deletes every node, so it revokes every local link into the
-    // store — nothing left to name afterwards.
-    let _ = a
-    let _ = c
     s.clear()
     assert s.is_empty()
 }
 
 test "clear nulls edges, it does not just empty the store" {
     mut w = World { store: Store.new(), focus: none }
-    let a = w.store.insert(Node { id: 1, hits: 0, peer: none })
-    let b = w.store.insert(Node { id: 2, hits: 0, peer: none })
-    a.peer = b
-    w.focus = a
+    // The two links are views, so they get their own scope — `clear` names no
+    // victim and would conflict with either one. The edges they set up are not
+    // views: `a.peer` and `w.focus` are slots the store maintains, and they
+    // outlive this scope precisely because of that.
+    {
+        let a = w.store.insert(Node { id: 1, hits: 0, peer: none })
+        let b = w.store.insert(Node { id: 2, hits: 0, peer: none })
+        a.peer = b
+        w.focus = a
+    }
 
     // Both edges point at nodes that are about to die: one node-to-node, one
     // root edge outside the store. Emptying the slots is not enough — the

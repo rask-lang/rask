@@ -709,9 +709,73 @@ end of this block". Today's E0328 blames the later read for something the earlie
 line caused.
 
 The one honest cost of block scoping: an unnamed delete conflicts with a live link
-even if the link is never used again, so the fix is to open a block or drop the
+even if the link is never used again, so the fix is to open a scope or drop the
 name rather than to rely on a last use. That is Rask's existing bargain, not a new
-one.
+one — and rewriting the corpus to obey it cost two sites out of twelve programs.
+
+**Site one, L3's `main`.** Building the tree opens a view per node, and
+`delete_subtree` is an unnamed delete, so the two can't overlap. The fix is to
+give the build its own scope and hand back the one link that has to survive it —
+which the delete then consumes, leaving nothing live across it:
+
+```rask
+// before — root, b, a1 and a2 are all live views at the delete
+let root = scene.nodes.insert(...)
+scene.root = root
+let a  = add_child(scene, root, "a")
+let b  = add_child(scene, root, "b")
+let a1 = add_child(scene, a, "a1")
+let a2 = add_child(scene, a, "a2")
+reparent(a1, b)
+scene.selected = a2
+delete_subtree(scene, a)
+
+// after
+func build(mutate scene: Scene) -> Link<SceneNode> {
+    let root = scene.nodes.insert(...)
+    scene.root = root
+    let a  = add_child(scene, root, "a")
+    let b  = add_child(scene, root, "b")
+    let a1 = add_child(scene, a, "a1")
+    let a2 = add_child(scene, a, "a2")
+    reparent(a1, b)
+    scene.selected = a2      // a field, so the store maintains it past this scope
+    return a
+}
+
+func main() {
+    mut scene = Scene { nodes: Store.new(), root: none, selected: none }
+    let doomed = build(scene)
+    delete_subtree(scene, doomed)
+    report(scene)
+}
+```
+
+It reads as an ordinary refactor — the setup was a paragraph of `main` that wanted
+to be a function anyway — and the output is still byte-identical to the handle
+version. Note what survives the scope and what doesn't: `scene.root` and
+`scene.selected` are fields, so the store maintains them; the six locals were
+views, and views end.
+
+**Site two, the `clear` test in p11.** Same shape, one bare scope instead of a
+function:
+
+```rask
+{
+    let a = s.insert(...)
+    let b = s.insert(...)
+    let c = s.insert(...)
+    s.delete(b)              // names its victim: ends exactly b's view
+    ...
+}
+s.clear()                    // names none: needs every view closed
+```
+
+**Everything else was already legal.** L1, L2, fan-in, sparse-delete and
+unlink-on-overwrite all delete by naming a victim, and a named delete ends exactly
+one view — so holding `n1`, `n3` and `n4` across `remove(list, n2)` is fine and
+stays fine. The only program the rule rejects is `cascade_hole_links.rk`, which is
+the one with the bug, and it rejects it at the call rather than at the read.
 
 #### The `?` opts out of the whole discipline
 

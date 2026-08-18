@@ -11,6 +11,11 @@
 // re-derived inside from a field. Nothing at the call site changes.
 //
 // Run it: prints "kid" for a node that is no longer in the store.
+//
+// This is also the one program in the corpus that the proposed rule rejects, and
+// rejects at the right line. Under S5 `cascade` would be declared
+// `deleting scene: Scene`, and `kid` is a live link view at the call — so the
+// error lands on `cascade(scene, parent)`, not on the read two lines later.
 
 struct Node {
     name: string

@@ -67,9 +67,15 @@ func report(scene: Scene) {
     println("   selected = {sel}, nodes = {scene.nodes.len()}")
 }
 
-func main() {
-    mut scene = Scene { nodes: Store.new(), root: none, selected: none }
-
+// Building the tree opens a link view per node, and `delete_subtree` below is an
+// unnamed delete — it decides for itself which nodes die. Under S5 those two
+// can't overlap, so the build lives in its own scope and hands back the one link
+// that has to survive it. That link is then consumed by the delete, so nothing is
+// live across it.
+//
+// This is the block-scoping cost, and it reads as an ordinary refactor: the setup
+// was a paragraph of main that wanted to be a function anyway.
+func build(mutate scene: Scene) -> Link<SceneNode> {
     let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
     scene.root = root
 
@@ -86,14 +92,19 @@ func main() {
     report(scene)
 
     println("-- select a2, then delete the subtree at a")
+    // The selection outlives this scope, and it is a field — the store maintains
+    // it, and the delete nulls it. That is the whole reason a field edge is
+    // optional and a local view is not.
     scene.selected = a2
     report(scene)
-    delete_subtree(scene, a)
-    report(scene)
 
-    // `a2` is deliberately not touched below this line. `delete_subtree` deleted
-    // it — it was a child of `a` — and nothing at this call site says so, so
-    // reading it here would be a use after free the compiler misses. That hole
-    // is isolated in cascade_hole_links.rk.
-    let _ = b
+    return a
+}
+
+func main() {
+    mut scene = Scene { nodes: Store.new(), root: none, selected: none }
+
+    let doomed = build(scene)
+    delete_subtree(scene, doomed)
+    report(scene)
 }
