@@ -1711,6 +1711,21 @@ fn store_link_delete_cost_follows_in_degree() {
 // the node, so this is a use after free, proven rather than checked. Reporting it
 // as a move would be wrong — nothing moved — and the generic move advice
 // ("add `.clone()`") would hand back a second dead pointer.
+// mem.linear/L1 has to hold in a `test` body too. Test and benchmark bodies were
+// walked without the scope-exit check, so a resource left open inside one compiled
+// clean while the identical code in a function was rejected — and a test body is
+// exactly where you exercise a resource.
+#[test]
+fn error_resource_unconsumed_in_test_body() {
+    let (failed, out) = compile_error_output("resource_unconsumed_in_test_body.rk");
+    assert!(failed, "an unconsumed resource in a test body must be rejected: {}", out);
+    assert!(
+        out.contains("E0805") && out.contains("must be consumed"),
+        "should be the ordinary linearity error, not something test-specific: {}",
+        out
+    );
+}
+
 #[test]
 fn error_store_link_use_after_delete() {
     let (failed, out) = compile_error_output("store_link_use_after_delete.rk");

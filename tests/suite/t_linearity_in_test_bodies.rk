@@ -1,0 +1,50 @@
+// mem.linear/L1 in a `test` body, and the aggregate case that exposed.
+//
+// Test and benchmark bodies used to be walked without the scope-exit check, so a
+// resource left open inside a `test` block compiled clean while the same code in
+// a function was E0805. Tests are exactly where resources get exercised, so that
+// was the one place linearity didn't apply.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+struct Wrapper {
+    conn: Conn
+    label: string
+}
+
+func make() -> Wrapper {
+    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+}
+
+func main() {}
+
+test "a resource consumed in a test body is accepted" {
+    let c = Conn { id: 1 }
+    assert_eq(c.close(), 1)
+}
+
+test "consuming through a field discharges the holder" {
+    // `w` is not itself a resource — it holds one. Closing `w.conn` hands the
+    // resource off, and there is no `w.close()` to call afterwards. The rest of
+    // `w` stays readable, because the binding was not moved.
+    let w = make()
+    assert_eq(w.label, "w")
+    assert_eq(w.conn.close(), 3)
+    assert_eq(w.label, "w")
+}
+
+test "ensure still runs for a resource in a test body" {
+    mut closed = 0
+    {
+        let c = Conn { id: 9 }
+        closed = c.close()
+    }
+    assert_eq(closed, 9)
+}

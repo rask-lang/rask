@@ -352,15 +352,14 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Import(_) => {}
             DeclKind::Export(_) => {}
             DeclKind::Const(_) => {} // Module-level consts handled differently
+            // "Like a function" has to include the exit check, or a `test` block
+            // is the one place linearity doesn't apply — which is exactly where
+            // resources get exercised.
             DeclKind::Test(test_decl) => {
-                // Check test body like a function
-                self.reset_body_state();
-                self.check_block(&test_decl.body);
+                self.check_body(&test_decl.body);
             }
             DeclKind::Benchmark(bench_decl) => {
-                // Check benchmark body like a function
-                self.reset_body_state();
-                self.check_block(&bench_decl.body);
+                self.check_body(&bench_decl.body);
             }
             DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
@@ -376,21 +375,28 @@ impl<'a> OwnershipChecker<'a> {
         self.bindings.clear();
         self.binding_types.clear();
         self.binding_decl_blocks.clear();
-        self.identified_links.clear();
-        self.take_link_params.clear();
-        self.link_delete_spans.clear();
+        self.borrow_bindings.clear();
         self.borrows.clear();
-    }
-
-    fn check_fn(&mut self, fn_decl: &FnDecl) {
-        // Reset state for each function (local analysis only)
-        self.reset_body_state();
         self.resource_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
+        self.in_ensure = false;
         self.frozen_contexts.clear();
+        self.active_with_bindings.clear();
+        self.active_for_mutates.clear();
+        self.scope_limited_closures.clear();
+        self.last_closure_scope_limit = None;
+        self.param_type_strings.clear();
+        self.identified_links.clear();
+        self.take_link_params.clear();
+        self.link_delete_spans.clear();
+        self.store_iterations.clear();
         self.current_block = 0;
         self.current_stmt = 0;
+    }
+
+    fn check_fn(&mut self, fn_decl: &FnDecl) {
+        self.reset_body_state();
 
         // CC3/PF5: Track frozen pool contexts
         for clause in &fn_decl.context_clauses {
@@ -452,6 +458,15 @@ impl<'a> OwnershipChecker<'a> {
 
         // Check for unconsumed resources at function exit
         self.check_resource_consumption(fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
+    }
+
+    /// A body with no parameters: reset, walk, then the scope-exit check.
+    fn check_body(&mut self, body: &[Stmt]) {
+        self.reset_body_state();
+        self.check_block(body);
+        self.check_resource_consumption(
+            body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
+        );
     }
 
     fn check_block(&mut self, stmts: &[Stmt]) {
@@ -1156,8 +1171,26 @@ impl<'a> OwnershipChecker<'a> {
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                    match &object.kind {
+                        ExprKind::Ident(name) => {
+                            self.bindings
+                                .insert(name.clone(), BindingState::Moved { at: expr.span });
+                        }
+                        // `w.conn.close()` — the resource lived in a field, and the
+                        // whole binding isn't moved, so `w.other` stays readable.
+                        // What is discharged is `w`'s obligation: its resource has
+                        // been handed off, and there is no `w.close()` to call.
+                        // Coarse for a struct holding two resources — closing one
+                        // discharges both — which wants per-field tracking; that is
+                        // strictly narrower than today's bug, where the correct
+                        // code cannot be written at all.
+                        _ => {
+                            if let (Some(root), Some(_)) =
+                                Self::extract_root_and_fields(object)
+                            {
+                                self.resource_bindings.remove(&root);
+                            }
+                        }
                     }
                 }
             }
@@ -1505,19 +1538,19 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::IsPresent { expr: inner, binding } => {
                 self.check_expr(inner);
                 // OPT19: `x? as v` introduces `v` in the then-branch, and the pass
-                // was dropping it. Only links are registered here: `v` is a
-                // *derived* name for whatever `x` pointed at, so a delete of that
-                // node has to kill it, and nothing else was tracking it. Kept to
-                // links deliberately — widening it to every `? as` binding changes
-                // resource and linearity behaviour that has its own tests.
+                // was dropping the name entirely. Moves happened to be caught
+                // anyway — `consume_arg` marks by name whether or not the name was
+                // registered — but the *type* was missing, so anything reasoning
+                // about what `v` is saw nothing.
                 if let Some(name) = binding {
                     if let Some(ty) = self.program.node_types.get(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
-                        if self.is_link_type(&narrowed) {
-                            self.bindings.insert(name.clone(), BindingState::Owned);
-                            self.binding_types.insert(name.clone(), narrowed);
-                            self.identified_links.remove(name);
+                        self.bindings.insert(name.clone(), BindingState::Owned);
+                        if self.type_is_resource(&narrowed) {
+                            self.resource_bindings.insert(name.clone());
                         }
+                        self.identified_links.remove(name);
+                        self.binding_types.insert(name.clone(), narrowed);
                     }
                 }
             }
