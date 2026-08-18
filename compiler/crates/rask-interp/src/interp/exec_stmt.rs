@@ -72,7 +72,7 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_owned(value)?;
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;

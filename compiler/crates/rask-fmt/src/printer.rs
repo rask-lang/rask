@@ -483,7 +483,11 @@ impl<'a> Printer<'a> {
         if f.body.is_empty() && is_trait_decl {
             // Trait method declaration with no body — no braces
         } else if f.body.is_empty() {
-            self.emit(" { }");
+            // `{}` for a function body: that's what hand-written Rask uses (137
+            // sites, 103 of them `func main() {}`), against `{ }` which appears
+            // 378 times and only ever in `stdlib/`'s signature stubs. An empty
+            // *type* body goes the other way, 47 to 4, and gets `{ }`.
+            self.emit(" {}");
         } else {
             self.emit(" {");
             self.emit_newline();
@@ -1371,10 +1375,22 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, op } => {
                 self.format_expr(target);
-                self.emit(" = ");
-                self.format_expr(value);
+                // A compound assignment is stored expanded — `i += 1` as
+                // `i = i + 1` — so writing `value` out rewrote every `+=` in the
+                // tree. `op` says which form was written; the right-hand side is
+                // then the expansion's own right operand (#805).
+                match (op, &value.kind) {
+                    (Some(op), ExprKind::Binary { right, .. }) => {
+                        self.emit(&format!(" {}= ", binop_str(op)));
+                        self.format_expr(right);
+                    }
+                    _ => {
+                        self.emit(" = ");
+                        self.format_expr(value);
+                    }
+                }
             }
             StmtKind::Return(None) => {
                 self.emit("return");
@@ -2012,13 +2028,23 @@ impl<'a> Printer<'a> {
                 self.emit("}");
             }
             ExprKind::Unsafe { body } => {
-                self.emit("unsafe {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
+                // `unsafe expr` and `unsafe { expr }` parse to the same node, and
+                // the printer only knew the braced form — so `unsafe
+                // path.as_c_str()` grew braces, and inside a condition the result
+                // read as `if unsafe { … } { … }`, two braces for one `if`. The
+                // source says which was written (#805).
+                if self.wrote_braces(expr.span) {
+                    self.emit("unsafe {");
+                    self.emit_newline();
+                    self.indent += 1;
+                    self.format_stmts(body);
+                    self.indent -= 1;
+                    self.emit_indent();
+                    self.emit("}");
+                } else {
+                    self.emit("unsafe ");
+                    self.format_unbraced_body(body);
+                }
             }
             ExprKind::Comptime { body } => {
                 self.emit("comptime {");
@@ -2075,6 +2101,36 @@ impl<'a> Printer<'a> {
                 }
                 self.indent -= 1;
                 self.emit_newline();
+                self.emit("}");
+            }
+        }
+    }
+
+    /// Whether the source for this node opened with a `{` — the braced form of
+    /// `unsafe`/`comptime`, which parse to the same node as the braceless one.
+    fn wrote_braces(&self, span: Span) -> bool {
+        let text = self.source_text(span).trim_start();
+        // The keyword comes first; look at what follows it.
+        let after = text
+            .strip_prefix("unsafe")
+            .or_else(|| text.strip_prefix("comptime"))
+            .unwrap_or(text);
+        after.trim_start().starts_with('{')
+    }
+
+    /// The single expression a braceless `unsafe`/`comptime` wraps.
+    fn format_unbraced_body(&mut self, body: &[Stmt]) {
+        match body {
+            [stmt] => self.format_stmt(stmt),
+            // More than one statement can't have come from the braceless form;
+            // print the block so nothing is lost.
+            _ => {
+                self.emit("{");
+                self.emit_newline();
+                self.indent += 1;
+                self.format_stmts(body);
+                self.indent -= 1;
+                self.emit_indent();
                 self.emit("}");
             }
         }
@@ -2246,6 +2302,10 @@ impl<'a> Printer<'a> {
         if let ExprKind::Block(ref stmts) = expr.kind {
             if stmts.is_empty() {
                 self.emit(" {}");
+            } else if self.fits_one_line(expr.span, stmts) {
+                self.emit(" { ");
+                self.format_stmt_inline(&stmts[0]);
+                self.emit(" }");
             } else {
                 self.emit(" {");
                 self.emit_newline();
@@ -2259,6 +2319,25 @@ impl<'a> Printer<'a> {
             self.emit(" ");
             self.format_expr(expr);
         }
+    }
+
+    /// A one-statement block the source kept on one line stays on one line.
+    /// Expanding them all is what made `fmt --check` red across the tree, and
+    /// `if c { return 1 }` reads better as written than as three lines (#805).
+    ///
+    /// A comment anywhere in the block forces the expansion — a trailing comment
+    /// has nowhere to go on a line that continues with `}`.
+    fn fits_one_line(&self, span: Span, stmts: &[Stmt]) -> bool {
+        stmts.len() == 1
+            && !self.source_text(span).contains('\n')
+            && !self.comments_within(span)
+    }
+
+    /// Whether any unconsumed comment starts inside `span`.
+    fn comments_within(&self, span: Span) -> bool {
+        self.comments
+            .peek_next()
+            .is_some_and(|c| c.span.start >= span.start && c.span.start < span.end)
     }
 
     fn fields_fit_one_line(&self, fields: &[FieldInit]) -> bool {

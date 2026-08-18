@@ -2620,7 +2620,7 @@ impl Parser {
                 if self.match_token(&TokenKind::Eq) {
                     let value = self.parse_expr()?;
                     self.expect_terminator()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: None }
                 } else if let Some(op) = self.match_compound_assign() {
                     let rhs = self.parse_expr()?;
                     let value = Expr {
@@ -2633,7 +2633,7 @@ impl Parser {
                         span: expr.span.clone(),
                     };
                     self.expect_terminator()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: Some(op) }
                 } else {
                     self.expect_terminator()?;
                     StmtKind::Expr(expr)
@@ -4044,7 +4044,7 @@ impl Parser {
             let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
-                kind: StmtKind::Assign { target: body, value },
+                kind: StmtKind::Assign { target: body, value, op: None },
                 span: span.clone(),
             };
             Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
@@ -4062,7 +4062,7 @@ impl Parser {
             let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
-                kind: StmtKind::Assign { target: body, value },
+                kind: StmtKind::Assign { target: body, value, op: Some(op) },
                 span: span.clone(),
             };
             Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
@@ -4479,7 +4479,7 @@ impl Parser {
                 let expr = self.parse_expr()?;
                 if self.match_token(&TokenKind::Eq) {
                     let value = self.parse_expr()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: None }
                 } else if let Some(op) = self.match_compound_assign() {
                     let rhs = self.parse_expr()?;
                     let value = Expr {
@@ -4491,7 +4491,7 @@ impl Parser {
                         },
                         span: expr.span.clone(),
                     };
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: Some(op) }
                 } else {
                     StmtKind::Expr(expr)
                 }

@@ -329,7 +329,7 @@ impl Desugarer {
             StmtKind::Let { init, .. } => self.desugar_expr(init),
             StmtKind::MutTuple { init, .. } => self.desugar_expr(init),
             StmtKind::LetTuple { init, .. } => self.desugar_expr(init),
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.desugar_expr(target);
                 self.desugar_expr(value);
             }

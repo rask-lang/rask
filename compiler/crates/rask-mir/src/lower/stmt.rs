@@ -378,7 +378,7 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 // mem.owned/OW3: `*p = v` writes through a borrow of a
                 // transparent `Owned`, so it names the same place as `p = v`.
                 // Left as a Deref target it matched no arm below and the store

@@ -636,7 +636,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.check_expr(value);
                 // A whole-variable assignment reinitializes the target — it is
                 // not a use of the old value, so don't flag a moved/maybe-moved
@@ -2643,7 +2643,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.collect_free_vars_inner(target, locals, out, projections);
                 self.collect_free_vars_inner(value, locals, out, projections);
             }

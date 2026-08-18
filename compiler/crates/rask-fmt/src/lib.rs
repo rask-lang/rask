@@ -301,14 +301,69 @@ mod tests {
     }
 
     #[test]
+    fn compound_assignment_keeps_its_operator() {
+        // `i += 1` is stored as `i = i + 1`, so writing the value out expanded
+        // every compound assignment in the tree.
+        for form in ["+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="] {
+            let input = format!("func main() {{\n    mut i = 0\n    i {} 1\n}}\n", form);
+            let output = format_source(&input);
+            assert!(
+                output.contains(&format!("i {} 1", form)),
+                "`{}` should survive:\n{}", form, output,
+            );
+        }
+        // A plain assignment that happens to be `i = i + 1` stays that way.
+        let output = format_source("func main() {\n    mut i = 0\n    i = i + 1\n}\n");
+        assert!(output.contains("i = i + 1"), "not rewritten to `+=`:\n{}", output);
+    }
+
+    #[test]
+    fn unsafe_keeps_the_form_it_was_written_in() {
+        // `unsafe expr` and `unsafe { expr }` parse to the same node. Printing
+        // the braced form for both turned `if unsafe f() { … }` into
+        // `if unsafe { f() } { … }` — two braces for one `if`.
+        keeps(
+            "func main() {\n    let p = unsafe raw()\n}\n",
+            "unsafe raw()",
+            "the braceless form",
+        );
+        let output = format_source("func main() {\n    unsafe {\n        let p = raw()\n    }\n}\n");
+        assert!(output.contains("unsafe {"), "the braced form stays braced:\n{}", output);
+    }
+
+    #[test]
+    fn a_one_statement_block_stays_on_one_line() {
+        keeps(
+            "func f(n: i64) -> i64 {\n    if n <= 1 { return 1 }\n    return n\n}\n",
+            "if n <= 1 { return 1 }",
+            "an inline if body",
+        );
+        keeps(
+            "func f(a: bool, b: i64) -> i64 {\n    let n = if a { b } else { 0 }\n    return n\n}\n",
+            "if a { b } else { 0 }",
+            "both inline branches",
+        );
+        // A comment in the block forces the expansion — a trailing comment has
+        // nowhere to go on a line that continues with `}`.
+        let output = format_source("func f(n: i64) -> i64 {\n    if n <= 1 { return 1 // base\n    }\n    return n\n}\n");
+        assert!(
+            !output.contains("{ return 1 // base }"),
+            "a comment expands the block:\n{}", output,
+        );
+    }
+
+    #[test]
     fn empty_declaration_bodies_use_one_spelling() {
-        // A fieldless type went through the inline-field branch and came out
-        // `{  }` — two spaces, from an empty list between `{ ` and ` }`.
+        // A fieldless *type* body went through the inline-field branch and came
+        // out `{  }` — two spaces, from an empty list between `{ ` and ` }`. The
+        // tree writes `{ }` there, 47 times against 4.
         let output = format_source("struct Cell<T> { }\n");
         assert!(output.contains("struct Cell<T> { }"), "one space:\n{}", output);
-        // The tree writes `{ }` for an empty body, 296 times against 136.
-        let output = format_source("extend Foo {\n    @native(\"x\")\n    public func f(self) -> i64 { }\n}\n");
-        assert!(output.contains("public func f(self) -> i64 { }"), "same for a stub:\n{}", output);
+        // An empty *function* body goes the other way: `{}` is what hand-written
+        // Rask uses (137 sites, 103 of them `func main() {}`), where `{ }` shows
+        // up 378 times and only ever in `stdlib/`'s signature stubs.
+        let output = format_source("func main() { }\n");
+        assert!(output.contains("func main() {}"), "tight for a function:\n{}", output);
     }
 
     #[test]

@@ -88,10 +88,16 @@ pub enum StmtKind {
         patterns: Vec<TuplePat>,
         init: Expr,
     },
-    /// Assignment
+    /// Assignment.
+    ///
+    /// `op` records the compound form the source used — `i += 1` is stored with
+    /// `value` already expanded to `i + 1` and `op: Some(BinOp::Add)`. Everything
+    /// downstream reads `value` and ignores `op`; it exists so the formatter can
+    /// write back what was written instead of expanding every `+=` in the tree.
     Assign {
         target: Expr,
         value: Expr,
+        op: Option<crate::expr::BinOp>,
     },
     /// Return statement
     Return(Option<Expr>),

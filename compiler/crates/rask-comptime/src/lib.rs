@@ -165,7 +165,7 @@ fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
         StmtKind::Expr(e) => eliminate_in_expr(e, cfg_values),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => eliminate_in_expr(init, cfg_values),
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             eliminate_in_expr(target, cfg_values);
             eliminate_in_expr(value, cfg_values);
         }
@@ -1387,7 +1387,7 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_expr(value)?;
                 if let ExprKind::Ident(name) = &target.kind {
                     if !self.env.assign(name, val) {

@@ -682,7 +682,7 @@ impl<'a> Monomorphizer<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.visit_expr(init);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.visit_expr(target);
                 self.visit_expr(value);
             }

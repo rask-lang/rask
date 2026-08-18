@@ -270,9 +270,10 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::Assign { target, value } => StmtKind::Assign {
+                StmtKind::Assign { target, value, op } => StmtKind::Assign {
                     target: self.clone_expr(target),
                     value: self.clone_expr(value),
+                    op: *op,
                 },
 
                 StmtKind::Return(opt_expr) => {

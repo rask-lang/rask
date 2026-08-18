@@ -413,7 +413,7 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.feed_tag(25);
                 self.hash_expr(target);
                 self.hash_expr(value);

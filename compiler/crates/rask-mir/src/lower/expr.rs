@@ -2564,6 +2564,7 @@ impl<'a> MirLowerer<'a> {
                     kind: rask_ast::stmt::StmtKind::Assign {
                         target: (**place).clone(),
                         value: absent,
+                        op: None,
                     },
                     span: expr.span,
                 })?;

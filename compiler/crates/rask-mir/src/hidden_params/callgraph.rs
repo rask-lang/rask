@@ -153,7 +153,7 @@ fn collect_callees_from_stmt(pass: &HiddenParamPass, stmt: &Stmt, callees: &mut 
         | StmtKind::LetTuple { init, .. } => {
             collect_callees_from_expr(pass, init, callees);
         }
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             collect_callees_from_expr(pass, target, callees);
             collect_callees_from_expr(pass, value, callees);
         }

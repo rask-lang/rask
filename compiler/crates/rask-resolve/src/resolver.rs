@@ -1803,7 +1803,7 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.resolve_expr(target);
                 self.resolve_expr(value);
             }

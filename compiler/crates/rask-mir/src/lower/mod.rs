@@ -3961,7 +3961,7 @@ impl<'a> MirLowerer<'a> {
             }
             StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),
             StmtKind::Return(None) => {}
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.walk_free_vars(target, bound, seen, free);
                 self.walk_free_vars(value, bound, seen, free);
             }
@@ -4787,7 +4787,7 @@ mod tests {
     fn assign_stmt(target: Expr, value: Expr) -> Stmt {
         Stmt {
             id: NodeId(210),
-            kind: StmtKind::Assign { target, value },
+            kind: StmtKind::Assign { target, value, op: None },
             span: sp(),
         }
     }

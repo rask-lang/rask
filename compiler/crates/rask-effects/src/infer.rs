@@ -243,7 +243,7 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             classify_expr(init, effects, callees);
         }
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             classify_expr(target, effects, callees);
             classify_expr(value, effects, callees);
         }
@@ -494,7 +494,7 @@ fn rt_scan_stmt(stmt: &Stmt, depth: u32, unguarded: &mut HashSet<String>) -> boo
         StmtKind::Expr(e) => rt_scan_expr(e, depth, unguarded),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, depth, unguarded),
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => rt_scan_expr(init, depth, unguarded),
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             rt_scan_expr(target, depth, unguarded) | rt_scan_expr(value, depth, unguarded)
         }
         StmtKind::Return(Some(e)) => rt_scan_expr(e, depth, unguarded),

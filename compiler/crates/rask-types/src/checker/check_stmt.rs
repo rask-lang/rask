@@ -140,7 +140,7 @@ impl TypeChecker {
                 self.check_sync_access_in_binding(init);
                 self.clear_expression_borrows();
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 // Reject mutation of read-only bindings (const) and read-only
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
