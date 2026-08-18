@@ -1774,8 +1774,8 @@ fn link_deleted_diagnostic(
         .with_primary(use_span, primary)
         .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
         .with_help("read what you need before the delete, or keep the reference in a field so the store can null it")
-        .with_fix("move the reads above the `delete`, or store the link in a `Link<T>?` field")
-        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the store nulls it and the `?` makes you check; a local can't, so the compiler proves you never follow one instead of checking at runtime the way a handle does")
+        .with_fix("move the reads above the delete, or store the link in a `Link<T>?` field")
+        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the store nulls it and the `?` makes you check; a local can't be reached by the store, so the compiler proves here that you never follow one")
 }
 
 impl ToDiagnostic for rask_ownership::OwnershipError {

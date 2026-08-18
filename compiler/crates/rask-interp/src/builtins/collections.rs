@@ -783,7 +783,15 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(links))
             }
+            // Every node dies, so every edge pointing into this store must be
+            // nulled. Truncating the slots would leave root edges and
+            // cross-store edges pointing at freed nodes — the one thing the
+            // model promises can't happen.
             "clear" => {
+                let live = s.lock().unwrap().live_nodes();
+                for node in &live {
+                    crate::store::delete_node(s, node);
+                }
                 let mut store = s.lock().unwrap();
                 store.slots.clear();
                 store.free_list.clear();

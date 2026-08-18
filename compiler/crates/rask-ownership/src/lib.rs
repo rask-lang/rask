@@ -840,6 +840,14 @@ impl<'a> OwnershipChecker<'a> {
                         self.consume_arg(&arg.expr);
                     }
                 }
+                // `store.clear()` deletes every node at once. It names no link,
+                // so a local link into that store has to die here the same way
+                // it would at an explicit `delete` — otherwise the checkless
+                // read the whole model rests on reads freed memory.
+                if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Store")
+                {
+                    self.kill_links_into_store(object, expr.span);
+                }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
                     if let ExprKind::Ident(name) = &object.kind {
@@ -1537,6 +1545,50 @@ impl<'a> OwnershipChecker<'a> {
                 self.program.types.type_name(*base) == "Link"
             }
             _ => false,
+        }
+    }
+
+    /// First type argument of a generic type, as a comparable string. Used to
+    /// pair a `Store<T>` with the `Link<T>` locals pointing into it.
+    fn elem_key(&self, ty: &rask_types::Type) -> Option<String> {
+        let ty = ty.as_option().unwrap_or(ty);
+        let arg = match ty {
+            rask_types::Type::UnresolvedGeneric { args, .. } => args.first()?,
+            rask_types::Type::Generic { args, .. } => args.first()?,
+            _ => return None,
+        };
+        match arg {
+            rask_types::GenericArg::Type(t) => {
+                Some(format!("{}", self.program.types.resolve_type_names(t)))
+            }
+            rask_types::GenericArg::ConstUsize(n) => Some(n.to_string()),
+        }
+    }
+
+    /// Mark every live local link with the store's element type as deleted.
+    /// Conservative on the store: links are not tracked back to the store they
+    /// came from, so two stores of the same node type kill each other's locals.
+    fn kill_links_into_store(&mut self, store: &Expr, span: Span) {
+        let elem = self
+            .program
+            .node_types
+            .get(&store.id)
+            .and_then(|ty| self.elem_key(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                self.is_link_type(ty)
+                    && matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                    && (elem.is_none() || self.elem_key(ty) == elem)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name, BindingState::Moved { at: span });
         }
     }
 

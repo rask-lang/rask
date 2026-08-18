@@ -41,8 +41,18 @@ func ask_after_delete() {
     println("{store.contains(n)}")   // ERROR: E0328
 }
 
+func clear_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let n = store.insert(Node { name: "n", next: none })
+    // `clear` names no link, but it deletes every node — so it revokes every
+    // local link into the store, same as writing `delete` on each one.
+    store.clear()
+    println("{n.name}")         // ERROR: E0328
+}
+
 func main() {
     read_after_delete()
     write_after_delete()
     ask_after_delete()
+    clear_after_delete()
 }

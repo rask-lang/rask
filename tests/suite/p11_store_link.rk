@@ -149,10 +149,30 @@ test "iteration and the structural ops" {
     assert_eq(after, 4)
     assert_eq(s.len(), 2)
 
-    s.clear()
-    assert s.is_empty()
+    // `clear` deletes every node, so it revokes every local link into the
+    // store — nothing left to name afterwards.
     let _ = a
     let _ = c
+    s.clear()
+    assert s.is_empty()
+}
+
+test "clear nulls edges, it does not just empty the store" {
+    mut w = World { store: Store.new(), focus: none }
+    let a = w.store.insert(Node { id: 1, hits: 0, peer: none })
+    let b = w.store.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = b
+    w.focus = a
+
+    // Both edges point at nodes that are about to die: one node-to-node, one
+    // root edge outside the store. Emptying the slots is not enough — the
+    // edges have to be nulled or a later read follows a freed node.
+    w.store.clear()
+
+    assert w.store.is_empty()
+    if w.focus? as _f {
+        assert false           // root edge survived clear
+    }
 }
 
 test "a delete in one store leaves another store's edges alone" {

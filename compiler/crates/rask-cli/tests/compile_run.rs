@@ -1398,12 +1398,19 @@ fn error_store_link_use_after_delete() {
         "must not suggest cloning — that would be a second dead pointer: {}",
         out
     );
-    // A read, a write, and `contains` — the last is correct too: a non-optional
-    // link's type already asserts the node is alive, so asking is meaningless.
+    // A read, a write, `contains`, and a read after `clear`. `contains` is
+    // correct too: a non-optional link's type already asserts the node is
+    // alive, so asking is a question with no meaning. `clear` is the one that
+    // names no link — it deletes every node, so it has to revoke every local.
     assert_eq!(
         out.matches("error[E0328]").count(),
-        3,
-        "exactly the three uses after delete rejected: {}",
+        4,
+        "exactly the four uses after delete rejected: {}",
+        out
+    );
+    assert!(
+        out.contains("store.clear()"),
+        "the `clear` case must be one of them: {}",
         out
     );
 }

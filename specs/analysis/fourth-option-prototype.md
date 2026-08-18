@@ -475,12 +475,60 @@ so `func kill(mutate s: Store<Node>, n: Link<Node>) { s.delete(n); n.id }` is
 rejected on the second statement. That is the rule working, but it means a function
 that deletes has to say so by taking the link, and callers see their name go away.
 
-**What it does not cover.** Deletes the compiler cannot see: a call that takes the
-store mutably and deletes inside. Rask's existing exclusivity rule is the shape of
-the answer — a live local link should conflict with handing the store to something
-that could delete — and it is not implemented here. `insert` must stay exempt, and
-already behaves that way, since nodes are allocated individually and an insert
-invalidates nothing.
+**`clear` had to be handled separately, and that closed the stdlib.** `delete`
+takes its link, so the rule falls out of ordinary argument consumption. `clear`
+names no link at all and deletes every node, so nothing consumed anything and
+this compiled and printed `a`:
+
+```rask
+let n = s.insert(Node { name: "a", peer: none })
+s.clear()
+println("{n.name}")        // read of a freed node, no diagnostic
+```
+
+`clear` now revokes every local link whose element type matches the store's,
+which is the same kill the explicit `delete` performs, just for all of them at
+once. Conservative in one direction — two stores of the same node type revoke
+each other's locals — and worth fixing only if that pattern shows up.
+
+That leaves nothing else in the store's API that deletes: `insert`, `len`,
+`is_empty`, `contains` and `nodes` invalidate nothing, and `insert` in particular
+must stay exempt, since nodes are allocated individually.
+
+**What it does not cover: a user function that deletes inside.** The store is
+passed mutably, the link never is, so the caller's name survives a delete the
+compiler cannot see:
+
+```rask
+func cleanup(mutate s: Store<Node>) {
+    for n in s.nodes() { s.delete(n) }    // re-derives links from the store
+}
+
+let n = s.insert(Node { name: "a", peer: none })
+cleanup(s)
+println("{n.name}")        // still compiles, still reads a freed node
+```
+
+The obvious conservative rule — passing a store mutably revokes local links into
+it — is not available, and the flagship list is the counterexample. `push_back`
+takes `mutate list: List`, and `main` calls it four times while holding `n1..n4`:
+
+```rask
+let n1 = push_back(list, 1)
+let n2 = push_back(list, 2)    // would revoke n1 under that rule
+```
+
+So the rule would have to distinguish a callee that deletes from one that only
+inserts — a "may delete this store" fact propagated through the call graph. That
+is an effect, and enforcing it is what principle 5 says Rask doesn't do. The gap
+is genuine and closing it costs more than it has been shown to be worth.
+
+Two things narrow it in practice without any analysis. A function that deletes
+can take the link (`func kill(mutate s: Store<Node>, take n: Link<Node>)`), which
+puts the revocation back where the checker can see it. And a link kept in a
+`Link<T>?` field instead of a local is nulled by the delete itself, wherever the
+delete happens — the runtime fixup has no such gap, because a field is an edge
+the store indexes.
 
 ## Finding 2: links carry write permission, and edge writes mutate their target
 
