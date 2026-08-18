@@ -1773,6 +1773,17 @@ impl<'a> OwnershipChecker<'a> {
                     // Whole-variable assignment: move source regardless of const/mut
                     if let Some(state) = self.bindings.get(&source_name) {
                         match state {
+                            // A borrowed *parameter* being moved out of is PM6 —
+                            // giving away something the caller still owns. Reporting
+                            // it as a borrow conflict named the wrong event: nothing
+                            // is being mutated in `o.only = next`, and neither the
+                            // message nor the fix said `take next` (#818).
+                            BindingState::Borrowed { .. }
+                                if self.borrowed_params.contains_key(&source_name) =>
+                            {
+                                self.consume_binding(&source_name, span, None);
+                                return;
+                            }
                             BindingState::Borrowed { .. } => {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::MutateWhileBorrowed {

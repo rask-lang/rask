@@ -4810,7 +4810,7 @@ fn error_mutate_param_left_empty() {
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");
     assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
-    assert_eq!(out.matches("E0835").count(), 3, "three sites, no more: {}", out);
+    assert_eq!(out.matches("E0835").count(), 4, "four sites, no more: {}", out);
     assert!(
         out.contains("borrowed, not owned"),
         "should say the parameter isn't owned: {}", out,
@@ -4829,6 +4829,12 @@ fn error_consume_borrowed_param() {
     );
     // `take` on the declaration is the fix, so that function must not be flagged.
     assert!(!out.contains("`proper`"), "a take parameter is fine: {}", out);
+    // #818: storing a borrowed parameter into a field is the same give-away, and
+    // used to be reported as a borrow conflict about a mutation that wasn't there.
+    assert!(
+        out.contains("cannot give away `next`") && !out.contains("E0802"),
+        "storing into a field is a give-away, not a borrow conflict: {}", out,
+    );
 }
 
 // mem.linear/L1 and L3 for an `Owned` local. `own` allocates and there is exactly

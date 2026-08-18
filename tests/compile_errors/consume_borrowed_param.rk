@@ -42,9 +42,24 @@ func relay_own(b: Bag) -> u64 {
     return eat(own b)
 }
 
+// ERROR: storing it into a field gives it away too — this used to be reported as
+// a borrow conflict, "`next` cannot be changed while it's being read", which named
+// an event that wasn't happening and never mentioned `take` (#818) [E0835]
+struct Slot {
+    public held: Bag
+}
+
+func store(mutate s: Slot, next: Bag) {
+    s.held = next
+}
+
 // The way to say it: `take` on the declaration, so the caller sees the value go.
 func proper(take b: Bag) -> u64 {
     return eat(b)
+}
+
+func store_properly(mutate s: Slot, take next: Bag) {
+    s.held = next
 }
 
 func main() {
