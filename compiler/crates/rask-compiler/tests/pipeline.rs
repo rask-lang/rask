@@ -474,6 +474,65 @@ fn comptime_cfg_elimination_runs() {
     let _ = std::fs::remove_file(&path);
 }
 
+// CT1: a comptime initializer that overflows is a compile error, so `check` has
+// to run the fold — otherwise it answers "does this compile" with yes for a
+// program `run` refuses, and the interpreter reports the same overflow at
+// runtime under its own code instead of as the compile error it is (#325).
+#[test]
+fn check_reports_a_comptime_overflow() {
+    let path = tmp_rk(r#"
+        const A: i32 = comptime { 2147483647 + 1 }
+        func main() { println("{A}") }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "a comptime overflow must fail the check");
+    let msgs: Vec<&String> = output.diagnostics.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("integer overflow")),
+        "the diagnostic should name the overflow: {:?}", msgs,
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+// The same through a comptime function's declared return type. `comptime func
+// big() -> i32` handed back an `i64`, so `big() + 1` was i64 arithmetic — no
+// overflow — and the out-of-range 2147483648 went into an `i32` const with no
+// diagnostic at all (#325).
+#[test]
+fn a_comptime_function_returns_at_its_declared_width() {
+    let path = tmp_rk(r#"
+        comptime func big() -> i32 { return 2147483647 }
+        const A: i32 = comptime { big() + 1 }
+        func main() { println("{A}") }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(!output.succeeded(), "the fold must overflow at i32, not i64");
+    let msgs: Vec<&String> = output.diagnostics.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("i32")),
+        "the width in the message should be the declared one: {:?}", msgs,
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn check_still_folds_a_valid_comptime_const() {
+    let path = tmp_rk(r#"
+        comptime func triangular(n: i64) -> i64 {
+            mut s = 0
+            mut i = 0
+            while i <= n { s += i; i += 1 }
+            return s
+        }
+        const T: i64 = comptime { triangular(5) }
+        func main() { println("{T}") }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(output.succeeded(), "a valid fold must still pass: {:?}",
+        output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn default_args_desugar_runs() {
     // If desugar_default_args doesn't run, calls without all args fail.

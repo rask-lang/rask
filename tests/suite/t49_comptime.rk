@@ -370,3 +370,29 @@ test "ctrl.comptime — a folded string const is still a string" {
     assert CT_STR.to_uppercase() == "HEI"
     assert CT_STR.len() == 3
 }
+
+// ── ctrl.comptime/CT1: a fold overflows at the declared width (#325) ──
+//
+// `comptime func big() -> i32` handed back an `i64`, because nothing applied the
+// declared return type to the value. So `big() + 1` was i64 arithmetic — no
+// overflow — and 2147483648 went into an `i32` const with no diagnostic, where
+// CT1 says a comptime overflow is a compile error. Parameters had the same gap.
+//
+// The rejecting side is in `compiler/crates/rask-compiler/tests/pipeline.rs`;
+// this is the side that has to keep folding.
+
+comptime func widest_i32() -> i32 {
+    return 2147483647
+}
+
+comptime func narrow(n: i8) -> i64 {
+    return n + 0
+}
+
+const EDGE: i32 = comptime { widest_i32() }
+const FROM_NARROW: i64 = comptime { narrow(100) }
+
+test "ctrl.comptime/CT1 — a fold at the declared width still reaches its edge" {
+    assert EDGE == 2147483647
+    assert FROM_NARROW == 100
+}

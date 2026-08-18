@@ -2073,8 +2073,15 @@ impl ComptimeInterpreter {
         self.env.push_call()?; // CT29: stack depth check
         self.env.push_scope();
 
-        // Bind parameters
+        // Bind parameters at their declared widths, same rule as a `let`
+        // annotation (#826): the value keeps whatever width the argument
+        // expression evaluated to otherwise, which is a different type from the
+        // one the signature promises.
         for (param, value) in func.params.iter().zip(args) {
+            let value = match CtInt::from_name(&param.ty) {
+                Some(kind) => Self::coerce_int_width(value, kind)?,
+                None => value,
+            };
             self.env.define(param.name.clone(), value);
         }
 
@@ -2083,7 +2090,16 @@ impl ComptimeInterpreter {
         self.env.pop_scope();
         self.env.pop_call();
 
-        Ok(result?.value())
+        let value = result?.value();
+        // The declared return type decides the width too. Without it
+        // `comptime func big() -> i32 { return 2147483647 }` handed back an
+        // `i64`, so `big() + 1` was i64 arithmetic — no overflow — and the
+        // out-of-range 2147483648 went into an `i32` const with no diagnostic,
+        // where CT1 says comptime overflow is a compile error (#325).
+        match func.ret_ty.as_deref().and_then(CtInt::from_name) {
+            Some(kind) => Self::coerce_int_width(value, kind),
+            None => Ok(value),
+        }
     }
 
     fn call_closure(
