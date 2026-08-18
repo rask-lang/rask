@@ -125,6 +125,28 @@ enum Ordering { Less, Equal, Greater }
 
 Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`.
 
+## Division and Remainder
+
+| Rule | Description |
+|------|-------------|
+| **AR1: Truncated division** | `/` on integers truncates toward zero: `-7 / 3` is `-2`, not `-3` |
+| **AR2: Remainder follows the dividend** | `%` takes the sign of its *left* operand, so `a % b` and `a` agree in sign: `-7 % 3` is `-1` and `7 % -3` is `1`. `(a / b) * b + (a % b) == a` holds |
+| **AR3: Euclidean `mod`** | `a.mod(b)` is the floored answer, always in `[0, b)` for positive `b`: `(-1).mod(10)` is `9`. Defined for every integer type; `b` of zero panics like `%` does |
+| **AR4: Zero divisor panics** | `a / 0` and `a % 0` panic (`type.overflow/OV2`), and so does `a.mod(0)` |
+
+`%` truncates because every C-family language does, and code carried over from C, Go or Rust would otherwise change meaning on negative inputs with nothing to notice. That's a worse trap than the one it would fix.
+
+The one it doesn't fix is real, though: ring buffers, wraparound indexing and calendar math all want the floored answer, and `((i % n) + n) % n` is what people write instead. `mod` is that expression with a name — an addition to the language, not a change to `%`.
+
+<!-- test: skip -->
+```rask
+let i: i64 = -1
+let n: i64 = 10
+
+i % n          // -1  — the remainder, sign of the dividend (AR2)
+i.mod(n)       //  9  — the index you wanted (AR3)
+```
+
 ## Edge Cases
 
 | Case | Rule | Behavior |
@@ -138,6 +160,11 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 | `u64::MAX > 1i32` | ORD4 | `true` — the bit pattern is not read as a negative number |
 | `5u64 + 1i32` | ORD4 | Compile error (E0371) — comparison is the exception, arithmetic isn't |
 | `5u64 << 1i32` | ORD4 | Compile error (E0371) — a shift count's signedness isn't decoration; a negative one is a bug |
+| `-7 / 3` | AR1 | `-2` — truncates toward zero |
+| `-7 % 3` | AR2 | `-1` — the remainder takes the dividend's sign |
+| `7 % -3` | AR2 | `1` — likewise; the divisor's sign doesn't reach the result |
+| `(-1).mod(10)` | AR3 | `9` — the floored answer, always in range |
+| `a % 0`, `a.mod(0)` | AR4 | Panic |
 | Shift exceeding bit width | BW2 | Panic |
 | Comparison chaining | P2 | Compile error |
 | Struct with float field | ORD2 | Auto-derives — the float field compares by the total order |

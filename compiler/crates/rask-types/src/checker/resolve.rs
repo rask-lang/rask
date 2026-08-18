@@ -3487,8 +3487,11 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
         match method {
-            // Binary arithmetic → same type
-            "add" | "sub" | "mul" | "div" | "rem"
+            // Binary arithmetic → same type. `mod` (AR3, Euclidean) rides
+            // here rather than beside it: it takes the same two operands and
+            // answers in the same type, so the mixed-signedness rule and the
+            // result type are the ones `%` already has.
+            "add" | "sub" | "mul" | "div" | "rem" | "mod"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
                 if args.len() == 1 => {
                 if let Err(mixed) = self.reject_mixed_signedness(method, ty, &args[0], span) {

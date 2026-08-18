@@ -61,14 +61,14 @@ pub fn module_layer(module: &str) -> StdlibLayer {
 // ---------------------------------------------------------------------------
 
 const SIGNED_INT_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "neg",
+    "add", "sub", "mul", "div", "rem", "mod", "neg",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
     "abs", "to_string", "to_float",
 ];
 
 const UNSIGNED_INT_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem",
+    "add", "sub", "mul", "div", "rem", "mod",
     "eq", "lt", "le", "gt", "ge",
     "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
     "to_string", "to_float",

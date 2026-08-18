@@ -31,6 +31,7 @@ On by default. Suppress with `@allow(warning_name)`.
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 | **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over `Mutex`/`Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
 | **W10: ensure_order** | W0908 | `ensure_order` | An `ensure` for a resource is registered after an `ensure` for something derived from it, so LIFO tears the dependency down first (`mem.resource-types/EO1`) |
+| **W11: mod_for_index** | W0909 | `mod_for_index` | `%` whose result is used as an index and whose left operand can be negative — `%` takes the dividend's sign (`type.operators/AR2`), so `(i - 1) % n` indexes out of range instead of wrapping. `.mod(n)` is the floored answer (AR3) |
 
 <!-- test: skip -->
 ```rask
@@ -42,6 +43,8 @@ func process(data: Vec<u8>) -> i32 {
 ```
 
 **W2 (unused_result) exceptions:** Not triggered by plain return types (no error to miss), `T?` values (intentional absence), or results assigned to a binding (that's W3's job).
+
+**W11 (mod_for_index) scope:** Only where the remainder *is* the index of a `[…]` access — a `%` whose result is a value is usually exactly what was meant. Silent when the left operand can't be negative: a non-negative literal, a `.len()`/`.count()` call, or a sum/product of those. A suggestion, so the fix is printed as code: `ring[(i - 1).mod(n)]`.
 
 **W10 (ensure_order) scope:** Derivation is read off the calls themselves, function-locally: the dependency appeared as an argument to the call that produced the dependent, or it appears in the dependent's own cleanup call. Independent resources never warn regardless of order, and an alias (`let b = a`) is not a derivation. Anything smarter needs a false-positive budget first.
 

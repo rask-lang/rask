@@ -1910,6 +1910,57 @@ fn lint_clean_code_passes() {
         "clean code should pass lint: {}", output);
 }
 
+// #305 / AR2: `%` takes the dividend's sign, so `(i - 1) % n` indexes out of
+// range instead of wrapping when `i` is 0. Narrow on purpose — only where the
+// remainder *is* an index, and only when the left operand could be negative.
+#[test]
+fn lint_flags_truncating_remainder_as_an_index() {
+    let output = lint_output(
+        "func main() {\n\
+         \x20   mut ring: Vec<i64> = Vec.new()\n\
+         \x20   ring.push(1)\n\
+         \x20   let n: i64 = 3\n\
+         \x20   mut i: i64 = 0\n\
+         \x20   let bad = ring[(i - 1) % n]\n\
+         \x20   println(\"{bad}\")\n\
+         }\n",
+    );
+    assert!(
+        output.contains("mod-for-index"),
+        "should flag a truncating remainder used as an index: {}", output,
+    );
+    // The fix has to be code that parses: `i - 1.mod(n)` would regroup as
+    // `i - (1.mod(n))`, so the compound operand keeps its parens.
+    assert!(
+        output.contains("ring[(i - 1).mod(n)]"),
+        "the fix must be valid code, parens included: {}", output,
+    );
+}
+
+#[test]
+fn lint_leaves_correct_remainder_indexing_alone() {
+    // `.mod()` already, a length (never negative), a literal, and a `%` whose
+    // result is a value rather than an index. Flagging any of these would
+    // drown the one case that is a bug.
+    let output = lint_output(
+        "func main() {\n\
+         \x20   mut ring: Vec<i64> = Vec.new()\n\
+         \x20   ring.push(1)\n\
+         \x20   let n: i64 = 3\n\
+         \x20   mut i: i64 = 0\n\
+         \x20   let a = ring[(i - 1).mod(n)]\n\
+         \x20   let b = ring[ring.len() % n]\n\
+         \x20   let c = ring[2 % n]\n\
+         \x20   let d = (i - 1) % 2\n\
+         \x20   println(\"{a} {b} {c} {d}\")\n\
+         }\n",
+    );
+    assert!(
+        !output.contains("mod-for-index"),
+        "none of these are the footgun: {}", output,
+    );
+}
+
 // ─── rask api integration ───────────────────────────────────
 
 #[test]

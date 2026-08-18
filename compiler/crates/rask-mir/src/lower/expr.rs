@@ -5159,6 +5159,113 @@ impl<'a> MirLowerer<'a> {
         Ok(Some((MirOperand::Local(slot), opt_ty)))
     }
 
+    /// `a.mod(b)` — the Euclidean remainder (type.operators/AR3).
+    ///
+    /// `%` takes the dividend's sign (AR2), so `-1 % 10` is `-1` and every ring
+    /// buffer and calendar calculation writes `((a % n) + n) % n` by hand. This
+    /// is that expression with a name, and with each operand evaluated once —
+    /// the hand-written form evaluates both twice, so `i.mod(next())` would
+    /// call `next()` twice if this were a desugar.
+    ///
+    /// Lowered as `r = a % b` then a branch, rather than a new MIR operator:
+    /// `Mod` and `Add` already exist and codegen already knows both widths and
+    /// both signednesses for them.
+    fn lower_int_mod(
+        &mut self,
+        lhs: &MirOperand,
+        rhs: MirOperand,
+        ty: &MirType,
+    ) -> Result<TypedOperand, LoweringError> {
+        let result = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Mod,
+                left: lhs.clone(),
+                right: rhs.clone(),
+            },
+        }));
+
+        // An unsigned remainder is already in range, so `mod` and `%` coincide
+        // and there is nothing to correct.
+        if ty.is_unsigned() {
+            return Ok((MirOperand::Local(result), ty.clone()));
+        }
+
+        // Signed: a negative remainder is one divisor away from the answer,
+        // and which way depends on the divisor's sign — `r + b` for a positive
+        // divisor, `r - b` for a negative one. Both land non-negative, which is
+        // the mathematical definition the name promises: `(-1).mod(10)` and
+        // `(-1).mod(-10)` are both 9.
+        //
+        // Two branches and no new MIR operator: `Mod`, `Lt`, `Add` and `Sub`
+        // all exist and codegen already handles every width for them.
+        let is_neg = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_neg,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(result),
+                right: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            },
+        }));
+
+        let fix_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(is_neg),
+            then_block: fix_block,
+            else_block: done_block,
+        }));
+
+        self.builder.switch_to_block(fix_block);
+        let divisor_neg = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: divisor_neg,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: rhs.clone(),
+                right: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            },
+        }));
+        let sub_block = self.builder.create_block();
+        let add_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(divisor_neg),
+            then_block: sub_block,
+            else_block: add_block,
+        }));
+
+        self.builder.switch_to_block(sub_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Sub,
+                left: MirOperand::Local(result),
+                right: rhs.clone(),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(add_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(result),
+                right: rhs,
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(done_block);
+        Ok((MirOperand::Local(result), ty.clone()))
+    }
+
     /// `reflect.<method><T>()` → the constant it answers.
     ///
     /// Every reflect method is compile-time known once mono has picked `T`
@@ -5552,6 +5659,10 @@ impl<'a> MirLowerer<'a> {
         {
             if let Some(handled) = self.lower_int_bit_method(method, args, &obj_op, obj_ty)? {
                 return Ok(Some(handled));
+            }
+            if method == "mod" && args.len() == 1 {
+                let (rhs, _) = self.lower_expr(&args[0].expr)?;
+                return Ok(Some(self.lower_int_mod(&obj_op, rhs, obj_ty)?));
             }
         }
 
