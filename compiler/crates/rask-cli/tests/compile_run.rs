@@ -4640,4 +4640,11 @@ fn error_field_annotation_forms() {
         out.matches("the serialized key has to be a string literal").count() == 2,
         "both bad `@rename` forms should be rejected: {}", out,
     );
+    // E13a: a decode has to build the whole struct, and an excluded field never
+    // appears in the input — so its value comes from a default or from nowhere.
+    assert!(
+        out.contains("E0377") && out.contains("`Config` cannot be decoded")
+            && out.contains("`token`"),
+        "an excluded field with no default should block Decode by name: {}", out,
+    );
 }

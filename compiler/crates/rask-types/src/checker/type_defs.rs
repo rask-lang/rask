@@ -96,6 +96,11 @@ pub enum TypeDef {
         /// E19: fields marked `@skip` — left out of every serialized form, so
         /// they don't get a say in whether the type is Encode/Decode either.
         skipped_fields: Vec<String>,
+        /// E13a: fields the wire form leaves out — `private` or
+        /// `@no_serialize` — that have no default to fill them from on decode.
+        /// A type with any of these isn't auto-`Decode`; it can still be
+        /// `Encode`, since encoding never needs a value for a field it omits.
+        undecodable_fields: Vec<String>,
         /// ER42/L1 transitive linearity: true if `is_resource` is true OR any
         /// field type is itself transitively linear. Computed by a fixed-point
         /// pass after declaration collection.

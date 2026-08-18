@@ -296,6 +296,24 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
+        // E13a: a field the wire form leaves out still needs a value on decode.
+        // Its declared default (`type.structs/FD1`, FD6) or an `@default(expr)`
+        // override supplies one; with neither there's nothing to build the
+        // field from, so the type isn't auto-`Decode`.
+        let undecodable_fields: Vec<String> = s
+            .fields
+            .iter()
+            .filter(|f| {
+                f.visibility == rask_ast::decl::FieldVisibility::Private
+                    || rask_ast::decl::field_attrs::is_skipped(&f.attrs)
+            })
+            .filter(|f| {
+                f.default.is_none()
+                    && rask_ast::decl::field_attrs::default_literal(&f.attrs).is_none()
+            })
+            .map(|f| f.name.clone())
+            .collect();
+
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
@@ -331,6 +349,7 @@ impl TypeChecker {
             is_binary,
             private_fields,
             skipped_fields,
+            undecodable_fields,
             // ER42/L1: refined by `propagate_resource_linearity` after all
             // declarations are collected. @resource is the seed; transitive
             // linearity propagates from there.

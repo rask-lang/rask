@@ -479,6 +479,19 @@ impl TypeChecker {
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);
+        // E13a: a decode blocked by an excluded field with no default is a
+        // different problem with a different fix — the field's type is fine, it
+        // just has nothing to be built from. Report that first, since when both
+        // are true the structural one is the one the reader can't act on.
+        if trait_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
+            if let Some(field) = checker.first_defaultless_excluded_field(ty) {
+                return TypeError::ExcludedFieldNeedsDefault {
+                    ty: ty_name,
+                    field,
+                    span,
+                };
+            }
+        }
         let (field, field_ty) = match checker.first_unencodable_field(ty) {
             Some((f, fty)) => (Some(f), Some(fty)),
             None => (None, None),

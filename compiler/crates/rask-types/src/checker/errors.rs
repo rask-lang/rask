@@ -395,6 +395,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.encoding/E13a: a field the wire form leaves out with no default to
+    /// build it from on decode.
+    #[error("`{ty}` cannot be decoded: field `{field}` is left out of the wire form and has no default")]
+    ExcludedFieldNeedsDefault {
+        ty: String,
+        field: String,
+        span: Span,
+    },
+
     #[error("the `+` operator cannot be used on strings")]
     StringAddForbidden {
         span: Span,
@@ -944,6 +953,7 @@ impl TypeError {
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
             | NotSerializable { .. }
+            | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }
             | PublicDuckTrait { .. }
             | PublicInferredError { .. }

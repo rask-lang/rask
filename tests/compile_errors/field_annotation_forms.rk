@@ -6,6 +6,8 @@
 // declaration or the encode site tells you. Both of these used to type-check
 // clean and do nothing (#603).
 
+import json
+
 // ERROR: `@skip` is now `@no_serialize` [E0376]
 // "skip from what?" had no answer — the field-level concept is "not part of
 // this type's serialized form, either direction". Left alone the old spelling
@@ -28,9 +30,23 @@ struct Numbered {
     public name: string
 }
 
+// ERROR: `Config` cannot be decoded — `token` has nothing to fill it [E0377]
+// E13a: a decode has to build the whole struct, and a `@no_serialize` field
+// never appears in the input. Its value comes from a default or from nowhere.
+// Encoding is unaffected, which is why this type is still `Encode`.
+struct Config {
+    public host: string
+    @no_serialize
+    public token: string
+}
+
+func decode_config(raw: string) -> Config {
+    return json.decode<Config>(raw) catch _ => Config { host: "", token: "" }
+}
+
 func main() {
     let s = Session { id: 1, token: "t" }
     let b = Bare { name: "ada" }
     let n = Numbered { name: "ada" }
-    println("{s.id} {b.name} {n.name}")
+    println("{s.id} {b.name} {n.name} {decode_config("").host}")
 }

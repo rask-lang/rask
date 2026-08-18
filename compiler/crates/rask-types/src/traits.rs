@@ -194,7 +194,14 @@ impl<'a> TraitChecker<'a> {
         }
 
         if matches!(base_trait, "Encode" | "Decode") {
-            if self.type_is_encodable(ty, &mut Vec::new()) {
+            let structurally_ok = self.type_is_encodable(ty, &mut Vec::new());
+            // E13a: decoding has one requirement encoding doesn't. Encoding never
+            // needs a value for a field it leaves out; decoding has to build the
+            // whole struct, so an excluded field with no default has nothing to
+            // come from.
+            let decodable = base_trait != "Decode"
+                || self.first_defaultless_excluded_field(ty).is_none();
+            if structurally_ok && decodable {
                 return Ok(());
             }
             return Err(TraitError::NotSatisfied {
@@ -338,6 +345,47 @@ impl<'a> TraitChecker<'a> {
             _ => None,
         }?;
         self.unencodable_field_of(id, &mut Vec::new())
+    }
+
+    /// E13a: the first field the wire form leaves out that has no default to
+    /// fill it from on decode. Reported by name, since the fix is on that field.
+    pub fn first_defaultless_excluded_field(&self, ty: &Type) -> Option<String> {
+        let id = match ty {
+            Type::Named(id) => Some(*id),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::Generic { base, .. } => Some(*base),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
+            _ => None,
+        }?;
+        self.defaultless_excluded_field_of(id, &mut Vec::new())
+    }
+
+    fn defaultless_excluded_field_of(
+        &self,
+        id: TypeId,
+        visited: &mut Vec<TypeId>,
+    ) -> Option<String> {
+        if visited.contains(&id) {
+            return None;
+        }
+        visited.push(id);
+        let Some(TypeDef::Struct { fields, undecodable_fields, .. }) = self.types.get(id) else {
+            return None;
+        };
+        if let Some(name) = undecodable_fields.first() {
+            return Some(name.clone());
+        }
+        // A nested struct's own excluded fields block the outer type too — the
+        // decode builds it the same way.
+        fields.iter().find_map(|(fname, fty)| {
+            let nested = match fty {
+                Type::Named(nid) => Some(*nid),
+                Type::UnresolvedNamed(n) => self.types.get_type_id(n),
+                _ => None,
+            }?;
+            self.defaultless_excluded_field_of(nested, &mut visited.clone())
+                .map(|inner| format!("{}.{}", fname, inner))
+        })
     }
 
     fn unencodable_field_of(
@@ -1201,6 +1249,7 @@ mod tests {
             is_binary: false,
             private_fields: vec![],
             skipped_fields: vec![],
+            undecodable_fields: vec![],
             is_transitive_resource: false,
         });
         let coin = types.register_type(TypeDef::Struct {
@@ -1213,6 +1262,7 @@ mod tests {
             is_binary: false,
             private_fields: vec![],
             skipped_fields: vec![],
+            undecodable_fields: vec![],
             is_transitive_resource: false,
         });
         let blob = types.register_type(TypeDef::Struct {
@@ -1225,6 +1275,7 @@ mod tests {
             is_binary: false,
             private_fields: vec![],
             skipped_fields: vec![],
+            undecodable_fields: vec![],
             is_transitive_resource: false,
         });
 

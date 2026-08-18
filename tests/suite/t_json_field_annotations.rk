@@ -24,20 +24,23 @@ struct ApiUser {
     public role: string
 
     @no_serialize
-    public cache_key: string
+    public cache_key: string = ""
 }
 
+// E13a: an excluded field takes its declared default on decode. Without one the
+// type isn't auto-`Decode` at all — zero-initialization is never automatic
+// (type.structs/FD4), and these are the values the decode has to come up with.
 struct Skipped {
     public id: i64
 
     @no_serialize
-    public note: string
+    public note: string = ""
 
     @no_serialize
-    public tags: Vec<string>
+    public tags: Vec<string> = Vec.new()
 
     @no_serialize
-    public seen: i64?
+    public seen: i64? = none
 }
 
 // E18
@@ -95,8 +98,9 @@ test "std.encoding — @no_serialize keeps a field out of the encoded object" {
 }
 
 // A skipped field still has to hold something usable — zeroed bytes are not an
-// empty string, and a null pointer is not an empty Vec.
-test "std.encoding — a skipped field decodes to its type's empty value" {
+// empty string, and a null pointer is not an empty Vec. E13a says where the
+// value comes from: the field's declared default.
+test "std.encoding — a skipped field decodes to its declared default" {
     let s = json.decode<Skipped>("{{\"id\":5}}") catch e => {
         assert false
         return
@@ -125,7 +129,7 @@ extend Marker with Opaque {
 
 struct HasOpaque {
     @no_serialize
-    public probe: any Opaque
+    public probe: any Opaque = Marker { v: 0 } as any Opaque
 
     public n: i64
 }

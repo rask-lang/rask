@@ -1078,6 +1078,21 @@ impl ToDiagnostic for rask_types::TypeError {
             // them out, so "add the required methods" is the wrong advice. A type
             // qualifies when every field does (std.encoding/E12–E17); the fix is
             // to change the field, which means naming it.
+            ExcludedFieldNeedsDefault { ty, field, span } => {
+                Diagnostic::error(format!("`{}` cannot be decoded", ty))
+                    .with_code("E0377")
+                    .with_primary(*span, format!(
+                        "field `{}` is left out of the wire form and has nothing to fill it",
+                        field
+                    ))
+                    .with_fix(format!(
+                        "give `{}` a declared default (`{}: T = value`), or an `@default(expr)` \
+                         override if the default should only apply to decoding",
+                        field, field
+                    ))
+                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
+            }
+
             NotSerializable { ty, trait_name, verb, field, field_ty, span } => {
                 let label = match (field, field_ty) {
                     (Some(f), Some(fty)) => {
@@ -1097,7 +1112,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0333")
                     .with_primary(*span, label)
                     .with_fix(format!(
-                        "mark {} with `@skip`, or give it a serializable type — bool, char, \
+                        "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
                          the integer and float types, string, `T?`, tuples, `Vec<T>`, \
                          `Map<string, T>`, or a struct or enum of those",
                         target
