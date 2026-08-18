@@ -1114,6 +1114,10 @@ impl ComptimeInterpreter {
             }
 
             // If expression
+            // `else_binding` is dropped here. Unlike the `IfLet` form below, the
+            // scrutinee isn't in hand — the condition is a presence or `is` test
+            // wrapping it — and binding the wrong thing is worse than binding
+            // nothing. Filed rather than guessed (#808).
             ExprKind::If {
                 cond,
                 then_branch,
@@ -1243,7 +1247,23 @@ impl ComptimeInterpreter {
                     self.env.pop_scope();
                     return result;
                 } else if let Some(else_br) = else_branch {
-                    return self.eval_expr_cf(else_br);
+                    // ER22: `else as e` binds the branch the test ruled out.
+                    // Comptime ignored the binding, so a body that used it failed
+                    // with "undefined variable" — the same field the formatter
+                    // was dropping (#805), one pass over. Same payload rule as
+                    // the interpreter's.
+                    self.env.push_scope();
+                    if let Some(name) = else_binding {
+                        let payload = match &value {
+                            ComptimeValue::Enum { data: Some(inner), .. } => (**inner).clone(),
+                            ComptimeValue::Enum { data: None, .. } => ComptimeValue::Unit,
+                            other => other.clone(),
+                        };
+                        self.env.define(name.clone(), payload);
+                    }
+                    let result = self.eval_expr_cf(else_br);
+                    self.env.pop_scope();
+                    return result;
                 } else {
                     ComptimeValue::Unit
                 }

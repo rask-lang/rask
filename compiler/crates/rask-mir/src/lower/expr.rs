@@ -1583,9 +1583,12 @@ impl<'a> MirLowerer<'a> {
                 if let Some((box_obj, acquire, release)) = self.sync_guard(object) {
                     let field = field.clone();
                     let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+                    // Same access, so the same node — anything the checker
+                    // recorded about it stays reachable.
+                    let (access_id, access_span) = (expr.id, expr.span);
                     return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, move |g| Expr {
-                        id: rask_ast::NodeId::DUMMY,
-                        span: rask_ast::Span::new(0, 0),
+                        id: access_id,
+                        span: access_span,
                         kind: ExprKind::Field {
                             object: Box::new(g),
                             field,
@@ -1751,7 +1754,7 @@ impl<'a> MirLowerer<'a> {
                     ));
                 };
                 let synthetic = Expr {
-                    id: rask_ast::NodeId::DUMMY,
+                    id: expr.id,
                     span: expr.span,
                     kind: ExprKind::Field { object: object.clone(), field: name },
                 };
@@ -3665,9 +3668,16 @@ impl<'a> MirLowerer<'a> {
             let method = method.to_string();
             let args = args.to_vec();
             let ret_hint = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(t));
+            // The rebuilt call is the same call — same method, same arguments,
+            // the guard standing in for the receiver — so it keeps the original
+            // node's id and span. A `DUMMY` id here threw away the checker's
+            // recorded dispatch target, and `store.lock().create_task(…)` fell
+            // back to guessing the receiver's type from the variable name
+            // (#425).
+            let (call_id, call_span) = (expr.id, expr.span);
             return self.lower_sync_guard_access(box_obj, acquire, release, ret_hint, move |g| Expr {
-                id: rask_ast::NodeId::DUMMY,
-                span: rask_ast::Span::new(0, 0),
+                id: call_id,
+                span: call_span,
                 kind: ExprKind::MethodCall {
                     object: Box::new(g),
                     method,
@@ -4503,18 +4513,28 @@ impl<'a> MirLowerer<'a> {
         }
 
         step!("0_checker_recorded", recorded_prefix);
-        step!("1_synthetic_local", if let ExprKind::Ident(var_name) = &object.kind {
-            self.meta(var_name).and_then(|m| m.type_prefix.clone())
-        } else {
-            None
-        });
-        // Nothing else. Seven more steps used to follow: the checker's node type
-        // for the receiver, a struct field's declared type read off the layout,
-        // the receiver type when a stub declared the method, the method's sole
-        // defining stdlib type, a name-to-type policy table, the MIR type, and a
-        // struct/enum layout name. All seven are gone — each went dead once the
-        // real gap behind it closed, and the tally above is how that was
-        // established and how it stays true.
+        // Nothing else. Eight more steps used to follow: a variable's tracked
+        // prefix, the checker's node type for the receiver, a struct field's
+        // declared type read off the layout, the receiver type when a stub
+        // declared the method, the method's sole defining stdlib type, a
+        // name-to-type policy table, the MIR type, and a struct/enum layout name.
+        // All eight are gone — each went dead once the real gap behind it closed,
+        // and the tally above is how that was established and how it stays true
+        // (#425).
+        //
+        // The last one out was the variable's tracked prefix, and it was holding
+        // up four separate gaps in the *checker*, each of which left a binding
+        // with no type at all:
+        //
+        //   - a binding from an `is` test inside a condition (`m is Msg.Text(t)
+        //     && t.len() > 1`) — the bindings were computed and discarded
+        //   - a tuple `for` binding (`for (k, v) in m`) — each name got a fresh
+        //     unconstrained variable rather than its slot in the element tuple
+        //   - a struct-shaped enum variant pattern (`Outer.Named { code, kind }`)
+        //     — the name isn't a type, so the struct lookup missed and every
+        //     field got a fresh variable
+        //   - `box.lock().method(…)` — lowering rebuilds the call and used to
+        //     stamp it `NodeId::DUMMY`, discarding the record
         //
         // A receiver that resolves to nothing now fails lowering with the method
         // named, which is the same trade `fallback::i64_fallback` makes: a

@@ -315,9 +315,20 @@ impl TypeChecker {
                 match binding {
                     ForBinding::Single(name) => define(self, name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
-                        let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
-                        for (name, var) in names.iter().zip(vars) {
-                            define(self, name.clone(), var);
+                        // Each name takes its position in the element tuple.
+                        // They used to get fresh unconstrained variables, so
+                        // `for (k, v) in m { k.len() }` left `k` with no type at
+                        // all — and the program compiled only because MIR guessed
+                        // the receiver from the variable's tracked prefix, the
+                        // last of the nine dispatch fallbacks (#425).
+                        let elems: Vec<Type> = match self.ctx.apply(&elem_ty) {
+                            Type::Tuple(elems) if elems.len() == names.len() => elems,
+                            // Still open, or not a tuple: fresh variables, which
+                            // is what every case got before.
+                            _ => names.iter().map(|_| self.ctx.fresh_var()).collect(),
+                        };
+                        for (name, ty) in names.iter().zip(elems) {
+                            define(self, name.clone(), ty);
                         }
                     }
                 }

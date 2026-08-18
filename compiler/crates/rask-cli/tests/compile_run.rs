@@ -1232,6 +1232,29 @@ fn error_mixed_signedness_arithmetic() {
     );
 }
 
+// #809 (found via #425): three bindings carried a fresh unconstrained type
+// variable rather than the type they hold, so a wrong annotation on any of them
+// unified happily and type-checked. The programs still ran correctly, which is
+// why nothing noticed — what gave it away was MIR having no receiver type to
+// dispatch a method call on.
+#[test]
+fn error_untyped_bindings() {
+    let (failed, out) = compile_error_output("untyped_bindings.rk");
+    assert!(failed, "a wrong annotation on these bindings must not compile: {}", out);
+    for (binding, ty) in [
+        ("`kind`", "`Inner`"),
+        ("`code`", "`i64`"),
+        ("`t`", "`string`"),
+        ("`name`", "`string`"),
+    ] {
+        let _ = binding;
+        assert!(
+            out.contains(&format!("found {}", ty)),
+            "should name what {} actually holds ({}): {}", binding, ty, out,
+        );
+    }
+}
+
 // #800: a token carries an `i128`, so the question moved from "does this parse"
 // to "does the slot hold it". Each band has to name its own range — landing all
 // three on one generic "invalid literal" is what sent people hunting for a typo

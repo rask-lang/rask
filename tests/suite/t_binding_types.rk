@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Three places a binding had no type at all (#425, #809).
+//
+// Each of these compiled and ran correctly, so nothing looked wrong. What gave
+// them away was MIR: a method call needs its receiver's type to pick a target,
+// and for these receivers the checker had nothing recorded — so lowering fell
+// back to guessing the type from the *variable's name*. That guess was the last
+// of nine such fallbacks, and it was these four gaps holding it up.
+//
+// `tests/compile_errors/untyped_bindings.rk` has the other half: with the types
+// filled in, a wrong annotation on one of these bindings is now an error. It
+// wasn't, which is what "no type at all" means.
+
+enum Msg {
+    Text(string)
+    Num(i64)
+}
+
+enum Inner {
+    A
+    B
+}
+
+extend Inner {
+    func label(self) -> string {
+        match self {
+            Inner.A => return "a"
+            Inner.B => return "b"
+        }
+    }
+}
+
+enum Outer {
+    Plain(Inner)
+    Named { code: i64, kind: Inner }
+}
+
+extend Outer {
+    func describe(self) -> string {
+        match self {
+            Outer.Plain(k) => return "plain {k.label()}"
+            // A struct-shaped variant names its fields, and the checker looked
+            // the name up as a *type* — which `Outer.Named` isn't. So `code` and
+            // `kind` both got fresh variables.
+            Outer.Named { code, kind } => return "{code}/{kind.label()}"
+        }
+    }
+}
+
+// An `is` binding reaches the rest of the condition (#256). The bindings were
+// computed and thrown away, so `t` resolved to a name with no type behind it.
+func classify(m: Msg) -> string {
+    if m is Msg.Text(t) && t.len() > 2 {
+        return "long {t}"
+    } else if m is Msg.Text(t) {
+        return "short {t}"
+    }
+    return "number"
+}
+
+struct Store {
+    n: i64
+}
+
+extend Store {
+    func new() -> Store {
+        return Store { n: 0 }
+    }
+
+    func bump(mutate self) -> i64 {
+        self.n = self.n + 1
+        return self.n
+    }
+}
+
+test "an `is` binding is typed for the rest of the condition" {
+    assert classify(Msg.Text("abc")) == "long abc"
+    assert classify(Msg.Text("x")) == "short x"
+    assert classify(Msg.Num(1)) == "number"
+}
+
+// Each name takes its position in the element tuple. They used to get fresh
+// unconstrained variables, so `k` had no type and `k.len()` had no receiver.
+test "a tuple `for` binding is typed per position" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("bb", 2)
+
+    mut keys = 0
+    mut total = 0
+    for (k, v) in m {
+        keys = keys + k.len()
+        total = total + v
+    }
+    assert keys == 3
+    assert total == 3
+}
+
+test "a tuple `for` binding over a Vec of pairs" {
+    mut rows: Vec<(string, i64)> = Vec.new()
+    rows.push(("one", 1))
+    rows.push(("two", 2))
+
+    mut chars: u64 = 0
+    mut sum = 0
+    for (name, n) in rows {
+        chars = chars + name.len()
+        sum = sum + n
+    }
+    assert chars == 6
+    assert sum == 3
+}
+
+test "a struct-shaped variant's fields are typed" {
+    assert Outer.Plain(Inner.A).describe() == "plain a"
+    assert Outer.Named { code: 7, kind: Inner.B }.describe() == "7/b"
+}
+
+// Lowering rebuilds `box.lock().method(…)` with the guard as the receiver, and
+// it used to stamp the rebuilt call `NodeId::DUMMY` — which threw away the
+// record for the *original* call.
+const shared = Mutex.new(Store.new())
+
+test "a method call through a lock guard keeps its dispatch target" {
+    let a = shared.lock().bump()
+    let b = shared.lock().bump()
+    assert a == 1
+    assert b == 2
+}
+
+func main() {}

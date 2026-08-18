@@ -45,6 +45,15 @@ pub struct TypeTable {
     pub(super) builtin_modules: BuiltinModules,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
+    /// Field names of a struct-shaped enum variant, keyed by
+    /// `(enum TypeId, variant name)` and in declaration order.
+    ///
+    /// `TypeDef::Enum` keeps payload types positionally, which is all a tuple
+    /// variant needs. A struct variant's pattern names its fields
+    /// (`Outer.Named { code, kind }`), so matching them to types needs the names
+    /// too — without them the checker gave every field a fresh variable and
+    /// `let x: i64 = kind` type-checked (#809).
+    pub(super) variant_field_names: HashMap<(TypeId, String), Vec<String>>,
     /// AST declarations contributing methods to each type: the `struct`/`enum`
     /// itself plus every `extend` block bound to it.
     ///
@@ -75,6 +84,7 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             binary_structs: HashMap::new(),
+            variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
             conformances: HashMap::new(),
             conformance_conditions: HashMap::new(),
@@ -302,6 +312,21 @@ impl TypeTable {
             return self.resolve_name(target).map(Type::Named);
         }
         self.resolve_name(name).map(Type::Named)
+    }
+
+    /// The `(field name, type)` pairs of a struct-shaped enum variant named
+    /// `Enum.Variant`, in declaration order. `None` for anything else — a plain
+    /// struct, a tuple variant, an unknown name.
+    pub fn struct_variant_fields(&self, qualified: &str) -> Option<Vec<(String, Type)>> {
+        let (enum_name, variant) = qualified.rsplit_once('.')?;
+        let enum_id = self.get_type_id(enum_name)?;
+        let names = self.variant_field_names.get(&(enum_id, variant.to_string()))?;
+        let TypeDef::Enum { variants, .. } = self.get(enum_id)? else { return None };
+        let (_, types) = variants.iter().find(|(v, _)| v == variant)?;
+        if names.len() != types.len() {
+            return None;
+        }
+        Some(names.iter().cloned().zip(types.iter().cloned()).collect())
     }
 
     /// Get a type definition by ID.

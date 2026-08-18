@@ -703,7 +703,18 @@ impl TypeChecker {
 
             ExprKind::IsPattern { expr: value, pattern } => {
                 let value_ty = self.infer_expr(value);
-                let _bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                // #256: a binding from an `is` test reaches the rest of the
+                // condition and the branch body — `m is Msg.Text(t) && t.len() > 1`.
+                // The resolver already puts the name in the enclosing scope, and
+                // the checker was throwing the *type* away, so `t` resolved to a
+                // name with nothing behind it. The program still compiled, because
+                // MIR guessed the receiver's type from the variable's tracked
+                // prefix — the last of the nine dispatch fallbacks, and this was
+                // the gap holding it up (#425).
+                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                for (name, ty) in bindings {
+                    self.define_local_bound(name, ty, super::BoundFrom::Payload);
+                }
                 Type::Bool
             }
 

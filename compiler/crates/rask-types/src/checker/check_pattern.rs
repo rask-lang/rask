@@ -236,6 +236,28 @@ impl TypeChecker {
             }
 
             Pattern::Struct { name, fields, .. } => {
+                // A struct-shaped *enum variant* — `Outer.Named { code, kind }`.
+                // The name isn't a type, so the struct lookup below missed it and
+                // every field got a fresh variable: `kind` had no type at all,
+                // and `let x: i64 = kind` type-checked (#809).
+                if let Some(variant_fields) = self.types.struct_variant_fields(name) {
+                    let mut bindings = vec![];
+                    for (field_name, field_pattern) in fields {
+                        let field_ty = match variant_fields.iter().find(|(n, _)| n == field_name) {
+                            Some((_, ty)) => ty.clone(),
+                            None => {
+                                self.errors.push(TypeError::NoSuchField {
+                                    ty: scrutinee_ty.clone(),
+                                    field: field_name.clone(),
+                                    span,
+                                });
+                                Type::Error
+                            }
+                        };
+                        bindings.extend(self.check_pattern(field_pattern, &field_ty, span));
+                    }
+                    return bindings;
+                }
                 // Look up the struct type
                 if let Some(type_id) = self.types.get_type_id(name) {
                     // Constrain scrutinee to be this struct type
