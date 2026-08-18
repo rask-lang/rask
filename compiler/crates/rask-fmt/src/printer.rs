@@ -144,10 +144,14 @@ impl<'a> Printer<'a> {
             if self.source[content_end..cstart].contains('\n') {
                 return false;
             }
-        } else if cend < span_end && !self.source[cend..span_end].trim().is_empty() {
-            // The span swallowed the comment. Only the last comment in it
-            // trails the statement — one partway through a multi-line statement
-            // stays where it is.
+        } else if cend < span_end && !self.only_whitespace_and_comments(cend, span_end) {
+            // The span swallowed the comment. Nothing but whitespace and further
+            // comments may follow it inside the span — real code after it means
+            // the comment is partway through a multi-line statement and stays
+            // where it is. Further *comments* are fine: a statement's span runs
+            // past any standalone comments that follow it, so requiring bare
+            // whitespace here made the trailing comment move on the second pass
+            // whenever another comment came after it.
             return false;
         }
 
@@ -158,6 +162,30 @@ impl<'a> Printer<'a> {
             self.output.push(' ');
         }
         self.output.push_str(&c.text);
+        true
+    }
+
+    /// Whether `source[from..to]` holds nothing but whitespace and comments.
+    fn only_whitespace_and_comments(&self, from: usize, to: usize) -> bool {
+        let bytes = self.source.as_bytes();
+        let mut i = from;
+        while i < to {
+            if bytes[i].is_ascii_whitespace() {
+                i += 1;
+            } else if bytes[i] == b'/' && i + 1 < to && bytes[i + 1] == b'/' {
+                while i < to && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            } else if bytes[i] == b'/' && i + 1 < to && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < to && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(to);
+            } else {
+                return false;
+            }
+        }
         true
     }
 
@@ -240,9 +268,11 @@ impl<'a> Printer<'a> {
                 }
             }
         }
-        // Convert func(T, U) -> R back to |T, U| -> R
+        // A closure type has two spellings and the parser stores the `func(…)`
+        // one, so that's what comes back out. Rewriting it to `|T| -> R` was
+        // wrong for the zero-parameter case — `||` is the or-operator token, so
+        // `|| -> Big` doesn't lex — and it's the minority spelling anyway.
         if let Some(rest) = ty.strip_prefix("func(") {
-            // Find matching closing paren
             let mut depth = 1;
             for (i, ch) in rest.char_indices() {
                 match ch {
@@ -250,40 +280,57 @@ impl<'a> Printer<'a> {
                     ')' => {
                         depth -= 1;
                         if depth == 0 {
-                            let params = &rest[..i];
+                            let params = self.format_type_list(&rest[..i]);
                             let after = rest[i + 1..].trim();
-                            // `||` is the logical-or token, so a closure type
-                            // with no parameters has to keep the `func()`
-                            // spelling — `|| -> Big` doesn't lex as a type.
-                            let (open, close) = if params.is_empty() {
-                                ("func(", ")")
-                            } else {
-                                ("|", "|")
-                            };
-                            match after.strip_prefix("->").map(str::trim) {
+                            return match after.strip_prefix("->").map(str::trim) {
                                 // An omitted return type is stored as `()` too,
                                 // so writing it back adds an arrow the source
                                 // never had.
-                                None | Some("()") => {
-                                    return format!("{}{}{}", open, params, close)
-                                }
+                                None | Some("()") => format!("func({})", params),
                                 Some(ret_ty) => {
-                                    return format!(
-                                        "{}{}{} -> {}",
-                                        open,
-                                        params,
-                                        close,
-                                        self.format_type(ret_ty)
-                                    )
+                                    format!("func({}) -> {}", params, self.format_type(ret_ty))
                                 }
-                            }
+                            };
                         }
                     }
                     _ => {}
                 }
             }
         }
+        // A generic argument is a type too. `Receiver<void>` came back out as
+        // `Receiver<()>`, which doesn't parse — the surface-spelling fix only
+        // looked at the whole string (#805).
+        if let Some(open) = ty.find('<') {
+            if let Some(inner) = ty.strip_suffix('>') {
+                let base = &ty[..open];
+                let args = self.format_type_list(&inner[open + 1..]);
+                return format!("{}<{}>", base, args);
+            }
+        }
         ty.to_string()
+    }
+
+    /// A comma-separated type list, split at the top level only.
+    fn format_type_list(&self, list: &str) -> String {
+        if list.trim().is_empty() {
+            return String::new();
+        }
+        let mut parts = Vec::new();
+        let mut depth = 0;
+        let mut start = 0;
+        for (i, ch) in list.char_indices() {
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(self.format_type(list[start..i].trim()));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(self.format_type(list[start..].trim()));
+        parts.join(", ")
     }
 
     // --- File ---
@@ -423,7 +470,7 @@ impl<'a> Printer<'a> {
         for (i, clause) in f.context_clauses.iter().enumerate() {
             self.emit(if i == 0 { " using " } else { ", " });
             if clause.is_frozen {
-                self.emit("const ");
+                self.emit("frozen ");
             }
             if let Some(ref name) = clause.name {
                 self.emit(name);
@@ -436,7 +483,7 @@ impl<'a> Printer<'a> {
         if f.body.is_empty() && is_trait_decl {
             // Trait method declaration with no body — no braces
         } else if f.body.is_empty() {
-            self.emit(" {}");
+            self.emit(" { }");
         } else {
             self.emit(" {");
             self.emit_newline();
@@ -524,7 +571,9 @@ impl<'a> Printer<'a> {
         let source_is_multiline = self.source_text(span).contains('\n');
         let has_methods = !s.methods.is_empty();
 
-        if !source_is_multiline && !has_methods && s.fields.len() <= 4 && self.struct_fields_fit_one_line(&s.fields) {
+        if !source_is_multiline && !has_methods && s.fields.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && !has_methods && s.fields.len() <= 4 && self.struct_fields_fit_one_line(&s.fields) {
             // Inline style: struct Vec3 { x: f64, y: f64, z: f64 }
             self.emit(" { ");
             for (i, field) in s.fields.iter().enumerate() {
@@ -621,7 +670,9 @@ impl<'a> Printer<'a> {
 
         let source_is_multiline = self.source_text(span).contains('\n');
 
-        if !source_is_multiline && u.fields.len() <= 4 && self.struct_fields_fit_one_line(&u.fields) {
+        if !source_is_multiline && u.fields.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && u.fields.len() <= 4 && self.struct_fields_fit_one_line(&u.fields) {
             self.emit(" { ");
             for (i, field) in u.fields.iter().enumerate() {
                 if i > 0 {
@@ -696,7 +747,9 @@ impl<'a> Printer<'a> {
         let all_fieldless = e.variants.iter().all(|v| v.fields.is_empty());
         let has_methods = !e.methods.is_empty();
 
-        if !source_is_multiline && !has_methods && all_fieldless && self.enum_variants_fit_one_line(&e.variants) {
+        if !source_is_multiline && !has_methods && e.variants.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && !has_methods && all_fieldless && self.enum_variants_fit_one_line(&e.variants) {
             // Inline style: enum Dir { N, S, E, W }
             self.emit(" { ");
             for (i, variant) in e.variants.iter().enumerate() {
@@ -810,19 +863,36 @@ impl<'a> Printer<'a> {
         self.emit_newline();
 
         self.indent += 1;
-        let mut first = true;
-        for method in &t.methods {
-            if !first {
-                self.emit_blank_line();
-            }
-            self.emit_indent();
-            self.format_fn_decl(method, true, true);
-            self.emit_newline();
-            first = false;
-        }
+        self.format_block_members(&t.methods, true);
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");
+    }
+
+    /// The members of an `extend` or `trait` body.
+    ///
+    /// Comments between them belong where they were written. Nothing consumed
+    /// them here, so a `///` on a method stayed unclaimed until the body's first
+    /// statement picked it up — and the doc comment ended up *inside* the method
+    /// it documented. Blank lines follow the source too, instead of one being
+    /// inserted between every pair of members (#805).
+    fn format_block_members(&mut self, methods: &[FnDecl], is_trait_decl: bool) {
+        let mut is_first = true;
+        for method in methods {
+            let comments = self.emit_comments_before(method.span.start, !is_first);
+            let blank_in_source = self.has_blank_line_before(method.span.start);
+            if comments.is_empty() {
+                if !is_first && blank_in_source {
+                    self.emit_blank_line();
+                }
+            } else if blank_in_source {
+                self.emit_blank_line();
+            }
+            self.emit_indent();
+            self.format_fn_decl(method, true, is_trait_decl);
+            self.emit_newline();
+            is_first = false;
+        }
     }
 
     fn format_impl_decl(&mut self, imp: &ImplDecl) {
@@ -847,16 +917,7 @@ impl<'a> Printer<'a> {
         self.emit_newline();
 
         self.indent += 1;
-        let mut first = true;
-        for method in &imp.methods {
-            if !first {
-                self.emit_blank_line();
-            }
-            self.emit_indent();
-            self.format_fn_decl(method, true, false);
-            self.emit_newline();
-            first = false;
-        }
+        self.format_block_members(&imp.methods, false);
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");

@@ -266,6 +266,63 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_doc_comment_above_the_method_it_documents() {
+        // Nothing consumed comments between `extend` members, so a `///` stayed
+        // unclaimed until the body's first statement picked it up — and the doc
+        // comment ended up inside the method.
+        let input = "struct Foo { n: i64 }\n\nextend Foo {\n    /// Doc for a.\n    public func a(self) -> i64 {\n        return 1\n    }\n}\n";
+        let output = format_source(input);
+        assert!(
+            output.contains("    /// Doc for a.\n    public func a"),
+            "the doc comment stays above its method:\n{}", output,
+        );
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
+    #[test]
+    fn keeps_a_frozen_context_clause() {
+        // `is_frozen` printed as `const`, which isn't the keyword.
+        keeps(
+            "func read_ok(h: Handle<Player>) -> i32 using frozen Pool<Player> {\n    return 1\n}\n",
+            "using frozen Pool<Player>",
+            "the frozen marker",
+        );
+    }
+
+    #[test]
+    fn converts_the_unit_type_inside_a_generic_argument() {
+        // The top-level check caught `-> void` and missed `Receiver<void>`, which
+        // came back out as `Receiver<()>` and stopped parsing.
+        keeps(
+            "func f() -> Receiver<void> {\n    todo()\n}\n",
+            "Receiver<void>",
+            "a nested unit type",
+        );
+    }
+
+    #[test]
+    fn empty_declaration_bodies_use_one_spelling() {
+        // A fieldless type went through the inline-field branch and came out
+        // `{  }` — two spaces, from an empty list between `{ ` and ` }`.
+        let output = format_source("struct Cell<T> { }\n");
+        assert!(output.contains("struct Cell<T> { }"), "one space:\n{}", output);
+        // The tree writes `{ }` for an empty body, 296 times against 136.
+        let output = format_source("extend Foo {\n    @native(\"x\")\n    public func f(self) -> i64 { }\n}\n");
+        assert!(output.contains("public func f(self) -> i64 { }"), "same for a stub:\n{}", output);
+    }
+
+    #[test]
+    fn a_trailing_comment_survives_a_comment_after_it() {
+        // A statement's span runs past standalone comments that follow it, so
+        // requiring bare whitespace after the trailing comment moved it on the
+        // second pass whenever another comment came next.
+        let input = "func main() {\n    let a = 4  // about a\n    // about the next thing\n}\n";
+        let once = format_source(input);
+        assert!(once.contains("let a = 4  // about a"), "stays put:\n{}", once);
+        assert_eq!(once, format_source(&once), "and stays put on a second pass:\n{}", once);
+    }
+
+    #[test]
     fn keeps_parens_around_a_condition_ending_in_a_struct_literal() {
         // Without them the `{` of the body attaches to the literal.
         keeps(

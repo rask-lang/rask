@@ -71,6 +71,30 @@ for pkg in projects/raido projects/tiwaz examples/lsm_database examples/validati
     fi
 done
 
+# --- Every .rk file: the output has to parse, and formatting it again has to be
+# --- a no-op. This catches files the check pass skips because they don't compile
+# --- standalone — `Receiver<void>` came back out as `Receiver<void>`'s internal
+# --- spelling `Receiver<()>`, which doesn't parse, and only stdlib/time.rk
+# --- showed it.
+unstable=0
+parsed=0
+for f in $(find stdlib examples tests projects -name '*.rk' 2>/dev/null); do
+    "$RASK" fmt "$f" > "$TMP/once.rk" 2>/dev/null || continue
+    parsed=$((parsed + 1))
+    if ! "$RASK" fmt "$TMP/once.rk" > "$TMP/twice.rk" 2>"$TMP/err.log"; then
+        unstable=$((unstable + 1))
+        echo "UNPARSEABLE OUTPUT $f"
+        echo "       $(grep -m1 '^error' "$TMP/err.log")"
+        continue
+    fi
+    if ! cmp -s "$TMP/once.rk" "$TMP/twice.rk"; then
+        unstable=$((unstable + 1))
+        echo "NOT IDEMPOTENT $f"
+        diff "$TMP/once.rk" "$TMP/twice.rk" | head -6 | sed 's/^/       /'
+    fi
+done
+
 echo "──────────────────────────────────────────────────"
 echo "fmt round-trip: $checked files formatted, $broken still-compiles failures"
-[ "$broken" -eq 0 ]
+echo "fmt stability:  $parsed files reformatted, $unstable parse/idempotence failures"
+[ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ]
