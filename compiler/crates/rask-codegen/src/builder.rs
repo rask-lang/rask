@@ -1076,28 +1076,12 @@ impl<'a> FunctionBuilder<'a> {
         let tgt_clif = mir_to_cranelift_type(target_ty)?;
 
         match kind {
-            // CV5/CV12: bit-preserving resize.
-            Truncate | Wrap => Ok(Self::resize_int(builder, val, source_ty, target_ty)),
-            // CV6/CV13: clamp to target range.
-            Saturate | Clamp => Ok(Self::saturate_int(builder, val, source_ty, target_ty)),
-            // CV8/CV9: float → int.
-            FloatToInt => {
-                // Trapping conversion — NaN/inf/overflow abort the task.
-                if target_ty.is_unsigned() {
-                    Ok(builder.ins().fcvt_to_uint(tgt_clif, val))
-                } else {
-                    Ok(builder.ins().fcvt_to_sint(tgt_clif, val))
-                }
-            }
-            FloatToIntSat => {
-                if target_ty.is_unsigned() {
-                    Ok(builder.ins().fcvt_to_uint_sat(tgt_clif, val))
-                } else {
-                    Ok(builder.ins().fcvt_to_sint_sat(tgt_clif, val))
-                }
-            }
-            // CV7/CV10: build Option<T> in a stack slot, branchlessly.
-            TryConvert => {
+            // CV12: bit-preserving resize.
+            Wrap => Ok(Self::resize_int(builder, val, source_ty, target_ty)),
+            // CV13: clamp to target range.
+            Clamp => Ok(Self::saturate_int(builder, val, source_ty, target_ty)),
+            // Compiler-internal: build Option<T> in a stack slot, branchlessly.
+            CheckedOption => {
                 // char.from_u32 lowers here with a Char target — validity is
                 // "valid Unicode scalar", not a contiguous integer range.
                 if matches!(target_ty, MirType::Char) {
@@ -1107,16 +1091,6 @@ impl<'a> FunctionBuilder<'a> {
                 let payload = Self::resize_int(builder, val, source_ty, target_ty);
                 let in_range = Self::int_in_range(builder, val, source_ty, target_ty);
                 Ok(Self::build_option(builder, payload, in_range, tgt_clif))
-            }
-            TryFloatToInt => {
-                // Saturating conversion gives a defined payload; validity gates the tag.
-                let payload = if target_ty.is_unsigned() {
-                    builder.ins().fcvt_to_uint_sat(tgt_clif, val)
-                } else {
-                    builder.ins().fcvt_to_sint_sat(tgt_clif, val)
-                };
-                let valid = Self::float_in_range(builder, val, target_ty);
-                Ok(Self::build_option(builder, payload, valid, tgt_clif))
             }
             // CV14 to a float target is the one method form that can't fail:
             // there's always a nearest representable float, and an out-of-range

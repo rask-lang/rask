@@ -59,7 +59,7 @@ func write_sstable(
             index.push(BlockIndex {
                 first_key: block_entries[0].key,
                 offset: block_id,
-                count: block_entries.len() truncate to i32,
+                count: block_entries.len().wrap<i32>(),
             })
             blocks.push(block_entries)
             block_entries = Vec.new()
@@ -72,7 +72,7 @@ func write_sstable(
         index.push(BlockIndex {
             first_key: block_entries[0].key,
             offset: block_id,
-            count: block_entries.len() truncate to i32,
+            count: block_entries.len().wrap<i32>(),
         })
         blocks.push(block_entries)
     }
@@ -105,7 +105,7 @@ func write_sstable(
         path: path,
         min_key: min_key,
         max_key: max_key,
-        entry_count: entries.len() truncate to i32,
+        entry_count: entries.len().wrap<i32>(),
         bloom: bloom,
     }
 }
@@ -173,8 +173,8 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
 
         index.push(BlockIndex {
             first_key: parts[0].to_string(),
-            offset: offset truncate to i32,
-            count: count truncate to i32,
+            offset: offset.wrap<i32>(),
+            count: count.wrap<i32>(),
         })
     }
     return index
@@ -271,8 +271,8 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         }
 
         metas.push(SstMeta {
-            id: id truncate to i32,
-            level: level truncate to i32,
+            id: id.wrap<i32>(),
+            level: level.wrap<i32>(),
             path: path,
             min_key: min_key,
             max_key: max_key,

@@ -3675,8 +3675,8 @@ impl TypeChecker {
         }
     }
 
-    /// CV11–CV16: each method is defined only where its policy means something,
-    /// so anywhere else is a compile error rather than a no-op. A method that
+    /// Each method is defined only where its policy means something, so
+    /// anywhere else is a compile error rather than a no-op. A method that
     /// reads as if it did something always did.
     fn check_convert_method(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
         let src_is_int = matches!(prim_of(src), Some(Prim::Int { .. }));
@@ -3737,51 +3737,13 @@ impl TypeChecker {
         }
     }
 
-    /// CV5–CV10: reject conversion forms applied to the wrong source/target kind.
+    /// CV11–CV16: reject a conversion method applied where its policy means
+    /// nothing. `CheckedOption` has no surface form to reject.
     fn check_convert(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
-        if kind.is_method_form() {
-            return self.check_convert_method(src, kind, pc);
+        if matches!(kind, ConvertKind::CheckedOption) {
+            return;
         }
-        let surface = kind.surface();
-        let target_is_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
-        let src_prim = prim_of(src);
-        let msg = if kind.is_float_source() {
-            // CV8–CV10: float → int.
-            if !matches!(src_prim, Some(Prim::Float { .. })) {
-                Some(format!(
-                    "`{}` converts a float to an integer, but `{}` is not a float — for integer-to-integer use `truncate to`, `saturate to`, or `try convert to`",
-                    surface, src
-                ))
-            } else if !target_is_int {
-                Some(format!(
-                    "`{}` produces an integer, but the target `{}` is not an integer type",
-                    surface, pc.target_name
-                ))
-            } else {
-                None
-            }
-        } else {
-            // CV5–CV7: int → int.
-            if !matches!(src_prim, Some(Prim::Int { .. })) {
-                Some(format!(
-                    "`{}` converts between integer types, but `{}` is not an integer — for float-to-int use `float to int T`",
-                    surface, src
-                ))
-            } else if !target_is_int {
-                Some(format!(
-                    "`{}` produces an integer, but the target `{}` is not an integer type",
-                    surface, pc.target_name
-                ))
-            } else {
-                None
-            }
-        };
-        if let Some(message) = msg {
-            self.errors.push(TypeError::InvalidConvert {
-                message,
-                span: pc.span,
-            });
-        }
+        self.check_convert_method(src, kind, pc)
     }
 
     /// V8: an index or count argument accepts any integer type. Used by the

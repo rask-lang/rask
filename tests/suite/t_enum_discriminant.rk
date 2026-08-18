@@ -62,12 +62,12 @@ test "a cast survives the mask-and-shift a wire encoder does" {
     // raido's shape: pack an opcode into the top byte of a u32 and read it back.
     // With the address bug this passed the mask and came back arbitrary.
     let op = Tagged.SIX as i64
-    let packed = ((op & 0xFF) << 24 | (3 & 0xFF) << 16) truncate to u32
+    let packed = ((op & 0xFF) << 24 | (3 & 0xFF) << 16).wrap<u32>()
     assert (packed as i64 >> 24) & 0xFF == 6
     assert (packed as i64 >> 16) & 0xFF == 3
 }
 
 test "a cast narrows to the widths a backing type implies" {
-    let byte = Tagged.HUNDRED as i64 truncate to u8
+    let byte = (Tagged.HUNDRED as i64).wrap<u8>()
     assert byte == 100
 }

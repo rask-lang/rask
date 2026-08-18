@@ -64,9 +64,9 @@ extend Number {
 
         let result = (a.abs() * b.abs()) >> FRAC_BITS
         return Number { raw: if sign < 0 {
-            -result truncate to i64
+            (-result).wrap<i64>()
         } else {
-            result truncate to i64
+            result.wrap<i64>()
         } }
     }
 
@@ -92,9 +92,9 @@ extend Number {
 
         let result = (a.abs() << FRAC_BITS) / b.abs()
         return Number { raw: if sign < 0 {
-            -result truncate to i64
+            (-result).wrap<i64>()
         } else {
-            result truncate to i64
+            result.wrap<i64>()
         } }
     }
 

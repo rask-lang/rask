@@ -686,7 +686,7 @@ pub enum TypeError {
     },
 
     /// type.primitives CV5–CV10: a conversion form applied to the wrong
-    /// source/target kind (e.g. `float to int` on an integer).
+    /// source/target kind (e.g. `floor` on an integer).
     #[error("invalid conversion: {message}")]
     InvalidConvert {
         message: String,

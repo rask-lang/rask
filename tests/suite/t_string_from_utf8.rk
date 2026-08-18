@@ -13,7 +13,7 @@
 func of(bs: Vec<i64>) -> Vec<u8> {
     mut v: Vec<u8> = Vec.new()
     for b in bs {
-        v.push(b truncate to u8)
+        v.push(b.wrap<u8>())
     }
     return v
 }
@@ -26,7 +26,7 @@ func rejected_at(bs: Vec<i64>) -> i64 {
     let r = string.from_utf8(of(bs))
     if r is Utf8Error as e {
         match e {
-            Utf8Error.InvalidByte(pos) => return pos truncate to i64,
+            Utf8Error.InvalidByte(pos) => return pos.wrap<i64>(),
         }
     }
     return -1

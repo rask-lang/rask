@@ -46,7 +46,7 @@ func manual_allocation_example() {
         // Write some data
         for i in 0..16 {
             let offset_ptr = ptr.offset(i)
-            *offset_ptr = i truncate to u8
+            *offset_ptr = i.wrap<u8>()
         }
 
         // Read it back

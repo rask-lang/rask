@@ -31,7 +31,7 @@ test "codegen — iterate a Vec of aggregates returned from a function" {
     assert rows.len() == 2
     mut total = 0
     for r in rows {
-        total += r.n truncate to i64
+        total += r.n.wrap<i64>()
     }
     assert total == 30
 }
@@ -40,7 +40,7 @@ test "codegen — nested aggregate field survives the same round trip" {
     let rows = build()
     mut ids = 0
     for r in rows {
-        ids += r.inner.n truncate to i64
+        ids += r.inner.n.wrap<i64>()
     }
     assert ids == 3
 }
@@ -51,7 +51,7 @@ test "codegen — same through a method return" {
     assert rows.len() == 2
     mut total = 0
     for r in rows {
-        total += r.n truncate to i64
+        total += r.n.wrap<i64>()
     }
     assert total == 30
 }

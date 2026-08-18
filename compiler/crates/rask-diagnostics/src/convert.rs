@@ -677,9 +677,8 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0370")
                     .with_primary(*span, format!("this is a `{}`", from))
                     .with_fix(format!(
-                        "say which values to lose: `x truncate to {}` keeps the low bits, \
-                         `x saturate to {}` clamps to the range, `x convert to {}?` answers \
-                         `none` when it doesn't fit",
+                        "say which values to lose: `x.to<{}>()!` asserts it fits, \
+                         `x.wrap<{}>()` keeps the low bits, `x.clamp<{}>()` pins to the range",
                         to, to, to
                     ))
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
@@ -694,8 +693,8 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
                     .with_fix(format!(
                         "bring the `{}` over to `{}`, and say what happens when it doesn't fit: \
-                         `x saturate to {}` clamps to the range, `x truncate to {}` keeps the \
-                         low bits, `try x convert to {}` hands back a `{}?`",
+                         `x.clamp<{}>()` pins to the range, `x.wrap<{}>()` keeps the low bits, \
+                         `x.to<{}>()` hands back a `{} or ConvertError`",
                         right, left, left, left, left, left
                     ))
                     .with_why(format!(
@@ -1575,17 +1574,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     C::Narrowing => (
                         format!("cannot narrow `{}` to `{}` with `as`", source, target),
                         "`as` only permits lossless widening — narrowing may lose data [type.primitives/CV2]",
-                        Some(format!("x truncate to {n}   // wraps\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                        Some(format!("x.to<{n}>()!   // asserts it fits\n  x.wrap<{n}>()   // wraps\n  x.clamp<{n}>()   // clamps", n = n)),
                     ),
                     C::SignReinterpret => (
                         format!("cannot reinterpret sign converting `{}` to `{}` with `as`", source, target),
                         "`as` only permits lossless widening — a negative value has no unsigned representation [type.primitives/CV3]",
-                        Some(format!("x truncate to {n}   // bit-preserving\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                        Some(format!("x.to<{n}>()!   // asserts it fits\n  x.wrap<{n}>()   // bit-preserving\n  x.clamp<{n}>()   // clamps", n = n)),
                     ),
                     C::FloatToInt => (
                         format!("cannot convert float `{}` to integer `{}` with `as`", source, target),
                         "float-to-int loses the fraction and can overflow — `as` doesn't allow it [type.primitives/CV4]",
-                        Some(format!("x float to int {n}   // truncates toward zero, panics on NaN/inf\n  x float to int {n} (saturating)   // clamps, NaN → 0\n  try x float to int {n}   // {n}?", n = n)),
+                        Some(format!("x.round<{n}>()!   // nearest\n  x.floor<{n}>()!   // toward -inf\n  x.ceil<{n}>()!   // toward +inf\n  x.to<{n}>()!   // only if there's no fraction", n = n)),
                     ),
                     C::FloatNarrowing => (
                         format!("cannot narrow `{}` to `{}` with `as`", source, target),
@@ -1635,7 +1634,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_help(format!(
                         "use a type that holds it, or convert at the use site:\n  \
-                         x truncate to {ty}   // wraps\n  x saturate to {ty}   // clamps",
+                         x.wrap<{ty}>()   // wraps\n  x.clamp<{ty}>()   // clamps",
                         ty = ty,
                     ))
             }

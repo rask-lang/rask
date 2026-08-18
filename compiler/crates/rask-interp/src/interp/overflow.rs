@@ -251,15 +251,12 @@ fn not_int(target: &str) -> RuntimeError {
     RuntimeError::TypeError(format!("conversion target `{}` is not an integer type", target))
 }
 
-/// Evaluate an explicit conversion form (CV5–CV10). `Interpreter`-independent.
+/// Evaluate an explicit conversion form (CV11–CV16). `Interpreter`-independent.
 pub(crate) fn convert(val: Value, target: &str, kind: ConvertKind) -> Result<Value, RuntimeError> {
     match kind {
-        ConvertKind::Truncate | ConvertKind::Wrap => truncate_to(val, target),
-        ConvertKind::Saturate | ConvertKind::Clamp => saturate_to(val, target),
-        ConvertKind::TryConvert => try_convert_to(val, target),
-        ConvertKind::FloatToInt => float_to_int(val, target, false, false),
-        ConvertKind::FloatToIntSat => float_to_int(val, target, true, false),
-        ConvertKind::TryFloatToInt => float_to_int(val, target, false, true),
+        ConvertKind::Wrap => truncate_to(val, target),
+        ConvertKind::Clamp => saturate_to(val, target),
+        ConvertKind::CheckedOption => try_convert_to(val, target),
         ConvertKind::To => convert_exact(val, target),
         ConvertKind::Round => convert_rounded(val, target, Rounding::Nearest),
         ConvertKind::Floor => convert_rounded(val, target, Rounding::Down),
@@ -463,11 +460,11 @@ fn not_convertible(target: &str) -> RuntimeError {
     ))
 }
 
-/// CV5: wrapping/bitwise truncation into the target width.
+/// CV12: wrapping/bitwise truncation into the target width.
 fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let raw = raw_i64(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`truncate to` needs an integer, found {}", val.type_name())))?;
+        format!("`wrap` needs an integer, found {}", val.type_name())))?;
     Ok(match t {
         IntTarget::Kind(k) => Value::Int(k.wrap(raw), k),
         IntTarget::I128 => Value::Int128(int_logical(&val).unwrap_or(raw as i128)),
@@ -478,11 +475,11 @@ fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     })
 }
 
-/// CV6: clamp to the target range.
+/// CV13: clamp to the target range.
 fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`saturate to` needs an integer, found {}", val.type_name())))?;
+        format!("`clamp` needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
         return Ok(Value::Uint128(if src < 0 { 0 } else { src as u128 }));
     }
@@ -490,11 +487,11 @@ fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     Ok(t.store(src.clamp(min, max)))
 }
 
-/// CV7: `T?` — `none` if out of range.
+/// `T?` — `none` if out of range. Compiler-internal (`char.from_u32`).
 fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`try convert to` needs an integer, found {}", val.type_name())))?;
+        format!("a checked conversion needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
         return Ok(if src < 0 { none() } else { some(Value::Uint128(src as u128)) });
     }
@@ -502,38 +499,6 @@ fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     Ok(if src >= min && src <= max { some(t.store(src)) } else { none() })
 }
 
-/// CV8/CV9/CV10: float → int, truncating toward zero.
-fn float_to_int(val: Value, target: &str, saturating: bool, optional: bool) -> Result<Value, RuntimeError> {
-    let f = match val {
-        Value::Float(f, _) => f,
-        other => return Err(RuntimeError::TypeError(
-            format!("`float to int` needs a float, found {}", other.type_name()))),
-    };
-    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
-    let (min, max) = t.bounds();
-    let (min_f, max_f) = (min as f64, max as f64);
-
-    if f.is_nan() {
-        if saturating { return Ok(t.store(0)); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!("cannot convert NaN to {}", target)));
-    }
-    if f.is_infinite() {
-        if saturating { return Ok(t.store(if f > 0.0 { max } else { min })); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!("cannot convert {}infinity to {}",
-            if f < 0.0 { "-" } else { "" }, target)));
-    }
-    let truncated = f.trunc();
-    if truncated < min_f || truncated > max_f {
-        if saturating { return Ok(t.store(if truncated > 0.0 { max } else { min })); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!(
-            "float {} out of range for {}", f, target)));
-    }
-    let v = truncated as i128;
-    Ok(if optional { some(t.store(v)) } else { t.store(v) })
-}
 
 /// Mask a value into `bits`, sign-extending for signed kinds.
 fn wrap_to_width(kind: IntKind, bits: u32, val: i128) -> i128 {

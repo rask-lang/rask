@@ -573,7 +573,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     let status_str = raw[first_sp + 1..second_sp].to_string()
     let status_val = status_str.parse_int()
         ?? return HttpError.InvalidResponse("bad status code: {status_str}")
-    let status = status_val truncate to u16
+    let status = status_val.wrap<u16>()
 
     // Parse headers
     mut headers = Headers.new()

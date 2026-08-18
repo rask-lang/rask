@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, ConvertKind, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -3149,59 +3149,52 @@ impl Parser {
         Ok(rask_ast::expr::CatchClause { binder, body: Box::new(body) })
     }
 
-    /// Detect and parse a non-`try` lossy conversion suffix on `lhs`
-    /// (type.primitives CV5/CV6/CV8/CV9): `truncate to T`, `saturate to T`,
-    /// `float to int T`, `float to int T (saturating)`. Returns None if the
-    /// following tokens aren't a conversion suffix.
+    /// The phrase verbs are gone (CV5–CV10 deleted), so point at the method
+    /// that replaced each one rather than failing on a stray word.
+    ///
+    /// The mapping isn't one-to-one, which is why this says what to write
+    /// instead of suggesting a rename: `try convert to T` gave a `T?` and
+    /// `to<T>()` gives a result, and the single `float to int` form became
+    /// three verbs that each name what happens to the fraction.
     fn try_parse_convert_suffix(
         &mut self,
         lhs: Expr,
-        start: usize,
+        _start: usize,
     ) -> Result<Result<Expr, Expr>, ParseError> {
-        let kind = if self.peek_is_word(0, "truncate") && self.peek_is_word(1, "to") {
-            self.advance(); // truncate
-            self.advance(); // to
-            ConvertKind::Truncate
+        let (words, hint) = if self.peek_is_word(0, "truncate") && self.peek_is_word(1, "to") {
+            ("truncate to T", "write `x.wrap<T>()` — it keeps the low bits, integers only")
         } else if self.peek_is_word(0, "saturate") && self.peek_is_word(1, "to") {
-            self.advance(); // saturate
-            self.advance(); // to
-            ConvertKind::Saturate
+            ("saturate to T", "write `x.clamp<T>()` — it pins to the target's range, integers only")
         } else if self.peek_is_word(0, "float")
             && self.peek_is_word(1, "to")
             && self.peek_is_word(2, "int")
         {
-            self.advance(); // float
-            self.advance(); // to
-            self.advance(); // int
-            ConvertKind::FloatToInt
+            (
+                "float to int T",
+                "say what happens to the fraction: `x.round<T>()`, `x.floor<T>()` or \
+                 `x.ceil<T>()`, or `x.to<T>()` if there shouldn't be one. All of them \
+                 answer `T or ConvertError`, so add `!` to assert it fits",
+            )
         } else {
             // Not a conversion suffix — hand the lhs back untouched.
             return Ok(Err(lhs));
         };
+        Err(self.phrase_conversion_removed(words, hint))
+    }
 
-        let target = self.parse_convert_target()?;
-        // CV9: optional `(saturating)` marker on float-to-int.
-        let kind = if kind == ConvertKind::FloatToInt
-            && self.check(&TokenKind::LParen)
-            && self.peek_is_word(1, "saturating")
-        {
-            self.advance(); // (
-            self.advance(); // saturating
-            self.expect(&TokenKind::RParen)?;
-            ConvertKind::FloatToIntSat
-        } else {
-            kind
-        };
-        let end = self.tokens[self.pos - 1].span.end;
-        Ok(Ok(Expr {
-            id: self.next_id(),
-            kind: ExprKind::Convert {
-                expr: Box::new(lhs),
-                target,
-                kind,
-            },
-            span: self.span(start, end),
-        }))
+    /// The error every deleted conversion phrase produces.
+    fn phrase_conversion_removed(&self, words: &str, hint: &str) -> ParseError {
+        ParseError {
+            span: self.current().span,
+            message: format!("`{}` is no longer a conversion", words),
+            hint: Some(hint.to_string()),
+            why: Some(
+                "the phrase verbs were replaced by six methods, because the policy set is \
+                 open and grammar can't be — adding `floor` and `ceil` costs one row each \
+                 [type.primitives/CV11-CV16]"
+                    .to_string(),
+            ),
+        }
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
@@ -3707,37 +3700,27 @@ impl Parser {
                 self.advance();
                 let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
 
-                // CV7 `try x convert to T` / CV10 `try x float to int T`:
-                // `try` here forms an optional-producing conversion, not error
-                // propagation. Detect the conversion tail before treating `try`
-                // as propagation.
-                let convert_kind = if self.peek_is_word(0, "convert") && self.peek_is_word(1, "to") {
-                    self.advance(); // convert
-                    self.advance(); // to
-                    Some(ConvertKind::TryConvert)
-                } else if self.peek_is_word(0, "float")
+                // `try x convert to T` and `try x float to int T` were the two
+                // optional-producing conversions (CV7/CV10). Both are gone, and
+                // their replacement changes the shape as well as the spelling —
+                // a result rather than an optional — so the fix has to say so.
+                if self.peek_is_word(0, "convert") && self.peek_is_word(1, "to") {
+                    return Err(self.phrase_conversion_removed(
+                        "try x convert to T",
+                        "write `x.to<T>()` — it answers `T or ConvertError` rather than \
+                         `T?`, so a fallback is `catch _ => …` instead of `?? …`",
+                    ));
+                }
+                if self.peek_is_word(0, "float")
                     && self.peek_is_word(1, "to")
                     && self.peek_is_word(2, "int")
                 {
-                    self.advance(); // float
-                    self.advance(); // to
-                    self.advance(); // int
-                    Some(ConvertKind::TryFloatToInt)
-                } else {
-                    None
-                };
-                if let Some(kind) = convert_kind {
-                    let target = self.parse_convert_target()?;
-                    let end = self.tokens[self.pos - 1].span.end;
-                    return Ok(Expr {
-                        id: self.next_id(),
-                        kind: ExprKind::Convert {
-                            expr: Box::new(inner),
-                            target,
-                            kind,
-                        },
-                        span: self.span(start, end),
-                    });
+                    return Err(self.phrase_conversion_removed(
+                        "try x float to int T",
+                        "say what happens to the fraction: `x.round<T>()`, `x.floor<T>()` \
+                         or `x.ceil<T>()`. All of them answer `T or ConvertError`, so a \
+                         fallback is `catch _ => …` instead of `?? …`",
+                    ));
                 }
 
                 // `try … else …` is gone (ER45/ER46/ER48 deleted). Point at the

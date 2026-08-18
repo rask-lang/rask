@@ -171,45 +171,19 @@ pub fn eval_convert(
     let bounds = int_bounds(target);
     match kind {
         // Wrapping truncation — same as the primitive `as` in eval_cast.
-        Truncate | Wrap => eval_cast(value, target),
-        Saturate | Clamp => {
+        Wrap => eval_cast(value, target),
+        Clamp => {
             let (min, max) = bounds.ok_or_else(|| cant_cast(value, target))?;
             let src = logical_i128(value).ok_or_else(|| cant_cast(value, target))?;
             Ok(store_int(target, src.clamp(min, max)))
         }
-        FloatToInt | FloatToIntSat => {
-            let (min, max) = bounds.ok_or_else(|| cant_cast(value, target))?;
-            let f = value.to_f64().ok_or_else(|| cant_cast(value, target))?;
-            if f.is_nan() {
-                if matches!(kind, FloatToIntSat) {
-                    return Ok(store_int(target, 0));
-                }
-                return Err(MiriError::UnsupportedOperation(format!(
-                    "cannot convert NaN to {target:?}"
-                )));
-            }
-            let t = f.trunc();
-            if t < min as f64 || t > max as f64 {
-                if matches!(kind, FloatToIntSat) {
-                    return Ok(store_int(target, if t > 0.0 { max } else { min }));
-                }
-                return Err(MiriError::UnsupportedOperation(format!(
-                    "float {f} out of range for {target:?}"
-                )));
-            }
-            Ok(store_int(target, t as i128))
-        }
-        // Optional-producing forms aren't evaluated at comptime yet.
-        TryConvert | TryFloatToInt => Err(MiriError::UnsupportedOperation(
-            "`try convert`/`try float to int` is not supported in comptime evaluation".to_string(),
+        // The result-producing forms (CV11, CV14–CV16) and the internal
+        // optional one aren't evaluated at comptime: `MiriValue` has no result
+        // or optional shape to hand back, and answering the payload would be
+        // worse than saying so.
+        To | Round | Floor | Ceil | CheckedOption => Err(MiriError::UnsupportedOperation(
+            format!("`{}` is not supported in comptime evaluation", kind.surface()),
         )),
-        // Neither are the result-producing ones (CV11, CV14–CV16) — MiriValue
-        // has no result shape to hand back, so a comptime `x.to<T>()` has to
-        // wait for one rather than quietly answering the payload.
-        To | Round | Floor | Ceil => Err(MiriError::UnsupportedOperation(format!(
-            "`{}` is not supported in comptime evaluation",
-            kind.surface()
-        ))),
     }
 }
 

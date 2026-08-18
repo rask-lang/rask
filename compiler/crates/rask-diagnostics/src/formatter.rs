@@ -207,8 +207,8 @@ impl<'a> DiagnosticFormatter<'a> {
     /// of the message:
     ///
     /// ```text
-    ///     = fix: x truncate to u8   // bit-preserving
-    ///   x saturate to u8   // clamps
+    ///     = fix: x.wrap<u8>()   // bit-preserving
+    ///   x.clamp<u8>()   // clamps
     /// ```
     ///
     /// `label_width` is the label's visible width — `.green().bold()` wraps it

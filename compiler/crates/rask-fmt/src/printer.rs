@@ -1788,41 +1788,8 @@ impl<'a> Printer<'a> {
                 self.emit(ty);
             }
             ExprKind::Convert { expr: inner, target, kind } => {
-                use rask_ast::expr::ConvertKind::*;
-                match kind {
-                    Truncate => {
-                        self.format_expr(inner);
-                        self.emit(&format!(" truncate to {}", target));
-                    }
-                    Saturate => {
-                        self.format_expr(inner);
-                        self.emit(&format!(" saturate to {}", target));
-                    }
-                    TryConvert => {
-                        self.emit("try ");
-                        self.format_expr(inner);
-                        self.emit(&format!(" convert to {}", target));
-                    }
-                    FloatToInt => {
-                        self.format_expr(inner);
-                        self.emit(&format!(" float to int {}", target));
-                    }
-                    FloatToIntSat => {
-                        self.format_expr(inner);
-                        self.emit(&format!(" float to int {} (saturating)", target));
-                    }
-                    TryFloatToInt => {
-                        self.emit("try ");
-                        self.format_expr(inner);
-                        self.emit(&format!(" float to int {}", target));
-                    }
-                    // The method forms (CV11–CV16) desugar into this node, so
-                    // they print back as what the author wrote.
-                    To | Wrap | Clamp | Round | Floor | Ceil => {
-                        self.format_expr(inner);
-                        self.emit(&format!(".{}<{}>()", kind.surface(), target));
-                    }
-                }
+                self.format_expr(inner);
+                self.emit(&format!(".{}<{}>()", kind.surface(), target));
             }
             ExprKind::Spawn { body } => {
                 self.emit("spawn {");

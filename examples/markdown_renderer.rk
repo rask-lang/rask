@@ -172,7 +172,7 @@ func ordered_list_start(line: string) -> i32? {
     let n = num_slice.parse_int() is i64 as v else {
         return none
     }
-    return n truncate to i32
+    return n.wrap<i32>()
 }
 
 // ─── Scanner ────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
 //
 // CV1a's test is "can every value of the source be represented in the target".
 // These are the four ways the answer is no. Each has to name a policy instead —
-// `truncate to`, `saturate to`, or `convert to T?`.
+// `.to<T>()`, `.wrap<T>()` or `.clamp<T>()`.
 //
 // The narrowing pair mattered most: it used to type-check and then the backends
 // disagreed about what it meant. `let small: u8 = big` where big is 300 kept 300

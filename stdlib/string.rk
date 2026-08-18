@@ -24,11 +24,11 @@ extend string {
     /// doesn't have — and this is exactly the kind of function where the two
     /// backends must agree about which byte sequences are legal.
     public func from_utf8(bytes: Vec<u8>) -> string or Utf8Error {
-        let len = bytes.len() truncate to i64
+        let len = bytes.len().wrap<i64>()
         mut out = StringBuilder.with_capacity(bytes.len())
         mut i: i64 = 0
         while i < len {
-            let lead = (bytes.get(i) ?? 0) truncate to i64
+            let lead = (bytes.get(i) ?? 0).wrap<i64>()
             // Sequence width from the lead byte. A continuation byte
             // (0x80..0xBF) can't lead; 0xC0/0xC1 are overlong two-byte forms
             // whose value fits in one; 0xF5..0xFF are past U+10FFFF.
@@ -44,7 +44,7 @@ extend string {
                 0
             }
             if width == 0 || i + width > len {
-                return Utf8Error.InvalidByte(i truncate to usize)
+                return Utf8Error.InvalidByte(i.wrap<usize>())
             }
 
             // Fold the continuation bytes into the scalar, checking each.
@@ -59,9 +59,9 @@ extend string {
             }
             mut k: i64 = 1
             while k < width {
-                let cont = (bytes.get(i + k) ?? 0) truncate to i64
+                let cont = (bytes.get(i + k) ?? 0).wrap<i64>()
                 if cont < 0x80 || cont > 0xBF {
-                    return Utf8Error.InvalidByte((i + k) truncate to usize)
+                    return Utf8Error.InvalidByte((i + k).wrap<usize>())
                 }
                 scalar = (scalar << 6) + (cont - 0x80)
                 k = k + 1
@@ -71,19 +71,19 @@ extend string {
             // a surrogate, or past U+10FFFF. Checking the decoded value covers
             // all three at once.
             if width == 3 && scalar < 0x800 {
-                return Utf8Error.InvalidByte(i truncate to usize)
+                return Utf8Error.InvalidByte(i.wrap<usize>())
             }
             if scalar >= 0xD800 && scalar <= 0xDFFF {
-                return Utf8Error.InvalidByte(i truncate to usize)
+                return Utf8Error.InvalidByte(i.wrap<usize>())
             }
             if width == 4 && (scalar < 0x10000 || scalar > 0x10FFFF) {
-                return Utf8Error.InvalidByte(i truncate to usize)
+                return Utf8Error.InvalidByte(i.wrap<usize>())
             }
 
-            if char.from_u32(scalar truncate to u32)? as c {
+            if char.from_u32(scalar.wrap<u32>())? as c {
                 out.push_char(c)
             } else {
-                return Utf8Error.InvalidByte(i truncate to usize)
+                return Utf8Error.InvalidByte(i.wrap<usize>())
             }
             i = i + width
         }

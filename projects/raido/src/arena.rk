@@ -47,7 +47,7 @@ struct Arena {
 extend Arena {
     func new(capacity: i64) -> Arena {
         return Arena {
-            buf: Vec.with_capacity(capacity truncate to usize),
+            buf: Vec.with_capacity(capacity.wrap<usize>()),
             top: 0,
             capacity: capacity,
             frame_base: 0,
@@ -89,12 +89,12 @@ extend Arena {
         // --- Strings ---
         // Body: len(u32) | utf-8 bytes[len]
         let bytes: Vec<u8> = s.bytes().to_vec()
-        let len = bytes.len() truncate to i64
+        let len = bytes.len().wrap<i64>()
         let offset = try self.alloc(ObjectKind.String, 4 + len)
         let body = offset + HEADER_SIZE
         write_u32le(mutate self.buf, body, len)
         for i in 0..len {
-            write_u8(mutate self.buf, body + 4 + i, (bytes.get(i) ?? 0) truncate to i64)
+            write_u8(mutate self.buf, body + 4 + i, (bytes.get(i) ?? 0).wrap<i64>())
         }
         return offset
     }
@@ -104,7 +104,7 @@ extend Arena {
         let len = read_u32le(self.buf, body)
         mut result = Vec.new()
         for i in 0..len {
-            result.push(read_u8(self.buf, body + 4 + i) truncate to u8)
+            result.push(read_u8(self.buf, body + 4 + i).wrap<u8>())
         }
         return string.from_utf8(result) catch _ => ""
     }

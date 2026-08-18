@@ -323,7 +323,7 @@ extend JsonParser {
             if digit < 0 {
                 return JsonError.ParseError("invalid hex digit in unicode escape")
             }
-            cp = cp * 16 + (digit truncate to u32)
+            cp = cp * 16 + (digit.wrap<u32>())
             i = i + 1
         }
         if char.from_u32(cp)? as c {
@@ -622,11 +622,14 @@ func hex_char(n: u8) -> char {
 }
 
 func format_number(n: f64) -> string {
-    let i = n float to int i64 (saturating)
-    if i as f64 == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
-        return "{i}"
+    // A JSON number prints without a decimal point when it *is* a whole
+    // number, and `to` asks exactly that: it succeeds only when the value
+    // survives the conversion, which is the round trip this used to spell out
+    // by hand (CV11).
+    let i = n.to<i64>() catch _ => {
+        return "{n}"
     }
-    return "{n}"
+    return "{i}"
 }
 
 // ─── Pretty-print internals ─────────────────────────────────────

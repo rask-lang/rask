@@ -44,32 +44,32 @@ test "type.primitives/CV1 — lossless widening with as" {
     assert f == 300.0
 }
 
-// --- CV5: truncate to T (wrapping) ---
-test "type.primitives/CV5 — truncate wraps" {
+// --- CV12: wrap<T> (keeps the low bits) ---
+test "type.primitives/CV12 — wrap keeps the low bits" {
     let big: i32 = 300
-    let a: u8 = big truncate to u8
+    let a: u8 = big.wrap<u8>()
     assert a == 44
     let neg: i32 = -1
-    let b: u8 = neg truncate to u8
+    let b: u8 = neg.wrap<u8>()
     assert b == 255
 }
 
-// --- CV6: saturate to T (clamp) ---
-test "type.primitives/CV6 — saturate clamps" {
+// --- CV13: clamp<T> (pins to the target's range) ---
+test "type.primitives/CV13 — clamp pins to the range" {
     let big: i32 = 300
-    assert (big saturate to u8) == 255
+    assert (big.clamp<u8>()) == 255
     let neg: i32 = -5
-    assert (neg saturate to u8) == 0
+    assert (neg.clamp<u8>()) == 0
     let fits: i32 = 100
-    assert (fits saturate to u8) == 100
+    assert (fits.clamp<u8>()) == 100
 }
 
-// --- CV7: try convert to T (T?) ---
-test "type.primitives/CV7 — try convert yields none out of range" {
-    let ok = try 100 convert to u8
-    assert ok! == 100
-    let overflow = try 300 convert to u8
-    assert overflow is none
+// --- CV11: to<T> (exact, or ConvertError) ---
+test "type.primitives/CV11 — to fails rather than losing the value" {
+    let ok: i64 = 100
+    assert ok.to<u8>()! == 100
+    let overflow: i64 = 300
+    assert (overflow.to<u8>() catch _ => 0) == 0
 }
 
 // --- BL1/BL2: boolean ops and short-circuit ---

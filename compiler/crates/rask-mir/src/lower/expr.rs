@@ -4117,7 +4117,7 @@ impl<'a> MirLowerer<'a> {
                                     value: n,
                                     source_ty: MirType::U32,
                                     target_ty: MirType::Char,
-                                    kind: rask_ast::expr::ConvertKind::TryConvert,
+                                    kind: rask_ast::expr::ConvertKind::CheckedOption,
                                 },
                             }));
                             return Ok(Some((MirOperand::Local(result_local), result_ty)));

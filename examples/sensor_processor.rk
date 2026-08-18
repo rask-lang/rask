@@ -128,7 +128,7 @@ func interrupt_handler(
     mut sequence: i64 = 0
 
     while sequence < sample_rate_hz * 2 {
-        let now_ns = (time.Instant.now() - start_time).as_nanos() saturate to i64
+        let now_ns = (time.Instant.now() - start_time).as_nanos().clamp<i64>()
 
         for sensor_id in 0..3 {
             let value = read_hardware_sensor(sensor_id, sequence)
@@ -292,7 +292,7 @@ func main() {
         }
 
         // Measure cycle time
-        let cycle_ns = cycle_start.elapsed().as_nanos() saturate to i64
+        let cycle_ns = cycle_start.elapsed().as_nanos().clamp<i64>()
         timing.record(cycle_ns, deadline_ns)
 
         cycle += 1
