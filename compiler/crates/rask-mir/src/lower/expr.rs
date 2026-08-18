@@ -1013,6 +1013,21 @@ impl<'a> MirLowerer<'a> {
                         };
                         (MirType::Ptr, rv)
                     }
+                    // `own expr` heap-allocates (mem.owned) at the point of
+                    // evaluation — not just when the value happens to land in a
+                    // struct field or enum payload declared `Owned<T>` (#739).
+                    // A scalar already fits an `Owned<T>` slot in place (OW7),
+                    // so `box_into_owned` leaves it alone; only an aggregate
+                    // actually moves to the heap.
+                    UnaryOp::Own => {
+                        let boxed = self.box_into_owned(operand_op, &operand_ty);
+                        let result_ty = if operand_ty.passed_by_address() {
+                            MirType::Ptr
+                        } else {
+                            operand_ty.clone()
+                        };
+                        return Ok((boxed, result_ty));
+                    }
                     // `*p` on a raw pointer reads exactly the pointee's width.
                     // Plain MIR Deref always took a full word, so `*p` on a
                     // `*u8` handed back four bytes of whatever followed —
@@ -1037,12 +1052,22 @@ impl<'a> MirLowerer<'a> {
                         return Ok((MirOperand::Local(result_local), MirType::I64));
                     }
                     // A raw pointer needs the load. An `Owned<T>` doesn't —
-                    // it's transparent, so the operand already *is* the T, and
-                    // emitting a Deref read whatever address the value's first
-                    // word happened to look like (segfault on
-                    // `(*owned_point).x`). mem.owned/OW3, #737.
+                    // it's transparent (OW5), so the checker's type for the
+                    // pointee is `T` itself, not a `RawPtr`. Once `own` boxes an
+                    // aggregate (#739) its MIR type is `Ptr` too, same as a raw
+                    // pointer — the checker's type is what tells them apart. For
+                    // an aggregate pointee, the pointer's value already *is* the
+                    // address its fields live at (every aggregate is addressed
+                    // this way), so deref is a relabel, not a load; a real load
+                    // here read whatever address the value's first word happened
+                    // to look like (segfault on `(*owned_point).x`), #737.
                     UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
-                        (operand_ty.clone(), MirRValue::Deref(operand_op))
+                        let pointee_mir_ty = self.ctx.lookup_raw_type(operand.id)
+                            .map(|t| self.ctx.type_to_mir(t));
+                        match pointee_mir_ty {
+                            Some(ty) if ty.passed_by_address() => (ty, MirRValue::Use(operand_op)),
+                            _ => (operand_ty.clone(), MirRValue::Deref(operand_op)),
+                        }
                     }
                     UnaryOp::Deref => (operand_ty.clone(), MirRValue::Use(operand_op)),
                     UnaryOp::Not => (MirType::Bool, MirRValue::UnaryOp {
@@ -1364,6 +1389,24 @@ impl<'a> MirLowerer<'a> {
                         func: FunctionRef::internal("rask_test_expect_fail".to_string()),
                         args: vec![],
                     }));
+                    return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
+                }
+
+                // drop(ptr) — consume an `Owned<T>` (mem.owned). Whether there's
+                // anything to free depends on whether `own` actually boxed: a
+                // scalar `T` fits an `Owned<T>` slot in place (OW7) and was never
+                // heap-allocated, so freeing it would hand `rask_free` a value
+                // that was never a pointer. Only a genuinely-boxed aggregate
+                // (MIR type `Ptr`) has a block to release.
+                if func_name == "drop" {
+                    if matches!(arg_mir_types.first(), Some(MirType::Ptr)) {
+                        let arg_op = arg_operands.into_iter().next().unwrap();
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("rask_free".to_string()),
+                            args: vec![arg_op],
+                        }));
+                    }
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
                 }
 

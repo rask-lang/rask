@@ -278,6 +278,8 @@ impl Interpreter {
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env
             .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
+        self.env
+            .define("drop".to_string(), Value::Builtin(BuiltinKind::Drop));
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env

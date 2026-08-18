@@ -1603,6 +1603,8 @@ impl ComptimeInterpreter {
             UnaryOp::Deref => {
                 Err(ComptimeError::NotSupported("pointer dereference at comptime".to_string()))
             }
+            // No heap at comptime — `own` is transparent, same as OW5 at runtime.
+            UnaryOp::Own => Ok(val),
         }
     }
 
