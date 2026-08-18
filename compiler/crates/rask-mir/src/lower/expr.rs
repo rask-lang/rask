@@ -2987,6 +2987,14 @@ impl<'a> MirLowerer<'a> {
                 let target_ty = self.ctx.resolve_type_str(target);
                 let result_ty = if kind.is_optional() {
                     MirType::Option(Box::new(target_ty.clone()))
+                } else if kind.yields_result(target_ty.is_int_like()) {
+                    // CV11/CV14–CV16: anything that can fail yields a result,
+                    // so `!`, `try` and `catch` all work on it without the
+                    // conversion inventing an error vocabulary of its own.
+                    MirType::Result {
+                        ok: Box::new(target_ty.clone()),
+                        err: Box::new(self.ctx.resolve_type_str("ConvertError")),
+                    }
                 } else {
                     target_ty.clone()
                 };

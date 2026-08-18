@@ -1411,9 +1411,17 @@ impl TypeChecker {
                     convert: Some(*kind),
                     span: expr.span,
                 });
-                // CV7/CV10 yield `T?`; the rest yield `T`.
+                // CV7/CV10 yield `T?`. CV11/CV15/CV16 — and CV14 to an integer
+                // target — yield `T or ConvertError`. Everything else yields a
+                // bare `T`, which is the rule the spec states as "anything that
+                // can fail yields a result".
                 if kind.is_optional() {
                     Type::option(target_ty)
+                } else if kind.yields_result(matches!(prim_of(&target_ty), Some(Prim::Int { .. }))) {
+                    Type::Result {
+                        ok: Box::new(target_ty),
+                        err: Box::new(self.convert_error_type()),
+                    }
                 } else {
                     target_ty
                 }
@@ -3657,8 +3665,83 @@ impl TypeChecker {
         });
     }
 
+    /// The `ConvertError` type conversions fail with (CV11). Declared in
+    /// `stdlib/builtins.rk`, which is always in scope — a conversion is core
+    /// language, so its error can't need an import.
+    pub(super) fn convert_error_type(&self) -> Type {
+        match self.types.get_type_id("ConvertError") {
+            Some(id) => Type::Named(id),
+            None => Type::UnresolvedNamed("ConvertError".to_string()),
+        }
+    }
+
+    /// CV11–CV16: each method is defined only where its policy means something,
+    /// so anywhere else is a compile error rather than a no-op. A method that
+    /// reads as if it did something always did.
+    fn check_convert_method(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
+        let src_is_int = matches!(prim_of(src), Some(Prim::Int { .. }));
+        let src_is_float = matches!(prim_of(src), Some(Prim::Float { .. }));
+        let target_is_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
+        let target_is_float = matches!(prim_of(&pc.target), Some(Prim::Float { .. }));
+        if !(src_is_int || src_is_float) {
+            self.errors.push(TypeError::InvalidConvert {
+                message: format!(
+                    "`{}` converts a number, but `{}` is not a numeric type",
+                    kind.surface(), src
+                ),
+                span: pc.span,
+            });
+            return;
+        }
+        let message = match kind {
+            // CV11: any numeric to any numeric.
+            ConvertKind::To if target_is_int || target_is_float => None,
+            ConvertKind::To => Some(format!(
+                "`to` produces a number, but the target `{}` is not a numeric type",
+                pc.target_name
+            )),
+            // CV14: never int→int — there is nothing to round.
+            ConvertKind::Round if src_is_int && target_is_int => Some(format!(
+                "`round` has nothing to round going from `{}` to `{}` — use `to`, `wrap` or `clamp`",
+                src, pc.target_name
+            )),
+            ConvertKind::Round if target_is_int || target_is_float => None,
+            ConvertKind::Round => Some(format!(
+                "`round` produces a number, but the target `{}` is not a numeric type",
+                pc.target_name
+            )),
+            // CV12/CV13: integers only. "What would a float wrap?" has no
+            // answer, and `clamp` would have to pick a fraction policy silently
+            // to stay total — the one thing its name can't say.
+            ConvertKind::Wrap | ConvertKind::Clamp if !src_is_int => Some(format!(
+                "`{}` works between integer types, but `{}` is a float — a float conversion names its fraction policy: `to`, `round`, `floor` or `ceil`",
+                kind.surface(), src
+            )),
+            ConvertKind::Wrap | ConvertKind::Clamp if !target_is_int => Some(format!(
+                "`{}` produces an integer, but the target `{}` is not an integer type",
+                kind.surface(), pc.target_name
+            )),
+            // CV15/CV16: float source, integer target.
+            ConvertKind::Floor | ConvertKind::Ceil if !src_is_float => Some(format!(
+                "`{}` rounds a float to an integer, but `{}` is not a float — for integer-to-integer use `to`, `wrap` or `clamp`",
+                kind.surface(), src
+            )),
+            ConvertKind::Floor | ConvertKind::Ceil if !target_is_int => Some(format!(
+                "`{}` produces an integer, but the target `{}` is not an integer type",
+                kind.surface(), pc.target_name
+            )),
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.errors.push(TypeError::InvalidConvert { message, span: pc.span });
+        }
+    }
+
     /// CV5–CV10: reject conversion forms applied to the wrong source/target kind.
     fn check_convert(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
+        if kind.is_method_form() {
+            return self.check_convert_method(src, kind, pc);
+        }
         let surface = kind.surface();
         let target_is_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
         let src_prim = prim_of(src);

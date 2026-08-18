@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The six conversion methods (type.primitives/CV11–CV16).
+//
+// These replaced the phrase-verb family — `truncate to T`, `saturate to T`,
+// `try convert to T` and the three `float to int` forms — and the spec is
+// explicit that they're new rules with new numbers, not renames. The mapping
+// isn't one-to-one: one form became three (`round`/`floor`/`ceil`), and `to`
+// yields a result where `try convert to` yielded an optional (#790).
+//
+// The shape rule is one sentence: anything that can fail yields a result,
+// anything total yields the value bare. So `wrap` and `clamp` hand back a `T`,
+// `to` and the float→int family hand back `T or ConvertError`, and `round` to a
+// float target is the one that depends on where it's going.
+
+test "type.primitives — CV11: `to` is exact or it fails" {
+    let n: i64 = 300
+    assert n.to<i32>()! == 300
+
+    // Doesn't fit: OutOfRange.
+    let over = n.to<u8>() catch _ => 0
+    assert over == 0
+
+    // A float with no fraction converts; one with a fraction is NotExact.
+    let whole: f64 = 42.0
+    assert whole.to<i32>()! == 42
+    let fraction: f64 = 2.5
+    let refused = fraction.to<i32>() catch _ => -1
+    assert refused == -1
+}
+
+func why_int(r: u8 or ConvertError) -> string {
+    let _ = r catch e => {
+        return e.message()
+    }
+    return "no failure"
+}
+
+func why_from_float(r: i32 or ConvertError) -> string {
+    let _ = r catch e => {
+        return e.message()
+    }
+    return "no failure"
+}
+
+test "type.primitives — CV11: `to` names which way it failed" {
+    let over: i64 = 300
+    assert why_int(over.to<u8>()) == "value doesn't fit the target type"
+
+    let fraction: f64 = 2.5
+    assert why_from_float(fraction.to<i32>()) == "value can't be represented exactly"
+
+    let nan: f64 = 0.0 / 0.0
+    assert why_from_float(nan.to<i32>()) == "value is NaN or infinity"
+}
+
+test "type.primitives — CV12/CV13: `wrap` keeps the low bits, `clamp` pins" {
+    let n: i64 = 300
+    assert n.wrap<u8>() == 44
+    assert n.clamp<u8>() == 255
+
+    let negative: i64 = -5
+    assert negative.clamp<u8>() == 0
+    assert negative.wrap<u8>() == 251
+}
+
+test "type.primitives — CV14: `round` to a float target can't fail" {
+    let n: i64 = 7
+    assert n.round<f32>() == 7.0
+    assert n.round<f64>() == 7.0
+
+    let wide: f64 = 1.5
+    assert wide.round<f32>() == 1.5
+}
+
+test "type.primitives — CV14: `round` to an integer target is nearest" {
+    let a: f64 = 2.4
+    let b: f64 = 2.6
+    assert a.round<i32>()! == 2
+    assert b.round<i32>()! == 3
+
+    // Ties go to even — IEEE's own "nearest", and the same rule `round` uses
+    // when the target is a float. One name, one mechanic.
+    let half: f64 = 2.5
+    let other_half: f64 = 3.5
+    assert half.round<i32>()! == 2
+    assert other_half.round<i32>()! == 4
+}
+
+test "type.primitives — CV15/CV16: `floor` and `ceil` pick a direction" {
+    let a: f64 = 2.99
+    assert a.floor<i32>()! == 2
+    assert a.ceil<i32>()! == 3
+
+    let negative: f64 = -2.01
+    assert negative.floor<i32>()! == -3
+    assert negative.ceil<i32>()! == -2
+}
+
+test "type.primitives — a conversion that can't fit fails rather than wrapping" {
+    let huge: f64 = 1.0e300
+    let a = huge.floor<i32>() catch _ => -1
+    assert a == -1
+    let b = huge.ceil<i32>() catch _ => -1
+    assert b == -1
+    let c = huge.round<i32>() catch _ => -1
+    assert c == -1
+}
+
+// `to` yields a result, so the whole error vocabulary works on it without the
+// conversion inventing anything: `!` asserts, `catch` handles, `try` propagates.
+func widen(n: i64) -> u16 or ConvertError {
+    let narrowed = try n.to<u16>()
+    return narrowed
+}
+
+test "type.primitives — `try` propagates a conversion failure" {
+    let ok = widen(500) catch _ => 0
+    assert ok == 500
+    let bad = widen(70000) catch _ => 0
+    assert bad == 0
+}
+
+func main() {}

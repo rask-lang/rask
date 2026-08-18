@@ -1816,6 +1816,12 @@ impl<'a> Printer<'a> {
                         self.format_expr(inner);
                         self.emit(&format!(" float to int {}", target));
                     }
+                    // The method forms (CV11–CV16) desugar into this node, so
+                    // they print back as what the author wrote.
+                    To | Wrap | Clamp | Round | Floor | Ceil => {
+                        self.format_expr(inner);
+                        self.emit(&format!(".{}<{}>()", kind.surface(), target));
+                    }
                 }
             }
             ExprKind::Spawn { body } => {

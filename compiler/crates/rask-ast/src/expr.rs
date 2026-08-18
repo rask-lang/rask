@@ -331,6 +331,21 @@ pub enum ConvertKind {
     FloatToIntSat,
     /// CV10: `try float to int T` — `T?`.
     TryFloatToInt,
+    /// CV11: `x.to<T>()` — exact, or `ConvertError`.
+    To,
+    /// CV12: `x.wrap<T>()` — keeps the low bits. Integers only.
+    Wrap,
+    /// CV13: `x.clamp<T>()` — pins to the target's range. Integers only.
+    Clamp,
+    /// CV14: `x.round<T>()` — nearest representable. Total to a float target,
+    /// fallible to an integer one.
+    Round,
+    /// CV15: `x.floor<T>()` — toward negative infinity. Float source, integer
+    /// target.
+    Floor,
+    /// CV16: `x.ceil<T>()` — toward positive infinity. Float source, integer
+    /// target.
+    Ceil,
 }
 
 impl ConvertKind {
@@ -347,6 +362,30 @@ impl ConvertKind {
         )
     }
 
+    /// CV11/CV14–CV16: does this form yield `T or ConvertError` rather than a
+    /// bare `T`? `round` is the one that depends on the target — rounding to a
+    /// float can't fail, rounding to an integer can (CV14).
+    pub fn yields_result(self, target_is_int: bool) -> bool {
+        match self {
+            ConvertKind::To | ConvertKind::Floor | ConvertKind::Ceil => true,
+            ConvertKind::Round => target_is_int,
+            _ => false,
+        }
+    }
+
+    /// The method spellings (CV11–CV16), which replaced the phrase verbs.
+    pub fn is_method_form(self) -> bool {
+        matches!(
+            self,
+            ConvertKind::To
+                | ConvertKind::Wrap
+                | ConvertKind::Clamp
+                | ConvertKind::Round
+                | ConvertKind::Floor
+                | ConvertKind::Ceil
+        )
+    }
+
     /// Surface form for diagnostics.
     pub fn surface(self) -> &'static str {
         match self {
@@ -356,6 +395,12 @@ impl ConvertKind {
             ConvertKind::FloatToInt => "float to int",
             ConvertKind::FloatToIntSat => "float to int (saturating)",
             ConvertKind::TryFloatToInt => "try float to int",
+            ConvertKind::To => "to",
+            ConvertKind::Wrap => "wrap",
+            ConvertKind::Clamp => "clamp",
+            ConvertKind::Round => "round",
+            ConvertKind::Floor => "floor",
+            ConvertKind::Ceil => "ceil",
         }
     }
 }

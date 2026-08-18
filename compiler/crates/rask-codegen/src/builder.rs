@@ -1076,10 +1076,10 @@ impl<'a> FunctionBuilder<'a> {
         let tgt_clif = mir_to_cranelift_type(target_ty)?;
 
         match kind {
-            // CV5: bit-preserving resize.
-            Truncate => Ok(Self::resize_int(builder, val, source_ty, target_ty)),
-            // CV6: clamp to target range.
-            Saturate => Ok(Self::saturate_int(builder, val, source_ty, target_ty)),
+            // CV5/CV12: bit-preserving resize.
+            Truncate | Wrap => Ok(Self::resize_int(builder, val, source_ty, target_ty)),
+            // CV6/CV13: clamp to target range.
+            Saturate | Clamp => Ok(Self::saturate_int(builder, val, source_ty, target_ty)),
             // CV8/CV9: float → int.
             FloatToInt => {
                 // Trapping conversion — NaN/inf/overflow abort the task.
@@ -1118,7 +1118,190 @@ impl<'a> FunctionBuilder<'a> {
                 let valid = Self::float_in_range(builder, val, target_ty);
                 Ok(Self::build_option(builder, payload, valid, tgt_clif))
             }
+            // CV14 to a float target is the one method form that can't fail:
+            // there's always a nearest representable float, and an out-of-range
+            // `f64` → `f32` gives ±infinity, which is IEEE's answer rather than
+            // an error.
+            Round if matches!(target_ty, MirType::F32 | MirType::F64) => {
+                Ok(Self::to_float(builder, val, source_ty, tgt_clif))
+            }
+            To | Round | Floor | Ceil => Ok(Self::lower_convert_result(
+                builder, val, source_ty, target_ty, tgt_clif, kind,
+            )),
         }
+    }
+
+    /// `ConvertError`'s variants, in declaration order — `stdlib/builtins.rk`.
+    /// Stored as the error payload of the result, which is how every fieldless
+    /// error enum travels.
+    const CONVERT_OK: i64 = 0;
+    const CONVERT_OUT_OF_RANGE: i64 = 1;
+    const CONVERT_NOT_EXACT: i64 = 2;
+    const CONVERT_NOT_FINITE: i64 = 3;
+
+    /// A numeric value at a float width, whatever it started as.
+    fn to_float(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        tgt_clif: Type,
+    ) -> Value {
+        let src_clif = builder.func.dfg.value_type(val);
+        if src_clif.is_float() {
+            return match (src_clif.bits(), tgt_clif.bits()) {
+                (a, b) if a == b => val,
+                (64, _) => builder.ins().fdemote(tgt_clif, val),
+                _ => builder.ins().fpromote(tgt_clif, val),
+            };
+        }
+        if source_ty.is_unsigned() {
+            builder.ins().fcvt_from_uint(tgt_clif, val)
+        } else {
+            builder.ins().fcvt_from_sint(tgt_clif, val)
+        }
+    }
+
+    /// CV11/CV14–CV16: the conversion that can fail, as `T or ConvertError`.
+    ///
+    /// One shape for all four: work out the converted value and a failure code
+    /// side by side, then branch once to write either `Ok(value)` or
+    /// `Err(variant)` into a result slot. The codes are applied in priority
+    /// order — a `NaN` is `NotFinite` rather than `OutOfRange`, even though it
+    /// fails the range test too — which is the order the interpreter uses.
+    fn lower_convert_result(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        target_ty: &MirType,
+        tgt_clif: Type,
+        kind: rask_ast::expr::ConvertKind,
+    ) -> Value {
+        use rask_ast::expr::ConvertKind::*;
+        let src_clif = builder.func.dfg.value_type(val);
+        let zero = builder.ins().iconst(types::I64, Self::CONVERT_OK);
+
+        let (payload, err_code) = if tgt_clif.is_float() {
+            // → float, and only `to` gets here: exact or it fails. An integer
+            // source is exact when the round trip survives; a float source is
+            // exact when narrowing loses nothing. NaN is neither — it converts
+            // fine, it just isn't equal to itself, so it's excused explicitly.
+            let converted = Self::to_float(builder, val, source_ty, tgt_clif);
+            let exact = if src_clif.is_float() {
+                let back = if src_clif.bits() > tgt_clif.bits() {
+                    builder.ins().fpromote(src_clif, converted)
+                } else {
+                    converted
+                };
+                let same = builder.ins().fcmp(FloatCC::Equal, back, val);
+                let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
+                builder.ins().bor(same, is_nan)
+            } else {
+                let back = if source_ty.is_unsigned() {
+                    builder.ins().fcvt_to_uint_sat(src_clif, converted)
+                } else {
+                    builder.ins().fcvt_to_sint_sat(src_clif, converted)
+                };
+                builder.ins().icmp(IntCC::Equal, back, val)
+            };
+            let not_exact = builder.ins().iconst(types::I64, Self::CONVERT_NOT_EXACT);
+            (converted, builder.ins().select(exact, zero, not_exact))
+        } else if src_clif.is_float() {
+            // float → int. The fraction is handled by the verb; what's left is
+            // whether the result is finite and whether it fits.
+            let rounded = match kind {
+                Floor => builder.ins().floor(val),
+                Ceil => builder.ins().ceil(val),
+                Round => builder.ins().nearest(val),
+                // `to` doesn't round — a fraction is a failure, checked below.
+                _ => val,
+            };
+            let converted = if target_ty.is_unsigned() {
+                builder.ins().fcvt_to_uint_sat(tgt_clif, rounded)
+            } else {
+                builder.ins().fcvt_to_sint_sat(tgt_clif, rounded)
+            };
+
+            let in_range = Self::float_in_range(builder, rounded, target_ty);
+            let out_of_range = builder.ins().iconst(types::I64, Self::CONVERT_OUT_OF_RANGE);
+            let mut code = builder.ins().select(in_range, zero, out_of_range);
+
+            if matches!(kind, To) {
+                // A fraction can't survive into an integer, so `to` fails on it
+                // rather than picking a rounding mode nobody asked for.
+                let truncated = builder.ins().trunc(val);
+                let whole = builder.ins().fcmp(FloatCC::Equal, truncated, val);
+                let not_exact = builder.ins().iconst(types::I64, Self::CONVERT_NOT_EXACT);
+                let fract_code = builder.ins().select(whole, code, not_exact);
+                code = fract_code;
+            }
+
+            // NaN and infinity outrank both: they're not a value that missed
+            // the range, they're not a value at all.
+            let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
+            let magnitude = builder.ins().fabs(val);
+            let inf = if src_clif == types::F32 {
+                let d = builder.ins().f64const(f64::INFINITY);
+                builder.ins().fdemote(types::F32, d)
+            } else {
+                builder.ins().f64const(f64::INFINITY)
+            };
+            let is_inf = builder.ins().fcmp(FloatCC::Equal, magnitude, inf);
+            let not_finite_cond = builder.ins().bor(is_nan, is_inf);
+            let not_finite = builder.ins().iconst(types::I64, Self::CONVERT_NOT_FINITE);
+            (converted, builder.ins().select(not_finite_cond, not_finite, code))
+        } else {
+            // int → int: the only way to lose the value is for it not to fit.
+            let converted = Self::resize_int(builder, val, source_ty, target_ty);
+            let in_range = Self::int_in_range(builder, val, source_ty, target_ty);
+            let out_of_range = builder.ins().iconst(types::I64, Self::CONVERT_OUT_OF_RANGE);
+            (converted, builder.ins().select(in_range, zero, out_of_range))
+        };
+
+        Self::build_convert_result(builder, payload, err_code, tgt_clif, target_ty)
+    }
+
+    /// Write `Ok(payload)` or `Err(variant)` into a result slot and hand back
+    /// its address, which is how every aggregate travels here.
+    fn build_convert_result(
+        builder: &mut ClifFunctionBuilder,
+        payload: Value,
+        err_code: Value,
+        tgt_clif: Type,
+        target_ty: &MirType,
+    ) -> Value {
+        let payload_size = target_ty.size().max(8);
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + payload_size,
+            3,
+        ));
+        let ok_block = builder.create_block();
+        let err_block = builder.create_block();
+        let merge = builder.create_block();
+        builder.ins().brif(err_code, err_block, &[], ok_block, &[]);
+
+        builder.switch_to_block(ok_block);
+        builder.seal_block(ok_block);
+        // Sub-word payloads widen into the 8-byte slot, same as an Option's.
+        let stored = if tgt_clif.is_int() && tgt_clif.bits() < 64 {
+            builder.ins().uextend(types::I64, payload)
+        } else {
+            payload
+        };
+        Self::build_ok(builder, slot, stored);
+        builder.ins().jump(merge, &[]);
+
+        builder.switch_to_block(err_block);
+        builder.seal_block(err_block);
+        // The code is the variant index plus one, so that zero can mean "no
+        // failure" — take the one back off before storing it.
+        let variant = builder.ins().iadd_imm(err_code, -1);
+        Self::build_err(builder, slot, variant);
+        builder.ins().jump(merge, &[]);
+
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        builder.ins().stack_addr(types::I64, slot, 0)
     }
 
     /// Bit-preserving integer resize. Widening extends by the source's signedness.

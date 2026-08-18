@@ -171,8 +171,8 @@ pub fn eval_convert(
     let bounds = int_bounds(target);
     match kind {
         // Wrapping truncation — same as the primitive `as` in eval_cast.
-        Truncate => eval_cast(value, target),
-        Saturate => {
+        Truncate | Wrap => eval_cast(value, target),
+        Saturate | Clamp => {
             let (min, max) = bounds.ok_or_else(|| cant_cast(value, target))?;
             let src = logical_i128(value).ok_or_else(|| cant_cast(value, target))?;
             Ok(store_int(target, src.clamp(min, max)))
@@ -203,6 +203,13 @@ pub fn eval_convert(
         TryConvert | TryFloatToInt => Err(MiriError::UnsupportedOperation(
             "`try convert`/`try float to int` is not supported in comptime evaluation".to_string(),
         )),
+        // Neither are the result-producing ones (CV11, CV14–CV16) — MiriValue
+        // has no result shape to hand back, so a comptime `x.to<T>()` has to
+        // wait for one rather than quietly answering the payload.
+        To | Round | Floor | Ceil => Err(MiriError::UnsupportedOperation(format!(
+            "`{}` is not supported in comptime evaluation",
+            kind.surface()
+        ))),
     }
 }
 
