@@ -796,13 +796,27 @@ impl<'a> MirLowerer<'a> {
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal
                     // defaults, and i64 holds every value i32 does.
-                    None => self
-                        .ctx
-                        .lookup_node_type(expr.id)
-                        .filter(|t| matches!(t,
-                            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64))
-                        .unwrap_or(MirType::I64),
+                    None => {
+                        // `let x: f64 = 1` — the checker settles the literal as a
+                        // float, and the integer filter below dropped that answer
+                        // and fell back to i64. An `Int` constant then went into
+                        // an f64 slot and Cranelift's verifier hit `unreachable`,
+                        // so a three-line program crashed the *compiler*. Take the
+                        // checker's answer: the literal is a float, so is the
+                        // constant.
+                        let settled = self.ctx.lookup_node_type(expr.id);
+                        if let Some(float_ty @ (MirType::F32 | MirType::F64)) = settled {
+                            return Ok((
+                                MirOperand::Constant(MirConst::Float(*val as f64)),
+                                float_ty,
+                            ));
+                        }
+                        settled
+                            .filter(|t| matches!(t,
+                                MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64))
+                            .unwrap_or(MirType::I64)
+                    }
                 };
                 Ok((MirOperand::Constant(MirConst::Int(*val)), ty))
             }
