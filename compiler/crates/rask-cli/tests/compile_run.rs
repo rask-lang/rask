@@ -1232,6 +1232,21 @@ fn error_mixed_signedness_arithmetic() {
     );
 }
 
+// #304: newline continuation is decided by the first token of the next line, and
+// `+` `-` `*` `<` `>` are excluded because each has a second meaning there. `+` has
+// no prefix reading at all, so a line starting with one isn't a continuation *or* a
+// statement — the parse error is the good outcome, and it's the one excluded
+// operator that gets to say so.
+#[test]
+fn error_newline_continuation_excludes_plus() {
+    let (failed, out) = compile_error_output("newline_continuation.rk");
+    assert!(failed, "a line starting with `+` must not compile: {}", out);
+    assert!(
+        out.contains("found '+'"),
+        "the error should point at the `+`: {}", out,
+    );
+}
+
 // #809 (found via #425): three bindings carried a fresh unconstrained type
 // variable rather than the type they hold, so a wrong annotation on any of them
 // unified happily and type-checked. The programs still ran correctly, which is
