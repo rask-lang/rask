@@ -324,9 +324,38 @@ static int parse_copy(const RaskStr *s, char *buf, size_t cap) {
     return 1;
 }
 
+// Which `ParseError` a failed parse is, in stdlib/string.rk's variant order:
+// 0 Empty, 1 Invalid, 2 OutOfRange.
+//
+// The rule is the interpreter's, so the two agree: trim, then an empty
+// remainder is Empty, a remainder made only of digits and `+-.` is OutOfRange
+// (it looked like a number and didn't fit), and anything else is Invalid.
+static int64_t parse_error_tag(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0, j = len;
+    while (i < j && (d[i] == ' ' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r')) i++;
+    while (j > i && (d[j-1] == ' ' || d[j-1] == '\t' || d[j-1] == '\n' || d[j-1] == '\r')) j--;
+    if (j <= i) return 0;                  // Empty
+    for (int64_t k = i; k < j; k++) {
+        char c = d[k];
+        int numeric = (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.';
+        if (!numeric) return 1;            // Invalid
+    }
+    return 2;                              // OutOfRange
+}
+
 // Parsing with a failure signal. Writes the value through `out` and returns 0
-// on success, 1 on failure. atoll/atof can't report anything, so "0" and
-// "notanumber" were indistinguishable and every parse looked successful (#472).
+// on success, or `1 + the ParseError tag` on failure. atoll/atof can't report
+// anything, so "0" and "notanumber" were indistinguishable and every parse
+// looked successful (#472).
+//
+// The tag rides in the status because the caller has nowhere else to get it:
+// codegen wrote the Result's Err tag and left the `ParseError` payload slot
+// untouched, so which failure the program matched on was whatever was on the
+// stack — usually `Empty`, and on a stack that had been used, a tag no variant
+// has, which reached the match's `unreachable` and killed the process with
+// SIGILL. `examples/13_string_operations.rk` died there.
 //
 // Matches the interpreter: surrounding whitespace is trimmed, then the whole
 // remaining string must be a number. Leading garbage, trailing garbage, an
@@ -334,15 +363,15 @@ static int parse_copy(const RaskStr *s, char *buf, size_t cap) {
 // a narrower target width — `"70000".parse()` into a u16 succeeds on both.
 int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
     char buf[64];
-    if (!parse_copy(s, buf, sizeof buf)) return 1;
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
 
     errno = 0;
     char *end = NULL;
     long long v = strtoll(buf, &end, 10);
-    if (end == buf) return 1;              // no digits consumed
-    if (errno == ERANGE) return 1;         // outside i64
+    if (end == buf) return 1 + parse_error_tag(s);       // no digits consumed
+    if (errno == ERANGE) return 1 + parse_error_tag(s);  // outside i64
     while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
-    if (*end != '\0') return 1;            // trailing garbage
+    if (*end != '\0') return 1 + parse_error_tag(s);     // trailing garbage
 
     *out = (int64_t)v;
     return 0;
@@ -350,15 +379,15 @@ int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
 
 int64_t rask_string_parse_float_into(const RaskStr *s, double *out) {
     char buf[64];
-    if (!parse_copy(s, buf, sizeof buf)) return 1;
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
 
     errno = 0;
     char *end = NULL;
     double v = strtod(buf, &end);
-    if (end == buf) return 1;
-    if (errno == ERANGE) return 1;
+    if (end == buf) return 1 + parse_error_tag(s);
+    if (errno == ERANGE) return 1 + parse_error_tag(s);
     while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
-    if (*end != '\0') return 1;
+    if (*end != '\0') return 1 + parse_error_tag(s);
 
     *out = v;
     return 0;

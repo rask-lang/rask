@@ -4838,11 +4838,23 @@ impl<'a> FunctionBuilder<'a> {
                         Self::build_ok(builder, dst_ss, value);
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err carries no payload — ParseError is fieldless.
+                        // `ParseError` is fieldless, but it still has three
+                        // variants — and the payload slot is where the program
+                        // reads which one. Writing only the Result's Err tag left
+                        // that slot holding whatever was on the stack: usually
+                        // `Empty` whatever the real failure was, and on a stack
+                        // that had been used, a tag no variant has, which reached
+                        // the match's `unreachable` and killed the process with
+                        // SIGILL. The runtime reports the variant as `1 + tag`,
+                        // so the tag is the status minus one.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
                         let one = builder.ins().iconst(types::I64, 1);
                         builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        let err_tag = builder.ins().iadd_imm(status, -1);
+                        builder.ins().stack_store(
+                            err_tag, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
+                        );
                         Self::zero_result_origin(builder, dst_ss);
                         builder.ins().jump(merge_block, &[]);
 
