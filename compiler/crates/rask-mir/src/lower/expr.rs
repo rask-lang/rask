@@ -4220,32 +4220,24 @@ impl<'a> MirLowerer<'a> {
                             }
 
                             // Map.new() with string keys → use string hash/eq.
-                            // Inspect the first generic arg of the Map type for
-                            // any string-flavored shape (resolved or unresolved),
-                            // OR fall back to the syntactic type name when the
-                            // user wrote `Map<string, _>.new()` explicitly.
+                            //
+                            // Only the *key* decides. The old test asked whether the
+                            // receiver's spelling contained "string" anywhere, so
+                            // `Map<Key, string>.new()` — struct key, string value —
+                            // picked the string-keyed constructor and the runtime
+                            // then read the key's 8 bytes as a char pointer. Lookups
+                            // hashed whatever that address held, so an insert and a
+                            // later get disagreed at random (#812).
                             let func_name = if func_name == "Map_new" {
-                                fn arg_is_string(arg: &rask_types::GenericArg) -> bool {
-                                    if let rask_types::GenericArg::Type(t) = arg {
-                                        match t.as_ref() {
-                                            rask_types::Type::String => true,
-                                            rask_types::Type::UnresolvedNamed(n) => n == "string",
-                                            _ => false,
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                }
-                                let has_string_keys = self.ctx.lookup_raw_type(expr.id)
-                                    .map(|ty| match ty {
-                                        rask_types::Type::Generic { args, .. }
-                                        | rask_types::Type::UnresolvedGeneric { args, .. } => {
-                                            args.first().map_or(false, arg_is_string)
-                                        }
-                                        _ => false,
-                                    })
-                                    .unwrap_or(false)
-                                    || (name.starts_with("Map<") && name.contains("string"));
+                                let from_checker = self.container_elem_mir_type(expr.id, 0);
+                                // The spelling still answers when the checker has
+                                // nothing for this node: `Map<string, _>.new()` inside
+                                // a stdlib body has no recorded type.
+                                let from_spelling = super::generic_args_of_str(name)
+                                    .and_then(|args| args.first().copied())
+                                    .map(|arg| self.ctx.resolve_type_str(arg));
+                                let has_string_keys = matches!(from_checker, Some(MirType::String))
+                                    || matches!(from_spelling, Some(MirType::String));
                                 if has_string_keys {
                                     "Map_new_string_keys".to_string()
                                 } else {

@@ -53,6 +53,28 @@ test "type.generics — a user type as the value" {
     assert got.n == 3
 }
 
+// A string *value* used to make the whole map string-keyed: the constructor
+// picked `Map_new_string_keys` whenever the receiver's spelling mentioned
+// "string" anywhere, key or value. String hashing reads a 16-byte string header
+// out of the key slot, so an 8-byte key was hashed and compared together with
+// whatever sat next to it — and since the map seeds its hash per process, an
+// insert and a later get agreed or didn't depending on the run. Twelve keys make
+// the disagreement certain instead of occasional.
+test "type.generics — an int key with a string value hashes as an int" {
+    mut m = Map<i64, string>.new()
+    mut i = 0
+    while i < 12 {
+        m.insert(i, "v{i}")
+        i = i + 1
+    }
+    assert m.len() == 12
+    i = 0
+    while i < 12 {
+        assert (m.get(i) ?? "?") == "v{i}"
+        i = i + 1
+    }
+}
+
 // A type *parameter* still has to stay open — the fix must not resolve `T` to
 // something, or a generic function couldn't take a literal.
 func first_or<T>(xs: Vec<T>, fallback: T) -> T {
