@@ -1,25 +1,28 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // 128-bit arithmetic (type.primitives: `i128`/`u128`, 16 bytes, ±2¹²⁷ / 0..2¹²⁸).
 //
-// The interpreter is right now; native still rejects these. Registered as a known
-// divergence so the gate says when native catches up (#762).
+// Both backends now hold real 128-bit values. The interpreter got there first
+// (#762): it already had `Value::Int128`/`Value::Uint128` with checked ops
+// behind them, and what was missing was ever *producing* one — `IntKind` is a
+// width tag on an i64 payload with no 128-bit member, so `let a: i128 = …` bound
+// a plain `Value::Int` and `a + a` wrapped at 64 bits. `i64::MAX + i64::MAX`
+// came back as -2. Silently, in a language whose arithmetic is otherwise
+// checked.
 //
-// The interpreter had all the 128-bit arithmetic already — `Value::Int128` /
-// `Value::Uint128` with checked ops behind them. What was missing was ever
-// *producing* one: `IntKind` is a width tag on an i64 payload with no 128-bit
-// member, so `let a: i128 = …` bound a plain `Value::Int` and `a + a` wrapped at
-// 64 bits. `i64::MAX + i64::MAX` came back as -2. Silently, in a language whose
-// arithmetic is otherwise checked.
+// Native followed. `MirType` had no 128-bit member either, so `i128` lowered as
+// an i64 and the overflow check fired at 64 bits — the same program panicked
+// where the interpreter wrapped. Now there's `MirType::I128`/`U128` at 16 bytes
+// mapped to Cranelift's own `I128`: add and sub lower there already, and
+// multiply, divide and remainder go through runtime helpers, because Cranelift
+// has no lowering rule for `smul_overflow`/`umul_overflow` or for any of
+// `sdiv`/`udiv`/`srem`/`urem` at that width.
 //
-// Natively `i128` has no MIR type of its own, so it lowers as an i64 and the
-// overflow check fires at 64 bits: the same program panics instead. Loud rather
-// than silent, which is why the interpreter went first.
-//
-// Every value here is written at or below `u64::MAX`, and the results are checked
-// as *relationships* rather than literals — the lexer still parses a literal into
-// 64 bits, so a number past that boundary can't be written on either side of the
-// comparison. That half has to wait for native: widening the literal first would
-// turn "doesn't compile" into "compiles and truncates".
+// Every value here is written at or below `u64::MAX`, and the results past that
+// boundary are checked as *relationships* rather than literals — the lexer still
+// parses a literal into 64 bits, so a number above `u64::MAX` can't be written
+// on either side of a comparison. That's the remaining half of #762, and it
+// comes last on purpose: widening the lexer first would turn today's honest
+// "doesn't compile" into a program that compiles and truncates.
 
 test "type.primitives — i128 addition past the 64-bit boundary" {
     let a: i128 = 9223372036854775807
@@ -64,6 +67,70 @@ test "type.primitives — 128-bit values compare" {
     let small: i128 = 5
     assert big > small
     assert small < big
+}
+
+// Division and remainder have no Cranelift lowering at 128 bits at all, so
+// natively these are runtime calls rather than instructions.
+test "type.primitives — 128-bit division and remainder past the boundary" {
+    let a: i128 = 9223372036854775807
+    let wide = a * 4
+    assert wide / 4 == a
+    assert wide % 4 == 0
+    assert (wide + 3) % 4 == 3
+    assert (wide + 3) / 4 == a
+}
+
+test "type.primitives — signed 128-bit division truncates toward zero" {
+    let a: i128 = 9223372036854775807
+    let wide = 0 - (a * 4)
+    assert wide / 4 == 0 - a
+    assert (wide - 3) / 4 == 0 - a
+    assert (wide - 3) % 4 == -3
+}
+
+test "type.primitives — u128 division stays unsigned" {
+    let u: u128 = 18446744073709551615
+    let wide = u * 4
+    assert wide / 4 == u
+    assert wide / u == 4
+    assert wide % u == 0
+}
+
+// `abs` is one of exactly two methods the checker accepts at this width (the
+// other is `to_string`). It used to ride the `i64_abs` symbol, so a value past
+// the boundary came back truncated: `-18446744073709551614` gave -2.
+test "type.primitives — abs on a 128-bit value keeps its magnitude" {
+    let a: i128 = 9223372036854775807
+    let wide = a + a
+    let negative = 0 - wide
+    assert negative < 0
+    assert negative.abs() == wide
+    assert wide.abs() == wide
+}
+
+// Rendering needs its own path too: the 64-bit helpers take the low half and
+// print a different number.
+test "type.primitives — a 128-bit value renders all of its digits" {
+    let a: i128 = 9223372036854775807
+    let sum = a + a
+    assert "{sum}" == "18446744073709551614"
+    assert sum.to_string() == "18446744073709551614"
+
+    let u: u128 = 18446744073709551615
+    assert "{u + u}" == "36893488147419103230"
+
+    let negative: i128 = 0 - sum
+    assert "{negative}" == "-18446744073709551614"
+}
+
+test "type.primitives — bitwise and shifts work at 128 bits" {
+    let one: i128 = 1
+    let high = one << 100
+    assert high > 0
+    assert high >> 100 == one
+    assert high & one == 0
+    assert (high | one) - high == one
+    assert high ^ high == 0
 }
 
 func main() {}

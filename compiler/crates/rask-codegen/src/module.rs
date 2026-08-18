@@ -57,6 +57,11 @@ impl CodeGenerator {
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
         let mut flag_builder = settings::builder();
         let _ = flag_builder.set("opt_level", "speed");
+        // Without this Cranelift refuses an `i128` in any signature, including
+        // the runtime imports 128-bit arithmetic calls into. The extension is
+        // LLVM's own convention — a register pair on SysV — which is what a C
+        // compiler already does with `__int128`, so the two agree (#762).
+        let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
         let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
@@ -97,6 +102,8 @@ impl CodeGenerator {
 
         let mut flag_builder = settings::builder();
         let _ = flag_builder.set("opt_level", "speed");
+        // See `new` — 128-bit values in signatures need this (#762).
+        let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
         // Set is_pic for position-independent code on relevant targets
         if matches!(target.operating_system, target_lexicon::OperatingSystem::Linux) {
             let _ = flag_builder.set("is_pic", "true");
@@ -288,6 +295,8 @@ impl CodeGenerator {
             ("rask_eprint_f32", Some(types::F32)),
             ("rask_eprint_char", Some(types::I32)),
             ("rask_eprint_u64", Some(types::I64)),
+            ("rask_eprint_i128", Some(types::I128)),
+            ("rask_eprint_u128", Some(types::I128)),
             ("rask_eprint_newline", None),
         ] {
             let mut sig = self.module.make_signature();
@@ -378,6 +387,27 @@ impl CodeGenerator {
                 .declare_function("rask_assert_fail_cmp_i64", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("assert_fail_cmp_i64".to_string(), id);
+        }
+
+        // assert_fail_cmp_i128 / _u128 — same shape, 128-bit operands. The i64
+        // helper can't stand in: narrowing to report the values would print
+        // exactly the wrong ones, since a 128-bit assertion is about values
+        // that don't fit 64 bits (#762).
+        for (mir_name, c_name) in [
+            ("assert_fail_cmp_i128", "rask_assert_fail_cmp_i128"),
+            ("assert_fail_cmp_u128", "rask_assert_fail_cmp_u128"),
+        ] {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I128)); // left
+            sig.params.push(AbiParam::new(types::I128)); // right
+            sig.params.push(AbiParam::new(types::I64));  // op str ptr
+            sig.params.push(AbiParam::new(types::I64));  // file ptr
+            sig.params.push(AbiParam::new(types::I32));  // line
+            sig.params.push(AbiParam::new(types::I32));  // col
+            let id = self.module
+                .declare_function(c_name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(mir_name.to_string(), id);
         }
 
         // assert_fail_cmp_char(left: i64, right: i64, op: ptr, file: ptr, line: i32, col: i32)
@@ -657,6 +687,47 @@ impl CodeGenerator {
                 .declare_function("rask_i64_to_string", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_i64_to_string".to_string(), id);
+        }
+
+        // 128-bit helpers (#762). Cranelift lowers `iadd`/`isub` and their
+        // overflow forms at `I128`, but not `smul_overflow`/`umul_overflow` and
+        // not division or remainder at all — those come through the runtime,
+        // returning a status the caller turns into the usual panic.
+        for name in [
+            "rask_i128_mul", "rask_u128_mul",
+            "rask_i128_div", "rask_i128_rem",
+            "rask_u128_div", "rask_u128_rem",
+        ] {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I128)); // a
+            sig.params.push(AbiParam::new(types::I128)); // b
+            sig.params.push(AbiParam::new(types::I64));  // out ptr
+            sig.returns.push(AbiParam::new(types::I32)); // 0 ok, 1 div-zero, 2 overflow
+            let id = self.module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
+        }
+
+        // rask_i128_to_string / rask_u128_to_string(out: *RaskStr, val: i128)
+        for name in ["rask_i128_to_string", "rask_u128_to_string"] {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));  // out ptr
+            sig.params.push(AbiParam::new(types::I128)); // val
+            let id = self.module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
+        }
+
+        // rask_print_i128 / rask_print_u128(val: i128) -> void
+        for name in ["rask_print_i128", "rask_print_u128"] {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I128));
+            let id = self.module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
         }
 
         // rask_bool_to_string(out: *RaskStr, val: i64) -> void

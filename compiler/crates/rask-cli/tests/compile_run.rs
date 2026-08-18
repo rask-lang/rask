@@ -4548,3 +4548,31 @@ fn small_fence_keeps_copy_and_unique() {
         assert_eq!(stdout, "6 7\n42\n30 3\n", "{backend}: {stdout}");
     }
 }
+
+// #762: 128-bit arithmetic is checked like every other width, and the mechanism
+// is different enough to pin on its own. Cranelift has no `umul_overflow` rule
+// at `I128` and no division lowering at all, so multiply, divide and remainder
+// are runtime calls handing back a status the caller branches on — a helper that
+// quietly returned a wrapped result would look identical to a correct one in
+// every test that doesn't overflow.
+#[test]
+fn i128_overflow_and_div_zero_panic_on_both_backends() {
+    for (fixture, needle) in [
+        ("i128_overflow_panics.rk", "overflow"),
+        ("i128_div_zero_panics.rk", "division by zero"),
+    ] {
+        for backend in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(backend, fixture);
+            let out = format!("{}{}", stdout, stderr);
+            assert_ne!(code, 0, "{backend} {fixture} should not succeed: {out}");
+            assert!(
+                out.contains(needle),
+                "{backend} {fixture} should say what went wrong: {out}",
+            );
+            assert!(
+                !out.contains("unreachable"),
+                "{backend} {fixture} must stop at the bad operation: {out}",
+            );
+        }
+    }
+}

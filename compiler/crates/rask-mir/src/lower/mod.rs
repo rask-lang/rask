@@ -589,11 +589,13 @@ impl<'a> MirContext<'a> {
             "i16" => MirType::I16,
             "i32" => MirType::I32,
             "i64" => MirType::I64,
+            "i128" => MirType::I128,
             "isize" => MirType::isize_ty(),
             "u8" => MirType::U8,
             "u16" => MirType::U16,
             "u32" => MirType::U32,
             "u64" => MirType::U64,
+            "u128" => MirType::U128,
             "usize" => MirType::usize_ty(),
             "f32" => MirType::F32,
             "f64" => MirType::F64,
@@ -749,11 +751,13 @@ impl<'a> MirContext<'a> {
             Type::I8 => MirType::I8,
             Type::I16 => MirType::I16,
             Type::I32 => MirType::I32,
-            Type::I64 | Type::I128 => MirType::I64,
+            Type::I64 => MirType::I64,
+            Type::I128 => MirType::I128,
             Type::U8 => MirType::U8,
             Type::U16 => MirType::U16,
             Type::U32 => MirType::U32,
-            Type::U64 | Type::U128 => MirType::U64,
+            Type::U64 => MirType::U64,
+            Type::U128 => MirType::U128,
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
@@ -4258,6 +4262,13 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
         }
     }
 
+    // `abs` at 128 bits answers at 128 bits. It isn't stub-declared, so without
+    // this it took the i64 default below and the result was truncated on the way
+    // out of the call — `(-18446744073709551614).abs()` printed -2 (#762).
+    if func_name == "i128_abs" {
+        return MirType::I128;
+    }
+
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
@@ -4421,19 +4432,24 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 /// become per-width when `std.bits` lands — `(0 as i32).count_zeros()` is 32,
 /// not 64, so those methods can't share one symbol.
 ///
-/// `i128`/`u128` ride there too, which is only honest because 128-bit is 64-bit
-/// everywhere else today: a literal past `u64::MAX` doesn't lex, and arithmetic
-/// wraps at 64 bits on the interpreter (#762). Leaving them out failed lowering
-/// outright, so `a.abs()` on an `i128` didn't compile while the interpreter
-/// answered — a divergence with no upside (#794). They need their own symbols
-/// the moment 128-bit becomes real, same as the narrow widths above.
+/// 128-bit has its own prefix. It used to ride the 64-bit symbols, which was
+/// defensible while nothing could build a value wider than 64 bits — that stops
+/// being true once arithmetic is real, and `abs` on a value past the boundary
+/// truncated (#762, #794). Only `abs` and `to_string` need an `i128_*` symbol
+/// today; those are the two methods the checker accepts at that width.
 pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::F32 | Type::F64 => Some("f64"),
         Type::Bool => Some("bool"),
         Type::Char => Some("char"),
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Some("i64"),
-        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Some("u64"),
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        // 128-bit dispatches on its own prefix. It used to ride the 64-bit
+        // symbols, which was defensible only while no value needed more than 64
+        // bits — `abs` on an `i128` truncated the moment that stopped being
+        // true (#762, #794).
+        Type::I128 => Some("i128"),
+        Type::U128 => Some("u128"),
         // A slice dispatches like the container it came from: `parts[2..]
         // .join(" ")` is `Vec_join`. Without this the call fell through to the
         // name-policy table, which guesses "a two-argument `join` means Vec" —

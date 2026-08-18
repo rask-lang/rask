@@ -1324,6 +1324,12 @@ impl<'a> FunctionBuilder<'a> {
             MirType::U16 => (0, u16::MAX as i128),
             MirType::U32 => (0, u32::MAX as i128),
             MirType::U64 => (0, u64::MAX as i128),
+            MirType::I128 => (i128::MIN, i128::MAX),
+            // `u128::MAX` doesn't fit the `i128` this returns. Nothing narrows
+            // *into* a `u128` today — the only conversions that reach here are
+            // widening, which can't clamp — so the ceiling stands in rather
+            // than widening the whole bounds API for one unreachable case.
+            MirType::U128 => (0, i128::MAX),
             _ => (i64::MIN as i128, i64::MAX as i128),
         }
     }
@@ -1335,6 +1341,7 @@ impl<'a> FunctionBuilder<'a> {
                 MirConst::String(_) => "rask_print_string",
                 MirConst::Bool(_) => "rask_print_bool",
                 MirConst::Float(_) => "rask_print_f64",
+                MirConst::Int128(_) => "rask_print_i128",
                 _ => "rask_print_i64",
             },
             MirOperand::Local(id) => {
@@ -1346,6 +1353,10 @@ impl<'a> FunctionBuilder<'a> {
                         MirType::Char => "rask_print_char",
                         MirType::String => "rask_print_string",
                         MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => "rask_print_u64",
+                        // The 64-bit printers take the low half and print a
+                        // different number (#762).
+                        MirType::I128 => "rask_print_i128",
+                        MirType::U128 => "rask_print_u128",
                         _ => "rask_print_i64",
                     }
                 } else {
@@ -1367,6 +1378,17 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Look up the MirType of an operand from the locals table.
+    /// Is this operand 128-bit — the one scalar width that doesn't fit a word?
+    fn operand_is_wide(operand: &MirOperand, locals: &[rask_mir::MirLocal]) -> bool {
+        match operand {
+            MirOperand::Constant(MirConst::Int128(_)) => true,
+            _ => matches!(
+                Self::operand_mir_type(operand, locals),
+                Some(MirType::I128 | MirType::U128)
+            ),
+        }
+    }
+
     fn operand_mir_type(operand: &MirOperand, locals: &[rask_mir::MirLocal]) -> Option<MirType> {
         match operand {
             MirOperand::Local(id) => locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
@@ -1445,6 +1467,16 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         match rvalue {
             MirRValue::Use(op) => {
+                // A 64-bit constant going into an unsigned 128-bit slot is a
+                // bit pattern, not a number — `u64::MAX` is carried as -1 —
+                // and the generic constant path sign-extends, which would make
+                // it `u128::MAX`. The destination's MIR type is the only place
+                // the signedness is still visible at this point (#762).
+                if let (Some(MirType::U128), MirOperand::Constant(MirConst::Int(n))) =
+                    (dst_mir_ty, op)
+                {
+                    return Ok(Self::iconst_i128(builder, *n as u64 as i128));
+                }
                 Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
@@ -2723,6 +2755,22 @@ impl<'a> FunctionBuilder<'a> {
             // div/shift guards branch to a panic block. Type is the
             // reconciled operand type, so checks are width-correct.
             let int_ty = builder.func.dfg.value_type(lhs_val);
+            // Cranelift lowers `iadd`/`isub` and their overflow forms at 128
+            // bits, so checked `+` and `-` need nothing special. `imul`'s
+            // overflow forms have no rule — the verifier rejects them outright —
+            // and division and remainder have no rule at all, so those three go
+            // through the runtime and come back with a status (#762).
+            if int_ty == types::I128 && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Mod) {
+                let (name, overflow_msg) = match (op, is_unsigned) {
+                    (BinOp::Mul, false) => ("rask_i128_mul", OV_MUL),
+                    (BinOp::Mul, true) => ("rask_u128_mul", OV_MUL),
+                    (BinOp::Div, false) => ("rask_i128_div", OV_DIV_OVERFLOW),
+                    (BinOp::Div, true) => ("rask_u128_div", OV_DIV_OVERFLOW),
+                    (BinOp::Mod, false) => ("rask_i128_rem", OV_DIV_OVERFLOW),
+                    _ => ("rask_u128_rem", OV_DIV_OVERFLOW),
+                };
+                return Self::emit_i128_helper(builder, ctx, name, lhs_val, rhs_val, overflow_msg);
+            }
             match op {
                 BinOp::Add => {
                     let (res, of) = if is_unsigned {
@@ -3854,13 +3902,16 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                 builder.ins().call(*assert_fn, &[]);
             }
-        } else if func.name == "assert_fail_cmp_i64" || func.name == "assert_fail_cmp_char" {
+        } else if func.name == "assert_fail_cmp_i64" || func.name == "assert_fail_cmp_char"
+            || func.name == "assert_fail_cmp_i128" || func.name == "assert_fail_cmp_u128" {
             // Comparison assert failure with scalar values: args = [left, right, op_str].
-            // Same shape for both; the char helper formats the codepoints as
-            // characters instead of numbers.
+            // Same shape for all of them; the char helper formats the codepoints
+            // as characters, and the 128-bit pair takes its operands at their
+            // own width so the reported numbers are the real ones.
             if args.len() >= 3 {
-                let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
-                let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
+                let arg_ty = if func.name.ends_with("128") { types::I128 } else { types::I64 };
+                let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
+                let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
@@ -4062,9 +4113,21 @@ impl<'a> FunctionBuilder<'a> {
         let sig = &builder.func.dfg.signatures[ext_func.signature];
         let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
 
+        // A string out-param function is declared with one more parameter than
+        // it's called with, and the extra one goes in *front*. Matching arg `i`
+        // against param `i` therefore reads every argument's type one slot too
+        // early. That was invisible while every such signature was all-`i64`;
+        // `i128_to_string(out: ptr, val: i128)` made it visible by truncating
+        // the value to the out pointer's width (#762).
+        let injects_out_param = param_types.len() == args.len() + 1
+            && ctx.adapt_table.get(func.name.as_str())
+                .map(|(a, _)| *a == ArgAdapt::StringOutParam)
+                .unwrap_or(false);
+        let param_offset = usize::from(injects_out_param);
+
         let mut arg_vals = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
-            let expected = param_types.get(i).copied();
+            let expected = param_types.get(i + param_offset).copied();
             let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
             let actual = builder.func.dfg.value_type(val);
             if let Some(exp) = expected {
@@ -4080,11 +4143,7 @@ impl<'a> FunctionBuilder<'a> {
 
         // Inject string out-param for extern C functions that use the
         // out-param ABI (declared with N+1 params, called with N args)
-        let needs_out_param = param_types.len() == arg_vals.len() + 1
-            && ctx.adapt_table.get(func.name.as_str())
-                .map(|(a, _)| *a == ArgAdapt::StringOutParam)
-                .unwrap_or(false);
-        let out_param_slot = if needs_out_param {
+        let out_param_slot = if injects_out_param {
             let ss = dst
                 .and_then(|id| ctx.stack_slot_map.get(id))
                 .map(|(ss, _)| *ss)
@@ -4167,14 +4226,23 @@ impl<'a> FunctionBuilder<'a> {
         let mut arg_vals = Vec::with_capacity(args.len());
         for (arg_idx, a) in args.iter().enumerate() {
             // string_append_cstr: second arg is raw char*, skip RaskString wrapping
+            // Everything reaches a runtime call as a word unless it's 128-bit,
+            // which is the one scalar width that doesn't fit one. Forcing that
+            // to `i64` here truncated the value before the signature loop below
+            // ever saw it (#762).
+            let want = if Self::operand_is_wide(a, ctx.locals) {
+                types::I128
+            } else {
+                types::I64
+            };
             let val = if func.name == "string_append_cstr" && arg_idx == 1 {
                 Self::lower_string_const_as_cstr(builder, a, ctx)?
             } else {
-                Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?
+                Self::lower_operand_typed(builder, a, Some(want), ctx)?
             };
             let actual = builder.func.dfg.value_type(val);
-            let converted = if actual != types::I64 && actual.is_int() {
-                Self::convert_value(builder, val, actual, types::I64, None)
+            let converted = if actual != want && actual.is_int() {
+                Self::convert_value(builder, val, actual, want, None)
             } else {
                 val
             };
@@ -4838,9 +4906,49 @@ impl<'a> FunctionBuilder<'a> {
         Self::guard_overflow(builder, ctx, both, OV_DIV_OVERFLOW);
     }
 
+    /// Call a 128-bit runtime helper and turn its status into the usual panic.
+    ///
+    /// The helper writes its result through an out pointer and returns 0, 1
+    /// (divide by zero) or 2 (overflow) rather than trapping, so the panic
+    /// happens here where the span is — the same messages the narrower widths
+    /// use (type.overflow OV1–OV4).
+    fn emit_i128_helper(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        name: &str,
+        lhs: Value,
+        rhs: Value,
+        overflow_msg: &str,
+    ) -> CodegenResult<Value> {
+        let func_ref = *ctx.func_refs.get(name)
+            .ok_or_else(|| CodegenError::FunctionNotFound(name.to_string()))?;
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, 16, 4,
+        ));
+        let out_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+        let call = builder.ins().call(func_ref, &[lhs, rhs, out_ptr]);
+        let status = builder.inst_results(call)[0];
+
+        let one = builder.ins().iconst(types::I32, 1);
+        let div_zero = builder.ins().icmp(IntCC::Equal, status, one);
+        Self::guard_overflow(builder, ctx, div_zero, OV_DIV_ZERO);
+        let two = builder.ins().iconst(types::I32, 2);
+        let overflowed = builder.ins().icmp(IntCC::Equal, status, two);
+        Self::guard_overflow(builder, ctx, overflowed, overflow_msg);
+
+        Ok(builder.ins().stack_load(types::I128, slot, 0))
+    }
+
     /// SH1: panic when the shift amount is >= the operand's bit width.
     /// Unsigned comparison also catches negative amounts.
     fn guard_shift(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, amount: Value, ty: Type) {
+        // `iconst` stops at 64 bits, so a 128-bit width is built from halves.
+        if ty == types::I128 {
+            let bits = Self::iconst_i128(builder, ty.bits() as i128);
+            let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
+            Self::guard_overflow(builder, ctx, bad, OV_SHIFT);
+            return;
+        }
         let bits = builder.ins().iconst(ty, ty.bits() as i64);
         let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
         Self::guard_overflow(builder, ctx, bad, OV_SHIFT);
@@ -6306,6 +6414,17 @@ impl<'a> FunctionBuilder<'a> {
         Self::lower_operand_typed(builder, op, Some(types::I64), ctx)
     }
 
+    /// Materialize a 128-bit constant.
+    ///
+    /// Cranelift's `iconst` only takes up to 64 bits, so a 128-bit value is
+    /// built as two halves joined with `iconcat` — low word first, which is
+    /// the order `iconcat` takes them in.
+    fn iconst_i128(builder: &mut ClifFunctionBuilder, n: i128) -> Value {
+        let lo = builder.ins().iconst(types::I64, n as u64 as i64);
+        let hi = builder.ins().iconst(types::I64, (n >> 64) as u64 as i64);
+        builder.ins().iconcat(lo, hi)
+    }
+
     fn lower_operand_typed(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
@@ -6342,8 +6461,17 @@ impl<'a> FunctionBuilder<'a> {
                 match const_val {
                     MirConst::Int(n) => {
                         let ty = expected_ty.unwrap_or(types::I64);
+                        if ty == types::I128 {
+                            // `iconst` has no I128 form. A constant that got
+                            // here as a 64-bit one is in a 128-bit slot because
+                            // something widened it, and only a signed operand
+                            // reaches this path — MIR emits `Int128` where the
+                            // signedness mattered.
+                            return Ok(Self::iconst_i128(builder, *n as i128));
+                        }
                         Ok(builder.ins().iconst(ty, *n))
                     }
+                    MirConst::Int128(n) => Ok(Self::iconst_i128(builder, *n)),
                     MirConst::Float(f) => {
                         // Only use expected_ty if it's a float type; ignore int expected types
                         let ty = match expected_ty {

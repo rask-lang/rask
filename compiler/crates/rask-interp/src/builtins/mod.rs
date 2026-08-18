@@ -110,6 +110,22 @@ impl Interpreter {
             }
         }
 
+        // A narrower receiver against a 128-bit argument widens, the same way
+        // the 128-bit methods already widen a narrow argument. `0 - big` is
+        // written with a plain literal on the left, and dispatching on the
+        // receiver alone sent it to the 64-bit path, which then rejected the
+        // argument: "expected int, got i128" for arithmetic the checker had
+        // already accepted (#762).
+        if let Value::Int(a, k) = &receiver {
+            match args.first() {
+                Some(Value::Int128(_)) => return self.call_int128_method(*a as i128, method, &args),
+                Some(Value::Uint128(_)) if k.is_unsigned() || *a >= 0 => {
+                    return self.call_uint128_method(*a as u128, method, &args)
+                }
+                _ => {}
+            }
+        }
+
         match &receiver {
             Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),

@@ -791,7 +791,8 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::Isize) => MirType::isize_ty(),
                     Some(IntSuffix::Usize) => MirType::usize_ty(),
-                    Some(IntSuffix::I128 | IntSuffix::U128) => MirType::I64,
+                    Some(IntSuffix::I128) => MirType::I128,
+                    Some(IntSuffix::U128) => MirType::U128,
                     // An unsuffixed literal the checker didn't pin down takes the
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal
@@ -814,11 +815,35 @@ impl<'a> MirLowerer<'a> {
                         settled
                             .filter(|t| matches!(t,
                                 MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64))
+                                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                                | MirType::I128 | MirType::U128))
                             .unwrap_or(MirType::I64)
                     }
                 };
-                Ok((MirOperand::Constant(MirConst::Int(*val)), ty))
+                // A literal too big for `i64` gets `U64ByMagnitude` from the
+                // lexer — that's about how it was *written*, not what it is. If
+                // the checker settled the node at 128 bits, take that: otherwise
+                // `let u: u128 = 18446744073709551615` became a `u64` whose bit
+                // pattern is -1 and then sign-extended to `u128::MAX` (#762).
+                let ty = if matches!(suffix, None | Some(IntSuffix::U64ByMagnitude)) {
+                    match self.ctx.lookup_node_type(expr.id) {
+                        Some(wide @ (MirType::I128 | MirType::U128)) => wide,
+                        _ => ty,
+                    }
+                } else {
+                    ty
+                };
+                // A 128-bit slot needs the widening decided here, where the
+                // signedness is still known. The lexer carries a literal as a
+                // 64-bit *bit pattern* — `u64::MAX` arrives as -1 — so an
+                // unsigned target reads the payload back as `u64` first, or the
+                // constant would sign-extend to all ones (#762).
+                let konst = match ty {
+                    MirType::I128 => MirConst::Int128(*val as i128),
+                    MirType::U128 => MirConst::Int128(*val as u64 as i128),
+                    _ => MirConst::Int(*val),
+                };
+                Ok((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, suffix) => {
                 let ty = match suffix {
@@ -3372,12 +3397,24 @@ impl<'a> MirLowerer<'a> {
                         || matches!(right_ty, MirType::F32 | MirType::F64);
                     let is_char = matches!(left_ty, MirType::Char)
                         && matches!(right_ty, MirType::Char);
+                    // A 128-bit comparison gets its own helper: narrowing the
+                    // operands to report them would print the wrong numbers,
+                    // since the values worth asserting about at that width are
+                    // the ones i64 can't hold (#762).
+                    let is_i128 = matches!(left_ty, MirType::I128)
+                        || matches!(right_ty, MirType::I128);
+                    let is_u128 = matches!(left_ty, MirType::U128)
+                        || matches!(right_ty, MirType::U128);
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
                     } else if is_float {
                         "assert_fail_cmp_f64"
                     } else if is_char {
                         "assert_fail_cmp_char"
+                    } else if is_u128 {
+                        "assert_fail_cmp_u128"
+                    } else if is_i128 {
+                        "assert_fail_cmp_i128"
                     } else {
                         "assert_fail_cmp_i64"
                     };
@@ -3388,7 +3425,15 @@ impl<'a> MirLowerer<'a> {
                     let (left_op, right_op) = if is_string {
                         (left_op, right_op)
                     } else {
-                        let want = if is_float { MirType::F64 } else { MirType::I64 };
+                        let want = if is_float {
+                            MirType::F64
+                        } else if is_u128 {
+                            MirType::U128
+                        } else if is_i128 {
+                            MirType::I128
+                        } else {
+                            MirType::I64
+                        };
                         (
                             self.widen_for_assert_helper(left_op, &left_ty, &want),
                             self.widen_for_assert_helper(right_op, &right_ty, &want),
@@ -6441,6 +6486,10 @@ impl<'a> MirLowerer<'a> {
                     // Unsigned values print unsigned. Shared with the signed
                     // helper, `u8` 200 came out as -56 (#326).
                     MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
+                    // 128-bit values need their own renderers: the 64-bit ones
+                    // take the low half and print a different number (#762).
+                    MirType::I128 => "i128_to_string",
+                    MirType::U128 => "u128_to_string",
                     MirType::F64 => "f64_to_string",
                     MirType::F32 => "f32_to_string",
                     MirType::Bool => "bool_to_string",

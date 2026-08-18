@@ -4,7 +4,7 @@ AR ?= ar
 
 SRCS = runtime.c alloc.c vec.c string.c map.c pool.c args.c \
        panic.c thread.c threadpool.c channel.c sync.c math.c json.c \
-       unicode_case.c
+       unicode_case.c int128.c
 OBJS = $(SRCS:.c=.o)
 LIB  = librask_runtime.a
 

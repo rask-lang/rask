@@ -494,6 +494,10 @@ fn const_to_value(c: &MirConst, expected: Option<&MirType>) -> MiriValue {
             Some(MirType::U64) => MiriValue::U64(*v as u64),
             _ => MiriValue::I64(*v),
         },
+        // MiriValue has no 128-bit member. Truncating is honest here because
+        // this evaluator is only used on MIR from tests, none of which is
+        // 128-bit; if that changes, the value needs a real width (#762).
+        MirConst::Int128(v) => MiriValue::I64(*v as i64),
         MirConst::Float(v) => match expected {
             Some(MirType::F32) => MiriValue::F32(*v as f32),
             _ => MiriValue::F64(*v),

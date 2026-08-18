@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// 128-bit arithmetic is checked like every other width (type.overflow OV1–OV4).
+//
+// Worth pinning separately from `tests/suite/t_i128_arithmetic.rk` because the
+// mechanism is different: at 128 bits Cranelift has no `umul_overflow` rule and
+// no division lowering at all, so multiply, divide and remainder are runtime
+// calls that hand back a status the caller turns into a panic. A helper that
+// silently returned its result on overflow would look identical to a correct one
+// in every test that doesn't overflow (#762).
+//
+// The multiplication that overflows is the *second* one: `u128::MAX` squared is
+// just under `u128::MAX`, so `a * a` is fine and `that * a` is not.
+
+func main() {
+    let a: u128 = 18446744073709551615
+    let square = a * a
+    println("square ok")
+    let cube = square * a
+    println("unreachable {cube}")
+}
