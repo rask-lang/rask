@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #793: `match (lhs, rhs) { (Value.Int(x), Value.Int(y)) => … }` didn't lower
+// natively — MIR failed with "unresolved variable `x`" while the interpreter
+// answered fine. A tuple element that names a variant was already handled as a
+// *test*; one that also binds its payload fell into the catch-all, so no tag
+// test ran and the bindings were never created.
+//
+// This is the natural way to write a binary operation over a tagged value, and
+// the workaround is nested matches — two levels of arms for every operator.
+//
+// #794: `a.abs()` on an `i128` receiver had no dispatch prefix, so it didn't
+// lower either. Pinned at the bottom.
+enum Value {
+    Int(i64)
+    Text(string)
+    Pair(i64, i64)
+    Nothing
+}
+
+func describe(lhs: Value, rhs: Value) -> string {
+    match (lhs, rhs) {
+        (Value.Int(x), Value.Int(y)) => return "ints {x}+{y}={x + y}"
+        (Value.Int(x), Value.Text(s)) => return "mixed {x} and {s}"
+        (Value.Text(a), Value.Text(b)) => return "texts {a}|{b}"
+        (Value.Pair(a, b), Value.Int(c)) => return "pair ({a},{b}) with {c}"
+        (Value.Nothing, Value.Int(n)) => return "nothing then {n}"
+        (Value.Int(x), _) => return "int {x} and something"
+        _ => return "no match"
+    }
+}
+
+func main() {}
+
+test "a tuple arm binds both payloads" {
+    assert describe(Value.Int(4), Value.Int(5)) == "ints 4+5=9"
+}
+
+test "a tuple arm picks the right variant pair" {
+    // Each of these could match an earlier arm if the tag tests were skipped.
+    assert describe(Value.Int(7), Value.Text("hi")) == "mixed 7 and hi"
+    assert describe(Value.Text("a"), Value.Text("b")) == "texts a|b"
+    assert describe(Value.Nothing, Value.Int(9)) == "nothing then 9"
+}
+
+test "a multi-field variant binds every field at its own offset" {
+    assert describe(Value.Pair(1, 2), Value.Int(3)) == "pair (1,2) with 3"
+}
+
+test "a payload bind mixes with a wildcard element" {
+    assert describe(Value.Int(1), Value.Nothing) == "int 1 and something"
+}
+
+test "no arm matches falls through to the wildcard" {
+    assert describe(Value.Text("x"), Value.Int(0)) == "no match"
+    assert describe(Value.Nothing, Value.Nothing) == "no match"
+}
+
+test "an i128 receiver dispatches its integer methods" {
+    // #794: this didn't lower natively at all — `builtin_method_prefix` mapped
+    // i8..i64 and u8..u64 and stopped, so a 128-bit receiver had no prefix.
+    //
+    // Only `abs` here, not the std.bits family: those answer over the
+    // receiver's declared *width*, and the two backends don't agree on what
+    // i128's width is yet. Native rides the i64 symbols (see #762 — a literal
+    // past u64::MAX doesn't even lex), while the interpreter's i128 table is
+    // genuinely 128-bit but has no bits methods in it. Pinning `count_ones`
+    // here would pin a divergence rather than close one.
+    let a: i128 = -7
+    assert a.abs() == 7
+
+    let b: u128 = 5
+    assert b + 2 == 7
+}

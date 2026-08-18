@@ -48,10 +48,15 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::I16 => Ok(types::I16),
         MirType::I32 => Ok(types::I32),
         MirType::I64 => Ok(types::I64),
+        // Cranelift has a real I128 — two machine words, with add/sub/mul
+        // lowered on x64. Division and remainder have no lowering rule and go
+        // through runtime helpers instead (#762).
+        MirType::I128 => Ok(types::I128),
         MirType::U8 => Ok(types::I8),
         MirType::U16 => Ok(types::I16),
         MirType::U32 => Ok(types::I32),
         MirType::U64 => Ok(types::I64),
+        MirType::U128 => Ok(types::I128),
         MirType::F32 => Ok(types::F32),
         MirType::F64 => Ok(types::F64),
         MirType::Char => Ok(types::I32), // Unicode scalar value

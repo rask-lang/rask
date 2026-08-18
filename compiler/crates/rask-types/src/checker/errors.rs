@@ -157,6 +157,11 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// ORD4: arithmetic between a signed and an unsigned integer. Comparison is
+    /// the one operator family that crosses signedness, because it has an
+    /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
+    #[error("`{op}` between `{left}` and `{right}` — one is signed, the other isn't")]
+    MixedSignednessArithmetic { op: &'static str, left: Type, right: Type, span: Span },
     /// ER11: `T or E` (E ≠ none) only auto-wraps at `return`.
     #[error("`{value}` doesn't become a `{target}` here — auto-wrap is return-only")]
     NoAutoWrapOutsideReturn { value: Type, target: Type, span: Span },
@@ -214,6 +219,15 @@ pub enum TypeError {
     #[error("cannot mutate `{name}` — bound from a shared read lock")]
     MutateWithBinding {
         name: String,
+        span: Span,
+    },
+    /// OPT19 / std.iteration/I1: a name a test or a pattern introduced. Same
+    /// immutability as `let`, but "add `mut`" isn't writable at any of these
+    /// sites, so the remedy comes from `from`.
+    #[error("cannot mutate `{name}` — it's a binding, not a slot")]
+    MutateBoundName {
+        name: String,
+        from: crate::checker::BoundFrom,
         span: Span,
     },
     #[error("`string` has no `{method}` — strings are immutable")]
@@ -302,6 +316,15 @@ pub enum TypeError {
         param_index: usize,
         span: Span,
     },
+    /// PM4: an argument going into a `mutate` parameter is written
+    /// `mutate arg`. Method receivers are exempt.
+    #[error("`{callee}` mutates `{arg}` — mark it at the call site")]
+    MissingMutateMarker {
+        callee: String,
+        arg: String,
+        param_name: String,
+        span: Span,
+    },
     #[error("`try` requires a Result or Option type, found {found}")]
     TryOnNonResult {
         found: Type,
@@ -369,6 +392,15 @@ pub enum TypeError {
         /// Dotted path to the offending field, when one can be pinned down.
         field: Option<String>,
         field_ty: Option<String>,
+        span: Span,
+    },
+
+    /// std.encoding/E13a: a field the wire form leaves out with no default to
+    /// build it from on decode.
+    #[error("`{ty}` cannot be decoded: field `{field}` is left out of the wire form and has no default")]
+    ExcludedFieldNeedsDefault {
+        ty: String,
+        field: String,
         span: Span,
     },
 
@@ -627,6 +659,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E19/E21: a serialization annotation the compiler can't act on — the old
+    /// `@skip` spelling, or `@rename` given something that isn't a string.
+    #[error("`@{attr}` on field `{field}`: {problem}")]
+    BadFieldAnnotation {
+        attr: String,
+        field: String,
+        problem: String,
+        fix: String,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -663,7 +706,7 @@ pub enum TypeError {
     },
 
     /// type.primitives CV5–CV10: a conversion form applied to the wrong
-    /// source/target kind (e.g. `float to int` on an integer).
+    /// source/target kind (e.g. `floor` on an integer).
     #[error("invalid conversion: {message}")]
     InvalidConvert {
         message: String,
@@ -851,6 +894,11 @@ impl TypeError {
                 *to = f(to);
             }
 
+            MixedSignednessArithmetic { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
+            }
+
             NoAutoWrapOutsideReturn { value, target, .. } => {
                 *value = f(value);
                 *target = f(target);
@@ -887,6 +935,7 @@ impl TypeError {
             | FrozenContextWrite { .. }
             | MutateConst { .. }
             | MutateWithBinding { .. }
+            | MutateBoundName { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | StringSliceStored { .. }
@@ -897,12 +946,14 @@ impl TypeError {
             | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
+            | MissingMutateMarker { .. }
             | UnsafeRequired { .. }
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
             | NotSerializable { .. }
+            | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }
             | PublicDuckTrait { .. }
             | PublicInferredError { .. }
@@ -922,6 +973,7 @@ impl TypeError {
             | StepDirectionMismatch { .. }
             | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
+            | BadFieldAnnotation { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

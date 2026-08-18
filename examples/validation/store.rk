@@ -248,7 +248,7 @@ func opt_id(x: UserId?) -> u64? {
 // ordering created_at. See FINDINGS.
 func now_millis() -> i64 {
     let d = started.elapsed()
-    return d.as_millis() saturate to i64
+    return d.as_millis().clamp<i64>()
 }
 
 // ─── Linear transaction resource ─────────────────────────────────────

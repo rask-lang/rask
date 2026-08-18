@@ -27,7 +27,7 @@ pub struct FieldLayout {
     pub offset: u32,
     pub size: u32,
     pub align: u32,
-    /// Field annotations, verbatim (`rename("user_name")`, `skip`, …).
+    /// Field annotations, verbatim (`rename("user_name")`, `no_serialize`, …).
     /// Serialization reads these — see `rask_ast::decl::field_attrs`.
     pub attrs: Vec<String>,
     /// Whether the field has a declared default value (`x: T = v`). Separate
@@ -35,6 +35,11 @@ pub struct FieldLayout {
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
     /// for either.
     pub has_declared_default: bool,
+    /// V5 visibility. Carried because `reflect.fields<T>()` reports it: without
+    /// it the native side had nothing to read and answered `true` for every
+    /// field, so a `private` one looked public there and not on the
+    /// interpreter (std.encoding/E13).
+    pub is_public: bool,
 }
 
 /// Enum memory layout
@@ -402,11 +407,19 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, bool)> = struct_decl.fields.iter()
         .map(|field| {
             let field_ty = resolve_field_type(&field.ty, &subst);
             let (field_size, field_align) = type_size_align(&field_ty, cache);
-            (field.name.clone(), field_ty, field_size, field_align, field.attrs.clone(), field.default.is_some())
+            (
+                field.name.clone(),
+                field_ty,
+                field_size,
+                field_align,
+                field.attrs.clone(),
+                field.default.is_some(),
+                field.visibility.is_pub(),
+            )
         })
         .collect();
 
@@ -421,7 +434,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align, attrs, has_declared_default) in resolved {
+    for (name, ty, size, align, attrs, has_declared_default, is_public) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -434,6 +447,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
             align,
             attrs,
             has_declared_default,
+            is_public,
         });
 
         offset += size;
@@ -479,6 +493,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             align: field_align,
             attrs: field.attrs.clone(),
             has_declared_default: field.default.is_some(),
+            is_public: field.visibility.is_pub(),
         });
     }
 
@@ -593,6 +608,8 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
                     align,
                     attrs: Vec::new(),
                     has_declared_default: field.default.is_some(),
+                    // A variant's payload has no visibility of its own.
+                    is_public: true,
                 });
 
                 field_offset += size;

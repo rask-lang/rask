@@ -52,7 +52,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 
 | Rule | Description |
 |------|-------------|
-| **IM1: Qualified** | `import pkg` → access as `pkg.Name` |
+| **IM1: Qualified** | `import pkg` → access as `pkg.Name`. Every stdlib module works this way — there is no set that comes pre-imported, so a module name is an ordinary identifier until a program imports it, and a program that hasn't may bind a local called `net` or `json` |
 | **IM2: Last-segment qualifier** | `import myapp.net.http` → access as `http.get()` |
 | **IM3: Alias** | `import pkg as p` → access as `p.Name` |
 | **IM4: Unqualified** | `import pkg.Name` → `Name` directly |

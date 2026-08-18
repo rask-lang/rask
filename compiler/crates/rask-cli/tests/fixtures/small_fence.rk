@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The half of `@small` that has to keep working (#587, mem.value/SM1, SM4).
+//
+// SM1: the annotation is a pure size assertion. It never raises the threshold
+// and never makes a type copy that wouldn't anyway — a `@small` struct of Copy
+// fields copies implicitly because it's under 16 bytes, exactly as it would
+// without the annotation.
+//
+// SM4: `@small` and `@unique` compose. One is about layout, the other about
+// copy semantics, so a small move-only ID type is coherent — and the move
+// semantics still bite.
+
+@small
+struct Point {
+    x: f32
+    y: f32
+    z: f32
+}
+
+@small
+@unique
+struct TicketId {
+    raw: i64
+}
+
+// A generic under the fence: fine at every instantiation that fits.
+@small
+struct Pair<T> {
+    a: T
+    b: T
+}
+
+extend Point {
+    func sum(self) -> f32 {
+        return self.x + self.y + self.z
+    }
+}
+
+func shift(p: Point) -> Point {
+    return Point { x: p.x + 1.0, y: p.y, z: p.z }
+}
+
+func claim(id: TicketId) -> i64 {
+    return id.raw
+}
+
+func main() {
+    // SM1: `p` is still usable after being passed — 12 bytes, so it copied.
+    let p = Point { x: 1.0, y: 2.0, z: 3.0 }
+    let moved = shift(p)
+    println("{p.sum()} {moved.sum()}")
+
+    // SM4: the fence doesn't soften `@unique` — this one consumes.
+    let ticket = TicketId { raw: 42 }
+    println("{claim(ticket)}")
+
+    // The generic fits at i64 (16 bytes) and at i32 (8).
+    let wide = Pair<i64> { a: 10, b: 20 }
+    let narrow = Pair<i32> { a: 1, b: 2 }
+    println("{wide.a + wide.b} {narrow.a + narrow.b}")
+}

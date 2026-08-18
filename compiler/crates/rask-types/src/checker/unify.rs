@@ -1454,7 +1454,7 @@ impl TypeChecker {
     /// nothing, and ceremony that informs nobody is a design bug
     /// (NORTH_STAR commitment 5) — so it's implicit. A conversion that *can*
     /// fail has to be written, and there are named verbs for those
-    /// (`truncate to`, `saturate to`, `convert to T?`).
+    /// (`to`, `wrap`, `clamp`, `round`, `floor`, `ceil`).
     ///
     /// Cross-sign is allowed in exactly one direction and only when the target
     /// is strictly wider: every `u32` fits an `i64`, so rejecting that protected

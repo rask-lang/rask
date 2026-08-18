@@ -3,68 +3,75 @@
 // Every case is exercised at a boundary value and must give identical results
 // on the interpreter and native backends.
 
-// --- CV5: truncate to T (wrapping/bitwise) ---
+// --- CV12: wrap<T> (wrapping/bitwise) ---
 test "truncate wraps into target width" {
     let big: i32 = 300
-    let a: u8 = big truncate to u8      // 300 & 0xFF = 44
+    let a: u8 = big.wrap<u8>()      // 300 & 0xFF = 44
     assert a == 44
     let neg: i32 = -1
-    let b: u8 = neg truncate to u8      // low 8 bits of -1 = 255
+    let b: u8 = neg.wrap<u8>()      // low 8 bits of -1 = 255
     assert b == 255
-    let c: i8 = 200 truncate to i8      // 0xC8 → -56
+    let c: i8 = 200.wrap<i8>()      // 0xC8 → -56
     assert c == -56
-    let same: i32 = 42 truncate to i32  // no-op on same width
+    let same: i32 = 42.wrap<i32>()  // no-op on same width
     assert same == 42
 }
 
-// --- CV6: saturate to T (clamp) ---
+// --- CV13: clamp<T> (pins to the range) ---
 test "saturate clamps to target range" {
     let big: i32 = 300
-    assert (big saturate to u8) == 255
-    assert (big saturate to i8) == 127
+    assert (big.clamp<u8>()) == 255
+    assert (big.clamp<i8>()) == 127
     let neg: i32 = -5
-    assert (neg saturate to u8) == 0
+    assert (neg.clamp<u8>()) == 0
     let vneg: i32 = -200
-    assert (vneg saturate to i8) == -128
+    assert (vneg.clamp<i8>()) == -128
     let fits: i32 = 100
-    assert (fits saturate to u8) == 100
+    assert (fits.clamp<u8>()) == 100
 }
 
-// --- CV7: try convert to T (T?, none if out of range) ---
-test "try convert yields none when out of range" {
-    let ok = try 100 convert to u8
-    assert ok! == 100
-    let overflow = try 300 convert to u8
-    assert overflow is none
-    let negative = try -1 convert to u8
-    assert negative is none
+// --- CV11: to<T> (exact, or ConvertError) ---
+//
+// This replaced `try x convert to T`, and the shape changed with it: a result
+// rather than an optional, so `?? d` became `catch _ => d`. It also covers more
+// than the old form did — a float source is exact-or-fail here, where the old
+// family needed a separate verb for it.
+test "to fails when the value doesn't fit" {
+    let ok: i64 = 100
+    assert ok.to<u8>()! == 100
+    let overflow: i64 = 300
+    assert (overflow.to<u8>() catch _ => 0) == 0
+    let negative: i64 = -1
+    assert (negative.to<u8>() catch _ => 0) == 0
 }
 
-// --- CV8: float to int T (truncate toward zero) ---
-test "float to int truncates toward zero" {
+// --- CV15/CV16: floor and ceil (float → int) ---
+//
+// Toward-zero is gone with the phrase verbs — it was never a policy anyone
+// named, just what a C cast happens to do. What the fraction does is now the
+// verb: `floor` toward −∞, `ceil` toward +∞, `round` to nearest.
+test "floor and ceil name which way the fraction goes" {
     let p: f64 = 3.9
-    assert (p float to int i32) == 3
+    assert p.floor<i32>()! == 3
+    assert p.ceil<i32>()! == 4
     let n: f64 = -3.9
-    assert (n float to int i32) == -3
+    assert n.floor<i32>()! == -4
+    assert n.ceil<i32>()! == -3
 }
 
-// --- CV9: float to int T (saturating) ---
-test "float to int saturating clamps" {
+// --- CV14–CV16: out of range is a failure, not a clamp ---
+//
+// The saturating float→int form is gone too: `clamp` is integers-only (CV13),
+// because on a float it would have to pick a fraction policy silently — the one
+// thing its name can't say. A float that doesn't fit fails, and the caller says
+// what to do about it.
+test "a float that doesn't fit the target fails" {
     let huge: f64 = 1.0e30
-    assert (huge float to int i32 (saturating)) == 2147483647
+    assert (huge.round<i32>() catch _ => 0) == 0
     let tiny: f64 = -1.0e30
-    assert (tiny float to int i32 (saturating)) == -2147483648
-    let ok: f64 = 42.5
-    assert (ok float to int i32 (saturating)) == 42
-}
-
-// --- CV10: try float to int T (T?) ---
-test "try float to int yields none out of range" {
-    let ok = try 3.5 float to int i32
-    assert ok! == 3
-    let huge: f64 = 1.0e30
-    let bad = try huge float to int i32
-    assert bad is none
+    assert (tiny.floor<i32>() catch _ => 0) == 0
+    let fits: f64 = 42.5
+    assert fits.floor<i32>()! == 42
 }
 
 // --- int → float via `as` (lossless widening, spec examples) ---

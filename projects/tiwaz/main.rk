@@ -7,24 +7,41 @@ import json
 
 func main() -> void or Error {
     using Multitasking {
-        mut server = try HttpServer.listen("0.0.0.0:8080")
+        mut server = try http.listen("0.0.0.0:8080")
         ensure server.close()
         println("listening on 8080")
         let all_routes = routes()
-        spawn(|| { health_checker(backend_pool.backends) }).detach()
+        spawn(own || { health_checker(backend_pool.backends) }).detach()
         loop {
             println("waiting for request")
             let (request, responder) = try server.accept()
             println("got request")
-            spawn(|| {
+            spawn(own || {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 println("forwarding request")
 
                 if request.path() == "/metrics" {
+                    // The four counters are copied out of the guard rather than
+                    // rendered inside it: a `with` guard is access for the
+                    // block's duration, and anything derived from it can't be
+                    // captured by the surrounding spawn closure (E0813).
+                    mut requests: u64 = 0
+                    mut errors: u64 = 0
+                    mut sent: u64 = 0
+                    mut received: u64 = 0
                     with metrics.read() as m {
-                        let body = json.stringify([["request_count", m.request_count], ["error_count", m.error_count], ["bytes_sent", m.bytes_sent], ["bytes_received", m.bytes_received]])
-                        responder.respond(Response.json(body))
+                        requests = m.request_count
+                        errors = m.error_count
+                        sent = m.bytes_sent
+                        received = m.bytes_received
                     }
+                    let body = json.encode(Metrics {
+                        request_count: requests,
+                        error_count: errors,
+                        bytes_sent: sent,
+                        bytes_received: received,
+                    })
+                    let _ = responder.respond(Response.json(body))
                     return
                 }
 
@@ -32,16 +49,11 @@ func main() -> void or Error {
                 if matched_route? as route {
                     let route_and_forward = |request: Request| -> Response {
                         let healthy = route.pool.next_healthy()
-                        if healthy is ProxyError {
-                            return Response.internal_error("no healthy backends")
+                            catch _ => return Response.internal_error("no healthy backends")
+                        return forward(request, healthy.url, route.path) catch _ => {
+                            println("error forwarding request")
+                            return Response.internal_error("upstream error")
                         }
-                        // ER24: early-exit narrow — `healthy` is the success type here
-                        let result = forward(request, healthy.url, route.path)
-                        if result? {
-                            return result
-                        }
-                        println("error forwarding request")
-                        return Response.internal_error("upstream error")
                     }
                     let with_middleware = with_metrics(logging(route_and_forward))
                     let response = with_middleware(request)

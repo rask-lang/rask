@@ -95,6 +95,13 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # projects/*/ type-checks. Nothing checked them, which is how raido reached
+    # 48 errors and tiwaz 11 (#774) — every rule change since they were written
+    # landed without anything noticing. `check` only: neither runs natively yet.
+    - name: Projects check
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/projects_gate.sh
+
     # The multi-file validation program. Nothing built it before, which is how
     # a package-wide `catch` migration (#607) and the span mis-attribution
     # (#621) both shipped — every other gate runs single files.

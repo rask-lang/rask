@@ -17,6 +17,11 @@ pub enum MirOperand {
 #[derive(Debug, Clone)]
 pub enum MirConst {
     Int(i64),
+    /// A 128-bit constant, already widened correctly for its type: an `i128`
+    /// sign-extends from the literal, a `u128` zero-extends. The distinction is
+    /// only visible here, where the MIR type is still in hand — Cranelift's
+    /// integer types carry no signedness (#762).
+    Int128(i128),
     Float(f64),
     Bool(bool),
     Char(char),

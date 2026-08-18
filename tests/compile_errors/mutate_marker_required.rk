@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an argument to a `mutate` parameter without the marker
+// ERROR: mark it at the call site
+//
+// PM4. The reasoning is asymmetry, not ceremony: the compiler backstops a
+// misread *move* — using a value after it's moved is an error — but nothing
+// backstops a misread mutation. `apply(player, 10)` reading as "looks at
+// player" and "rewrites player" are both legal code, so the one that can't be
+// caught is the one that gets written down.
+//
+// PM5: the marker follows the *signature*, never the argument's size. A Copy
+// argument to a `mutate` parameter still writes `mutate`.
+
+struct Player { health: i64 }
+
+struct Counter { n: i64 }
+
+extend Counter {
+    func bump(mutate self) {
+        self.n = self.n + 1
+    }
+}
+
+func apply_damage(mutate p: Player, amount: i64) {
+    p.health = p.health - amount
+}
+
+func read_health(p: Player) -> i64 {
+    return p.health
+}
+
+func bump_scalar(mutate n: i64) {
+    n = n + 1
+}
+
+func main() {
+    mut player = Player { health: 100 }
+
+    // ERROR: `apply_damage` mutates `player` — mark it at the call site
+    apply_damage(player, 10)
+
+    // PM5: a Copy argument is no exception.
+    mut count: i64 = 0
+    // ERROR: `bump_scalar` mutates `count` — mark it at the call site
+    bump_scalar(count)
+
+    // A field path is a legal `mutate` argument and takes the marker too.
+    mut c = Counter { n: 0 }
+    // ERROR: `bump_scalar` mutates `c.n` — mark it at the call site
+    bump_scalar(c.n)
+
+    // The marker on a parameter that isn't `mutate` is the other error (E0328)
+    // — a marker without a `mutate` parameter is a lie.
+    // ERROR: unexpected `mutate` annotation
+    let h = read_health(mutate player)
+
+    // The receiver is exempt: no marker, and no error.
+    c.bump()
+
+    println("{h} {count} {c.n}")
+}

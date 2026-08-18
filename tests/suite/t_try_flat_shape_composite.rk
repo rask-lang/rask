@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER16b's composite over the flat `T? or E` shape: `try` sends the error up,
+// `??` handles the absence here. It's the form the spec prescribes when a value
+// can both fail and be absent, because bare `try` would have to guess which of
+// the two leaves.
+//
+// #598 was left open for this, verified on the interpreter and blocked on native
+// by #644 — a `T? or E` function returning a bare payload segfaulted, because
+// MIR wrapped it zero times where it needed two. Both are fixed; this pins the
+// composite end to end on both backends so the blocked case can't come back.
+//
+// ER16b's precedence is what makes it paren-free: `try f() ?? v` is
+// `(try f()) ?? v`, not `try (f() ?? v)`.
+
+enum LoadError {
+    Corrupt
+}
+
+extend LoadError {
+    func message(self) -> string {
+        return "corrupt"
+    }
+}
+
+// The three-way shape: a value, an absence, and a failure.
+func flat(k: string) -> i64? or LoadError {
+    if k == "yes" {
+        return 1
+    }
+    if k == "gone" {
+        return none
+    }
+    return LoadError.Corrupt
+}
+
+// `try` propagates the failure, `??` turns the absence into an early return.
+func through(k: string) -> i64? or LoadError {
+    let v = try flat(k) ?? return none
+    return v + 100
+}
+
+func label(k: string) -> string {
+    let r = through(k) catch e => return "failed: {e.message()}"
+    if r? as v {
+        return "value {v}"
+    }
+    return "absent"
+}
+
+func main() {}
+
+test "ER16b: the composite carries a value through" {
+    assert label("yes") == "value 101"
+}
+
+test "ER16b: `??` catches the absence at this level" {
+    assert label("gone") == "absent"
+}
+
+test "ER16b: `try` sends the failure to the caller" {
+    assert label("bad") == "failed: corrupt"
+}
+
+test "#644: each branch of a flat return survives the round trip" {
+    // Binding the result was enough to crash before — the payload path is the
+    // one that was missing its wraps.
+    let a = flat("yes") catch _ => none
+    assert (a ?? -1) == 1
+
+    let b = flat("gone") catch _ => none
+    assert (b ?? -1) == -1
+
+    let c = flat("bad") catch _ => none
+    assert (c ?? -1) == -1
+}

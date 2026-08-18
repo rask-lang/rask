@@ -107,6 +107,11 @@ impl ResourceTracker {
         }
     }
 
+    /// Nothing is being tracked, so nothing needs walking.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Transfer a resource to a different scope depth (for returns/moves).
     pub fn transfer_to_scope(&mut self, id: u64, new_scope_depth: usize) {
         if let Some(entry) = self.entries.get_mut(&id) {

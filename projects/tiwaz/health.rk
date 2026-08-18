@@ -4,16 +4,16 @@ import time
 const status = Shared<Map<string, bool>>.new(Map<string, bool>.new())
 const health_url = "/health"
 
-const health_check_interval = 10 // seconds
+const health_check_interval = time.Duration.seconds(10)
 
 func health_checker(backends : Vec<Backend>) -> void {
     loop {
         let result = check_health(backends)
         if result is HttpError as e {
             // Log the error and continue with the next check.
-            println("health check error: {e}")
+            println("health check error: {e.message()}")
         }
-        time.sleep(health_check_interval)
+        let _ = time.sleep(health_check_interval)
     }
 }
 

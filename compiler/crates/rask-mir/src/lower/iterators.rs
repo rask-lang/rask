@@ -177,7 +177,8 @@ impl<'a> MirLowerer<'a> {
             return false;
         };
         let materializes = match method.as_str() {
-            "values" | "keys" | "lines" | "chars" | "split_whitespace" | "take_all" => {
+            "values" | "keys" | "lines" | "chars" | "bytes"
+            | "split_whitespace" | "take_all" => {
                 args.is_empty()
             }
             "split" => args.len() == 1,

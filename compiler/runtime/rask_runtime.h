@@ -230,6 +230,32 @@ void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);
 
+// 128-bit operations Cranelift can't lower — see int128.c. Each returns
+// 0 (ok), 1 (divide by zero) or 2 (overflow); the caller panics with the span.
+// C11 has no 128-bit integer, so the width is a compiler extension.
+__extension__ typedef __int128 RaskI128;
+__extension__ typedef unsigned __int128 RaskU128;
+
+int32_t     rask_i128_mul(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_u128_mul(RaskU128 a, RaskU128 b, RaskU128 *out);
+int32_t     rask_i128_div(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_i128_rem(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_u128_div(RaskU128 a, RaskU128 b, RaskU128 *out);
+int32_t     rask_u128_rem(RaskU128 a, RaskU128 b, RaskU128 *out);
+void        rask_i128_to_string(RaskStr *out, RaskI128 val);
+void        rask_u128_to_string(RaskStr *out, RaskU128 val);
+void        rask_print_i128(RaskI128 val);
+void        rask_print_u128(RaskU128 val);
+void        rask_eprint_i128(RaskI128 val);
+void        rask_eprint_u128(RaskU128 val);
+RaskI128    rask_i128_abs(RaskI128 v);
+void        rask_assert_fail_cmp_i128(RaskI128 left, RaskI128 right,
+                                      const char *op, const char *file,
+                                      int32_t line, int32_t col);
+void        rask_assert_fail_cmp_u128(RaskU128 left, RaskU128 right,
+                                      const char *op, const char *file,
+                                      int32_t line, int32_t col);
+
 // Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
 // arrives here separately — a base conversion, then padding.
 void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);

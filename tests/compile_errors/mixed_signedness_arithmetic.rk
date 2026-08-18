@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: arithmetic between a signed and an unsigned integer (ORD4)
+// ERROR: one is signed, the other isn't
+//
+// Comparison is the one operator family that crosses signedness, because
+// `5u64 > -1i32` has an obviously-correct answer. Arithmetic doesn't:
+// `u64 + i32` has no result type that holds both operands, so neither side can
+// be widened without picking a winner. That's the conversion C makes, and it's
+// why `-1 < 1u` is true there.
+//
+// Until #778 this type-checked and reinterpreted the signed side's bits, so
+// `5u64 + (-10i32)` printed 18446744073709551611 on both backends — a wrong
+// number, silently, from code that looked fine.
+
+func main() {
+    let u: u64 = 5
+    let i: i32 = -10
+    let small: u8 = 3
+    let signed_small: i8 = -3
+
+    // The four arithmetic operators
+    let a = u + i
+    let b = u - i
+    let c = u * i
+    let d = u / i
+    let e = u % i
+
+    // Bitwise: same reasoning, and the bit patterns aren't interchangeable
+    let f = small & signed_small
+    let g = small | signed_small
+    let h = small ^ signed_small
+
+    // Shifts too — the count's signedness isn't decoration, a negative one is a
+    // bug and today it becomes a huge shift.
+    let j = u << i
+    let k = u >> i
+
+    println("{a} {b} {c} {d} {e} {f} {g} {h} {j} {k}")
+}

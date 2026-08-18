@@ -290,6 +290,11 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
         diags.push(frozen_to_diagnostic(d));
     }
 
+    // --- Cleanup order (mem.resource-types/EO1) ---
+    for w in rask_effects::ensure_order::check(&parse_result.decls) {
+        diags.push(ensure_order_to_diagnostic(&w));
+    }
+
     let package_names = collect_builtin_imports(&parse_result.decls);
 
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
@@ -431,6 +436,11 @@ pub fn check_package(
         diags.push(frozen_to_diagnostic(d));
     }
 
+    // --- Cleanup order (mem.resource-types/EO1) ---
+    for w in rask_effects::ensure_order::check(&pkg_ctx.all_decls) {
+        diags.push(ensure_order_to_diagnostic(&w));
+    }
+
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -462,25 +472,57 @@ pub fn compile_file(
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
+    compile_file_with(path, dep_decls, config, |_, _| {})
+}
+
+/// `compile_file`, with a chance to rewrite the declarations first.
+///
+/// `transform` runs after the frontend and the derive/stdlib/dependency merge,
+/// and before monomorphization — the one point where the decl list is complete
+/// and nothing has been laid out yet. That's where `rask test` swaps `main` for
+/// a test runner and `rask bench` for a benchmark runner.
+///
+/// Those two used to open-code the whole frontend to get that one edit in, so a
+/// fix to resolve, typecheck, ownership or mono had to be made twice — and one
+/// of the copies used the plain typecheck, which left every stdlib body untyped
+/// and only showed up as 17 failures in `rask test examples/validation` (#330,
+/// #697).
+pub fn compile_file_with(
+    path: &str,
+    dep_decls: Vec<Decl>,
+    config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
+) -> PipelineOutput<CompileResult> {
     if let Some(mut pkg_ctx) = detect_package(path) {
-        return compile_package(&mut pkg_ctx, dep_decls, config);
+        return compile_package_with(&mut pkg_ctx, dep_decls, config, transform);
     }
-    compile_single(path, dep_decls, config)
+    compile_single(path, dep_decls, config, transform)
 }
 
 fn compile_single(
     path: &str,
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let check_output = check_single(path, config);
-    finalize_compile(check_output, dep_decls, HashSet::new(), config)
+    finalize_compile(check_output, dep_decls, HashSet::new(), config, transform)
 }
 
 pub fn compile_package(
     pkg_ctx: &mut PackageContext,
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
+) -> PipelineOutput<CompileResult> {
+    compile_package_with(pkg_ctx, dep_decls, config, |_, _| {})
+}
+
+/// `compile_package`, with the same decl hook as `compile_file_with`.
+pub fn compile_package_with(
+    pkg_ctx: &mut PackageContext,
+    dep_decls: Vec<Decl>,
+    config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     // Collect package_modules from the registry before check consumes pkg_ctx.
     let mut package_modules = HashSet::new();
@@ -501,7 +543,7 @@ pub fn compile_package(
     }
 
     let check_output = check_package(pkg_ctx, config);
-    finalize_compile(check_output, dep_decls, package_modules, config)
+    finalize_compile(check_output, dep_decls, package_modules, config, transform)
 }
 
 /// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
@@ -510,6 +552,7 @@ fn finalize_compile(
     dep_decls: Vec<Decl>,
     package_modules: HashSet<String>,
     config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let mut diags = check_output.diagnostics;
     let pkg_source_files = check_output.source_files;
@@ -545,6 +588,9 @@ fn finalize_compile(
         rask_desugar::desugar(&mut dep_decls_desugared);
         check.decls.extend(dep_decls_desugared);
     }
+
+    // --- Caller's decl rewrite (test/bench runners) ---
+    transform(&mut check.decls, &check.typed);
 
     // --- Monomorphize ---
     let mono = if package_modules.is_empty() {
@@ -674,6 +720,28 @@ fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
         format!("`{}` has IO effect", w.callee_name)
     };
     diag.with_code(w.code).with_primary(w.span, label)
+}
+
+/// EO1: `ensure` runs LIFO, so a dependency registered *after* its dependent is
+/// torn down first — the dependent's cleanup then calls into something that's
+/// already gone. The FIX shows the two lines reordered rather than describing
+/// the rule, because "swap these" is the whole of it.
+fn ensure_order_to_diagnostic(w: &rask_effects::ensure_order::EnsureOrderWarning) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "`{}` is cleaned up before `{}`, which needs it",
+        w.dependency, w.dependent
+    ))
+    .with_code("W0908")
+    .with_primary(
+        w.span,
+        format!("registered last, so this runs first and `{}` is gone", w.dependency),
+    )
+    .with_secondary(
+        w.dependent_span,
+        format!("`{}` still needs `{}` when this runs", w.dependent, w.dependency),
+    )
+    .with_fix(w.fixed_order.clone())
+    .with_why("`ensure` bodies run LIFO — the last one registered runs first. A resource derived from another has to be cleaned up first, which means its `ensure` comes second. Registered the other way round, the cleanup calls into a dependency that's already torn down; across an FFI boundary that's undefined behaviour the language otherwise makes impossible [mem.resource-types/EO1]")
 }
 
 fn frozen_to_diagnostic(d: &FrozenDiagnostic) -> Diagnostic {

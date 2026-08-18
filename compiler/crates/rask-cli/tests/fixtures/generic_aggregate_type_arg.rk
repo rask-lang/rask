@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type gets one layout for every instantiation, laid out with a
+// word-sized placeholder per type parameter. An aggregate type argument is bigger
+// than that, so the store runs past its own slot and the read comes back garbage.
+//
+//     let b = One { only: Big { a: 1, b: 2, c: 3 } }
+//     println("{b.only.a}")                            // SIGSEGV, silently
+//
+// This is a workaround, not the fix: it turns the crash into an error that says
+// what's wrong. The fix needs per-instantiation layouts, which needs the checker
+// to record which type arguments a generic struct was instantiated with — it
+// currently discards them, so a struct literal's node type is a bare
+// `Named(TypeId)`. Tracked in #781.
+//
+// Scalars, `string` (stored as a pointer) and any argument at or under a word are
+// unaffected — `One<i64>`, `One<string>`, `Pair<i64, i64>` all work, and
+// `generic_struct_turbofish.rk` covers them.
+
+struct One<A> {
+    public only: A
+}
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+func main() {
+    // ERROR: a 24-byte Big doesn't fit the word-sized placeholder slot.
+    let b = One { only: Big { a: 1, b: 2, c: 3 } }
+    println("{b.only.a}")
+}

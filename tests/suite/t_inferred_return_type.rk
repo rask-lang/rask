@@ -58,7 +58,7 @@ test "a module const can call an unannotated function" {
 
 test "a function with no return value stays void" {
     mut seen = Vec<i64>.new()
-    no_value(seen)
+    no_value(mutate seen)
     assert_eq(seen.len(), 1)
 }
 

@@ -19,14 +19,14 @@ func test_bool_to_int() {
 }
 
 // --- narrowing cast via `as` (CV1) ---
-// ERROR: cannot use 'as' for narrowing conversion, use 'truncate to'
+// ERROR: cannot use 'as' for narrowing conversion, name a policy: `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()`
 func test_narrowing_as() {
     let big: i64 = 1000
     let small: i32 = big as i32
 }
 
-// --- float to int via `as` (CV5) ---
-// ERROR: cannot use 'as' for float-to-int, use 'truncate to' or 'round to'
+// --- float to int via `as` (CV4) ---
+// ERROR: cannot use 'as' for float-to-int, name a fraction policy: `.round<T>()`, `.floor<T>()`, `.ceil<T>()`
 func test_float_to_int_as() {
     let f: f64 = 3.14
     let i: i32 = f as i32

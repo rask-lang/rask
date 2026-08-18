@@ -409,11 +409,12 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0826")
                 .with_primary(*span, format!("`{}` has no `to_string()`", ty))
-                .with_why(
-                    "`{}` renders a value through `Displayable`. Structs and enums opt in, \
+                .with_why(format!(
+                    "{} renders this value through `Displayable`. Structs and enums opt in, \
                      so the compiler never invents output that looks intentional but isn't \
                      [std.fmt/D3, D4]",
-                );
+                    if *interpolated { "`{}`" } else { "`print`" },
+                ));
                 // The two cases have genuinely different fixes.
                 if ty.ends_with('?') || ty.contains(" or ") {
                     diag = diag
@@ -676,12 +677,33 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0370")
                     .with_primary(*span, format!("this is a `{}`", from))
                     .with_fix(format!(
-                        "say which values to lose: `x truncate to {}` keeps the low bits, \
-                         `x saturate to {}` clamps to the range, `x convert to {}?` answers \
-                         `none` when it doesn't fit",
+                        "say which values to lose: `x.to<{}>()!` asserts it fits, \
+                         `x.wrap<{}>()` keeps the low bits, `x.clamp<{}>()` pins to the range",
                         to, to, to
                     ))
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
+            }
+
+            MixedSignednessArithmetic { op, left, right, span } => {
+                Diagnostic::error(format!(
+                    "`{}` between `{}` and `{}` — one is signed, the other isn't",
+                    op, left, right
+                ))
+                    .with_code("E0371")
+                    .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
+                    .with_fix(format!(
+                        "bring the `{}` over to `{}`, and say what happens when it doesn't fit: \
+                         `x.clamp<{}>()` pins to the range, `x.wrap<{}>()` keeps the low bits, \
+                         `x.to<{}>()` hands back a `{} or ConvertError`",
+                        right, left, left, left, left, left
+                    ))
+                    .with_why(format!(
+                        "there is no result type that holds both — `{}` can't hold every `{}` \
+                         and `{}` can't hold every `{}`, so widening one silently would be a \
+                         guess. Comparison is the exception: `a < b` has an answer by value even \
+                         across signedness, and arithmetic doesn't [type.operators/ORD4]",
+                        left, right, right, left
+                    ))
             }
 
             NoAutoWrapOutsideReturn { value, target, span } => {
@@ -791,6 +813,38 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("change `let {}` to `mut {}` to allow mutation", name, name))
                     .with_fix(format!("replace `let {}` with `mut {}`", name, name))
                     .with_why("`let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.")
+            }
+
+            MutateBoundName { name, from, span } => {
+                use rask_types::BoundFrom;
+                let d = Diagnostic::error(format!(
+                    "cannot mutate `{}` — it's a binding, not a slot",
+                    name
+                ))
+                    .with_code("E0372");
+                match from {
+                    BoundFrom::Payload => d
+                        .with_primary(*span, format!(
+                            "`{}` is the value the test proved was there, read out of the original",
+                            name
+                        ))
+                        .with_help("write through the original, or build a new value and put it back")
+                        .with_fix(format!(
+                            "read what you need inside the block and assign back outside it — \
+                             `mut copy = {}.field` … `original = …` — or give the type a method \
+                             that takes `mutate self` and call it on the original",
+                            name
+                        ))
+                        .with_why("`as v` names the payload a test proved present, and there is no `let` here to make `mut`. The payload is read out of the scrutinee, so a write to `v` would land on the copy and be lost — the compiler rejects it instead of dropping it silently [type.optionals/OPT19]"),
+                    BoundFrom::Element => d
+                        .with_primary(*span, format!(
+                            "`{}` is a read-only element of the collection being walked",
+                            name
+                        ))
+                        .with_help("add `mutate` to the loop to write through the element")
+                        .with_fix(format!("for mutate {} in … {{ … }}", name))
+                        .with_why("a plain `for` yields elements read-only; `for mutate x in xs` is the mode whose writes reach the collection. Without it the two backends disagreed about what the write meant — the interpreter wrote through and native dropped it [std.iteration/I1, I4]"),
+                }
             }
 
             MutateWithBinding { name, span } => {
@@ -953,6 +1007,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("annotations must match parameter declarations")
             }
 
+            MissingMutateMarker { callee, arg, param_name, span } => {
+                Diagnostic::error(format!(
+                    "`{}` mutates `{}` — mark it at the call site",
+                    callee, arg
+                ))
+                    .with_code("E0373")
+                    .with_primary(*span, format!("passed to the `mutate {}` parameter", param_name))
+                    .with_fix(format!("{}(mutate {}, …)", callee, arg))
+                    .with_why("the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]")
+            }
+
             TryOnNonResult { found, span } => {
                 Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
                     .with_code("E0329")
@@ -1013,6 +1078,21 @@ impl ToDiagnostic for rask_types::TypeError {
             // them out, so "add the required methods" is the wrong advice. A type
             // qualifies when every field does (std.encoding/E12–E17); the fix is
             // to change the field, which means naming it.
+            ExcludedFieldNeedsDefault { ty, field, span } => {
+                Diagnostic::error(format!("`{}` cannot be decoded", ty))
+                    .with_code("E0377")
+                    .with_primary(*span, format!(
+                        "field `{}` is left out of the wire form and has nothing to fill it",
+                        field
+                    ))
+                    .with_fix(format!(
+                        "give `{}` a declared default (`{}: T = value`), or an `@default(expr)` \
+                         override if the default should only apply to decoding",
+                        field, field
+                    ))
+                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
+            }
+
             NotSerializable { ty, trait_name, verb, field, field_ty, span } => {
                 let label = match (field, field_ty) {
                     (Some(f), Some(fty)) => {
@@ -1032,7 +1112,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0333")
                     .with_primary(*span, label)
                     .with_fix(format!(
-                        "mark {} with `@skip`, or give it a serializable type — bool, char, \
+                        "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
                          the integer and float types, string, `T?`, tuples, `Vec<T>`, \
                          `Map<string, T>`, or a struct or enum of those",
                         target
@@ -1456,6 +1536,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("the type in a type pattern must appear in the Result's error union")
                     .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
             }
+            BadFieldAnnotation { attr, field, problem, fix, span } => {
+                Diagnostic::error(format!("`@{}` on field `{}`: {}", attr, field, problem))
+                    .with_code("E0376")
+                    .with_primary(*span, format!("`@{}` here", attr))
+                    .with_fix(fix.clone())
+                    .with_why("a serialization annotation the compiler can't act on is worse than one it rejects — the wire format would differ from what the source says [std.encoding/E19, E21]")
+            }
+
             LegacyWrapperConstructor { name, span } => {
                 let (what, fix) = match name.as_str() {
                     "Some" => (
@@ -1509,17 +1597,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     C::Narrowing => (
                         format!("cannot narrow `{}` to `{}` with `as`", source, target),
                         "`as` only permits lossless widening — narrowing may lose data [type.primitives/CV2]",
-                        Some(format!("x truncate to {n}   // wraps\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                        Some(format!("x.to<{n}>()!   // asserts it fits\n  x.wrap<{n}>()   // wraps\n  x.clamp<{n}>()   // clamps", n = n)),
                     ),
                     C::SignReinterpret => (
                         format!("cannot reinterpret sign converting `{}` to `{}` with `as`", source, target),
                         "`as` only permits lossless widening — a negative value has no unsigned representation [type.primitives/CV3]",
-                        Some(format!("x truncate to {n}   // bit-preserving\n  x saturate to {n}   // clamps\n  try x convert to {n}   // {n}?", n = n)),
+                        Some(format!("x.to<{n}>()!   // asserts it fits\n  x.wrap<{n}>()   // bit-preserving\n  x.clamp<{n}>()   // clamps", n = n)),
                     ),
                     C::FloatToInt => (
                         format!("cannot convert float `{}` to integer `{}` with `as`", source, target),
                         "float-to-int loses the fraction and can overflow — `as` doesn't allow it [type.primitives/CV4]",
-                        Some(format!("x float to int {n}   // truncates toward zero, panics on NaN/inf\n  x float to int {n} (saturating)   // clamps, NaN → 0\n  try x float to int {n}   // {n}?", n = n)),
+                        Some(format!("x.round<{n}>()!   // nearest\n  x.floor<{n}>()!   // toward -inf\n  x.ceil<{n}>()!   // toward +inf\n  x.to<{n}>()!   // only if there's no fraction", n = n)),
                     ),
                     C::FloatNarrowing => (
                         format!("cannot narrow `{}` to `{}` with `as`", source, target),
@@ -1569,7 +1657,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_help(format!(
                         "use a type that holds it, or convert at the use site:\n  \
-                         x truncate to {ty}   // wraps\n  x saturate to {ty}   // clamps",
+                         x.wrap<{ty}>()   // wraps\n  x.clamp<{ty}>()   // clamps",
                         ty = ty,
                     ))
             }
@@ -1744,6 +1832,56 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
         use rask_ownership::OwnershipErrorKind::*;
 
         match &self.kind {
+            SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {
+                let label = match offending_field {
+                    Some((field, field_size, field_ty)) => format!(
+                        "{} bytes at `{}` — `{}` is a `{}` there, {} of them",
+                        size, type_name, field, field_ty, field_size
+                    ),
+                    None => format!("{} bytes at `{}`, and the limit is 16", size, type_name),
+                };
+                Diagnostic::error(format!(
+                    "`@small` type `{}` outgrew the copy threshold at `{}`",
+                    base_name, type_name
+                ))
+                .with_code("E0375")
+                .with_primary(self.span, label)
+                .with_fix(format!(
+                    "don't instantiate `{}` with a type that big — or drop `@small`, \
+                     since the fence can't hold for every type argument",
+                    base_name
+                ))
+                .with_why("`@small` is read at the definition but it's a promise about every instantiation. The same source text is 16 bytes at one type argument and 32 at another, and only the second one breaks the promise — so the check runs per instantiation, like any other generic bound [mem.value/SM3, type.generics/G2]")
+            }
+
+            SmallTypeTooBig { type_name, size, offending_field } => {
+                let label = match offending_field {
+                    Some((field, field_size)) => format!(
+                        "{} bytes — `{}` is the {}-byte field that took it over 16",
+                        size, field, field_size
+                    ),
+                    None => format!("{} bytes, and the limit is 16", size),
+                };
+                let fix = match offending_field {
+                    Some((field, _)) => format!(
+                        "shrink or move out `{}` — or drop `@small` and let the \
+                         move errors at the call sites stand",
+                        field
+                    ),
+                    None => "shrink the type — or drop `@small` and let the move \
+                             errors at the call sites stand"
+                        .to_string(),
+                };
+                Diagnostic::error(format!(
+                    "`@small` type `{}` outgrew the copy threshold",
+                    type_name
+                ))
+                .with_code("E0374")
+                .with_primary(self.span, label)
+                .with_fix(fix)
+                .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
+            }
+
             UseAfterMove { name, moved_at, reason } => {
                 use rask_ownership::MoveReason;
                 let (note, help) = match reason {
@@ -2224,7 +2362,8 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
 
             RuntimeError::RecursionTooDeep { function, depth } => {
                 Diagnostic::error(format!(
-                    "recursion too deep: {} nested calls and the stack is nearly gone",
+                    "recursion too deep: {} nested calls, and the interpreter is out \
+                     of stacks to continue on",
                     depth
                 ))
                 .with_code("R0023")
@@ -2235,9 +2374,11 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                      has no such limit",
                 )
                 .with_why(
-                    "the interpreter evaluates one Rask call per host stack frame, and \
-                     each of those is large; the limit is reported here rather than left \
-                     to overflow the stack, which killed the process with nothing printed",
+                    "the interpreter spends one host stack frame per Rask call and those \
+                     frames are large, so it moves onto a fresh stack every few hundred \
+                     calls rather than overflowing. That chain is capped — around a \
+                     gigabyte of live stack — so a recursion that never terminates stops \
+                     here with a message instead of taking the machine down",
                 )
             }
 

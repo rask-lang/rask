@@ -511,7 +511,11 @@ impl TypeChecker {
 
                 if let Some((ref name, ref payload_ty, _)) = presence_binding {
                     self.push_scope();
-                    self.define_local_const(name.clone(), payload_ty.clone());
+                    self.define_local_bound(
+                        name.clone(),
+                        payload_ty.clone(),
+                        super::BoundFrom::Payload,
+                    );
                 }
                 let then_ty = self.infer_expr(then_branch);
                 if presence_binding.is_some() {
@@ -582,7 +586,7 @@ impl TypeChecker {
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
-                        self.define_local_const(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
                 }
                 let then_ty = self.infer_expr(then_branch);
@@ -595,7 +599,7 @@ impl TypeChecker {
                         .and_then(|name| self.complement_branch(pattern, &value_ty).map(|t| (name.clone(), t)));
                     if let Some((name, ty)) = complement {
                         self.push_scope();
-                        self.define_local_const(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     } else if let Some(name) = else_binding {
                         self.errors.push(TypeError::ElseBindingNotResult {
                             name: name.clone(),
@@ -677,7 +681,7 @@ impl TypeChecker {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
                     for (name, ty) in bindings {
-                        self.define_local(name, ty);
+                        self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
                     if let Some(guard) = &arm.guard {
                         let guard_ty = self.infer_expr(guard);
@@ -1081,7 +1085,11 @@ impl TypeChecker {
                         .unwrap_or_else(|| self.ctx.fresh_var());
                     self.push_scope();
                     if !clause.is_discard() {
-                        self.define_local_const(clause.binder.clone(), err_ty);
+                        self.define_local_bound(
+                            clause.binder.clone(),
+                            err_ty,
+                            super::BoundFrom::Payload,
+                        );
                     }
                     let handler_ty = self.infer_expr(&clause.body);
                     self.pop_scope();
@@ -1130,7 +1138,11 @@ impl TypeChecker {
 
                 self.push_scope();
                 if !clause.is_discard() {
-                    self.define_local_const(clause.binder.clone(), err_ty);
+                    self.define_local_bound(
+                        clause.binder.clone(),
+                        err_ty,
+                        super::BoundFrom::Payload,
+                    );
                 }
                 let body_ty = self.infer_expr(&clause.body);
                 self.pop_scope();
@@ -1399,9 +1411,17 @@ impl TypeChecker {
                     convert: Some(*kind),
                     span: expr.span,
                 });
-                // CV7/CV10 yield `T?`; the rest yield `T`.
+                // CV7/CV10 yield `T?`. CV11/CV15/CV16 — and CV14 to an integer
+                // target — yield `T or ConvertError`. Everything else yields a
+                // bare `T`, which is the rule the spec states as "anything that
+                // can fail yields a result".
                 if kind.is_optional() {
                     Type::option(target_ty)
+                } else if kind.yields_result(matches!(prim_of(&target_ty), Some(Prim::Int { .. }))) {
+                    Type::Result {
+                        ok: Box::new(target_ty),
+                        err: Box::new(self.convert_error_type()),
+                    }
                 } else {
                     target_ty
                 }
@@ -1971,6 +1991,9 @@ impl TypeChecker {
             }
 
             if self.is_builtin_function(name) {
+                // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
+                // rewrites each argument to `x.to_string()` — the same shape
+                // `{x}` becomes. Nothing to check here (#772).
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
@@ -2228,11 +2251,27 @@ impl TypeChecker {
         }
     }
 
+    /// The argument as the reader wrote it, for PM4's message and its fix.
+    ///
+    /// Only the shapes a `mutate` argument can be — a name or a field path.
+    /// Anything else has no place to write the value back to, so it can't reach
+    /// a `mutate` parameter in the first place.
+    fn argument_text(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::argument_text(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
             | "assert" | "debug" | "format" | "fence" | "compiler_fence"
             | "assert_eq" | "skip" | "expect_fail")
     }
+
 
     /// Validate that call-site annotations match parameter declarations.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
@@ -2253,6 +2292,11 @@ impl TypeChecker {
         let param_ids = match &sym.kind {
             SymbolKind::Function { params, .. } => params.clone(),
             _ => return,
+        };
+
+        let callee_name = match &func.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => sym.name.clone(),
         };
 
         // Validate each argument annotation
@@ -2289,14 +2333,37 @@ impl TypeChecker {
                                 span: arg.expr.span,
                             });
                         }
+                        Some(super::BindingKind::Bound(from)) => {
+                            self.errors.push(TypeError::MutateBoundName {
+                                name: arg_name.clone(),
+                                from,
+                                span: arg.expr.span,
+                            });
+                        }
                         _ => {}
                     }
                 }
             }
 
             match (&arg.mode, is_take, is_mutate) {
-                // Missing annotations are OK — call-site markers are optional.
-                // IDE shows ghost annotations for visibility (spec decision).
+                // PM4: an argument going into a `mutate` parameter is written
+                // `mutate arg`. The checker backstops a misread *move* — using
+                // a value after it's moved is an error — but nothing backstops
+                // a misread *mutation*: both readings are legal code, so the
+                // one the compiler can't catch is the one that gets marked.
+                //
+                // `own` on a `take` argument stays optional (PM4), because a
+                // wrong reading there does get caught.
+                (ArgMode::Default, false, true) => {
+                    let arg_text = Self::argument_text(&arg.expr)
+                        .unwrap_or_else(|| param_name.clone());
+                    self.errors.push(TypeError::MissingMutateMarker {
+                        callee: callee_name.clone(),
+                        arg: arg_text,
+                        param_name: param_name.clone(),
+                        span: arg.expr.span,
+                    });
+                }
                 (ArgMode::Default, true, _) => {}
                 (ArgMode::Default, _, true) => {}
                 // Correct annotations are fine
@@ -2517,6 +2584,13 @@ impl TypeChecker {
                     Some(super::BindingKind::Param) => {
                         self.errors.push(TypeError::MutateReadOnlyParam {
                             name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    Some(super::BindingKind::Bound(from)) => {
+                        self.errors.push(TypeError::MutateBoundName {
+                            name: var_name.clone(),
+                            from,
                             span: object.span,
                         });
                     }
@@ -3591,48 +3665,85 @@ impl TypeChecker {
         });
     }
 
-    /// CV5–CV10: reject conversion forms applied to the wrong source/target kind.
-    fn check_convert(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
-        let surface = kind.surface();
+    /// The `ConvertError` type conversions fail with (CV11). Declared in
+    /// `stdlib/builtins.rk`, which is always in scope — a conversion is core
+    /// language, so its error can't need an import.
+    pub(super) fn convert_error_type(&self) -> Type {
+        match self.types.get_type_id("ConvertError") {
+            Some(id) => Type::Named(id),
+            None => Type::UnresolvedNamed("ConvertError".to_string()),
+        }
+    }
+
+    /// Each method is defined only where its policy means something, so
+    /// anywhere else is a compile error rather than a no-op. A method that
+    /// reads as if it did something always did.
+    fn check_convert_method(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
+        let src_is_int = matches!(prim_of(src), Some(Prim::Int { .. }));
+        let src_is_float = matches!(prim_of(src), Some(Prim::Float { .. }));
         let target_is_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
-        let src_prim = prim_of(src);
-        let msg = if kind.is_float_source() {
-            // CV8–CV10: float → int.
-            if !matches!(src_prim, Some(Prim::Float { .. })) {
-                Some(format!(
-                    "`{}` converts a float to an integer, but `{}` is not a float — for integer-to-integer use `truncate to`, `saturate to`, or `try convert to`",
-                    surface, src
-                ))
-            } else if !target_is_int {
-                Some(format!(
-                    "`{}` produces an integer, but the target `{}` is not an integer type",
-                    surface, pc.target_name
-                ))
-            } else {
-                None
-            }
-        } else {
-            // CV5–CV7: int → int.
-            if !matches!(src_prim, Some(Prim::Int { .. })) {
-                Some(format!(
-                    "`{}` converts between integer types, but `{}` is not an integer — for float-to-int use `float to int T`",
-                    surface, src
-                ))
-            } else if !target_is_int {
-                Some(format!(
-                    "`{}` produces an integer, but the target `{}` is not an integer type",
-                    surface, pc.target_name
-                ))
-            } else {
-                None
-            }
-        };
-        if let Some(message) = msg {
+        let target_is_float = matches!(prim_of(&pc.target), Some(Prim::Float { .. }));
+        if !(src_is_int || src_is_float) {
             self.errors.push(TypeError::InvalidConvert {
-                message,
+                message: format!(
+                    "`{}` converts a number, but `{}` is not a numeric type",
+                    kind.surface(), src
+                ),
                 span: pc.span,
             });
+            return;
         }
+        let message = match kind {
+            // CV11: any numeric to any numeric.
+            ConvertKind::To if target_is_int || target_is_float => None,
+            ConvertKind::To => Some(format!(
+                "`to` produces a number, but the target `{}` is not a numeric type",
+                pc.target_name
+            )),
+            // CV14: never int→int — there is nothing to round.
+            ConvertKind::Round if src_is_int && target_is_int => Some(format!(
+                "`round` has nothing to round going from `{}` to `{}` — use `to`, `wrap` or `clamp`",
+                src, pc.target_name
+            )),
+            ConvertKind::Round if target_is_int || target_is_float => None,
+            ConvertKind::Round => Some(format!(
+                "`round` produces a number, but the target `{}` is not a numeric type",
+                pc.target_name
+            )),
+            // CV12/CV13: integers only. "What would a float wrap?" has no
+            // answer, and `clamp` would have to pick a fraction policy silently
+            // to stay total — the one thing its name can't say.
+            ConvertKind::Wrap | ConvertKind::Clamp if !src_is_int => Some(format!(
+                "`{}` works between integer types, but `{}` is a float — a float conversion names its fraction policy: `to`, `round`, `floor` or `ceil`",
+                kind.surface(), src
+            )),
+            ConvertKind::Wrap | ConvertKind::Clamp if !target_is_int => Some(format!(
+                "`{}` produces an integer, but the target `{}` is not an integer type",
+                kind.surface(), pc.target_name
+            )),
+            // CV15/CV16: float source, integer target.
+            ConvertKind::Floor | ConvertKind::Ceil if !src_is_float => Some(format!(
+                "`{}` rounds a float to an integer, but `{}` is not a float — for integer-to-integer use `to`, `wrap` or `clamp`",
+                kind.surface(), src
+            )),
+            ConvertKind::Floor | ConvertKind::Ceil if !target_is_int => Some(format!(
+                "`{}` produces an integer, but the target `{}` is not an integer type",
+                kind.surface(), pc.target_name
+            )),
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.errors.push(TypeError::InvalidConvert { message, span: pc.span });
+        }
+    }
+
+    /// CV11–CV16: reject a conversion method applied where its policy means
+    /// nothing. `CheckedOption` has no surface form to reject.
+    fn check_convert(&mut self, src: &Type, kind: ConvertKind, pc: &PendingCast) {
+        if matches!(kind, ConvertKind::CheckedOption) {
+            return;
+        }
+        self.check_convert_method(src, kind, pc)
     }
 
     /// V8: an index or count argument accepts any integer type. Used by the

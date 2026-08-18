@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ORD4's legal half: comparison crosses signedness and answers by value.
+// `5u64 > -1i32` is true — neither operand is reinterpreted. Arithmetic across
+// signedness is the compile error (#778); this pins the exception.
+func main() {
+    let u: u64 = 5
+    let i: i32 = -1
+    let huge: u64 = 18446744073709551615
+    let one: i32 = 1
+
+    println("{u > i} {huge > one} {i > u}")
+}

@@ -152,8 +152,160 @@ impl<'a> OwnershipChecker<'a> {
         for decl in decls {
             self.check_decl(decl);
         }
+        self.check_size_fences(decls);
+        self.check_generic_size_fences(decls);
         OwnershipResult {
             errors: self.errors,
+        }
+    }
+
+    /// SM1/SM2: a `@small` type asserts it stays within the copy threshold.
+    ///
+    /// The annotation buys one thing — the error lands *here* rather than at
+    /// every use site. Adding a field that pushes a struct past 16 bytes flips
+    /// every assignment from copy to move (VS1/VS6), and those errors surface
+    /// wherever the type is passed, with only the `MoveReason` note connecting
+    /// them back to a field nobody was looking at.
+    ///
+    /// Nothing else changes: `@small` never raises the threshold and never
+    /// makes a type copy that otherwise wouldn't. It's an assertion about
+    /// layout, so the check is a size comparison and nothing more (SM1).
+    fn check_size_fences(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let DeclKind::Struct(s) = &decl.kind else { continue };
+            if !s.attrs.iter().any(|a| a == "small") {
+                continue;
+            }
+            let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
+            let ty = rask_types::Type::Named(type_id);
+            let size = self.type_size(&ty);
+            if size <= 16 {
+                continue;
+            }
+            // Name the field that took it over: walking in declaration order,
+            // the first one whose end crosses 16 is the one a reader would
+            // delete or shrink. More useful than the total alone, which says
+            // the type is too big without saying where to look.
+            let offending_field = self
+                .program
+                .types
+                .get(type_id)
+                .and_then(|def| match def {
+                    rask_types::TypeDef::Struct { fields, .. } => Some(fields.clone()),
+                    _ => None,
+                })
+                .and_then(|fields| {
+                    let mut running = 0usize;
+                    for (name, field_ty) in &fields {
+                        let field_size = self.type_size(field_ty);
+                        running += field_size;
+                        if running > 16 {
+                            return Some((name.clone(), field_size));
+                        }
+                    }
+                    None
+                });
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::SmallTypeTooBig {
+                    type_name: s.name.clone(),
+                    size,
+                    offending_field,
+                },
+                span: decl.span,
+            });
+        }
+    }
+
+    /// SM3: a `@small` generic type has to fit at *every* instantiation.
+    ///
+    /// The annotation is read at the definition, but it's a promise about the
+    /// concrete types callers plug in. `@small struct Pair<T>` is 16 bytes at
+    /// `Pair<i64>` and 32 at `Pair<string>` — the same source text, one of
+    /// which quietly breaks the promise. Checking only the declaration would
+    /// pass both, which is the worst of the two: the annotation says "cheap to
+    /// copy" and the reader has no way to tell it isn't.
+    ///
+    /// So every instantiation the program actually mentions gets sized with
+    /// its type arguments substituted in. The error lands on the declaration
+    /// rather than the use site, because that's where the promise was made and
+    /// where either fix goes — narrow what the type holds, or drop `@small`.
+    fn check_generic_size_fences(&mut self, decls: &[Decl]) {
+        // Only generic structs carrying the fence. Concrete ones already went
+        // through check_size_fences.
+        let mut fenced: HashMap<String, Span> = HashMap::new();
+        for decl in decls {
+            let DeclKind::Struct(s) = &decl.kind else { continue };
+            if s.type_params.is_empty() || !s.attrs.iter().any(|a| a == "small") {
+                continue;
+            }
+            fenced.insert(s.name.clone(), decl.span);
+        }
+        if fenced.is_empty() {
+            return;
+        }
+
+        // Every generic type the program mentions, from the types the checker
+        // settled on. Nested ones count too — `Vec<Pair<string>>` instantiates
+        // `Pair<string>` just as much as a bare binding does.
+        let mut instances: Vec<(rask_types::TypeId, Vec<rask_types::GenericArg>)> = Vec::new();
+        for ty in self.program.node_types.values() {
+            collect_generic_instances(ty, &mut instances);
+        }
+
+        let mut reported: HashSet<String> = HashSet::new();
+        for (base, args) in instances {
+            let Some(rask_types::TypeDef::Struct { name, type_params, fields, .. }) =
+                self.program.types.get(base)
+            else {
+                continue;
+            };
+            let (name, type_params, fields) =
+                (name.clone(), type_params.clone(), fields.clone());
+            let Some(decl_span) = fenced.get(&name).copied() else { continue };
+            if type_params.len() != args.len() {
+                continue;
+            }
+
+            let full = Type::Generic { base, args: args.clone() };
+            let rendered = format!("{}", self.program.types.resolve_type_names(&full));
+            if !reported.insert(rendered.clone()) {
+                continue;
+            }
+
+            let subst: HashMap<&str, &Type> = type_params
+                .iter()
+                .zip(args.iter())
+                .filter_map(|(p, a)| match a {
+                    rask_types::GenericArg::Type(t) => Some((p.as_str(), t.as_ref())),
+                    _ => None,
+                })
+                .collect();
+
+            let mut total = 0usize;
+            let mut offender = None;
+            for (field_name, field_ty) in &fields {
+                let concrete = substitute_params(field_ty, &subst);
+                let field_size = self.type_size(&concrete);
+                total += field_size;
+                if total > 16 && offender.is_none() {
+                    let ty_text =
+                        format!("{}", self.program.types.resolve_type_names(&concrete));
+                    offender = Some((field_name.clone(), field_size, ty_text));
+                }
+            }
+            if total <= 16 {
+                continue;
+            }
+
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::SmallInstantiationTooBig {
+                    type_name: rendered,
+                    base_name: name.split('<').next().unwrap_or(&name).to_string(),
+                    size: total,
+                    offending_field: offender,
+                },
+                span: decl_span,
+            });
         }
     }
 
@@ -553,6 +705,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
+                    self.consume_returned_resources(expr);
                     // SL2: Check if returning a scope-limited closure
                     if let ExprKind::Ident(name) = &expr.kind {
                         if self.scope_limited_closures.contains_key(name) {
@@ -2675,6 +2828,75 @@ impl<'a> OwnershipChecker<'a> {
         self.ensure_spans.entry(name.to_string()).or_insert(ensure_span);
     }
 
+    /// A `return` hands its value to the caller, which consumes any resource in
+    /// it (mem.linear/L2).
+    ///
+    /// Reading a name isn't a move, so `return conn` left the binding Owned and
+    /// scope exit reported it as leaked — with a suggested fix (`close()` it
+    /// first) that would hand the caller a dead connection. There was no version
+    /// of the function that satisfied the checker and still worked (#792).
+    ///
+    /// Aggregates count, because handing back `(request, responder)` is what the
+    /// flagship `Responder` design does. A projection doesn't: `return conn.fd`
+    /// reads a field and leaves the resource behind, which really is a leak.
+    fn consume_returned_resources(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if self.resource_bindings.contains(name)
+                    && matches!(self.bindings.get(name), Some(BindingState::Owned))
+                {
+                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.consume_returned_resources(e);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.consume_returned_resources(&f.value);
+                }
+                if let Some(s) = spread {
+                    self.consume_returned_resources(s);
+                }
+            }
+            // `Holder.Full(conn)` — an enum variant carrying a payload, which
+            // parses as a method call on the type name. A free function call
+            // isn't here on purpose: passing a resource to one already moves it
+            // through the argument path, which knows the parameter's mode and
+            // this doesn't.
+            ExprKind::MethodCall { object, method, args, .. }
+                if self.names_a_variant(object, method) =>
+            {
+                for arg in args {
+                    self.consume_returned_resources(&arg.expr);
+                }
+            }
+            // The value a branch produces is the value returned.
+            ExprKind::If { then_branch, else_branch, .. } => {
+                self.consume_returned_resources(then_branch);
+                if let Some(e) = else_branch {
+                    self.consume_returned_resources(e);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Is `object.method(…)` an enum variant construction rather than a call?
+    /// Read off the type table, which is authoritative for type names — a
+    /// variant can share its name with one from another enum.
+    fn names_a_variant(&self, object: &Expr, method: &str) -> bool {
+        let ExprKind::Ident(name) = &object.kind else { return false };
+        let Some(type_id) = self.program.types.get_type_id(name) else { return false };
+        matches!(
+            self.program.types.get(type_id),
+            Some(rask_types::TypeDef::Enum { variants, .. })
+                if variants.iter().any(|(v, _)| v == method)
+        )
+    }
+
     /// Extract resource names from ensure expressions (e.g., `file.close()`).
     fn mark_ensure_expr(&mut self, expr: &Expr, ensure_span: Span) {
         match &expr.kind {
@@ -2773,4 +2995,86 @@ impl<'a> OwnershipChecker<'a> {
 pub fn check_ownership(program: &TypedProgram, decls: &[Decl]) -> OwnershipResult {
     let checker = OwnershipChecker::new(program);
     checker.check(decls)
+}
+
+/// Every `Name<Args…>` reachable inside a type, including nested ones.
+fn collect_generic_instances(
+    ty: &Type,
+    out: &mut Vec<(rask_types::TypeId, Vec<rask_types::GenericArg>)>,
+) {
+    use rask_types::GenericArg;
+    match ty {
+        Type::Generic { base, args } => {
+            out.push((*base, args.clone()));
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    collect_generic_instances(t, out);
+                }
+            }
+        }
+        Type::UnresolvedGeneric { args, .. } => {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    collect_generic_instances(t, out);
+                }
+            }
+        }
+        Type::Result { ok, err } => {
+            collect_generic_instances(ok, out);
+            collect_generic_instances(err, out);
+        }
+        Type::Array { elem, .. } => collect_generic_instances(elem, out),
+        Type::Slice(inner) | Type::RawPtr(inner) => collect_generic_instances(inner, out),
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                collect_generic_instances(e, out);
+            }
+        }
+        Type::Fn { params, ret } => {
+            for p in params {
+                collect_generic_instances(p, out);
+            }
+            collect_generic_instances(ret, out);
+        }
+        _ => {}
+    }
+}
+
+/// Replace a generic struct's type parameters with the instantiation's
+/// arguments. Parameters reach here as `UnresolvedNamed("T")` — the checker
+/// never resolves them to a TypeId because there's nothing to resolve to.
+fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
+    use rask_types::GenericArg;
+    match ty {
+        Type::UnresolvedNamed(name) => match subst.get(name.as_str()) {
+            Some(t) => (*t).clone(),
+            None => ty.clone(),
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(substitute_params(ok, subst)),
+            err: Box::new(substitute_params(err, subst)),
+        },
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(substitute_params(elem, subst)),
+            len: *len,
+        },
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_params(inner, subst))),
+        Type::RawPtr(inner) => Type::RawPtr(Box::new(substitute_params(inner, subst))),
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|e| substitute_params(e, subst)).collect())
+        }
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => {
+                        GenericArg::Type(Box::new(substitute_params(t, subst)))
+                    }
+                    other => other.clone(),
+                })
+                .collect(),
+        },
+        _ => ty.clone(),
+    }
 }

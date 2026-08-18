@@ -43,9 +43,9 @@ func main() {
     let first = numbers.iter().find(|x| x > 0)
     let last = numbers.iter().find(|x| x == 5)
 
-    if first? {
+    if first? as n {
         print("First: ")
-        print(first)
+        print(n)
         print("\n")
     } else {
         print("No first\n")

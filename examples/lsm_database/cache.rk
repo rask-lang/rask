@@ -178,8 +178,8 @@ test "block cache eviction" {
     mut i = 0
     while i < MAX_CACHE_ENTRIES + 10 {
         mut entries = Vec.new()
-        entries.push(KeyValue.new("k", "v", i truncate to i64))
-        cache.put(i truncate to i32, 0, entries)
+        entries.push(KeyValue.new("k", "v", i.wrap<i64>()))
+        cache.put(i.wrap<i32>(), 0, entries)
         i += 1
     }
 

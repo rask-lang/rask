@@ -20,9 +20,9 @@ func main() {
     scores.insert("Charlie", 92)
 
     let alice_score = scores.get("Alice")
-    if alice_score? {
+    if alice_score? as score {
         print("Alice's score: ")
-        print(alice_score)
+        print(score)
         print("\n")
     }
 

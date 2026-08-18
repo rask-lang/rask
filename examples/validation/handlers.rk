@@ -59,7 +59,7 @@ func handle_health() -> Response or ApiError {
     let up = started.elapsed()
     let body = HealthBody {
         status: "ok",
-        uptime_ms: up.as_millis() saturate to i64,
+        uptime_ms: up.as_millis().clamp<i64>(),
         tasks: count,
     }
     return json_response(200, json.encode(body))

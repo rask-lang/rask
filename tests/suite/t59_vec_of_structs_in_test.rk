@@ -47,7 +47,7 @@ test "a u64 field summed through a for loop" {
 
     mut ids = 0
     for v in page {
-        ids += v.id saturate to i64
+        ids += v.id.clamp<i64>()
     }
     assert ids == 60
 }

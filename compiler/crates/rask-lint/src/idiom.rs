@@ -7,7 +7,7 @@
 //! - duck-trait: Flag `duck trait` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{BinOp, Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::types::*;
@@ -305,155 +305,100 @@ fn check_expr_for_resource(
     }
 }
 
-/// idiom/ensure-ordering: Flag ensure registration order that doesn't match
-/// variable acquisition order. LIFO execution means misordered ensures clean
-/// up resources in the wrong sequence.
+/// idiom/ensure-ordering: cleanup order that tears a dependency down too early.
 ///
-/// Good (LIFO gives correct cleanup):
-///   let a = open("a")
-///   ensure a.close()       // registered 1st → runs LAST
-///   let b = open("b")
-///   ensure b.close()       // registered 2nd → runs FIRST
+/// `ensure` bodies run LIFO, so a resource derived from another has its
+/// `ensure` registered *second*:
 ///
-/// Bad (LIFO gives reversed cleanup):
-///   let a = open("a")
-///   let b = open("b")
-///   ensure b.close()       // registered 1st → runs LAST  (b closed after a!)
-///   ensure a.close()       // registered 2nd → runs FIRST (a closed before b!)
+///   let w = make_world()
+///   ensure w.destroy()          // registered 1st -> runs LAST
+///   let b = make_body(w)
+///   ensure b.close(w)           // registered 2nd -> runs FIRST
+///
+/// Swap the two and `b.close(w)` runs against a destroyed world.
+///
+/// This used to compare *creation order* as a proxy for derivation, which
+/// flagged two unrelated resources whose order genuinely doesn't matter — a
+/// world and a log file cleaned up in either sequence is fine, and the lint
+/// called it an error. It now shares its evidence with the W10 compiler warning
+/// (`rask_effects::ensure_order`, mem.resource-types/EO1) so `rask lint` and
+/// `rask check` can't disagree about the same two lines (#584).
 pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    rask_effects::ensure_order::check(decls)
+        .into_iter()
+        .map(|w| {
+            let (line, col) = util::line_col(source, w.span.start);
+            let source_line = util::get_source_line(source, line);
+            LintDiagnostic {
+                rule: "idiom/ensure-ordering".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "`{}` is cleaned up before `{}`, which needs it — \
+                     `ensure` runs LIFO, so the dependency's ensure comes first \
+                     (mem.resource-types/EO1)",
+                    w.dependency, w.dependent
+                ),
+                location: LintLocation { line, column: col, source_line },
+                fix: w.fixed_order.replace('\n', " then "),
+            }
+        })
+        .collect()
+}
+
+/// idiom/too-many-contexts: a signature that has become an environment dump.
+///
+/// Context clauses bubble: every callee's contexts appear on its callers, so a
+/// deep call chain accumulates them. Past a few, the signature stops telling you
+/// what the function takes and starts listing what the program owns — which is
+/// the friction the complexity stress test named (#585).
+///
+/// A lint, not a language rule: four contexts is sometimes the honest shape, and
+/// the three ways out are all restructurings the author has to choose between.
+pub fn check_too_many_contexts(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    const MAX_CONTEXTS: usize = 3;
     let mut diags = Vec::new();
-
     for decl in decls {
-        let body = match &decl.kind {
-            DeclKind::Fn(f) => &f.body,
-            _ => continue,
-        };
-        check_ensure_ordering_in_block(body, source, &mut diags);
+        for f in decl_fns(decl) {
+            let count = f.context_clauses.len();
+            if count <= MAX_CONTEXTS {
+                continue;
+            }
+            // The clause that took it over, so the underline lands on one
+            // clause rather than the whole signature.
+            let offender = &f.context_clauses[MAX_CONTEXTS];
+            let (line, col) = util::line_col(source, offender.span.start);
+            let source_line = util::get_source_line(source, line);
+            let names: Vec<String> = f
+                .context_clauses
+                .iter()
+                .map(|c| c.name.clone().unwrap_or_else(|| c.ty.clone()))
+                .collect();
+            diags.push(LintDiagnostic {
+                rule: "idiom/too-many-contexts".to_string(),
+                severity: Severity::Warning,
+                message: format!(
+                    "`{}` takes {} context clauses ({}) — past three the signature reads as an environment dump rather than a signature",
+                    f.name,
+                    count,
+                    names.join(", "),
+                ),
+                location: LintLocation { line, column: col, source_line },
+                fix: "group the contexts into one struct and pass that, pass the individual fields the body actually uses, or split the function"
+                    .to_string(),
+            });
+        }
     }
-
     diags
 }
 
-fn check_ensure_ordering_in_block(
-    stmts: &[Stmt],
-    source: &str,
-    diags: &mut Vec<LintDiagnostic>,
-) {
-    // Track binding order: variable name → position index
-    let mut binding_order: Vec<String> = Vec::new();
-    // Track ensure receivers in registration order
-    let mut ensure_receivers: Vec<(String, &Stmt)> = Vec::new();
-
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
-                binding_order.push(name.clone());
-            }
-            StmtKind::Ensure { body, .. } => {
-                if let Some(receiver) = extract_ensure_receiver(body) {
-                    ensure_receivers.push((receiver, stmt));
-                }
-            }
-            // Recurse into nested blocks
-            StmtKind::While { body, .. }
-            | StmtKind::WhileLet { body, .. }
-            | StmtKind::For { body, .. }
-            | StmtKind::Loop { body, .. } => {
-                check_ensure_ordering_in_block(body, source, diags);
-            }
-            StmtKind::Expr(expr) => {
-                recurse_ensure_ordering_in_expr(expr, source, diags);
-            }
-            _ => {}
-        }
-    }
-
-    // Check: ensure receivers' binding positions must be non-decreasing.
-    // If receiver B (bound later) has its ensure registered before receiver A
-    // (bound earlier), LIFO will clean up A first — wrong.
-    if ensure_receivers.len() < 2 {
-        return;
-    }
-
-    let positions: Vec<Option<usize>> = ensure_receivers
-        .iter()
-        .map(|(name, _)| binding_order.iter().position(|b| b == name))
-        .collect();
-
-    let mut prev_pos: Option<usize> = None;
-    for (i, pos) in positions.iter().enumerate() {
-        let Some(current) = pos else { continue };
-        if let Some(prev) = prev_pos {
-            if *current < prev {
-                // Out of order: this ensure's variable was bound earlier
-                // than the previous ensure's variable, but registered later.
-                let (prev_name, _) = &ensure_receivers[i - 1];
-                let (curr_name, curr_stmt) = &ensure_receivers[i];
-
-                let (line, col) = util::line_col(source, curr_stmt.span.start);
-                let source_line = util::get_source_line(source, line);
-                diags.push(LintDiagnostic {
-                    rule: "idiom/ensure-ordering".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "`ensure {curr_name}...` registered after `ensure {prev_name}...`, \
-                         but `{curr_name}` was created first — \
-                         LIFO will close `{curr_name}` before `{prev_name}` (ctrl.ensure/EN2)"
-                    ),
-                    location: LintLocation {
-                        line,
-                        column: col,
-                        source_line,
-                    },
-                    fix: "interleave acquisition and ensure: \
-                          acquire → ensure → acquire → ensure"
-                        .to_string(),
-                });
-            }
-        }
-        prev_pos = Some(*current);
-    }
-}
-
-fn recurse_ensure_ordering_in_expr(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    match &expr.kind {
-        ExprKind::Block(stmts)
-        | ExprKind::UsingBlock { body: stmts, .. }
-        | ExprKind::Spawn { body: stmts }
-        | ExprKind::Unsafe { body: stmts }
-        | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. }
-        | ExprKind::Loop { body: stmts, .. } => {
-            check_ensure_ordering_in_block(stmts, source, diags);
-        }
-        _ => {}
-    }
-}
-
-/// Extract the receiver variable name from an ensure body.
-/// Handles `ensure x.method()` and `ensure x.method(args)`.
-/// Returns None for complex expressions we can't analyze.
-fn extract_ensure_receiver(body: &[Stmt]) -> Option<String> {
-    if body.len() != 1 {
-        return None;
-    }
-    let expr = match &body[0].kind {
-        StmtKind::Expr(e) => e,
-        _ => return None,
-    };
-    match &expr.kind {
-        ExprKind::MethodCall { object, .. } => match &object.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            _ => None,
-        },
-        ExprKind::Call { func, .. } => match &func.kind {
-            ExprKind::Field { object, .. } => match &object.kind {
-                ExprKind::Ident(name) => Some(name.clone()),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
+/// Every function declaration in a decl — free functions, methods, tests.
+fn decl_fns(decl: &Decl) -> Vec<&rask_ast::decl::FnDecl> {
+    match &decl.kind {
+        DeclKind::Fn(f) => vec![f],
+        DeclKind::Struct(s) => s.methods.iter().collect(),
+        DeclKind::Enum(e) => e.methods.iter().collect(),
+        DeclKind::Impl(i) => i.methods.iter().collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -726,4 +671,156 @@ fn check_expr_for_none_eq(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnos
         location: LintLocation { line, column: col, source_line },
         fix: fix.to_string(),
     });
+}
+
+/// idiom/mod-for-index: `%` producing an index, where a negative left operand
+/// would produce a negative index.
+///
+/// `%` takes the dividend's sign (type.operators/AR2), so `(i - 1) % n` is `-1`
+/// when `i` is 0 — and indexing with it panics rather than wrapping to the end
+/// of the buffer, which is what the code meant. `.mod(n)` is the floored answer
+/// (AR3), always in range.
+///
+/// Deliberately narrow: only where the remainder is the *index* of a `[…]`
+/// access, and only when the left operand isn't obviously non-negative. A `%`
+/// whose result is a value rather than an index is usually exactly what was
+/// wanted, and flagging those would drown the case that isn't.
+pub fn check_mod_for_index(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+    for decl in decls {
+        for body in decl_bodies(decl) {
+            walk_stmts_for_mod_index(body, source, &mut diags);
+        }
+    }
+    diags
+}
+
+fn walk_stmts_for_mod_index(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
+                walk_expr_for_mod_index(init, source, diags)
+            }
+            StmtKind::LetTuple { init, .. } => walk_expr_for_mod_index(init, source, diags),
+            StmtKind::Expr(e) => walk_expr_for_mod_index(e, source, diags),
+            StmtKind::Return(Some(e)) => walk_expr_for_mod_index(e, source, diags),
+            StmtKind::Assign { value, .. } => walk_expr_for_mod_index(value, source, diags),
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Loop { body, .. } => walk_stmts_for_mod_index(body, source, diags),
+            _ => {}
+        }
+    }
+}
+
+fn walk_expr_for_mod_index(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
+    if let ExprKind::Index { object, index } = &expr.kind {
+        if let ExprKind::Binary { op: BinOp::Mod, left, right } = &index.kind {
+            if !is_obviously_non_negative(left) {
+                let (line, col) = util::line_col(source, index.span.start);
+                let source_line = util::get_source_line(source, line);
+                let container = expr_text(object).unwrap_or_else(|| "…".to_string());
+                // A compound left operand keeps its parens in both the message
+                // and the fix: `i - 1.mod(n)` parses as `i - (1.mod(n))`, so a
+                // fix printed without them is wrong code.
+                let lhs = expr_text_grouped(left).unwrap_or_else(|| "i".to_string());
+                let rhs = expr_text(right).unwrap_or_else(|| "n".to_string());
+                diags.push(LintDiagnostic {
+                    rule: "idiom/mod-for-index".to_string(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "`{lhs} % {rhs}` is negative when `{lhs}` is — `%` takes the \
+                         dividend's sign, so this indexes out of range instead of \
+                         wrapping (type.operators/AR2)"
+                    ),
+                    location: LintLocation { line, column: col, source_line },
+                    fix: format!("{container}[{lhs}.mod({rhs})]"),
+                });
+            }
+        }
+        walk_expr_for_mod_index(object, source, diags);
+        walk_expr_for_mod_index(index, source, diags);
+        return;
+    }
+    match &expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            walk_expr_for_mod_index(left, source, diags);
+            walk_expr_for_mod_index(right, source, diags);
+        }
+        ExprKind::Unary { operand, .. } => walk_expr_for_mod_index(operand, source, diags),
+        ExprKind::Call { args, .. } => {
+            for a in args {
+                walk_expr_for_mod_index(&a.expr, source, diags);
+            }
+        }
+        ExprKind::MethodCall { object, args, .. } => {
+            walk_expr_for_mod_index(object, source, diags);
+            for a in args {
+                walk_expr_for_mod_index(&a.expr, source, diags);
+            }
+        }
+        ExprKind::Block(stmts) => walk_stmts_for_mod_index(stmts, source, diags),
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
+            walk_expr_for_mod_index(cond, source, diags);
+            walk_expr_for_mod_index(then_branch, source, diags);
+            if let Some(e) = else_branch {
+                walk_expr_for_mod_index(e, source, diags);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Left operands that can't be negative, so `%` on them is already in range.
+///
+/// A non-negative literal, and a `.len()`/`.count()` call — the two shapes that
+/// make up most correct `%`-as-index code. Anything else is left to the warning,
+/// which is a suggestion rather than an error.
+fn is_obviously_non_negative(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(v, _) => *v >= 0,
+        ExprKind::MethodCall { method, .. } => matches!(method.as_str(), "len" | "count"),
+        ExprKind::Binary { op: BinOp::Add | BinOp::Mul, left, right } => {
+            is_obviously_non_negative(left) && is_obviously_non_negative(right)
+        }
+        _ => false,
+    }
+}
+
+/// Like `expr_text`, but parenthesized when it's a compound expression, so it
+/// can sit to the left of a `.` or an operator without regrouping.
+fn expr_text_grouped(e: &Expr) -> Option<String> {
+    let text = expr_text(e)?;
+    Some(match &e.kind {
+        ExprKind::Binary { .. } => format!("({})", text),
+        _ => text,
+    })
+}
+
+/// An expression as the reader wrote it, for the message and the fix.
+fn expr_text(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(n) => Some(n.clone()),
+        ExprKind::Int(v, _) => Some(v.to_string()),
+        ExprKind::Field { object, field } => Some(format!("{}.{}", expr_text(object)?, field)),
+        ExprKind::Binary { op, left, right } => Some(format!(
+            "{} {} {}",
+            expr_text(left)?,
+            binop_text(op)?,
+            expr_text(right)?
+        )),
+        _ => None,
+    }
+}
+
+fn binop_text(op: &BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        _ => return None,
+    })
 }

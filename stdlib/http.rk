@@ -9,7 +9,6 @@
 
 import async.spawn
 import net
-import json
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -53,6 +52,13 @@ extend Method {
         return none
     }
 
+}
+
+// std.fmt/D3: an enum opts into Displayable by declaring the conformance — a
+// bare `extend` with a `to_string` in it doesn't count. Without this header
+// `format_http_request` couldn't call `req.method.to_string()`, so `rask check
+// stdlib/fmt.rk` failed on a stdlib file.
+extend Method with Displayable {
     // Serialize to the standard HTTP method string.
     public func to_string(self) -> string {
         match self {
@@ -567,7 +573,7 @@ func parse_http_response(raw: string) -> Response or HttpError {
     let status_str = raw[first_sp + 1..second_sp].to_string()
     let status_val = status_str.parse_int()
         ?? return HttpError.InvalidResponse("bad status code: {status_str}")
-    let status = status_val truncate to u16
+    let status = status_val.wrap<u16>()
 
     // Parse headers
     mut headers = Headers.new()

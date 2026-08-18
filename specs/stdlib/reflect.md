@@ -49,6 +49,8 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
+`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer` and `is_float` fold to constants on both backends. `size_of`, `align_of`, `is_copy`, `is_resource` and `is_flat` are not implemented on either — they need the monomorphized layout, which only the native backend has, and giving one backend a real number while the other guessed would make the two disagree. Both report it rather than answering (#791).
+
 <!-- test: skip -->
 ```rask
 comptime {

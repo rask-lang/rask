@@ -3,7 +3,7 @@
 
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
-use crate::value::{map_entries_seeded, MapKey, Value};
+use crate::value::{map_entries_seeded, FloatKind, MapKey, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -621,6 +621,14 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
             // A genuinely negative value has no u128 to widen into; leave it for
             // the ordinary signedness check rather than wrapping it here.
             "u128" if widened >= 0 => return Value::Uint128(widened as u128),
+            // `let a: f64 = 1` — type.primitives/L1 lets an unsuffixed literal
+            // take the annotated type, and a float is one of the types it can
+            // take. This bound a plain `Value::Int`, so the binding printed as
+            // `1` and then `a * 2.0` failed with "expected int, got f64" while
+            // native computed 2 (#798). The annotation is where the width and
+            // the kind are both known.
+            "f64" => return Value::Float(n as f64, FloatKind::F64),
+            "f32" => return Value::Float(n as f32 as f64, FloatKind::F32),
             _ => {}
         }
     }

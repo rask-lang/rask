@@ -502,9 +502,15 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
 
     // Remove test decls and user's main() — the runner replaces main.
     // Keep @test functions since they're callable from other code.
+    //
+    // Only when there *is* a runner. With no tests (or none matching the
+    // filter) nothing replaces `main`, and dropping it left the program with no
+    // entry point — which the caller used to be spared because it checked for
+    // tests before monomorphizing, and no longer does (#330).
+    let has_runner = !tests.is_empty();
     decls.retain(|d| {
         !matches!(&d.kind, DeclKind::Test(_))
-            && !matches!(&d.kind, DeclKind::Fn(f) if f.name == "main")
+            && !(has_runner && matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"))
     });
 
     // Add test body functions
@@ -700,10 +706,13 @@ pub fn extract_benchmarks(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(S
         }
     }
 
-    // Remove benchmark decls and user's main() — the runner replaces main
+    // Remove benchmark decls and user's main() — the runner replaces main.
+    // Only when there is one: with no benchmarks nothing takes main's place,
+    // and dropping it leaves the program with no entry point (#330).
+    let has_runner = !benchmarks.is_empty();
     decls.retain(|d| {
         !matches!(&d.kind, DeclKind::Benchmark(_))
-            && !matches!(&d.kind, DeclKind::Fn(f) if f.name == "main")
+            && !(has_runner && matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"))
     });
 
     // Add benchmark body functions

@@ -791,20 +791,59 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::Isize) => MirType::isize_ty(),
                     Some(IntSuffix::Usize) => MirType::usize_ty(),
-                    Some(IntSuffix::I128 | IntSuffix::U128) => MirType::I64,
+                    Some(IntSuffix::I128) => MirType::I128,
+                    Some(IntSuffix::U128) => MirType::U128,
                     // An unsuffixed literal the checker didn't pin down takes the
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal
                     // defaults, and i64 holds every value i32 does.
-                    None => self
-                        .ctx
-                        .lookup_node_type(expr.id)
-                        .filter(|t| matches!(t,
-                            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64))
-                        .unwrap_or(MirType::I64),
+                    None => {
+                        // `let x: f64 = 1` — the checker settles the literal as a
+                        // float, and the integer filter below dropped that answer
+                        // and fell back to i64. An `Int` constant then went into
+                        // an f64 slot and Cranelift's verifier hit `unreachable`,
+                        // so a three-line program crashed the *compiler*. Take the
+                        // checker's answer: the literal is a float, so is the
+                        // constant.
+                        let settled = self.ctx.lookup_node_type(expr.id);
+                        if let Some(float_ty @ (MirType::F32 | MirType::F64)) = settled {
+                            return Ok((
+                                MirOperand::Constant(MirConst::Float(*val as f64)),
+                                float_ty,
+                            ));
+                        }
+                        settled
+                            .filter(|t| matches!(t,
+                                MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                                | MirType::I128 | MirType::U128))
+                            .unwrap_or(MirType::I64)
+                    }
                 };
-                Ok((MirOperand::Constant(MirConst::Int(*val)), ty))
+                // A literal too big for `i64` gets `U64ByMagnitude` from the
+                // lexer — that's about how it was *written*, not what it is. If
+                // the checker settled the node at 128 bits, take that: otherwise
+                // `let u: u128 = 18446744073709551615` became a `u64` whose bit
+                // pattern is -1 and then sign-extended to `u128::MAX` (#762).
+                let ty = if matches!(suffix, None | Some(IntSuffix::U64ByMagnitude)) {
+                    match self.ctx.lookup_node_type(expr.id) {
+                        Some(wide @ (MirType::I128 | MirType::U128)) => wide,
+                        _ => ty,
+                    }
+                } else {
+                    ty
+                };
+                // A 128-bit slot needs the widening decided here, where the
+                // signedness is still known. The lexer carries a literal as a
+                // 64-bit *bit pattern* — `u64::MAX` arrives as -1 — so an
+                // unsigned target reads the payload back as `u64` first, or the
+                // constant would sign-extend to all ones (#762).
+                let konst = match ty {
+                    MirType::I128 => MirConst::Int128(*val as i128),
+                    MirType::U128 => MirConst::Int128(*val as u64 as i128),
+                    _ => MirConst::Int(*val),
+                };
+                Ok((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, suffix) => {
                 let ty = match suffix {
@@ -2146,6 +2185,42 @@ impl<'a> MirLowerer<'a> {
                         .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
                     let offset = field_layout.map(|f| f.offset).unwrap_or(0);
                     let store_size = field_layout.map(|f| f.size);
+                    // A generic type gets one layout for every instantiation, laid
+                    // out with a word-sized placeholder per type parameter. An
+                    // aggregate type argument is bigger than that, so the store
+                    // runs past its own slot and the read comes back garbage —
+                    // `One { only: Big { … } }` with a 24-byte Big segfaulted,
+                    // silently (#781). Refuse instead, at the field whose two
+                    // sizes disagree.
+                    //
+                    // Only when the value is stored *inline*. A field that holds a
+                    // reference has a word-sized slot on purpose and its value's
+                    // own size says nothing about it:
+                    //
+                    //   `Owned<T>` heap-allocates just below, so any size fits.
+                    //   `Handle<T>?` is a niche — the handle *is* the value and
+                    //   `none` is the all-ones sentinel — so it occupies 8 bytes
+                    //   even though `Option(Handle).size()` reports 16.
+                    let stores_a_reference = field_layout
+                        .is_some_and(|f| self.owned_payload(&f.ty).is_some())
+                        || matches!(&val_ty, MirType::Option(inner) if **inner == MirType::Handle);
+                    if let Some(fl) = field_layout {
+                        let value_size = val_ty.size();
+                        if !stores_a_reference
+                            && val_ty.passed_by_address()
+                            && !matches!(val_ty, MirType::String)
+                            && value_size > fl.size
+                        {
+                            return Err(LoweringError::InvalidConstruct(format!(
+                                "field `{}` holds {} bytes but its slot is {} — a generic \
+                                 type is laid out once for every instantiation, with a \
+                                 word-sized placeholder per type parameter, so an \
+                                 aggregate type argument doesn't fit. Box it, or use a \
+                                 concrete type here (#781)",
+                                field.name, value_size, fl.size
+                            )));
+                        }
+                    }
                     // A `T?` or `T or E` field given a plain `T` has to be
                     // wrapped here. Stored bare, the value landed where the tag
                     // belongs — `Row { name: "bo" }` for a `string?` field put
@@ -2873,8 +2948,28 @@ impl<'a> MirLowerer<'a> {
                     return Ok(self.emit_trait_box(val, &concrete_mir_ty, &trait_name));
                 }
 
-                let (val, _) = self.lower_expr(expr)?;
+                let (val, source_ty) = self.lower_expr(expr)?;
                 let target_ty = self.ctx.resolve_type_str(ty);
+
+                // E18: `e as i64` on a fieldless enum extracts the discriminant.
+                // An enum value is passed by address, so casting it directly
+                // handed back the *address* — 140726462192184 where the tag was
+                // wanted, and a different number every run. `& 0xFF` in a wire
+                // encoder masks that into a plausible wrong byte, so a packed
+                // instruction came out with an arbitrary opcode and nothing
+                // crashed (#796). Read the tag the way `.discriminant()` does,
+                // then cast that.
+                let val = if matches!(source_ty, MirType::Enum(_)) && target_ty.is_int_like() {
+                    let tag_local = self.builder.alloc_temp(MirType::U16);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: tag_local,
+                        rvalue: MirRValue::EnumTag { value: val },
+                    }));
+                    MirOperand::Local(tag_local)
+                } else {
+                    val
+                };
+
                 let result_local = self.builder.alloc_temp(target_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
@@ -2892,6 +2987,14 @@ impl<'a> MirLowerer<'a> {
                 let target_ty = self.ctx.resolve_type_str(target);
                 let result_ty = if kind.is_optional() {
                     MirType::Option(Box::new(target_ty.clone()))
+                } else if kind.yields_result(target_ty.is_int_like()) {
+                    // CV11/CV14–CV16: anything that can fail yields a result,
+                    // so `!`, `try` and `catch` all work on it without the
+                    // conversion inventing an error vocabulary of its own.
+                    MirType::Result {
+                        ok: Box::new(target_ty.clone()),
+                        err: Box::new(self.ctx.resolve_type_str("ConvertError")),
+                    }
                 } else {
                     target_ty.clone()
                 };
@@ -3302,12 +3405,24 @@ impl<'a> MirLowerer<'a> {
                         || matches!(right_ty, MirType::F32 | MirType::F64);
                     let is_char = matches!(left_ty, MirType::Char)
                         && matches!(right_ty, MirType::Char);
+                    // A 128-bit comparison gets its own helper: narrowing the
+                    // operands to report them would print the wrong numbers,
+                    // since the values worth asserting about at that width are
+                    // the ones i64 can't hold (#762).
+                    let is_i128 = matches!(left_ty, MirType::I128)
+                        || matches!(right_ty, MirType::I128);
+                    let is_u128 = matches!(left_ty, MirType::U128)
+                        || matches!(right_ty, MirType::U128);
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
                     } else if is_float {
                         "assert_fail_cmp_f64"
                     } else if is_char {
                         "assert_fail_cmp_char"
+                    } else if is_u128 {
+                        "assert_fail_cmp_u128"
+                    } else if is_i128 {
+                        "assert_fail_cmp_i128"
                     } else {
                         "assert_fail_cmp_i64"
                     };
@@ -3318,7 +3433,15 @@ impl<'a> MirLowerer<'a> {
                     let (left_op, right_op) = if is_string {
                         (left_op, right_op)
                     } else {
-                        let want = if is_float { MirType::F64 } else { MirType::I64 };
+                        let want = if is_float {
+                            MirType::F64
+                        } else if is_u128 {
+                            MirType::U128
+                        } else if is_i128 {
+                            MirType::I128
+                        } else {
+                            MirType::I64
+                        };
                         (
                             self.widen_for_assert_helper(left_op, &left_ty, &want),
                             self.widen_for_assert_helper(right_op, &right_ty, &want),
@@ -3492,6 +3615,14 @@ impl<'a> MirLowerer<'a> {
         // Try to recognize an iterator chain on the receiver and fuse it inline.
         if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
             return Ok(result);
+        }
+
+        if let Some(r) = self.try_lower_reflect_call(object, method, type_args)? {
+            return Ok(r);
+        }
+
+        if let Some(r) = self.try_lower_enum_from_value(object, method, args)? {
+            return Ok(r);
         }
 
         if let Some(r) = self.try_lower_origin(object, method, args)? {
@@ -3986,7 +4117,7 @@ impl<'a> MirLowerer<'a> {
                                     value: n,
                                     source_ty: MirType::U32,
                                     target_ty: MirType::Char,
-                                    kind: rask_ast::expr::ConvertKind::TryConvert,
+                                    kind: rask_ast::expr::ConvertKind::CheckedOption,
                                 },
                             }));
                             return Ok(Some((MirOperand::Local(result_local), result_ty)));
@@ -4994,6 +5125,275 @@ impl<'a> MirLowerer<'a> {
         Ok(None)
     }
 
+    /// `Enum.from_value(n)` on a fieldless enum → `Enum?`.
+    ///
+    /// E18: auto-generated for every fieldless enum, `none` when the number
+    /// isn't a discriminant. The checker implements it and the interpreter runs
+    /// it; native had no lowering, so a program using it type-checked, ran on
+    /// one backend, and failed codegen on the other with "Function not found:
+    /// Colour_from_value" (#795).
+    ///
+    /// A fieldless enum value *is* its discriminant, so the construction is:
+    /// test `n` against each variant's tag, and on a hit store `n` into the
+    /// option's payload. No per-variant construction needed.
+    fn try_lower_enum_from_value(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        if method != "from_value" || args.len() != 1 {
+            return Ok(None);
+        }
+        let ExprKind::Ident(enum_name) = &object.kind else {
+            return Ok(None);
+        };
+        if self.locals.contains_key(enum_name) {
+            return Ok(None);
+        }
+        let Some((layout_id, layout)) = self.ctx.find_enum(enum_name) else {
+            return Ok(None);
+        };
+        if !layout.variants.iter().all(|v| v.fields.is_empty()) {
+            return Ok(None);
+        }
+        let tags: Vec<u64> = layout.variants.iter().map(|v| v.tag).collect();
+        let enum_ty = MirType::Enum(crate::types::EnumLayoutId {
+            id: layout_id,
+            byte_size: layout.size,
+            align: layout.align,
+        });
+        let opt_ty = MirType::Option(Box::new(enum_ty));
+
+        let (n_op, _) = self.lower_expr(&args[0].expr)?;
+
+        let slot = self.builder.alloc_temp(opt_ty.clone());
+        let some_block = self.builder.create_block();
+        let none_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        // One case per discriminant. A switch rather than a chain of compares
+        // so the cost doesn't grow with the enum — raido's Opcode has 42.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: n_op.clone(),
+            cases: tags.iter().map(|t| (*t, some_block)).collect(),
+            default: none_block,
+        }));
+
+        self.builder.switch_to_block(some_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+            value: n_op,
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            value: MirOperand::Constant(crate::operand::MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(done_block);
+        Ok(Some((MirOperand::Local(slot), opt_ty)))
+    }
+
+    /// `a.mod(b)` — the Euclidean remainder (type.operators/AR3).
+    ///
+    /// `%` takes the dividend's sign (AR2), so `-1 % 10` is `-1` and every ring
+    /// buffer and calendar calculation writes `((a % n) + n) % n` by hand. This
+    /// is that expression with a name, and with each operand evaluated once —
+    /// the hand-written form evaluates both twice, so `i.mod(next())` would
+    /// call `next()` twice if this were a desugar.
+    ///
+    /// Lowered as `r = a % b` then a branch, rather than a new MIR operator:
+    /// `Mod` and `Add` already exist and codegen already knows both widths and
+    /// both signednesses for them.
+    fn lower_int_mod(
+        &mut self,
+        lhs: &MirOperand,
+        rhs: MirOperand,
+        ty: &MirType,
+    ) -> Result<TypedOperand, LoweringError> {
+        let result = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Mod,
+                left: lhs.clone(),
+                right: rhs.clone(),
+            },
+        }));
+
+        // An unsigned remainder is already in range, so `mod` and `%` coincide
+        // and there is nothing to correct.
+        if ty.is_unsigned() {
+            return Ok((MirOperand::Local(result), ty.clone()));
+        }
+
+        // Signed: a negative remainder is one divisor away from the answer,
+        // and which way depends on the divisor's sign — `r + b` for a positive
+        // divisor, `r - b` for a negative one. Both land non-negative, which is
+        // the mathematical definition the name promises: `(-1).mod(10)` and
+        // `(-1).mod(-10)` are both 9.
+        //
+        // Two branches and no new MIR operator: `Mod`, `Lt`, `Add` and `Sub`
+        // all exist and codegen already handles every width for them.
+        let is_neg = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_neg,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(result),
+                right: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            },
+        }));
+
+        let fix_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(is_neg),
+            then_block: fix_block,
+            else_block: done_block,
+        }));
+
+        self.builder.switch_to_block(fix_block);
+        let divisor_neg = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: divisor_neg,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: rhs.clone(),
+                right: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            },
+        }));
+        let sub_block = self.builder.create_block();
+        let add_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(divisor_neg),
+            then_block: sub_block,
+            else_block: add_block,
+        }));
+
+        self.builder.switch_to_block(sub_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Sub,
+                left: MirOperand::Local(result),
+                right: rhs.clone(),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(add_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(result),
+                right: rhs,
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: done_block,
+        }));
+
+        self.builder.switch_to_block(done_block);
+        Ok((MirOperand::Local(result), ty.clone()))
+    }
+
+    /// `reflect.<method><T>()` → the constant it answers.
+    ///
+    /// Every reflect method is compile-time known once mono has picked `T`
+    /// (std.reflect/R5), so there is nothing to call — the answer becomes a
+    /// literal here. Only `reflect.fields()` was handled before, and only as the
+    /// iterable of a `comptime for`; everywhere else the `reflect` name was left
+    /// for ordinary local lookup to trip over, and the failure came out as
+    /// "unresolved variable `reflect`" — a diagnosis pointing at name
+    /// resolution, which was fine (#775).
+    ///
+    /// The answers come from `rask_types::reflect` so the interpreter folds the
+    /// same ones. Where neither backend can answer — anything needing layout —
+    /// it says so instead of picking a number.
+    fn try_lower_reflect_call(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        type_args: &Option<Vec<String>>,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        use rask_types::reflect::{self, ReflectAnswer};
+
+        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
+            return Ok(None);
+        }
+        // `fields` is the unrolled `comptime for` iterable, handled in stmt.rs.
+        if method == "fields" {
+            return Ok(None);
+        }
+
+        let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.{method}() needs the type it's asking about: \
+                 write `reflect.{method}<T>()`"
+            )));
+        };
+
+        struct MirDecls<'a, 'b>(&'a super::MirContext<'b>);
+        impl reflect::ReflectDecls for MirDecls<'_, '_> {
+            fn declares_struct(&self, name: &str) -> bool {
+                self.0.find_struct(name).is_some()
+            }
+            fn declares_enum(&self, name: &str) -> bool {
+                self.0.find_enum(name).is_some()
+            }
+        }
+
+        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
+        Ok(Some(match answer {
+            ReflectAnswer::Bool(b) => (
+                MirOperand::Constant(crate::operand::MirConst::Bool(b)),
+                MirType::Bool,
+            ),
+            ReflectAnswer::Int(n) => (
+                MirOperand::Constant(crate::operand::MirConst::Int(n as i64)),
+                MirType::U64,
+            ),
+            ReflectAnswer::Str(s) => (
+                MirOperand::Constant(crate::operand::MirConst::String(s)),
+                MirType::String,
+            ),
+            ReflectAnswer::Unsupported(why) => {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "reflect.{method}<{type_name}>() isn't implemented on either \
+                     backend — {why} (#791)"
+                )));
+            }
+            ReflectAnswer::NoSuchMethod => {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "no reflect method `{method}` — see specs/stdlib/reflect.md \
+                     for the surface"
+                )));
+            }
+        }))
+    }
+
     /// `.origin()` on a Result → formatted origin string.
     fn try_lower_origin(
         &mut self,
@@ -5312,6 +5712,10 @@ impl<'a> MirLowerer<'a> {
         {
             if let Some(handled) = self.lower_int_bit_method(method, args, &obj_op, obj_ty)? {
                 return Ok(Some(handled));
+            }
+            if method == "mod" && args.len() == 1 {
+                let (rhs, _) = self.lower_expr(&args[0].expr)?;
+                return Ok(Some(self.lower_int_mod(&obj_op, rhs, obj_ty)?));
             }
         }
 
@@ -6090,6 +6494,10 @@ impl<'a> MirLowerer<'a> {
                     // Unsigned values print unsigned. Shared with the signed
                     // helper, `u8` 200 came out as -56 (#326).
                     MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
+                    // 128-bit values need their own renderers: the 64-bit ones
+                    // take the low half and print a different number (#762).
+                    MirType::I128 => "i128_to_string",
+                    MirType::U128 => "u128_to_string",
                     MirType::F64 => "f64_to_string",
                     MirType::F32 => "f32_to_string",
                     MirType::Bool => "bool_to_string",

@@ -81,8 +81,8 @@ func main() {
     mut hs: Vec<Handle<Item>> = Vec.new()
     hs.push(a)
     hs.push(b)
-    println("{handle(p, b, hs)}")
-    println("{handle(p, a, hs)}")
+    println("{handle(mutate p, b, hs)}")
+    println("{handle(mutate p, a, hs)}")
 
     mut ns: Vec<i64> = Vec.new()
     ns.push(1)

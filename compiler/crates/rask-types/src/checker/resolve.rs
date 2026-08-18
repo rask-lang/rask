@@ -3411,6 +3411,69 @@ impl TypeChecker {
         Err(Self::wrapper_method_cut(self_ty, method, span))
     }
 
+    /// ORD4: arithmetic is homogeneous, so a signed and an unsigned operand
+    /// can't meet under `+ - * / % & | ^ << >>`. There's no result type that
+    /// holds both — `u64` can't hold a negative `i32` and `i32` can't hold a
+    /// large `u64` — so widening one side would be picking a winner silently.
+    /// That's the conversion C makes, and it's why `-1 < 1u` is true there.
+    ///
+    /// Comparison keeps crossing signedness (it answers by value, so there's
+    /// nothing to guess) — its arm deliberately doesn't call this.
+    ///
+    /// Fires only when both sides are settled integer primitives. An untyped
+    /// literal is a variable at this point, and the unify below is what pins it
+    /// to the receiver, so `a + 1` on a `u64` still works.
+    fn reject_mixed_signedness(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let arg = self.ctx.apply(arg);
+        let (Some(recv_signed), Some(arg_signed)) =
+            (Self::integer_is_signed(recv), Self::integer_is_signed(&arg))
+        else {
+            return Ok(());
+        };
+        if recv_signed == arg_signed {
+            return Ok(());
+        }
+        Err(TypeError::MixedSignednessArithmetic {
+            op: Self::operator_spelling(method),
+            left: recv.clone(),
+            right: arg,
+            span,
+        })
+    }
+
+    /// Signedness of an integer primitive, `None` for anything else.
+    fn integer_is_signed(ty: &Type) -> Option<bool> {
+        match ty {
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Some(true),
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The operator a desugared method name came from, so the message quotes
+    /// what was written rather than `add`.
+    fn operator_spelling(method: &str) -> &'static str {
+        match method {
+            "add" => "+",
+            "sub" => "-",
+            "mul" => "*",
+            "div" => "/",
+            "rem" => "%",
+            "bit_and" => "&",
+            "bit_or" => "|",
+            "bit_xor" => "^",
+            "shl" => "<<",
+            "shr" => ">>",
+            _ => "this operator",
+        }
+    }
+
     /// Resolve methods on primitive integer types (i8..i128, u8..u128).
     /// Desugared operators (add, bit_and, etc.) resolve here instead of
     /// bouncing through HasMethod → unsolved constraint suppression.
@@ -3424,10 +3487,21 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
         match method {
-            // Binary arithmetic → same type
-            "add" | "sub" | "mul" | "div" | "rem"
+            // Binary arithmetic → same type. `mod` (AR3, Euclidean) rides
+            // here rather than beside it: it takes the same two operands and
+            // answers in the same type, so the mixed-signedness rule and the
+            // result type are the ones `%` already has.
+            "add" | "sub" | "mul" | "div" | "rem" | "mod"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
                 if args.len() == 1 => {
+                if let Err(mixed) = self.reject_mixed_signedness(method, ty, &args[0], span) {
+                    // Pin the result to the receiver on the way out. The
+                    // operands are the complaint; leaving `ret` open turns one
+                    // error into two, the second being "couldn't work out the
+                    // type of x" pointing at a binding that's fine.
+                    let _ = self.unify(ret, ty, span);
+                    return Err(mixed);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
