@@ -80,4 +80,54 @@ test "type.operators — integer comparison operators" {
     assert !(9 < 2)
 }
 
+
+// ── type.operators/P4: `as` binds tighter than every binary operator ─────
+//
+// `as` used to sit between `+ -` and `* / %`, so `a + b as f64` cast `b` while
+// `a / b as f64` cast the whole quotient. Nothing picks that on purpose and it
+// only showed up as a bug: `examples/sensor_processor.rk` read 2200.02 °C
+// instead of 22.02 once the formatter dropped a pair of parens (#817).
+
+test "type.operators/P4 — a cast takes one operand, whichever operator precedes it" {
+    let a: i64 = 8
+    let b: i64 = 2
+
+    // The two lines that used to group differently.
+    let over: f64 = 4.0 / b as f64
+    let plus: f64 = 4.0 + b as f64
+    assert over == 2.0
+    assert plus == 6.0
+
+    // `%` and `*` too.
+    let times: f64 = 4.0 * b as f64
+    assert times == 8.0
+
+    // Both sides cast: nothing swallows the other operand.
+    let both: f64 = a as f64 / b as f64
+    assert both == 4.0
+}
+
+test "type.operators/P4 — unary and postfix bind tighter than a cast" {
+    let a: i64 = 8
+    assert (-a as f64) == -8.0
+
+    let v: Vec<i64> = [1, 2, 3]
+    assert (v.len() as f64) == 3.0
+}
+
+test "type.operators/P4 — parenthesise to cast a whole expression" {
+    let a: i64 = 8
+    let b: i64 = 3
+    // Integer division first, then the cast — 8/3 is 2, not 2.666…
+    let whole: f64 = (a / b) as f64
+    assert whole == 2.0
+}
+
+test "type.operators/P4 — a cast is looser than comparison and the bitwise ops" {
+    let n: i64 = 300
+    assert n as f64 > 299.0
+    // `as` tighter than `&`: (n as i64) & 0xFF, not n as (i64 & 0xFF)
+    assert (n as i64 & 0xFF) == 44
+}
+
 func main() {}

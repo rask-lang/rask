@@ -2422,13 +2422,15 @@ impl<'a> Printer<'a> {
     /// `(x catch _ => 0) == 0` came out as `x catch _ => 0 == 0`, which parses as
     /// `x catch _ => (0 == 0)` — a bool where a number belonged (#805).
     fn binary_operand_needs_parens(kind: &ExprKind) -> bool {
-        // A `Cast` is *not* exempt. `as` binds looser than the multiplicative
-        // operators — `sum / self.count as f64` parses as
-        // `(sum / self.count) as f64` — so dropping the parentheses around a cast
-        // used as a binary operand reparses as a different expression. It cost
-        // `sensor_processor` a factor of a hundred: `(base + noise) as f64 / 100.0`
-        // came out as `base + noise as f64 / 100.0` and reported 2200.02 °C where
-        // the answer is 22.02 (#805).
+        // A `Cast` is *not* exempt, though since #817 that's for readability
+        // rather than for correctness. `as` now binds tighter than every binary
+        // operator (type.operators/P4), so the parens can't change the grouping —
+        // but they make the grouping visible, and this is the one place in an
+        // expression where getting it wrong is expensive. It cost
+        // `sensor_processor` a factor of a hundred back when `as` sat between
+        // `+ -` and `* / %`: `(base + noise) as f64 / 100.0` came out as
+        // `base + noise as f64 / 100.0`, which was `base + ((noise as f64) /
+        // 100.0)` and reported 2200.02 °C where the answer is 22.02 (#805).
         !matches!(
             kind,
             ExprKind::Binary { .. }
@@ -2444,11 +2446,13 @@ impl<'a> Printer<'a> {
         Self::binds_tighter_than_postfix(kind) || matches!(kind, ExprKind::Unary { .. })
     }
 
-    /// `as` binds tighter than every operator, so an operand that binds looser
-    /// keeps its parentheses.
+    /// `as` binds tighter than every binary operator and looser than prefix and
+    /// postfix (type.operators/P4), so anything but a postfix or primary operand
+    /// keeps its parentheses — a unary operand included, which is why `-a as f64`
+    /// prints as `(-a) as f64`.
     ///
-    /// They were dropped, and `(base + noise) as f64 / 100.0` came out as
-    /// `base + noise as f64 / 100.0` — which is `base + ((noise as f64) / 100.0)`,
+    /// They were dropped once, and `(base + noise) as f64 / 100.0` came out as
+    /// `base + noise as f64 / 100.0` — which was `base + ((noise as f64) / 100.0)`,
     /// a different number. `sensor_processor` reported 2200.02 °C instead of
     /// 22.02 (#805).
     fn format_cast_operand(&mut self, inner: &Expr) {

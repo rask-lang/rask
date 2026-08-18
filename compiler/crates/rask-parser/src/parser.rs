@@ -3286,7 +3286,19 @@ impl Parser {
             }
 
             if self.check(&TokenKind::As) {
-                let bp = 21;
+                // Tighter than every binary operator, looser than prefix and
+                // postfix (type.operators/P4). 22 is exactly that slot: it clears
+                // multiplicative's right power (22, so the cast wins inside
+                // `a * b as T`) and stays under `PREFIX_BP` (23, so `-a as T` is
+                // `(-a) as T`).
+                //
+                // `as` used to sit at 21, which is multiplicative's *left* power —
+                // so it bound looser than `* / %` and tighter than `+ -`, and
+                // `a / b as f64` and `a + b as f64` grouped differently. That's the
+                // kind of rule that only shows up as a bug: it cost
+                // `examples/sensor_processor.rk` a reading of 2200.02 °C instead
+                // of 22.02 (#817).
+                let bp = 22;
                 if bp < min_bp { break; }
                 self.advance();
                 let ty = self.parse_type_name()?;
@@ -3299,11 +3311,11 @@ impl Parser {
                 continue;
             }
 
-            // Lossy conversion suffixes (CV5/CV6/CV8/CV9) bind like `as` (bp 21).
+            // Lossy conversion suffixes (CV5/CV6/CV8/CV9) bind like `as` (bp 22).
             if (self.peek_is_word(0, "truncate")
                 || self.peek_is_word(0, "saturate")
                 || self.peek_is_word(0, "float"))
-                && 21 >= min_bp
+                && 22 >= min_bp
             {
                 match self.try_parse_convert_suffix(lhs, start)? {
                     Ok(converted) => {
