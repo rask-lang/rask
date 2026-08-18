@@ -11,28 +11,47 @@ use crate::value::Value;
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    /// Refuse to recurse when the host stack is nearly gone, and say so.
+    /// Keep recursing past the end of the host stack by moving onto a new one.
     ///
-    /// The interpreter evaluates one Rask call per host stack frame, and those
+    /// The interpreter spends one host stack frame per Rask call, and those
     /// frames are large — `eval_expr` is a single match over 80 expression kinds
-    /// and Rust sizes a frame for the union of every arm's locals. Running out
-    /// used to mean SIGABRT: no message, no diagnostic, no exit code (#759).
+    /// and Rust sizes a frame for the union of every arm's locals. 16 MiB is
+    /// therefore only ~465 Rask calls deep. Running out used to be a SIGABRT
+    /// with no message at all, then an R0023 diagnostic (#759) — but both are
+    /// wrong answers to `down(300)`, because the same program compiled natively
+    /// recurses into the millions and the interpreter is the reference for what
+    /// the answer should be.
     ///
-    /// Measured rather than counted. One Rask frame costs anywhere from a few KB
-    /// to tens of KB depending on how deeply nested the expressions in the body
-    /// are, so a fixed depth limit is either wrong for a heavy body or needlessly
-    /// low for a light one. Comparing the stack pointer against where interpreting
-    /// started answers the question that actually matters.
+    /// So a call that can't fit continues on a thread with a fresh stack; this
+    /// one blocks in `join` until it returns. Nothing the program can observe
+    /// changes — same interpreter, same environment, same values.
+    ///
+    /// Whether there's room is measured against the stack pointer rather than
+    /// counted, because one Rask frame costs anywhere from a few KB to tens of
+    /// KB depending on how deeply nested the expressions in the body are: 467
+    /// frames of `return 1 + down(n - 1)` fit in the same stack as 227 of a body
+    /// doing nested arithmetic and interpolation. A fixed depth limit is either
+    /// wrong for the heavy body or needlessly low for the light one.
+    ///
+    /// The chain of stacks is capped, so runaway recursion is still a diagnostic
+    /// rather than a machine out of threads.
     pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         if crate::stack_nearly_exhausted() {
-            return Err(RuntimeDiagnostic::new(
-                RuntimeError::RecursionTooDeep {
-                    function: func.name.clone(),
-                    depth: self.call_depth,
-                },
-                func.span,
-            ));
+            if crate::stack_segments_exhausted() {
+                return Err(RuntimeDiagnostic::new(
+                    RuntimeError::RecursionTooDeep {
+                        function: func.name.clone(),
+                        depth: self.call_depth,
+                    },
+                    func.span,
+                ));
+            }
+            return crate::grow_interp_stack(move || self.call_counted(func, args));
         }
+        self.call_counted(func, args)
+    }
+
+    fn call_counted(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         self.call_depth += 1;
         let result = self.call_function_at_depth(func, args);
         self.call_depth -= 1;

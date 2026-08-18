@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// E9/E15/E18: an enum's discriminant is one number, and there are two ways to
+// ask for it. Before #796 each backend got one of them wrong, and differently:
+//
+//                       interp    native
+//   Tagged.SIX as i64   6         140725525176496   <- the value's address
+//   Tagged.SIX.discriminant()   1         6
+//
+// E15 says `Variant = N` *assigns* the discriminant value, so 6 is the answer
+// to both. Native's cast reached for the enum's storage address (an enum is
+// passed by address, and the cast didn't read the tag out first), and the
+// interpreter's `.discriminant()` answered the variant's position instead of
+// its declared value.
+//
+// The address is the nastier of the two: `& 0xFF` in a wire encoder masks it to
+// a plausible byte, so `projects/raido` packed instructions with an arbitrary
+// opcode and executed a different wrong program every run — no crash.
+
+// Explicit backing type and explicit values
+enum Tagged: u8 {
+    ZERO = 0,
+    SIX = 6,
+    HUNDRED = 100
+}
+
+// Explicit values, backing type left to the compiler
+enum Valued {
+    A = 0,
+    B = 6
+}
+
+// Neither — positions are the discriminants
+enum Plain {
+    First
+    Second
+    Third
+}
+
+func main() {}
+
+test "E18: a cast reads the declared discriminant" {
+    assert Tagged.ZERO as i64 == 0
+    assert Tagged.SIX as i64 == 6
+    assert Tagged.HUNDRED as i64 == 100
+    assert Valued.B as i64 == 6
+}
+
+test "E18: a cast on an auto-indexed enum reads the position" {
+    assert Plain.First as i64 == 0
+    assert Plain.Second as i64 == 1
+    assert Plain.Third as i64 == 2
+}
+
+test "E9: discriminant() answers the same number as the cast" {
+    assert Tagged.SIX.discriminant() == Tagged.SIX as i64
+    assert Valued.B.discriminant() == Valued.B as i64
+    assert Plain.Second.discriminant() == Plain.Second as i64
+    assert Tagged.HUNDRED.discriminant() == 100
+}
+
+test "a cast survives the mask-and-shift a wire encoder does" {
+    // raido's shape: pack an opcode into the top byte of a u32 and read it back.
+    // With the address bug this passed the mask and came back arbitrary.
+    let op = Tagged.SIX as i64
+    let packed = ((op & 0xFF) << 24 | (3 & 0xFF) << 16).wrap<u32>()
+    assert (packed as i64 >> 24) & 0xFF == 6
+    assert (packed as i64 >> 16) & 0xFF == 3
+}
+
+test "a cast narrows to the widths a backing type implies" {
+    let byte = (Tagged.HUNDRED as i64).wrap<u8>()
+    assert byte == 100
+}

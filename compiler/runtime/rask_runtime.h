@@ -230,6 +230,32 @@ void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);
 
+// 128-bit operations Cranelift can't lower — see int128.c. Each returns
+// 0 (ok), 1 (divide by zero) or 2 (overflow); the caller panics with the span.
+// C11 has no 128-bit integer, so the width is a compiler extension.
+__extension__ typedef __int128 RaskI128;
+__extension__ typedef unsigned __int128 RaskU128;
+
+int32_t     rask_i128_mul(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_u128_mul(RaskU128 a, RaskU128 b, RaskU128 *out);
+int32_t     rask_i128_div(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_i128_rem(RaskI128 a, RaskI128 b, RaskI128 *out);
+int32_t     rask_u128_div(RaskU128 a, RaskU128 b, RaskU128 *out);
+int32_t     rask_u128_rem(RaskU128 a, RaskU128 b, RaskU128 *out);
+void        rask_i128_to_string(RaskStr *out, RaskI128 val);
+void        rask_u128_to_string(RaskStr *out, RaskU128 val);
+void        rask_print_i128(RaskI128 val);
+void        rask_print_u128(RaskU128 val);
+void        rask_eprint_i128(RaskI128 val);
+void        rask_eprint_u128(RaskU128 val);
+RaskI128    rask_i128_abs(RaskI128 v);
+void        rask_assert_fail_cmp_i128(RaskI128 left, RaskI128 right,
+                                      const char *op, const char *file,
+                                      int32_t line, int32_t col);
+void        rask_assert_fail_cmp_u128(RaskU128 left, RaskU128 right,
+                                      const char *op, const char *file,
+                                      int32_t line, int32_t col);
+
 // Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
 // arrives here separately — a base conversion, then padding.
 void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);
@@ -268,6 +294,37 @@ int64_t rask_char_to_uppercase(int32_t c);
 int64_t rask_char_to_lowercase(int32_t c);
 int64_t rask_char_len_utf8(int32_t c);
 int64_t rask_char_eq(int32_t a, int32_t b);
+
+// ─── Unicode case mapping (generated: unicode_case.c) ───────
+//
+// Case conversion used to be ASCII-only here, so `"aöb".to_uppercase()` came
+// back `AöB` and Greek was left untouched entirely, while the interpreter — which
+// uses Rust's std — answered `AÖB` and `αβγ` (#779). The tables are generated
+// from that same source, so the two can't drift.
+
+/// One scalar in, one scalar out.
+typedef struct {
+    uint32_t from;
+    uint32_t to;
+} RaskCaseSimple;
+
+/// One scalar in, up to three out — `ß` uppercases to `SS`, `İ` lowercases to
+/// `i` followed by a combining dot.
+typedef struct {
+    uint32_t from;
+    uint8_t n;
+    uint32_t to[3];
+} RaskCaseMulti;
+
+/// The most a single scalar can grow in bytes under either mapping.
+extern const int RASK_CASE_MAX_GROWTH;
+
+/// Map `cp`, writing up to three scalars into `out`. Returns the count, always at
+/// least 1 — an unmapped scalar maps to itself.
+int rask_case_map(uint32_t cp, int to_upper, uint32_t out[3]);
+
+/// The single-scalar answer, for `char.to_uppercase()`/`to_lowercase()`.
+uint32_t rask_case_map_one(uint32_t cp, int to_upper);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);

@@ -614,6 +614,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_split", "rask_string_split", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_split_whitespace", "rask_string_split_whitespace", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_chars", "rask_string_chars", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_bytes", "rask_string_bytes", &[types::I64], Some(types::I64), false),
 
         // ── Conversion to string (out-param) ──────────────────
         StdlibEntry {
@@ -624,6 +625,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "u64_to_string", c_name: "rask_u64_to_string",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        // 128-bit renderers. The value goes in at its own width; the 64-bit
+        // helpers would print the low half as a different number (#762).
+        StdlibEntry {
+            mir_name: "i128_to_string", c_name: "rask_i128_to_string",
+            params: &[types::I64, types::I128], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "u128_to_string", c_name: "rask_u128_to_string",
+            params: &[types::I64, types::I128], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -696,6 +709,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Math operations ────────────────────────────────────
         // i64.abs() (std.math/N2) — libc's llabs, no wrapper needed.
         StdlibEntry::simple("i64_abs", "llabs", &[types::I64], Some(types::I64), false),
+        // `llabs` takes a `long long`, so a 128-bit value would be truncated
+        // before it was negated (#762).
+        StdlibEntry::simple("i128_abs", "rask_i128_abs", &[types::I128], Some(types::I128), true),
         // The f64_* method entries are generated below from
         // rask_stdlib::FLOAT_METHODS. f32 keeps its own single-precision entry.
         StdlibEntry::simple("f32_sqrt", "sqrtf", &[types::F32], Some(types::F32), false),

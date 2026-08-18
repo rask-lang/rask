@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// SM1–SM3 (#587): `@small` asserts one thing — the type stays inside the
+// 16-byte copy threshold. It changes no semantics. What it buys is the
+// *location* of the break: grow a struct past 16 bytes without it and every
+// assignment flips from copy to move, so the errors land at call sites, with
+// only the move note pointing back at the field nobody was looking at.
+//
+// With `@small` the break is here, at the declaration, before any call site
+// sees it. The generic half is the same promise, checked once per instantiation
+// — `Pair<i64>` is 16 bytes and `Pair<string>` is 32, and only the second one
+// breaks it.
+
+// ERROR: `@small` type `TooBig` outgrew the copy threshold — 24 bytes [SM2]
+@small
+struct TooBig {
+    a: i64
+    b: i64
+    c: i64
+}
+
+// ERROR: `@small` type `WideNames` outgrew the copy threshold — 32 bytes [SM2]
+// A `string` is 16 bytes, so two of them clear the threshold on their own.
+@small
+struct WideNames {
+    first: string
+    last: string
+}
+
+// ERROR: `@small` type `Pair` outgrew the copy threshold at `Pair<string>` [SM3]
+@small
+struct Pair<T> {
+    a: T
+    b: T
+}
+
+func main() {
+    let big = TooBig { a: 1, b: 2, c: 3 }
+    println("{big.a}")
+
+    let names = WideNames { first: "ada", last: "lovelace" }
+    println("{names.first}")
+
+    // Fine — 16 bytes exactly.
+    let ok = Pair<i64> { a: 1, b: 2 }
+    println("{ok.a}")
+
+    // Not fine — 32 bytes, and the annotation promised otherwise.
+    let wide = Pair<string> { a: "x", b: "y" }
+    println("{wide.a}")
+}

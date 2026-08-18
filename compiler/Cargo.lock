@@ -1499,6 +1499,7 @@ name = "rask-lint"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-effects",
  "rask-lexer",
  "rask-parser",
  "serde",

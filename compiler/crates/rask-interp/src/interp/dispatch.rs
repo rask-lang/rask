@@ -581,6 +581,11 @@ impl Interpreter {
     pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
         match args.get(idx) {
             Some(Value::Int128(n)) => Ok(*n),
+            // A narrower operand widens into the 128-bit one. `a * 2` writes the
+            // 2 as an ordinary literal, and requiring an `Int128` on both sides
+            // reported "expected i128, got i64" for arithmetic the checker had
+            // already accepted (#762).
+            Some(Value::Int(n, _)) => Ok(*n as i128),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected i128, got {}",
                 v.type_name()
@@ -596,6 +601,10 @@ impl Interpreter {
     pub(crate) fn expect_uint128(&self, args: &[Value], idx: usize) -> Result<u128, RuntimeError> {
         match args.get(idx) {
             Some(Value::Uint128(n)) => Ok(*n),
+            // A narrower operand widens, as for `expect_int128`. A negative one
+            // has no u128 to widen into, so it stays an error rather than
+            // wrapping to something enormous.
+            Some(Value::Int(n, _)) if *n >= 0 => Ok(*n as u128),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected u128, got {}",
                 v.type_name()

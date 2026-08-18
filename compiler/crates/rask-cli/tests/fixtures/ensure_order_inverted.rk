@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// EO1 (#584): `ensure` bodies run LIFO, so the *last* one registered runs first.
+// A resource derived from another has to be cleaned up first, which means its
+// `ensure` comes second — the source order reads backwards from the run order,
+// which is the whole reason this is easy to get wrong.
+//
+// Registered the other way round, the world is destroyed while the body is
+// still live and `b.close(w)` calls into a torn-down dependency. Across an FFI
+// boundary that's undefined behaviour the language otherwise makes impossible,
+// and the compiler said nothing either way.
+//
+// The file compiles — this is a warning, not an error, because both orders are
+// valid code and only one of them is what anyone meant (tool.warnings/SB2).
+
+@resource
+struct World { id: i64 }
+
+@resource
+struct Body { id: i64 }
+
+@resource
+struct Log { id: i64 }
+
+func make_world() -> World {
+    return World { id: 1 }
+}
+
+func make_body(w: World) -> Body {
+    return Body { id: w.id + 1 }
+}
+
+func make_log() -> Log {
+    return Log { id: 9 }
+}
+
+extend World {
+    func destroy(take self) {
+        println("world gone")
+    }
+}
+
+extend Body {
+    func close(take self, w: World) {
+        println("body gone, world {w.id}")
+    }
+}
+
+extend Log {
+    func flush(take self) {
+        println("log flushed")
+    }
+}
+
+// WARN: the world's cleanup is registered last, so it runs first.
+func inverted() {
+    let w = make_world()
+    let b = make_body(w)
+    ensure b.close(w)
+    ensure w.destroy()
+    println("inverted body")
+}
+
+// Correct: the world's `ensure` comes first, so it runs last.
+func correct() {
+    let w = make_world()
+    ensure w.destroy()
+    let b = make_body(w)
+    ensure b.close(w)
+    println("correct body")
+}
+
+// Independent resources — no derivation either way, so neither order warns.
+func independent() {
+    let w = make_world()
+    let l = make_log()
+    ensure l.flush()
+    ensure w.destroy()
+    println("independent body")
+}
+
+// Three resources, two of them related. Only the pair is checked.
+func mixed() {
+    let w = make_world()
+    ensure w.destroy()
+    let b = make_body(w)
+    ensure b.close(w)
+    let l = make_log()
+    ensure l.flush()
+    println("mixed body")
+}
+
+func main() {
+    inverted()
+    correct()
+    independent()
+    mixed()
+}

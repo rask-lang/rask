@@ -60,7 +60,7 @@ extend Document {
     }
 
     func line_count(self) -> i32 {
-        return self.line_order.len() truncate to i32
+        return self.line_order.len().wrap<i32>()
     }
 
     func get_line(self, index: i32) -> string? {
@@ -73,7 +73,7 @@ extend Document {
     func insert_line(self, after: i32, text: string) -> void or Error {
         let h = self.lines.insert(Line { text: text })
         let raw_pos = (after + 1) as i64
-        let cap = self.line_order.len() truncate to i64
+        let cap = self.line_order.len().wrap<i64>()
         let insert_pos = if raw_pos > cap: cap else: raw_pos
         self.line_order.insert(insert_pos, h)
 

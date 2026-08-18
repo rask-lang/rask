@@ -57,7 +57,7 @@ extend fs {
             return ""
         }
         let buf = unsafe rask_alloc(size + 1)
-        let n = unsafe fread(buf, 1, size truncate to u64, f)
+        let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
         unsafe fclose(f)
         let result = unsafe string.from_raw(buf, n as usize)
         unsafe rask_free(buf)
@@ -77,7 +77,7 @@ extend fs {
         mut bytes: Vec<u8> = Vec.new()
         if size > 0 {
             let buf = unsafe rask_alloc(size)
-            let n = unsafe fread(buf, 1, size truncate to u64, f)
+            let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
             mut i: u64 = 0
             loop {
                 if i >= n { break }
@@ -99,7 +99,7 @@ extend fs {
             return IoError.last_os_error()
         }
         let ptr = unsafe content.as_ptr()
-        let len = content.len() truncate to u64
+        let len = content.len().wrap<u64>()
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
         return
@@ -201,7 +201,7 @@ extend fs {
             return IoError.last_os_error()
         }
         let ptr = unsafe content.as_ptr()
-        let len = content.len() truncate to u64
+        let len = content.len().wrap<u64>()
         unsafe fwrite(ptr, 1, len, f)
         unsafe fclose(f)
         return

@@ -53,7 +53,7 @@ func bloom_hash(key: string, seed: i32) -> usize {
         hash = hash ^ (ch as i64)
         hash = (hash * 16777619) % 4294967296
     }
-    return hash.abs() truncate to usize
+    return hash.abs().wrap<usize>()
 }
 
 func encode_bloom(filter: BloomFilter) -> string {

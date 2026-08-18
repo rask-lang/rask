@@ -287,7 +287,7 @@ extend Lexer {
     }
 
     func read_number(self) -> Token or LexError {
-        let is_num_lit = false
+        mut is_num_lit = false
         let start = self.pos
         mut frac_start = self.pos
 
@@ -299,9 +299,8 @@ extend Lexer {
                         return LexError.UnexpectedChar('.', self.line)  // second dot in number
                     }
                     self.advance() // consume the dot
-                    let peeked = self.peek()
-                    if peeked? {
-                        if peeked >= '0' && peeked <= '9' {
+                    if self.peek()? as next {
+                        if next >= '0' && next <= '9' {
                             frac_start = self.pos
                         } else {
                             return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
@@ -316,13 +315,13 @@ extend Lexer {
         }
         if is_num_lit {
             
-            let int_part = self.source.substring(start, frac_start - 1).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer part
-            let frac_part = self.source.substring(frac_start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
+            let int_part = self.source.substring(start, frac_start - 1).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            let frac_part = self.source.substring(frac_start, self.pos).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
             let frac_digits = self.pos - frac_start
             let raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
         } else {
-            let value = self.source.substring(start, self.pos).parse_i64() ?? return LexError.UnexpectedChar('.', self.line)  // invalid integer
+            let value = self.source.substring(start, self.pos).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer
             return Token.IntLit(value)
         }
     }

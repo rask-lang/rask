@@ -8,7 +8,7 @@ struct Point {
     public x: f64
     @rename("Y")
     public y: f64
-    @skip
+    @no_serialize
     public hidden: i64
 }
 

@@ -110,6 +110,22 @@ impl Interpreter {
             }
         }
 
+        // A narrower receiver against a 128-bit argument widens, the same way
+        // the 128-bit methods already widen a narrow argument. `0 - big` is
+        // written with a plain literal on the left, and dispatching on the
+        // receiver alone sent it to the 64-bit path, which then rejected the
+        // argument: "expected int, got i128" for arithmetic the checker had
+        // already accepted (#762).
+        if let Value::Int(a, k) = &receiver {
+            match args.first() {
+                Some(Value::Int128(_)) => return self.call_int128_method(*a as i128, method, &args),
+                Some(Value::Uint128(_)) if k.is_unsigned() || *a >= 0 => {
+                    return self.call_uint128_method(*a as u128, method, &args)
+                }
+                _ => {}
+            }
+        }
+
         match &receiver {
             Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),
@@ -309,9 +325,21 @@ impl Interpreter {
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
-            // E9: .discriminant() returns variant index as u16
-            Value::Enum { variant_index, .. } if method == "discriminant" => {
-                return Ok(Value::int(*variant_index as i64));
+            // E9: `.discriminant()` is the variant's *discriminant value*, and
+            // E15 says `Variant = N` assigns that value — so on an enum with
+            // explicit values it's N, not the position. This answered the
+            // position, so `Opcode.ADD.discriminant()` was 1 here and 6
+            // natively, while `Opcode.ADD as i64` was 6 here (E18 reads the
+            // declared value) — the same enum giving two different numbers
+            // through two spellings of the same question.
+            Value::Enum { name, variant, variant_index, .. } if method == "discriminant" => {
+                let disc = self
+                    .enums
+                    .get(name)
+                    .and_then(|decl| decl.variants.iter().find(|v| &v.name == variant))
+                    .and_then(|v| v.discriminant)
+                    .unwrap_or(*variant_index as i128);
+                return Ok(Value::int(disc as i64));
             }
             _ => {}
         }

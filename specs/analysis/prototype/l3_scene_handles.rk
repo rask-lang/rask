@@ -45,7 +45,7 @@ func delete_subtree(mutate scene: Scene, n: Handle<SceneNode>) {
     let me = n                       // see #768, as in reparent above
     let kids = scene.nodes[n].children.clone()
     for c in kids {
-        delete_subtree(scene, c)
+        delete_subtree(mutate scene, c)
     }
     if scene.nodes[n].parent? as p {
         scene.nodes[p].children = scene.nodes[p].children.filter(own |c| c != me)
@@ -87,22 +87,22 @@ func main() {
     let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
     scene.root = root
 
-    let a = add_child(scene, root, "a")
-    let b = add_child(scene, root, "b")
-    let a1 = add_child(scene, a, "a1")
-    let a2 = add_child(scene, a, "a2")
+    let a = add_child(mutate scene, root, "a")
+    let b = add_child(mutate scene, root, "b")
+    let a1 = add_child(mutate scene, a, "a1")
+    let a2 = add_child(mutate scene, a, "a2")
 
     println("-- initial")
     report(scene)
 
     println("-- reparent a1 under b")
-    reparent(scene, a1, b)
+    reparent(mutate scene, a1, b)
     report(scene)
 
     println("-- select a2, then delete the subtree at a")
     scene.selected = a2
     report(scene)
-    delete_subtree(scene, a)
+    delete_subtree(mutate scene, a)
     report(scene)
     let _ = a2
     let _ = b

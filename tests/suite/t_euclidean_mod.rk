@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.operators/AR2–AR4 (#305). `%` takes the dividend's sign, so `-1 % 10` is
+// -1 and every ring buffer, wraparound index and calendar calculation writes
+// `((a % n) + n) % n` by hand. `.mod(n)` is that expression with a name.
+//
+// `%` itself is deliberately unchanged — every C-family language truncates, and
+// code carried over from C, Go or Rust would otherwise change meaning on
+// negative inputs with nothing to notice. The pair is what's gated here: the
+// truncating answer and the floored one, side by side, on both backends.
+
+func main() {}
+
+test "AR2: `%` takes the dividend's sign" {
+    let a: i64 = -7
+    let b: i64 = 3
+    assert a % b == -1
+
+    let c: i64 = 7
+    let d: i64 = -3
+    assert c % d == 1
+
+    let e: i64 = -7
+    let f: i64 = -3
+    assert e % f == -1
+}
+
+test "AR1: `/` truncates toward zero" {
+    let a: i64 = -7
+    let b: i64 = 3
+    assert a / b == -2
+
+    let c: i64 = 7
+    let d: i64 = -3
+    assert c / d == -2
+}
+
+test "AR2/AR3 hold the division identity" {
+    // (a / b) * b + (a % b) == a, for every sign combination.
+    let a: i64 = -7
+    let b: i64 = 3
+    assert (a / b) * b + (a % b) == a
+
+    let c: i64 = 7
+    let d: i64 = -3
+    assert (c / d) * d + (c % d) == c
+}
+
+test "AR3: `mod` is the floored answer" {
+    let a: i64 = -1
+    let n: i64 = 10
+    assert a.mod(n) == 9
+    assert a % n == -1
+
+    let b: i64 = -7
+    let m: i64 = 3
+    assert b.mod(m) == 2
+
+    let c: i64 = 7
+    assert c.mod(m) == 1
+}
+
+test "AR3: `mod` is non-negative for a negative divisor too" {
+    let a: i64 = -1
+    let n: i64 = -10
+    assert a.mod(n) == 9
+
+    let b: i64 = -7
+    let m: i64 = -3
+    assert b.mod(m) == 2
+}
+
+test "AR3: every integer width" {
+    let a: i32 = -5
+    let b: i32 = 3
+    assert a.mod(b) == 1
+
+    let c: i8 = -5
+    let d: i8 = 3
+    assert c.mod(d) == 1
+
+    // Unsigned is already in range, so `mod` and `%` coincide.
+    let e: u64 = 7
+    let f: u64 = 3
+    assert e.mod(f) == 1
+    assert e % f == 1
+}
+
+test "AR3: the wraparound the footgun is about" {
+    // The ring-buffer step backwards: index 0 wraps to the last slot.
+    let n: i64 = 4
+    mut i: i64 = 0
+    assert (i - 1).mod(n) == 3
+    assert (i - 1) % n == -1
+
+    i = 3
+    assert (i + 1).mod(n) == 0
+}

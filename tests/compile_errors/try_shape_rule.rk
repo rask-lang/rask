@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: bare `try` whose other branch doesn't fit the return (ER47)
+// ERROR: has nowhere to go
+//
+// `try` sends the operand's other branch out unchanged, so that branch has to
+// fit the enclosing return. Two ways to get it wrong, and they have different
+// fixes — an absence isn't an error, and an error isn't an absence:
+//
+//   `try <optional>` in a `T or E` function   ->  FIX: `x ?? return <error>`
+//   `try <result>`   in a `T?` function       ->  FIX: `r catch _ => return none`
+//
+// The legal side of the same rule is gated in tests/suite/t_try_propagates_none.rk
+// (absence through a `T?` function) and t_try_error_wrap.rk (ER31a auto-wrap).
+
+enum LoadError {
+    Missing
+    Bad
+}
+
+extend LoadError {
+    func message(self) -> string {
+        match self {
+            LoadError.Missing => return "missing",
+            LoadError.Bad => return "bad",
+        }
+    }
+}
+
+func maybe(k: string) -> i64? {
+    if k == "yes" {
+        return 1
+    }
+    return none
+}
+
+func fallible(k: string) -> i64 or LoadError {
+    if k == "yes" {
+        return 1
+    }
+    return LoadError.Missing
+}
+
+// ERROR: `try` here would propagate `none`, and this function has no absent branch
+func optional_in_result(k: string) -> i64 or LoadError {
+    let v = try maybe(k)
+    return v
+}
+
+// ERROR: `try` here would propagate an error, and this function only returns absence
+func result_in_optional(k: string) -> i64? {
+    let v = try fallible(k)
+    return v
+}
+
+func main() {
+    let a = optional_in_result("yes") catch _ => -1
+    let b = result_in_optional("yes") ?? -1
+    println("{a} {b}")
+}

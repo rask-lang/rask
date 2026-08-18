@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+name: Reap merged branches
+
+# Bot PRs leave their branch behind when they merge. By 2026-08-18 that was 213
+# `claude/*` refs against 1 open PR, so `git ls-remote` and the branch picker in
+# every UI were mostly dead entries.
+#
+# Safe rule, deliberately: a branch is deleted only if a MERGED pull request
+# used it as its head. No age heuristic, no "looks abandoned" — a branch whose
+# PR was closed unmerged, or that never had a PR, is left alone. Those are the
+# ones that might still hold work nobody has looked at.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be deleted without deleting it'
+        type: boolean
+        default: true
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Scheduled runs delete for real; manual runs default to a dry run so the
+      # first look at a 200-branch backlog isn't also the deletion.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Delete branches whose PR merged
+        run: |
+          set -euo pipefail
+
+          # Cross-repository PRs point at a fork's branch. Their headRefName can
+          # collide with a real branch here, so they never enter the list.
+          #
+          # The limit is a ceiling on how far back the job looks, not a page
+          # size — merged PRs past it are never considered, and their branches
+          # would stay forever. 352 merged as of 2026-08-18; the summary below
+          # warns when the list comes back full so the number gets raised
+          # before that happens silently.
+          MERGED_LIMIT=1000
+          gh pr list --state merged --limit "$MERGED_LIMIT" \
+            --json headRefName,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository == false) | .headRefName' \
+            | sort -u > /tmp/merged.txt
+
+          # A branch can carry a merged PR and a newer open one (reopened work,
+          # follow-up PR on the same ref). Those stay.
+          gh pr list --state open --limit 200 \
+            --json headRefName,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository == false) | .headRefName' \
+            | sort -u > /tmp/open.txt
+
+          default_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+          deleted=0
+          kept=0
+
+          while read -r branch; do
+            [ -n "$branch" ] || continue
+            if [ "$branch" = "$default_branch" ] || [ "$branch" = "main" ]; then
+              continue
+            fi
+            if grep -qxF "$branch" /tmp/open.txt; then
+              echo "keep   $branch (open PR)"
+              kept=$((kept + 1))
+              continue
+            fi
+            if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              continue  # already gone
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "would delete $branch"
+            else
+              echo "delete $branch"
+              git push origin --delete "$branch"
+            fi
+            deleted=$((deleted + 1))
+          done < /tmp/merged.txt
+
+          echo "---"
+          merged_count=$(wc -l < /tmp/merged.txt)
+          if [ "$merged_count" -ge "$MERGED_LIMIT" ]; then
+            echo "WARNING: hit MERGED_LIMIT ($MERGED_LIMIT). Older merged PRs"
+            echo "         were not looked at — raise the limit."
+          fi
+          echo "branches with a merged PR: $merged_count"
+          echo "deleted (or would delete): $deleted"
+          echo "kept for an open PR:       $kept"
+          echo "dry run:                   $DRY_RUN"

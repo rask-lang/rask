@@ -190,6 +190,13 @@ impl TypeChecker {
                                     span: stmt.span,
                                 });
                             }
+                            Some(super::BindingKind::Bound(from)) => {
+                                self.errors.push(TypeError::MutateBoundName {
+                                    name: root.clone(),
+                                    from,
+                                    span: stmt.span,
+                                });
+                            }
                             _ => {}
                         }
                     }
@@ -290,23 +297,35 @@ impl TypeChecker {
                 // body. The test narrows nothing — this is a binding, re-read
                 // once per iteration, exactly as in the `if` form.
                 if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
-                    self.define_local_const(name, payload_ty);
+                    self.define_local_bound(name, payload_ty, super::BoundFrom::Payload);
                 }
                 for s in body {
                     self.check_stmt(s);
                 }
                 self.pop_scope();
             }
-            StmtKind::For { binding, iter, body, .. } => {
+            StmtKind::For { binding, iter, body, mutate, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
+                // std.iteration/I1: a plain `for` yields elements read-only;
+                // `for mutate x in xs` is the mode whose writes reach the
+                // collection. Nothing enforced this, so `for c in xs { c.n += 1 }`
+                // compiled and then the backends disagreed — the interpreter
+                // wrote through to the element, native dropped the write.
+                let mut define = |c: &mut Self, name: String, ty: Type| {
+                    if *mutate {
+                        c.define_local(name, ty);
+                    } else {
+                        c.define_local_bound(name, ty, super::BoundFrom::Element);
+                    }
+                };
                 match binding {
-                    ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
+                    ForBinding::Single(name) => define(self, name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
                         let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
                         for (name, var) in names.iter().zip(vars) {
-                            self.define_local(name.clone(), var);
+                            define(self, name.clone(), var);
                         }
                     }
                 }
@@ -373,7 +392,7 @@ impl TypeChecker {
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, stmt.span);
                 for (name, ty) in bindings {
-                    self.define_local(name, ty);
+                    self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
                 for s in body {
                     self.check_stmt(s);

@@ -1209,6 +1209,311 @@ fn error_literal_wrong_type() {
     );
 }
 
+// #778: `5u64 + (-10i32)` used to type-check and print 18446744073709551611 on
+// both backends. `resolve_integer_method` unified the operand with the receiver
+// and discarded the failure, so the signed side's bits got reinterpreted.
+// Comparison keeps crossing signedness (ORD4) — that half is the exception, and
+// the test below pins it so the fix doesn't take it out too.
+#[test]
+fn error_mixed_signedness_arithmetic() {
+    let (failed, out) = compile_error_output("mixed_signedness_arithmetic.rk");
+    assert!(failed, "mixed-signedness arithmetic must not compile: {}", out);
+    for op in ["`+`", "`-`", "`*`", "`/`", "`%`", "`&`", "`|`", "`^`", "`<<`", "`>>`"] {
+        assert!(
+            out.contains(&format!("{} between", op)),
+            "should reject {}: {}", op, out,
+        );
+    }
+    // One error per site — a mixed-sign operator pins its result to the
+    // receiver on the way out, so no "couldn't work out the type" behind it.
+    assert!(
+        !out.contains("E0361"),
+        "the rejection shouldn't drag a second error along: {}", out,
+    );
+}
+
+// The other half of ORD4: comparison across signedness stays legal and answers
+// by value. Enforcing the arithmetic half must not touch it.
+#[test]
+fn mixed_signedness_comparison_still_compiles() {
+    let (stdout, stderr, code) = run_capture("--interp", "mixed_signedness_compare.rk");
+    assert_eq!(code, 0, "comparison across signedness is legal: {stdout}{stderr}");
+    assert_eq!(stdout, "true true false\n", "{stdout}");
+}
+
+// #788: `as v` and a `for` element name a value a test or a pattern produced,
+// not a slot. Only the optional bind was checked; the other two forms compiled
+// and the backends then disagreed about what the write meant —
+// `for c in xs { c.n += 1 }` gave 2 on interp and 1 natively, and a match arm
+// wrote straight through a `let` scrutinee on interp (3) while native dropped
+// it (2). All three are rejected now.
+#[test]
+fn error_mutate_through_a_binding() {
+    let (failed, out) = compile_error_output("mutate_through_binding.rk");
+    assert!(failed, "a write through a bind must not compile: {}", out);
+    for name in ["`t`", "`t2`", "`c`", "`r`", "`item`"] {
+        assert!(
+            out.contains(&format!("cannot mutate {} — it's a binding", name)),
+            "should reject the write to {}: {}", name, out,
+        );
+    }
+    // The old message suggested a fix that isn't writable at any of these
+    // sites: there is no `let t`, and `if opt? as mut t` doesn't parse.
+    assert!(
+        !out.contains("with `mut "),
+        "must not suggest `mut`, which none of these forms accept: {}", out,
+    );
+    // A `for` element gets the remedy it actually has.
+    assert!(
+        out.contains("for mutate c in"),
+        "a read-only element should point at `for mutate`: {}", out,
+    );
+}
+
+// The read side of the same rule, and the two write-back forms that stay legal:
+// `for mutate`, and a `mutate self` method on the original. Both backends.
+#[test]
+fn binding_read_and_write_back_forms_agree() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "binding_read_write_forms.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(
+            stdout,
+            "read 5 call 10\nwritten back 7\nfor mutate 2\nread-only walk 4\n\
+             arm 7\nshadowed 3\noriginal 11\n",
+            "{mode}: {stdout}",
+        );
+    }
+}
+
+// #772: `print(x)` renders x, so it takes the same Displayable check `{x}` does.
+// It was a builtin whose arguments nothing looked at, so it accepted anything —
+// and the two backends then rendered whatever they liked.
+#[test]
+fn error_print_of_a_non_displayable_type() {
+    let (failed, out) = compile_error_output("not_displayable.rk");
+    assert!(failed, "print of a non-Displayable type must not compile: {}", out);
+    // Two spellings, same rule: `{p}` and `print(p)`.
+    assert!(
+        out.matches("`Point` does not implement `Displayable`").count() >= 2,
+        "both the placeholder and the call should be caught: {}", out,
+    );
+    assert!(
+        out.matches("`i64?` does not implement `Displayable`").count() >= 2,
+        "an optional is rejected at a call as well as in a placeholder: {}", out,
+    );
+    // The message names which spelling reached the renderer.
+    assert!(
+        out.contains("`print` renders this value"),
+        "the call form should say `print`, not `{{}}`: {}", out,
+    );
+}
+
+// The other half of #772, and the more surprising one: `print(p)` on a type that
+// *had* opted into Displayable didn't call its `to_string` either. Native printed
+// the address of the aggregate's storage and a char's code point; the interpreter
+// printed a debug form that ignored the impl. `{p}` was right on both, so
+// desugaring `print(x)` to `x.to_string()` is what makes the two spellings agree.
+#[test]
+fn print_renders_through_displayable_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "print_accepts_displayable.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(
+            stdout,
+            "1 2.5 true c\n42\n(1, 2)\nparse failed: loose wire\npayload 7\n3\n\
+             multi  1   true \n",
+            "{mode}: {stdout}",
+        );
+        // The two that were wrong natively: an aggregate printed its address and
+        // a char printed its code point.
+        assert!(!stdout.contains("140"), "{mode}: an address leaked out: {stdout}");
+        assert!(!stdout.contains("99"), "{mode}: a char printed as a number: {stdout}");
+    }
+}
+
+// #780: `json` and `net` worked with no import and the other modules didn't.
+// Not a prelude decision — `stdlib/http.rk` imports them, and stdlib decls share
+// one scope with user code, so that import satisfied every program's.
+#[test]
+fn error_module_used_without_its_import() {
+    let (failed, out) = compile_error_output("module_needs_import.rk");
+    assert!(failed, "a module needs its own import: {}", out);
+    for m in ["`json`", "`net`", "`fs`"] {
+        assert!(
+            out.contains(&format!("{} is used but never imported", m)),
+            "{} should need an import like every other module: {}", m, out,
+        );
+    }
+}
+
+// The other half: the two leaked names were also *reserved*, so `let net = 1`
+// was rejected as shadowing a built-in while `let fs = 1` was fine.
+#[test]
+fn module_names_can_be_bound_as_locals() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "module_names_are_bindable.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        assert_eq!(stdout, "1 2 3 4 5 6 7 8 9 10\n", "{mode}: {stdout}");
+    }
+}
+
+// #530 / PM4: an argument going into a `mutate` parameter is written
+// `mutate arg`. The asymmetry is the point — a misread *move* is caught by the
+// use-after-move check, a misread mutation isn't, so the uncatchable one gets
+// written down.
+#[test]
+fn error_missing_call_site_mutate_marker() {
+    let (failed, out) = compile_error_output("mutate_marker_required.rk");
+    assert!(failed, "a `mutate` argument needs its marker: {}", out);
+    assert!(
+        out.contains("`apply_damage` mutates `player` — mark it at the call site"),
+        "should name callee and argument: {}", out,
+    );
+    // PM5: the marker follows the signature, not the argument's size.
+    assert!(
+        out.contains("`bump_scalar` mutates `count`"),
+        "a Copy argument is no exception: {}", out,
+    );
+    // A field path is a legal `mutate` argument, and the message quotes it whole.
+    assert!(
+        out.contains("`bump_scalar` mutates `c.n`"),
+        "a field path should be named as written: {}", out,
+    );
+    // The receiver is exempt — `c.bump()` must not be flagged.
+    assert!(
+        !out.contains("mutates `c` —"),
+        "a method receiver takes no marker: {}", out,
+    );
+}
+
+// ER47 (#598): bare `try` sends the operand's other branch out unchanged, so
+// that branch has to fit the return. The two ways to get it wrong have different
+// fixes — an absence isn't an error, and an error isn't an absence.
+#[test]
+fn error_try_shape_rule() {
+    let (failed, out) = compile_error_output("try_shape_rule.rk");
+    assert!(failed, "a mismatched `try` shape must not compile: {}", out);
+    assert!(
+        out.contains("would propagate `none`, and this function has no absent branch"),
+        "an optional operand in a `T or E` function: {}", out,
+    );
+    assert!(
+        out.contains("would propagate an error, and this function only returns absence"),
+        "a result operand in a `T?` function: {}", out,
+    );
+    // Each names the fix that belongs to its direction.
+    assert!(out.contains("x ?? return"), "the absence side's fix: {}", out);
+    assert!(out.contains("catch _ => return none"), "the error side's fix: {}", out);
+}
+
+// EO1 (#584): `ensure` runs LIFO, so a resource derived from another needs its
+// cleanup registered *second* — source order reads backwards from run order.
+// Registered the other way, the dependency is torn down first and the
+// dependent's cleanup calls into it. Both orders are valid code and only one is
+// what anyone meant, so this is a warning, not an error.
+#[test]
+fn warns_when_ensure_order_inverts_a_derivation() {
+    let rask = rask_binary();
+    let fixture = fixture("ensure_order_inverted.rk");
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(&fixture)
+        .output()
+        .expect("failed to run rask check");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    assert!(out.status.success(), "a warning must not fail the check: {}", combined);
+    assert!(
+        combined.contains("`w` is cleaned up before `b`, which needs it"),
+        "should name both resources: {}", combined,
+    );
+    // Exactly one — `correct`, `independent` and `mixed` in the same file must
+    // stay quiet, and the independent pair is the false positive worth pinning.
+    assert_eq!(
+        combined.matches("W0908").count(), 1,
+        "only the inverted function warns: {}", combined,
+    );
+    // The fix shows the reordered lines rather than describing the rule.
+    assert!(
+        combined.contains("ensure w.destroy()") && combined.contains("ensure b.close(w)"),
+        "the fix should show both lines in the right order: {}", combined,
+    );
+}
+
+// The behaviour behind the warning, on both backends: the inverted order really
+// does run the world's cleanup first.
+#[test]
+fn inverted_ensure_order_runs_cleanups_backwards() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "ensure_order_inverted.rk");
+        assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
+        // inverted(): the world goes before the body that still needs it.
+        let inverted = stdout
+            .split("correct body")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let world = inverted.find("world gone");
+        let body = inverted.find("body gone");
+        assert!(
+            world < body,
+            "{mode}: the inverted order should tear the world down first: {stdout}",
+        );
+        // correct(): the body goes first, while the world is still alive.
+        let rest = stdout.split("correct body").nth(1).unwrap_or_default();
+        let world2 = rest.find("world gone");
+        let body2 = rest.find("body gone");
+        assert!(
+            body2 < world2,
+            "{mode}: the correct order should tear the body down first: {stdout}",
+        );
+    }
+}
+
+// EX4 (#325): an uncaught panic exits 101, an error returned from main exits 1.
+// The interpreter only counted an explicit `panic()` as a panic, so an
+// overflow, a divide by zero, a shift past the width and a forced `x!` on
+// `none` exited 1 there while native exited 101 for all of them. Anything
+// branching on the exit code got a different answer per backend.
+#[test]
+fn every_panic_kind_exits_101_on_both_backends() {
+    let rask = rask_binary();
+    let fixture = fixture("panic_exit_codes.rk");
+    for case in ["overflow", "divzero", "shift", "unwrap", "explicit"] {
+        for mode in ["--interp", "--native"] {
+            let out = Command::new(&rask)
+                .args(["run", mode])
+                .arg(&fixture)
+                .arg(case)
+                .env("RASK_RUNTIME_DIR", runtime_dir())
+                .output()
+                .expect("failed to run rask");
+            assert_eq!(
+                out.status.code(),
+                Some(101),
+                "{mode} {case}: a panic exits 101 (EX4)\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+    }
+}
+
+// The other half of EX4, and the reason the two codes exist: an error returned
+// from main is the program saying no, not the program hitting a bug.
+#[test]
+fn a_returned_error_still_exits_1_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (_stdout, _stderr, code) = run_capture(mode, "main_returns_error.rk");
+        assert_eq!(code, 1, "{mode}: a returned error is exit 1, not 101");
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.
@@ -1799,6 +2104,104 @@ fn lint_clean_code_passes() {
     let output = lint_output("func get_data() -> i32 { return 1 }\nfunc main() {}");
     assert!(output.contains("No lint issues") || !output.contains("warning"),
         "clean code should pass lint: {}", output);
+}
+
+// #305 / AR2: `%` takes the dividend's sign, so `(i - 1) % n` indexes out of
+// range instead of wrapping when `i` is 0. Narrow on purpose — only where the
+// remainder *is* an index, and only when the left operand could be negative.
+#[test]
+fn lint_flags_truncating_remainder_as_an_index() {
+    let output = lint_output(
+        "func main() {\n\
+         \x20   mut ring: Vec<i64> = Vec.new()\n\
+         \x20   ring.push(1)\n\
+         \x20   let n: i64 = 3\n\
+         \x20   mut i: i64 = 0\n\
+         \x20   let bad = ring[(i - 1) % n]\n\
+         \x20   println(\"{bad}\")\n\
+         }\n",
+    );
+    assert!(
+        output.contains("mod-for-index"),
+        "should flag a truncating remainder used as an index: {}", output,
+    );
+    // The fix has to be code that parses: `i - 1.mod(n)` would regroup as
+    // `i - (1.mod(n))`, so the compound operand keeps its parens.
+    assert!(
+        output.contains("ring[(i - 1).mod(n)]"),
+        "the fix must be valid code, parens included: {}", output,
+    );
+}
+
+#[test]
+fn lint_leaves_correct_remainder_indexing_alone() {
+    // `.mod()` already, a length (never negative), a literal, and a `%` whose
+    // result is a value rather than an index. Flagging any of these would
+    // drown the one case that is a bug.
+    let output = lint_output(
+        "func main() {\n\
+         \x20   mut ring: Vec<i64> = Vec.new()\n\
+         \x20   ring.push(1)\n\
+         \x20   let n: i64 = 3\n\
+         \x20   mut i: i64 = 0\n\
+         \x20   let a = ring[(i - 1).mod(n)]\n\
+         \x20   let b = ring[ring.len() % n]\n\
+         \x20   let c = ring[2 % n]\n\
+         \x20   let d = (i - 1) % 2\n\
+         \x20   println(\"{a} {b} {c} {d}\")\n\
+         }\n",
+    );
+    assert!(
+        !output.contains("mod-for-index"),
+        "none of these are the footgun: {}", output,
+    );
+}
+
+// #585: context clauses bubble — every callee's contexts show up on its callers
+// — so a deep call chain accumulates them until the signature stops saying what
+// the function takes and starts listing what the program owns. A lint rather
+// than a language rule: four is sometimes the honest shape.
+#[test]
+fn lint_flags_a_signature_with_more_than_three_contexts() {
+    let output = lint_output(
+        "struct World { n: i64 }\n\
+         struct Physics { n: i64 }\n\
+         struct Audio { n: i64 }\n\
+         struct Input { n: i64 }\n\
+         func tick(dt: i64) using world: World, physics: Physics, audio: Audio, input: Input {\n\
+         \x20   println(\"{dt}\")\n\
+         }\n\
+         func main() {\n\
+         \x20   println(\"hi\")\n\
+         }\n",
+    );
+    assert!(
+        output.contains("too-many-contexts"),
+        "four context clauses should be flagged: {}", output,
+    );
+    assert!(
+        output.contains("`tick`") && output.contains("world, physics, audio, input"),
+        "should name the function and every clause: {}", output,
+    );
+}
+
+#[test]
+fn lint_leaves_three_contexts_alone() {
+    let output = lint_output(
+        "struct World { n: i64 }\n\
+         struct Physics { n: i64 }\n\
+         struct Audio { n: i64 }\n\
+         func tick(dt: i64) using world: World, physics: Physics, audio: Audio {\n\
+         \x20   println(\"{dt}\")\n\
+         }\n\
+         func main() {\n\
+         \x20   println(\"hi\")\n\
+         }\n",
+    );
+    assert!(
+        !output.contains("too-many-contexts"),
+        "three is the limit, not the trigger: {}", output,
+    );
 }
 
 // ─── rask api integration ───────────────────────────────────
@@ -4216,14 +4619,15 @@ nocopy=1
 
 // The interpreter died at ~245 nested calls by overflowing the host stack —
 // SIGABRT, nothing printed, no exit code — where native manages millions (#759).
-// `main` and the test runner now run on the same 16 MiB stack every spawned task
-// already had (~245 → ~495), and running out is measured and reported instead.
+// It now moves onto a fresh stack instead of stopping at the end of one, so the
+// depth is bounded by memory rather than by a single thread's stack. 1,000 is
+// past the old cliff and inside what a debug build reaches too.
 #[test]
 fn deep_recursion_runs_on_both_backends() {
     let expected = "\
-down=300
+down=1000
 even=true odd=true
-sum=45150
+sum=500500
 ";
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "deep_recursion.rk");
@@ -4232,9 +4636,11 @@ sum=45150
     }
 }
 
-// Unbounded recursion is a reported error, not a vanished process. The depth it
-// reaches depends on how heavy the frames are, so the test pins the diagnostic
-// and the exit code rather than a number.
+// Unbounded recursion is a reported error, not a vanished process — and now that
+// the interpreter grows its stack rather than stopping at the end of one, the
+// thing that stops it is the cap on how much stack the chain may hold. The depth
+// reached depends on how heavy the frames are and on the build profile, so the
+// test pins the diagnostic and the exit code rather than a number.
 #[test]
 fn runaway_recursion_is_reported_not_aborted() {
     let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
@@ -4257,4 +4663,184 @@ fn error_own_capture_moves_a_noncopy_param() {
     assert!(failed, "a moved 24-byte struct must still be rejected: {}", out);
     assert!(out.contains("E0813"), "should be maybe-moved (E0813): {}", out);
     assert!(out.contains("`big`"), "should name the moved binding: {}", out);
+}
+
+// `r is MyErr.Worse as w` was rejected as "not a branch of `i64 or MyErr` — this
+// test can never be true", while the bare `is MyErr.Worse` right next to it
+// worked. The two spellings take different paths: the bare one is a constructor
+// pattern and skips the branch check, the bound one is a type pattern and was
+// compared against the scrutinee's own branches, which never include a variant
+// name. `match` has always dispatched at variant granularity on a `T or E`
+// (#766). Three halves: the checker accepts it and types the binder as the
+// variant's payload, the interpreter matches the inner variant instead of
+// descending past it, and MIR reads at the variant's offset inside the err payload
+// rather than binding the whole error.
+#[test]
+fn is_on_an_error_variant_binds_its_payload_on_both_backends() {
+    let expected = "\
+0: ok(7)
+1: bad
+2: worse(disk)
+3: code(42)
+4: pair(sector,9)
+whole: worse: disk
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "is_error_variant_payload.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// Case conversion was ASCII-only natively: `"aöb".to_uppercase()` came back
+// `AöB`, and Greek was left untouched entirely (#779). The native tables are now
+// generated from Rust's own Unicode data — the same source the interpreter uses —
+// so the one-to-many mappings come along too: `ß` uppercases to `SS`, and `İ`
+// lowercases to `i` plus a combining dot, growing in both bytes and scalars.
+#[test]
+fn unicode_case_conversion_agrees_on_both_backends() {
+    let expected = "\
+AÖB aöb
+αβγδεζ ΑΒΓΔΕΖ
+ПРИВЕТ привет
+STRASSE len 7->7
+dotted len 2->3 chars 2
+AÑO-ΔΕΛΤΑ-ТЕСТ-ABC
+año-δελτα-тест-abc
+HELLO, WORLD! 123 / hello, world! 123
+empty [][]
+ß up S lo ß
+ö up Ö lo ö
+Α up Α lo α
+a up A lo a
+1 up 1 lo 1
+";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "unicode_case.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, expected, "{}", mode);
+    }
+}
+
+// A generic type is laid out once for every instantiation, with a word-sized
+// placeholder per type parameter, so an aggregate type argument doesn't fit its
+// slot: `One { only: Big { … } }` with a 24-byte Big stored past the slot and read
+// back garbage — SIGSEGV, silently (#781).
+//
+// A workaround, not the fix: the crash is now an error that says what's wrong. The
+// fix needs per-instantiation layouts, which needs the checker to record the type
+// arguments a generic struct was instantiated with — it discards them today, so a
+// struct literal's node type is a bare `Named(TypeId)`.
+//
+// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
+#[test]
+fn error_generic_struct_with_an_aggregate_type_arg() {
+    let (stdout, stderr, code) = run_capture("--native", "generic_aggregate_type_arg.rk");
+    let out = format!("{}{}", stdout, stderr);
+    assert_ne!(code, 0, "should be rejected, not run: {}", out);
+    assert!(
+        out.contains("doesn't fit") && out.contains("#781"),
+        "should name the limitation and the issue: {}", out,
+    );
+    assert!(
+        out.contains("`only`"),
+        "should name the field whose sizes disagree: {}", out,
+    );
+}
+
+// #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
+// annotation type-checked clean. The annotation's whole job is to move the
+// break from the call sites to the declaration, so an unenforced one is worse
+// than none: it reads as a guarantee and isn't.
+#[test]
+fn error_small_size_fence() {
+    let (failed, out) = compile_error_output("small_size_fence.rk");
+    assert!(failed, "`@small` over the threshold must not compile: {}", out);
+    assert!(
+        out.contains("E0374") && out.contains("`TooBig`") && out.contains("24 bytes"),
+        "should name the type and its size: {}", out,
+    );
+    assert!(
+        out.contains("`c` is the 8-byte field that took it over 16"),
+        "should name the field that crossed the line: {}", out,
+    );
+    // Two strings are 32 bytes — the threshold isn't only about field count.
+    assert!(
+        out.contains("`WideNames`") && out.contains("32 bytes"),
+        "should catch the string pair too: {}", out,
+    );
+    // SM3: the generic half, checked per instantiation.
+    assert!(
+        out.contains("E0375") && out.contains("`Pair<string>`"),
+        "should name the offending instantiation: {}", out,
+    );
+    assert!(
+        !out.contains("`Pair<i64>`"),
+        "`Pair<i64>` is 16 bytes and must not be flagged: {}", out,
+    );
+}
+
+// The other side of the fence: SM1 says it's a pure size assertion, so a
+// `@small` struct of Copy fields still copies implicitly, and SM4 says it
+// composes with `@unique` — layout and copy semantics are separate questions.
+#[test]
+fn small_fence_keeps_copy_and_unique() {
+    for backend in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(backend, "small_fence.rk");
+        assert_eq!(code, 0, "{backend}: {stdout}{stderr}");
+        assert_eq!(stdout, "6 7\n42\n30 3\n", "{backend}: {stdout}");
+    }
+}
+
+// #762: 128-bit arithmetic is checked like every other width, and the mechanism
+// is different enough to pin on its own. Cranelift has no `umul_overflow` rule
+// at `I128` and no division lowering at all, so multiply, divide and remainder
+// are runtime calls handing back a status the caller branches on — a helper that
+// quietly returned a wrapped result would look identical to a correct one in
+// every test that doesn't overflow.
+#[test]
+fn i128_overflow_and_div_zero_panic_on_both_backends() {
+    for (fixture, needle) in [
+        ("i128_overflow_panics.rk", "overflow"),
+        ("i128_div_zero_panics.rk", "division by zero"),
+    ] {
+        for backend in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(backend, fixture);
+            let out = format!("{}{}", stdout, stderr);
+            assert_ne!(code, 0, "{backend} {fixture} should not succeed: {out}");
+            assert!(
+                out.contains(needle),
+                "{backend} {fixture} should say what went wrong: {out}",
+            );
+            assert!(
+                !out.contains("unreachable"),
+                "{backend} {fixture} must stop at the bad operation: {out}",
+            );
+        }
+    }
+}
+
+// #603: an annotation the compiler silently ignores is worse than one it
+// rejects — the wire format then differs from what the source says, and nothing
+// at the declaration or the encode site tells you. `@skip` in particular reads
+// as "excluded" and serialized the field anyway.
+#[test]
+fn error_field_annotation_forms() {
+    let (failed, out) = compile_error_output("field_annotation_forms.rk");
+    assert!(failed, "unusable annotations must not compile: {}", out);
+    assert!(
+        out.contains("E0376") && out.contains("`@skip`") && out.contains("@no_serialize"),
+        "should name the replacement for `@skip`: {}", out,
+    );
+    assert!(
+        out.matches("the serialized key has to be a string literal").count() == 2,
+        "both bad `@rename` forms should be rejected: {}", out,
+    );
+    // E13a: a decode has to build the whole struct, and an excluded field never
+    // appears in the input — so its value comes from a default or from nowhere.
+    assert!(
+        out.contains("E0377") && out.contains("`Config` cannot be decoded")
+            && out.contains("`token`"),
+        "an excluded field with no default should block Decode by name: {}", out,
+    );
 }

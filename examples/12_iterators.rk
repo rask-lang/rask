@@ -123,9 +123,9 @@ func main() {
     let first_large = numbers.iter()
         .find(|n| n > 7)
 
-    if first_large? {
+    if first_large? as n {
         print("First number > 7: ")
-        print(first_large)
+        print(n)
         print("\n")
     } else {
         print("Not found\n")

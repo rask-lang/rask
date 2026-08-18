@@ -45,16 +45,30 @@ func bool_to_int() {
     let n: i32 = b as i32
 }
 
-// --- CV8: `float to int` misused on an integer source ---
-// ERROR: `float to int` converts a float, source is not a float [E0818]
+// --- CV15: `floor` misused on an integer source ---
+// ERROR: `floor` rounds a float to an integer, source is not a float [E0818]
 func float_form_on_int() {
     let n: i32 = 5
-    let x = n float to int i32
+    let x = n.floor<i32>()!
 }
 
-// --- CV5: `truncate to` producing a non-integer ---
-// ERROR: `truncate to` produces an integer, target is not an integer [E0818]
-func truncate_to_float() {
+// --- CV12: `wrap` producing a non-integer ---
+// ERROR: `wrap` produces an integer, target is not an integer [E0818]
+func wrap_to_float() {
     let n: i32 = 5
-    let x = n truncate to f64
+    let x = n.wrap<f64>()
+}
+
+// --- CV14: `round` between integer types has nothing to round ---
+// ERROR: `round` has nothing to round going from `i32` to `i8` [E0818]
+func round_int_to_int() {
+    let n: i32 = 5
+    let x = n.round<i8>()!
+}
+
+// --- CV13: `clamp` on a float source ---
+// ERROR: `clamp` works between integer types, source is a float [E0818]
+func clamp_a_float() {
+    let f: f64 = 1.5
+    let x = f.clamp<i32>()
 }

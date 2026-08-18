@@ -17,10 +17,15 @@ pub enum MirType {
     I16,
     I32,
     I64,
+    /// 128-bit signed. Two machine words; Cranelift lowers add/sub/mul, and
+    /// div/rem go through runtime helpers (#762).
+    I128,
     U8,
     U16,
     U32,
     U64,
+    /// 128-bit unsigned. See `I128`.
+    U128,
     F32,
     F64,
     Char,
@@ -114,6 +119,7 @@ impl MirType {
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
             | MirType::Handle => 8,
+            MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size,
             MirType::Enum(eid) => eid.byte_size,
@@ -156,12 +162,33 @@ impl MirType {
             MirType::Bool | MirType::I8 | MirType::U8 | MirType::Void => 1,
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
+            MirType::I128 | MirType::U128 => 16,
             MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
             MirType::Struct(sid) => sid.align,
             MirType::Enum(eid) => eid.align,
             MirType::Slice(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
             _ => 8,
         }
+    }
+
+    /// Does an array element of this type live *in* its slot?
+    ///
+    /// The slots of `[T; N]` are `i * T::size()` apart, so a value that occupies
+    /// its slot is copied in whole and read back by address. One store rule and
+    /// one read rule, both from here, because they only work as a pair: a store
+    /// that writes a word where the reader expects a value in place hands back the
+    /// address of whatever the first eight bytes were.
+    ///
+    /// Struct, enum and tuple only, deliberately — not every type that is
+    /// `passed_by_address`. A `string` is a pointer to its 16 bytes and the whole
+    /// read path expects that (#414). A wrapper element (`[i32?; 3]`) would want
+    /// to be inline but isn't supported end to end: its size isn't a multiple of
+    /// 8, and the `??` and tag reads expect a loaded value rather than an address,
+    /// so indexing one hands back the slot address as if it were the payload
+    /// (#783). Widening this without those is how that turns from "doesn't
+    /// compile" into "compiles and prints an address".
+    pub fn stored_inline_in_array(&self) -> bool {
+        matches!(self, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
     }
 
     /// True for F32 and F64.
@@ -171,7 +198,7 @@ impl MirType {
 
     /// True for unsigned integer types.
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+        matches!(self, MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128)
     }
 
     /// True for an integer primitive of either signedness — the set where a
@@ -179,8 +206,8 @@ impl MirType {
     pub fn is_int_like(&self) -> bool {
         matches!(
             self,
-            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
         )
     }
 }

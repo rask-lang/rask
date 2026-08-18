@@ -62,11 +62,11 @@ extend Number {
             1
         }
 
-        let result = i128.abs(a) * i128.abs(b) >> FRAC_BITS
+        let result = (a.abs() * b.abs()) >> FRAC_BITS
         return Number { raw: if sign < 0 {
-            -result as i64
+            (-result).wrap<i64>()
         } else {
-            result as i64
+            result.wrap<i64>()
         } }
     }
 
@@ -90,11 +90,11 @@ extend Number {
             1
         }
 
-        let result = i128.abs(a) << FRAC_BITS / i128.abs(b)
+        let result = (a.abs() << FRAC_BITS) / b.abs()
         return Number { raw: if sign < 0 {
-            -result as i64
+            (-result).wrap<i64>()
         } else {
-            result as i64
+            result.wrap<i64>()
         } }
     }
 

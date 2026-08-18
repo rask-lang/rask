@@ -38,9 +38,11 @@ pub mod build_context;
 /// to recurse as deep whichever way the compiler was built, or a test passes
 /// locally under `--release` and dies in a debug CI job.
 ///
-/// The size is a stopgap either way: the frame size is the actual problem (#759).
-/// Erring high is right meanwhile. The reservation is lazily committed, so the
-/// headroom costs address space rather than memory.
+/// The size no longer decides how deep a program can recurse — `grow_interp_stack`
+/// continues on a fresh stack when this one runs out — but it does decide how
+/// often that costs a thread spawn, so erring high is still right. The
+/// reservation is lazily committed, so the headroom costs address space rather
+/// than memory until it's used.
 ///
 /// Outlining the biggest cold `eval_expr` arms was tried and barely moved it —
 /// `eval_expr`'s frame went 9144 → 9064 bytes for the two largest, because LLVM
@@ -122,6 +124,84 @@ pub(crate) fn stack_used() -> usize {
 pub(crate) fn stack_nearly_exhausted() -> bool {
     let used = stack_used();
     used != 0 && used + STACK_RESERVE_BYTES >= INTERP_STACK_BYTES
+}
+
+thread_local! {
+    /// How many stacks deep this evaluation already is (see `grow_interp_stack`).
+    ///
+    /// Thread-local, and a fresh thread starts at zero — so the count is handed
+    /// across explicitly when a segment is added, or an infinite recursion would
+    /// grow forever.
+    static STACK_SEGMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Live host stack one interpreted program may chain together.
+///
+/// A segment is fully spent before the next is added, so this is committed
+/// memory, not just reserved address space — the cap is what keeps a runaway
+/// recursion a diagnostic instead of a machine swapping itself to death. A
+/// gigabyte buys around 30,000 Rask frames in release, which covers the things
+/// that legitimately recurse: a descent over nested JSON, a quicksort on a
+/// nearly-sorted list, a naive fibonacci.
+const MAX_INTERP_STACK_BYTES: usize = 1024 * 1024 * 1024;
+
+/// How many stacks that works out to.
+///
+/// Expressed as a budget rather than a count so the two profiles agree on the
+/// memory rather than on the number of threads — a debug frame is ~17× an
+/// optimized one, so a debug segment is correspondingly larger and there are
+/// correspondingly fewer of them.
+const MAX_STACK_SEGMENTS: usize = {
+    let n = MAX_INTERP_STACK_BYTES / INTERP_STACK_BYTES;
+    if n < 2 { 2 } else { n }
+};
+
+/// Has the chain of stacks reached its cap?
+pub(crate) fn stack_segments_exhausted() -> bool {
+    STACK_SEGMENTS.get() + 1 >= MAX_STACK_SEGMENTS
+}
+
+/// Continue evaluating on a fresh stack.
+///
+/// The interpreter spends one host frame per Rask call and those frames are
+/// large — around 30 KB, because `eval_expr` is a single match over 80 kinds and
+/// Rust sizes a frame for the union of every arm's locals. 16 MiB therefore
+/// buys only ~465 Rask calls, and a program that recursed deeper than that used
+/// to die: first as a SIGABRT with no message, then (once the guard landed) as
+/// an R0023 diagnostic. Both are wrong answers — the same program compiled
+/// natively recurses into the millions, and the interpreter is supposed to be
+/// the reference for what the answer is.
+///
+/// So instead of refusing, the call continues on a thread with a whole new
+/// stack, and the old one waits in `join`. The recursion is unchanged as far as
+/// the program can tell — same interpreter, same environment, same values,
+/// which travel because they're already `Arc`-backed for concurrency. What
+/// changes is which host stack the frames land on.
+///
+/// The cost lands once per ~465 Rask frames: one thread spawn, and one OS
+/// thread parked in `join` per live segment. Frame size is still worth
+/// shrinking (#759) — it decides how often this happens — but it's no longer
+/// the difference between running and not.
+pub(crate) fn grow_interp_stack<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    let next = STACK_SEGMENTS.get() + 1;
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(INTERP_STACK_BYTES)
+            .spawn_scoped(s, || {
+                mark_stack_base();
+                STACK_SEGMENTS.set(next);
+                f()
+            })
+            .expect("failed to spawn interpreter thread")
+            .join()
+            // The child's panic is the program's panic — resume it here rather
+            // than turning it into a different one.
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
 }
 
 /// Run `f` on a thread with the interpreter's stack size, borrowing freely.

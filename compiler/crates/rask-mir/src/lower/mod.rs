@@ -589,11 +589,13 @@ impl<'a> MirContext<'a> {
             "i16" => MirType::I16,
             "i32" => MirType::I32,
             "i64" => MirType::I64,
+            "i128" => MirType::I128,
             "isize" => MirType::isize_ty(),
             "u8" => MirType::U8,
             "u16" => MirType::U16,
             "u32" => MirType::U32,
             "u64" => MirType::U64,
+            "u128" => MirType::U128,
             "usize" => MirType::usize_ty(),
             "f32" => MirType::F32,
             "f64" => MirType::F64,
@@ -749,11 +751,13 @@ impl<'a> MirContext<'a> {
             Type::I8 => MirType::I8,
             Type::I16 => MirType::I16,
             Type::I32 => MirType::I32,
-            Type::I64 | Type::I128 => MirType::I64,
+            Type::I64 => MirType::I64,
+            Type::I128 => MirType::I128,
             Type::U8 => MirType::U8,
             Type::U16 => MirType::U16,
             Type::U32 => MirType::U32,
-            Type::U64 | Type::U128 => MirType::U64,
+            Type::U64 => MirType::U64,
+            Type::U128 => MirType::U128,
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
@@ -1110,7 +1114,7 @@ pub struct MirLowerer<'a> {
 /// One field's compile-time-known metadata inside an unrolled `comptime for
 /// field in reflect.fields<T>()` body (CT48–CT54). Mirrors the interpreter's
 /// FieldInfo shape (rask-interp/src/stdlib/reflect.rs) so native and interp
-/// agree; `is_public` has no source in `FieldLayout` so it defaults to `true`.
+/// agree.
 #[derive(Clone)]
 pub(crate) struct ReflectFieldConst {
     pub(crate) name: String,
@@ -2958,6 +2962,7 @@ impl<'a> MirLowerer<'a> {
             match method.as_str() {
                 "split" | "split_whitespace" | "lines" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
+                "bytes" => return Some(MirType::U8),
                 _ => {}
             }
             if let ExprKind::Ident(name) = &object.kind {
@@ -3502,6 +3507,41 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
+    /// `Enum.Variant` naming a variant of a Result's error enum: each field's
+    /// type, its offset *within the err payload*, and its size.
+    fn err_variant_fields(
+        &self,
+        scrutinee_ty: &MirType,
+        ty_name: &str,
+    ) -> Option<Vec<(MirType, u32, u32)>> {
+        let MirType::Result { err, .. } = scrutinee_ty else { return None };
+        let (enum_name, variant_name) = ty_name.split_once('.')?;
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = err.as_ref() else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
+        if layout.name != enum_name {
+            return None;
+        }
+        let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
+        if variant.fields.is_empty() {
+            return None;
+        }
+        Some(
+            variant
+                .fields
+                .iter()
+                .map(|f| {
+                    (
+                        self.ctx.type_to_mir(&f.ty),
+                        variant.payload_offset + f.offset,
+                        f.size,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Bind pattern payload variables into the current scope.
     ///
     /// After confirming a tag match, extracts payload fields from the
@@ -3584,7 +3624,68 @@ impl<'a> MirLowerer<'a> {
             // only caller (WhileLet) already routed control flow via
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
-            Pattern::TypePat { ty_name: _, binding: Some(name) } => {
+            Pattern::TypePat { ty_name, binding: Some(name) } => {
+                // ER23 at variant granularity: `r is MyErr.Worse as w` binds the
+                // *variant's* payload, not the whole error. The test is already
+                // two-layer — err tag, then the variant tag — so all that's needed
+                // is reading at the variant's own offset inside the err payload.
+                // Binding `payload_ty` handed over a `MyErr` where a `string` was
+                // named, and `{w}` printed the enum's tag (#766).
+                if let Some(fields) = self.err_variant_fields(scrutinee_ty, ty_name) {
+                    let bound_ty = match fields.as_slice() {
+                        [(ty, _, _)] => ty.clone(),
+                        many => MirType::Tuple(many.iter().map(|(t, _, _)| t.clone()).collect()),
+                    };
+                    let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
+                    match fields.as_slice() {
+                        // One field binds directly.
+                        [(field_ty, offset, size)] => {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: local,
+                                rvalue: MirRValue::Field {
+                                    base: value.clone(),
+                                    field_index: 0,
+                                    byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + *offset),
+                                    access: FieldAccess::for_field(field_ty, *size),
+                                },
+                            }));
+                        }
+                        // Several bind a tuple, which has to be built: the
+                        // variant's fields sit at the enum's offsets, the tuple's
+                        // at its own, and the two don't line up.
+                        many => {
+                            let mut tuple_offset = 0u32;
+                            for (field_ty, src_offset, size) in many {
+                                let align = field_ty.align().max(1);
+                                tuple_offset = (tuple_offset + align - 1) & !(align - 1);
+                                let read = self.builder.alloc_temp(field_ty.clone());
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: read,
+                                    rvalue: MirRValue::Field {
+                                        base: value.clone(),
+                                        field_index: 0,
+                                        byte_offset: Some(
+                                            crate::types::RESULT_PAYLOAD_OFFSET + *src_offset,
+                                        ),
+                                        access: FieldAccess::for_field(field_ty, *size),
+                                    },
+                                }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: local,
+                                    offset: tuple_offset,
+                                    value: MirOperand::Local(read),
+                                    store_size: Some(field_ty.size()),
+                                }));
+                                tuple_offset += field_ty.size();
+                            }
+                        }
+                    }
+                    self.locals.insert(name.clone(), (local, bound_ty.clone()));
+                    if let Some(prefix) = self.mir_type_name(&bound_ty) {
+                        self.meta_mut(name).type_prefix = Some(prefix);
+                    }
+                    return;
+                }
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
                     crate::fallback::i64_fallback("lower/mod:typepat_payload")
                 });
@@ -4161,6 +4262,13 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
         }
     }
 
+    // `abs` at 128 bits answers at 128 bits. It isn't stub-declared, so without
+    // this it took the i64 default below and the result was truncated on the way
+    // out of the call — `(-18446744073709551614).abs()` printed -2 (#762).
+    if func_name == "i128_abs" {
+        return MirType::I128;
+    }
+
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
@@ -4323,6 +4431,12 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 /// `u64_*` entries and narrower values ride in the same slots. That has to
 /// become per-width when `std.bits` lands — `(0 as i32).count_zeros()` is 32,
 /// not 64, so those methods can't share one symbol.
+///
+/// 128-bit has its own prefix. It used to ride the 64-bit symbols, which was
+/// defensible while nothing could build a value wider than 64 bits — that stops
+/// being true once arithmetic is real, and `abs` on a value past the boundary
+/// truncated (#762, #794). Only `abs` and `to_string` need an `i128_*` symbol
+/// today; those are the two methods the checker accepts at that width.
 pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::F32 | Type::F64 => Some("f64"),
@@ -4330,6 +4444,12 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
         Type::Char => Some("char"),
         Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
         Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        // 128-bit dispatches on its own prefix. It used to ride the 64-bit
+        // symbols, which was defensible only while no value needed more than 64
+        // bits — `abs` on an `i128` truncated the moment that stopped being
+        // true (#762, #794).
+        Type::I128 => Some("i128"),
+        Type::U128 => Some("u128"),
         // A slice dispatches like the container it came from: `parts[2..]
         // .join(" ")` is `Vec_join`. Without this the call fell through to the
         // name-policy table, which guesses "a two-argument `join` means Vec" —
@@ -5307,6 +5427,7 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                        is_public: true,
                     }],
                 },
                 VariantLayout {
@@ -5322,6 +5443,7 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                        is_public: true,
                     }],
                 },
             ],
@@ -5470,8 +5592,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
                     ],
                 },
             ],

@@ -109,6 +109,43 @@ impl TypeChecker {
     // Pattern Checking
     // ------------------------------------------------------------------------
 
+    /// When `ty_name` is `Enum.Variant` and `Enum` is the scrutinee's error side,
+    /// the type that variant's payload binds to.
+    ///
+    /// One field binds that field's type; several bind a tuple; none binds unit,
+    /// which is what a binder on a fieldless variant deserves — there's nothing
+    /// behind it to name.
+    ///
+    /// A union error side is handled too: `is ParseError.Syntax` on a
+    /// `T or (ParseError | DivError)` finds the variant in whichever member
+    /// declares it.
+    pub(super) fn err_variant_payload(&self, resolved: &Type, ty_name: &str) -> Option<Type> {
+        let Type::Result { err, .. } = resolved else { return None };
+        let (enum_name, variant_name) = ty_name.split_once('.')?;
+        let err_applied = self.ctx.apply(err);
+        let candidates: Vec<Type> = match err_applied {
+            Type::Union(members) => members,
+            other => vec![other],
+        };
+        for candidate in candidates {
+            let Type::Named(id) = self.ctx.apply(&candidate) else { continue };
+            if self.types.type_name(id) != enum_name {
+                continue;
+            }
+            let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else { continue };
+            let fields = variants
+                .iter()
+                .find(|(v, _)| v == variant_name)
+                .map(|(_, f)| f.clone())?;
+            return Some(match fields.len() {
+                0 => Type::Unit,
+                1 => fields[0].clone(),
+                _ => Type::Tuple(fields),
+            });
+        }
+        None
+    }
+
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
         match pattern {
             Pattern::Wildcard => vec![],
@@ -283,6 +320,25 @@ impl TypeChecker {
             Pattern::TypePat { ty_name, binding } => {
                 let narrow_ty = normalize_type(&resolve_type_name(ty_name, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
+                // ER23 at variant granularity. `match` already dispatches on one
+                // variant of a `T or E` — `error-types.md` shows exactly that with
+                // `IoError.NotFound(p)` arms, and ER30 makes covering every
+                // variant of E the exhaustiveness rule. So `is MyErr.Worse as w`
+                // is the same question, and the binder takes the *variant's*
+                // payload rather than the whole error.
+                //
+                // Without this, `MyErr.Worse` was compared against the scrutinee's
+                // own branches (`i64`, `MyErr`), never matched one, and reported
+                // "`MyErr.Worse` is not a branch of `i64 or MyErr` — this test can
+                // never be true". The bare `is MyErr.Worse` next to it proved that
+                // wrong: it parses as a constructor pattern and never reached this
+                // check at all (#766).
+                if let Some(payload) = self.err_variant_payload(&resolved, ty_name) {
+                    return match binding {
+                        Some(name) => vec![(name.clone(), payload)],
+                        None => vec![],
+                    };
+                }
                 match &resolved {
                     Type::Result { err, .. } => {
                         // Every branch the scrutinee could hold — a flat

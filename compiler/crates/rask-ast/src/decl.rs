@@ -196,7 +196,7 @@ pub struct Field {
     pub name_span: Span,
     pub ty: String,
     pub visibility: FieldVisibility,
-    /// Field annotations: `@rename("...")`, `@skip`, `@default(expr)`.
+    /// Field annotations: `@rename("...")`, `@no_serialize`, `@default(expr)`.
     /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.
     pub attrs: Vec<String>,
     /// Declared default (`port: i32 = 8080`). Compile-time constant only (FD1).
@@ -224,8 +224,16 @@ pub mod field_attrs {
         field_name.to_string()
     }
 
-    /// `@skip` — left out of the serialized form entirely (E19).
+    /// `@no_serialize` — left out of the serialized form entirely, in both
+    /// directions (E19).
     pub fn is_skipped(attrs: &[String]) -> bool {
+        attrs.iter().any(|a| a.trim() == "no_serialize")
+    }
+
+    /// The old spelling. `@skip` failed the guess test — skip from what? — and
+    /// became `@no_serialize` (E19). Still recognized so the error can say so
+    /// rather than silently serializing the field.
+    pub fn uses_old_skip(attrs: &[String]) -> bool {
         attrs.iter().any(|a| a.trim() == "skip")
     }
 

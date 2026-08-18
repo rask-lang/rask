@@ -19,9 +19,9 @@ func main() {
     // Pattern matching with Option
     let maybe: i32? = 42
 
-    if maybe? {
+    if maybe? as value {
         print("Got value: ")
-        print(maybe)
+        print(value)
         print("\n")
     }
 

@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The forms that stay legal after #788 made test/pattern binds read-only.
+// A bind can be read, called, shadowed and copied out — it just can't be
+// written to. The write-back forms are `for mutate` and a method on the
+// original, and both are here so a later tightening can't take them out.
+struct Counter { n: i32 }
+
+extend Counter {
+    func bump(mutate self) {
+        self.n += 1
+    }
+
+    func doubled(self) -> i32 {
+        return self.n * 2
+    }
+}
+
+enum Shape {
+    Round(Counter)
+    Flat
+}
+
+func main() {
+    // Read and call through an optional payload bind
+    mut opt: Counter? = Counter { n: 5 }
+    if opt? as t {
+        println("read {t.n} call {t.doubled()}")
+    }
+
+    // Copy out of the bind, mutate the copy, write the whole value back
+    if opt? as t {
+        mut next = Counter { n: t.n + 1 }
+        next.bump()
+        opt = next
+    }
+    println("written back {opt!.n}")
+
+    // `for mutate` is the mode whose writes reach the collection
+    mut xs: Vec<Counter> = Vec.new()
+    xs.push(Counter { n: 1 })
+    for mutate c in xs {
+        c.n += 1
+    }
+    println("for mutate {xs.get(0)!.n}")
+
+    // A plain `for` still reads elements and calls read-only methods
+    mut total = 0
+    for c in xs {
+        total = total + c.doubled()
+    }
+    println("read-only walk {total}")
+
+    // A match arm reads its payload
+    let s = Shape.Round(Counter { n: 7 })
+    match s {
+        Shape.Round(r) => println("arm {r.n}"),
+        Shape.Flat => println("flat"),
+    }
+
+    // Shadowing recovers the no-rename convenience the narrowing cut removed
+    mut maybe: Counter? = Counter { n: 3 }
+    if maybe? as maybe {
+        println("shadowed {maybe.n}")
+    }
+
+    // The original is still `mut`: mutate it through a method, not the bind
+    mut c2 = Counter { n: 10 }
+    c2.bump()
+    println("original {c2.n}")
+}

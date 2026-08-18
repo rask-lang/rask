@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// E18: `from_value` is auto-generated for every fieldless enum and answers
+// `none` when the number isn't one of the discriminants. The checker
+// implemented it and the interpreter ran it; native had no lowering, so a
+// program using it type-checked, worked on one backend, and failed codegen on
+// the other with "Function not found: Colour_from_value" (#795).
+//
+// It's the inverse of `as i64` / `.discriminant()` (#796), so the round trip
+// through an integer is what this really gates — that pair is how an enum
+// crosses a wire.
+
+enum Colour {
+    Red
+    Green
+    Blue
+}
+
+// Explicit values with a gap in them: 2..6 are not discriminants, so a number
+// that lands there has to come back `none` rather than being read as an index.
+enum Kind: u8 {
+    Reserved = 0,
+    Text = 1,
+    Blob = 7
+}
+
+func disc_or(c: Colour?, fallback: i64) -> i64 {
+    if c? as v {
+        return v as i64
+    }
+    return fallback
+}
+
+func kind_or(k: Kind?, fallback: i64) -> i64 {
+    if k? as v {
+        return v as i64
+    }
+    return fallback
+}
+
+func main() {}
+
+test "E18: from_value on an auto-indexed enum" {
+    assert disc_or(Colour.from_value(0), -1) == 0
+    assert disc_or(Colour.from_value(1), -1) == 1
+    assert disc_or(Colour.from_value(2), -1) == 2
+}
+
+test "E18: a value that isn't a discriminant is none" {
+    assert disc_or(Colour.from_value(3), -1) == -1
+    assert disc_or(Colour.from_value(9), -1) == -1
+    assert disc_or(Colour.from_value(-1), -7) == -7
+}
+
+test "E18: explicit values are matched by value, not by position" {
+    assert kind_or(Kind.from_value(0), -1) == 0
+    assert kind_or(Kind.from_value(1), -1) == 1
+    assert kind_or(Kind.from_value(7), -1) == 7
+    // 2 is Blob's *position*, not its value — the gap has to stay a gap.
+    assert kind_or(Kind.from_value(2), -1) == -1
+    assert kind_or(Kind.from_value(99), -1) == -1
+}
+
+test "the integer round trip closes" {
+    // Out through E18's cast, back through from_value.
+    assert kind_or(Kind.from_value(Kind.Blob as i64), -1) == Kind.Blob as i64
+    assert disc_or(Colour.from_value(Colour.Blue as i64), -1) == Colour.Blue as i64
+}

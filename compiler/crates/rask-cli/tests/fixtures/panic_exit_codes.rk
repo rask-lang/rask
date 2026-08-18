@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// struct.targets/EX4: an uncaught panic exits 101, an error returned from main
+// exits 1. 101 says "a bug", 1 says "the program said no", and the whole point
+// of having two codes is that a caller can tell them apart.
+//
+// The interpreter only counted an explicit `panic()`, so an overflow, a divide
+// by zero, a forced `x!` on `none` and a failed `assert` all exited 1 there
+// while native exited 101 for every one of them (#325). A CI job branching on
+// the exit code got a different answer per backend.
+//
+// This fixture is the *panic* half; each case is run separately by the test,
+// since the first one to fire ends the program. Which case runs is chosen by
+// the argument so one file covers them all.
+import cli
+
+func main() {
+    let which = cli.args().get(1) ?? "overflow"
+
+    if which == "overflow" {
+        let a: i32 = 2147483647
+        println("{a + 1}")
+    }
+    if which == "divzero" {
+        let a: i64 = 5
+        let z: i64 = 0
+        println("{a / z}")
+    }
+    if which == "shift" {
+        let a: i32 = 1
+        let s: i32 = 32
+        println("{a << s}")
+    }
+    if which == "unwrap" {
+        let x: i64? = none
+        println("{x!}")
+    }
+    if which == "explicit" {
+        panic("boom")
+    }
+    println("no case ran")
+}

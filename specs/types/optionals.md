@@ -116,7 +116,7 @@ The `?`-tests don't narrow — they're plain booleans. Getting at the payload is
 
 | Rule | Description |
 |------|-------------|
-| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember |
+| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember. `v` is the payload read out of the scrutinee, so a write to it is rejected (E0372): the write would land on the copy. Get at the value inside the block, assemble a whole one, assign it back outside — or give the type a `mutate self` method and call it on the original. This is not the `with` rule: a `with` binding *is* mutable (mem.borrowing/W5) because the block writes back at exit, and `as` names a payload in one case and a box's contents in the other |
 | **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on let scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
 | **OPT21 deleted (with ER21/ER24)** | Early-exit narrowing after a diverging `is none` arm is gone along with all scrutinee narrowing (`type.errors`, Conditions and Binding). `is none` is a plain bool; the guard is `?? <exit>`, and it binds |
 | **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |

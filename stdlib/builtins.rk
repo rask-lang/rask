@@ -89,3 +89,24 @@ extend Span {
         return self.start == self.end
     }
 }
+
+/// Why a conversion couldn't produce the value (type.primitives/CV11).
+///
+/// `x.to<T>()`, `x.round<T>()` to an integer, `x.floor<T>()` and `x.ceil<T>()`
+/// all answer `T or ConvertError`. `OutOfRange` is spelled to match
+/// `ParseError.OutOfRange`, which already means exactly this.
+public enum ConvertError {
+    OutOfRange   // doesn't fit the target type
+    NotExact     // a float with a fraction, going to an integer
+    NotFinite    // NaN or infinity
+}
+
+extend ConvertError {
+    public func message(self) -> string {
+        match self {
+            ConvertError.OutOfRange => return "value doesn't fit the target type"
+            ConvertError.NotExact => return "value can't be represented exactly"
+            ConvertError.NotFinite => return "value is NaN or infinity"
+        }
+    }
+}

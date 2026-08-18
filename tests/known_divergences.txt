@@ -10,9 +10,15 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
-# (none right now)
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
+#
+# Pruned 2026-08-18, fixed and re-verified on native before removing the line:
+#   t_i128_arithmetic.rk — #762. `MirType::I128`/`U128` at 16 bytes, mapped to
+#     Cranelift's own `I128`. Add and sub lower there already; multiply,
+#     divide and remainder have no rule, so they go through runtime helpers
+#     that hand back a status the caller turns into the usual overflow panic.
+#     All 6 tests pass on both backends.
 #
 # Pruned 2026-08-17, fixed and re-verified on native before removing the line:
 #   t19b_union_method_dispatch.rk — #776. A union err payload now carries its

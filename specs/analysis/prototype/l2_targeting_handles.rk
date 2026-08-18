@@ -25,7 +25,7 @@ func main() {
     world[c].target = b
 
     println("-- round 1, everyone alive")
-    combat_round(world)
+    combat_round(mutate world)
     report(world, a, b, c)
 
     // b dies. Its handle stays in a.target and c.target, stale.
@@ -33,7 +33,7 @@ func main() {
     println("-- b removed; a.target and c.target are now stale handles")
 
     println("-- round 2")
-    combat_round(world)
+    combat_round(mutate world)
     report(world, a, b, c)
 }
 

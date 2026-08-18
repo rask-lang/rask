@@ -136,7 +136,7 @@ name is the policy.
 | **CV11: Convert** | `x.to<T>()` | `T or ConvertError` | Exact, or it fails |
 | **CV12: Wrap** | `x.wrap<T>()` | `T` | **Integers only.** Keeps the low bits |
 | **CV13: Clamp** | `x.clamp<T>()` | `T` | **Integers only.** Pins to the target's range |
-| **CV14: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable. Total to a float target, fallible to an integer one |
+| **CV14: Round** | `x.round<T>()` | `T` / `T or ConvertError` | Nearest representable, ties to even. Total to a float target, fallible to an integer one |
 | **CV15: Floor** | `x.floor<T>()` | `T or ConvertError` | **Float source, integer target.** Toward negative infinity |
 | **CV16: Ceil** | `x.ceil<T>()` | `T or ConvertError` | **Float source, integer target.** Toward positive infinity |
 
@@ -192,6 +192,12 @@ public enum ConvertError {
 
 `OutOfRange` is spelled to match `ParseError.OutOfRange` (`stdlib/string.rk`),
 which already means exactly this.
+
+`round` breaks ties to even, at every target. That's IEEE's own "nearest", and
+it's the only nearest a float narrowing has — `x.round<f32>()` from an `f64` has
+no other meaning. Making the integer target round half-away-from-zero instead
+would be one name with two mechanics, which is the thing CV12 rejected for
+`wrap`.
 
 `to` from a float is therefore exact-or-fail: `3.0.to<i32>()` gives `3`, and
 `3.7.to<i32>()` fails with `NotExact`. That's the honest reading of "convert if

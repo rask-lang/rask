@@ -69,26 +69,26 @@ func print_backward(list: List) {
 func main() {
     mut list = List { nodes: Store.new(), head: none, tail: none }
 
-    let n1 = push_back(list, 1)
-    let n2 = push_back(list, 2)
-    let n3 = push_back(list, 3)
-    let n4 = push_back(list, 4)
+    let n1 = push_back(mutate list, 1)
+    let n2 = push_back(mutate list, 2)
+    let n3 = push_back(mutate list, 3)
+    let n4 = push_back(mutate list, 4)
 
     print_forward(list)
     print_backward(list)
 
     println("-- remove the middle node (2)")
-    remove(list, n2)
+    remove(mutate list, n2)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the head (1)")
-    remove(list, n1)
+    remove(mutate list, n1)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the tail (4)")
-    remove(list, n4)
+    remove(mutate list, n4)
     print_forward(list)
     print_backward(list)
 

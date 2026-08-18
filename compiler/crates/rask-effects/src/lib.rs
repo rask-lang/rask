@@ -13,6 +13,7 @@
 //!
 //! Run after type checking. No AST modifications — annotation only.
 
+pub mod ensure_order;
 pub mod frozen;
 pub mod infer;
 pub mod sources;

@@ -25,6 +25,6 @@ func main() {
     boost(mutate p.x)
     print(p.x)   // 12
     mut z = 42
-    modify_int(z)
+    modify_int(mutate z)
     print(z)     // 42 — whole Copy variable, write-back discarded
 }

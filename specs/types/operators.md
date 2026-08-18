@@ -96,7 +96,7 @@ trait Equal {
 |------|-------------|
 | **ORD1: Comparable trait** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
 | **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type with Comparable` |
-| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer (the arithmetic half is not yet enforced — #778). Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
+| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer. The bitwise operators and the shifts go with arithmetic, not with comparison. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
 | **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 
 <!-- test: skip -->
@@ -125,6 +125,28 @@ enum Ordering { Less, Equal, Greater }
 
 Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`.
 
+## Division and Remainder
+
+| Rule | Description |
+|------|-------------|
+| **AR1: Truncated division** | `/` on integers truncates toward zero: `-7 / 3` is `-2`, not `-3` |
+| **AR2: Remainder follows the dividend** | `%` takes the sign of its *left* operand, so `a % b` and `a` agree in sign: `-7 % 3` is `-1` and `7 % -3` is `1`. `(a / b) * b + (a % b) == a` holds |
+| **AR3: Euclidean `mod`** | `a.mod(b)` is the floored answer, always in `[0, b)` for positive `b`: `(-1).mod(10)` is `9`. Defined for every integer type; `b` of zero panics like `%` does |
+| **AR4: Zero divisor panics** | `a / 0` and `a % 0` panic (`type.overflow/OV2`), and so does `a.mod(0)` |
+
+`%` truncates because every C-family language does, and code carried over from C, Go or Rust would otherwise change meaning on negative inputs with nothing to notice. That's a worse trap than the one it would fix.
+
+The one it doesn't fix is real, though: ring buffers, wraparound indexing and calendar math all want the floored answer, and `((i % n) + n) % n` is what people write instead. `mod` is that expression with a name — an addition to the language, not a change to `%`.
+
+<!-- test: skip -->
+```rask
+let i: i64 = -1
+let n: i64 = 10
+
+i % n          // -1  — the remainder, sign of the dividend (AR2)
+i.mod(n)       //  9  — the index you wanted (AR3)
+```
+
 ## Edge Cases
 
 | Case | Rule | Behavior |
@@ -136,7 +158,13 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 | `[3.0, NaN, 1.0].sort()` | ORD3 | `[1.0, 3.0, NaN]` — total order, no lost elements. A *negative* NaN sorts first, ahead of `-inf`, per IEEE totalOrder |
 | `5u64 > -1i32` | ORD4 | `true` — by value, not by reinterpreting either operand |
 | `u64::MAX > 1i32` | ORD4 | `true` — the bit pattern is not read as a negative number |
-| `5u64 + 1i32` | ORD4 | Compile error — comparison is the exception, arithmetic isn't (not yet enforced, #778) |
+| `5u64 + 1i32` | ORD4 | Compile error (E0371) — comparison is the exception, arithmetic isn't |
+| `5u64 << 1i32` | ORD4 | Compile error (E0371) — a shift count's signedness isn't decoration; a negative one is a bug |
+| `-7 / 3` | AR1 | `-2` — truncates toward zero |
+| `-7 % 3` | AR2 | `-1` — the remainder takes the dividend's sign |
+| `7 % -3` | AR2 | `1` — likewise; the divisor's sign doesn't reach the result |
+| `(-1).mod(10)` | AR3 | `9` — the floored answer, always in range |
+| `a % 0`, `a.mod(0)` | AR4 | Panic |
 | Shift exceeding bit width | BW2 | Panic |
 | Comparison chaining | P2 | Compile error |
 | Struct with float field | ORD2 | Auto-derives — the float field compares by the total order |

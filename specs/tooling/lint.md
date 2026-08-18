@@ -53,6 +53,14 @@ Common mistakes the canonical patterns address.
 | **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 | **I5: equality-absent-check** | `x == none` / `x != none` on an optional — the branch test is `x is none`, presence is `x?` (`type.optionals/OPT15`) | warning |
+| **I6: too-many-contexts** | A function with more than 3 `using` clauses (`mem.context`) — names the three restructurings | warning |
+
+I6 is a style limit, not a language one. Context clauses bubble: every callee's
+contexts appear on its callers, so a deep call chain accumulates them until the
+signature stops saying what the function takes and starts listing what the
+program owns. Four is sometimes the honest shape, which is why it's a lint —
+the three ways out (group them into a struct, pass the fields the body actually
+uses, split the function) are a choice the author has to make.
 
 I3 and I4 both say "this was a sketch — is it still?" Neither is about correctness: the code type-checks fine either way, and neither blocks anything. They fire on the two constructs whose whole point is being temporary, so that "we'll harden it later" has something reminding you. Both are suppressible per SU1 when the sketch is deliberate.
 

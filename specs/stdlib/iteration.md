@@ -11,7 +11,7 @@ Four iteration modes per collection: value (default, read-only), mutable (read-w
 
 | Rule | Description |
 |------|-------------|
-| **I1: Value mode** | Default `for x in collection` yields borrowed elements (read-only). Natural, matches all major languages |
+| **I1: Value mode** | Default `for x in collection` yields borrowed elements (read-only). Natural, matches all major languages. A write through the binding is a compile error (E0372) pointing at `for mutate` — before it was enforced the two backends disagreed about what the write meant, one writing through and one dropping it |
 | **I2: Index mode** | Use range `for i in 0..collection.len()` for index-based mutation |
 | **I3: Take-all mode** | `.take_all()` consumes the collection, yields owned values |
 | **I4: Mutable mode** | `for mutate x in collection` yields mutable access to each element. Structural mutation still forbidden |

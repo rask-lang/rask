@@ -64,7 +64,7 @@ func churn() -> i64 {
     mut i = 0
     while i < 8 {
         let scratch = Msg { kind: Kind.A, path: "scratch" }
-        total += scratch.path.len() truncate to i64
+        total += scratch.path.len().wrap<i64>()
         i += 1
     }
     return total

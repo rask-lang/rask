@@ -67,7 +67,7 @@ extend Db {
         for meta in discovered {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
             if meta.level < MAX_LEVELS {
-                with levels[meta.level truncate to usize] as level_ssts {
+                with levels[meta.level.wrap<usize>()] as level_ssts {
                     level_ssts.push(meta)
                 }
             }
@@ -227,7 +227,7 @@ extend Db {
     }
 
     func compact_level(mutate self, level: i32) -> void or DbError {
-        let level_idx = level truncate to usize
+        let level_idx = level.wrap<usize>()
         if self.levels[level_idx].len() < 2 { return () }
         if level >= MAX_LEVELS - 1 { return () }
 
@@ -248,7 +248,7 @@ extend Db {
             let _ = ssts.remove(0)
         }
 
-        let next_level_idx = (level + 1) truncate to usize
+        let next_level_idx = (level + 1).wrap<usize>()
         with self.levels[next_level_idx] as ssts {
             ssts.push(merged)
         }
@@ -260,16 +260,16 @@ extend Db {
         mut total_sst = 0
         mut level_counts = Vec.new()
         for level in self.levels {
-            level_counts.push(level.len() truncate to i32)
+            level_counts.push(level.len().wrap<i32>())
             total_sst += level.len()
         }
 
         return DbStats {
-            memtable_entries: self.memtable.entries.len() truncate to i32,
+            memtable_entries: self.memtable.entries.len().wrap<i32>(),
             memtable_bytes: self.memtable.size_bytes,
-            sst_count: total_sst truncate to i32,
+            sst_count: total_sst.wrap<i32>(),
             level_counts: level_counts,
-            cache_entries: self.cache.count() truncate to i32,
+            cache_entries: self.cache.count().wrap<i32>(),
             cache_accesses: self.cache.access_counter,
             next_seq: self.next_seq,
         }

@@ -136,6 +136,20 @@ impl TypeChecker {
         }
     }
 
+    /// Define a name a test or a pattern introduced — a payload bind or a
+    /// read-only `for` element. Read-only like `let`, and the source is kept so
+    /// the mutation error can name the remedy that form actually has.
+    pub(super) fn define_local_bound(
+        &mut self,
+        name: String,
+        ty: Type,
+        from: super::BoundFrom,
+    ) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, (ty, super::BindingKind::Bound(from)));
+        }
+    }
+
     pub(super) fn lookup_local(&self, name: &str) -> Option<Type> {
         for scope in self.local_types.iter().rev() {
             if let Some((ty, _)) = scope.get(name) {

@@ -33,7 +33,7 @@ struct Scene {
 func cascade(mutate scene: Scene, n: Link<Node>) {
     let kids = n.kids.clone()
     for c in kids {
-        cascade(scene, c)
+        cascade(mutate scene, c)
     }
     scene.nodes.delete(n)
 }
@@ -45,7 +45,7 @@ func main() {
     let kid = scene.nodes.insert(Node { name: "kid", kids: Vec.new() })
     parent.kids.push(kid)
 
-    cascade(scene, parent)
+    cascade(mutate scene, parent)
 
     // `kid` was deleted inside `cascade`. The store agrees it is gone. The name
     // still reads it.

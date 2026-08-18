@@ -111,18 +111,18 @@ extend Opcode {
 
 func encode_abc(op: Opcode, a: i64, b: i64, c: i64) -> u32 {
     let o = op as i64
-    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | (b & 0xFF) << 8 | c & 0xFF) as u32
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | (b & 0xFF) << 8 | c & 0xFF).wrap<u32>()
 }
 
 func encode_abx(op: Opcode, a: i64, bx: i64) -> u32 {
     let o = op as i64
-    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | bx & 0xFFFF) as u32
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | bx & 0xFFFF).wrap<u32>()
 }
 
 func encode_asbx(op: Opcode, a: i64, sbx: i64) -> u32 {
     let o = op as i64
-    let biased = sbx + 32768 & 0xFFFF
-    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | biased) as u32
+    let biased = (sbx + 32768) & 0xFFFF
+    return ((o & 0xFF) << 24 | (a & 0xFF) << 16 | biased).wrap<u32>()
 }
 
 // --- Instruction decoding ---
@@ -132,7 +132,7 @@ func decode_op(instr: u32) -> i64 {
 }
 
 func decode_opcode(instr: u32) -> Opcode? {
-    return Opcode.from_value(decode_op(instr) as u8)
+    return Opcode.from_value(decode_op(instr).wrap<u8>())
 }
 
 func decode_a(instr: u32) -> i64 {
@@ -152,7 +152,7 @@ func decode_bx(instr: u32) -> i64 {
 }
 
 func decode_sbx(instr: u32) -> i64 {
-    return instr as i64 & 0xFFFF - 32768
+    return (instr as i64 & 0xFFFF) - 32768
 }
 
 // --- Disassembler ---

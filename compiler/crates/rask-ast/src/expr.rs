@@ -315,47 +315,66 @@ pub struct ClosureParam {
     pub is_take: bool,
 }
 
-/// Lossy numeric conversion forms (type.primitives CV5–CV10). Unlike `as`
-/// (lossless widening only), each names its data-loss behavior explicitly.
+/// Numeric conversions that can lose something (type.primitives CV11–CV16).
+/// Unlike `as` (lossless widening only), each names its data-loss behavior.
+///
+/// These replaced the phrase-verb family — `truncate to T`, `saturate to T`,
+/// `try convert to T` and the three `float to int` forms. Not a rename: one
+/// form became three, and `to` answers a result where `try convert to`
+/// answered an optional, so an old diagnostic citing CV5 must not resolve to
+/// `to` (#790).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvertKind {
-    /// CV5: `truncate to T` — wrapping/bitwise truncation.
-    Truncate,
-    /// CV6: `saturate to T` — clamp to target range.
-    Saturate,
-    /// CV7: `try convert to T` — `T?`, `none` if out of range.
-    TryConvert,
-    /// CV8: `float to int T` — truncate toward zero, panic on NaN/infinity.
-    FloatToInt,
-    /// CV9: `float to int T (saturating)` — clamp to T.MIN/T.MAX, NaN → 0.
-    FloatToIntSat,
-    /// CV10: `try float to int T` — `T?`.
-    TryFloatToInt,
+    /// CV11: `x.to<T>()` — exact, or `ConvertError`.
+    To,
+    /// CV12: `x.wrap<T>()` — keeps the low bits. Integers only.
+    Wrap,
+    /// CV13: `x.clamp<T>()` — pins to the target's range. Integers only.
+    Clamp,
+    /// CV14: `x.round<T>()` — nearest representable, ties to even. Total to a
+    /// float target, fallible to an integer one.
+    Round,
+    /// CV15: `x.floor<T>()` — toward negative infinity. Float source, integer
+    /// target.
+    Floor,
+    /// CV16: `x.ceil<T>()` — toward positive infinity. Float source, integer
+    /// target.
+    Ceil,
+    /// Compiler-internal: a checked conversion that answers `T?`.
+    ///
+    /// No surface syntax reaches this — `char.from_u32(n)` lowers to it,
+    /// because "is this a valid Unicode scalar" is the same shape as "does this
+    /// fit the target" and the codegen path is already written (CH3).
+    CheckedOption,
 }
 
 impl ConvertKind {
     /// Result is `T?` (optional) rather than `T`.
     pub fn is_optional(self) -> bool {
-        matches!(self, ConvertKind::TryConvert | ConvertKind::TryFloatToInt)
+        matches!(self, ConvertKind::CheckedOption)
     }
 
-    /// Source is a float (CV8–CV10) rather than an integer (CV5–CV7).
-    pub fn is_float_source(self) -> bool {
-        matches!(
-            self,
-            ConvertKind::FloatToInt | ConvertKind::FloatToIntSat | ConvertKind::TryFloatToInt
-        )
+    /// CV11/CV14–CV16: does this form yield `T or ConvertError` rather than a
+    /// bare `T`? `round` is the one that depends on the target — rounding to a
+    /// float can't fail, rounding to an integer can (CV14).
+    pub fn yields_result(self, target_is_int: bool) -> bool {
+        match self {
+            ConvertKind::To | ConvertKind::Floor | ConvertKind::Ceil => true,
+            ConvertKind::Round => target_is_int,
+            _ => false,
+        }
     }
 
     /// Surface form for diagnostics.
     pub fn surface(self) -> &'static str {
         match self {
-            ConvertKind::Truncate => "truncate to",
-            ConvertKind::Saturate => "saturate to",
-            ConvertKind::TryConvert => "try convert to",
-            ConvertKind::FloatToInt => "float to int",
-            ConvertKind::FloatToIntSat => "float to int (saturating)",
-            ConvertKind::TryFloatToInt => "try float to int",
+            ConvertKind::CheckedOption => "char.from_u32",
+            ConvertKind::To => "to",
+            ConvertKind::Wrap => "wrap",
+            ConvertKind::Clamp => "clamp",
+            ConvertKind::Round => "round",
+            ConvertKind::Floor => "floor",
+            ConvertKind::Ceil => "ceil",
         }
     }
 }

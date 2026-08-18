@@ -251,23 +251,220 @@ fn not_int(target: &str) -> RuntimeError {
     RuntimeError::TypeError(format!("conversion target `{}` is not an integer type", target))
 }
 
-/// Evaluate an explicit conversion form (CV5–CV10). `Interpreter`-independent.
+/// Evaluate an explicit conversion form (CV11–CV16). `Interpreter`-independent.
 pub(crate) fn convert(val: Value, target: &str, kind: ConvertKind) -> Result<Value, RuntimeError> {
     match kind {
-        ConvertKind::Truncate => truncate_to(val, target),
-        ConvertKind::Saturate => saturate_to(val, target),
-        ConvertKind::TryConvert => try_convert_to(val, target),
-        ConvertKind::FloatToInt => float_to_int(val, target, false, false),
-        ConvertKind::FloatToIntSat => float_to_int(val, target, true, false),
-        ConvertKind::TryFloatToInt => float_to_int(val, target, false, true),
+        ConvertKind::Wrap => truncate_to(val, target),
+        ConvertKind::Clamp => saturate_to(val, target),
+        ConvertKind::CheckedOption => try_convert_to(val, target),
+        ConvertKind::To => convert_exact(val, target),
+        ConvertKind::Round => convert_rounded(val, target, Rounding::Nearest),
+        ConvertKind::Floor => convert_rounded(val, target, Rounding::Down),
+        ConvertKind::Ceil => convert_rounded(val, target, Rounding::Up),
     }
 }
 
-/// CV5: wrapping/bitwise truncation into the target width.
+/// Which way a fraction goes on the way to an integer (CV14–CV16).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rounding {
+    Nearest,
+    Down,
+    Up,
+}
+
+/// `ConvertError`'s variants, in declaration order — `stdlib/builtins.rk`.
+const CONVERT_ERR_OUT_OF_RANGE: u32 = 0;
+const CONVERT_ERR_NOT_EXACT: u32 = 1;
+const CONVERT_ERR_NOT_FINITE: u32 = 2;
+
+fn ok(val: Value) -> Value {
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Ok".to_string(),
+        fields: vec![val],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+fn convert_err(variant: &str, index: u32) -> Value {
+    let payload = Value::Enum {
+        name: "ConvertError".to_string(),
+        variant: variant.to_string(),
+        fields: vec![],
+        variant_index: index,
+        origin: None,
+    };
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Err".to_string(),
+        fields: vec![payload],
+        variant_index: 1,
+        origin: None,
+    }
+}
+
+fn out_of_range() -> Value {
+    convert_err("OutOfRange", CONVERT_ERR_OUT_OF_RANGE)
+}
+
+fn not_exact() -> Value {
+    convert_err("NotExact", CONVERT_ERR_NOT_EXACT)
+}
+
+fn not_finite() -> Value {
+    convert_err("NotFinite", CONVERT_ERR_NOT_FINITE)
+}
+
+/// The float widths a conversion can target.
+fn float_target(name: &str) -> Option<crate::value::FloatKind> {
+    match name {
+        "f32" => Some(crate::value::FloatKind::F32),
+        "f64" => Some(crate::value::FloatKind::F64),
+        _ => None,
+    }
+}
+
+fn source_float(val: &Value) -> Option<f64> {
+    match val {
+        Value::Float(f, _) => Some(*f),
+        _ => None,
+    }
+}
+
+/// CV11: `x.to<T>()` — the value survives exactly, or the conversion fails.
+///
+/// "Exactly" is the same question CV1 asks about `as`, asked at runtime instead
+/// of at compile time: can this value be represented in the target? A float
+/// with a fraction can't be an integer, a large `i64` can't be an `f32`, and
+/// `NaN` can't be either.
+fn convert_exact(val: Value, target: &str) -> Result<Value, RuntimeError> {
+    if let Some(fk) = float_target(target) {
+        // → float. An integer source is exact when the round trip survives; a
+        // float source is exact when narrowing doesn't lose anything.
+        let as_f64 = match (&val, int_logical(&val)) {
+            (Value::Float(f, _), _) => *f,
+            (_, Some(n)) => {
+                let f = n as f64;
+                if f as i128 != n {
+                    return Ok(not_exact());
+                }
+                f
+            }
+            _ => return Err(not_numeric("to", &val)),
+        };
+        let narrowed = narrow_float(fk, as_f64);
+        if !as_f64.is_nan() && narrowed != as_f64 {
+            return Ok(not_exact());
+        }
+        return Ok(ok(Value::Float(narrowed, fk)));
+    }
+
+    let t = IntTarget::parse(target).ok_or_else(|| not_convertible(target))?;
+    if let Some(f) = source_float(&val) {
+        return Ok(float_to_int_checked(f, t, Rounding::Nearest, true));
+    }
+    let src = int_logical(&val).ok_or_else(|| not_numeric("to", &val))?;
+    Ok(int_into(t, src))
+}
+
+/// CV14–CV16: `round`, `floor`, `ceil`.
+fn convert_rounded(val: Value, target: &str, mode: Rounding) -> Result<Value, RuntimeError> {
+    if let Some(fk) = float_target(target) {
+        // Only `round` reaches a float target, and it can't fail there: an
+        // out-of-range `f64` → `f32` gives ±infinity, which is IEEE's answer,
+        // not an error (CV14).
+        let as_f64 = match (&val, int_logical(&val)) {
+            (Value::Float(f, _), _) => *f,
+            (_, Some(n)) => n as f64,
+            _ => return Err(not_numeric("round", &val)),
+        };
+        return Ok(Value::Float(narrow_float(fk, as_f64), fk));
+    }
+
+    let t = IntTarget::parse(target).ok_or_else(|| not_convertible(target))?;
+    let f = source_float(&val).ok_or_else(|| not_numeric("round", &val))?;
+    Ok(float_to_int_checked(f, t, mode, false))
+}
+
+/// A float into an integer target, with the fraction handled by `mode`.
+/// `exact_only` is `to`: a fraction is a failure rather than something to round.
+fn float_to_int_checked(f: f64, t: IntTarget, mode: Rounding, exact_only: bool) -> Value {
+    if f.is_nan() || f.is_infinite() {
+        return not_finite();
+    }
+    let rounded = if exact_only {
+        if f.fract() != 0.0 {
+            return not_exact();
+        }
+        f
+    } else {
+        match mode {
+            // Ties go to even, which is IEEE's own "nearest" and what the
+            // hardware instruction does. `round` has to mean one thing at every
+            // target: `x.round<f32>()` from an `f64` is IEEE nearest because
+            // that's the only nearest a float narrowing has, so the integer
+            // target can't quietly be half-away-from-zero instead (CV14).
+            Rounding::Nearest => f.round_ties_even(),
+            Rounding::Down => f.floor(),
+            Rounding::Up => f.ceil(),
+        }
+    };
+    let (min, max) = t.bounds();
+    // u128's true ceiling doesn't fit an i128, so it's checked as a float.
+    let above = if matches!(t, IntTarget::U128) {
+        rounded >= 340282366920938463463374607431768211456.0
+    } else {
+        rounded > max as f64
+    };
+    if rounded < min as f64 || above {
+        return out_of_range();
+    }
+    ok(t.store(rounded as i128))
+}
+
+/// An integer into an integer target, exactly or not at all.
+fn int_into(t: IntTarget, src: i128) -> Value {
+    if let IntTarget::U128 = t {
+        return if src < 0 { out_of_range() } else { ok(Value::Uint128(src as u128)) };
+    }
+    let (min, max) = t.bounds();
+    if src < min || src > max {
+        out_of_range()
+    } else {
+        ok(t.store(src))
+    }
+}
+
+/// The value as it survives the target width — an `f32` target rounds to the
+/// nearest `f32`, everything else keeps its bits.
+fn narrow_float(fk: crate::value::FloatKind, f: f64) -> f64 {
+    match fk {
+        crate::value::FloatKind::F32 => f as f32 as f64,
+        _ => f,
+    }
+}
+
+fn not_numeric(method: &str, val: &Value) -> RuntimeError {
+    RuntimeError::TypeError(format!(
+        "`{}` needs a number, found {}",
+        method,
+        val.type_name()
+    ))
+}
+
+fn not_convertible(target: &str) -> RuntimeError {
+    RuntimeError::TypeError(format!(
+        "conversion target `{}` is not a numeric type",
+        target
+    ))
+}
+
+/// CV12: wrapping/bitwise truncation into the target width.
 fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let raw = raw_i64(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`truncate to` needs an integer, found {}", val.type_name())))?;
+        format!("`wrap` needs an integer, found {}", val.type_name())))?;
     Ok(match t {
         IntTarget::Kind(k) => Value::Int(k.wrap(raw), k),
         IntTarget::I128 => Value::Int128(int_logical(&val).unwrap_or(raw as i128)),
@@ -278,11 +475,11 @@ fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     })
 }
 
-/// CV6: clamp to the target range.
+/// CV13: clamp to the target range.
 fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`saturate to` needs an integer, found {}", val.type_name())))?;
+        format!("`clamp` needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
         return Ok(Value::Uint128(if src < 0 { 0 } else { src as u128 }));
     }
@@ -290,11 +487,11 @@ fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     Ok(t.store(src.clamp(min, max)))
 }
 
-/// CV7: `T?` — `none` if out of range.
+/// `T?` — `none` if out of range. Compiler-internal (`char.from_u32`).
 fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
-        format!("`try convert to` needs an integer, found {}", val.type_name())))?;
+        format!("a checked conversion needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
         return Ok(if src < 0 { none() } else { some(Value::Uint128(src as u128)) });
     }
@@ -302,38 +499,6 @@ fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     Ok(if src >= min && src <= max { some(t.store(src)) } else { none() })
 }
 
-/// CV8/CV9/CV10: float → int, truncating toward zero.
-fn float_to_int(val: Value, target: &str, saturating: bool, optional: bool) -> Result<Value, RuntimeError> {
-    let f = match val {
-        Value::Float(f, _) => f,
-        other => return Err(RuntimeError::TypeError(
-            format!("`float to int` needs a float, found {}", other.type_name()))),
-    };
-    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
-    let (min, max) = t.bounds();
-    let (min_f, max_f) = (min as f64, max as f64);
-
-    if f.is_nan() {
-        if saturating { return Ok(t.store(0)); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!("cannot convert NaN to {}", target)));
-    }
-    if f.is_infinite() {
-        if saturating { return Ok(t.store(if f > 0.0 { max } else { min })); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!("cannot convert {}infinity to {}",
-            if f < 0.0 { "-" } else { "" }, target)));
-    }
-    let truncated = f.trunc();
-    if truncated < min_f || truncated > max_f {
-        if saturating { return Ok(t.store(if truncated > 0.0 { max } else { min })); }
-        if optional { return Ok(none()); }
-        return Err(RuntimeError::Panic(format!(
-            "float {} out of range for {}", f, target)));
-    }
-    let v = truncated as i128;
-    Ok(if optional { some(t.store(v)) } else { t.store(v) })
-}
 
 /// Mask a value into `bits`, sign-extending for signed kinds.
 fn wrap_to_width(kind: IntKind, bits: u32, val: i128) -> i128 {

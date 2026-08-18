@@ -44,7 +44,7 @@ func reparent(n: Link<SceneNode>, new_parent: Link<SceneNode>) {
 func delete_subtree(mutate scene: Scene, n: Link<SceneNode>) {
     let kids = n.children.clone()
     for c in kids {
-        delete_subtree(scene, c)
+        delete_subtree(mutate scene, c)
     }
     scene.nodes.delete(n)
 }
@@ -73,10 +73,10 @@ func main() {
     let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
     scene.root = root
 
-    let a = add_child(scene, root, "a")
-    let b = add_child(scene, root, "b")
-    let a1 = add_child(scene, a, "a1")
-    let a2 = add_child(scene, a, "a2")
+    let a = add_child(mutate scene, root, "a")
+    let b = add_child(mutate scene, root, "b")
+    let a1 = add_child(mutate scene, a, "a1")
+    let a2 = add_child(mutate scene, a, "a2")
 
     println("-- initial")
     report(scene)
@@ -94,6 +94,6 @@ func main() {
     // that kills `root`, `b`, `a1` and `a2` from here on — but they are finished
     // with above, so no restructuring is needed. `scene.selected` survives
     // because it is a field, and the store nulls it.
-    delete_subtree(scene, a)
+    delete_subtree(mutate scene, a)
     report(scene)
 }

@@ -14,6 +14,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "map.c",
     "pool.c",
     "string.c",
+    "unicode_case.c",
     "random.c",
     "time.c",
     "atomic.c",
@@ -23,6 +24,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "ptr.c",
     "math.c",
     "json.c",
+    "int128.c",
 ];
 
 /// Sources that require pthreads (Linux, macOS — not Windows/bare-metal).

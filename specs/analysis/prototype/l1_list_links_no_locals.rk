@@ -55,7 +55,7 @@ func remove_at(mutate list: List, index: i32) {
     mut i = 0
     while cur? as n {
         if i == index {
-            remove(list, n)
+            remove(mutate list, n)
             return
         }
         cur = n.next
@@ -67,7 +67,7 @@ func remove_value(mutate list: List, value: i32) {
     mut cur = list.head
     while cur? as n {
         if n.value == value {
-            remove(list, n)
+            remove(mutate list, n)
             return
         }
         cur = n.next
@@ -97,26 +97,26 @@ func print_backward(list: List) {
 func main() {
     mut list = List { nodes: Store.new(), head: none, tail: none }
 
-    push_back(list, 1)
-    push_back(list, 2)
-    push_back(list, 3)
-    push_back(list, 4)
+    push_back(mutate list, 1)
+    push_back(mutate list, 2)
+    push_back(mutate list, 3)
+    push_back(mutate list, 4)
 
     print_forward(list)
     print_backward(list)
 
     println("-- remove the middle node (2)")
-    remove_value(list, 2)
+    remove_value(mutate list, 2)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the head (1)")
-    remove_value(list, 1)
+    remove_value(mutate list, 1)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the tail (4)")
-    remove_value(list, 4)
+    remove_value(mutate list, 4)
     print_forward(list)
     print_backward(list)
 

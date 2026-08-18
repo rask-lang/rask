@@ -48,6 +48,25 @@ pub enum BindingKind {
     Param,
     /// `with expr as v` — read-only with-binding (use `as mut v` to mutate)
     WithRead,
+    /// A name a test or a pattern introduced, not a declaration: `if x? as v`
+    /// (OPT19 binds a let), a match-arm payload, `catch e =>`, a `for` element
+    /// in the default read-only mode (std.iteration/I1). Read-only like `let`,
+    /// but there is no `let` to change — the fix depends on where it came from,
+    /// which is what `Bound` carries.
+    Bound(BoundFrom),
+}
+
+/// Where a `Bound` name came from, so the mutation error can name the remedy
+/// that exists for that form instead of "add `mut`", which none of them accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundFrom {
+    /// `if x? as v`, `r is E as e`, a match-arm payload, `catch e =>`,
+    /// `while q.pop()? as item`. The name is the payload the test proved
+    /// present, read out of the scrutinee — writing to it can't reach back.
+    Payload,
+    /// A `for` element in the default mode. `for mutate x in xs` is the form
+    /// that writes back (std.iteration/I1, I4).
+    Element,
 }
 
 /// A deferred read-only-binding check. See `pending_mutations`.
@@ -68,7 +87,13 @@ pub struct PendingFrozenWrite {
 
 impl BindingKind {
     pub fn is_read_only(&self) -> bool {
-        matches!(self, BindingKind::Let | BindingKind::Param | BindingKind::WithRead)
+        matches!(
+            self,
+            BindingKind::Let
+                | BindingKind::Param
+                | BindingKind::WithRead
+                | BindingKind::Bound(_)
+        )
     }
 }
 

@@ -105,6 +105,25 @@ impl Interpreter {
             "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b, arg_kind(args))) }
             "bit_not" => Ok(Value::Int(!a, kind)),
             "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
+            // AR3: the floored answer, always non-negative — `(-1).mod(10)` is
+            // 9, where `-1 % 10` is -1. This is the expression people write by
+            // hand as `((a % n) + n) % n`, with a name and one evaluation of
+            // each operand.
+            "mod" => {
+                let b = self.expect_int(args, 0)?;
+                if b == 0 {
+                    return Err(RuntimeError::DivisionByZero);
+                }
+                if kind.is_unsigned() {
+                    // Already non-negative; `mod` and `%` coincide.
+                    return Ok(Value::Int(((a as u64) % (b as u64)) as i64, kind));
+                }
+                a.checked_rem_euclid(b)
+                    .map(|r| Value::Int(r, kind))
+                    .ok_or_else(|| RuntimeError::IntegerOverflow(format!(
+                        "integer overflow: {}.mod({}) exceeds range", a, b
+                    )))
+            }
             "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
             // An unsigned receiver holds its bit pattern in the i64 slot, so
             // the top half of u64 prints negative without the width (#517).

@@ -51,6 +51,37 @@ pub enum OwnershipErrorKind {
         reason: MoveReason,
     },
 
+    /// SM2: a `@small` type grew past the 16-byte copy threshold.
+    ///
+    /// The break belongs at the annotation, not at the call sites: adding a
+    /// field that pushes a struct over the threshold flips every assignment
+    /// from copy to move, and those errors land wherever the type is *used*,
+    /// with only the `MoveReason` note connecting them back.
+    #[error("`@small` type `{type_name}` outgrew the copy threshold — {size} bytes, limit is 16")]
+    SmallTypeTooBig {
+        type_name: String,
+        size: usize,
+        /// The field that took it over, with its own size, for the message.
+        offending_field: Option<(String, usize)>,
+    },
+
+    /// SM3: one instantiation of a `@small` generic type doesn't fit.
+    ///
+    /// The fence is a promise about every instantiation, not just the ones the
+    /// author had in mind. `@small struct Pair<T>` is 16 bytes at `Pair<i64>`
+    /// and 32 at `Pair<string>` — the second one silently breaks the promise
+    /// callers were reading off the annotation.
+    #[error("`@small` type `{type_name}` outgrew the copy threshold at this instantiation — {size} bytes, limit is 16")]
+    SmallInstantiationTooBig {
+        /// The instantiation as written, e.g. `Pair<string>`.
+        type_name: String,
+        /// The bare generic name, for the fix line.
+        base_name: String,
+        size: usize,
+        /// The field that took it over, with its own size and its type.
+        offending_field: Option<(String, usize, String)>,
+    },
+
     /// Conflicting access to a value (e.g., trying to write while someone is reading).
     #[error("cannot {requested} `{name}` - it's already being {existing}")]
     BorrowConflict {

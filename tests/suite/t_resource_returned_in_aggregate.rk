@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Handing a resource to the caller consumes it — including inside an aggregate
+// (mem.linear/L2, #792).
+//
+// `return conn` left the binding Owned, because reading a name isn't a move, so
+// scope exit reported the resource as leaked. The suggested fix made it worse:
+// closing it before returning hands the caller a dead connection, and there was
+// no version of the function that satisfied the checker and still worked. It
+// broke `stdlib/http.rk`, whose whole `Responder` design is built on returning
+// `(Request, Responder)`.
+//
+// The aggregates matter as much as the bare case. The interpreter had the
+// mirror-image bug at runtime: `transfer_resource_to_scope` walked structs and
+// enums but not tuples, and didn't walk into a non-resource struct holding a
+// resource — so the same program leaked interpreted and ran natively.
+
+@resource
+struct Conn {
+    fd: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.fd
+    }
+}
+
+struct Wrap {
+    conn: Conn
+}
+
+enum Slot {
+    Full(Conn)
+    Empty
+}
+
+func bare() -> Conn {
+    let c = Conn { fd: 1 }
+    return c
+}
+
+func in_tuple() -> (i64, Conn) {
+    let c = Conn { fd: 2 }
+    return (7, c)
+}
+
+func in_struct() -> Wrap {
+    let c = Conn { fd: 3 }
+    return Wrap { conn: c }
+}
+
+func in_enum() -> Slot {
+    let c = Conn { fd: 4 }
+    return Slot.Full(c)
+}
+
+// The branch that produces the value is the one that returns it.
+func from_a_branch(pick: bool) -> Conn {
+    let a = Conn { fd: 5 }
+    if pick {
+        return a
+    }
+    return a
+}
+
+test "mem.linear — returning a resource hands it to the caller" {
+    assert bare().close() == 1
+}
+
+test "mem.linear — a resource returned inside a tuple" {
+    let (n, c) = in_tuple()
+    assert n == 7
+    assert c.close() == 2
+}
+
+test "mem.linear — a resource returned inside a struct" {
+    let w = in_struct()
+    assert w.conn.close() == 3
+}
+
+test "mem.linear — a resource returned inside an enum payload" {
+    match in_enum() {
+        Slot.Full(c) => assert c.close() == 4
+        Slot.Empty => assert false
+    }
+}
+
+test "mem.linear — a resource returned from a branch" {
+    assert from_a_branch(true).close() == 5
+    assert from_a_branch(false).close() == 5
+}
+
+func main() {}

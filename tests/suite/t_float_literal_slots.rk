@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #798: `let x: f64 = 1` crashed the *compiler* — the checker settles the
+// literal as a float, MIR's literal lowering filtered that answer down to
+// integers only and fell back to i64, and an `Int` constant in an `f64` slot
+// hit `unreachable` in Cranelift's verifier. Three lines, no diagnostic, and
+// `rask check` passed.
+//
+// The interpreter had the mirror-image bug in the same place: it bound the
+// literal as a plain `Value::Int`, so `let a: f64 = 1` printed `1` and then
+// `a * 2.0` failed with "expected int, got f64". Both ends take the annotated
+// type now (type.primitives/L1 — an unsuffixed literal adopts the type its
+// position asks for, and a float is one of them).
+//
+// Not covered here, and still divergent: a literal at a *call argument* or a
+// *comparison operand*. `scaled(3)` for `func scaled(x: f64)` gives 6 natively
+// and "expected int, got f64" on the interpreter — the interpreter applies the
+// defaulting at an annotation and a field, not at those two positions. Tracked
+// on #798; those cases were both broken before, so this isn't a new gap, but a
+// test asserting either would be pinning a disagreement.
+
+struct Reading { value: f64 }
+
+func main() {}
+
+test "an annotated binding takes an integer literal as a float" {
+    let a: f64 = 1
+    assert a == 1.0
+
+    let b: f64 = -1
+    assert b == -1.0
+
+    let z: f64 = 0
+    assert z == 0.0
+}
+
+test "f32 as well as f64" {
+    let s: f32 = 7
+    assert s == 7.0
+}
+
+test "the binding really is a float, not an int that prints like one" {
+    // This is the half the interpreter got wrong: the value printed fine and
+    // only fell over once something did float arithmetic with it.
+    let a: f64 = 1
+    assert a * 2.0 == 2.0
+
+    let b: f32 = 7
+    assert b / 2.0 == 3.5
+
+    let c: f64 = -1
+    assert c + 0.5 == -0.5
+}
+
+test "a float struct field from an integer literal" {
+    let r = Reading { value: 4 }
+    assert r.value == 4.0
+    assert r.value * 2.0 == 8.0
+}
+
+test "an integer annotation is untouched" {
+    let a: i64 = 1
+    assert a + 1 == 2
+
+    let b: i32 = 3
+    assert b * 2 == 6
+}
+
+test "a float literal still works" {
+    let a: f64 = 1.0
+    assert a == 1.0
+    assert a * 2.0 == 2.0
+}

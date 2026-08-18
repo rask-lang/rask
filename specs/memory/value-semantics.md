@@ -91,7 +91,7 @@ Copy eligibility is automatic (VS1), but it's also fragile at a distance: add a 
 |------|-------------|
 | **SM1: Pure size assertion** | `@small` asserts the type's total size stays ≤16 bytes — the copy threshold (VS6). It asserts nothing else and changes no semantics. A `@small` type with all-Copy fields is therefore guaranteed to copy implicitly (VS1) |
 | **SM2: Fails at the definition** | A `@small` type over 16 bytes errors at the annotation, naming the field and the sizes — not at use sites |
-| **SM3: Generic types check per instantiation** | `@small` on a generic type requires every instantiation to fit, checked at monomorphization like other bounds (`type.generics/G2`); the error names the offending type arguments |
+| **SM3: Generic types check per instantiation** | `@small` on a generic type requires every instantiation to fit — checked once per instantiation the program names, like other generic bounds (`type.generics/G2`). The error names the offending type arguments and lands on the declaration, since that's where both fixes go |
 | **SM4: Composes with @unique** | `@small` + `@unique` is legal — a small, move-only ID type is coherent. `@small` is about layout; `@unique` is about copy semantics |
 
 <!-- test: parse -->
