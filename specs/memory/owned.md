@@ -82,6 +82,12 @@ drop(ptr)                         // Now consumed
 
 Full linearity enforcement (OW1-OW4) is a Phase 4 compiler feature. OW5 is a deliberate simplification — auto-deref without ceremony.
 
+OW5's transparency has one consequence worth stating: nothing in the *type* distinguishes a value from a pointer to it, so the compiler tracks which is which by where the value came from. `own` allocates and hands back the pointer; a binding takes it over rather than copying out of it; a declared `Owned<T>` slot given something that is already a box stores it as-is rather than boxing twice. A scalar is never boxed — it fits its slot — so `Owned<i32>` really is an `i32`, and dropping one frees nothing.
+
+| Rule | Description |
+|------|-------------|
+| **OW5a: One allocation per `own`** | `own expr` allocates exactly once. Moving the result — into a binding, a field, or an enum payload — moves the pointer; it does not allocate again |
+
 ## Allocation
 
 | Rule | Description |

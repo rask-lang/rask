@@ -1117,6 +1117,11 @@ impl Interpreter {
                     // pointer never reaches the interpreter to begin with;
                     // `unsafe` code is native-only.
                     UnaryOp::Deref => Ok(val),
+                    // mem.owned/OW3: there's no heap to move to here — the
+                    // interpreter's values already live independently of the
+                    // frame — and OW5 makes an `Owned<T>` read as its `T`, so
+                    // `own e` is `e`.
+                    UnaryOp::Own => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",

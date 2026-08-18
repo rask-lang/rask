@@ -395,6 +395,7 @@ pub enum BuiltinKind {
     AssertEq,   // assert_eq(got, expected) — pretty-print diff on failure
     Skip,       // skip("reason") — skip rest of test
     ExpectFail, // expect_fail() — invert pass/fail
+    Drop,       // drop(p) — consume an Owned<T> (mem.owned/OW3)
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).

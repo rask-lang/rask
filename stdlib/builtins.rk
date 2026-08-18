@@ -22,6 +22,14 @@ public func todo(msg: string?) {}
 @native
 public func unreachable(msg: string?) {}
 
+/// Consume an `Owned<T>` and free its heap value (mem.owned/OW3).
+///
+/// Exactly one box, per OW1/OW2 — a type that owns further boxes frees them
+/// itself. A scalar `Owned` was never on the heap (it fits its slot), so
+/// dropping one frees nothing.
+@native
+public func drop(take ptr: Owned) {}
+
 /// Print a value followed by a newline to stderr.
 @native
 public func eprintln(msg: string) {}

@@ -1063,10 +1063,34 @@ impl<'a> MirLowerer<'a> {
                     // emitting a Deref read whatever address the value's first
                     // word happened to look like (segfault on
                     // `(*owned_point).x`). mem.owned/OW3, #737.
-                    UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                    // ... but not an `Owned` box, which is a pointer for
+                    // representation reasons only. `(*owned).x` is a borrow of the
+                    // struct, so the pointer is already the answer (#739).
+                    UnaryOp::Deref
+                        if matches!(operand_ty, MirType::Ptr)
+                            && !self.expr_yields_owned_box(operand) =>
+                    {
                         (operand_ty.clone(), MirRValue::Deref(operand_op))
                     }
                     UnaryOp::Deref => (operand_ty.clone(), MirRValue::Use(operand_op)),
+                    // mem.owned/OW3: `own e` moves the value to the heap and the
+                    // pointer is its representation from here on. A scalar needs
+                    // no box — it already fits the slot — so `box_into_owned`
+                    // hands it straight back, and `drop` on one frees nothing.
+                    UnaryOp::Own => {
+                        if !operand_ty.passed_by_address() {
+                            return Ok((operand_op, operand_ty));
+                        }
+                        let boxed = self.box_into_owned(operand_op, &operand_ty);
+                        // Typed as the pointer it is, not as the payload. A
+                        // struct-typed operand is copied byte-for-byte wherever it
+                        // lands, so the box was memcpy'd into the binding's slot
+                        // and the heap value it named was orphaned — `drop` then
+                        // had a stack address to free. Field reads work either way:
+                        // both spellings are an address, and the checker still says
+                        // `Big` (OW5), which is where the layout comes from.
+                        return Ok((boxed, MirType::Ptr));
+                    }
                     UnaryOp::Not => (MirType::Bool, MirRValue::UnaryOp {
                         op: lower_unaryop(*op),
                         operand: operand_op,
@@ -1236,6 +1260,30 @@ impl<'a> MirLowerer<'a> {
                     let val = arg_operands.into_iter().next()
                         .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
                     return Ok((val, MirType::I64));
+                }
+
+                // mem.owned/OW3: `drop(p)` frees the box `own` allocated. Exactly
+                // one box — a type that owns further boxes frees them itself, per
+                // OW1/OW2's "consumed exactly once by the program".
+                //
+                // A scalar `Owned` was never boxed (it fits the slot already), so
+                // there is nothing to free and this is where that ends. Anything
+                // else lowering can't see as a box is left alone too: freeing a
+                // stack address aborts the process, and refusing here would reject
+                // shapes linearity should be judging instead.
+                if func_name == "drop" {
+                    if let Some(ptr) = args
+                        .first()
+                        .and_then(|a| self.lower_owned_box_ptr(&a.expr).transpose())
+                        .transpose()?
+                    {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("rask_free".to_string()),
+                            args: vec![ptr],
+                        }));
+                    }
+                    return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
                 }
 
                 // todo()/unreachable() — desugar to panic() with descriptive message
@@ -1752,6 +1800,17 @@ impl<'a> MirLowerer<'a> {
                     (fi, rt, bo, fs)
                 };
 
+                // A field declared `Owned<T>` holds the *pointer* to its value
+                // (#705 put it there), so the read has to load that word. Every
+                // other aggregate field lives inline, where base+offset is the
+                // answer — and taking the address here handed back the address of
+                // the slot instead of what it points to, so `h.inner.v` read the
+                // pointer's own bits as the first field (#739).
+                let access = if self.owned_field_is_boxed(object, field) {
+                    FieldAccess::Sized(8)
+                } else {
+                    field_size.map_or(FieldAccess::Word, FieldAccess::Sized)
+                };
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
@@ -1759,7 +1818,7 @@ impl<'a> MirLowerer<'a> {
                         base: obj_op,
                         field_index,
                         byte_offset,
-                        access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
+                        access,
                     },
                 }));
                 Ok((MirOperand::Local(result_local), result_ty))
@@ -2310,7 +2369,7 @@ impl<'a> MirLowerer<'a> {
                     let val_op = match field_layout
                         .and_then(|f| self.owned_payload(&f.ty))
                     {
-                        Some(_) => self.box_into_owned(val_op, &val_ty),
+                        Some(_) => self.box_into_owned_slot(&field.value, val_op, &val_ty),
                         None => val_op,
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -3989,7 +4048,9 @@ impl<'a> MirLowerer<'a> {
                                 // clobbering the next payload, and the recursive read
                                 // came back as a tag used for an address (#705).
                                 let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
-                                    Some(_) => self.box_into_owned(val, &val_ty),
+                                    Some(_) => {
+                                        self.box_into_owned_slot(&arg.expr, val, &val_ty)
+                                    }
                                     None => val,
                                 };
                                 // Aggregate payloads (string = 16 bytes, embedded

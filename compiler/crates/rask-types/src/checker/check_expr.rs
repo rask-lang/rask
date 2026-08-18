@@ -2134,6 +2134,17 @@ impl TypeChecker {
                 return self.ctx.fresh_var();
             }
 
+            // mem.owned/OW3: `drop(p)` consumes one `Owned` and frees its value.
+            // It takes whatever `own` produced — `Owned<T>` erases to `T` here
+            // (OW5), so there is no type to check against; the arity is.
+            if name == "drop" && args.len() != 1 {
+                self.errors.push(TypeError::ArityMismatch {
+                    expected: 1,
+                    found: args.len(),
+                    span,
+                });
+            }
+
             if self.is_builtin_function(name) {
                 // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
                 // rewrites each argument to `x.to_string()` — the same shape
@@ -2413,7 +2424,7 @@ impl TypeChecker {
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
             | "assert" | "debug" | "format" | "fence" | "compiler_fence"
-            | "assert_eq" | "skip" | "expect_fail")
+            | "assert_eq" | "skip" | "expect_fail" | "drop")
     }
 
 

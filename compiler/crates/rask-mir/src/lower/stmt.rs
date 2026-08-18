@@ -1121,7 +1121,36 @@ impl<'a> MirLowerer<'a> {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
+        // Ask before lowering: `own` is gone from the operand by then, and the
+        // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
+        // point where "the value in this local is a heap box" is knowable (#739).
+        let init_may_be_box = self.expr_yields_owned_box(init);
         let (init_op, inferred_ty) = self.lower_expr(init)?;
+
+        // `let p = own Big { … }` takes over the box rather than copying out of
+        // it. A struct-typed destination copies its bytes on assignment, which is
+        // right for every other aggregate and wrong here: it left `p` naming a
+        // stack copy and orphaned the heap value, so `drop(p)` had a stack address
+        // to free and a field storing `p` held an address that dangled at scope
+        // exit (#739). The binding aliases the pointer instead.
+        //
+        // The pointer is the test, not the `own`: a scalar `Owned` was never boxed
+        // — it fits the slot — so `let ptr: Owned<i32> = own 42` is an ordinary
+        // binding holding 42, and marking it a box would have `drop` free the
+        // address 42.
+        if init_may_be_box {
+            if let MirOperand::Local(src) = init_op {
+                if matches!(self.builder.local_type(src), Some(MirType::Ptr)) {
+                    let var_ty = ty
+                        .map(|s| self.ctx.resolve_type_str(s))
+                        .unwrap_or(inferred_ty);
+                    self.builder.name_local(src, name.to_string());
+                    self.locals.insert(name.to_string(), (src, var_ty));
+                    self.meta_mut(name).is_owned_box = true;
+                    return Ok(());
+                }
+            }
+        }
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
@@ -1137,7 +1166,6 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
-
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.

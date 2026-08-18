@@ -241,6 +241,11 @@ impl Interpreter {
             BuiltinKind::ExpectFail => {
                 Err(RuntimeError::TestExpectFail)
             }
+            // mem.owned/OW3: consuming an `Owned` frees its heap value. There's
+            // no heap here — the interpreter's values are reference-counted and go
+            // when the last name to them goes — so the free is implicit and this
+            // only has to agree about the result.
+            BuiltinKind::Drop => Ok(Value::Unit),
         }
     }
 

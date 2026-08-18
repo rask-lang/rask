@@ -1136,6 +1136,14 @@ pub(crate) struct LocalMeta {
     /// locals and aggregate mutate params (which are already pointers used via
     /// field access, not bare loads).
     pub scalar_mutate_ptr: Option<MirType>,
+    /// The value in this local is a heap box handed over by `own` (#739).
+    ///
+    /// `Owned<T>` erases to `T` in the checker (OW5), so nothing in the type says
+    /// whether a given value is the struct or a pointer to it. Only the code that
+    /// allocated it knows, and this carries that fact to the places that have to
+    /// tell the two apart: storing into a declared `Owned` slot must not box a
+    /// second time, and `drop` frees exactly one box.
+    pub is_owned_box: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -1680,6 +1688,107 @@ impl<'a> MirLowerer<'a> {
             rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
             _ => None,
         }
+    }
+
+    /// Does `object.field` name a field declared `Owned<T>` whose value went to
+    /// the heap? Those hold a pointer where every other aggregate field holds the
+    /// value, so reading one is a load rather than an address (#739).
+    ///
+    /// A scalar payload is never boxed — it fits the slot already — so the field
+    /// holds the value and reads like any other.
+    pub(crate) fn owned_field_is_boxed(&self, object: &Expr, field: &str) -> bool {
+        let layout = self.struct_layout_of_expr(object);
+        if std::env::var("RASK_DEBUG_OWNED").is_ok() {
+            eprintln!("OWNEDCHK field {} layout {:?} fieldty {:?}", field,
+                layout.as_ref().map(|l| l.name.clone()),
+                layout.as_ref().and_then(|l| l.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())));
+        }
+        let Some(layout) = layout else { return false };
+        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
+        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
+        self.ctx.type_to_mir(&payload).passed_by_address()
+    }
+
+    /// Does this expression already evaluate to a heap box?
+    ///
+    /// `own e` allocates, and so does anything already holding what an `own`
+    /// produced — a local bound to one, or a field declared `Owned<T>`. Storing
+    /// such a value into a declared `Owned` slot must not allocate again; that's
+    /// how `Holder { inner: p }` ended up with a box holding a box (#739).
+    pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Unary { op: UnaryOp::Own, .. } => true,
+            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
+            ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
+            _ => false,
+        }
+    }
+
+    /// The box pointer this expression names, as a pointer — `None` when it isn't
+    /// a box at all.
+    ///
+    /// The ordinary path is no good for this. `Owned<T>` erases to `T` (OW5), so a
+    /// read of one comes back typed as the struct, and a struct-typed value is
+    /// copied byte-for-byte wherever it lands — so what reached `drop` was the
+    /// address of a stack copy, and freeing that aborted the process. Reading the
+    /// slot into a pointer-typed local keeps the pointer a pointer (#739).
+    pub(crate) fn lower_owned_box_ptr(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<Option<MirOperand>, LoweringError> {
+        match &expr.kind {
+            // Already a pointer: `own` hands one back, and a local bound to one
+            // holds it (its MIR local is `Ptr`).
+            ExprKind::Unary { op: UnaryOp::Own, .. } => {
+                let (op, _) = self.lower_expr(expr)?;
+                Ok(Some(op))
+            }
+            ExprKind::Ident(name) => {
+                if !self.meta(name).is_some_and(|m| m.is_owned_box) {
+                    return Ok(None);
+                }
+                Ok(self.locals.get(name).map(|(id, _)| MirOperand::Local(*id)))
+            }
+            ExprKind::Field { object, field } => {
+                if !self.owned_field_is_boxed(object, field) {
+                    return Ok(None);
+                }
+                let Some(offset) = self
+                    .struct_layout_of_expr(object)
+                    .and_then(|l| l.fields.iter().position(|f| f.name == *field)
+                        .map(|i| (i as u32, l.fields[i].offset)))
+                else {
+                    return Ok(None);
+                };
+                let (base, _) = self.lower_expr(object)?;
+                let ptr = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: ptr,
+                    rvalue: MirRValue::Field {
+                        base,
+                        field_index: offset.0,
+                        byte_offset: Some(offset.1),
+                        access: crate::operand::FieldAccess::Sized(8),
+                    },
+                }));
+                Ok(Some(MirOperand::Local(ptr)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
+    /// already.
+    pub(crate) fn box_into_owned_slot(
+        &mut self,
+        value_expr: &Expr,
+        val: MirOperand,
+        val_ty: &MirType,
+    ) -> MirOperand {
+        if self.expr_yields_owned_box(value_expr) {
+            return val;
+        }
+        self.box_into_owned(val, val_ty)
     }
 
     /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
@@ -4302,7 +4411,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::Neg => MirUnaryOp::Neg,
         UnaryOp::Not => MirUnaryOp::Not,
         UnaryOp::BitNot => MirUnaryOp::BitNot,
-        UnaryOp::Ref | UnaryOp::Deref => unreachable!(),
+        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Own => unreachable!(),
     }
 }
 

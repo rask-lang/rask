@@ -3651,7 +3651,22 @@ impl Parser {
                             span: self.span(start, end),
                         })
                     }
-                    _ => self.parse_expr_bp(Self::PREFIX_BP),
+                    // `own expr` allocates. Keeping the operator in the tree is
+                    // what makes that possible: it used to be dropped here, so
+                    // `let p = own Node { … }` left `p` an ordinary stack struct
+                    // and there was nothing for `drop` to free (#739).
+                    _ => {
+                        let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
+                        let end = operand.span.end;
+                        Ok(Expr {
+                            id: self.next_id(),
+                            kind: ExprKind::Unary {
+                                op: UnaryOp::Own,
+                                operand: Box::new(operand),
+                            },
+                            span: self.span(start, end),
+                        })
+                    }
                 }
             }
 

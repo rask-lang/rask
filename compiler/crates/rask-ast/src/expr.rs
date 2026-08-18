@@ -419,6 +419,10 @@ pub enum UnaryOp {
     Ref,
     /// Dereference (*)
     Deref,
+    /// Heap-allocate (`own expr`) — `mem.owned/OW3`. The operand is evaluated and
+    /// its value moved to the heap; the result is the pointer, which is also the
+    /// value's representation from here on (OW5).
+    Own,
 }
 
 /// A select arm for channel multiplexing.

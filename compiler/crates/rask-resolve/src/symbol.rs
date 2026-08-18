@@ -173,6 +173,8 @@ pub enum BuiltinFunctionKind {
     Skip,
     /// expect_fail - invert pass/fail for test
     ExpectFail,
+    /// drop - consume an `Owned<T>` and free its heap value (mem.owned/OW3)
+    Drop,
 }
 
 /// Built-in module kinds (stdlib modules).
