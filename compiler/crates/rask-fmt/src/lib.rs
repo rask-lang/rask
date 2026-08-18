@@ -111,6 +111,33 @@ mod tests {
     // `format_source` still falls back for callers with nowhere to put a
     // diagnostic — the LSP formats mid-keystroke, when the buffer often doesn't
     // parse and returning the text unchanged is the only sane answer.
+
+    // An `extern "C" { … }` block flattens into one declaration per member, and
+    // the printer used to reprint each as its own `extern "C" func` — so the
+    // braces went away and any comment written inside them had nowhere to land
+    // (#805). Members carry the offset of their own `extern` keyword now, which
+    // is what puts the block back together.
+    #[test]
+    fn an_extern_block_keeps_its_braces() {
+        let input = "extern \"C\" {\n    // The readers.\n    func read(fd: i64) -> i64\n    func write(fd: i64) -> i64\n}\n";
+        let output = format_source(input);
+        assert_eq!(output, input, "an extern block should round-trip: {}", output);
+    }
+
+    #[test]
+    fn a_single_extern_stays_single() {
+        let input = "extern \"C\" func alloc(n: i64) -> i64\n";
+        let output = format_source(input);
+        assert_eq!(output, input, "the single form has no braces to add: {}", output);
+    }
+
+    #[test]
+    fn two_extern_blocks_do_not_merge() {
+        let input = "extern \"C\" {\n    func a(n: i64) -> i64\n}\n\nextern \"C\" {\n    func b(n: i64) -> i64\n}\n";
+        let output = format_source(input);
+        assert_eq!(output, input, "each block keeps its own braces: {}", output);
+    }
+
     #[test]
     fn returns_original_on_parse_error() {
         let broken = "func {{{ invalid syntax";

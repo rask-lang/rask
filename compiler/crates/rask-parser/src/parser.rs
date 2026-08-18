@@ -647,9 +647,23 @@ impl Parser {
                     Decl { id, kind, span }
                 }).collect();
                 self.pending_decls.extend(pending);
-                // The first member carries the `extern "C"` keywords with it, so its
-                // span starts where the declaration did.
-                extern_first_span = Some(self.span(start, first_span.end));
+                // In the single form the first member carries the `extern "C"`
+                // keywords with it, so its span starts where the declaration did.
+                //
+                // Not in the block form. There the members each keep the span of
+                // their own `func`, and the block's own start lives on
+                // `ExternDecl.block_start` — which is what the formatter reads to
+                // put the braces back. Stretching the first member's span over the
+                // `extern "C" {` swallowed any comment written on the first line
+                // inside the braces, so it came out attached to the second member
+                // instead (#805).
+                let from_block =
+                    matches!(&first, DeclKind::Extern(e) if e.block_start.is_some());
+                if !from_block {
+                    extern_first_span = Some(self.span(start, first_span.end));
+                } else {
+                    extern_first_span = Some(first_span);
+                }
                 first
             }
             TokenKind::Package => {
@@ -2146,6 +2160,7 @@ impl Parser {
         &mut self,
         doc: Option<String>,
     ) -> Result<Vec<(DeclKind, Span)>, ParseError> {
+        let extern_start = self.current().span.start;
         self.expect(&TokenKind::Extern)?;
         let abi = self.expect_string()?;
 
@@ -2159,7 +2174,7 @@ impl Parser {
                 let func_doc = self.take_doc();
                 let member_start = self.current().span.start;
                 self.expect(&TokenKind::Func)?;
-                let kind = self.parse_extern_func(&abi, func_doc)?;
+                let kind = self.parse_extern_func(&abi, func_doc, Some(extern_start))?;
                 let member_end = self.tokens[self.pos.saturating_sub(1)].span.end;
                 decls.push((kind, self.span(member_start, member_end)));
                 self.skip_newlines();
@@ -2171,13 +2186,16 @@ impl Parser {
         // Single form: extern "C" func name(...)
         let single_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
-        let kind = self.parse_extern_func(&abi, doc)?;
+        let kind = self.parse_extern_func(&abi, doc, None)?;
         let end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(vec![(kind, self.span(single_start, end))])
     }
 
     /// Parse a single extern function — signature-only (import) or with body (export).
-    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    ///
+    /// `block_start` is the offset of the `extern` keyword when this member came
+    /// from the block form, so the formatter can print the braces back (#805).
+    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>, block_start: Option<usize>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
@@ -2212,7 +2230,7 @@ impl Parser {
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc }))
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start }))
     }
 
     /// Parse a package block (struct.build/PK1-PK5).

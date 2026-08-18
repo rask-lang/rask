@@ -421,19 +421,18 @@ func format_http_response(resp: Response) -> string {
 
 // ─── Socket I/O (C runtime) ─────────────────────────────────────
 
-// Both readers fill a string out-param, so they're declared returning
-// `string`. Declared `-> i64` the result stayed an integer and `as string`
-// didn't reinterpret it, so every request body read back as the pointer's
-// decimal value and request parsing failed.
-extern "C" func rask_io_read_string(fd: i64, max: i64) -> string
+extern "C" {
+    // Both readers fill a string out-param, so they're declared returning
+    // `string`. Declared `-> i64` the result stayed an integer and `as string`
+    // didn't reinterpret it, so every request body read back as the pointer's
+    // decimal value and request parsing failed.
+    func rask_io_read_string(fd: i64, max: i64) -> string
+    func rask_io_read_until_close(fd: i64, max: i64) -> string
 
-extern "C" func rask_io_write_string(fd: i64, s: i64) -> i64
-
-extern "C" func rask_io_read_until_close(fd: i64, max: i64) -> string
-
-extern "C" func rask_net_tcp_connect(addr: i64) -> i64
-
-extern "C" func rask_io_close_fd(fd: i64) -> void
+    func rask_io_write_string(fd: i64, s: i64) -> i64
+    func rask_net_tcp_connect(addr: i64) -> i64
+    func rask_io_close_fd(fd: i64) -> void
+}
 
 // Read raw bytes from a TCP connection (up to max_bytes).
 func read_raw(conn_fd: i64, max_bytes: i64) -> string {

@@ -419,17 +419,45 @@ impl<'a> Printer<'a> {
         parts.join(", ")
     }
 
+    /// The offset of the `extern` keyword when this declaration came from a block.
+    fn extern_block_start(decl: &Decl) -> Option<usize> {
+        match &decl.kind {
+            DeclKind::Extern(e) => e.block_start,
+            _ => None,
+        }
+    }
+
     // --- File ---
 
     pub fn format_file(&mut self, decls: &[Decl]) {
         let mut is_first = true;
         let mut prev_was_import = false;
 
-        for decl in decls {
+        // `extern "C" { … }` flattens into one declaration per member, so the
+        // block has to be put back together here. Members carry the offset of
+        // their own `extern` keyword, which groups them without merging two
+        // blocks that were written apart (#805).
+        let mut i = 0;
+        while i < decls.len() {
+            let decl = &decls[i];
+            let block = Self::extern_block_start(decl);
+            let mut run = 1;
+            if block.is_some() {
+                while i + run < decls.len() && Self::extern_block_start(&decls[i + run]) == block {
+                    run += 1;
+                }
+            }
+            let members = &decls[i..i + run];
+            i += run;
+
             let is_import = matches!(decl.kind, DeclKind::Import(_));
 
-            // Emit comments before this decl (with blank lines from source)
-            let comments = self.emit_comments_before(decl.span.start, !is_first);
+            // Emit comments before this decl (with blank lines from source).
+            // For a block, the bound is the `extern` keyword — a comment written
+            // inside the braces belongs to the member it precedes, not above the
+            // block.
+            let decl_start = block.unwrap_or(decl.span.start);
+            let comments = self.emit_comments_before(decl_start, !is_first);
 
             // Blank line between previous decl/comment and this decl
             if !is_first && comments.is_empty() {
@@ -439,15 +467,19 @@ impl<'a> Printer<'a> {
             }
 
             // Blank line between last comment and decl (if source had one)
-            if !comments.is_empty() && self.has_blank_line_before(decl.span.start) {
+            if !comments.is_empty() && self.has_blank_line_before(decl_start) {
                 self.emit_blank_line();
             } else if !is_first && comments.is_empty() {
                 // Already handled above
             }
 
-            self.decl_end = decl.span.end;
-            self.format_decl(decl);
-            self.decl_end = self.source.len();
+            if block.is_some() {
+                self.format_extern_block(members);
+            } else {
+                self.decl_end = decl.span.end;
+                self.format_decl(decl);
+                self.decl_end = self.source.len();
+            }
             if !self.output.ends_with('\n') {
                 self.emit_newline();
             }
@@ -455,6 +487,47 @@ impl<'a> Printer<'a> {
             is_first = false;
             prev_was_import = is_import;
         }
+    }
+
+    /// Print the members of one `extern "C" { … }` back inside its braces.
+    ///
+    /// Each member keeps its own span, so a comment written beside one lands
+    /// beside it rather than below the block — which is what the flattened form
+    /// could not express.
+    fn format_extern_block(&mut self, members: &[Decl]) {
+        let abi = match &members[0].kind {
+            DeclKind::Extern(e) => e.abi.clone(),
+            _ => return,
+        };
+        self.emit_indent();
+        self.emit("extern \"");
+        self.emit(&abi);
+        self.emit("\" {");
+        self.emit_newline();
+        self.indent += 1;
+        let mut first = true;
+        for m in members {
+            let DeclKind::Extern(e) = &m.kind else { continue };
+            let comments = self.emit_comments_before(m.span.start, !first);
+            if !first && comments.is_empty() && self.has_blank_line_before(m.span.start) {
+                self.emit_blank_line();
+            }
+            self.decl_end = m.span.end;
+            self.format_extern_member(e);
+            self.decl_end = self.source.len();
+            self.emit_newline();
+            first = false;
+        }
+        // A comment on the last line inside the braces belongs in here, not after.
+        let close = self.source[members[members.len() - 1].span.end..]
+            .find('}')
+            .map(|off| members[members.len() - 1].span.end + off)
+            .unwrap_or(self.source.len());
+        self.emit_comments_before(close, false);
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
+        self.emit_newline();
     }
 
     // --- Declarations ---
@@ -1415,7 +1488,19 @@ impl<'a> Printer<'a> {
         self.emit_indent();
         self.emit("extern \"");
         self.emit(&e.abi);
-        self.emit("\" func ");
+        self.emit("\" ");
+        self.format_extern_signature(e);
+    }
+
+    /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the
+    /// block already said it.
+    fn format_extern_member(&mut self, e: &ExternDecl) {
+        self.emit_indent();
+        self.format_extern_signature(e);
+    }
+
+    fn format_extern_signature(&mut self, e: &ExternDecl) {
+        self.emit("func ");
         self.emit(&e.name);
         self.emit("(");
         for (i, param) in e.params.iter().enumerate() {

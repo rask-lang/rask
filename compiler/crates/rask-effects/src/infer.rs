@@ -790,6 +790,7 @@ mod tests {
                 params: vec![],
                 ret_ty: None,
                 doc: None,
+                block_start: None,
             }),
             span: sp(),
         }

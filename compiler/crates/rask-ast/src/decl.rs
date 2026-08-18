@@ -100,6 +100,16 @@ pub struct ExternDecl {
     pub ret_ty: Option<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+    /// Byte offset of the `extern` keyword when this came from the block form,
+    /// `extern "C" { func …; func … }`.
+    ///
+    /// The block flattens into one declaration per function, which is what every
+    /// later pass wants, but it left the formatter with no way to print the
+    /// braced form back — it reprinted each member as its own `extern "C" func`,
+    /// and a comment written inside the braces had nowhere to go (#805). Two
+    /// blocks in a row have different offsets, so this groups members without
+    /// merging blocks that were written apart.
+    pub block_start: Option<usize>,
 }
 
 /// A function declaration.
