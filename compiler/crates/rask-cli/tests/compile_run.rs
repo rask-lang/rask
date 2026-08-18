@@ -4870,6 +4870,36 @@ fn error_owned_not_consumed() {
     );
 }
 
+// #827: a `@resource` inside an optional carried no obligation at all.
+// `is_resource_type_name` looks the annotation up in the type table and `"Conn?"`
+// isn't a name in it, and the annotated path never fell through to what the
+// checker already knew about the initializer — so `mut c: Conn? = Conn { … }`
+// compiled clean and leaked.
+//
+// The `? as` binding was the other half. OPT19 calls it "the payload read out of
+// the scrutinee", which for a linear payload can only mean moved — so the binding
+// holds the resource inside the branch and the optional doesn't hold it after.
+// Both ends are tracked now, which is what makes the *closing* version compile:
+// consuming the binding is what discharges the optional.
+#[test]
+fn error_optional_resource_not_consumed() {
+    let (failed, out) = compile_error_output("optional_resource.rk");
+    assert!(failed, "an unconsumed optional resource must be rejected: {}", out);
+    assert_eq!(out.matches("E0805").count(), 3, "exactly three leaks: {}", out);
+    assert!(
+        out.contains("resource `maybe` must be consumed"),
+        "the optional binding itself: {}", out,
+    );
+    assert!(
+        out.contains("resource `conn` must be consumed"),
+        "the `? as` payload binding: {}", out,
+    );
+    assert!(
+        out.contains("resource `c` must be consumed"),
+        "a `none` binding that gets filled: {}", out,
+    );
+}
+
 // #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
 // annotation type-checked clean. The annotation's whole job is to move the
 // break from the call sites to the declaration, so an unenforced one is worse

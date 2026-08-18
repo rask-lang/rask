@@ -598,12 +598,18 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(borrow_block) = self.last_closure_scope_limit.take() {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
-                // Track resource types
-                if let Some(ty_str) = ty {
-                    if self.is_resource_type_name(ty_str) {
-                        self.resource_bindings.insert(name.clone());
-                    }
-                } else if self.expr_is_resource_type(init) {
+                // Track resource types. The annotation and the initializer are
+                // both asked: an annotation the name table can't place — a
+                // wrapper, an alias — used to suppress what the checker had
+                // already worked out about the value (#827).
+                //
+                // `= none` holds nothing, so there is nothing to consume yet. A
+                // later assignment registers the binding when it puts a resource
+                // in — see the `Assign` arm.
+                if !matches!(init.kind, ExprKind::None)
+                    && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
+                        || self.expr_is_resource_type(init))
+                {
                     self.resource_bindings.insert(name.clone());
                 }
                 self.track_owned_binding(name, init);
@@ -647,12 +653,18 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(borrow_block) = self.last_closure_scope_limit.take() {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
-                // Track resource types
-                if let Some(ty_str) = ty {
-                    if self.is_resource_type_name(ty_str) {
-                        self.resource_bindings.insert(name.clone());
-                    }
-                } else if self.expr_is_resource_type(init) {
+                // Track resource types. The annotation and the initializer are
+                // both asked: an annotation the name table can't place — a
+                // wrapper, an alias — used to suppress what the checker had
+                // already worked out about the value (#827).
+                //
+                // `= none` holds nothing, so there is nothing to consume yet. A
+                // later assignment registers the binding when it puts a resource
+                // in — see the `Assign` arm.
+                if !matches!(init.kind, ExprKind::None)
+                    && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
+                        || self.expr_is_resource_type(init))
+                {
                     self.resource_bindings.insert(name.clone());
                 }
                 self.track_owned_binding(name, init);
@@ -729,6 +741,14 @@ impl<'a> OwnershipChecker<'a> {
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
+                        // Putting a resource into a binding gives it the
+                        // obligation, whether or not it had one before. This is
+                        // what makes `mut c: Conn? = none` work: nothing to
+                        // consume at the declaration, and a real one to consume
+                        // once something fills it (#827).
+                        if self.expr_is_resource_type(value) {
+                            self.resource_bindings.insert(target_name.clone());
+                        }
                     }
                 }
                 // SL2: propagate or reject scope-limited closure on assignment.
@@ -1407,8 +1427,18 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::If { cond, then_branch, else_branch, .. } => {
                 self.check_expr(cond);
+                // OPT19: `if x? as c` reads the payload out of `x`. For a linear
+                // payload "read out" can only mean moved — a resource can't be
+                // copied — so `c` carries the obligation from here and `x` no
+                // longer does. Neither half held before: the binding leaked
+                // silently and the optional it came from was never registered at
+                // all (#827).
+                let present_resource = self.optional_payload_resource(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
+                if let Some(ref binding) = present_resource {
+                    self.check_present_binding_consumed(binding, then_branch.span);
+                }
                 let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
                     let after_then = self.bindings.clone();
@@ -2960,12 +2990,34 @@ impl<'a> OwnershipChecker<'a> {
 
     /// L1/ER42: a type-name annotation refers to a transitively-linear type.
     /// Strips generic args ("File<T>" → "File") and asks the type table.
+    ///
+    /// An optional is stripped first. A `Conn?` is still a connection that has to
+    /// be closed on the path where it exists — but `get_type_id("Conn?")` finds
+    /// nothing, so the annotation said "not a resource" and the binding was never
+    /// registered. `mut maybe: Conn? = Conn { … }` then dropped it with no
+    /// diagnostic at all (#827).
     fn is_resource_type_name(&self, ty_name: &str) -> bool {
-        let base = ty_name.split('<').next().unwrap_or(ty_name);
-        if let Some(id) = self.program.types.get_type_id(base) {
+        let name = Self::strip_optional(ty_name);
+        let base = name.split('<').next().unwrap_or(name);
+        if let Some(id) = self.program.types.get_type_id(base.trim()) {
             return self.program.types.is_transitive_resource_by_id(id);
         }
         false
+    }
+
+    /// `Conn?` and `Conn or none` → `Conn`. Repeats, so `Conn??` gets there too.
+    fn strip_optional(ty_name: &str) -> &str {
+        let mut name = ty_name.trim();
+        loop {
+            let next = name
+                .strip_suffix('?')
+                .or_else(|| name.strip_suffix(" or none"))
+                .map(str::trim);
+            match next {
+                Some(inner) if inner != name => name = inner,
+                _ => return name,
+            }
+        }
     }
 
     /// L1/ER42: a `Type` value must be consumed exactly once — `@resource`
@@ -3260,6 +3312,57 @@ impl<'a> OwnershipChecker<'a> {
 
     /// At function exit, emit errors for unconsumed @resource bindings, and C4
     /// errors for ensured resources whose consumption isn't statically definite.
+
+    /// `if x? as c` where the payload is a resource: register `c` and take the
+    /// obligation off `x`. Returns the binding name when it did.
+    ///
+    /// OPT19 calls `c` "the payload read out of the scrutinee". For a Copy payload
+    /// that reads as a copy, which is why writing through `c` is rejected. A linear
+    /// payload can't be copied, so the only coherent reading there is a move: `c`
+    /// holds the resource inside the branch and `x` doesn't hold it afterwards —
+    /// on the absent path there was nothing to hold (#827).
+    fn optional_payload_resource(&mut self, cond: &Expr) -> Option<String> {
+        let ExprKind::IsPresent { expr: inner, binding: Some(name) } = &cond.kind else {
+            return None;
+        };
+        let payload = self
+            .program
+            .node_types
+            .get(&inner.id)
+            .and_then(|ty| ty.as_option())?
+            .clone();
+        if !self.type_is_resource(&payload) {
+            return None;
+        }
+        // The scrutinee gave the payload away. A call result had no binding to
+        // charge in the first place.
+        if let ExprKind::Ident(source) = &inner.kind {
+            if self.resource_bindings.contains(source) {
+                self.bindings.insert(source.clone(), BindingState::Moved { at: cond.span });
+            }
+        }
+        self.bindings.insert(name.clone(), BindingState::Owned);
+        self.binding_types.insert(name.clone(), payload);
+        self.resource_bindings.insert(name.clone());
+        Some(name.clone())
+    }
+
+    /// The `? as` binding lives only inside the branch, so its obligation is
+    /// checked there rather than at function exit — otherwise the branch merge
+    /// would leave it maybe-moved and report a leak on a program that closed it.
+    fn check_present_binding_consumed(&mut self, name: &str, span: Span) {
+        let consumed = matches!(self.bindings.get(name), Some(BindingState::Moved { .. }))
+            || self.ensure_registered.contains(name);
+        if !consumed {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ResourceNotConsumed { name: name.to_string() },
+                span,
+            });
+        }
+        self.resource_bindings.remove(name);
+        self.bindings.remove(name);
+    }
+
     fn check_resource_consumption(&mut self, span: Span) {
         let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
         names.sort();
