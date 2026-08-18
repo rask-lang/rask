@@ -207,161 +207,114 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     let source_files: Vec<_> = root_pkg.files.iter()
         .map(|f| (f.path.clone(), f.source.clone()))
         .collect();
+    let root_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
 
-    let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
-    rask_desugar::desugar(&mut all_decls);
-
-    // Collect dependency declarations and package modules (same as cmd_build)
-    let mut package_modules = std::collections::HashSet::new();
+    // Dependency declarations, the way `rask build` collects them.
     let mut dep_decls = Vec::new();
     for pkg in prepared.registry.packages() {
         if pkg.id == prepared.root_id { continue; }
-        package_modules.insert(pkg.name.clone());
         for decl in pkg.all_decls() {
             match &decl.kind {
                 rask_ast::decl::DeclKind::Fn(_)
                 | rask_ast::decl::DeclKind::Struct(_)
                 | rask_ast::decl::DeclKind::Enum(_)
                 | rask_ast::decl::DeclKind::Impl(_)
-                | rask_ast::decl::DeclKind::Const(_) => {
-                    dep_decls.push(decl.clone());
-                }
+                | rask_ast::decl::DeclKind::Const(_) => dep_decls.push(decl.clone()),
                 _ => {}
             }
         }
     }
-    for decl in &all_decls {
-        if let rask_ast::decl::DeclKind::Import(import) = &decl.kind {
-            if let Some(first) = import.path.first() {
-                if rask_resolve::is_builtin_module(first) {
-                    package_modules.insert(first.clone());
-                }
-            }
+
+    // One frontend, shared with `rask build`. This used to be a hand-rolled
+    // copy of resolve → typecheck → ownership → hidden-params → derive → mono,
+    // which is how it ended up calling the plain typecheck: the stdlib's own
+    // bodies were resolved but never typed, and `rask test examples/validation`
+    // failed on 17 stdlib functions `rask build` had simply discarded (#330,
+    // #697). Now the test runner is the one thing it contributes — a decl
+    // rewrite handed to the pipeline.
+    let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
+    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let mut pkg_ctx = rask_compiler::PackageContext {
+        registry: prepared.registry,
+        root_id: prepared.root_id,
+        all_decls: root_decls,
+    };
+    let mut tests = Vec::new();
+    let output = rask_compiler::compile_package_with(
+        &mut pkg_ctx,
+        dep_decls,
+        &config,
+        |decls, _typed| {
+            tests = super::compile::extract_tests(decls, filter.as_deref());
+        },
+    );
+
+    let pipeline_sources = if output.source_files.is_empty() {
+        source_files.clone()
+    } else {
+        output.source_files.clone()
+    };
+    for diag in &output.diagnostics {
+        crate::show_diagnostic_multi(diag, &pipeline_sources);
+    }
+    let Some(compiled) = output.result else {
+        eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
+        process::exit(1);
+    };
+
+    if tests.is_empty() {
+        if format == Format::Human {
+            println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
+            println!("  No tests found.");
         }
+        return;
     }
 
-    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let (typed, all_decls, mono, comptime_globals) = (
+        compiled.typed,
+        compiled.decls,
+        compiled.mono,
+        compiled.comptime_globals,
+    );
 
-    match rask_resolve::resolve_package_with_stdlib(&all_decls, &prepared.registry, prepared.root_id, &stdlib_decls) {
-        Ok(resolved) => {
-            // Type-check the stdlib's own bodies alongside the program, the way
-            // the shared driver does for `rask build`. This path is an older
-            // hand-rolled copy of the pipeline that used the plain `typecheck`,
-            // so the stdlib's Rask source was resolved but never typed — every
-            // receiver inside it reached MIR with no recorded type, and lowering
-            // fell back to guessing a stdlib prefix from the method name.
-            //
-            // `rask build` never noticed because the main binary drops the
-            // stdlib functions the program doesn't call. A test binary compiles
-            // more of them, so `rask test examples/validation` failed on 17
-            // stdlib functions the build had simply discarded (#697).
-            let stdlib_typecheck_decls = rask_stdlib::StubRegistry::typecheck_decls();
-            let (typed, type_errors) = rask_types::typecheck_with_stdlib_lenient(
-                resolved, &all_decls, &stdlib_typecheck_decls,
-            );
-            match if type_errors.is_empty() { Ok(typed) } else { Err(type_errors) } {
-                Ok(typed) => {
-                    let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
-                    if !ownership_result.is_ok() {
-                        for error in &ownership_result.errors {
-                            crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
-                        }
-                        eprintln!("{}", output::banner_fail("Ownership", ownership_result.errors.len()));
-                        process::exit(1);
-                    }
+    let tmp_dir = std::env::temp_dir();
+    let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
+    let bin_str = bin_path.to_string_lossy().to_string();
+    let obj_path = format!("{}.o", bin_str);
 
-                    // Merge stdlib + dep decls
-                    all_decls.extend(stdlib_decls);
-                    let mut dep_decls_desugared = dep_decls;
-                    rask_desugar::desugar(&mut dep_decls_desugared);
-                    all_decls.extend(dep_decls_desugared);
-                    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut all_decls, Some(&typed));
-                    super::codegen::exit_on_context_errors(&hp_diags, &source_files);
+    if let Err(errors) = super::compile::compile_tests_to_object(
+        &mono, &typed, &all_decls, &comptime_globals,
+        &tests, None, None, &obj_path, Some(&cfg),
+    ) {
+        for e in &errors {
+            eprintln!("{}: compile: {}", output::error_label(), e);
+        }
+        let _ = std::fs::remove_file(&obj_path);
+        process::exit(1);
+    }
 
-                    // Bodies for auto-derived methods, same as the run path.
-                    // Without this a `compare` the checker derived has a
-                    // signature and no function, and codegen can't find it.
-                    rask_compiler::derive::generate_derived_methods(&mut all_decls, &typed);
+    if let Err(e) = super::link::link_executable_with(
+        &obj_path, &bin_str, &prepared.link_opts, false, None,
+    ) {
+        eprintln!("{}: link: {}", output::error_label(), e);
+        let _ = std::fs::remove_file(&obj_path);
+        process::exit(1);
+    }
+    let _ = std::fs::remove_file(&obj_path);
 
-                    // Extract tests (replaces main, adds test body functions)
-                    let tests = super::compile::extract_tests(&mut all_decls, filter.as_deref());
+    let run_output = process::Command::new(&bin_str).output();
+    let _ = std::fs::remove_file(&bin_path);
 
-                    if tests.is_empty() {
-                        if format == Format::Human {
-                            println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
-                            println!("  No tests found.");
-                        }
-                        return;
-                    }
-
-                    match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules) {
-                        Ok(mono) => {
-                            let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
-                            let (comptime_globals, ct_diags) =
-                                rask_compiler::evaluate_comptime_globals(&all_decls, &typed, &mono, Some(&cfg));
-                            super::codegen::exit_on_comptime_errors(&ct_diags, &source_files);
-
-                            let tmp_dir = std::env::temp_dir();
-                            let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
-                            let bin_str = bin_path.to_string_lossy().to_string();
-                            let obj_path = format!("{}.o", bin_str);
-
-                            if let Err(errors) = super::compile::compile_tests_to_object(
-                                &mono, &typed, &all_decls, &comptime_globals,
-                                &tests, None, None, &obj_path, Some(&cfg),
-                            ) {
-                                for e in &errors {
-                                    eprintln!("{}: compile: {}", output::error_label(), e);
-                                }
-                                let _ = std::fs::remove_file(&obj_path);
-                                process::exit(1);
-                            }
-
-                            if let Err(e) = super::link::link_executable_with(
-                                &obj_path, &bin_str, &prepared.link_opts, false, None,
-                            ) {
-                                eprintln!("{}: link: {}", output::error_label(), e);
-                                let _ = std::fs::remove_file(&obj_path);
-                                process::exit(1);
-                            }
-                            let _ = std::fs::remove_file(&obj_path);
-
-                            let output = process::Command::new(&bin_str).output();
-                            let _ = std::fs::remove_file(&bin_path);
-
-                            match output {
-                                Ok(out) => {
-                                    let stdout = String::from_utf8_lossy(&out.stdout);
-                                    let complete =
-                                        display_test_results(&stdout, path, format, tests.len());
-                                    if !out.status.success() || !complete {
-                                        process::exit(1);
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("{}: executing test binary: {}", output::error_label(), e);
-                                    process::exit(1);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("monomorphization error: {}", e);
-                            process::exit(1);
-                        }
-                    }
-                }
-                Err(errors) => {
-                    for error in &errors {
-                        crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
-                    }
-                    process::exit(1);
-                }
+    match run_output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let complete = display_test_results(&stdout, path, format, tests.len());
+            if !out.status.success() || !complete {
+                process::exit(1);
             }
         }
-        Err(errors) => {
-            for error in &errors {
-                crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
-            }
+        Err(e) => {
+            eprintln!("{}: executing test binary: {}", output::error_label(), e);
             process::exit(1);
         }
     }
@@ -465,18 +418,33 @@ pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) ->
 }
 
 fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> bool {
-    let mut result = match crate::run_check(path, format) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    // One frontend, shared with `rask build` — the test runner is the decl
+    // rewrite handed to it, not a second copy of the pipeline (#330).
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let mut tests = Vec::new();
+    let output = rask_compiler::compile_file_with(path, Vec::new(), &config, |decls, _typed| {
+        tests = super::compile::extract_tests(decls, filter);
+    });
 
-    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
-    super::codegen::exit_on_context_errors(&hp_diags, &result.source_files);
-    // Bodies for auto-derived methods, same as the run path. Without this a
-    // `compare` the checker derived has a signature and no function, and
-    // codegen can't find it.
-    rask_compiler::derive::generate_derived_methods(&mut result.decls, &result.typed);
-    let tests = super::compile::extract_tests(&mut result.decls, filter);
+    // The pipeline reports its own sources; fall back to the file itself when
+    // it failed early enough to have none, so a diagnostic still gets a snippet.
+    let source_files = if output.source_files.is_empty() {
+        std::fs::read_to_string(path)
+            .map(|src| vec![(std::path::PathBuf::from(path), src)])
+            .unwrap_or_default()
+    } else {
+        output.source_files.clone()
+    };
+    for diag in &output.diagnostics {
+        crate::show_diagnostic_multi(diag, &source_files);
+    }
+    let Some(result) = output.result else {
+        if format == Format::Human {
+            eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
+        }
+        return false;
+    };
 
     if tests.is_empty() {
         if format == Format::Human {
@@ -486,27 +454,8 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         return true;
     }
 
-    // Inject compiled stdlib functions + struct defs for mono/codegen
-    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
-    if !stdlib_fn_decls.is_empty() {
-        result.decls.extend(stdlib_fn_decls);
-    }
-    if !stdlib_struct_defs.is_empty() {
-        result.decls.extend(stdlib_struct_defs);
-    }
-
-    let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{}: mono: {}", output::error_label(), e);
-            return false;
-        }
-    };
-    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let (comptime_globals, ct_diags) =
-        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
-    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
+    let mono = result.mono;
+    let comptime_globals = result.comptime_globals;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -515,7 +464,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
 
     if let Err(errors) = super::compile::compile_tests_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &tests, Some(path), result.source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+        &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
     ) {
         for e in &errors {
             eprintln!("{}: compile: {}", output::error_label(), e);
@@ -532,7 +481,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let output = process::Command::new(&bin_str).output();
+    let run_output = process::Command::new(&bin_str).output();
     // A test binary that dies mid-run takes the evidence with it. Keeping it
     // is the difference between "something crashed" and a backtrace.
     if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
@@ -541,7 +490,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         let _ = std::fs::remove_file(&bin_path);
     }
 
-    match output {
+    match run_output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
@@ -1243,10 +1192,26 @@ fn parse_bench_json_i64(s: &str, key: &str) -> Option<i64> {
 
 /// Run a single .rk benchmark file natively, return parsed results.
 fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<BenchResult> {
-    let mut result = match std::panic::catch_unwind(|| {
-        crate::run_check_or_exit(path, format)
-    }) {
-        Ok(r) => r,
+    // Same one frontend as the test runner — the benchmark runner is the decl
+    // rewrite handed to it (#330).
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let path_owned = path.to_string();
+    let filter_owned = filter.map(|f| f.to_string());
+    let compiled = std::panic::catch_unwind(move || {
+        let mut benchmarks = Vec::new();
+        let output = rask_compiler::compile_file_with(
+            &path_owned,
+            Vec::new(),
+            &config,
+            |decls, _typed| {
+                benchmarks = super::compile::extract_benchmarks(decls, filter_owned.as_deref());
+            },
+        );
+        (output, benchmarks)
+    });
+    let (output, benchmarks) = match compiled {
+        Ok(pair) => pair,
         Err(_) => {
             if format == Format::Human {
                 eprintln!("    {}: frontend panic for {}", output::error_label(), path);
@@ -1255,38 +1220,19 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
 
-    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(&mut result.decls, Some(&result.typed));
-    super::codegen::exit_on_context_errors(&hp_diags, &result.source_files);
-    // Bodies for auto-derived methods, same as the run path.
-    rask_compiler::derive::generate_derived_methods(&mut result.decls, &result.typed);
-    let benchmarks = super::compile::extract_benchmarks(&mut result.decls, filter);
+    let source_files = output.source_files.clone();
+    if output.result.is_none() {
+        for diag in &output.diagnostics {
+            crate::show_diagnostic_multi(diag, &source_files);
+        }
+        return Vec::new();
+    }
     if benchmarks.is_empty() {
         return Vec::new();
     }
-
-    // Inject compiled stdlib functions + struct defs for mono/codegen
-    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
-    if !stdlib_fn_decls.is_empty() {
-        result.decls.extend(stdlib_fn_decls);
-    }
-    if !stdlib_struct_defs.is_empty() {
-        result.decls.extend(stdlib_struct_defs);
-    }
-
-    let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
-        Ok(m) => m,
-        Err(e) => {
-            if format == Format::Human {
-                eprintln!("    {}: mono: {}", output::error_label(), e);
-            }
-            return Vec::new();
-        }
-    };
-    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let (comptime_globals, ct_diags) =
-        rask_compiler::evaluate_comptime_globals(&result.decls, &result.typed, &mono, Some(&cfg));
-    super::codegen::exit_on_comptime_errors(&ct_diags, &result.source_files);
+    let result = output.result.unwrap();
+    let mono = result.mono;
+    let comptime_globals = result.comptime_globals;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));
@@ -1295,7 +1241,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
 
     if let Err(errors) = super::compile::compile_benchmarks_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), result.source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+        &benchmarks, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
     ) {
         if format == Format::Human {
             for e in &errors {

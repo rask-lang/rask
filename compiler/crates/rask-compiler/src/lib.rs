@@ -472,25 +472,57 @@ pub fn compile_file(
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
+    compile_file_with(path, dep_decls, config, |_, _| {})
+}
+
+/// `compile_file`, with a chance to rewrite the declarations first.
+///
+/// `transform` runs after the frontend and the derive/stdlib/dependency merge,
+/// and before monomorphization — the one point where the decl list is complete
+/// and nothing has been laid out yet. That's where `rask test` swaps `main` for
+/// a test runner and `rask bench` for a benchmark runner.
+///
+/// Those two used to open-code the whole frontend to get that one edit in, so a
+/// fix to resolve, typecheck, ownership or mono had to be made twice — and one
+/// of the copies used the plain typecheck, which left every stdlib body untyped
+/// and only showed up as 17 failures in `rask test examples/validation` (#330,
+/// #697).
+pub fn compile_file_with(
+    path: &str,
+    dep_decls: Vec<Decl>,
+    config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
+) -> PipelineOutput<CompileResult> {
     if let Some(mut pkg_ctx) = detect_package(path) {
-        return compile_package(&mut pkg_ctx, dep_decls, config);
+        return compile_package_with(&mut pkg_ctx, dep_decls, config, transform);
     }
-    compile_single(path, dep_decls, config)
+    compile_single(path, dep_decls, config, transform)
 }
 
 fn compile_single(
     path: &str,
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let check_output = check_single(path, config);
-    finalize_compile(check_output, dep_decls, HashSet::new(), config)
+    finalize_compile(check_output, dep_decls, HashSet::new(), config, transform)
 }
 
 pub fn compile_package(
     pkg_ctx: &mut PackageContext,
     dep_decls: Vec<Decl>,
     config: &CompilerConfig,
+) -> PipelineOutput<CompileResult> {
+    compile_package_with(pkg_ctx, dep_decls, config, |_, _| {})
+}
+
+/// `compile_package`, with the same decl hook as `compile_file_with`.
+pub fn compile_package_with(
+    pkg_ctx: &mut PackageContext,
+    dep_decls: Vec<Decl>,
+    config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     // Collect package_modules from the registry before check consumes pkg_ctx.
     let mut package_modules = HashSet::new();
@@ -511,7 +543,7 @@ pub fn compile_package(
     }
 
     let check_output = check_package(pkg_ctx, config);
-    finalize_compile(check_output, dep_decls, package_modules, config)
+    finalize_compile(check_output, dep_decls, package_modules, config, transform)
 }
 
 /// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
@@ -520,6 +552,7 @@ fn finalize_compile(
     dep_decls: Vec<Decl>,
     package_modules: HashSet<String>,
     config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let mut diags = check_output.diagnostics;
     let pkg_source_files = check_output.source_files;
@@ -555,6 +588,9 @@ fn finalize_compile(
         rask_desugar::desugar(&mut dep_decls_desugared);
         check.decls.extend(dep_decls_desugared);
     }
+
+    // --- Caller's decl rewrite (test/bench runners) ---
+    transform(&mut check.decls, &check.typed);
 
     // --- Monomorphize ---
     let mono = if package_modules.is_empty() {
