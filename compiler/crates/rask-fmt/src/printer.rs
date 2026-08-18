@@ -209,14 +209,23 @@ impl<'a> Printer<'a> {
     /// Convert parser-normalized types back to Rask syntax.
     /// E.g., `Result<i32, string>` → `i32 or string`.
     fn format_type(&self, ty: &str) -> String {
+        // The parser normalizes `void` to `()` (type.primitives/P6), which isn't
+        // a type anyone can write — printing it back gave "`()` is not a type"
+        // on the formatter's own output (#805).
+        if ty == "()" {
+            return "void".to_string();
+        }
         if let Some(inner) = ty.strip_prefix("Result<") {
             if let Some(inner) = inner.strip_suffix('>') {
-                // Find the top-level comma (not inside nested angle brackets)
+                // The top-level comma is the one separating value from error.
+                // Only angle brackets were counted, so a tuple value type split
+                // at its own comma: `(string, string) or E` came back out as
+                // `(string or string), E`, which doesn't parse (#805).
                 let mut depth = 0;
                 for (i, ch) in inner.char_indices() {
                     match ch {
-                        '<' => depth += 1,
-                        '>' => depth -= 1,
+                        '<' | '(' | '[' => depth += 1,
+                        '>' | ')' | ']' => depth -= 1,
                         ',' if depth == 0 => {
                             let ok_ty = inner[..i].trim();
                             let err_ty = inner[i + 1..].trim();
@@ -243,15 +252,30 @@ impl<'a> Printer<'a> {
                         if depth == 0 {
                             let params = &rest[..i];
                             let after = rest[i + 1..].trim();
-                            if let Some(ret) = after.strip_prefix("->") {
-                                let ret_ty = ret.trim();
-                                return format!(
-                                    "|{}| -> {}",
-                                    params,
-                                    self.format_type(ret_ty)
-                                );
+                            // `||` is the logical-or token, so a closure type
+                            // with no parameters has to keep the `func()`
+                            // spelling — `|| -> Big` doesn't lex as a type.
+                            let (open, close) = if params.is_empty() {
+                                ("func(", ")")
                             } else {
-                                return format!("|{}|", params);
+                                ("|", "|")
+                            };
+                            match after.strip_prefix("->").map(str::trim) {
+                                // An omitted return type is stored as `()` too,
+                                // so writing it back adds an arrow the source
+                                // never had.
+                                None | Some("()") => {
+                                    return format!("{}{}{}", open, params, close)
+                                }
+                                Some(ret_ty) => {
+                                    return format!(
+                                        "{}{}{} -> {}",
+                                        open,
+                                        params,
+                                        close,
+                                        self.format_type(ret_ty)
+                                    )
+                                }
                             }
                         }
                     }
@@ -390,6 +414,22 @@ impl<'a> Printer<'a> {
         if let Some(ref ret_ty) = f.ret_ty {
             self.emit(" -> ");
             let ty = self.format_type(ret_ty);
+            self.emit(&ty);
+        }
+
+        // `using players: Pool<Player>` declares what the body reaches for
+        // without naming it at the call site. The printer dropped the clause, so
+        // the body then read a name nothing had declared (#805).
+        for (i, clause) in f.context_clauses.iter().enumerate() {
+            self.emit(if i == 0 { " using " } else { ", " });
+            if clause.is_frozen {
+                self.emit("const ");
+            }
+            if let Some(ref name) = clause.name {
+                self.emit(name);
+                self.emit(": ");
+            }
+            let ty = self.format_type(&clause.ty);
             self.emit(&ty);
         }
 
@@ -625,6 +665,15 @@ impl<'a> Printer<'a> {
     fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {
         self.emit_indent();
 
+        // Enums were the one declaration whose attributes weren't printed, so
+        // `@message` disappeared and the derived `message()` went with it — the
+        // formatted file then failed to check on a call the source made (#805).
+        for attr in &e.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
+
         if e.is_pub {
             self.emit("public ");
         }
@@ -665,6 +714,13 @@ impl<'a> Printer<'a> {
             self.indent += 1;
             for variant in &e.variants {
                 self.emit_indent();
+                // A per-variant `@message("…")` is what the derived message
+                // actually reads.
+                for attr in &variant.attrs {
+                    self.emit(&format!("@{attr}"));
+                    self.emit_newline();
+                    self.emit_indent();
+                }
                 self.emit(&variant.name);
                 if !variant.fields.is_empty() {
                     let is_tuple = variant.fields.first().map_or(false, |f| {
@@ -724,11 +780,32 @@ impl<'a> Printer<'a> {
 
     fn format_trait_decl(&mut self, t: &TraitDecl) {
         self.emit_indent();
+
+        // Attributes, `unsafe`, `duck` and super-traits were all dropped. Losing
+        // `duck` is the one that changes the program: a duck trait matches by
+        // shape and a plain one has to be declared, so the conformance the
+        // source relied on stopped existing (#805).
+        for attr in &t.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
+
         if t.is_pub {
             self.emit("public ");
         }
+        if t.is_unsafe {
+            self.emit("unsafe ");
+        }
+        if t.is_duck {
+            self.emit("duck ");
+        }
         self.emit("trait ");
         self.emit(&t.name);
+        for (i, sup) in t.super_traits.iter().enumerate() {
+            self.emit(if i == 0 { ": " } else { ", " });
+            self.emit(sup);
+        }
         self.emit(" {");
         self.emit_newline();
 
@@ -838,7 +915,11 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
         self.emit(" = ");
-        self.emit(&t.target);
+        // The target is a type like any other, and printing it raw left the
+        // parser's internal spellings in the output — `-> ()` where the source
+        // said nothing at all (#805).
+        let target = self.format_type(&t.target);
+        self.emit(&target);
         if !t.with_traits.is_empty() {
             self.emit(" with (");
             for (i, trait_name) in t.with_traits.iter().enumerate() {
@@ -1265,7 +1346,7 @@ impl<'a> Printer<'a> {
                     self.emit(": ");
                 }
                 self.emit("while ");
-                self.format_expr(cond);
+                self.format_condition(cond);
                 self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;
@@ -1469,11 +1550,11 @@ impl<'a> Printer<'a> {
                     self.emit("(");
                 }
 
-                self.format_expr_inner(left, Some(prec));
+                self.format_binary_operand(left, prec, op, false);
                 self.emit(" ");
                 self.emit(binop_str(op));
                 self.emit(" ");
-                self.format_expr_inner(right, Some(prec));
+                self.format_binary_operand(right, prec, op, true);
 
                 if need_parens {
                     self.emit(")");
@@ -1481,7 +1562,11 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
-                let needs_parens = matches!(operand.kind, ExprKind::IsPattern { .. });
+                // A prefix operator binds tighter than every binary one, so a
+                // binary operand keeps its parentheses. Only `is` was handled,
+                // and `!(a < b)` came back out as `!a < b` — "expected `bool`,
+                // found `i64`" on the formatter's own output (#805).
+                let needs_parens = !Self::binds_tighter_than_prefix(&operand.kind);
                 if needs_parens { self.emit("("); }
                 self.format_expr(operand);
                 if needs_parens { self.emit(")"); }
@@ -1498,7 +1583,7 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::MethodCall { object, method, type_args, args } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".");
                 self.emit(method);
                 if let Some(ref targs) = type_args {
@@ -1516,23 +1601,23 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::Field { object, field } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".");
                 self.emit(field);
             }
             ExprKind::OptionalField { object, field } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit("?.");
                 self.emit(field);
             }
             ExprKind::DynamicField { object, field_expr } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".(");
                 self.format_expr(field_expr);
                 self.emit(")");
             }
             ExprKind::Index { object, index } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit("[");
                 self.format_expr(index);
                 self.emit("]");
@@ -1561,6 +1646,14 @@ impl<'a> Printer<'a> {
                 self.format_branch(then_branch);
                 if let Some(ref else_br) = else_branch {
                     self.emit(" else");
+                    // ER22: the `as e` names the value the handler is about to
+                    // handle. `If` right above passes it through and this arm
+                    // didn't, so `} else as e {` came back out as `} else {` and
+                    // the body then referred to a name nothing declared (#805).
+                    if let Some(name) = else_binding {
+                        self.emit(" as ");
+                        self.emit(name);
+                    }
                     self.format_branch(else_br);
                 }
             }
@@ -1644,12 +1737,19 @@ impl<'a> Printer<'a> {
                 self.emit(" => ");
                 self.format_expr(&clause.body);
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
-                self.format_expr(inner);
+            ExprKind::IsPresent { expr: inner, binding } => {
+                self.format_postfix_receiver(inner);
                 self.emit("?");
+                // OPT19: `x?` is a plain bool and narrows nothing, so the `as v`
+                // is the only way into the payload. Dropping it left the branch
+                // body reading a name that no longer existed (#805).
+                if let Some(name) = binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
             }
             ExprKind::Unwrap { expr: inner, message } => {
-                self.format_expr(inner);
+                self.format_postfix_receiver(inner);
                 self.emit("!");
                 if let Some(msg) = message {
                     self.emit(" ");
@@ -1919,6 +2019,35 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// A condition sits directly in front of a `{`, so a struct literal at its
+    /// tail makes the brace ambiguous — `if c == Shape.Circle { r: 4 } {` reads
+    /// as an `if` whose body starts at `{ r: 4 }`. Wrapping the condition is what
+    /// the source has to do, and the printer has to keep doing it (#805).
+    fn format_condition(&mut self, cond: &Expr) {
+        if Self::ends_in_struct_literal(cond) {
+            self.emit("(");
+            self.format_expr(cond);
+            self.emit(")");
+        } else {
+            self.format_expr(cond);
+        }
+    }
+
+    /// Whether the last thing a condition prints is a `}` that a following `{`
+    /// could attach to.
+    fn ends_in_struct_literal(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::StructLit { .. } => true,
+            ExprKind::Binary { right, .. } => Self::ends_in_struct_literal(right),
+            ExprKind::Unary { operand, .. } => Self::ends_in_struct_literal(operand),
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
+                Self::ends_in_struct_literal(inner)
+            }
+            ExprKind::NullCoalesce { default, .. } => Self::ends_in_struct_literal(default),
+            _ => false,
+        }
+    }
+
     fn format_if_expr(
         &mut self,
         cond: &Expr,
@@ -1927,7 +2056,7 @@ impl<'a> Printer<'a> {
         else_binding: Option<&str>,
     ) {
         self.emit("if ");
-        self.format_expr(cond);
+        self.format_condition(cond);
 
         if !matches!(then_branch.kind, ExprKind::Block(_)) {
             self.emit(": ");
@@ -1959,6 +2088,97 @@ impl<'a> Printer<'a> {
                 self.format_branch(else_br);
             }
         }
+    }
+
+    /// One operand of a binary operator. Precedence alone isn't enough. The
+    /// operators are left-associative, so the *right* operand needs parentheses
+    /// at equal precedence too — `a - (b - c)` is not `a - b - c`. And Rask
+    /// forbids chained comparison, so a comparison inside a comparison keeps its
+    /// parentheses whichever side it lands on, even though it binds tighter.
+    fn format_binary_operand(&mut self, operand: &Expr, prec: u8, op: &BinOp, is_right: bool) {
+        if is_comparison(op) {
+            if let ExprKind::Binary { op: inner, .. } = &operand.kind {
+                if is_comparison(inner) {
+                    self.emit("(");
+                    self.format_expr(operand);
+                    self.emit(")");
+                    return;
+                }
+            }
+        }
+        if Self::binary_operand_needs_parens(&operand.kind) {
+            self.emit("(");
+            self.format_expr(operand);
+            self.emit(")");
+            return;
+        }
+        let min = if is_right { prec + 1 } else { prec };
+        self.format_expr_inner(operand, Some(min));
+    }
+
+    /// Forms that bind looser than any binary operator and aren't in the
+    /// precedence table, so the numeric comparison can't speak for them.
+    /// `(x catch _ => 0) == 0` came out as `x catch _ => 0 == 0`, which parses as
+    /// `x catch _ => (0 == 0)` — a bool where a number belonged (#805).
+    fn binary_operand_needs_parens(kind: &ExprKind) -> bool {
+        !matches!(
+            kind,
+            ExprKind::Binary { .. }
+                | ExprKind::Unary { .. }
+                | ExprKind::Cast { .. }
+                | ExprKind::Convert { .. }
+        ) && !Self::binds_tighter_than_postfix(kind)
+    }
+
+    /// Whether an expression can sit under a prefix operator unparenthesized:
+    /// the postfix and primary forms, plus another prefix. `x?` is excluded even
+    /// though it's postfix — `!x?` is forbidden outright (OPT17).
+    fn binds_tighter_than_prefix(kind: &ExprKind) -> bool {
+        Self::binds_tighter_than_postfix(kind) || matches!(kind, ExprKind::Unary { .. })
+    }
+
+    /// A postfix `.`, `[`, `!` or `?` binds tighter than almost everything, so a
+    /// receiver that binds looser needs its parentheses back. The printer dropped
+    /// them, and `(time.Instant.now() - start).as_nanos()` came out as
+    /// `time.Instant.now() - start.as_nanos()` — a different call on a different
+    /// receiver (#805).
+    fn format_postfix_receiver(&mut self, object: &Expr) {
+        if Self::binds_tighter_than_postfix(&object.kind) {
+            self.format_expr(object);
+            return;
+        }
+        self.emit("(");
+        self.format_expr(object);
+        self.emit(")");
+    }
+
+    /// Primary and postfix forms, which can carry a `.` directly. Anything else
+    /// — an operator, a cast, a block, a prefix form — gets parenthesized. `x?`
+    /// is in the second group even though it's postfix: `x?.y` lexes as `?.`.
+    fn binds_tighter_than_postfix(kind: &ExprKind) -> bool {
+        matches!(
+            kind,
+            ExprKind::Int(..)
+                | ExprKind::Float(..)
+                | ExprKind::String(_)
+                | ExprKind::StringInterp(_)
+                | ExprKind::Char(_)
+                | ExprKind::Bool(_)
+                | ExprKind::Null
+                | ExprKind::None
+                | ExprKind::Ident(_)
+                | ExprKind::Call { .. }
+                | ExprKind::MethodCall { .. }
+                | ExprKind::Field { .. }
+                | ExprKind::DynamicField { .. }
+                | ExprKind::OptionalField { .. }
+                | ExprKind::Index { .. }
+                | ExprKind::StructLit { .. }
+                | ExprKind::Array(_)
+                | ExprKind::ArrayRepeat { .. }
+                | ExprKind::Tuple(_)
+                | ExprKind::Unwrap { .. }
+        )
     }
 
     fn format_branch(&mut self, expr: &Expr) {
@@ -2078,6 +2298,15 @@ impl<'a> Printer<'a> {
 }
 
 // --- Operator helpers ---
+
+/// Comparison and equality are non-associative in Rask — `a < b < c` is
+/// rejected — so nesting one inside another always needs parentheses.
+fn is_comparison(op: &BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+    )
+}
 
 fn precedence(op: &BinOp) -> u8 {
     match op {

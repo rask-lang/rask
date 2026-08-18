@@ -109,6 +109,14 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask build examples/validation --release
 
+    # The formatter's output has to still be the same program. Nothing compared
+    # the two, which is how `rask fmt` came to drop `as` bindings, `using`
+    # clauses, enum and trait attributes and every parenthesis that mattered —
+    # 21 of 30 examples stopped compiling after being formatted (#805).
+    - name: Formatter round-trip
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/fmt_roundtrip_gate.sh
+
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}

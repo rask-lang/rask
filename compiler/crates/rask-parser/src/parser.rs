@@ -3475,7 +3475,12 @@ impl Parser {
             TokenKind::Minus => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 // `-N` is one literal, not a negation of `N`. Folding the sign
                 // in here is what lets `i64::MIN` be written: the lexer sees
                 // 9223372036854775808 on its own, which only fits `u64`, so
@@ -3535,7 +3540,12 @@ impl Parser {
             TokenKind::Bang => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 // OPT17/ER26: `!x?` is forbidden — prefix `!` with suffix `?`
                 // fights the parse. Suggest `x == none` (Option) or `x is E`
                 // (Result) instead. `!` on a plain bool is still fine.
@@ -3553,7 +3563,12 @@ impl Parser {
             TokenKind::Tilde => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Amp => {
@@ -3566,7 +3581,12 @@ impl Parser {
             TokenKind::Star => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
 

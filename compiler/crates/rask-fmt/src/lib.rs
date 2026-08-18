@@ -162,6 +162,119 @@ mod tests {
         assert_eq!(output, format_source(&output), "and idempotently: {}", output);
     }
 
+    // ── #805: the formatter's output has to still be the same program ──
+    //
+    // Each of these came from a file that stopped compiling after being
+    // formatted. Nothing compared the two, so all of them shipped.
+
+    /// Format `input` and assert the result contains `expected`.
+    fn keeps(input: &str, expected: &str, what: &str) {
+        let output = format_source(input);
+        assert!(output.contains(expected), "{}: expected `{}` in:\n{}", what, expected, output);
+        assert_eq!(output, format_source(&output), "{} isn't idempotent:\n{}", what, output);
+    }
+
+    #[test]
+    fn keeps_parens_a_postfix_receiver_needs() {
+        // `(a - b).f()` is a different call from `a - b.f()`.
+        keeps(
+            "func main() {\n    let n = (a - b).count()\n}\n",
+            "(a - b).count()",
+            "a binary receiver",
+        );
+        keeps(
+            "func main() {\n    let n = (a ?? b).count()\n}\n",
+            "(a ?? b).count()",
+            "a coalescing receiver",
+        );
+    }
+
+    #[test]
+    fn keeps_parens_precedence_needs() {
+        // The operators are left-associative, so the right operand needs
+        // parentheses at equal precedence: `a - (b - c)` is not `a - b - c`.
+        keeps("func main() {\n    let n = a - (b - c)\n}\n", "a - (b - c)", "right operand");
+        keeps("func main() {\n    let n = (a + b) * c\n}\n", "(a + b) * c", "left operand");
+        // A prefix operator binds tighter than every binary one.
+        keeps("func main() {\n    let n = !(a < b)\n}\n", "!(a < b)", "prefix operand");
+        keeps("func main() {\n    let n = -(a + b)\n}\n", "-(a + b)", "negated sum");
+        // Comparison is non-associative — `a < b == c < d` is rejected.
+        keeps(
+            "func main() {\n    let n = (a < b) == (c < d)\n}\n",
+            "(a < b) == (c < d)",
+            "nested comparison",
+        );
+        // `-(3)` used to print as `-(3` — the folded literal's span stopped
+        // before the closing paren and the printer echoes that span.
+        keeps("func main() {\n    let n = -(-7)\n}\n", "-(-7)", "a negated folded literal");
+    }
+
+    #[test]
+    fn keeps_an_as_binding() {
+        keeps(
+            "func main() {\n    if score? as s {\n        println(\"{s}\")\n    }\n}\n",
+            "if score? as s {",
+            "the presence binding",
+        );
+        keeps(
+            "func main() {\n    if x is Shape.Circle {\n        println(\"c\")\n    } else as e {\n        println(\"{e}\")\n    }\n}\n",
+            "} else as e {",
+            "the else binding",
+        );
+    }
+
+    #[test]
+    fn keeps_a_using_clause() {
+        keeps(
+            "func heal(amount: i32) using players: Pool<Player> {\n    return\n}\n",
+            "using players: Pool<Player>",
+            "the context clause",
+        );
+    }
+
+    #[test]
+    fn keeps_attributes_and_modifiers() {
+        keeps(
+            "@message\nenum E {\n    @message(\"boom\")\n    Bad(i64)\n}\n",
+            "@message(\"boom\")",
+            "a variant attribute",
+        );
+        keeps(
+            "@allow(idiom/duck-trait)\nduck trait Frobber {\n    func frob(self) -> i64\n}\n",
+            "duck trait Frobber",
+            "the duck modifier",
+        );
+    }
+
+    #[test]
+    fn keeps_the_surface_spelling_of_a_type() {
+        // The parser normalizes `void` to `()`, which nobody can write.
+        keeps("func f() -> void {\n    return\n}\n", "-> void", "the unit type");
+        // `||` is the or-operator token, so a no-parameter closure type has to
+        // keep the `func()` spelling.
+        keeps(
+            "func f(g: func() -> i64) -> i64 {\n    return 1\n}\n",
+            "func() -> i64",
+            "an empty closure type",
+        );
+        // The value/error split has to find the *top-level* comma.
+        keeps(
+            "func f() -> (string, string) or Error {\n    return (\"a\", \"b\")\n}\n",
+            "(string, string) or Error",
+            "a tuple value type",
+        );
+    }
+
+    #[test]
+    fn keeps_parens_around_a_condition_ending_in_a_struct_literal() {
+        // Without them the `{` of the body attaches to the literal.
+        keeps(
+            "func main() {\n    if (c == Shape.Circle { r: 4 }) {\n        println(\"y\")\n    }\n}\n",
+            "if (c == Shape.Circle { r: 4 }) {",
+            "the condition",
+        );
+    }
+
     // The other half of the same rule: a comment alone on its line is a
     // standalone comment and doesn't get pulled up onto the code above it.
     #[test]
