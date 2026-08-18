@@ -823,6 +823,28 @@ impl<'a> Monomorphizer<'a> {
     /// standing for itself would mangle to `One_get$A`, which is an instance of
     /// nothing. Also empty unless the count matches what the owning type declares,
     /// so a partial answer never mangles a name it can't fill.
+    /// A static method — `Box.new(x)` — has no receiver to read the
+    /// instantiation off. Its own call node carries it instead, when the method
+    /// returns the type it's declared on, which is what a constructor does. The
+    /// base check is what makes that safe: a static method returning some *other*
+    /// one-parameter generic would otherwise hand its arguments to the wrong type
+    /// parameter.
+    fn owner_type_args_from_result(&self, id: NodeId, qualified: &str) -> Vec<Type> {
+        let Some(owner) = self.method_owners.get(qualified) else { return Vec::new() };
+        let Some(typed) = self.typed else { return Vec::new() };
+        let ty = self
+            .instantiated_node_types
+            .get(&id)
+            .or_else(|| typed.node_types.get(&id));
+        let Some(Type::Generic { base, .. }) = ty else { return Vec::new() };
+        let base_name = typed.types.type_name(*base);
+        let bare = base_name.split('<').next().unwrap_or(&base_name).trim();
+        if bare != owner.base {
+            return Vec::new();
+        }
+        self.receiver_type_args(id, qualified)
+    }
+
     fn receiver_type_args(&self, id: NodeId, qualified: &str) -> Vec<Type> {
         let Some(owner) = self.method_owners.get(qualified) else { return Vec::new() };
         let Some(typed) = self.typed else { return Vec::new() };
@@ -1056,7 +1078,22 @@ impl<'a> Monomorphizer<'a> {
                             // first, then the method's own — `instantiation_params`
                             // reads the two lists back in that order (#814).
                             let recv_args = if self.has_instantiable_body(&qualified) {
-                                self.receiver_type_args(object.id, &qualified)
+                                // `Box.new("hei")` is dispatched here too — the
+                                // checker records the owning type as the receiver —
+                                // but the object is the *type name*, so it carries
+                                // no instantiation. The call's own result type does,
+                                // when the method returns the type it's declared
+                                // on. Without it the constructor stayed on the
+                                // shared placeholder layout while
+                                // `Box<string>.get()` got a per-instantiation one,
+                                // and the value one wrote the other read back at the
+                                // wrong field size (#820).
+                                let from_recv = self.receiver_type_args(object.id, &qualified);
+                                if from_recv.is_empty() {
+                                    self.owner_type_args_from_result(expr.id, &qualified)
+                                } else {
+                                    from_recv
+                                }
                             } else {
                                 Vec::new()
                             };

@@ -3779,8 +3779,18 @@ impl<'a> FunctionBuilder<'a> {
                         }
                         // Scalar field. Layout uses 8-byte slots; load at storage
                         // width to avoid reading wrong bytes (e.g. lower f64 half).
+                        // A field declared with one of the type's parameters —
+                        // `value: T` — carries whatever the layout substituted, and
+                        // the shared layout for a generic type substitutes `i64` for
+                        // every parameter. Right size, wrong register class: reading
+                        // `Box<f64>`'s field through it loaded the double's bits into
+                        // an integer register, and converting them on the way into
+                        // `f64_to_string` printed `wrap(3.14).value` as
+                        // 4614253070214988800 (#820). The MIR local at the read knows
+                        // the real type, so keep what the caller asked for.
                         load_ty = match &field.ty {
                             RaskType::F64 | RaskType::F32 => types::F64,
+                            _ if field.is_type_param => load_ty,
                             _ => types::I64,
                         };
                         field.offset as i32

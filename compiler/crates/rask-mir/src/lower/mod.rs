@@ -5729,6 +5729,7 @@ mod tests {
                         attrs: vec![],
                         has_declared_default: false,
                         is_public: true,
+                        is_type_param: false,
                     }],
                 },
                 VariantLayout {
@@ -5745,6 +5746,7 @@ mod tests {
                         attrs: vec![],
                         has_declared_default: false,
                         is_public: true,
+                        is_type_param: false,
                     }],
                 },
             ],
@@ -5893,8 +5895,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, is_type_param: false },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, is_type_param: false },
                     ],
                 },
             ],

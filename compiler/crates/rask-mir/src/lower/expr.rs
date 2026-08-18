@@ -4349,6 +4349,18 @@ impl<'a> MirLowerer<'a> {
                                 func_name
                             };
 
+                            // A static method on a generic type gets one copy per
+                            // instantiation, and monomorphization named the copy —
+                            // `Box_new$string`. This path built the callee name from
+                            // the source spelling and never asked, so the call went
+                            // to a `Box_new` nobody emits (#820).
+                            let func_name = self
+                                .ctx
+                                .call_rewrites
+                                .get(&expr.id)
+                                .cloned()
+                                .unwrap_or(func_name);
+
                             let ret_ty = self
                                 .func_sigs
                                 .get(&func_name)
