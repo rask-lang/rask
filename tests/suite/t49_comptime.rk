@@ -120,6 +120,57 @@ test "ctrl.comptime/CT1 — arithmetic reaches the top of u128" {
     assert comptime wide_div() == 5
 }
 
+// ── A folded local belongs to its function (#825) ───────────────────
+//
+// A comptime-foldable `let` in a function body became a global keyed by the bare
+// binding name, in a map shared by the whole program. Two functions each with a
+// `let v = f()` collided, and one silently read the other's value: `first()`
+// returned 9. The interpreter, which has no such map, said 7.
+
+comptime func seven() -> i64 { return 7 }
+comptime func nine() -> i64 { return 9 }
+
+func first_v() -> i64 {
+    let v = seven()
+    return v
+}
+
+func second_v() -> i64 {
+    let v = nine()
+    return v
+}
+
+test "ctrl.comptime — same-named folded locals in two functions stay apart" {
+    assert first_v() == 7
+    assert second_v() == 9
+}
+
+// ── The declared width decides the value's (#826) ───────────────────
+//
+// A comptime `let` ignored its annotation, so the value kept whatever width its
+// literal evaluated to. `let a: u128 = <fits in u64>` bound a `u64`, and a fold of
+// it came out `u64`-wide — printing the same digits and comparing unequal against
+// a `u128`.
+
+comptime func at_u64_max() -> u128 {
+    let a: u128 = 18446744073709551615
+    return a
+}
+
+comptime func narrow_slot() -> i64 {
+    let a: i8 = 100
+    // Still an i8 after the annotation, so this would overflow if it were one.
+    let widened: i64 = 100
+    return widened + 27
+}
+
+test "ctrl.comptime/CT1 — a comptime binding takes its declared width" {
+    // The value that fits u64 exactly: the boundary the old behaviour lost.
+    let boundary = at_u64_max()
+    assert boundary == 18446744073709551615
+    assert narrow_slot() == 127
+}
+
 func main() {}
 
 // CT5 + CT10: comptime block, value is the last expression

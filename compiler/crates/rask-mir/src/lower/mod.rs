@@ -167,6 +167,16 @@ pub struct ComptimeGlobalMeta {
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
 
+/// The key a comptime-folded *local* is stored under.
+///
+/// A comptime global map is shared by the whole program, and a bare binding name
+/// isn't unique in it: two functions each with a `let v = f()` collided, and one
+/// read the other's value and width (#825). The owning function's name makes it
+/// unique. `$` rather than `::` because the key becomes a data symbol name.
+pub fn comptime_local_key(fn_name: &str, binding: &str) -> String {
+    format!("{}$local${}", fn_name, binding)
+}
+
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
     format!("{}{}", CONST_SLOT_PREFIX, const_name)
@@ -1671,6 +1681,46 @@ impl<'a> MirLowerer<'a> {
                 cleanup_chain: self.cleanup_chain(),
             }));
         }
+    }
+
+    /// A folded comptime value for a binding in this function, if there is one.
+    ///
+    /// The local's own key first — that's where a comptime-folded `let` lives — and
+    /// the bare name second, which is a module-level const (#825).
+    pub(crate) fn comptime_global_for(&self, name: &str) -> Option<(String, &'a ComptimeGlobalMeta)> {
+        let local_key = comptime_local_key(&self.parent_name, name);
+        if let Some(meta) = self.ctx.comptime_globals.get(&local_key) {
+            return Some((local_key, meta));
+        }
+        self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
+    }
+
+    /// The MIR type of a folded comptime global, from the width its value
+    /// actually has.
+    ///
+    /// A comptime global carries its bytes and the name of what they are; only
+    /// this said how many bytes to read back, and it listed five widths. Anything
+    /// else fell to `i64`, so a `u128` global was read 8 bytes at a time (the value
+    /// came back mod 2^64) and a `u32` one read 8 bytes out of a 4-byte allocation
+    /// (#824).
+    pub(crate) fn comptime_global_mir_type(prefix: &str) -> Option<MirType> {
+        Some(match prefix {
+            "bool" => MirType::Bool,
+            "i8" => MirType::I8,
+            "i16" => MirType::I16,
+            "i32" => MirType::I32,
+            "i64" => MirType::I64,
+            "i128" => MirType::I128,
+            "u8" => MirType::U8,
+            "u16" => MirType::U16,
+            "u32" => MirType::U32,
+            "u64" => MirType::U64,
+            "u128" => MirType::U128,
+            "char" => MirType::Char,
+            "f32" => MirType::F32,
+            "f64" => MirType::F64,
+            _ => return None,
+        })
     }
 
     /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.

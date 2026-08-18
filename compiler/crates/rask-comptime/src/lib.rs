@@ -879,6 +879,19 @@ impl CtInt {
             CtInt::I128 | CtInt::U128 => 128,
         }
     }
+    /// The kind a type annotation names, or `None` if it isn't an integer width.
+    fn from_name(name: &str) -> Option<CtInt> {
+        Some(match name.trim() {
+            "i8" => CtInt::I8, "i16" => CtInt::I16, "i32" => CtInt::I32,
+            "i64" => CtInt::I64, "i128" => CtInt::I128,
+            "u8" => CtInt::U8, "u16" => CtInt::U16, "u32" => CtInt::U32,
+            "u64" => CtInt::U64, "u128" => CtInt::U128,
+            // P2: pointer-sized, decided in one place.
+            "isize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
+            "usize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
+            _ => return None,
+        })
+    }
     fn name(self) -> &'static str {
         match self {
             CtInt::I8 => "i8", CtInt::I16 => "i16", CtInt::I32 => "i32", CtInt::I64 => "i64",
@@ -1520,6 +1533,32 @@ impl ComptimeInterpreter {
         Ok(ControlFlow::Normal(last_value))
     }
 
+    /// Retype an integer value to a declared width, refusing rather than
+    /// truncating if it doesn't fit (CT1).
+    ///
+    /// A non-integer value passes through: an annotation this doesn't recognise
+    /// isn't an integer width, and nothing else here needs re-widening.
+    fn coerce_int_width(value: ComptimeValue, kind: CtInt) -> ComptimeResult<ComptimeValue> {
+        let Some((num, _)) = value.as_int() else { return Ok(value) };
+        if kind == CtInt::U128 {
+            return num
+                .to_u128()
+                .map(ComptimeValue::U128)
+                .ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                    "{} is outside u128 range {}", num, kind.range_text()
+                )));
+        }
+        let n = num.to_i128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+            "{} is outside {} range {}", num, kind.name(), kind.range_text()
+        )))?;
+        if n < kind.min() || n > kind.max() {
+            return Err(ComptimeError::IntegerOverflow(format!(
+                "{} is outside {} range {}", n, kind.name(), kind.range_text()
+            )));
+        }
+        Ok(kind.make(n))
+    }
+
     /// `if x? { … }`, `if x? as v { … }`, `if x? as v { … } else as e { … }`.
     ///
     /// `Ok(None)` when the condition isn't a presence test with a name to bind, so
@@ -1587,8 +1626,17 @@ impl ComptimeInterpreter {
         match &stmt.kind {
             StmtKind::Expr(e) => self.eval_expr_cf(e),
 
-            StmtKind::Mut { name, init, .. } | StmtKind::Let { name, init, .. } => {
+            StmtKind::Mut { name, ty, init, .. } | StmtKind::Let { name, ty, init, .. } => {
                 let value = self.eval_expr(init)?;
+                // The annotation decides the width. Without this the value kept
+                // whatever width its literal evaluated to, so `let a: u128 = <fits
+                // in u64>` bound a `u64` — and a fold of it came out `u64`-wide,
+                // which printed the same digits and compared unequal against a
+                // `u128` (#826).
+                let value = match ty.as_deref().and_then(CtInt::from_name) {
+                    Some(kind) => Self::coerce_int_width(value, kind)?,
+                    None => value,
+                };
                 self.env.define(name.clone(), value);
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }

@@ -952,12 +952,14 @@ impl<'a> MirLowerer<'a> {
                     Ok((MirOperand::Local(id), ty))
                 } else if name == "None" {
                     self.lower_none(expr)
-                } else if let Some(meta) = self.ctx.comptime_globals.get(name) {
-                    // Module-level comptime global reference
+                } else if let Some((key, meta)) = self.comptime_global_for(name) {
+                    // A folded comptime value: a module-level const, or a local in
+                    // this function (which is keyed by the function too — see
+                    // `comptime_local_key`).
                     let global_local = self.builder.alloc_temp(MirType::Ptr);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                         dst: global_local,
-                        name: name.clone(),
+                        name: key,
                     }));
 
                     if meta.type_prefix == "Vec" {
@@ -977,14 +979,8 @@ impl<'a> MirLowerer<'a> {
                         Ok((MirOperand::Local(vec_local), MirType::I64))
                     } else {
                         // Scalar global: load value from the data pointer
-                        let mir_ty = match meta.type_prefix.as_str() {
-                            "bool" => MirType::Bool,
-                            "i32" => MirType::I32,
-                            "i64" => MirType::I64,
-                            "f32" => MirType::F32,
-                            "f64" => MirType::F64,
-                            _ => MirType::I64,
-                        };
+                        let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
+                            .unwrap_or(MirType::I64);
                         let result_local = self.builder.alloc_temp(mir_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: result_local,

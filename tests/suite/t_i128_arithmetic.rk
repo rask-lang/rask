@@ -262,4 +262,49 @@ test "type.overflow/AR3 — the floored modulo at 128 bits" {
     assert u.mod(d) == 5
 }
 
+// ── A folded comptime value keeps its width (#824) ──────────────────
+//
+// A `comptime func` returning 128 bits came back truncated. Two causes, one on
+// each side of the fold: Miri — the MIR-level evaluator that takes the fast path —
+// has no 128-bit values at all, so it computed at 64 bits; and the folded global
+// was read back at a width from a table that listed five of them and defaulted the
+// rest to `i64`, so a 16-byte value was loaded 8 bytes at a time.
+//
+// `200000000000000000000000000000000000001` used to come back as
+// `1374799102801346561`, which is that number mod 2^64. `u64::MAX` came back as
+// `u128::MAX` — the low word sign-extended into the high one.
+
+comptime func wide_sum() -> u128 {
+    let a: u128 = 200000000000000000000000000000000000000
+    return a + 1
+}
+
+comptime func at_u64_max() -> u128 {
+    let a: u128 = 18446744073709551615
+    return a
+}
+
+comptime func at_u128_max() -> u128 {
+    let a: u128 = 340282366920938463463374607431768211455
+    return a
+}
+
+comptime func at_i128_min() -> i128 {
+    let a: i128 = -170141183460469231731687303715884105728
+    return a
+}
+
+test "ctrl.comptime — a folded 128-bit value survives the fold" {
+    let sum = wide_sum()
+    assert sum == 200000000000000000000000000000000000001
+
+    // The boundary that used to sign-extend: a value that fits u64 exactly.
+    let u64max = at_u64_max()
+    assert u64max == 18446744073709551615
+
+    // Both ends of both widths.
+    assert at_u128_max() == 340282366920938463463374607431768211455
+    assert at_i128_min() == -170141183460469231731687303715884105728
+}
+
 func main() {}
