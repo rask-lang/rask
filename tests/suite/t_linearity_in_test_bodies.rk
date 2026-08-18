@@ -19,8 +19,22 @@ struct Wrapper {
     label: string
 }
 
+struct Pair {
+    a: Conn
+    b: Conn
+}
+
+struct Nest {
+    inner: Pair
+    tag: i32
+}
+
 func make() -> Wrapper {
     return Wrapper { conn: Conn { id: 3 }, label: "w" }
+}
+
+func make_pair() -> Pair {
+    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
 }
 
 func main() {}
@@ -47,4 +61,19 @@ test "ensure still runs for a resource in a test body" {
         closed = c.close()
     }
     assert_eq(closed, 9)
+}
+
+test "a holder owes each resource field separately" {
+    // Closing one does not discharge the other: the obligation is per field, so
+    // both have to be consumed and the compiler names whichever is left.
+    let p = make_pair()
+    assert_eq(p.a.close(), 1)
+    assert_eq(p.b.close(), 2)
+}
+
+test "obligations reach through nesting" {
+    let n = Nest { inner: make_pair(), tag: 7 }
+    assert_eq(n.tag, 7)
+    assert_eq(n.inner.a.close(), 1)
+    assert_eq(n.inner.b.close(), 2)
 }

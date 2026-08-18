@@ -1715,6 +1715,40 @@ fn store_link_delete_cost_follows_in_degree() {
 // walked without the scope-exit check, so a resource left open inside one compiled
 // clean while the identical code in a function was rejected — and a test body is
 // exactly where you exercise a resource.
+// mem.linear/L1 is owed per resource *field*, not per binding. A struct holding
+// two resources owes both; closing one used to discharge the holder outright, so
+// the other was dropped in silence. The path in the message is the point — naming
+// the root can't tell you which one you missed.
+#[test]
+fn error_resource_field_partially_consumed() {
+    let (failed, out) = compile_error_output("resource_field_partially_consumed.rk");
+    assert!(failed, "a half-consumed holder must be rejected: {}", out);
+    assert!(
+        out.contains("resource `p.b` must be consumed"),
+        "the unconsumed field is named by path, not by root: {}",
+        out
+    );
+    assert!(
+        out.contains("resource `n.inner.b` must be consumed"),
+        "and the path reaches through nesting: {}",
+        out
+    );
+    // The consumed halves must not be reported — over-reporting here would make
+    // the correct two-resource program uncompilable, which is the bug this
+    // replaced running in the other direction.
+    assert!(
+        !out.contains("`p.a`") && !out.contains("`n.inner.a`"),
+        "a consumed field must not still be owed: {}",
+        out
+    );
+    assert_eq!(
+        out.matches("error[E0805]").count(),
+        2,
+        "exactly the two outstanding fields: {}",
+        out
+    );
+}
+
 #[test]
 fn error_resource_unconsumed_in_test_body() {
     let (failed, out) = compile_error_output("resource_unconsumed_in_test_body.rk");
