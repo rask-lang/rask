@@ -88,6 +88,25 @@ test "type.optionals — a fixed array of optionals holds a `none`" {
     assert s[1] == none
 }
 
+// Writing an element back is the other half of the store/read pair. A wrapper
+// element's operand is its address, so the store has to copy the bytes; storing
+// the pointer put a stack address where the element belongs.
+test "type.optionals — an element of an optional array can be written" {
+    mut a: [i64?; 3] = [1, none, 3]
+    a[1] = 5
+    a[2] = none
+    assert (a[0] ?? 0 - 1) == 1
+    assert (a[1] ?? 0 - 1) == 5
+    assert a[2] == none
+
+    mut v: Vec<i64?> = [1, none]
+    v.push(9)
+    v[0] = none
+    assert v.len() == 3
+    assert v[0] == none
+    assert (v[2] ?? 0 - 1) == 9
+}
+
 test "std.collections — wide and aggregate elements" {
     let names: Vec<string> = ["ada", "bo"]
     assert names.len() == 2
@@ -97,8 +116,16 @@ test "std.collections — wide and aggregate elements" {
     assert ps.len() == 2
     assert ps[1].x == 3
 
-    let pa: [Pt; 2] = [Pt { x: 5, y: 6 }, Pt { x: 7, y: 8 }]
+    mut pa: [Pt; 2] = [Pt { x: 5, y: 6 }, Pt { x: 7, y: 8 }]
     assert pa[1].y == 8
+    pa[1] = Pt { x: 9, y: 10 }
+    assert pa[0].x == 5
+    assert pa[1].y == 10
+
+    mut ts: [(i64, i64); 2] = [(1, 2), (3, 4)]
+    ts[0] = (9, 9)
+    assert ts[0].1 == 9
+    assert ts[1].0 == 3
 }
 
 test "std.collections — a literal of literals nests" {

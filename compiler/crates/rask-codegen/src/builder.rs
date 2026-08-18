@@ -748,8 +748,21 @@ impl<'a> FunctionBuilder<'a> {
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
-                let flags = MemFlags::new();
-                builder.ins().store(flags, val, addr, 0);
+                // An element that lives *in* its slot is a value, and the operand
+                // is its address — copy the bytes. Storing the pointer put the
+                // constructing slot's address where the element belongs, so
+                // `a[1] = 5` on a `[i64?; 3]` read back as an address (#783). Same
+                // `stored_inline_in_array` rule the read and the literal's store
+                // use; the three only work as a set.
+                let elem_is_inline = ctx.locals.iter().find(|l| l.id == *base)
+                    .is_some_and(|l| matches!(&l.ty,
+                        MirType::Array { elem, .. } if elem.stored_inline_in_array()));
+                if elem_is_inline {
+                    Self::copy_bytes(builder, val, 0, addr, 0, *elem_size);
+                } else {
+                    let flags = MemFlags::new();
+                    builder.ins().store(flags, val, addr, 0);
+                }
             }
 
             MirStmtKind::Call { dst, func, args } => {
