@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 extern "C" func rask_io_errno() -> i32
+
 extern "C" func rask_io_error_kind(err: i32) -> i32
+
 extern "C" func rask_io_error_text(err: i32) -> *u8
+
 extern "C" func rask_io_cstr_len(s: *u8) -> u64
 
 /// I/O error type — all I/O operations return T or IoError.
@@ -20,14 +23,14 @@ public enum IoError {
 extend IoError {
     public func message(self) -> string {
         match self {
-            IoError.NotFound(msg) => return "not found: {msg}",
-            IoError.PermissionDenied(msg) => return "permission denied: {msg}",
-            IoError.AlreadyExists(msg) => return "already exists: {msg}",
-            IoError.BrokenPipe => return "broken pipe",
-            IoError.ConnectionReset => return "connection reset",
-            IoError.TimedOut => return "timed out",
-            IoError.UnexpectedEof => return "unexpected end of file",
-            IoError.Other(msg) => return msg,
+            IoError.NotFound(msg) => return "not found: {msg}"
+            IoError.PermissionDenied(msg) => return "permission denied: {msg}"
+            IoError.AlreadyExists(msg) => return "already exists: {msg}"
+            IoError.BrokenPipe => return "broken pipe"
+            IoError.ConnectionReset => return "connection reset"
+            IoError.TimedOut => return "timed out"
+            IoError.UnexpectedEof => return "unexpected end of file"
+            IoError.Other(msg) => return msg
         }
     }
 
@@ -90,107 +93,110 @@ struct io { }
 extend io {
     /// Read a line of text from standard input.
     @native("rask_io_read_line")
-    public func read_line() -> string or IoError { }
+    public func read_line() -> string or IoError {}
 
     /// Acquire a handle to standard input.
     @native
-    public func stdin() -> Stdin { }
+    public func stdin() -> Stdin {}
 
     /// Acquire a handle to standard output.
     @native
-    public func stdout() -> Stdout { }
+    public func stdout() -> Stdout {}
 
     /// Acquire a handle to standard error.
     @native
-    public func stderr() -> Stderr { }
+    public func stderr() -> Stderr {}
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
     @native
-    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError { }
+    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {}
 }
 
 /// Standard input handle. Implements Reader. Must be consumed via close().
 @resource
-public struct Stdin { }
+public struct Stdin {
+}
 
 extend Stdin with Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
     @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+    public func read(self, buf: Vec<u8>) -> i64 or IoError {}
 
     /// Read all remaining bytes.
     @native
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {}
 
     /// Read all remaining bytes as UTF-8 string.
     @native
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {}
 }
 
 extend Stdin {
     /// Read a single line from stdin.
     @native("rask_io_read_line")
-    public func read_line(self) -> string or IoError { }
+    public func read_line(self) -> string or IoError {}
 
     /// Close the handle.
     @native
-    public func close(mutate self) { }
+    public func close(mutate self) {}
 }
 
 /// Standard output handle. Implements Writer. Must be consumed via close().
 @resource
-public struct Stdout { }
+public struct Stdout {
+}
 
 extend Stdout with Writer {
     /// Write bytes. Returns number of bytes written.
     @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError {}
 
     /// Write all bytes, retrying partial writes.
     @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
 
     /// Write a string.
     @native
-    public func write_text(self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError {}
 }
 
 extend Stdout {
     /// Flush buffered output.
     @native
-    public func flush(self) -> void or IoError { }
+    public func flush(self) -> void or IoError {}
 
     /// Close the handle.
     @native
-    public func close(mutate self) { }
+    public func close(mutate self) {}
 }
 
 /// Standard error handle. Implements Writer. Must be consumed via close().
 @resource
-public struct Stderr { }
+public struct Stderr {
+}
 
 extend Stderr with Writer {
     /// Write bytes. Returns number of bytes written.
     @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError {}
 
     /// Write all bytes, retrying partial writes.
     @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
 
     /// Write a string.
     @native
-    public func write_text(self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError {}
 }
 
 extend Stderr {
     /// Flush buffered output.
     @native
-    public func flush(self) -> void or IoError { }
+    public func flush(self) -> void or IoError {}
 
     /// Close the handle.
     @native
-    public func close(mutate self) { }
+    public func close(mutate self) {}
 }
 
 /// In-memory buffer implementing both Reader and Writer. Not linear.
@@ -199,51 +205,51 @@ public struct Buffer { }
 extend Buffer with Reader {
     /// Read bytes from the buffer.
     @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+    public func read(self, buf: Vec<u8>) -> i64 or IoError {}
 
     /// Read all remaining bytes.
     @native
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {}
 
     /// Read all as UTF-8 string.
     @native
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {}
 }
 
 extend Buffer with Writer {
     /// Write bytes to the buffer.
     @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError {}
 
     /// Write all bytes.
     @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
 
     /// Write a string.
     @native
-    public func write_text(self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError {}
 }
 
 extend Buffer {
     /// Create an empty buffer.
     @native
-    public func new() -> Buffer { }
+    public func new() -> Buffer {}
 
     /// Create a buffer initialized with data.
     @native
-    public func from(data: Vec<u8>) -> Buffer { }
+    public func from(data: Vec<u8>) -> Buffer {}
 
     /// View all written bytes.
     @unimplemented
-    public func as_bytes(self) -> Vec<u8> { }
+    public func as_bytes(self) -> Vec<u8> {}
 
     /// Total bytes written.
     @native
-    public func len(self) -> i64 { }
+    public func len(self) -> i64 {}
 
     /// Reset read position to 0.
     @unimplemented
-    public func reset(mutate self) { }
+    public func reset(mutate self) {}
 }
 
 /// A file handle for reading and writing.
@@ -252,29 +258,29 @@ public struct File { }
 extend File {
     /// Read the entire file contents as bytes.
     @native("rask_file_read_bytes")
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {}
 
     /// Read the entire file contents as text.
     @native("rask_file_read_all")
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {}
 
     /// Write a string to the file.
     @native("rask_file_write")
-    public func write(mutate self, data: string) -> void or IoError { }
+    public func write(mutate self, data: string) -> void or IoError {}
 
     /// Write all bytes, retrying partial writes.
     @native("rask_file_write_bytes")
-    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError {}
 
     /// Write a string.
     @native("rask_file_write")
-    public func write_text(mutate self, data: string) -> void or IoError { }
+    public func write_text(mutate self, data: string) -> void or IoError {}
 
     /// Write a string followed by a newline.
     @native("rask_file_write_line")
-    public func write_line(mutate self, data: string) -> void or IoError { }
+    public func write_line(mutate self, data: string) -> void or IoError {}
 
     /// Close the file handle.
     @native("rask_file_close")
-    public func close(mutate self) { }
+    public func close(mutate self) {}
 }

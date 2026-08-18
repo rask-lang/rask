@@ -6,29 +6,29 @@ struct net { }
 extend net {
     /// Listen for TCP connections on the given address.
     @native("rask_net_tcp_listen")
-    public func tcp_listen(addr: string) -> TcpListener or IoError { }
+    public func tcp_listen(addr: string) -> TcpListener or IoError {}
 
     /// Connect to a remote TCP address. Returns a connection or error.
     @native("rask_net_tcp_connect")
-    public func tcp_connect(addr: string) -> TcpConnection or IoError { }
+    public func tcp_connect(addr: string) -> TcpConnection or IoError {}
 }
 
 extend TcpListener {
     /// Accept an incoming TCP connection.
     @native("rask_net_tcp_accept")
-    public func accept(self) -> TcpConnection or IoError { }
+    public func accept(self) -> TcpConnection or IoError {}
 
     /// Get the local address the listener is bound to.
     @native("rask_net_local_addr")
-    public func local_addr(self) -> string { }
+    public func local_addr(self) -> string {}
 
     /// Close the listener.
     @native("rask_net_close")
-    public func close(take self) -> void or IoError { }
+    public func close(take self) -> void or IoError {}
 
     /// Clone the listener handle.
     @native("rask_net_clone")
-    public func clone(self) -> TcpListener { }
+    public func clone(self) -> TcpListener {}
 }
 
 /// A TCP connection (socket).
@@ -37,37 +37,37 @@ public struct TcpConnection { }
 extend TcpConnection {
     /// Read all available data as bytes.
     @native("rask_net_read_bytes")
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {}
 
     /// Write bytes to the connection.
     @native("rask_net_write_bytes")
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
 
     /// Read all available data, decoding as UTF-8 text.
     @native
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {}
 
     /// Write text to the connection.
     @native
-    public func write_text(self, data: string) -> void or IoError { }
+    public func write_text(self, data: string) -> void or IoError {}
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
-    public func remote_addr(self) -> string { }
+    public func remote_addr(self) -> string {}
 
     /// Read an HTTP/1.1 request from the connection.
     @native("rask_net_read_http_request")
-    public func read_http_request(self) -> Request or IoError { }
+    public func read_http_request(self) -> Request or IoError {}
 
     /// Write an HTTP response to the connection.
     @native("rask_net_write_http_response")
-    public func write_http_response(self, response: Response) -> void or IoError { }
+    public func write_http_response(self, response: Response) -> void or IoError {}
 
     /// Close the connection.
     @native("rask_net_close")
-    public func close(take self) -> void or IoError { }
+    public func close(take self) -> void or IoError {}
 
     /// Clone the connection handle.
     @native("rask_net_clone")
-    public func clone(self) -> TcpConnection { }
+    public func clone(self) -> TcpConnection {}
 }

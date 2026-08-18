@@ -9,11 +9,14 @@ func add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-enum DivideError { Msg(string) }
+enum DivideError {
+    Msg(string)
+}
+
 extend DivideError {
     func message(self) -> string {
         match self {
-            DivideError.Msg(m) => return m,
+            DivideError.Msg(m) => return m
         }
     }
 }

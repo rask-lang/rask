@@ -6,8 +6,11 @@
 // `extern "C"` name is global, so declaring `strlen` with a different return
 // type than the one std.fs already declares breaks that module too.
 extern "C" func strlen(ptr: *u8) -> u64
+
 extern "C" func memcpy(dest: *u8, src: *u8, n: usize)
+
 extern "C" func malloc(size: usize) -> *u8
+
 extern "C" func free(ptr: *u8)
 
 // Wrapper for C strlen — expression form for single operations

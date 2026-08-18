@@ -78,23 +78,45 @@ done
 # --- showed it.
 unstable=0
 parsed=0
+# The intermediate keeps the file's relative path: a stdlib stub is parsed with
+# the keyword-name allowance the stub loader uses, and that is decided by the
+# path. Written to a flat `once.rk` the second pass lost the allowance and
+# `stdlib/builtins.rk` — which declares `assert` and `print` — failed to parse.
 for f in $(find stdlib examples tests projects -name '*.rk' 2>/dev/null); do
-    "$RASK" fmt "$f" > "$TMP/once.rk" 2>/dev/null || continue
+    once="$TMP/once/$f"
+    twice="$TMP/twice/$f"
+    mkdir -p "$(dirname "$once")" "$(dirname "$twice")"
+    "$RASK" fmt "$f" > "$once" 2>/dev/null || continue
     parsed=$((parsed + 1))
-    if ! "$RASK" fmt "$TMP/once.rk" > "$TMP/twice.rk" 2>"$TMP/err.log"; then
+    if ! "$RASK" fmt "$once" > "$twice" 2>"$TMP/err.log"; then
         unstable=$((unstable + 1))
         echo "UNPARSEABLE OUTPUT $f"
         echo "       $(grep -m1 '^error' "$TMP/err.log")"
         continue
     fi
-    if ! cmp -s "$TMP/once.rk" "$TMP/twice.rk"; then
+    if ! cmp -s "$once" "$twice"; then
         unstable=$((unstable + 1))
         echo "NOT IDEMPOTENT $f"
-        diff "$TMP/once.rk" "$TMP/twice.rk" | head -6 | sed 's/^/       /'
+        diff "$once" "$twice" | head -6 | sed 's/^/       /'
     fi
 done
+
+# --- `fmt --check` over the tree the formatter owns.
+# --- stdlib/ and examples/ are kept formatted, so `--check` is a gate rather
+# --- than a wish. tests/ and projects/ are not: their files carry deliberate
+# --- layout that a reformat would churn for no gain.
+dirty=0
+if ! "$RASK" fmt --check stdlib/ > "$TMP/check.log" 2>&1; then
+    dirty=$((dirty + $(grep -c '✗' "$TMP/check.log")))
+    grep '✗' "$TMP/check.log" | sed 's/^/       /'
+fi
+if ! "$RASK" fmt --check examples/ > "$TMP/check.log" 2>&1; then
+    dirty=$((dirty + $(grep -c '✗' "$TMP/check.log")))
+    grep '✗' "$TMP/check.log" | sed 's/^/       /'
+fi
 
 echo "──────────────────────────────────────────────────"
 echo "fmt round-trip: $checked files formatted, $broken still-compiles failures"
 echo "fmt stability:  $parsed files reformatted, $unstable parse/idempotence failures"
-[ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ]
+echo "fmt --check:    stdlib/ and examples/, $dirty files not formatted"
+[ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ] && [ "$dirty" -eq 0 ]

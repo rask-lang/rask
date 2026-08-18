@@ -42,10 +42,10 @@ func main() {
     // Match on integers
     let num = 2
     let result = match num {
-        1 => "one",
-        2 => "two",
-        3 => "three",
-        _ => "other",
+        1 => "one"
+        2 => "two"
+        3 => "three"
+        _ => "other"
     }
     println("match result: {result}")
 

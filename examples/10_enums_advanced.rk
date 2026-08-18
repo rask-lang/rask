@@ -20,20 +20,17 @@ enum Shape {
 extend Shape {
     func area(self) -> f64 {
         match self {
-            Shape.Circle { radius } => return 3.14159 * radius * radius,
-            Shape.Rectangle { width, height } => return width * height,
-            Shape.Triangle { base, height } => return 0.5 * base * height,
+            Shape.Circle { radius } => return 3.14159 * radius * radius
+            Shape.Rectangle { width, height } => return width * height
+            Shape.Triangle { base, height } => return 0.5 * base * height
         }
     }
 
     func describe(self) -> string {
         match self {
-            Shape.Circle { radius } =>
-                return "Circle with radius {radius}",
-            Shape.Rectangle { width, height } =>
-                return "Rectangle {width}x{height}",
-            Shape.Triangle { base, height } =>
-                return "Triangle (base={base}, height={height})",
+            Shape.Circle { radius } => return "Circle with radius {radius}"
+            Shape.Rectangle { width, height } => return "Rectangle {width}x{height}"
+            Shape.Triangle { base, height } => return "Triangle (base={base}, height={height})"
         }
     }
 }
@@ -41,9 +38,7 @@ extend Shape {
 // Function that processes messages
 func handle_message(msg: Message) {
     match msg {
-        Message.Quit => {
-            print("Received quit signal\n")
-        }
+        Message.Quit => print("Received quit signal\n")
         Message.Text(content) => {
             print("Text message: ")
             print(content)
@@ -70,12 +65,7 @@ func handle_message(msg: Message) {
 
 func main() {
     // Create different message variants
-    let messages = Vec.from([
-        Message.Text("Hello, Rask!"),
-        Message.Move { x: 10, y: 20 },
-        Message.Color { r: 255, g: 128, b: 0 },
-        Message.Quit,
-    ])
+    let messages = Vec.from([Message.Text("Hello, Rask!"), Message.Move { x: 10, y: 20 }, Message.Color { r: 255, g: 128, b: 0 }, Message.Quit])
 
     print("Processing messages:\n")
     for msg in messages.iter() {
@@ -123,8 +113,6 @@ func main() {
             print(height)
             print("\n")
         }
-        Shape.Triangle { base, height } => {
-            print("It's a triangle\n")
-        }
+        Shape.Triangle { base, height } => print("It's a triangle\n")
     }
 }

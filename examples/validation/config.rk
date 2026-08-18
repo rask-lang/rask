@@ -29,7 +29,7 @@ extend Config {
 
 // Public conformance — the config's Displayable rendering is part of the
 // service's observable API (it lands in startup logs).
-public extend Config with Displayable {
+extend Config with Displayable {
     func to_string(self) -> string {
         return "Config(addr={self.addr()}, cap={self.store_capacity}, rate={self.rate_limit_per_min}/min)"
     }

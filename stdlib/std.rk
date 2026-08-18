@@ -6,5 +6,5 @@ struct std { }
 extend std {
     /// Exit the process with the given status code.
     @native("rask_exit")
-    public func exit(code: i64) -> Never { }
+    public func exit(code: i64) -> Never {}
 }

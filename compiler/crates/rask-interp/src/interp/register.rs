@@ -342,6 +342,7 @@ impl Interpreter {
                 variants: vec![
                     Variant {
                         name: "Some".to_string(),
+                        name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
@@ -355,6 +356,7 @@ impl Interpreter {
                     },
                     Variant {
                         name: "None".to_string(),
+                        name_span: rask_ast::Span::new(0, 0),
                         fields: vec![],
                         attrs: vec![],
                         discriminant: None,
@@ -375,6 +377,7 @@ impl Interpreter {
                 variants: vec![
                     Variant {
                         name: "Ok".to_string(),
+                        name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
@@ -388,6 +391,7 @@ impl Interpreter {
                     },
                     Variant {
                         name: "Err".to_string(),
+                        name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
                             name: "error".to_string(),
                             name_span: Span::new(0, 0),
@@ -413,14 +417,14 @@ impl Interpreter {
                 name: "Ordering".to_string(),
                 type_params: vec![],
                 variants: vec![
-                    Variant { name: "Less".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Equal".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Greater".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Relaxed".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Acquire".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Release".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "AcqRel".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "SeqCst".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Less".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Equal".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Greater".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Relaxed".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Acquire".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "Release".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "AcqRel".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                    Variant { name: "SeqCst".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                 ],
                 methods: vec![],
                 is_pub: true,

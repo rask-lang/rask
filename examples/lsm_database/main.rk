@@ -56,7 +56,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
                 print_usage()
                 std.exit(0)
             }
-            _ => positional.push(arg.to_string()),
+            _ => positional.push(arg.to_string())
         }
         i += 1
     }
@@ -120,8 +120,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> void or DbError
     while i < count {
         let key = "{prefix}_{i:06}"
         match db.get(key) {
-            string => found += 1,
-            DbError => missing += 1,
+            string => found += 1
+            DbError => missing += 1
         }
         i += 1
     }
@@ -155,8 +155,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> void or DbError
     while i < count {
         let key = "{prefix}_{i:06}"
         match db.get(key) {
-            string => still_found += 1,
-            DbError => correctly_deleted += 1,
+            string => still_found += 1
+            DbError => correctly_deleted += 1
         }
         i += 1
     }
@@ -205,25 +205,21 @@ func run(args: CliArgs) -> void or DbError {
             if args.key.is_empty() {
                 return DbError.Io("scan requires <start> <end>")
             }
-            let end = if args.value.is_empty(): "{args.key}\u{FF}" else: args.value
+            let end = if args.value.is_empty() { "{args.key}\u{FF}" } else { args.value }
             let results = try db.scan(args.key, end)
             for kv in results {
                 println("{kv.key}\t{kv.value}")
             }
             println("({results.len()} entries)")
         }
-        "bench" => {
-            try run_benchmark(mutate db, args.count, args.prefix)
-        }
+        "bench" => try run_benchmark(mutate db, args.count, args.prefix)
         "compact" => {
             println("Forcing compaction...")
             try db.compact_all()
             println("Compaction complete.")
             print_stats(db.stats())
         }
-        "stats" => {
-            print_stats(db.stats())
-        }
+        "stats" => print_stats(db.stats())
         "dump" => {
             let results = try db.scan("\u{00}", "\u{FF}".repeat(16))
             for kv in results {
@@ -244,7 +240,7 @@ func run(args: CliArgs) -> void or DbError {
 func main() {
     let args = cli.args()
     let cli_args = match parse_cli_args(args) {
-        CliArgs as a => a,
+        CliArgs as a => a
         DbError as e => {
             println("rask-db: {e.message()}")
             print_usage()

@@ -1073,8 +1073,8 @@ mod tests {
                     name: "Color".to_string(),
                     type_params: vec![],
                     variants: vec![
-                        Variant { name: "Red".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                        Variant { name: "Green".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Red".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Green".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1133,7 +1133,7 @@ mod tests {
                             attrs: vec![],
                             discriminant: None,
                         },
-                        Variant { name: "Beta".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Beta".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1562,8 +1562,8 @@ mod tests {
                     name: "Color".to_string(),
                     type_params: vec![],
                     variants: vec![
-                        Variant { name: "Red".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                        Variant { name: "Blue".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Red".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Blue".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![
                         make_method("default", vec![], Some("Color"), vec![return_stmt(None)]),

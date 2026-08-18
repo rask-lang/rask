@@ -73,8 +73,9 @@ func handle_metrics() -> Response or ApiError {
 // Deliberately fallible I/O so SysError reaches the boundary (os.SY1).
 func handle_sleep(req: Request) -> Response or ApiError {
     let raw = req.query_param("ms") ?? "50"
-    let ms = raw.parse<u64>()
-        ?? return ApiError.BadRequest("ms must be a non-negative integer")
+    let ms = raw.parse<u64>() ?? {
+        return ApiError.BadRequest("ms must be a non-negative integer")
+    }
     try time.sleep(time.Duration.millis(ms))
     return json_response(200, json.encode(OkBody { ok: true }))
 }
@@ -88,8 +89,9 @@ func handle_list_tasks(req: Request) -> Response or ApiError {
 }
 
 func handle_create_task(req: Request) -> Response or ApiError {
-    let dto = json.decode<CreateTaskRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<CreateTaskRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
     try dto.validate()
 
     let label = dto.priority ?? "medium"
@@ -107,8 +109,9 @@ func handle_get_task(id: TaskId) -> Response or ApiError {
 }
 
 func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
-    let dto = json.decode<UpdateTaskRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<UpdateTaskRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
     try dto.validate()
     let patch = try build_patch(dto)
 
@@ -122,16 +125,18 @@ func handle_delete_task(id: TaskId) -> Response or ApiError {
 }
 
 func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
-    let dto = json.decode<AddDepRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<AddDepRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
     let dep = TaskId(dto.dep_id)
     try store.lock().add_dependency(id, dep)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
 func handle_batch(req: Request) -> Response or ApiError {
-    let dto = json.decode<BatchRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<BatchRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
 
     mut ops = Vec.new()
     for raw in dto.ops {
@@ -140,14 +145,15 @@ func handle_batch(req: Request) -> Response or ApiError {
 
     let applied = ops.len()
     try store.lock().apply_batch(ops)
-    return json_response(200, json.encode(BatchResult { applied: applied }))
+    return json_response(200, json.encode(BatchResult { applied }))
 }
 
 // ─── Users & projects ────────────────────────────────────────────────
 
 func handle_create_user(req: Request) -> Response or ApiError {
-    let dto = json.decode<CreateUserRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<CreateUserRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
     try dto.validate()
 
     let email = EmailAddress { raw: dto.email }
@@ -162,8 +168,9 @@ func handle_get_user(id: UserId) -> Response or ApiError {
 }
 
 func handle_create_project(req: Request) -> Response or ApiError {
-    let dto = json.decode<CreateProjectRequest>(req.body)
-        catch _ => return ApiError.BadRequest("invalid JSON")
+    let dto = json.decode<CreateProjectRequest>(req.body) catch _ => {
+        return ApiError.BadRequest("invalid JSON")
+    }
     if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
 
     let owner = UserId(dto.owner)
@@ -180,18 +187,18 @@ func handle_create_project(req: Request) -> Response or ApiError {
 
 func build_filter(req: Request) -> ListFilter or ValidationError {
     mut f = ListFilter {}
-    if req.query_param("status")? as s   { f.status = try Status.from_label(s) }
+    if req.query_param("status")? as s { f.status = try Status.from_label(s) }
     if req.query_param("priority")? as p { f.priority = try Priority.from_label(p) }
-    if req.query_param("offset")? as o   { f.offset = o.parse<usize>() ?? 0 }
-    if req.query_param("limit")? as l    { f.limit = l.parse<usize>() ?? 50 }
+    if req.query_param("offset")? as o { f.offset = o.parse<usize>() ?? 0 }
+    if req.query_param("limit")? as l { f.limit = l.parse<usize>() ?? 50 }
     return f
 }
 
 func build_patch(dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
     mut p = TaskPatch {}
-    if dto.status? as s    { p.status = try Status.from_label(s) }
+    if dto.status? as s { p.status = try Status.from_label(s) }
     if dto.priority? as pr { p.priority = try Priority.from_label(pr) }
-    if dto.assignee? as a  { p.assignee = UserId(a) }
+    if dto.assignee? as a { p.assignee = UserId(a) }
     if dto.add_tags? as tags { p.add_tags = tags }
     return p
 }
@@ -200,19 +207,25 @@ func to_txop(raw: BatchOp) -> TxOp or ValidationError {
     let id = TaskId(raw.task_id)
     match raw.op {
         "status" => {
-            let v = raw.value ?? return ValidationError.Empty("value")
+            let v = raw.value ?? {
+                return ValidationError.Empty("value")
+            }
             let st = try Status.from_label(v)
             return TxOp.SetStatus(id, st)
         }
         "priority" => {
-            let v = raw.value ?? return ValidationError.Empty("value")
+            let v = raw.value ?? {
+                return ValidationError.Empty("value")
+            }
             let pr = try Priority.from_label(v)
             return TxOp.SetPriority(id, pr)
         }
         "dep" => {
-            let d = raw.dep_id ?? return ValidationError.Empty("dep_id")
+            let d = raw.dep_id ?? {
+                return ValidationError.Empty("dep_id")
+            }
             return TxOp.AddDep(id, TaskId(d))
         }
-        _ => return ValidationError.BadEnum("op", raw.op),
+        _ => return ValidationError.BadEnum("op", raw.op)
     }
 }

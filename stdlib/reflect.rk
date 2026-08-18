@@ -37,66 +37,47 @@ public struct VariantInfo {
 
 // ─── Reflect Namespace ──────────────────────────────────────────
 
-struct reflect {  }
+struct reflect { }
 
 extend reflect {
     @native
     public func size_of<T>() -> usize {}
-
     @native
     public func align_of<T>() -> usize {}
-
     @native
     public func name_of<T>() -> string {}
-
     @native
     public func is_copy<T>() -> bool {}
-
     @native
     public func is_resource<T>() -> bool {}
-
     @native
     public func is_struct<T>() -> bool {}
-
     @native
     public func is_enum<T>() -> bool {}
-
     @native
     public func is_optional<T>() -> bool {}
-
     @native
     public func is_vec<T>() -> bool {}
-
     @native
     public func is_map<T>() -> bool {}
-
     @native
     public func is_integer<T>() -> bool {}
-
     @native
     public func is_float<T>() -> bool {}
-
     @native
     public func is_flat<T>() -> bool {}
-
     @native
     public func fields<T>() -> Vec<FieldInfo> {}
-
     @native
     public func has_field<T>(name: string) -> bool {}
-
     @native
     public func methods<T>() -> Vec<MethodInfo> {}
-
     @native
     public func has_method<T>(name: string) -> bool {}
-
     @native
     public func implements<T, Trait>() -> bool {}
-
     @native
     public func traits<T>() -> Vec<string> {}
-
     @native
     public func variants<T>() -> Vec<VariantInfo> {}
 }

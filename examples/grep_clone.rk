@@ -16,17 +16,17 @@ struct GrepOptions {
 }
 
 enum GrepError {
-    NoPattern,
-    NoFiles,
-    FileError(string),
+    NoPattern
+    NoFiles
+    FileError(string)
 }
 
 extend GrepError {
     func message(self) -> string {
         match self {
-            NoPattern => return "missing pattern argument",
-            NoFiles => return "no files specified",
-            FileError(msg) => return "{msg}",
+            NoPattern => return "missing pattern argument"
+            NoFiles => return "no files specified"
+            FileError(msg) => return "{msg}"
         }
     }
 }
@@ -47,22 +47,22 @@ func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
     while i < args.len() {
         let arg = args[i]
         match arg {
-            "-i" => opts.ignore_case = true,
-            "-n" => opts.line_numbers = true,
-            "-c" => opts.count_only = true,
-            "-v" => opts.invert_match = true,
+            "-i" => opts.ignore_case = true
+            "-n" => opts.line_numbers = true
+            "-c" => opts.count_only = true
+            "-v" => opts.invert_match = true
             "-h" | "--help" => {
                 print_usage()
                 std.exit(0)
             }
             "--" => {}
-            _ => positional.push(arg),
+            _ => positional.push(arg)
         }
         i = i + 1
     }
 
-    if positional.is_empty(): return GrepError.NoPattern
-    if positional.len() < 2: return GrepError.NoFiles
+    if positional.is_empty() { return GrepError.NoPattern }
+    if positional.len() < 2 { return GrepError.NoFiles }
 
     opts.pattern = positional.remove(0)
     opts.files = positional
@@ -92,8 +92,9 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
 }
 
 func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
-    let content = fs.read_text(path)
-        catch e => return GrepError.FileError(e)
+    let content = fs.read_text(path) catch e => {
+        return GrepError.FileError(e)
+    }
 
     mut match_count: i64 = 0
     mut line_num = 0
@@ -101,7 +102,7 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
     for line in content.lines() {
         line_num = line_num + 1
         let matches = line_matches(line, opts.pattern, opts.ignore_case)
-        let show = if opts.invert_match: !matches else: matches
+        let show = if opts.invert_match { !matches } else { matches }
 
         if show {
             match_count = match_count + 1
@@ -148,6 +149,6 @@ func main() {
         fi = fi + 1
     }
 
-    if had_errors: std.exit(2)
-    if total_matches == 0: std.exit(1)
+    if had_errors { std.exit(2) }
+    if total_matches == 0 { std.exit(1) }
 }

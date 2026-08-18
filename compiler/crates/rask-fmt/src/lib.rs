@@ -52,6 +52,9 @@ pub fn try_format_source_with_config(
     }
 
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
+    if config.allow_keyword_fn_names {
+        parser = parser.allow_keyword_fn_names();
+    }
     let parse_result = parser.parse();
     if !parse_result.is_ok() {
         return Err(FormatError::Parse(parse_result.errors));
@@ -147,6 +150,132 @@ mod tests {
     // past its trailing comment — so "is the comment on this line" answered no
     // every time and every trailing comment in the tree moved onto its own line.
     // That changes what the comment annotates.
+    #[test]
+    fn a_comment_beside_a_field_or_variant_stays_beside_it() {
+        // Neither is a statement, so nothing was flushing the comments written
+        // among them: they stayed pending and came out below the closing brace,
+        // where a comment about one member reads as a comment about the next
+        // declaration (#805).
+        let input = "\
+enum E {
+    A  // about A
+    // about B
+    B
+}
+
+struct S {
+    public a: i64  // about a
+    // about b
+    public b: i64
+}
+";
+        let output = format_source(input);
+        assert!(output.contains("A  // about A"), "trailing on a variant:\n{}", output);
+        assert!(
+            output.contains("public a: i64  // about a"),
+            "trailing on a field:\n{}", output,
+        );
+        // Standalone ones keep their own line, inside the braces.
+        let body = output.split("enum E {").nth(1).unwrap();
+        assert!(
+            body.split('}').next().unwrap().contains("// about B"),
+            "the standalone one stays inside the enum:\n{}", output,
+        );
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
+    #[test]
+    fn a_trailing_comment_attaches_to_the_member_it_follows() {
+        // Source order alone isn't enough: bounded only by the declaration's end,
+        // the first pending comment attached to the *first* field whatever line it
+        // was on. `Node { value, next // about next }` moved it up onto `value`.
+        let input = "struct Node {\n    value: i32\n    next: i32  // about next\n}\n";
+        let output = format_source(input);
+        assert!(
+            output.contains("next: i32  // about next"),
+            "stays on `next`:\n{}", output,
+        );
+        assert!(
+            !output.contains("value: i32  //"),
+            "and not on `value`:\n{}", output,
+        );
+    }
+
+    #[test]
+    fn a_comment_stays_in_the_block_it_was_written_in() {
+        // The pending-comment cursor is global and the block-end drain accepted any
+        // comment indented at least as deep as the block — which is every comment
+        // in every later block too. One `if` body swallowed the next one's, and one
+        // function's body swallowed the comments out of the next function (#805).
+        let input = "\
+func f(n: i64) -> i64 {
+    if n == 1 {
+        return 1  // one
+    }
+    if n == 2 {
+        return 2  // two
+    }
+    return 0
+}
+
+func g() {
+    // about g
+    println(\"g\")
+}
+";
+        let output = format_source(input);
+        assert!(output.contains("return 1  // one"), "first if keeps its own:\n{}", output);
+        assert!(output.contains("return 2  // two"), "second one too:\n{}", output);
+        let g = output.split("func g() {").nth(1).unwrap();
+        assert!(g.contains("// about g"), "g keeps its comment:\n{}", output);
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
+    #[test]
+    fn a_comment_beside_a_match_arm_stays_beside_it() {
+        let input = "\
+func f(n: i64) -> i64 {
+    match n {
+        1 => return 10  // ten
+        _ => return 0   // zero
+    }
+}
+";
+        let output = format_source(input);
+        assert!(output.contains("1 => return 10  // ten"), "first arm:\n{}", output);
+        assert!(output.contains("_ => return 0   // zero"), "and the last:\n{}", output);
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
+    #[test]
+    fn a_body_that_is_only_a_comment_keeps_its_braces_open() {
+        // `{}` would drop the comment out of the braces entirely — it escaped to
+        // column 0 below the enclosing `extend`.
+        let input = "func stub() {\n    // nothing yet\n}\n";
+        let output = format_source(input);
+        assert!(output.contains("func stub() {"), "expanded:\n{}", output);
+        assert!(output.contains("    // nothing yet"), "comment inside:\n{}", output);
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
+    #[test]
+    fn a_chain_with_a_comment_in_it_is_left_as_written() {
+        // Reflowing the chain deletes the line the comment annotated, and the
+        // comment then lands wherever the cursor flushes — above the whole chain.
+        let input = "\
+func main() {
+    let xs = source()
+        .filter(|n| n > 0)  // keep positives
+        .map(|n| n * 2)     // double them
+    println(\"{xs}\")
+}
+";
+        let output = format_source(input);
+        assert!(output.contains(".filter(|n| n > 0)  // keep positives"), "{}", output);
+        assert!(output.contains(".map(|n| n * 2)     // double them"), "{}", output);
+        assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
+    }
+
     #[test]
     fn trailing_comments_stay_on_their_line() {
         let input = "func main() {\n    let a = 4  // one\n    let b = 5  // another\n}\n";

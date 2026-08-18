@@ -564,11 +564,19 @@ impl Parser {
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
-        if let Some(decl) = self.pending_decls.pop() {
-            return Ok(decl);
+        // FIFO. `pop()` handed them back last-first, so an `extern "C" { … }`
+        // block's five functions came out of the parser in reverse — harmless to
+        // the compiler, and `rask fmt` reprinted them in that order, reordering
+        // declarations in the source it was asked to tidy (#805).
+        if !self.pending_decls.is_empty() {
+            return Ok(self.pending_decls.remove(0));
         }
 
         let start = self.current().span.start;
+        // An `extern` block flattens into one declaration per member, each with its
+        // own span; the first keeps the `extern "C"` keywords, so its span is the
+        // declaration's start through its own end rather than the whole block's.
+        let mut extern_first_span: Option<Span> = None;
 
         let mut attrs = Vec::new();
         while self.check(&TokenKind::At) {
@@ -632,14 +640,16 @@ impl Parser {
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => {
-                let mut kinds = self.parse_extern_decls(doc)?;
-                let first = kinds.remove(0);
-                let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
-                let pending: Vec<Decl> = kinds.into_iter().map(|kind| {
+                let mut members = self.parse_extern_decls(doc)?;
+                let (first, first_span) = members.remove(0);
+                let pending: Vec<Decl> = members.into_iter().map(|(kind, span)| {
                     let id = self.next_id();
-                    Decl { id, kind, span: self.span(start, end) }
+                    Decl { id, kind, span }
                 }).collect();
                 self.pending_decls.extend(pending);
+                // The first member carries the `extern "C"` keywords with it, so its
+                // span starts where the declaration did.
+                extern_first_span = Some(self.span(start, first_span.end));
                 first
             }
             TokenKind::Package => {
@@ -662,6 +672,9 @@ impl Parser {
             }
         };
 
+        if let Some(span) = extern_first_span {
+            return Ok(Decl { id: self.next_id(), kind, span });
+        }
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
         Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) })
     }
@@ -1592,6 +1605,7 @@ impl Parser {
                 }
             } else {
                 let _variant_doc = item_doc;
+                let variant_name_span = self.current().span;
                 let variant_name = self.expect_ident()?;
                 let mut fields = Vec::new();
 
@@ -1660,7 +1674,13 @@ impl Parser {
                     None
                 };
 
-                variants.push(Variant { name: variant_name, fields, attrs: variant_attrs, discriminant });
+                variants.push(Variant {
+                    name: variant_name,
+                    name_span: variant_name_span,
+                    fields,
+                    attrs: variant_attrs,
+                    discriminant,
+                });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -2111,7 +2131,18 @@ impl Parser {
 
     /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.
     /// Returns one or more extern declarations.
-    fn parse_extern_decls(&mut self, doc: Option<String>) -> Result<Vec<DeclKind>, ParseError> {
+    /// The functions of an `extern` declaration, each with the span of its own
+    /// `func` keyword through its signature.
+    ///
+    /// The block form flattens into one declaration per function, so each needs a
+    /// span of its own: given the whole block's, a comment written *inside* the
+    /// braces started after every member's span start, and nothing emitted it until
+    /// the next declaration came along — below the block, reading as a comment
+    /// about that instead (#805).
+    fn parse_extern_decls(
+        &mut self,
+        doc: Option<String>,
+    ) -> Result<Vec<(DeclKind, Span)>, ParseError> {
         self.expect(&TokenKind::Extern)?;
         let abi = self.expect_string()?;
 
@@ -2123,8 +2154,11 @@ impl Parser {
             let mut decls = Vec::new();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
                 let func_doc = self.take_doc();
+                let member_start = self.current().span.start;
                 self.expect(&TokenKind::Func)?;
-                decls.push(self.parse_extern_func(&abi, func_doc)?);
+                let kind = self.parse_extern_func(&abi, func_doc)?;
+                let member_end = self.tokens[self.pos.saturating_sub(1)].span.end;
+                decls.push((kind, self.span(member_start, member_end)));
                 self.skip_newlines();
             }
             self.expect(&TokenKind::RBrace)?;
@@ -2132,8 +2166,11 @@ impl Parser {
         }
 
         // Single form: extern "C" func name(...)
+        let single_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
-        Ok(vec![self.parse_extern_func(&abi, doc)?])
+        let kind = self.parse_extern_func(&abi, doc)?;
+        let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+        Ok(vec![(kind, self.span(single_start, end))])
     }
 
     /// Parse a single extern function — signature-only (import) or with body (export).

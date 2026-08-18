@@ -729,9 +729,9 @@ mod tests {
         let result = empty_result(vec![CDecl::Enum(CEnumDecl {
             tag: Some("color".into()),
             variants: vec![
-                CEnumVariant { name: "RED".into(), value: Some(0) },
-                CEnumVariant { name: "GREEN".into(), value: Some(1) },
-                CEnumVariant { name: "BLUE".into(), value: Some(2) },
+                CEnumVariant { name: "RED".into(), name_span: rask_ast::Span::new(0, 0), value: Some(0) },
+                CEnumVariant { name: "GREEN".into(), name_span: rask_ast::Span::new(0, 0), value: Some(1) },
+                CEnumVariant { name: "BLUE".into(), name_span: rask_ast::Span::new(0, 0), value: Some(2) },
             ],
             is_forward: false,
         })]);

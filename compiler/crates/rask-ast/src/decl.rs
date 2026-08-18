@@ -290,6 +290,9 @@ pub struct EnumDecl {
 #[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
+    /// Where the variant's name sits in the source. The formatter needs it to
+    /// keep a comment written beside a variant beside that variant.
+    pub name_span: Span,
     pub fields: Vec<Field>,
     /// Attributes like `@message("template string")`.
     pub attrs: Vec<String>,

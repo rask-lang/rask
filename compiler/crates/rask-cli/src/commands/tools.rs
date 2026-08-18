@@ -70,7 +70,16 @@ pub fn cmd_fmt(path: &str, check_only: bool, write_in_place: bool) {
             }
         };
 
-        let formatted = match rask_fmt::try_format_source(&source) {
+        // A stdlib stub declares `assert`, `print` and friends, whose names are
+        // keywords. The stub loader parses them with that allowance, so the
+        // formatter needs it too — without it `rask fmt stdlib/` reported the
+        // stdlib's own source as a syntax error, which is the one thing
+        // `fmt --check` can never be green with.
+        let config = rask_fmt::FormatConfig {
+            allow_keyword_fn_names: rask_stdlib::StubRegistry::is_stdlib_path(file),
+            ..Default::default()
+        };
+        let formatted = match rask_fmt::try_format_source_with_config(&source, &config) {
             Ok(f) => f,
             Err(err) => {
                 report_format_error(&err, &source, file);

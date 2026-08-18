@@ -176,6 +176,7 @@ impl TypeSubstitutor {
             type_params: Vec::new(), // Removed after instantiation
             variants: e.variants.iter().map(|v| rask_ast::decl::Variant {
                 name: v.name.clone(),
+                name_span: v.name_span,
                 fields: v.fields.iter().map(|f| rask_ast::decl::Field {
                     name: f.name.clone(),
                     name_span: f.name_span.clone(),

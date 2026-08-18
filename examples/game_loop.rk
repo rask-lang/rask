@@ -49,9 +49,9 @@ struct Entity {
 }
 
 enum EntityType {
-    Player,
-    Enemy,
-    Projectile,
+    Player
+    Enemy
+    Projectile
 }
 
 // Game state
@@ -81,7 +81,7 @@ extend GameState {
         })
 
         return GameState {
-            entities: entities,
+            entities,
             player: player_handle,
             score: 0,
             game_over: false,
@@ -91,7 +91,7 @@ extend GameState {
 
     func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {
         return self.entities.insert(Entity {
-            position: Position { x: x, y: y },
+            position: Position { x, y },
             velocity: Velocity { dx: -50.0f32, dy: 0.0f32 },
             health: Health { current: 20, max: 20 },
             collider: Collider { radius: 12.0f32 },
@@ -102,8 +102,8 @@ extend GameState {
 
     func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Handle<Entity> or Error {
         return self.entities.insert(Entity {
-            position: Position { x: x, y: y },
-            velocity: Velocity { dx: dx, dy: dy },
+            position: Position { x, y },
+            velocity: Velocity { dx, dy },
             health: Health { current: 1, max: 1 },
             collider: Collider { radius: 4.0f32 },
             active: true,
@@ -116,7 +116,7 @@ extend GameState {
 // Takes Pool<Entity> directly — decoupled from GameState, works with any entity pool
 func movement_system(mutate entities: Pool<Entity>, dt: f32) {
     for h in entities {
-        if !entities[h].active: continue
+        if !entities[h].active { continue }
 
         entities[h].position.x += entities[h].velocity.dx * dt
         entities[h].position.y += entities[h].velocity.dy * dt
@@ -128,11 +128,11 @@ func collision_system(mutate state: GameState) {
     mut to_check = state.entities.handles()
 
     for i in 0..to_check.len() {
-        for j in (i + 1)..to_check.len() {
+        for j in i + 1..to_check.len() {
             let h1 = to_check[i]
             let h2 = to_check[j]
 
-            if !state.entities[h1].active || !state.entities[h2].active: continue
+            if !state.entities[h1].active || !state.entities[h2].active { continue }
 
             let e1 = state.entities[h1]
             let e2 = state.entities[h2]
@@ -155,10 +155,9 @@ func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<En
     let type2 = state.entities[h2].entity_type
 
     // Player vs Enemy
-    if (type1 == EntityType.Player && type2 == EntityType.Enemy) ||
-       (type1 == EntityType.Enemy && type2 == EntityType.Player) {
-        let player_h = if type1 == EntityType.Player: h1 else: h2
-        let enemy_h = if type1 == EntityType.Enemy: h1 else: h2
+    if type1 == EntityType.Player && type2 == EntityType.Enemy || type1 == EntityType.Enemy && type2 == EntityType.Player {
+        let player_h = if type1 == EntityType.Player { h1 } else { h2 }
+        let enemy_h = if type1 == EntityType.Enemy { h1 } else { h2 }
 
         state.entities[player_h].health.current -= 10
         state.entities[enemy_h].active = false
@@ -169,10 +168,9 @@ func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<En
     }
 
     // Projectile vs Enemy
-    if (type1 == EntityType.Projectile && type2 == EntityType.Enemy) ||
-       (type1 == EntityType.Enemy && type2 == EntityType.Projectile) {
-        let enemy_h = if type1 == EntityType.Enemy: h1 else: h2
-        let proj_h = if type1 == EntityType.Projectile: h1 else: h2
+    if type1 == EntityType.Projectile && type2 == EntityType.Enemy || type1 == EntityType.Enemy && type2 == EntityType.Projectile {
+        let enemy_h = if type1 == EntityType.Enemy { h1 } else { h2 }
+        let proj_h = if type1 == EntityType.Projectile { h1 } else { h2 }
 
         state.entities[enemy_h].health.current -= 25
         state.entities[proj_h].active = false
@@ -253,7 +251,7 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
     mut handles = entities.handles()
     for i in 0..handles.len() {
         let h = handles[i]
-        if !entities[h].active: continue
+        if !entities[h].active { continue }
         entities[h].position.x += entities[h].velocity.dx * dt
         entities[h].position.y += entities[h].velocity.dy * dt
     }
@@ -278,48 +276,48 @@ func main() -> void or Error {
     using ThreadPool(workers: 4) {
         // Simulate game for a few seconds
         while !state.game_over && frame_count < 300 {
-        // Simulate frame time (16ms = ~60fps)
-        let frame_time = 0.016f32
-        last_time += frame_time
+            // Simulate frame time (16ms = ~60fps)
+            let frame_time = 0.016f32
+            last_time += frame_time
 
-        accumulator += frame_time
+            accumulator += frame_time
 
-        // Fixed timestep updates
-        while accumulator >= dt {
-            // Handle input (simulated - would be real input in actual game)
-            if frame_count % 30 == 0 {
-                // Fire projectile
-                if state.player? as player_h {
-                    let px = state.entities[player_h].position.x
-                    let py = state.entities[player_h].position.y
-                    try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
+            // Fixed timestep updates
+            while accumulator >= dt {
+                // Handle input (simulated - would be real input in actual game)
+                if frame_count % 30 == 0 {
+                    // Fire projectile
+                    if state.player? as player_h {
+                        let px = state.entities[player_h].position.x
+                        let py = state.entities[player_h].position.y
+                        try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
+                    }
                 }
+
+                // Parallel physics: split entity updates across thread pool
+                // Each thread processes a batch of entities
+                // Borrow checker tracks that only state.entities is borrowed
+                parallel_movement_system(mutate state.entities, dt, NUM_PHYSICS_THREADS)
+
+                // Collision runs single-threaded (needs to see all entities)
+                collision_system(mutate state)
+
+                // Game logic on main thread
+                spawn_timer = spawn_system(mutate state, spawn_timer + dt)
+                cleanup_system(mutate state)
+
+                accumulator -= dt
             }
 
-            // Parallel physics: split entity updates across thread pool
-            // Each thread processes a batch of entities
-            // Borrow checker tracks that only state.entities is borrowed
-            parallel_movement_system(mutate state.entities, dt, NUM_PHYSICS_THREADS)
-
-            // Collision runs single-threaded (needs to see all entities)
-            collision_system(mutate state)
-
-            // Game logic on main thread
-            spawn_timer = spawn_system(mutate state, spawn_timer + dt)
-            cleanup_system(mutate state)
-
-            accumulator -= dt
-        }
-
-        // Render (simulated - just print status occasionally)
-        if frame_count % 60 == 0 {
-            let entity_count = state.entities.len()
-            mut player_health = 0
-            if state.player? as h {
-                player_health = state.entities[h].health.current
+            // Render (simulated - just print status occasionally)
+            if frame_count % 60 == 0 {
+                let entity_count = state.entities.len()
+                mut player_health = 0
+                if state.player? as h {
+                    player_health = state.entities[h].health.current
+                }
+                println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
             }
-            println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
-        }
 
             frame_count += 1
 
@@ -333,5 +331,4 @@ func main() -> void or Error {
     } else {
         println("Demo complete! Final Score: {state.score}")
     }
-
 }

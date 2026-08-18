@@ -16,16 +16,18 @@ extend Wal {
     func open(path: string) -> Wal or WalError {
         // Create the file if it doesn't exist
         if !fs.exists(path) {
-            fs.write_text(path, "")
-                catch e => return WalError.WriteFailure("cannot create WAL: {path}: {e}")
+            fs.write_text(path, "") catch e => {
+                return WalError.WriteFailure("cannot create WAL: {path}: {e}")
+            }
         }
-        return Wal { path: path, entry_count: 0 }
+        return Wal { path, entry_count: 0 }
     }
 
     func append(mutate self, kv: KeyValue) -> void or WalError {
         let line = encode_kv(kv)
-        fs.append_text(self.path, line)
-            catch e => return WalError.WriteFailure("write failed: {e}")
+        fs.append_text(self.path, line) catch e => {
+            return WalError.WriteFailure("write failed: {e}")
+        }
         self.entry_count += 1
         return ()
     }
@@ -41,8 +43,9 @@ extend Wal {
     }
 
     func truncate(mutate self) -> void or WalError {
-        fs.write_text(self.path, "")
-            catch e => return WalError.WriteFailure("cannot truncate WAL: {e}")
+        fs.write_text(self.path, "") catch e => {
+            return WalError.WriteFailure("cannot truncate WAL: {e}")
+        }
         self.entry_count = 0
         return ()
     }
@@ -60,7 +63,9 @@ func recover_wal(path: string) -> Vec<KeyValue> or WalError {
         let trimmed = line.trim().to_string()
         if trimmed.is_empty() { continue }
         // Skip corrupt tail entries — partial writes from crash
-        let kv = decode_kv(trimmed) is KeyValue as entry else { continue }
+        let kv = decode_kv(trimmed) is KeyValue as entry else {
+            continue
+        }
         entries.push(kv)
     }
     return entries

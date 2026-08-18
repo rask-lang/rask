@@ -6,48 +6,48 @@ public struct Vec<T> { }
 extend Vec<T> {
     /// Create a new empty vector.
     @native("rask_vec_new")
-    public func new() -> Vec<T> { }
+    public func new() -> Vec<T> {}
 
     /// Create a vector with pre-allocated capacity.
     @native("rask_vec_with_capacity")
-    public func with_capacity(n: usize) -> Vec<T> { }
+    public func with_capacity(n: usize) -> Vec<T> {}
 
     /// Create a bounded vector that cannot grow beyond n elements (CP2, CP3).
     /// Pre-allocated at creation, and `push` past the bound panics.
     @native("rask_vec_fixed")
-    public func fixed(n: usize) -> Vec<T> { }
+    public func fixed(n: usize) -> Vec<T> {}
 
     /// Number of elements.
     @native("rask_vec_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the vector contains no elements.
     @native("rask_vec_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// Maximum capacity, if bounded — `none` when the vector may grow freely.
     @native
-    public func capacity(self) -> Option<usize> { }
+    public func capacity(self) -> Option<usize> {}
 
     /// True if this vector has a capacity bound.
     @native
-    public func is_bounded(self) -> bool { }
+    public func is_bounded(self) -> bool {}
 
     /// True if this vector is bounded and at its bound.
     @native
-    public func is_full(self) -> bool { }
+    public func is_full(self) -> bool {}
 
     /// Room left before the bound — `none` when the vector is unbounded.
     @native
-    public func remaining(self) -> Option<usize> { }
+    public func remaining(self) -> Option<usize> {}
 
     /// Total bytes allocated.
     @unimplemented
-    public func allocated(self) -> usize { }
+    public func allocated(self) -> usize {}
 
     /// Push a value onto the end. Panics if bounded and full, or on OOM.
     @native("rask_vec_push")
-    public func push(mutate self, value: T) { }
+    public func push(mutate self, value: T) {}
 
     /// Push a value onto the end. Hands the value back instead of panicking
     /// when the vector is at its bound or the allocator refuses.
@@ -64,221 +64,221 @@ extend Vec<T> {
     /// Push every element of `iter`. Hands back the first element that didn't
     /// fit. `push_all`, not `extend` — that word is the declaration keyword.
     @unimplemented
-    public func try_push_all(mutate self, iter: Iterator<T>) -> void or GrowError<T> { }
+    public func try_push_all(mutate self, iter: Iterator<T>) -> void or GrowError<T> {}
 
     /// Remove and return the last element.
     @native("rask_vec_pop")
-    public func pop(mutate self) -> Option<T> { }
+    public func pop(mutate self) -> Option<T> {}
 
     /// Remove all elements.
     @native("rask_vec_clear")
-    public func clear(mutate self) { }
+    public func clear(mutate self) {}
 
     /// Insert a value at the given index, shifting later elements right.
     @native("rask_vec_insert_at")
-    public func insert(mutate self, index: i64, value: T) { }
+    public func insert(mutate self, index: i64, value: T) {}
 
     /// Remove and return the element at the given index.
     @native("rask_vec_remove_at")
-    public func remove(mutate self, index: i64) -> T { }
+    public func remove(mutate self, index: i64) -> T {}
 
     /// Remove and return the element at the given index by swapping in the
     /// last element — O(1), does not preserve order.
     @unimplemented
-    public func remove_unordered(mutate self, index: i64) -> T { }
+    public func remove_unordered(mutate self, index: i64) -> T {}
 
     /// Reserve space for at least `additional` more elements. Panics on OOM.
     @unimplemented
-    public func reserve(mutate self, additional: usize) { }
+    public func reserve(mutate self, additional: usize) {}
 
     /// Reserve space for at least `additional` more elements. Reports why
     /// instead of panicking when the room isn't there.
     @unimplemented
-    public func try_reserve(mutate self, additional: usize) -> void or ReserveError { }
+    public func try_reserve(mutate self, additional: usize) -> void or ReserveError {}
 
     /// Get element at index (borrows).
     @native("rask_vec_get")
-    public func get(self, index: i64) -> Option<T> { }
+    public func get(self, index: i64) -> Option<T> {}
 
     /// Get a clone of element at index.
     @unimplemented
-    public func get_clone(self, index: i64) -> Option<T> { }
+    public func get_clone(self, index: i64) -> Option<T> {}
 
     /// Get the first element.
     @native("rask_vec_first")
-    public func first(self) -> Option<T> { }
+    public func first(self) -> Option<T> {}
 
     /// Get the last element.
     @native("rask_vec_last")
-    public func last(self) -> Option<T> { }
+    public func last(self) -> Option<T> {}
 
     /// Read element at index through a closure.
     @native
-    public func read(self, index: i64, f: func(T) -> R) -> Option<R> { }
+    public func read(self, index: i64, f: func(T) -> R) -> Option<R> {}
 
     /// Modify element at index through a closure.
     @native
-    public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> { }
+    public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> {}
 
     /// Swap elements at two indices.
     @native("rask_vec_swap")
-    public func swap(mutate self, i: i64, j: i64) { }
+    public func swap(mutate self, i: i64, j: i64) {}
 
     /// Iterate over elements by reference.
     @native
-    public func iter(self) -> Iterator<T> { }
+    public func iter(self) -> Iterator<T> {}
 
     /// Drain all elements into an iterator, leaving the vec empty.
     @native("rask_vec_take_all")
-    public func take_all(mutate self) -> Iterator<T> { }
+    public func take_all(mutate self) -> Iterator<T> {}
 
     /// Skip the first n elements.
     @native("rask_iter_skip")
-    public func skip(self, n: usize) -> Vec<T> { }
+    public func skip(self, n: usize) -> Vec<T> {}
 
     /// Take the first n elements.
     @native
-    public func take(self, n: usize) -> Vec<T> { }
+    public func take(self, n: usize) -> Vec<T> {}
 
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
     @unimplemented
-    public func remove_where(mutate self, f: func(T) -> bool) -> usize { }
+    public func remove_where(mutate self, f: func(T) -> bool) -> usize {}
 
     /// Remove and return elements where f returns true.
     @unimplemented
-    public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
+    public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {}
 
     /// True if the vector contains the given value.
     @native("rask_vec_contains")
-    public func contains(self, value: T) -> bool { }
+    public func contains(self, value: T) -> bool {}
 
     /// Reverse elements in place.
     @native("rask_vec_reverse")
-    public func reverse(mutate self) { }
+    public func reverse(mutate self) {}
 
     /// Join elements into a string with a separator.
     @native("rask_vec_join")
-    public func join(self, sep: string) -> string { }
+    public func join(self, sep: string) -> string {}
 
     /// Sort elements in ascending order.
     @native("rask_vec_sort")
-    public func sort(mutate self) { }
+    public func sort(mutate self) {}
 
     /// Sort using a custom comparator, which answers with an `Ordering`.
     /// An integer comparator isn't accepted — `|a, b| a - b` is a type error.
     @native("rask_vec_sort_by")
-    public func sort_by(mutate self, f: func(T, T) -> Ordering) { }
+    public func sort_by(mutate self, f: func(T, T) -> Ordering) {}
 
     /// Sort by a key extracted from each element.
     @native
-    public func sort_by_key(mutate self, f: func(T) -> K) { }
+    public func sort_by_key(mutate self, f: func(T) -> K) {}
 
     /// Remove consecutive duplicate elements. Only runs of equal neighbors
     /// collapse — sort first for full dedup.
     @native("rask_vec_dedup")
-    public func remove_adjacent_duplicates(mutate self) { }
+    public func remove_adjacent_duplicates(mutate self) {}
 
     /// Keep only elements where f returns true.
     @native("rask_vec_filter")
-    public func filter(self, f: func(T) -> bool) -> Vec<T> { }
+    public func filter(self, f: func(T) -> bool) -> Vec<T> {}
 
     /// Transform each element.
     @native("rask_vec_map")
-    public func map(self, f: func(T) -> U) -> Vec<U> { }
+    public func map(self, f: func(T) -> U) -> Vec<U> {}
 
     /// Stage this data as a Wide plan for data-parallel execution.
     @native("rask_vec_clone")
-    public func wide(self) -> Wide<T> { }
+    public func wide(self) -> Wide<T> {}
 
     /// Map then flatten results.
     @native
-    public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> { }
+    public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> {}
 
     /// Flatten a Vec of Vecs into a single Vec.
     @native
-    public func flatten(self) -> Vec<T> { }
+    public func flatten(self) -> Vec<T> {}
 
     /// Reduce to a single value using an accumulator.
     @native
-    public func fold(self, init: U, f: func(U, T) -> U) -> U { }
+    public func fold(self, init: U, f: func(U, T) -> U) -> U {}
 
     /// Reduce without initial value. Returns none if empty.
     @native
-    public func reduce(self, f: func(T, T) -> T) -> Option<T> { }
+    public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
 
     /// Yield (index, element) pairs.
     @native
-    public func enumerate(self) -> Vec<(usize, T)> { }
+    public func enumerate(self) -> Vec<(usize, T)> {}
 
     /// Zip with another vector into pairs.
     @native
-    public func zip(self, other: Vec<U>) -> Vec<(T, U)> { }
+    public func zip(self, other: Vec<U>) -> Vec<(T, U)> {}
 
     /// Split into chunks of the given size.
     @native("rask_vec_chunks")
-    public func chunks(self, size: usize) -> Vec<Vec<T>> { }
+    public func chunks(self, size: usize) -> Vec<Vec<T>> {}
 
     /// True if any element satisfies the predicate.
     @native
-    public func any(self, f: func(T) -> bool) -> bool { }
+    public func any(self, f: func(T) -> bool) -> bool {}
 
     /// True if all elements satisfy the predicate.
     @native
-    public func all(self, f: func(T) -> bool) -> bool { }
+    public func all(self, f: func(T) -> bool) -> bool {}
 
     /// Find the first element matching the predicate.
     @native
-    public func find(self, f: func(T) -> bool) -> Option<T> { }
+    public func find(self, f: func(T) -> bool) -> Option<T> {}
 
     /// Find the index of the first element matching the predicate.
     @native
-    public func position(self, f: func(T) -> bool) -> Option<usize> { }
+    public func position(self, f: func(T) -> bool) -> Option<usize> {}
 
     /// Sum all elements.
     @native
-    public func sum(self) -> T { }
+    public func sum(self) -> T {}
 
     /// Minimum element.
     @native
-    public func min(self) -> Option<T> { }
+    public func min(self) -> Option<T> {}
 
     /// Maximum element.
     @native
-    public func max(self) -> Option<T> { }
+    public func max(self) -> Option<T> {}
 
     /// Clone the vector.
     @native("rask_vec_clone")
-    public func clone(self) -> Vec<T> { }
+    public func clone(self) -> Vec<T> {}
 
     /// Set element at index. Panics if out of bounds.
     @native("rask_vec_set")
-    public func set(mutate self, index: i64, value: T) { }
+    public func set(mutate self, index: i64, value: T) {}
 
     /// Shrink allocation to fit current length.
     @unimplemented
-    public func shrink_to_fit(mutate self) { }
+    public func shrink_to_fit(mutate self) {}
 
     /// Shrink allocation to at least min_capacity.
     @unimplemented
-    public func shrink_to(mutate self, min_capacity: usize) { }
+    public func shrink_to(mutate self, min_capacity: usize) {}
 
     /// Construct an element in place via closure. Panics on alloc failure.
     @native
-    public func push_with(mutate self, f: func(T)) -> usize { }
+    public func push_with(mutate self, f: func(T)) -> usize {}
 
     /// Raw pointer to the underlying buffer (unsafe).
     @native("rask_vec_as_ptr")
-    public unsafe func as_ptr(self) -> *T { }
+    public unsafe func as_ptr(self) -> *T {}
 
     /// Mutable raw pointer to the underlying buffer (unsafe). Same address
     /// `as_ptr` hands back — it's the `mutate self` receiver that makes writing
     /// through it legal, not a different buffer.
     @native("rask_vec_as_ptr")
-    public unsafe func as_mut_ptr(mutate self) -> *T { }
+    public unsafe func as_mut_ptr(mutate self) -> *T {}
 
     /// Freeze into a compile-time array.
-    public comptime func freeze(self) -> Vec<T> { }
+    public comptime func freeze(self) -> Vec<T> {}
 }
 
 // --- Growth errors ---
@@ -291,16 +291,16 @@ extend Vec<T> {
 /// so a function that grows any of them can still name its error.
 public enum GrowError<T> {
     /// The collection is at its capacity bound.
-    Full(T),
+    Full(T)
     /// The allocator couldn't provide the space.
-    NoMemory(T),
+    NoMemory(T)
 }
 
 extend GrowError<T> {
     public func message(self) -> string {
         match self {
-            GrowError.Full(_) => return "collection is at its capacity bound",
-            GrowError.NoMemory(_) => return "allocation failed",
+            GrowError.Full(_) => return "collection is at its capacity bound"
+            GrowError.NoMemory(_) => return "allocation failed"
         }
     }
 }
@@ -309,16 +309,16 @@ extend GrowError<T> {
 /// back — only the reason.
 public enum ReserveError {
     /// The requested capacity is past the collection's bound.
-    Full,
+    Full
     /// The allocator couldn't provide the space.
-    NoMemory,
+    NoMemory
 }
 
 extend ReserveError {
     public func message(self) -> string {
         match self {
-            ReserveError.Full => return "requested capacity exceeds the collection's bound",
-            ReserveError.NoMemory => return "allocation failed",
+            ReserveError.Full => return "requested capacity exceeds the collection's bound"
+            ReserveError.NoMemory => return "allocation failed"
         }
     }
 }
@@ -329,90 +329,90 @@ public struct Map<K, V> { }
 extend Map<K, V> {
     /// Create a new empty map.
     @native("rask_map_new")
-    public func new() -> Map<K, V> { }
+    public func new() -> Map<K, V> {}
 
     /// Create a map with pre-allocated capacity.
     @native
-    public func with_capacity(n: usize) -> Map<K, V> { }
+    public func with_capacity(n: usize) -> Map<K, V> {}
 
     /// Number of entries.
     @native("rask_map_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the map contains no entries.
     @native("rask_map_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// Maximum capacity, if bounded.
     @native
-    public func capacity(self) -> Option<usize> { }
+    public func capacity(self) -> Option<usize> {}
 
     /// True if this map has a fixed capacity.
     @unimplemented
-    public func is_bounded(self) -> bool { }
+    public func is_bounded(self) -> bool {}
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert")
-    public func insert(mutate self, key: K, value: V) -> Option<V> { }
+    public func insert(mutate self, key: K, value: V) -> Option<V> {}
 
     /// Insert a key-value pair, handing the value back instead of panicking
     /// when the map is at its bound or the allocator refuses. The success side
     /// is the displaced value, as with `insert`.
     @unimplemented
-    public func try_insert(mutate self, key: K, value: V) -> Option<V> or GrowError<V> { }
+    public func try_insert(mutate self, key: K, value: V) -> Option<V> or GrowError<V> {}
 
     /// Remove a key and return its value.
     @native("rask_map_take")
-    public func remove(mutate self, key: K) -> Option<V> { }
+    public func remove(mutate self, key: K) -> Option<V> {}
 
     /// Remove all entries.
     @native("rask_map_clear")
-    public func clear(mutate self) { }
+    public func clear(mutate self) {}
 
     /// Get value for key (borrows).
     @native("rask_map_get")
-    public func get(self, key: K) -> Option<V> { }
+    public func get(self, key: K) -> Option<V> {}
 
     /// Get a clone of value for key.
     @unimplemented
-    public func get_clone(self, key: K) -> Option<V> { }
+    public func get_clone(self, key: K) -> Option<V> {}
 
     /// True if the map contains this key.
     @native("rask_map_contains")
-    public func contains_key(self, key: K) -> bool { }
+    public func contains_key(self, key: K) -> bool {}
 
     /// Read value for key through a closure.
     @native
-    public func read(self, key: K, f: func(V) -> R) -> Option<R> { }
+    public func read(self, key: K, f: func(V) -> R) -> Option<R> {}
 
     /// Modify value for key through a closure.
     @native
-    public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> { }
+    public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> {}
 
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
     @native
-    public func insert_if_missing(mutate self, key: K, f: func() -> V) { }
+    public func insert_if_missing(mutate self, key: K, f: func() -> V) {}
 
     /// Insert default if key absent, then modify the value. One hash lookup.
     /// Panics on alloc failure.
     @native
-    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R { }
+    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
 
     /// Iterate over (key, value) pairs.
     @native("rask_map_entries")
-    public func iter(self) -> Iterator<(K, V)> { }
+    public func iter(self) -> Iterator<(K, V)> {}
 
     /// Iterate over keys.
     @native("rask_map_keys")
-    public func keys(self) -> Iterator<K> { }
+    public func keys(self) -> Iterator<K> {}
 
     /// Iterate over values.
     @native("rask_map_values")
-    public func values(self) -> Iterator<V> { }
+    public func values(self) -> Iterator<V> {}
 
     /// Freeze into a compile-time map.
-    public comptime func freeze(self) -> Map<K, V> { }
+    public comptime func freeze(self) -> Map<K, V> {}
 }
 
 /// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
@@ -424,29 +424,29 @@ public struct Wide<T> { }
 extend Wide<T> {
     /// Transform each lane. Lazy — records the op, runs nothing.
     @native
-    public func map(self, f: func(T) -> U) -> Wide<U> { }
+    public func map(self, f: func(T) -> U) -> Wide<U> {}
 
     /// Combine two plans lane-by-lane. Lazy. Lengths must match at run time.
     @native
-    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> { }
+    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {}
 
     /// Run the plan and materialize the lanes back to a Vec.
     @native("rask_vec_clone")
-    public func read(self) -> Vec<T> { }
+    public func read(self) -> Vec<T> {}
 
     /// Run the plan, reducing the lanes with `+`.
     @native("rask_wide_sum")
-    public func sum(self) -> T { }
+    public func sum(self) -> T {}
 
     /// Run the plan, folding the lanes from an initial accumulator.
     @native
-    public func reduce(self, init: U, f: func(U, T) -> U) -> U { }
+    public func reduce(self, init: U, f: func(U, T) -> U) -> U {}
 
     /// Run the plan, returning the smallest lane.
     @native
-    public func min(self) -> T { }
+    public func min(self) -> T {}
 
     /// Run the plan, returning the largest lane.
     @native
-    public func max(self) -> T { }
+    public func max(self) -> T {}
 }

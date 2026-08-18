@@ -23,7 +23,9 @@ duck trait Inspectable {
 
 // Config and BuildInfo satisfy Inspectable purely by shape — no `extend with`.
 extend Config {
-    func describe(self) -> string { return "config {self.to_string()}" }
+    func describe(self) -> string {
+        return "config {self.to_string()}"
+    }
 }
 
 struct BuildInfo {
@@ -32,14 +34,13 @@ struct BuildInfo {
 }
 
 extend BuildInfo {
-    func describe(self) -> string { return "build {self.version} ({self.commit})" }
+    func describe(self) -> string {
+        return "build {self.version} ({self.commit})"
+    }
 }
 
 func handle_inspect() -> Response or ApiError {
-    let items = Vec.from([
-        config.read().clone() as any Inspectable,
-        BuildInfo { version: "0.1.0", commit: "dev" } as any Inspectable,
-    ])
+    let items = Vec.from([config.read().clone() as any Inspectable, BuildInfo { version: "0.1.0", commit: "dev" } as any Inspectable])
 
     // StringBuilder (canonical-patterns' pick for this) isn't reachable from
     // user code yet — see FINDINGS — so collect and join instead.

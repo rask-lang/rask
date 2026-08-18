@@ -18,15 +18,15 @@ import os
 @message
 enum DiskError {
     @message("disk full ({0} blocks)")
-    Full(usize),
+    Full(usize)
 }
 
 @message
 enum ConfigError {
     @message("TIERED_DIR not set")
-    NoEnv,
+    NoEnv
     @message("config file missing: {0}")
-    NoFile(string),
+    NoFile(string)
 }
 
 // Hand-written message() — @message auto-delegation for the wrapped
@@ -39,8 +39,8 @@ enum StoreError {
 extend StoreError with Error {
     func message(self) -> string {
         match self {
-            StoreError.Corrupt(path, row)  => return "corrupt table {path}: bad row {row}",
-            StoreError.FlushFailed(n, e)   => return "flush of {n} rows failed: {e.message()}",
+            StoreError.Corrupt(path, row) => return "corrupt table {path}: bad row {row}"
+            StoreError.FlushFailed(n, e) => return "flush of {n} rows failed: {e.message()}"
         }
     }
 }
@@ -57,8 +57,10 @@ struct Config {
 
 extend Config {
     func from_env() -> Config or ConfigError {
-        let dir = os.env("TIERED_DIR") ?? return ConfigError.NoEnv
-        return Config { dir: dir, memtable_cap: 4 }
+        let dir = os.env("TIERED_DIR") ?? {
+            return ConfigError.NoEnv
+        }
+        return Config { dir, memtable_cap: 4 }
     }
 
     // No real file I/O in this example — stands in for a loader that can fail.
@@ -72,9 +74,7 @@ extend Config {
 }
 
 func load_config() -> Config {
-    return Config.from_env()
-        catch _ => Config.from_file(".tiered.conf")
-        catch _ => Config.default()
+    return Config.from_env() catch _ => Config.from_file(".tiered.conf") catch _ => Config.default()
 }
 
 // ─── Fake block device ───────────────────────────────────────────────
@@ -86,7 +86,7 @@ struct Disk {
 
 extend Disk {
     func new(cap: usize) -> Disk {
-        return Disk { blocks: Vec.new(), cap: cap }
+        return Disk { blocks: Vec.new(), cap }
     }
 
     func write(mutate self, block: string) -> void or DiskError {
@@ -113,7 +113,7 @@ extend MemTable {
     }
 
     func put(mutate self, key: string, value: string) {
-        self.entries.push(Entry { key: key, value: value })
+        self.entries.push(Entry { key, value })
     }
 
     // Newest write wins, so scan from the end.
@@ -126,7 +126,9 @@ extend MemTable {
         return none
     }
 
-    func len(self) -> usize { return self.entries.len() }
+    func len(self) -> usize {
+        return self.entries.len()
+    }
 }
 
 // ─── Sorted table: the flat shape ────────────────────────────────────
@@ -144,7 +146,9 @@ extend SsTable {
         for row in self.rows {
             // Absence-to-error conversion: a '='-less row has no payload to
             // bind, so the exit names the error itself (the old ok_or shape).
-            let eq = row.index_of("=") ?? return StoreError.Corrupt(self.path, row)
+            let eq = row.index_of("=") ?? {
+                return StoreError.Corrupt(self.path, row)
+            }
             if row[..eq] == key { return row[eq + 1..].to_string() }
         }
         return none
@@ -192,7 +196,7 @@ extend Tiered {
         for e in self.active.entries {
             rows.push("{e.key}={e.value}")
         }
-        self.pending = SsTable { path: "L0-{self.sealed}", rows: rows }
+        self.pending = SsTable { path: "L0-{self.sealed}", rows }
         self.sealed += 1
         self.active = MemTable.new()
     }
@@ -201,13 +205,16 @@ extend Tiered {
     // none behind — OPT32/#586), write it, promote it. `take` binds the
     // place, `??` the result: (take self.pending) ?? return.
     func tick(mutate self) -> void or StoreError {
-        let staged = take self.pending ?? return       // idle — nothing staged
+        let staged = take self.pending ?? {
+            return       // idle — nothing staged
+        }
         let n = staged.rows.len()
 
         // The used binder, diverging flavor: wrap the disk error with the
         // context only this frame has (how many rows were lost).
-        self.disk.write(staged.rows.join("\n"))
-            catch e => return StoreError.FlushFailed(n, e)
+        self.disk.write(staged.rows.join("\n")) catch e => {
+            return StoreError.FlushFailed(n, e)
+        }
 
         self.tables.push(staged)
 
@@ -230,7 +237,9 @@ extend Tiered {
         if hot? as v { return v }
 
         for t in self.tables {
-            let v = try t.lookup(key) ?? continue
+            let v = try t.lookup(key) ?? {
+                continue
+            }
             return v
         }
         return none
@@ -254,9 +263,9 @@ extend Tiered {
 
 func report(store: Tiered, key: string) {
     match store.get(key) {
-        string as v      => println("{key} = {v}"),
-        none             => println("{key} is absent"),
-        StoreError as e  => println("{key} failed: {e.message()}"),
+        string as v => println("{key} = {v}")
+        none => println("{key} is absent")
+        StoreError as e => println("{key} failed: {e.message()}")
     }
 }
 
