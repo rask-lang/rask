@@ -1719,6 +1719,33 @@ fn store_link_delete_cost_follows_in_degree() {
 // two resources owes both; closing one used to discharge the holder outright, so
 // the other was dropped in silence. The path in the message is the point — naming
 // the root can't tell you which one you missed.
+// Where a field path exists the obligation is per field; where one doesn't, the
+// whole binding is owed. That fallback is sound but it names the root, which reads
+// like a compiler bug unless the message says which shape stopped the walk.
+#[test]
+fn error_resource_in_untrackable_shape_says_why() {
+    let (failed, out) = compile_error_output("resource_in_untrackable_shape.rk");
+    assert!(failed, "a resource with no field path must still be owed: {}", out);
+    assert!(
+        out.contains("the resource sits in `h.c`, an optional"),
+        "the blocking field is named by path, not just its shape: {}",
+        out
+    );
+    assert!(
+        out.contains("the resource sits in a tuple"),
+        "a shape with no path at all is still named: {}",
+        out
+    );
+    // The point of the note: the error names the root, so it has to explain why it
+    // couldn't name a field. Losing the explanation is the regression to catch.
+    assert_eq!(
+        out.matches("there is no field path to it").count(),
+        2,
+        "every coarse obligation explains itself: {}",
+        out
+    );
+}
+
 #[test]
 fn error_resource_field_partially_consumed() {
     let (failed, out) = compile_error_output("resource_field_partially_consumed.rk");

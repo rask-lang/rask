@@ -114,6 +114,16 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// A binding that holds a resource the field walk could not name — inside a
+    /// `Vec`, a `Map`, an optional, a tuple, an enum payload. The obligation falls
+    /// back to the whole binding, and `where_` says which shape forced that so the
+    /// root-named error doesn't read like a bug.
+    #[error("`{name}` holds a resource in {where_} and must be used before the end of this block")]
+    ResourceNotConsumedOpaque {
+        name: String,
+        where_: String,
+    },
+
     /// Resource type not consumed before scope exit.
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {

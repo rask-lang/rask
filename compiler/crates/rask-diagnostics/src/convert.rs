@@ -2102,6 +2102,29 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
             }
 
+            ResourceNotConsumedOpaque { name, where_ } => {
+                Diagnostic::error(format!(
+                    "resource `{}` must be consumed before scope exit",
+                    name
+                ))
+                .with_code("E0805")
+                .with_primary(self.span, "resource goes out of scope here")
+                .with_help(format!(
+                    "consume the resource inside `{}`, then `discard {}` — or hold it \
+                     somewhere the compiler can name, like a plain field",
+                    name, name
+                ))
+                .with_fix(format!(
+                    "take the resource out of `{}` and consume it",
+                    name
+                ))
+                .with_note(format!(
+                    "the resource sits in {} — there is no field path to it, so the whole of `{}` is owed rather than one field",
+                    where_, name
+                ))
+                .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+
             ResourceNotConsumed { name } => {
                 Diagnostic::error(format!(
                     "resource `{}` must be consumed before scope exit",

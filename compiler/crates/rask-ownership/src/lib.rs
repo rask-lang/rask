@@ -98,6 +98,10 @@ pub struct OwnershipChecker<'a> {
     /// being one: `p` owes `{"a", "b"}`, and `p.a.close()` discharges `"a"` alone.
     /// Scope exit reports whatever is left, by path.
     resource_fields: HashMap<String, HashSet<String>>,
+    /// Bindings whose resource the field walk could not name, and the shape that
+    /// stopped it. These owe the whole binding; the reason rides along so the
+    /// error can say why it named the root.
+    coarse_resources: HashMap<String, String>,
     take_link_params: HashSet<String>,
     identified_links: HashSet<String>,
     /// Spans where a link was consumed by `store.delete(...)`, so a use-after-move
@@ -147,6 +151,7 @@ impl<'a> OwnershipChecker<'a> {
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             resource_fields: HashMap::new(),
+            coarse_resources: HashMap::new(),
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
@@ -394,6 +399,7 @@ impl<'a> OwnershipChecker<'a> {
         self.param_type_strings.clear();
         self.identified_links.clear();
         self.resource_fields.clear();
+        self.coarse_resources.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
         self.store_iterations.clear();
@@ -3161,25 +3167,31 @@ impl<'a> OwnershipChecker<'a> {
     /// `Pool<File>`, etc. as linear. A handle is a copyable value and a pool is
     /// the sanctioned resource container (its own drop story is R5, not L1), so
     /// binding one must not demand consumption (`mem.resource-types/RC2`).
-    /// Dotted paths to the `@resource` fields inside a type. Empty if the type is
-    /// itself a resource (the binding owes itself, which the existing
-    /// `resource_bindings` set already tracks) or holds none.
-    fn resource_field_paths(&self, ty: &Type) -> Vec<String> {
-        let mut out = Vec::new();
-        self.collect_resource_paths(ty, &mut Vec::new(), &mut out, 0);
-        out
+    /// What a type owes, by field. `named` are dotted paths to `@resource` fields
+    /// the walk could reach; `opaque` are places it found a resource but had no
+    /// path to name it — a `Vec` element, an optional, a tuple, an enum payload.
+    fn resource_field_paths(&self, ty: &Type) -> (Vec<String>, Vec<(String, String)>) {
+        let mut named = Vec::new();
+        let mut opaque = Vec::new();
+        self.collect_resource_paths(ty, &mut Vec::new(), &mut named, &mut opaque, 0);
+        (named, opaque)
     }
 
     fn collect_resource_paths(
         &self,
         ty: &Type,
         prefix: &mut Vec<String>,
-        out: &mut Vec<String>,
+        named: &mut Vec<String>,
+        opaque: &mut Vec<(String, String)>,
         depth: usize,
     ) {
         // Cyclic types would otherwise recurse forever; a resource nested this
         // deep is not something the message could name usefully anyway.
         if depth > 8 {
+            opaque.push((
+                prefix.join("."),
+                "a type nested deeper than the checker walks".to_string(),
+            ));
             return;
         }
         let id = match ty {
@@ -3196,11 +3208,63 @@ impl<'a> OwnershipChecker<'a> {
             }
             prefix.push(fname);
             if self.is_directly_resource(&fty) {
-                out.push(prefix.join("."));
+                named.push(prefix.join("."));
+            } else if let Some(shape) = self.opaque_resource_shape(&fty) {
+                opaque.push((prefix.join("."), shape));
             } else {
-                self.collect_resource_paths(&fty, prefix, out, depth + 1);
+                self.collect_resource_paths(&fty, prefix, named, opaque, depth + 1);
             }
             prefix.pop();
+        }
+    }
+
+    /// Why the field walk can't reach a resource inside this type — `None` when it
+    /// can, i.e. the type is a plain struct with named fields. Every shape that
+    /// holds values without giving them a field path is listed, so a type matching
+    /// none of them is reported as unrecognised rather than joining the bucket in
+    /// silence.
+    fn opaque_resource_shape(&self, ty: &Type) -> Option<String> {
+        if ty.as_option().is_some() {
+            return Some("an optional".to_string());
+        }
+        if let Type::Tuple(_) = ty {
+            return Some("a tuple".to_string());
+        }
+        if let Type::UnresolvedGeneric { name, args } = ty {
+            if !args.is_empty() {
+                let base = name.split('<').next().unwrap_or(name);
+                return Some(Self::container_shape(base));
+            }
+        }
+        if let Type::UnresolvedGeneric { name, args } = ty {
+            if !args.is_empty() {
+                return Some(Self::container_shape(name.split('<').next().unwrap_or(name)));
+            }
+        }
+        let (id, args) = match ty {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (*base, args.clone()),
+            _ => return Some("a type the checker does not recognise".to_string()),
+        };
+        let name = self.program.types.type_name(id);
+        let base = name.split('<').next().unwrap_or(&name).to_string();
+        if !args.is_empty() {
+            return Some(Self::container_shape(&base));
+        }
+        match self.program.types.get(id) {
+            Some(rask_types::TypeDef::Enum { .. }) => Some("an enum payload".to_string()),
+            Some(rask_types::TypeDef::Union { .. }) => Some("a union member".to_string()),
+            Some(rask_types::TypeDef::Struct { .. }) => None,
+            _ => Some("a type the checker does not recognise".to_string()),
+        }
+    }
+
+    fn container_shape(base: &str) -> String {
+        match base {
+            "Vec" => "a `Vec` element".to_string(),
+            "Map" => "a `Map` entry".to_string(),
+            "Set" => "a `Set` element".to_string(),
+            other => format!("a `{}` payload", other),
         }
     }
 
@@ -3227,15 +3291,27 @@ impl<'a> OwnershipChecker<'a> {
             self.resource_bindings.insert(name.to_string());
             return;
         }
-        let paths = self.resource_field_paths(ty);
-        if paths.is_empty() {
-            // Holds a resource somewhere the path walk can't name — a Vec or a
-            // Map element. Fall back to owing the whole binding, which is what
-            // the checker did before per-field tracking existed.
+        let (named, opaque) = self.resource_field_paths(ty);
+        if !opaque.is_empty() || named.is_empty() {
+            // Somewhere in there is a resource with no field path to it. Owing the
+            // whole binding is the sound answer — and it subsumes any nameable
+            // fields alongside it, so those are not tracked separately. Naming the
+            // shape that forced it is what keeps a root-named error from reading
+            // like a bug.
+            let where_ = match opaque.into_iter().next() {
+                Some((path, shape)) if !path.is_empty() => {
+                    format!("`{}.{}`, {}", name, path, shape)
+                }
+                Some((_, shape)) => shape,
+                None => self
+                    .opaque_resource_shape(ty)
+                    .unwrap_or_else(|| "a shape the checker cannot name".to_string()),
+            };
+            self.coarse_resources.insert(name.to_string(), where_);
             self.resource_bindings.insert(name.to_string());
         } else {
             self.resource_fields
-                .insert(name.to_string(), paths.into_iter().collect());
+                .insert(name.to_string(), named.into_iter().collect());
         }
     }
 
@@ -3419,10 +3495,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             // Not registered with ensure: must be consumed (Moved) before exit.
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
-                self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ResourceNotConsumed { name },
-                    span,
-                });
+                let kind = match self.coarse_resources.get(&name) {
+                    Some(where_) => OwnershipErrorKind::ResourceNotConsumedOpaque {
+                        name,
+                        where_: where_.clone(),
+                    },
+                    None => OwnershipErrorKind::ResourceNotConsumed { name },
+                };
+                self.errors.push(OwnershipError { kind, span });
             }
         }
 

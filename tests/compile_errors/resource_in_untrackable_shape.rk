@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// When the field walk can't reach a resource, say so.
+//
+// mem.linear/L1 is owed per field where a field path exists. Where one doesn't —
+// the resource sits in an optional, a tuple, a container element — the whole
+// binding is owed instead. That's sound but it names the root, which reads like a
+// compiler bug unless the message says which shape stopped the walk.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+struct InOptional {
+    c: Conn?
+    tag: i32
+}
+
+func in_optional() {
+    let h = InOptional { c: Conn { id: 1 }, tag: 1 }
+    println("{h.tag}")          // ERROR: whole binding owed, `h.c` named as the reason
+}
+
+func in_tuple() {
+    let t = (Conn { id: 3 }, 7)
+    println("{t.1}")            // ERROR: whole binding owed, tuple named as the reason
+}
+
+func main() {
+    in_optional()
+    in_tuple()
+}
