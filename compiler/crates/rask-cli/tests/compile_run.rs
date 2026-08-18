@@ -1293,6 +1293,28 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 // `Pool`+`Handle` and with `Store`+`Link` produces the same output. That is what
 // makes the ergonomics comparison in the write-up a comparison rather than two
 // unrelated programs, so it is asserted rather than eyeballed.
+// analysis.fourth-option: the compile-time delete tracking only sees deletes
+// written in the current body. A function that takes the store mutably and
+// derives its own links to delete — cascade delete — is invisible at the call
+// site, and the caller's local link keeps reading a freed node.
+//
+// This asserts the hole is still open, so it fails loudly the day a `prune`-style
+// parameter mode closes it. When that happens, flip this to a compile-error
+// fixture instead of deleting it.
+#[test]
+fn store_link_cascade_delete_is_the_documented_hole() {
+    let (out, code) = run_interp_repo_path("specs/analysis/prototype/cascade_hole_links.rk");
+    assert_eq!(code, 0, "the hole means this still compiles and runs: {out}");
+    assert!(
+        out.contains("store len = 0"),
+        "the cascade really did delete both nodes: {out}"
+    );
+    assert!(
+        out.contains("kid.name = kid"),
+        "and the caller's link still reads the freed node — this is the hole: {out}"
+    );
+}
+
 #[test]
 fn store_link_litmus_pairs_agree() {
     let pairs = [

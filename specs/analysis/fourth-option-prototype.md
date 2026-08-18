@@ -560,8 +560,88 @@ fixed, the middle row becomes a real "no" and passing a link is certain either
 way.
 
 So the residual hole is one row wide: **handing the store to something that can
-delete**. That is genuinely undecidable without knowing whether the callee
-deletes, which is the effect discussed above.
+delete**.
+
+### The hole is in the showcase program
+
+Not hypothetical. `l3_scene_links.rk` — written to demonstrate the model — had
+a use after free in `main`, and I wrote it without noticing:
+
+```rask
+scene.selected = a2
+delete_subtree(scene, a)    // a2 is a child of a, so this deletes a2
+report(scene)
+let _ = a2                  // reads a freed node; compiles clean
+```
+
+`delete_subtree` deletes `n` and recurses on `n.children`. `n` is accounted for
+— the caller handed it over. The children are not: they come out of a field
+inside the callee, and the caller is holding links to them. The store shrank
+from 5 nodes to 3, `scene.selected` was correctly nulled by the fixup, and the
+local `a2` kept reading the dead node.
+
+`prototype/cascade_hole_links.rk` reduces it to twelve lines and prints
+`store len = 0` followed by `kid.name = kid`.
+
+This changes what the gap is worth. It is not an exotic aliasing case — it is
+**cascade delete**, the most ordinary reason to have a graph in the first place,
+and the model fails on it silently.
+
+### What closing it takes, and what it costs
+
+A delete is safe for the caller when the caller can see it. Three sources:
+
+- a link the function got as a `take` parameter — the caller gave it up, visibly
+- a link the function inserted itself — the caller never knew about it
+- **a link the function derived from the store** (`nodes()`, iteration, or a
+  field like `n.children`) — the caller may be holding the same node
+
+Only the third is dangerous, and it is exactly what `delete_subtree` does. So
+the parameter has to say so:
+
+```rask
+func delete_subtree(prune scene: Scene, take n: Link<SceneNode>)
+```
+
+`mutate s: Store<T>` would stop permitting `delete` and `clear`; `prune` permits
+them. At a call site with `prune`, every non-optional local link into that store
+is revoked — the same kill `clear` already does, for the same reason: the set of
+deleted nodes is not enumerable from the call site, and a `Link<T>` whose type
+promises liveness cannot survive a promise nobody can keep. A link that needs to
+survive must be `Link<T>?`, which the store maintains.
+
+This is a parameter mode, not an effect. It appears only on functions that
+receive a store, propagates only along the path the store travels, and is
+checked one signature at a time — the same way `mutate` already works. Nothing
+is inferred and nothing is coloured.
+
+**Cost, measured on the corpus.** Seventeen functions across the link programs;
+three would need the annotation:
+
+| Function | Why |
+|---|---|
+| `delete_subtree(mutate scene: Scene, n)` | recurses on `n.children` |
+| `remove_at(mutate list: List, index)` | deletes a node found by walking `list.head` |
+| `remove_value(mutate list: List, value)` | same |
+
+The other fourteen are untouched. `push_back` and `add_child` insert only.
+`remove(mutate list, n)` deletes exactly the link it was handed, so it needs
+`take n` and nothing else. Every `report`/`print` function reads.
+
+And of the three, only `delete_subtree` is called by a caller that holds locals
+— the other two live in `l1_list_links_no_locals.rk`, whose whole point is that
+main holds none. So the annotation would change one call site in the corpus, and
+that call site is the one with the bug.
+
+**What it does not fix.** `prune` is coarse: the L3 call would also revoke `b`
+and `root`, which survive. That is the honest limit of a call-site kill — from
+outside, "I deleted an unknown set under here" is all the caller can be told.
+Keeping `b` means keeping it in a `Link<T>?` field.
+
+**Not built.** A new parameter mode is a language change, and the spelling is
+open — `prune s` reads as "remove things from s", where `deletes s` misreads as
+"deletes s itself". Proposed in #806; the `take`-parameter half of it is only
+sound once #804 is fixed.
 
 ## Finding 2: links carry write permission, and edge writes mutate their target
 

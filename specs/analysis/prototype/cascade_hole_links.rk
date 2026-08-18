@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The hole in the compile-time delete tracking, reduced to twelve lines.
+//
+// This is not a hypothetical. It was found in l3_scene_links.rk — the program
+// written to show the model working — where `delete_subtree(scene, a)` deletes
+// a's whole subtree and `main` then uses `a2`, one of the nodes it deleted.
+//
+// The rule the compiler enforces is "a delete you can see revokes the name it
+// names". `cascade` deletes nodes the caller named, and the caller never sees
+// it: the store goes in mutably, no link comes out, and the nodes to delete are
+// re-derived inside from a field. Nothing at the call site changes.
+//
+// Run it: prints "kid" for a node that is no longer in the store.
+
+struct Node {
+    name: string
+    kids: Vec<Link<Node>>
+}
+
+struct Scene {
+    nodes: Store<Node>
+}
+
+// Deletes `n` and everything under it. `n` is accounted for — the caller handed
+// it over. The children are not: they come out of `n.kids`, and the caller may
+// be holding links to them.
+func cascade(mutate scene: Scene, n: Link<Node>) {
+    let kids = n.kids.clone()
+    for c in kids {
+        cascade(scene, c)
+    }
+    scene.nodes.delete(n)
+}
+
+func main() {
+    mut scene = Scene { nodes: Store.new() }
+
+    let parent = scene.nodes.insert(Node { name: "parent", kids: Vec.new() })
+    let kid = scene.nodes.insert(Node { name: "kid", kids: Vec.new() })
+    parent.kids.push(kid)
+
+    cascade(scene, parent)
+
+    // `kid` was deleted inside `cascade`. The store agrees it is gone. The name
+    // still reads it.
+    println("store len = {scene.nodes.len()}")
+    println("kid.name = {kid.name}")
+}

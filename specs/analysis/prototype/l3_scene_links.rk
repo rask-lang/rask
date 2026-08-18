@@ -90,6 +90,10 @@ func main() {
     report(scene)
     delete_subtree(scene, a)
     report(scene)
-    let _ = a2
+
+    // `a2` is deliberately not touched below this line. `delete_subtree` deleted
+    // it — it was a child of `a` — and nothing at this call site says so, so
+    // reading it here would be a use after free the compiler misses. That hole
+    // is isolated in cascade_hole_links.rk.
     let _ = b
 }
