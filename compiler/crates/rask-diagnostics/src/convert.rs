@@ -2340,7 +2340,8 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
 
             RuntimeError::RecursionTooDeep { function, depth } => {
                 Diagnostic::error(format!(
-                    "recursion too deep: {} nested calls and the stack is nearly gone",
+                    "recursion too deep: {} nested calls, and the interpreter is out \
+                     of stacks to continue on",
                     depth
                 ))
                 .with_code("R0023")
@@ -2351,9 +2352,11 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                      has no such limit",
                 )
                 .with_why(
-                    "the interpreter evaluates one Rask call per host stack frame, and \
-                     each of those is large; the limit is reported here rather than left \
-                     to overflow the stack, which killed the process with nothing printed",
+                    "the interpreter spends one host stack frame per Rask call and those \
+                     frames are large, so it moves onto a fresh stack every few hundred \
+                     calls rather than overflowing. That chain is capped — around a \
+                     gigabyte of live stack — so a recursion that never terminates stops \
+                     here with a message instead of taking the machine down",
                 )
             }
 

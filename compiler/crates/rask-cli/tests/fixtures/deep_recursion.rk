@@ -4,15 +4,16 @@
 // millions, so a program that ran compiled vanished interpreted — and the
 // interpreter is meant to be the reference.
 //
-// Two things changed. `main` and the test runner now run on the same 16 MiB stack
-// every spawned task already got, so the depth doesn't depend on which entry
-// point ran the code (~245 → ~495). And running out is now measured and reported
-// rather than left to overflow.
+// It no longer stops at the end of a stack: a call that doesn't fit continues on
+// a thread with a fresh one, and the frame that couldn't fit waits in `join`.
+// Nothing the program can observe changes. The chain is capped by memory rather
+// than by depth — about a gigabyte of live stack, ~30,000 Rask frames in release
+// — so runaway recursion is still a diagnostic (see runaway_recursion.rk).
 //
-// Measured, not counted: one Rask frame costs anywhere from a few KB to tens of
-// KB depending on how deeply nested the expressions in the body are, so a fixed
-// depth limit is either wrong for a heavy body or needlessly low for a light one.
-// This file stays well under either.
+// 1,000 is deliberately past the old cliff and inside what a debug build reaches
+// too: a debug frame costs ~17× an optimized one, so the two profiles reach very
+// different depths on the same budget, and a fixture that only fits in release
+// would fail in a debug CI job.
 
 func down(n: i64) -> i64 {
     if n <= 0 {
@@ -36,7 +37,8 @@ func odd(n: i64) -> bool {
     return even(n - 1)
 }
 
-// A recursive descent that builds a value on the way back up.
+// A recursive descent that builds a value on the way back up — the return path
+// crosses every stack the call chain grew through.
 func sum_to(n: i64) -> i64 {
     if n <= 0 {
         return 0
@@ -45,7 +47,7 @@ func sum_to(n: i64) -> i64 {
 }
 
 func main() {
-    println("down={down(300)}")
-    println("even={even(300)} odd={odd(301)}")
-    println("sum={sum_to(300)}")
+    println("down={down(1000)}")
+    println("even={even(1000)} odd={odd(1001)}")
+    println("sum={sum_to(1000)}")
 }

@@ -4376,14 +4376,15 @@ nocopy=1
 
 // The interpreter died at ~245 nested calls by overflowing the host stack —
 // SIGABRT, nothing printed, no exit code — where native manages millions (#759).
-// `main` and the test runner now run on the same 16 MiB stack every spawned task
-// already had (~245 → ~495), and running out is measured and reported instead.
+// It now moves onto a fresh stack instead of stopping at the end of one, so the
+// depth is bounded by memory rather than by a single thread's stack. 1,000 is
+// past the old cliff and inside what a debug build reaches too.
 #[test]
 fn deep_recursion_runs_on_both_backends() {
     let expected = "\
-down=300
+down=1000
 even=true odd=true
-sum=45150
+sum=500500
 ";
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "deep_recursion.rk");
@@ -4392,9 +4393,11 @@ sum=45150
     }
 }
 
-// Unbounded recursion is a reported error, not a vanished process. The depth it
-// reaches depends on how heavy the frames are, so the test pins the diagnostic
-// and the exit code rather than a number.
+// Unbounded recursion is a reported error, not a vanished process — and now that
+// the interpreter grows its stack rather than stopping at the end of one, the
+// thing that stops it is the cap on how much stack the chain may hold. The depth
+// reached depends on how heavy the frames are and on the build profile, so the
+// test pins the diagnostic and the exit code rather than a number.
 #[test]
 fn runaway_recursion_is_reported_not_aborted() {
     let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
