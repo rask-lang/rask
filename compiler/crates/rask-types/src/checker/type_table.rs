@@ -7,7 +7,7 @@ use rask_ast::NodeId;
 
 use super::builtins::BuiltinModules;
 use super::type_defs::{BinaryStructInfo, TypeDef};
-use super::errors::TypeError;
+use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
@@ -544,17 +544,52 @@ impl TypeTable {
     /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,
     /// `Map<string, File>` inside a tuple, a `Vec<File>` return of a `func`
     /// type) are caught at their innermost violation.
-    /// HA4: the float key of a `Map` nested anywhere in this type, if there is
-    /// one. `f32`/`f64` are not Hashable — `NaN != NaN` breaks the contract that
-    /// equal keys hash equal — so they can't key a Map.
-    pub fn find_float_map_key(&self, ty: &Type) -> Option<Type> {
+    /// HA1/HA4: a Map key has to be Hashable. `Some((ty, fix))` names the key
+    /// that isn't, plus which way out to offer.
+    ///
+    /// This used to test `F32 | F64` by name, so the rule held for the one type
+    /// that motivated it and nothing else — a struct with a float field got in,
+    /// and so did a nominal newtype that declared no conformance (#812). The
+    /// diagnostic already said "is not Hashable"; now the check is that.
+    ///
+    /// A key whose type isn't settled yet is left alone: an inference variable or
+    /// an unresolved name (an open type parameter) says nothing either way, and
+    /// reporting one would flag every generic container.
+    fn unhashable_key(&self, key: &Type) -> Option<(Type, MapKeyFix)> {
+        match key {
+            Type::Var(_)
+            | Type::Error
+            | Type::UnresolvedNamed(_)
+            | Type::UnresolvedGeneric { .. } => None,
+            settled if crate::traits::implements_trait(self, settled, "Hashable") => None,
+            settled => Some((settled.clone(), self.map_key_fix(settled))),
+        }
+    }
+
+    /// Which advice fits this key type.
+    fn map_key_fix(&self, key: &Type) -> MapKeyFix {
+        if matches!(key, Type::F32 | Type::F64) {
+            return MapKeyFix::Float;
+        }
+        let id = match key {
+            Type::Named(id) => Some(*id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+        match id.and_then(|id| self.get(id)) {
+            Some(TypeDef::NominalAlias { .. }) => MapKeyFix::NominalClause,
+            _ => MapKeyFix::ExtendBlock,
+        }
+    }
+
+    pub fn find_unhashable_map_key(&self, ty: &Type) -> Option<(Type, MapKeyFix)> {
         let args = match ty {
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
                 if full.split('<').next() == Some("Map") {
                     if let Some(GenericArg::Type(k)) = args.first() {
-                        if matches!(**k, Type::F32 | Type::F64) {
-                            return Some((**k).clone());
+                        if let Some(bad) = self.unhashable_key(k) {
+                            return Some(bad);
                         }
                     }
                 }
@@ -563,8 +598,8 @@ impl TypeTable {
             Type::UnresolvedGeneric { name, args } => {
                 if name.split('<').next() == Some("Map") {
                     if let Some(GenericArg::Type(k)) = args.first() {
-                        if matches!(**k, Type::F32 | Type::F64) {
-                            return Some((**k).clone());
+                        if let Some(bad) = self.unhashable_key(k) {
+                            return Some(bad);
                         }
                     }
                 }
@@ -591,7 +626,7 @@ impl TypeTable {
             }
             _ => {}
         }
-        nested.into_iter().find_map(|t| self.find_float_map_key(t))
+        nested.into_iter().find_map(|t| self.find_unhashable_map_key(t))
     }
 
     pub fn find_linear_container(&self, ty: &Type) -> Option<(String, Type)> {

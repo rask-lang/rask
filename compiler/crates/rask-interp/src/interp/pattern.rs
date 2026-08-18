@@ -354,6 +354,23 @@ impl Interpreter {
                         b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
                     })
             }
+            // TU9: a tuple compares element by element. A tuple *is* a
+            // `Value::Vec` in here, so this arm is also what `Vec == Vec` would
+            // use — same element-wise answer either way. Without it a
+            // `Map<(i64, i64), …>` accepted an insert and then missed every read,
+            // while native found the key (#812).
+            //
+            // Same `ptr_eq` shortcut the struct arm carries: locking both sides
+            // hangs when they are the same buffer.
+            (Value::Vec(a), Value::Vec(b)) => {
+                if Arc::ptr_eq(a, b) {
+                    return true;
+                }
+                let a = a.lock().unwrap();
+                let b = b.lock().unwrap();
+                a.items.len() == b.items.len()
+                    && a.items.iter().zip(b.items.iter()).all(|(x, y)| Self::value_eq(x, y))
+            }
             // A nominal newtype is its underlying value plus a name (T9), so
             // two of the same type compare by what they wrap. Without this a
             // `Map<UserId, …>` could be inserted into but never read back.
@@ -396,6 +413,17 @@ impl Interpreter {
             Value::Nominal { type_name, inner } => {
                 type_name.hash(&mut hasher);
                 Self::value_hash(inner).hash(&mut hasher);
+            }
+            // A tuple, which shares the Vec representation. Element-wise, to
+            // match the equality arm — every tuple used to hash to the same
+            // number, which is only survivable because equality decides the
+            // bucket, and equality had no arm either.
+            Value::Vec(v) => {
+                let guard = v.lock().unwrap();
+                guard.items.len().hash(&mut hasher);
+                for item in &guard.items {
+                    Self::value_hash(item).hash(&mut hasher);
+                }
             }
             _ => 0u8.hash(&mut hasher),
         }

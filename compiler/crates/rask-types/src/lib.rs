@@ -11,7 +11,7 @@ pub mod reflect;
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
-    TypeError, InvalidCastClass, IndexErrorKind, TraitBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
+    TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, BoundFrom,
     parse_type_string, signature_type_param_names, UnsafeCategory,
 };

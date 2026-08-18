@@ -300,11 +300,13 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 
 | Type | Hashable Status |
 |------|-----------------|
-| Integer primitives, bool, string | Auto-derived |
+| Integer primitives, bool, char, string | Auto-derived |
 | `f32`, `f64` | NOT Hashable (NaN breaks equality) |
 | Struct with all Hashable fields | Auto-derived (field-wise hash combine) |
 | Enum with all Hashable payloads | Auto-derived (tag + payload) |
+| Tuple / fixed array of Hashable elements | Auto-derived, element-wise (`type.tuples/TU11`) |
 | Handle types | Auto-derived (hash of index + generation) |
+| Nominal newtype (`type Id = u64 with (…)`) | Only when the clause lists `Hashable` — a newtype inherits nothing it doesn't name (`type.aliases/T11`) |
 
 ## Compiler-Verified Comparable
 

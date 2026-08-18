@@ -5,6 +5,20 @@ use rask_ast::Span;
 
 use crate::types::{Type, TypeVarId};
 
+/// Which way out of an unhashable Map key to offer. The type decides: a float
+/// can never be a key, while a struct or a newtype just hasn't said it hashes
+/// yet — and those two say it in different syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapKeyFix {
+    /// HA4: `f32`/`f64` are excluded outright. Key on the bits instead.
+    Float,
+    /// A nominal newtype — the traits it inherits are the ones its `with (…)`
+    /// clause names.
+    NominalClause,
+    /// Anything else — an `extend T with Hashable` block declares it.
+    ExtendBlock,
+}
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -745,10 +759,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.generics/HA4: `f32`/`f64` are not Hashable, so they can't key a Map.
-    #[error("a float can't key a Map")]
-    FloatMapKey {
+    /// type.generics/HA1, HA4: a Map key has to be Hashable.
+    #[error("`{key}` can't key a Map")]
+    UnhashableMapKey {
         key: Type,
+        /// Which way out to offer — the advice differs per kind of type.
+        fix: MapKeyFix,
         span: Span,
     },
 
@@ -866,7 +882,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
-            FloatMapKey { key, .. } => *key = f(key),
+            UnhashableMapKey { key, .. } => *key = f(key),
             ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
             DuplicateSumVariant { ty, variant, .. } => {

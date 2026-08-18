@@ -4302,6 +4302,28 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
     }
 }
 
+// type.generics/HA1: the Map key bound is a real `Hashable` check, not a
+// hand-written float test. Each rejected kind gets the way out that fits it —
+// there is no `extend` block you can write for a tuple, and no field to fix on a
+// newtype (#812).
+#[test]
+fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
+    let (failed, out) = compile_error_output("map_key_hashable.rk");
+    assert!(failed, "an unhashable Map key must be rejected: {}", out);
+    assert_eq!(out.matches("E0834").count(), 3, "three bad keys, no more: {}", out);
+    // The newtype is told about its clause, the float about its bits, the struct
+    // about a declared conformance.
+    assert!(out.contains("`Id` is not Hashable"), "{}", out);
+    assert!(out.contains("with (Equal, Hashable)"), "{}", out);
+    assert!(out.contains("`f64` is not Hashable"), "{}", out);
+    assert!(out.contains("`map.insert(x.to_bits(), v)`"), "{}", out);
+    assert!(out.contains("`Floaty` is not Hashable"), "{}", out);
+    assert!(out.contains("extend Floaty with Hashable"), "{}", out);
+    // The two good keys stay good.
+    assert!(!out.contains("`Plain`"), "an all-Hashable struct is a key: {}", out);
+    assert!(!out.contains("`Tag`"), "a newtype that lists Hashable is a key: {}", out);
+}
+
 // type.generics/HA4: floats aren't Hashable, so `to_bits()` is how a float
 // becomes a Map key — the caller decides what "the same key" means rather than
 // inheriting `NaN != NaN`. `Map<f64, V>` itself is rejected

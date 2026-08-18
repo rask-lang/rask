@@ -1677,18 +1677,39 @@ impl ToDiagnostic for rask_types::TypeError {
                 )
             }
 
-            FloatMapKey { key, span } => {
-                let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
-                Diagnostic::error(format!("`{}` can't be a Map key", key))
-                    .with_code("E0829")
-                    .with_primary(*span, format!("`{}` is not Hashable", key))
-                    .with_fix(format!(
-                        "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
-                    ))
-                    .with_why(
-                        "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
-                            .to_string(),
-                    )
+            UnhashableMapKey { key, fix, span } => {
+                use rask_types::MapKeyFix;
+                let d = Diagnostic::error(format!("`{}` can't be a Map key", key))
+                    .with_code("E0834")
+                    .with_primary(*span, format!("`{}` is not Hashable", key));
+                match fix {
+                    MapKeyFix::Float => {
+                        let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
+                        d.with_fix(format!(
+                            "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
+                        ))
+                        .with_why(
+                            "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
+                                .to_string(),
+                        )
+                    }
+                    MapKeyFix::NominalClause => d
+                        .with_fix(format!(
+                            "list it where the type is declared: `type {key} = … with (Equal, Hashable)`"
+                        ))
+                        .with_why(
+                            "a nominal newtype inherits exactly the traits its `with (…)` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
+                                .to_string(),
+                        ),
+                    MapKeyFix::ExtendBlock => d
+                        .with_fix(format!(
+                            "extend {key} with Equal {{ func eq(self, other: {key}) -> bool {{ … }} }}\n  extend {key} with Hashable {{ func hash(self) -> u64 {{ … }} }}"
+                        ))
+                        .with_why(
+                            "a Map key has to hash equal whenever it compares equal. Auto-derive covers primitives and aggregates whose every field is itself Hashable; anything else says so with a declared conformance [type.generics/HA1, G1]"
+                                .to_string(),
+                        ),
+                }
             }
 
             LinearInContainer { container, elem, span } => {

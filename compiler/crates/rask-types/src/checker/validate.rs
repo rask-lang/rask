@@ -209,21 +209,21 @@ impl TypeChecker {
     /// RC1/RC3: reject any recorded site whose resolved type embeds a `Vec<T>`
     /// or `Map<K, V>` with a linear element/key. One error per span.
     ///
-    /// Also HA4: a float is not Hashable, so it can't be a Map key. Same list of
-    /// sites and the same reason for deferring — a `Map.new()` key type isn't
-    /// known until the inserts have been seen. `Map<f64, V>` was accepted, and
-    /// then a NaN key found its own entry natively and missed on the interpreter
-    /// (#306), which is the contract violation HA4 names.
+    /// Also HA1/HA4: a Map key has to be Hashable. Same list of sites and the
+    /// same reason for deferring — a `Map.new()` key type isn't known until the
+    /// inserts have been seen. `Map<f64, V>` was accepted, and then a NaN key
+    /// found its own entry natively and missed on the interpreter (#306), which
+    /// is the contract violation HA4 names.
     pub(super) fn validate_pending_linear_containers(&mut self) {
         let pending = std::mem::take(&mut self.pending_linear_containers);
         let mut reported: Vec<Span> = Vec::new();
-        let mut float_key_reported: Vec<Span> = Vec::new();
+        let mut bad_key_reported: Vec<Span> = Vec::new();
         for (span, ty) in pending {
             let ty = self.ctx.apply(&ty);
-            if let Some(key) = self.types.find_float_map_key(&ty) {
-                if !float_key_reported.contains(&span) {
-                    float_key_reported.push(span);
-                    self.errors.push(TypeError::FloatMapKey { key, span });
+            if let Some((key, fix)) = self.types.find_unhashable_map_key(&ty) {
+                if !bad_key_reported.contains(&span) {
+                    bad_key_reported.push(span);
+                    self.errors.push(TypeError::UnhashableMapKey { key, fix, span });
                 }
             }
             if let Some((container, elem)) = self.types.find_linear_container(&ty) {
