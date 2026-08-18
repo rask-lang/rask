@@ -1000,8 +1000,50 @@ signature for, without a type-system claim the model can't keep.
 The cost is real and worth stating plainly: **you cannot guarantee a function only
 reads the graph.** Handles gave that for free — but through the *pool*, as a side
 effect of the ticket model, since a handle is inert without its container. Links
-deliberately need no container, so the guarantee goes with it. That is a
-consequence of the model, not an oversight.
+deliberately need no container, so the guarantee goes with it.
+
+### What "no read-only links" actually costs: the graph is task-local
+
+The API-intent loss is the small half. The real one is concurrency, and the rules
+are already written down.
+
+`mem.ownership/T2` says you cannot share mutable references across tasks, and
+`T3` says block-scoped views cannot be sent to another task. With no read-only
+link, **every link is a mutable reference**, and under the fixed-source framing
+every link is also a view. Both rules point the same way: no link may cross a task
+boundary — including one you only want to read through.
+
+The handle model has a complete story here and none of it has a link analogue:
+
+| | Handles | Links |
+|---|---|---|
+| identifier crosses tasks | `Handle<T>` is Send + Sync unconditionally — a number | an address; T2 forbids it |
+| container crosses | `Pool<T>`: Send if `T: Send`, Sync if `T: Sync` | `Store<T>` cannot even be captured today |
+| read-parallel access | `pool.snapshot()` → (frozen copy, live original) | `Store` has no `snapshot()` |
+| read-only enforced | `using frozen Pool<T>` at the call site | does not exist |
+
+So a graph becomes task-local. Not merely "no shared mutation" — no shared
+*reading* either, because the only thing you could hand a reader is a link. That
+takes out simulate-on-one-thread-render-on-another, which is the shape validation
+program 4 (game loop with entities) is named after.
+
+**The prototype is currently unsound about this, not merely limited.** A link
+captured by `spawn` and written from both sides typechecks — filed as #830.
+Rejecting that is needed whichever way the design goes.
+
+**And this cuts against the withdrawal above, honestly.** Read-only links would
+have bought exactly this case: a read-only link into a frozen store is sound to
+share, which is what `frozen Pool<T>` plus `snapshot()` already does for handles.
+The propagation-over-reachability that made `mut Link<T>` look like `&`/`&mut` is
+precisely what cross-task read-sharing needs. So dropping it is cheap only if
+read-parallel graph access is not wanted; if it is, the model needs something
+reachability-shaped, and that is the thing the language declines to add.
+
+**What can be recovered without it:** a `Store.snapshot()` returning
+`(copy, original)`, with the copy moved into the task and links derived inside, so
+none cross. That restores read-parallelism and loses stable cross-task identity — a
+handle survives the round trip because it is a name, an address into a different
+allocation does not. Same root cause as the #626 trade.
 
 **`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
 an assignment that reads as touching `a` also modifies `b`. In the real design
@@ -1199,10 +1241,13 @@ withdrawn it comes down to two questions, and only the first is a language chang
    seventeen corpus functions and one call site. Against it, the handle model
    spends context clauses, `frozen`, `WeakHandle`, generation coalescing and the
    W2a–d exceptions — so the signature-surface arithmetic favours it.
-2. **Is "no read-only access to graph nodes, ever" acceptable?** Hold a link and
-   you can write the node; the only mitigation is a lint saying which functions do.
-   If that is acceptable, links are decided. If it is not, the model has no answer
-   that isn't `&`/`&mut`, and handles stay.
+2. **Is a task-local graph acceptable?** This is what "no read-only links" comes
+   to. Every link is a mutable reference, so T2/T3 keep all of them inside one
+   task — no shared reading, not just no shared mutation. The mitigations are a
+   lint for intent and a `Store.snapshot()` for read-parallelism, and the latter
+   costs stable cross-task node identity. If that is acceptable, links are
+   decided. If it is not, the model needs reachability-propagating read-only,
+   which is `&`/`&mut` by another name, and handles stay.
 
 ## Running it
 
