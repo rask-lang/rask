@@ -299,6 +299,26 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
+    /// A collection literal's element, wrapped into the slot it fills.
+    ///
+    /// Same job `wrap_sum_field_value` does for a struct field — a `T` going
+    /// into a `T?` slot acquires the tag — with the niche `Handle<T>?` carved out
+    /// the same way, because there the handle *is* the value.
+    pub(super) fn wrap_collection_element(
+        &mut self,
+        elem_ty: &MirType,
+        val_ty: &MirType,
+        val: MirOperand,
+    ) -> MirOperand {
+        if matches!(elem_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+            return val;
+        }
+        self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::CollectionElement,
+            val, val_ty, elem_ty,
+        )
+    }
+
     /// Lower an absent optional. `none` and `None` are the same value written
     /// two ways, and both land here.
     ///
@@ -1969,6 +1989,17 @@ impl<'a> MirLowerer<'a> {
 
             // Array literal
             ExprKind::Array(elems) => {
+                // std.collections: `[1, 2, 3]` *is* a Vec value; it's a fixed
+                // array only where the slot it fills says so. The checker records
+                // which of the two this literal is, and reading that is the whole
+                // rule — built as a stack array regardless, `let xs: Vec<i64> =
+                // [1, 2, 3]` handed `xs.len()` a length nobody wrote (#771).
+                if let Some(node_ty) = self.ctx.node_types.get(&expr.id).cloned() {
+                    if self.generic_head(&node_ty).is_some_and(|(n, _)| n == "Vec") {
+                        let elem_hint = self.collection_elem_of_checker_type(&node_ty);
+                        return self.lower_vec_from_array_with(elems, elem_hint);
+                    }
+                }
                 // The element type is the checker's, not the first element's.
                 // CV1a makes it the type every element fits, so `[small_u8,
                 // big_u64]` is a `[u64; 2]` — taking the first element's type
@@ -1985,13 +2016,23 @@ impl<'a> MirLowerer<'a> {
                 for (i, elem) in elems.iter().enumerate() {
                     let (elem_op, ty) = self.lower_expr(elem)?;
                     if i == 0 {
-                        elem_ty = ty;
+                        elem_ty = ty.clone();
                     }
-                    lowered.push(elem_op);
+                    lowered.push((elem_op, ty));
                 }
                 if let Some(ty) = checked_elem {
                     elem_ty = ty;
                 }
+                // A bare `T` filling a `T?` slot gets its layers here, the same
+                // way a struct field's does. `[1, none, 3]` in a `[i32?; 3]` used
+                // to store the bare 1 where the tag belongs, so the second read
+                // came back as the first element's value (#783).
+                let lowered: Vec<MirOperand> = lowered
+                    .into_iter()
+                    .map(|(op, val_ty)| {
+                        self.wrap_collection_element(&elem_ty, &val_ty, op)
+                    })
+                    .collect();
                 let elem_size = elem_ty.size();
                 let elem_ty_for_store = elem_ty.clone();
                 let array_ty = MirType::Array {

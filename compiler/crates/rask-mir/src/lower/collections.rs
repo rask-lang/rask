@@ -18,14 +18,30 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
+        self.lower_vec_from_array_with(elems, None)
+    }
+
+    /// `lower_vec_from_array`, told what the elements are.
+    ///
+    /// The first element's own lowered type is a guess: it can't see that the
+    /// slot wants a `T?`, so `[1, none, 3]` into a `Vec<i64?>` built 8-byte slots
+    /// and dropped every tag. The checker knows, so it says.
+    pub(super) fn lower_vec_from_array_with(
+        &mut self,
+        elems: &[Expr],
+        elem_hint: Option<MirType>,
+    ) -> Result<TypedOperand, LoweringError> {
         let mut elem_ty = MirType::I64;
         let mut lowered = Vec::new();
         for (i, elem) in elems.iter().enumerate() {
             let (op, ty) = self.lower_expr(elem)?;
             if i == 0 {
-                elem_ty = ty;
+                elem_ty = ty.clone();
             }
-            lowered.push(op);
+            lowered.push((op, ty));
+        }
+        if let Some(hint) = elem_hint {
+            elem_ty = hint;
         }
         // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size 8
         // and readers load a whole word per element. An untyped integer literal
@@ -37,6 +53,12 @@ impl<'a> MirLowerer<'a> {
         if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
             elem_ty = MirType::I64;
         }
+        // A bare `T` filling a `T?` slot gets its layers here, same as an array
+        // literal's elements and a struct field's value.
+        let lowered: Vec<MirOperand> = lowered
+            .into_iter()
+            .map(|(op, val_ty)| self.wrap_collection_element(&elem_ty, &val_ty, op))
+            .collect();
         let elem_size = elem_ty.size();
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),

@@ -1926,6 +1926,17 @@ impl<'a> FunctionBuilder<'a> {
                 ctx.locals.iter().find(|l| l.id == *src_id)
                     .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
             }
+            // An array element that lives in its slot comes back as an address,
+            // and for a wrapper element that address *is* a whole wrapper. Copy
+            // it. Without this arm the wrap-as-Some path below claimed the
+            // assignment and built `Some(<element address>)`, so `a[0] ?? d` on a
+            // `[i64?; 3]` handed back the address (#783).
+            (MirType::Option(_) | MirType::Result { .. },
+             MirRValue::ArrayIndex { base, .. }) => {
+                Self::operand_mir_type(base, ctx.locals).is_some_and(|t| {
+                    matches!(t, MirType::Array { elem, .. } if elem.stored_inline_in_array())
+                })
+            }
             // `try convert`/`try float to int` builds an Option slot and
             // returns its pointer — copy the 16-byte struct into dst.
             (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),

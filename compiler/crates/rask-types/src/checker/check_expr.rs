@@ -191,11 +191,71 @@ impl TypeChecker {
                     }
                 }
             }
+            // std.collections: `[1, 2, 3]` is a collection literal, and the slot
+            // it lands in says which collection and what element type. Typed from
+            // its own elements instead, `let xs: [i64?; 3] = [1, 2, 3]` reported
+            // "expected `i64?`, found `i64`" — the literal never learned that its
+            // elements fill optional slots, so no element could widen (#771).
+            ExprKind::Array(elements) => {
+                if let Some(want_elem) = self.collection_elem_type(expected) {
+                    for element in elements.iter() {
+                        let got = self.infer_expr_expecting(element, &want_elem);
+                        self.coerce_into(
+                            CoercionSite::CollectionElement,
+                            got,
+                            want_elem.clone(),
+                            element.span,
+                        );
+                    }
+                    // The literal's own type is the destination's shape with the
+                    // element type it was given — MIR builds the slot from this,
+                    // so a `[i64?; 3]` has to say so here. An empty literal has
+                    // nothing of its own to say and takes the shape whole.
+                    let ty = match expected {
+                        Type::Array { .. } => Type::Array {
+                            elem: Box::new(want_elem),
+                            len: elements.len(),
+                        },
+                        other => other.clone(),
+                    };
+                    self.node_types.insert(expr.id, ty.clone());
+                    return ty;
+                }
+            }
             _ => {}
         }
         let ty = self.infer_expr(expr);
         self.note_trait_coercion(expr, expected, &ty);
         ty
+    }
+
+    /// The element type a collection literal's members fill, for the shapes
+    /// `[…]` can take: a fixed array, a slice, or a `Vec`.
+    ///
+    /// `None` when the destination isn't one of those, or when its element type
+    /// is still open — an unresolved element says nothing to push into the
+    /// members, and forcing one would pin them to a variable.
+    fn collection_elem_type(&self, expected: &Type) -> Option<Type> {
+        let elem = match expected {
+            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            Type::Generic { base, args } if self.types.type_name(*base).split('<').next() == Some("Vec") => {
+                match args.first()? {
+                    GenericArg::Type(t) => (**t).clone(),
+                    _ => return None,
+                }
+            }
+            Type::UnresolvedGeneric { name, args } if name.split('<').next() == Some("Vec") => {
+                match args.first()? {
+                    GenericArg::Type(t) => (**t).clone(),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if matches!(elem, Type::Var(_) | Type::Error) {
+            return None;
+        }
+        Some(elem)
     }
 
     /// The `any Trait` type arguments a container was instantiated with.
