@@ -1971,8 +1971,8 @@ impl ComptimeInterpreter {
             UnaryOp::Deref => {
                 Err(ComptimeError::NotSupported("pointer dereference at comptime".to_string()))
             }
-            // There is no heap at comptime, and OW5 makes the value read the same
-            // either way, so the operand's value *is* the answer.
+            // No heap at comptime — `own` is transparent, same as OW5 at runtime,
+            // so the operand's value *is* the answer.
             UnaryOp::Own => Ok(val),
         }
     }

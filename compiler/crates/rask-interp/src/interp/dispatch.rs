@@ -242,9 +242,9 @@ impl Interpreter {
                 Err(RuntimeError::TestExpectFail)
             }
             // mem.owned/OW3: consuming an `Owned` frees its heap value. There's
-            // no heap here — the interpreter's values are reference-counted and go
-            // when the last name to them goes — so the free is implicit and this
-            // only has to agree about the result.
+            // no heap block to release here — the interpreter's values go when the
+            // last name to them does — so this only has to agree about the result.
+            // Native's `drop` is the one that actually frees.
             BuiltinKind::Drop => Ok(Value::Unit),
         }
     }

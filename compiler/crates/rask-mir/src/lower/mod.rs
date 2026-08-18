@@ -1774,59 +1774,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// The box pointer this expression names, as a pointer — `None` when it isn't
-    /// a box at all.
-    ///
-    /// The ordinary path is no good for this. `Owned<T>` erases to `T` (OW5), so a
-    /// read of one comes back typed as the struct, and a struct-typed value is
-    /// copied byte-for-byte wherever it lands — so what reached `drop` was the
-    /// address of a stack copy, and freeing that aborted the process. Reading the
-    /// slot into a pointer-typed local keeps the pointer a pointer (#739).
-    pub(crate) fn lower_owned_box_ptr(
-        &mut self,
-        expr: &Expr,
-    ) -> Result<Option<MirOperand>, LoweringError> {
-        match &expr.kind {
-            // Already a pointer: `own` hands one back, and a local bound to one
-            // holds it (its MIR local is `Ptr`).
-            ExprKind::Unary { op: UnaryOp::Own, .. } => {
-                let (op, _) = self.lower_expr(expr)?;
-                Ok(Some(op))
-            }
-            ExprKind::Ident(name) => {
-                if !self.meta(name).is_some_and(|m| m.is_owned_box) {
-                    return Ok(None);
-                }
-                Ok(self.locals.get(name).map(|(id, _)| MirOperand::Local(*id)))
-            }
-            ExprKind::Field { object, field } => {
-                if !self.owned_field_is_boxed(object, field) {
-                    return Ok(None);
-                }
-                let Some(offset) = self
-                    .struct_layout_of_expr(object)
-                    .and_then(|l| l.fields.iter().position(|f| f.name == *field)
-                        .map(|i| (i as u32, l.fields[i].offset)))
-                else {
-                    return Ok(None);
-                };
-                let (base, _) = self.lower_expr(object)?;
-                let ptr = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: ptr,
-                    rvalue: MirRValue::Field {
-                        base,
-                        field_index: offset.0,
-                        byte_offset: Some(offset.1),
-                        access: crate::operand::FieldAccess::Sized(8),
-                    },
-                }));
-                Ok(Some(MirOperand::Local(ptr)))
-            }
-            _ => Ok(None),
-        }
-    }
-
     /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
     /// already.
     pub(crate) fn box_into_owned_slot(

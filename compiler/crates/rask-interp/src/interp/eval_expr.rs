@@ -1117,10 +1117,10 @@ impl Interpreter {
                     // pointer never reaches the interpreter to begin with;
                     // `unsafe` code is native-only.
                     UnaryOp::Deref => Ok(val),
-                    // mem.owned/OW3: there's no heap to move to here — the
-                    // interpreter's values already live independently of the
-                    // frame — and OW5 makes an `Owned<T>` read as its `T`, so
-                    // `own e` is `e`.
+                    // `own` heap-allocates on native (#739); the interpreter's
+                    // values are already independent of any stack frame, so
+                    // there's nothing further to do here — same OW5 transparency
+                    // as Deref above.
                     UnaryOp::Own => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(

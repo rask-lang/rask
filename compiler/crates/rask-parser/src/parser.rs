@@ -3691,10 +3691,7 @@ impl Parser {
                         let end = operand.span.end;
                         Ok(Expr {
                             id: self.next_id(),
-                            kind: ExprKind::Unary {
-                                op: UnaryOp::Own,
-                                operand: Box::new(operand),
-                            },
+                            kind: ExprKind::Unary { op: UnaryOp::Own, operand: Box::new(operand) },
                             span: self.span(start, end),
                         })
                     }
