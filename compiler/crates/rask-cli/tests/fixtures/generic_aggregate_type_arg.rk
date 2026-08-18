@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A generic type gets one layout for every instantiation, laid out with a
-// word-sized placeholder per type parameter. An aggregate type argument is bigger
-// than that, so the store runs past its own slot and the read comes back garbage.
+// The half of #781 that's still an error.
 //
-//     let b = One { only: Big { a: 1, b: 2, c: 3 } }
-//     println("{b.only.a}")                            // SIGSEGV, silently
+// A generic type whose type argument is an inline aggregate gets a layout of its
+// own now — `tests/suite/t_generic_aggregate_arg.rk` covers what works.
 //
-// This is a workaround, not the fix: it turns the crash into an error that says
-// what's wrong. The fix needs per-instantiation layouts, which needs the checker
-// to record which type arguments a generic struct was instantiated with — it
-// currently discards them, so a struct literal's node type is a bare
-// `Named(TypeId)`. Tracked in #781.
+// Not when the type has methods. `extend One<A>` compiles to *one* `One_get`
+// body, whose `self` is the shared layout, and mono doesn't monomorphize a method
+// per receiver instantiation the way it does a generic function. Widen the layout
+// and the caller passes 24 bytes to a body reading 8, which is a segfault rather
+// than an error — so such a type keeps the shared layout and the aggregate
+// argument is refused at the field whose two sizes disagree.
 //
-// Scalars, `string` (stored as a pointer) and any argument at or under a word are
-// unaffected — `One<i64>`, `One<string>`, `Pair<i64, i64>` all work, and
-// `generic_struct_turbofish.rk` covers them.
+// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
 
 struct One<A> {
     public only: A
+}
+
+extend One<A> {
+    func get(self) -> A {
+        return self.only
+    }
 }
 
 struct Big {
@@ -27,7 +30,11 @@ struct Big {
 }
 
 func main() {
-    // ERROR: a 24-byte Big doesn't fit the word-sized placeholder slot.
+    // A scalar argument fits the placeholder slot, so this half is fine.
+    let n = One { only: 5 }
+    println("{n.get()}")
+
+    // ERROR: a 24-byte Big doesn't fit, and the shared method body can't widen.
     let b = One { only: Big { a: 1, b: 2, c: 3 } }
-    println("{b.only.a}")
+    println("{b.get().a}")
 }

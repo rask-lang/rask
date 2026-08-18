@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type whose type argument is an inline aggregate (#781).
+//
+// Every instantiation used to share one layout, computed with `i64` standing in
+// for each type parameter. That holds for a scalar argument, and it holds for a
+// `string` too — a string in a generic slot is the pointer to its bytes. It does
+// not hold for a struct, enum or tuple, which *is* its bytes and can be any size:
+// `One<Big>` stored 24 bytes into an 8-byte slot and segfaulted on the read back.
+//
+// Those instantiations get a layout of their own now. What's left is a method on
+// the generic type — `extend One<A>` compiles to one shared body, so it can't
+// serve both an 8-byte and a 24-byte `self`; such a type keeps the shared layout
+// and an aggregate argument is still a compile error. A generic *function* is
+// monomorphized, so it works.
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct One<A> {
+    public only: A
+}
+
+struct Pair<A, B> {
+    public first: A
+    public second: B
+}
+
+enum Holder<T> {
+    Empty
+    Full(T)
+}
+
+func only_of<A>(o: One<A>) -> A {
+    return o.only
+}
+
+func b_of(o: One<Big>) -> i64 {
+    return o.only.b
+}
+
+func make_one() -> One<Big> {
+    return One { only: Big { a: 7, b: 8, c: 9 } }
+}
+
+test "type.generics — an aggregate type argument reads back whole" {
+    let one = One { only: Big { a: 1, b: 2, c: 3 } }
+    assert one.only.a == 1
+    assert one.only.b == 2
+    assert one.only.c == 3
+}
+
+test "type.generics — the aggregate survives every crossing" {
+    let one = One { only: Big { a: 1, b: 2, c: 3 } }
+    // A monomorphized generic function.
+    assert only_of(one).c == 3
+    // A concrete parameter and a concrete return.
+    assert b_of(one) == 2
+    assert make_one().only.c == 9
+}
+
+test "type.generics — two parameters, and a mix of widths" {
+    let both = Pair { first: Big { a: 1, b: 2, c: 3 }, second: Big { a: 4, b: 5, c: 6 } }
+    assert both.first.c == 3
+    assert both.second.a == 4
+
+    let mixed = Pair { first: 5, second: Big { a: 7, b: 8, c: 9 } }
+    assert mixed.first == 5
+    assert mixed.second.b == 8
+}
+
+test "type.generics — assigning the aggregate field" {
+    mut one = One { only: Big { a: 0, b: 0, c: 0 } }
+    one.only = Big { a: 4, b: 5, c: 6 }
+    assert one.only.b == 5
+}
+
+test "type.generics — nested instantiation" {
+    let nested = One { only: One { only: Big { a: 1, b: 2, c: 3 } } }
+    assert nested.only.only.c == 3
+}
+
+test "type.generics — inside a collection" {
+    mut xs: Vec<One<Big>> = Vec.new()
+    xs.push(One { only: Big { a: 9, b: 8, c: 7 } })
+    assert xs.len() == 1
+    assert xs[0].only.a == 9
+}
+
+test "type.generics — an enum payload is the same problem" {
+    let held = Holder.Full(Big { a: 1, b: 2, c: 3 })
+    match held {
+        Holder.Full(v) => assert v.b == 2
+        Holder.Empty => assert false
+    }
+}
+
+test "type.generics — a tuple argument lives inline too" {
+    let three = One { only: (1, 2, 3) }
+    assert three.only.2 == 3
+}
+
+// The arguments that always fitted, so the shared layout still serves them and
+// nothing changed shape.
+test "type.generics — a scalar or string argument is unchanged" {
+    let n = One { only: 5 }
+    assert n.only == 5
+    let s = One { only: "hi" }
+    assert s.only == "hi"
+    assert only_of(s) == "hi"
+}
+
+func main() {}

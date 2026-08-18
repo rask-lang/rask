@@ -568,6 +568,94 @@ impl<'a> MirContext<'a> {
         self.find_struct(base)
     }
 
+    /// The layout of one *instantiation* of a generic type, when mono emitted a
+    /// separate one.
+    ///
+    /// Generic types share a single layout with a word-sized placeholder per type
+    /// parameter, which is right until a type argument is an inline aggregate
+    /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
+    /// instance layout and falls through to the shared one. The name comes from
+    /// `rask_mono::generic_instance_name`, so both sides spell it the same way by
+    /// construction (#781).
+    pub fn generic_instance_mir_type(
+        &self,
+        base: &rask_types::TypeId,
+        args: &[rask_types::GenericArg],
+    ) -> Option<MirType> {
+        let name = self.generic_instance_layout_name(base, args)?;
+        if let Some((idx, sl)) = self.find_struct(&name) {
+            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
+        }
+        let (idx, el) = self.find_enum(&name)?;
+        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
+    }
+
+    /// `Base$Arg$Arg` for a resolved generic type, or `None` when an argument
+    /// can't be named.
+    fn generic_instance_layout_name(
+        &self,
+        base: &rask_types::TypeId,
+        args: &[rask_types::GenericArg],
+    ) -> Option<String> {
+        let base_name = self.type_names.get(base)?;
+        let bare = base_name.split('<').next().unwrap_or(base_name).trim();
+        let mut arg_tys = Vec::with_capacity(args.len());
+        for arg in args {
+            let rask_types::GenericArg::Type(t) = arg else { return None };
+            arg_tys.push((**t).clone());
+        }
+        rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+    }
+
+    /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
+    ///
+    /// The key is built the same way `rask_mono::generic_instance_name` builds it,
+    /// which for a written argument is the argument's own spelling — a name for a
+    /// user type, the primitive's name otherwise. A nested `One<One<Big>>` folds
+    /// the same way because its inner `<…>` becomes `$…` too.
+    fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
+        let args = generic_args_of_str(full)?;
+        if args.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            // A nested instantiation, spelled the same way.
+            let key = match arg.split_once('<') {
+                Some(_) => {
+                    let inner = generic_args_of_str(arg)?;
+                    let head = arg.split('<').next()?.trim();
+                    format!("{}${}", head, inner.join("$"))
+                }
+                None => arg.trim().to_string(),
+            };
+            if key.is_empty() {
+                return None;
+            }
+            parts.push(key);
+        }
+        let name = format!("{}${}", base.trim(), parts.join("$"));
+        if let Some((idx, sl)) = self.find_struct(&name) {
+            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
+        }
+        let (idx, el) = self.find_enum(&name)?;
+        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
+    }
+
+    /// The instance struct layout for a checker type, if it has one.
+    pub fn generic_instance_struct(&self, ty: Option<&Type>) -> Option<(u32, &StructLayout)> {
+        let Type::Generic { base, args } = ty? else { return None };
+        let name = self.generic_instance_layout_name(base, args)?;
+        self.find_struct(&name)
+    }
+
+    /// The instance enum layout for a checker type, if it has one.
+    pub fn generic_instance_enum(&self, ty: Option<&Type>) -> Option<(u32, &EnumLayout)> {
+        let Type::Generic { base, args } = ty? else { return None };
+        let name = self.generic_instance_layout_name(base, args)?;
+        self.find_enum(&name)
+    }
+
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
     /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
@@ -728,7 +816,14 @@ impl<'a> MirContext<'a> {
                 } else if let Some((idx, el)) = self.find_enum(name) {
                     MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                 } else if let Some(base) = name.split('<').next() {
-                    // Generic type like "Box<i64>" — try base name "Box"
+                    // "One<Big>" written out — a generic instantiation whose type
+                    // argument is an inline aggregate has a layout of its own, and
+                    // it isn't found under the base name. A monomorphized body
+                    // reaches this spelling: `first$Big(o: One<Big>)` was given the
+                    // shared 8-byte layout while its caller passed 24 bytes (#781).
+                    if let Some(instance) = self.instance_layout_from_str(base, name) {
+                        return instance;
+                    }
                     if let Some((idx, sl)) = self.find_struct(base) {
                         self.struct_or_handle(base, idx, sl)
                     } else if let Some((idx, el)) = self.find_enum(base) {
@@ -776,7 +871,10 @@ impl<'a> MirContext<'a> {
                     MirType::Ptr
                 }
             }
-            Type::Generic { base, .. } => {
+            Type::Generic { base, args } => {
+                if let Some(instance) = self.generic_instance_mir_type(base, args) {
+                    return instance;
+                }
                 if let Some(name) = self.type_names.get(base) {
                     self.resolve_type_str(name)
                 } else {

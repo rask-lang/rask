@@ -2188,6 +2188,22 @@ impl<'a> MirLowerer<'a> {
                     (MirType::Ptr, None, None)
                 };
 
+                // A generic struct with an inline aggregate type argument has a
+                // layout of its own, and the written name doesn't identify it —
+                // `One { only: Big { … } }` says only "One". The checker's type for
+                // this node carries the instantiation, so that picks the layout
+                // (#781).
+                let (result_ty, layout) = match self
+                    .ctx
+                    .generic_instance_struct(self.ctx.lookup_raw_type(expr.id))
+                {
+                    Some((idx, sl)) => (
+                        MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)),
+                        Some(sl),
+                    ),
+                    None => (result_ty, layout),
+                };
+
                 let result_local = self.builder.alloc_temp(result_ty.clone());
 
                 // For enum variants, store the tag first
@@ -2258,10 +2274,12 @@ impl<'a> MirLowerer<'a> {
                             && value_size > fl.size
                         {
                             return Err(LoweringError::InvalidConstruct(format!(
-                                "field `{}` holds {} bytes but its slot is {} — a generic \
-                                 type is laid out once for every instantiation, with a \
-                                 word-sized placeholder per type parameter, so an \
-                                 aggregate type argument doesn't fit. Box it, or use a \
+                                "field `{}` holds {} bytes but its slot is {} — this \
+                                 generic type has methods, so every instantiation shares \
+                                 one body and therefore one layout, laid out with a \
+                                 word-sized placeholder per type parameter. An aggregate \
+                                 type argument doesn't fit that. Drop the `extend` block, \
+                                 hold the aggregate behind a field of its own, or use a \
                                  concrete type here (#781)",
                                 field.name, value_size, fl.size
                             )));
@@ -3916,8 +3934,17 @@ impl<'a> MirLowerer<'a> {
                         }
 
                         // Enum variant constructor: Shape.Circle(r)
-                        // Extract layout data before mutable borrows in lower_expr
-                        let enum_variant = self.ctx.find_enum(name).and_then(|(idx, layout)| {
+                        // Extract layout data before mutable borrows in lower_expr.
+                        // A generic enum whose type argument is an inline aggregate
+                        // has its own layout, and the written name doesn't identify
+                        // it — `Holder.Full(Big { … })` says only "Holder". The
+                        // checker's type for the call carries the instantiation
+                        // (#781).
+                        let enum_variant = self
+                            .ctx
+                            .generic_instance_enum(self.ctx.lookup_raw_type(expr.id))
+                            .or_else(|| self.ctx.find_enum(name))
+                            .and_then(|(idx, layout)| {
                             let variant = layout.variants.iter().find(|v| v.name == *method)?;
                             Some((
                                 idx,

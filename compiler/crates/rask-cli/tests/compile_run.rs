@@ -4741,15 +4741,15 @@ a up A lo a
     }
 }
 
-// A generic type is laid out once for every instantiation, with a word-sized
-// placeholder per type parameter, so an aggregate type argument doesn't fit its
-// slot: `One { only: Big { … } }` with a 24-byte Big stored past the slot and read
-// back garbage — SIGSEGV, silently (#781).
+// A generic type *with methods* is laid out once for every instantiation, with a
+// word-sized placeholder per type parameter, so an aggregate type argument doesn't
+// fit its slot. The layout has to stay shared there: `extend One<A>` is one body,
+// and one body can't take both an 8-byte and a 24-byte `self`.
 //
-// A workaround, not the fix: the crash is now an error that says what's wrong. The
-// fix needs per-instantiation layouts, which needs the checker to record the type
-// arguments a generic struct was instantiated with — it discards them today, so a
-// struct literal's node type is a bare `Named(TypeId)`.
+// Without methods the instantiation gets its own layout and this all works —
+// `tests/suite/t_generic_aggregate_arg.rk` is that half. What's left needs mono to
+// monomorphize a method per receiver instantiation, the way it already does for a
+// generic function (#781).
 //
 // `rask check` doesn't run MIR lowering, so this is caught at compile/run.
 #[test]
