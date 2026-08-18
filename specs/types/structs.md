@@ -338,6 +338,14 @@ func flat(v: Vertex) -> i32 {
 `..` covers the fields the pattern doesn't name, which is also how a `private`
 field is skipped.
 
+The same pattern binds in a `let`/`mut`, without a `match` around it:
+
+```rask
+mut Point { x, .. } = point    // Bind visible fields, ignore rest
+```
+
+The compiler doesn't parse that form yet — [#811](https://github.com/rask-lang/rask/issues/811).
+
 Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
 
 ## Edge Cases
