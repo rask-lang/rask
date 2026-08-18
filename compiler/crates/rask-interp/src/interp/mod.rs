@@ -676,6 +676,11 @@ impl Interpreter {
 
     /// Handles nested values like Result.Ok(file) or Result.Err(FileError{file}).
     fn transfer_resource_to_scope(&mut self, value: &Value, new_depth: usize) {
+        // A program with no live resources has nothing to hand over, and this
+        // walks aggregates — so the common case doesn't pay for the search.
+        if self.resource_tracker.is_empty() {
+            return;
+        }
         match value {
             Value::File(rc) => {
                 let ptr = Arc::as_ptr(rc) as usize;
@@ -690,13 +695,34 @@ impl Interpreter {
                 }
             }
             Value::Struct(ref s) => {
-                if let Some(id) = s.lock().unwrap().resource_id {
+                let (id, fields) = {
+                    let data = s.lock().unwrap();
+                    (data.resource_id, data.fields.values().cloned().collect::<Vec<_>>())
+                };
+                if let Some(id) = id {
                     self.resource_tracker.transfer_to_scope(id, new_depth);
+                }
+                // A struct that isn't itself a resource can still hold one —
+                // `return Wrap { conn: conn }` hands it over just as directly.
+                for field in &fields {
+                    self.transfer_resource_to_scope(field, new_depth);
                 }
             }
             Value::Enum { fields, .. } => {
                 for field in fields {
                     self.transfer_resource_to_scope(field, new_depth);
+                }
+            }
+            // A tuple is a `Vec` at runtime, and `return (request, responder)`
+            // hands the resource to the caller the same way a struct field
+            // does. Without this the callee's scope exit read it as a leak, and
+            // native — which has no runtime tracker — disagreed (#792). A real
+            // `Vec` can't hold a resource at all (mem.linear/RC1, RC3), so
+            // walking one costs nothing and finds nothing.
+            Value::Vec(items) => {
+                let snapshot: Vec<Value> = items.lock().unwrap().items.clone();
+                for item in &snapshot {
+                    self.transfer_resource_to_scope(item, new_depth);
                 }
             }
             _ => {}

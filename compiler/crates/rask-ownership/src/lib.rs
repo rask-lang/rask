@@ -705,6 +705,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
+                    self.consume_returned_resources(expr);
                     // SL2: Check if returning a scope-limited closure
                     if let ExprKind::Ident(name) = &expr.kind {
                         if self.scope_limited_closures.contains_key(name) {
@@ -2825,6 +2826,75 @@ impl<'a> OwnershipChecker<'a> {
     fn register_ensure(&mut self, name: &str, ensure_span: Span) {
         self.ensure_registered.insert(name.to_string());
         self.ensure_spans.entry(name.to_string()).or_insert(ensure_span);
+    }
+
+    /// A `return` hands its value to the caller, which consumes any resource in
+    /// it (mem.linear/L2).
+    ///
+    /// Reading a name isn't a move, so `return conn` left the binding Owned and
+    /// scope exit reported it as leaked — with a suggested fix (`close()` it
+    /// first) that would hand the caller a dead connection. There was no version
+    /// of the function that satisfied the checker and still worked (#792).
+    ///
+    /// Aggregates count, because handing back `(request, responder)` is what the
+    /// flagship `Responder` design does. A projection doesn't: `return conn.fd`
+    /// reads a field and leaves the resource behind, which really is a leak.
+    fn consume_returned_resources(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if self.resource_bindings.contains(name)
+                    && matches!(self.bindings.get(name), Some(BindingState::Owned))
+                {
+                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.consume_returned_resources(e);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.consume_returned_resources(&f.value);
+                }
+                if let Some(s) = spread {
+                    self.consume_returned_resources(s);
+                }
+            }
+            // `Holder.Full(conn)` — an enum variant carrying a payload, which
+            // parses as a method call on the type name. A free function call
+            // isn't here on purpose: passing a resource to one already moves it
+            // through the argument path, which knows the parameter's mode and
+            // this doesn't.
+            ExprKind::MethodCall { object, method, args, .. }
+                if self.names_a_variant(object, method) =>
+            {
+                for arg in args {
+                    self.consume_returned_resources(&arg.expr);
+                }
+            }
+            // The value a branch produces is the value returned.
+            ExprKind::If { then_branch, else_branch, .. } => {
+                self.consume_returned_resources(then_branch);
+                if let Some(e) = else_branch {
+                    self.consume_returned_resources(e);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Is `object.method(…)` an enum variant construction rather than a call?
+    /// Read off the type table, which is authoritative for type names — a
+    /// variant can share its name with one from another enum.
+    fn names_a_variant(&self, object: &Expr, method: &str) -> bool {
+        let ExprKind::Ident(name) = &object.kind else { return false };
+        let Some(type_id) = self.program.types.get_type_id(name) else { return false };
+        matches!(
+            self.program.types.get(type_id),
+            Some(rask_types::TypeDef::Enum { variants, .. })
+                if variants.iter().any(|(v, _)| v == method)
+        )
     }
 
     /// Extract resource names from ensure expressions (e.g., `file.close()`).
