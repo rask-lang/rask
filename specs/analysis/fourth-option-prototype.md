@@ -946,24 +946,62 @@ is rejected as "cannot mutate `t` — declared `let`". Same `as`, opposite
 mutability — filed as [#788](https://github.com/rask-lang/rask/issues/788). Even if that were settled, a binding is local — it says nothing about
 the link a function hands back.
 
-So writability belongs on the type, which is what "why not a mutable `Link`?"
-proposes. Following Rask's own defaults — parameters read-only until `mutate`,
-bindings immutable until `mut` — that reads:
+*Not the type either.* The remaining candidate was `mut Link<T>` — writability in
+the type, following Rask's own defaults:
 
 ```rask
-struct Entity {
-    target: mut Link<Entity>?        // writes allowed through this edge
-    home:   Link<Region>?            // read-only through this one
-}
-
 func report(e: Link<Entity>)         // cannot write the node
 func damage(e: mut Link<Entity>)     // can
 ```
 
-The cost is a `mut` on every edge you write through, which is visible at the
-declaration and at every signature — the legibility that a context-based answer
-can't provide, since nothing at the use site would say the link is restricted. It
-is one modifier, not the extra type `ReadLink<T>` would have been.
+Two things kill it, and the second is the serious one.
+
+**It contradicts a decision the box family already made.** `mut` in type position
+would be its first use in the language — nothing in the stdlib or SYNTAX.md has
+one. And `Cell` states the rule it would break, in its own doc comment:
+
+> Mutation goes through the heap slot, not the binding, which is why `set` and
+> `replace` take a plain `self`: `let c = Cell.new(0)` followed by `c.set(1)` is
+> the point of the type, not a mistake (mem.cell/CE1, CE2).
+
+Links behave identically today: `let a = s.insert(...)` followed by `a.peer = b`
+and `a.id = 99` all compile. `mut Link<T>` would make Link the one box where the
+binding controls writes through it — a second inconsistency stacked on the first.
+
+**It cannot be one bit on a parameter; it is viral over the reachable graph.**
+`remove` never writes `n`. It writes `p` and `x`, read *out of* `n`:
+
+```rask
+func remove(mutate list: List, n: Link<Node>) {
+    if n.prev? as p { p.next = n.next }
+    if n.next? as x { x.prev = n.prev }
+}
+```
+
+So either a link derived from a read-only link is itself read-only — and
+read-only propagates across every edge you can follow, which is `&`/`&mut` with
+reachability — or it is writable, and `mut` guarantees nothing, since one hop
+through an edge launders any read-only link into a writable one. The first is
+further than this language goes. The second is decoration.
+
+**Counted, in case the default mattered:** eleven link-typed parameters across the
+link programs, of which eight are read-only and three write (`add_child`'s
+`parent`, `reparent`'s `n` and `new_parent`) — four once `remove`'s `n` needs it to
+write through `p`. So read-only would have been the right default. The problem is
+having the feature at all.
+
+**So there are no read-only links, and that is the answer rather than a gap.**
+Hold one and you can write the node. What replaces the guarantee is information:
+principle 5 says to track modes "as metadata surfaced via tooling (IDE ghosts,
+lints) instead of type-system constraints", and "does this function write through a
+link parameter?" is exactly that. A lint gives you what you would have read the
+signature for, without a type-system claim the model can't keep.
+
+The cost is real and worth stating plainly: **you cannot guarantee a function only
+reads the graph.** Handles gave that for free — but through the *pool*, as a side
+effect of the ticket model, since a handle is inert without its container. Links
+deliberately need no container, so the guarantee goes with it. That is a
+consequence of the model, not an oversight.
 
 **`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
 an assignment that reads as touching `a` also modifies `b`. In the real design
@@ -1118,11 +1156,13 @@ list:
    is the call the compiler can't see: a store passed mutably to something that
    deletes inside. That needs the `deleting` parameter mode (#806), which needs
    #804 first.
-2. **Read-only links** — put writability in the type (`mut Link<T>`, default
-   read-only, matching `let`/`mut` and parameter modes). Not a context: a link
-   escapes the context that made it, demonstrated above. Not a binding mode: local,
-   and `with … as` versus `? as` don't even agree on mutability today. Designed,
-   not built — and now the largest unbuilt item.
+2. **Read-only links don't exist, and shouldn't be made to.** Not a context: a
+   link escapes the context that made it, demonstrated above. Not a binding mode:
+   `Cell` already decided that writes go through the slot, not the binding. Not the
+   type: `mut Link<T>` would be `mut`'s first appearance in type position, would
+   make Link the one box that breaks the family rule, and cannot stay one bit —
+   read-only either propagates across every edge you can follow, or launders away
+   in one hop. Writability becomes information via lint (principle 5) instead.
 3. **The representation note** — say plainly that flat-graph zero-copy
    persistence is what's being traded away, and that graph `Encode` gains an id
    assignment pass. No escalation needed; the tier was already narrow.
@@ -1144,19 +1184,25 @@ What it costs is three concepts, against the one runtime check handles spend:
 |---|---|
 | kill/use tracking for link locals — a named delete kills one name plus every derived alias, an unnamed one kills all | built |
 | `deleting` parameter mode, composing with `mutate` | designed, #806 |
-| `mut Link<T>` — writability in the type | designed, unbuilt |
+| ~~`mut Link<T>` — writability in the type~~ | **withdrawn** — breaks the box-family rule, and can't stay one bit |
 | B1/B2 amendment: a third container class, grows in count but never relocates | designed, unbuilt |
 
 The first reuses machinery Rask already has for `take`, so it adds no new analysis
 class — which is the answer to "complexity is conserved". The rest are genuinely
 new surface.
 
-So the decision is not "does the model work" — it does. It is whether `deleting`
-and `mut Link<T>` are acceptable additions to the language. If they are, links win
-on ergonomics and the checkless read is real. If either is not, handles stay,
-because without them the model is either unsound (no `deleting`: cascade delete is
-a use after free, demonstrated) or unable to express read-only access at all (no
-`mut Link<T>`).
+So the decision is not "does the model work" — it does. With `mut Link<T>`
+withdrawn it comes down to two questions, and only the first is a language change:
+
+1. **Is `deleting` an acceptable parameter mode?** Without it the model is unsound:
+   cascade delete is a use after free, demonstrated. Measured cost is three of
+   seventeen corpus functions and one call site. Against it, the handle model
+   spends context clauses, `frozen`, `WeakHandle`, generation coalescing and the
+   W2a–d exceptions — so the signature-surface arithmetic favours it.
+2. **Is "no read-only access to graph nodes, ever" acceptable?** Hold a link and
+   you can write the node; the only mitigation is a lint saying which functions do.
+   If that is acceptable, links are decided. If it is not, the model has no answer
+   that isn't `&`/`&mut`, and handles stay.
 
 ## Running it
 
