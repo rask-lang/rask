@@ -68,7 +68,7 @@ public func main(args: Args) {
 | **EX1: Normal return** | `main` returning → status 0 |
 | **EX2: Error return** | `main` returning an error → status 1, error to stderr |
 | **EX3: Explicit exit** | `sys.exit(n)` → immediate, no cleanup |
-| **EX4: Panic** | Panic → status 101, message to stderr |
+| **EX4: Panic** | Panic → status 101, message to stderr. Every runtime panic, not just an explicit `panic()`: arithmetic overflow and divide-by-zero (`type.overflow/OV1–OV4`), a shift past the width (SH1), `x!` on a `none` (`type.optionals/OPT13`), an out-of-bounds index, a match with no arm, use of a closed resource, and a failed `assert`. An error returned from `main` is the other case and exits 1 — 101 says the program hit a bug, 1 says the program said no |
 | **EX5: Ensure runs** | `ensure` blocks run before exit (unless `sys.exit()`) |
 
 ## One Package, One Role

@@ -128,7 +128,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
         Err(diag) => {
             // A panic is a bug, not an error return: exit 101, distinct from an
             // error propagated out of main (exit 1). (struct.targets/EX4, ctrl.panic/P4)
-            let exit_code = if matches!(diag.error, rask_interp::RuntimeError::Panic(..)) { 101 } else { 1 };
+            let exit_code = if diag.error.is_panic() { 101 } else { 1 };
             let diagnostic = diag.to_diagnostic();
             if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
                 let file_name = file_path.to_string_lossy();

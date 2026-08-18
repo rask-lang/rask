@@ -1475,6 +1475,45 @@ fn inverted_ensure_order_runs_cleanups_backwards() {
     }
 }
 
+// EX4 (#325): an uncaught panic exits 101, an error returned from main exits 1.
+// The interpreter only counted an explicit `panic()` as a panic, so an
+// overflow, a divide by zero, a shift past the width and a forced `x!` on
+// `none` exited 1 there while native exited 101 for all of them. Anything
+// branching on the exit code got a different answer per backend.
+#[test]
+fn every_panic_kind_exits_101_on_both_backends() {
+    let rask = rask_binary();
+    let fixture = fixture("panic_exit_codes.rk");
+    for case in ["overflow", "divzero", "shift", "unwrap", "explicit"] {
+        for mode in ["--interp", "--native"] {
+            let out = Command::new(&rask)
+                .args(["run", mode])
+                .arg(&fixture)
+                .arg(case)
+                .env("RASK_RUNTIME_DIR", runtime_dir())
+                .output()
+                .expect("failed to run rask");
+            assert_eq!(
+                out.status.code(),
+                Some(101),
+                "{mode} {case}: a panic exits 101 (EX4)\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+    }
+}
+
+// The other half of EX4, and the reason the two codes exist: an error returned
+// from main is the program saying no, not the program hitting a bug.
+#[test]
+fn a_returned_error_still_exits_1_on_both_backends() {
+    for mode in ["--interp", "--native"] {
+        let (_stdout, _stderr, code) = run_capture(mode, "main_returns_error.rk");
+        assert_eq!(code, 1, "{mode}: a returned error is exit 1, not 101");
+    }
+}
+
 // #345: `func main() -> void or E` that ends up on the error branch exits 1,
 // not 0. Both backends: the interpreter treated the error as an ordinary
 // return value, and native's main always returned void.

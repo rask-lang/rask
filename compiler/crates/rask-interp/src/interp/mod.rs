@@ -1016,6 +1016,40 @@ pub enum RuntimeError {
     TestExpectFail,
 }
 
+impl RuntimeError {
+    /// Is this the program panicking, as opposed to failing some other way?
+    ///
+    /// struct.targets/EX4 puts a panic at exit 101 and an error returned from
+    /// `main` at exit 1, and the distinction is the point: 101 says "a bug",
+    /// 1 says "the program said no". Only `Panic` was counted here, so an
+    /// overflow, a divide by zero, a forced `x!` on `none` and a failed
+    /// `assert` all exited 1 on the interpreter while native exited 101 for
+    /// every one of them.
+    ///
+    /// Panicking is what the *spec* says these do — OV1–OV4 and SH1 say
+    /// "panics", OPT13 says `x!` panics when there's nothing to force — so the
+    /// exit code follows the rule rather than the enum variant that happens to
+    /// carry the message.
+    ///
+    /// Deliberately not here: `MainReturnedError` (EX4's exit-1 case),
+    /// `UndefinedVariable`, `TypeError`, `NoSuchMethod` and friends — those are
+    /// checker gaps surfacing at runtime, not the program panicking, and giving
+    /// them 101 would say the program hit a bug in itself when it didn't.
+    pub fn is_panic(&self) -> bool {
+        matches!(
+            self,
+            RuntimeError::Panic(_)
+                | RuntimeError::IntegerOverflow(_)
+                | RuntimeError::DivisionByZero
+                | RuntimeError::IndexOutOfBounds { .. }
+                | RuntimeError::UnwrapError
+                | RuntimeError::NoMatchingArm
+                | RuntimeError::ResourceClosed { .. }
+                | RuntimeError::AssertionFailed(_)
+        )
+    }
+}
+
 /// Runtime error with source location for diagnostic display.
 #[derive(Debug)]
 pub struct RuntimeDiagnostic {
