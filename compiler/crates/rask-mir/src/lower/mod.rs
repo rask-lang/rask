@@ -4181,6 +4181,9 @@ impl<'a> MirLowerer<'a> {
                 | rask_ast::stmt::StmtKind::LetTuple { patterns, .. } => {
                     for n in rask_ast::stmt::tuple_pats_flat_names(patterns) { local_bound.insert(n.to_string()); }
                 }
+                rask_ast::stmt::StmtKind::LetStruct { pattern, .. } => {
+                    for n in rask_ast::stmt::pattern_binding_names(pattern) { local_bound.insert(n); }
+                }
                 _ => {}
             }
         }
@@ -4199,7 +4202,9 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
             StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),

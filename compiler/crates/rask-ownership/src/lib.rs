@@ -657,6 +657,37 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 self.track_owned_binding(name, init);
             }
+            // `let Point { x, .. } = p` — reading fields out of the source is a
+            // projection, so the source is borrowed rather than moved, exactly as
+            // `let x = p.x` would be (F1). Moving the whole struct instead would
+            // make one destructuring the last use of the value, which is not what
+            // reading two of its fields means.
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.check_expr(init);
+                if let (ExprKind::Ident(source), Pattern::Struct { fields, .. }) =
+                    (&init.kind, pattern)
+                {
+                    let mode = if *is_mut {
+                        BorrowMode::Exclusive
+                    } else {
+                        BorrowMode::Shared
+                    };
+                    for (field_name, _) in fields {
+                        self.create_borrow_with_projection(
+                            source.clone(),
+                            mode,
+                            stmt.span,
+                            Some(vec![field_name.clone()]),
+                        );
+                    }
+                } else {
+                    self.handle_assignment(init, stmt.span, *is_mut);
+                }
+                for name in rask_ast::stmt::pattern_binding_names(pattern) {
+                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.binding_decl_blocks.insert(name, self.current_block);
+                }
+            }
             StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, false);
@@ -2753,7 +2784,9 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
             StmtKind::Assign { target, value, .. } => {

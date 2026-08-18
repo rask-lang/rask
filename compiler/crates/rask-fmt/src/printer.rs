@@ -1513,6 +1513,12 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.emit(if *is_mut { "mut " } else { "let " });
+                self.format_pattern(pattern);
+                self.emit(" = ");
+                self.format_expr(init);
+            }
             StmtKind::Assign { target, value, op } => {
                 self.format_expr(target);
                 // A compound assignment is stored expanded — `i += 1` as

@@ -2725,6 +2725,29 @@ impl Parser {
         }
     }
 
+    /// `let Point { x, y } = p` / `mut Point { x, .. } = p`, if that's what comes
+    /// next. `None` otherwise, so the ordinary name path takes over.
+    ///
+    /// A type name followed by `{` is the whole test: `mut x = Point { … }` has the
+    /// `=` first, and `mut x: Point = …` has the `:`. A lowercase name falls
+    /// through on purpose — it can't be a struct, so the error it gets is the one
+    /// about a missing `=`.
+    fn try_parse_struct_binding(&mut self, is_mut: bool) -> Result<Option<StmtKind>, ParseError> {
+        let TokenKind::Ident(name) = &self.current().kind else { return Ok(None) };
+        if !Self::is_type_name(name) || !matches!(self.peek(1), TokenKind::LBrace) {
+            return Ok(None);
+        }
+        let saved = self.allow_brace_expr;
+        self.allow_brace_expr = true;
+        let pattern = self.parse_pattern();
+        self.allow_brace_expr = saved;
+        let pattern = pattern?;
+        self.expect(&TokenKind::Eq)?;
+        let init = self.parse_expr()?;
+        self.expect_terminator()?;
+        Ok(Some(StmtKind::LetStruct { pattern, init, is_mut }))
+    }
+
     fn parse_mut_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Mut)?;
 
@@ -2739,6 +2762,10 @@ impl Parser {
             let init = self.parse_expr()?;
             self.expect_terminator()?;
             return Ok(StmtKind::MutTuple { patterns, init });
+        }
+
+        if let Some(stmt) = self.try_parse_struct_binding(true)? {
+            return Ok(stmt);
         }
 
         let name_span = self.current().span;
@@ -2804,6 +2831,10 @@ impl Parser {
             let init = self.parse_expr()?;
             self.expect_terminator()?;
             return Ok(StmtKind::LetTuple { patterns, init });
+        }
+
+        if let Some(stmt) = self.try_parse_struct_binding(false)? {
+            return Ok(stmt);
         }
 
         let name_span = self.current().span;

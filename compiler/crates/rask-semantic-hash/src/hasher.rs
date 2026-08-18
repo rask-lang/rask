@@ -413,6 +413,12 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.feed_tag(102);
+                self.feed_u32(*is_mut as u32);
+                self.hash_pattern(pattern);
+                self.hash_expr(init);
+            }
             StmtKind::Assign { target, value, .. } => {
                 self.feed_tag(25);
                 self.hash_expr(target);

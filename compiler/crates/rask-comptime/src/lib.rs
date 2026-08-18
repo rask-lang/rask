@@ -164,7 +164,9 @@ fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => eliminate_in_expr(e, cfg_values),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => eliminate_in_expr(init, cfg_values),
+        StmtKind::MutTuple { init, .. }
+        | StmtKind::LetTuple { init, .. }
+        | StmtKind::LetStruct { init, .. } => eliminate_in_expr(init, cfg_values),
         StmtKind::Assign { target, value, .. } => {
             eliminate_in_expr(target, cfg_values);
             eliminate_in_expr(value, cfg_values);
@@ -1383,6 +1385,36 @@ impl ComptimeInterpreter {
                         expected: "tuple".to_string(),
                         found: value.type_name().to_string(),
                     });
+                }
+                Ok(ControlFlow::Normal(ComptimeValue::Unit))
+            }
+
+            // `let Point { x, .. } = p` — bind the fields the pattern names.
+            StmtKind::LetStruct { pattern, init, .. } => {
+                let value = self.eval_expr(init)?;
+                let Pattern::Struct { fields: pat_fields, .. } = pattern else {
+                    return Err(ComptimeError::NotSupported(
+                        "destructuring binding on a non-struct pattern".to_string(),
+                    ));
+                };
+                let ComptimeValue::Struct { fields, .. } = value else {
+                    return Err(ComptimeError::TypeMismatch {
+                        expected: "struct".to_string(),
+                        found: value.type_name().to_string(),
+                    });
+                };
+                for (field_name, pat) in pat_fields {
+                    let Some(val) = fields.get(field_name) else {
+                        return Err(ComptimeError::NotSupported(format!(
+                            "no field `{}` to bind", field_name
+                        )));
+                    };
+                    let Pattern::Ident(binding) = pat else {
+                        return Err(ComptimeError::NotSupported(
+                            "only a name can bind a field at comptime".to_string(),
+                        ));
+                    };
+                    self.env.define(binding.clone(), val.clone());
                 }
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }

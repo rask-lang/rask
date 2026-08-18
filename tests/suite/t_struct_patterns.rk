@@ -103,4 +103,52 @@ test "type.structs — field shorthand in construction" {
     assert moved.z == 0
 }
 
+// A destructuring `let`/`mut` — the same pattern without a `match` around it
+// (#811). Reading fields is a projection, so the source is borrowed, not moved,
+// and it stays usable afterwards.
+
+struct Labelled {
+    public label: string
+    public n: i64
+}
+
+test "type.structs — destructuring let binds the fields it names" {
+    let p = Point { x: 1, y: 2 }
+    let Point { x, y } = p
+    assert x == 1
+    assert y == 2
+
+    // The source survives — this is a field read, not a move.
+    assert p.x == 1
+}
+
+test "type.structs — `..` skips the rest, and `mut` bindings rebind" {
+    let v = Vertex { x: 1, y: 2, z: 3 }
+    let Vertex { z, .. } = v
+    assert z == 3
+
+    mut Vertex { x, .. } = v
+    x = x + 10
+    assert x == 11
+    assert v.x == 1
+}
+
+test "type.structs — renaming while binding, and a string field" {
+    let p = Point { x: 7, y: 8 }
+    let Point { x: first, y: second } = p
+    assert first == 7
+    assert second == 8
+
+    let l = Labelled { label: "hi", n: 3 }
+    let Labelled { label, n } = l
+    assert label == "hi"
+    assert n == 3
+}
+
+test "type.structs — destructuring a value that isn't a name" {
+    let Point { x, y } = rebuild(2, 3)
+    assert x == 2
+    assert y == 3
+}
+
 func main() {}

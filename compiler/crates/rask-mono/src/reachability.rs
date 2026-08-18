@@ -934,7 +934,9 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_stmt(s);
                 }
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.visit_expr(init);
             }
             StmtKind::Break { value: Some(e), .. } => self.visit_expr(e),

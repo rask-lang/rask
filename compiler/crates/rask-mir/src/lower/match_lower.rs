@@ -1267,7 +1267,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// A struct field's index and layout by name.
-    fn struct_field(
+    pub(super) fn struct_field(
         &self,
         ty: &MirType,
         field_name: &str,

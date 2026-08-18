@@ -75,7 +75,9 @@ impl<'a> WarnContext<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.check_expr(init, warnings);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.check_expr(init, warnings);
             }
             StmtKind::Assign { target, value, .. } => {

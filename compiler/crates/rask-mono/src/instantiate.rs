@@ -271,6 +271,12 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
+                StmtKind::LetStruct { pattern, init, is_mut } => StmtKind::LetStruct {
+                    pattern: self.clone_pattern(pattern),
+                    init: self.clone_expr(init),
+                    is_mut: *is_mut,
+                },
+
                 StmtKind::Assign { target, value, op } => StmtKind::Assign {
                     target: self.clone_expr(target),
                     value: self.clone_expr(value),

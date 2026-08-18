@@ -340,11 +340,25 @@ field is skipped.
 
 The same pattern binds in a `let`/`mut`, without a `match` around it:
 
+<!-- test: parse -->
 ```rask
-mut Point { x, .. } = point    // Bind visible fields, ignore rest
+struct Point {
+    public x: i32
+    public y: i32
+}
+
+func shifted(p: Point) -> i32 {
+    mut Point { x, .. } = p    // Bind the fields named, ignore the rest
+    x = x + 1
+    let Point { x: px, y: py } = p    // Rename while binding
+    return x + px + py
+}
 ```
 
-The compiler doesn't parse that form yet — [#811](https://github.com/rask-lang/rask/issues/811).
+Reading fields out of a struct is a projection, so the source is borrowed, not
+moved (`mem.borrowing/F1`) — it stays usable afterwards, exactly as it would after
+`let x = p.x`. The bindings can't fail, so only names and `..` go inside; a pattern
+that tests a value belongs in a `match`.
 
 Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
 

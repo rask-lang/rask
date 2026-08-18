@@ -2,7 +2,7 @@
 //! Statement AST nodes.
 
 use crate::{NodeId, Span};
-use crate::expr::Expr;
+use crate::expr::{Expr, Pattern};
 
 /// A statement in the AST.
 #[derive(Debug, Clone)]
@@ -59,6 +59,43 @@ pub fn tuple_pats_flat_names(pats: &[TuplePat]) -> Vec<&str> {
     pats.iter().flat_map(|p| p.flat_names()).collect()
 }
 
+/// Every name a pattern binds, in source order.
+///
+/// Shared so the resolver, the checker and the two backends agree about what a
+/// destructuring binding introduces.
+pub fn pattern_binding_names(pattern: &Pattern) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_pattern_binding_names(pattern, &mut out);
+    out
+}
+
+fn collect_pattern_binding_names(pattern: &Pattern, out: &mut Vec<String>) {
+    match pattern {
+        Pattern::Ident(name) => out.push(name.clone()),
+        Pattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                collect_pattern_binding_names(p, out);
+            }
+        }
+        Pattern::Constructor { fields, .. } => {
+            for p in fields {
+                collect_pattern_binding_names(p, out);
+            }
+        }
+        Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            for p in patterns {
+                collect_pattern_binding_names(p, out);
+            }
+        }
+        Pattern::TypePat { binding, .. } => {
+            if let Some(name) = binding {
+                out.push(name.clone());
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+    }
+}
+
 /// The kind of statement.
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -87,6 +124,17 @@ pub enum StmtKind {
     LetTuple {
         patterns: Vec<TuplePat>,
         init: Expr,
+    },
+    /// Struct destructuring binding: `let Point { x, y } = p`,
+    /// `mut Point { x, .. } = p` (type.structs "Partial patterns").
+    ///
+    /// One variant with `is_mut`, where the tuple form has a `Let`/`Mut` pair: the
+    /// two spellings differ only in whether the bindings can be reassigned, and
+    /// every pass that cares about that reads a bool from it anyway.
+    LetStruct {
+        pattern: Pattern,
+        init: Expr,
+        is_mut: bool,
     },
     /// Assignment.
     ///

@@ -11,7 +11,7 @@ use crate::{
     MirType,
 };
 use rask_ast::{
-    expr::{Expr, ExprKind, UnaryOp},
+    expr::{Expr, ExprKind, Pattern, UnaryOp},
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
@@ -715,6 +715,11 @@ impl<'a> MirLowerer<'a> {
                     let (init_op, init_ty) = self.lower_expr(init)?;
                     self.destructure_tuple_pattern(patterns, &init_op, &init_ty)
                 }
+            }
+
+            // Struct destructuring binding: `let Point { x, .. } = p`.
+            StmtKind::LetStruct { pattern, init, .. } => {
+                self.lower_struct_destructure(pattern, init)
             }
 
             // While-let pattern loop
@@ -1515,6 +1520,54 @@ impl<'a> MirLowerer<'a> {
             if let TuplePat::Nested(inner) = pat {
                 self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty)?;
             }
+        }
+        Ok(())
+    }
+
+    /// `let Point { x, y } = p` — read each named field into its binding.
+    ///
+    /// One read per field the pattern names, which is what the source says: the
+    /// alternative, binding the whole struct and projecting later, would make the
+    /// bindings views into `p` rather than values of their own. Nested patterns
+    /// don't reach here — a destructuring *binding* can't fail, so the parser only
+    /// accepts names and `..` inside one.
+    fn lower_struct_destructure(
+        &mut self,
+        pattern: &Pattern,
+        init: &Expr,
+    ) -> Result<(), LoweringError> {
+        let Pattern::Struct { fields, .. } = pattern else {
+            return Err(LoweringError::InvalidConstruct(
+                "destructuring binding needs a struct pattern".into(),
+            ));
+        };
+        let (src_op, src_ty) = self.lower_expr(init)?;
+        for (field_name, field_pat) in fields {
+            let Pattern::Ident(binding) = field_pat else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "field `{}` in a destructuring binding must bind a name",
+                    field_name
+                )));
+            };
+            let Some((field_idx, field_layout)) = self.struct_field(&src_ty, field_name) else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "no field `{}` to bind",
+                    field_name
+                )));
+            };
+            let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+            let (offset, size) = (field_layout.offset, field_layout.size);
+            let local = self.builder.alloc_local(binding.clone(), field_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: src_op.clone(),
+                    field_index: field_idx as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(&field_ty, size),
+                },
+            }));
+            self.locals.insert(binding.clone(), (local, field_ty));
         }
         Ok(())
     }

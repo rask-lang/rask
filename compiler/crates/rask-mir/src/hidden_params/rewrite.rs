@@ -133,7 +133,9 @@ fn rewrite_stmt(pass: &mut HiddenParamPass, caller: &str, stmt: &mut Stmt) {
                 rewrite_expr(pass, caller, init);
             }
         }
-        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+        StmtKind::MutTuple { init, .. }
+        | StmtKind::LetTuple { init, .. }
+        | StmtKind::LetStruct { init, .. } => {
             rewrite_expr(pass, caller, init);
         }
         StmtKind::Assign { target, value, .. } => {

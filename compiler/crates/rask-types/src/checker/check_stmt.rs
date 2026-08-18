@@ -390,6 +390,19 @@ impl TypeChecker {
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
             }
+            // `let Point { x, .. } = p` — the pattern types its own bindings, the
+            // same way a match arm's does.
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                let init_ty = self.infer_expr(init);
+                let bindings = self.check_pattern(pattern, &init_ty, stmt.span);
+                for (name, ty) in bindings {
+                    if *is_mut {
+                        self.define_local(name, ty);
+                    } else {
+                        self.define_local_const(name, ty);
+                    }
+                }
+            }
             StmtKind::WhileLet { pattern, expr, body, .. } => {
                 let value_ty = self.infer_expr(expr);
                 self.push_scope();
