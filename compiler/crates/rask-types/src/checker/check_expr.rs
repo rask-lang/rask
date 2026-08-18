@@ -2520,7 +2520,6 @@ impl TypeChecker {
                     });
                 }
                 (ArgMode::Default, true, _) => {}
-                (ArgMode::Default, _, true) => {}
                 // Correct annotations are fine
                 (ArgMode::Own, true, _) => {}
                 (ArgMode::Mutate, _, true) => {}

@@ -865,7 +865,6 @@ impl TypeError {
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
             | CoalesceOnResult { found, .. }
-            | CoalesceOnNonOptional { found, .. }
             | ForceUnwrapOnNonOptional { found, .. }
             | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }

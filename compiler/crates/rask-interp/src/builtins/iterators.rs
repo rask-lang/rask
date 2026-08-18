@@ -449,17 +449,6 @@ impl Interpreter {
                 }
                 if is_float { Ok(Value::Float(ftotal, FloatKind::Untyped)) } else { Ok(Value::int(total)) }
             }
-            "to_vec" => {
-                // Alias for collect
-                let mut result = Vec::new();
-                loop {
-                    match self.iter_next(iter)? {
-                        Some(item) => result.push(item),
-                        None => break,
-                    }
-                }
-                Ok(Value::vec(result))
-            }
             "min" => {
                 let mut best: Option<Value> = None;
                 loop {
