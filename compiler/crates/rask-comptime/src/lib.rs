@@ -500,22 +500,19 @@ impl ComptimeValue {
         }
     }
 
-    /// The logical value (as i128) and width kind of an integer variant.
-    fn as_int(&self) -> Option<(i128, CtInt)> {
+    /// The logical value and width kind of an integer variant.
+    fn as_int(&self) -> Option<(CtNum, CtInt)> {
         Some(match self {
-            ComptimeValue::I8(v) => (*v as i128, CtInt::I8),
-            ComptimeValue::I16(v) => (*v as i128, CtInt::I16),
-            ComptimeValue::I32(v) => (*v as i128, CtInt::I32),
-            ComptimeValue::I64(v) => (*v as i128, CtInt::I64),
-            ComptimeValue::U8(v) => (*v as i128, CtInt::U8),
-            ComptimeValue::U16(v) => (*v as i128, CtInt::U16),
-            ComptimeValue::U32(v) => (*v as i128, CtInt::U32),
-            ComptimeValue::U64(v) => (*v as i128, CtInt::U64),
-            ComptimeValue::I128(v) => (*v, CtInt::I128),
-            // Comptime arithmetic runs in an `i128`, so a `u128` past
-            // `i128::MAX` has nowhere to be computed. Refusing here gives
-            // "not a comptime integer" instead of a wrong number (#802).
-            ComptimeValue::U128(v) => (i128::try_from(*v).ok()?, CtInt::U128),
+            ComptimeValue::I8(v) => (CtNum::Signed(*v as i128), CtInt::I8),
+            ComptimeValue::I16(v) => (CtNum::Signed(*v as i128), CtInt::I16),
+            ComptimeValue::I32(v) => (CtNum::Signed(*v as i128), CtInt::I32),
+            ComptimeValue::I64(v) => (CtNum::Signed(*v as i128), CtInt::I64),
+            ComptimeValue::U8(v) => (CtNum::Signed(*v as i128), CtInt::U8),
+            ComptimeValue::U16(v) => (CtNum::Signed(*v as i128), CtInt::U16),
+            ComptimeValue::U32(v) => (CtNum::Signed(*v as i128), CtInt::U32),
+            ComptimeValue::U64(v) => (CtNum::Signed(*v as i128), CtInt::U64),
+            ComptimeValue::I128(v) => (CtNum::Signed(*v), CtInt::I128),
+            ComptimeValue::U128(v) => (CtNum::Big(*v), CtInt::U128),
             _ => return None,
         })
     }
@@ -813,6 +810,64 @@ enum CtInt { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128 }
 #[derive(Clone, Copy)]
 pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
 
+/// A comptime integer operand.
+///
+/// An `i128` carries every width exactly except the top half of `u128`. That half
+/// used to have nowhere to go: `as_int` refused it, so a fold involving a large
+/// `u128` silently didn't happen and the const was computed at run time instead —
+/// no diagnostic, just no constant folding (#802). Two variants rather than one
+/// wider carrier, because a signed 256-bit type would only exist to hold values no
+/// Rask type has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CtNum {
+    Signed(i128),
+    Big(u128),
+}
+
+impl CtNum {
+    /// `None` when the value is a `u128` past `i128::MAX` — the caller is on the
+    /// signed path and has to report a range error rather than truncate.
+    fn to_i128(self) -> Option<i128> {
+        match self {
+            CtNum::Signed(v) => Some(v),
+            CtNum::Big(v) => i128::try_from(v).ok(),
+        }
+    }
+
+    /// `None` for a negative value: nothing negative is a `u128`.
+    fn to_u128(self) -> Option<u128> {
+        match self {
+            CtNum::Signed(v) => u128::try_from(v).ok(),
+            CtNum::Big(v) => Some(v),
+        }
+    }
+
+    /// Ordering across the two carriers. A negative is below every `Big`, and a
+    /// non-negative signed value compares as the unsigned number it is.
+    fn cmp(self, other: CtNum) -> std::cmp::Ordering {
+        match (self.to_u128(), other.to_u128()) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            // Only a negative fails the conversion, and a negative is smaller.
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, None) => {
+                let a = if let CtNum::Signed(v) = self { v } else { 0 };
+                let b = if let CtNum::Signed(v) = other { v } else { 0 };
+                a.cmp(&b)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CtNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CtNum::Signed(v) => write!(f, "{}", v),
+            CtNum::Big(v) => write!(f, "{}", v),
+        }
+    }
+}
+
 impl CtInt {
     fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64 | CtInt::I128) }
     fn bits(self) -> u32 {
@@ -839,14 +894,30 @@ impl CtInt {
             _ => 0,
         }
     }
-    /// The comptime ceiling. `u128` stops at `i128::MAX` rather than its own
-    /// max because the evaluator computes in an `i128` — a wrong answer is
-    /// worse than a refusal (#802).
+    /// The type's own maximum. `u128`'s doesn't fit an `i128`, so it answers on
+    /// the unsigned path instead — see `max_u128` (#802).
     fn max(self) -> i128 {
         match self {
             CtInt::I128 | CtInt::U128 => i128::MAX,
             _ if self.signed() => (1i128 << (self.bits() - 1)) - 1,
             _ => (1i128 << self.bits()) - 1,
+        }
+    }
+    /// The maximum as an unsigned number, for the widths that reach past
+    /// `i128::MAX`. Only meaningful for unsigned kinds.
+    fn max_u128(self) -> u128 {
+        match self {
+            CtInt::U128 => u128::MAX,
+            _ => self.max() as u128,
+        }
+    }
+    /// The range, spelled for a diagnostic. `u128` can't say its own top end in
+    /// an `i128`, so the two paths print it differently.
+    fn range_text(self) -> String {
+        if self == CtInt::U128 {
+            format!("[0, {}]", u128::MAX)
+        } else {
+            format!("[{}, {}]", self.min(), self.max())
         }
     }
     /// Pick the more specific kind. I64 is the untyped default and yields.
@@ -870,6 +941,14 @@ impl CtInt {
             CtInt::U128 => ComptimeValue::U128(v as u128),
         }
     }
+    /// Build from an unsigned value. The signed `make` can't carry the top half of
+    /// a `u128`, and casting through `i128` there would flip the sign bit.
+    fn make_u128(self, v: u128) -> ComptimeValue {
+        match self {
+            CtInt::U128 => ComptimeValue::U128(v),
+            _ => self.make(v as i128),
+        }
+    }
     fn wrap(self, v: i128) -> i128 {
         let bits = self.bits();
         if bits >= 128 { return v; }
@@ -879,19 +958,88 @@ impl CtInt {
     }
 }
 
-fn ct_overflow(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeError {
-    let sym = match op {
+fn ct_op_symbol(op: CtOp) -> &'static str {
+    match op {
         CtOp::Add => "+", CtOp::Sub => "-", CtOp::Mul => "*",
         CtOp::Div => "/", CtOp::Rem => "%", CtOp::Shl => "<<", CtOp::Shr => ">>",
         CtOp::BitAnd => "&", CtOp::BitOr => "|", CtOp::BitXor => "^",
-    };
+    }
+}
+
+fn ct_overflow_of(kind: CtInt, op: CtOp, a: impl std::fmt::Display, b: impl std::fmt::Display) -> ComptimeError {
     ComptimeError::IntegerOverflow(format!(
-        "{} {} {} exceeds {} range [{}, {}]", a, sym, b, kind.name(), kind.min(), kind.max()
+        "{} {} {} exceeds {} range {}", a, ct_op_symbol(op), b, kind.name(), kind.range_text()
     ))
 }
 
+fn ct_overflow(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeError {
+    ct_overflow_of(kind, op, a, b)
+}
+
 /// Width-aware checked comptime integer arithmetic (CT1).
-pub(crate) fn ct_checked_binop(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeResult<ComptimeValue> {
+///
+/// Splits on whether the result width is `u128`: that one is computed in a `u128`,
+/// because half its range has no `i128` to be computed in. Every other width fits
+/// the signed carrier exactly (#802).
+pub(crate) fn ct_checked_binop(kind: CtInt, op: CtOp, a: CtNum, b: CtNum) -> ComptimeResult<ComptimeValue> {
+    if kind == CtInt::U128 {
+        return ct_checked_binop_u128(op, a, b);
+    }
+    let range = |v: CtNum| ComptimeError::IntegerOverflow(format!(
+        "{} is outside {} range {}", v, kind.name(), kind.range_text()
+    ));
+    let a = a.to_i128().ok_or_else(|| range(a))?;
+    let b = b.to_i128().ok_or_else(|| range(b))?;
+    ct_checked_binop_i128(kind, op, a, b)
+}
+
+/// The `u128` half. Checked `u128` arithmetic throughout, so the top of the range
+/// is reachable and an underflow past zero is an overflow error rather than a
+/// wrapped answer.
+fn ct_checked_binop_u128(op: CtOp, a: CtNum, b: CtNum) -> ComptimeResult<ComptimeValue> {
+    let kind = CtInt::U128;
+    let range = |v: CtNum| ComptimeError::IntegerOverflow(format!(
+        "{} is outside u128 range {}", v, kind.range_text()
+    ));
+    let au = a.to_u128().ok_or_else(|| range(a))?;
+    // A shift amount is a count, not a `u128` value, so it comes off the operand
+    // as written rather than through the unsigned conversion.
+    if matches!(op, CtOp::Shl | CtOp::Shr) {
+        let amount = match b {
+            CtNum::Signed(v) if (0..128).contains(&v) => v as u32,
+            CtNum::Big(v) if v < 128 => v as u32,
+            _ => return Err(ComptimeError::IntegerOverflow(format!(
+                "shift amount {} exceeds u128 bit width (128)", b
+            ))),
+        };
+        let shifted = match op {
+            CtOp::Shl => au << amount,
+            _ => au >> amount,
+        };
+        return Ok(ComptimeValue::U128(shifted));
+    }
+    let bu = b.to_u128().ok_or_else(|| range(b))?;
+    match op {
+        CtOp::BitAnd => return Ok(ComptimeValue::U128(au & bu)),
+        CtOp::BitOr => return Ok(ComptimeValue::U128(au | bu)),
+        CtOp::BitXor => return Ok(ComptimeValue::U128(au ^ bu)),
+        CtOp::Div | CtOp::Rem if bu == 0 => return Err(ComptimeError::DivisionByZero),
+        _ => {}
+    }
+    let result = match op {
+        CtOp::Add => au.checked_add(bu),
+        CtOp::Sub => au.checked_sub(bu),
+        CtOp::Mul => au.checked_mul(bu),
+        CtOp::Div => Some(au / bu),
+        CtOp::Rem => Some(au % bu),
+        _ => unreachable!(),
+    };
+    result
+        .map(ComptimeValue::U128)
+        .ok_or_else(|| ct_overflow_of(kind, op, au, bu))
+}
+
+fn ct_checked_binop_i128(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeResult<ComptimeValue> {
     match op {
         CtOp::BitAnd => return Ok(kind.make(a & b)),
         CtOp::BitOr => return Ok(kind.make(a | b)),
@@ -2129,13 +2277,15 @@ impl ComptimeInterpreter {
             "rem" => self.ct_arith(obj, args, CtOp::Rem, |a, b| a % b, "%"),
             "neg" => match obj.as_int() {
                 Some((v, kind)) => {
-                    let r = -v;
-                    if r < kind.min() || r > kind.max() {
-                        Err(ComptimeError::IntegerOverflow(format!(
-                            "negating {} exceeds {} range [{}, {}]", v, kind.name(), kind.min(), kind.max()
-                        )))
-                    } else {
-                        Ok(kind.make(r))
+                    // Nothing unsigned has a negation but zero, and the `u128`
+                    // half of the range has no signed carrier to negate in — so
+                    // the check is on the value, not on a computed result (#802).
+                    let out_of_range = ComptimeError::IntegerOverflow(format!(
+                        "negating {} exceeds {} range {}", v, kind.name(), kind.range_text()
+                    ));
+                    match v.to_i128().map(|n| -n) {
+                        Some(r) if r >= kind.min() && r <= kind.max() => Ok(kind.make(r)),
+                        _ => Err(out_of_range),
                     }
                 }
                 None => match obj {
@@ -2158,7 +2308,18 @@ impl ComptimeInterpreter {
             "shl" => self.ct_int_only(obj, args, CtOp::Shl),
             "shr" => self.ct_int_only(obj, args, CtOp::Shr),
             "bit_not" => match obj.as_int() {
-                Some((v, kind)) => Ok(kind.make(kind.wrap(!v))),
+                Some((v, kind)) if kind == CtInt::U128 => {
+                    let u = v.to_u128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                        "{} is outside u128 range {}", v, kind.range_text()
+                    )))?;
+                    Ok(ComptimeValue::U128(!u))
+                }
+                Some((v, kind)) => {
+                    let n = v.to_i128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                        "{} is outside {} range {}", v, kind.name(), kind.range_text()
+                    )))?;
+                    Ok(kind.make(kind.wrap(!n)))
+                }
                 None => Err(ComptimeError::TypeMismatch {
                     expected: "integer".to_string(),
                     found: obj.type_name().to_string(),
@@ -2265,8 +2426,21 @@ impl ComptimeInterpreter {
             (ComptimeValue::Char(a), ComptimeValue::Char(b)) => Ok(ComptimeValue::Bool(a == b)),
             (ComptimeValue::String(a), ComptimeValue::String(b)) => Ok(ComptimeValue::Bool(a == b)),
             (obj, arg) => {
-                if let (Some(a), Some(b)) = (obj.as_i64(), arg.as_i64()) {
-                    Ok(ComptimeValue::Bool(int_op(a, b)))
+                // Wide integers first: `as_i64` can't see past `i64::MAX`, so two
+                // large `u128` values fell through to the float path and then to a
+                // type error (#802). The comparison itself is exact — an ordering
+                // needs no arithmetic and no carrier wide enough to hold both.
+                if let (Some((a, _)), Some((b, _))) = (obj.as_int(), arg.as_int()) {
+                    let ord = a.cmp(b);
+                    // The caller's predicate is written on i64s; reuse it by
+                    // feeding it the ordering as -1/0/1, which every comparison
+                    // operator reads the same way.
+                    let (l, r) = match ord {
+                        std::cmp::Ordering::Less => (-1i64, 0i64),
+                        std::cmp::Ordering::Equal => (0, 0),
+                        std::cmp::Ordering::Greater => (1, 0),
+                    };
+                    Ok(ComptimeValue::Bool(int_op(l, r)))
                 } else if let (Some(a), Some(b)) = (obj.as_f64(), arg.as_f64()) {
                     Ok(ComptimeValue::Bool(float_op(a, b)))
                 } else {

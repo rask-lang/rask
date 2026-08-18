@@ -63,6 +63,63 @@ test "type.optionals/OPT19 — comptime binds the presence payload" {
     assert SHADOWED == "shadowed cy"
 }
 
+// ── 128-bit arithmetic at comptime (#802) ───────────────────────────
+//
+// Every comptime integer operation ran through one `i128` carrier, so the top
+// half of `u128` had nowhere to be computed. `as_int` refused those values, the
+// comparison path fell back to `as_i64` — which can't see past `i64::MAX` — and
+// what came out was a silently wrong answer: `huge > big` on two values above
+// `i128::MAX` answered false.
+//
+// The `u128` width is computed in a `u128` now. Only small values cross back out
+// of these functions, so the folded return is observable without depending on how
+// a 128-bit constant travels into MIR (which is its own gap — #824).
+
+comptime func wide_compare() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let big: u128 = 200000000000000000000000000000000000000
+    if huge > big { return 1 }
+    return 0
+}
+
+comptime func wide_add() -> i64 {
+    let big: u128 = 200000000000000000000000000000000000000
+    let one: u128 = 1
+    let total = big + one
+    if total > big { return 7 }
+    return 0
+}
+
+comptime func wide_sub() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let big: u128 = 200000000000000000000000000000000000000
+    let diff = huge - big
+    if diff == 140282366920938463463374607431768211455 { return 3 }
+    return 0
+}
+
+comptime func wide_mask() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let low: u128 = 255
+    if huge & low == low { return 9 }
+    return 0
+}
+
+comptime func wide_div() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let two: u128 = 2
+    if huge / two == 170141183460469231731687303715884105727 { return 5 }
+    return 0
+}
+
+test "ctrl.comptime/CT1 — arithmetic reaches the top of u128" {
+    assert comptime wide_compare() == 1
+    assert comptime wide_add() == 7
+    assert comptime wide_sub() == 3
+    assert comptime wide_mask() == 9
+    assert comptime wide_div() == 5
+}
+
 func main() {}
 
 // CT5 + CT10: comptime block, value is the last expression
