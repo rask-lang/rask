@@ -1298,7 +1298,7 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 // derives its own links to delete — cascade delete — is invisible at the call
 // site, and the caller's local link keeps reading a freed node.
 //
-// This asserts the hole is still open, so it fails loudly the day a `prune`-style
+// This asserts the hole is still open, so it fails loudly the day a `deleting`-style
 // parameter mode closes it. When that happens, flip this to a compile-error
 // fixture instead of deleting it.
 #[test]

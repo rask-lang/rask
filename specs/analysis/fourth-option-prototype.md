@@ -600,12 +600,12 @@ Only the third is dangerous, and it is exactly what `delete_subtree` does. So
 the parameter has to say so:
 
 ```rask
-func delete_subtree(prune scene: Scene, take n: Link<SceneNode>)
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>)
 ```
 
-`mutate s: Store<T>` would stop permitting `delete` and `clear`; `prune` permits
-them. At a call site with `prune`, every non-optional local link into that store
-is revoked — the same kill `clear` already does, for the same reason: the set of
+`mutate s: Store<T>` would stop permitting `delete` and `clear`; `deleting`
+permits them. At a call site with `deleting`, every non-optional local link into
+that store is revoked — the same kill `clear` already does, for the same reason: the set of
 deleted nodes is not enumerable from the call site, and a `Link<T>` whose type
 promises liveness cannot survive a promise nobody can keep. A link that needs to
 survive must be `Link<T>?`, which the store maintains.
@@ -633,15 +633,68 @@ And of the three, only `delete_subtree` is called by a caller that holds locals
 main holds none. So the annotation would change one call site in the corpus, and
 that call site is the one with the bug.
 
-**What it does not fix.** `prune` is coarse: the L3 call would also revoke `b`
-and `root`, which survive. That is the honest limit of a call-site kill — from
-outside, "I deleted an unknown set under here" is all the caller can be told.
-Keeping `b` means keeping it in a `Link<T>?` field.
+### Revoking is too coarse, and the fixup already knows how to be precise
 
-**Not built.** A new parameter mode is a language change, and the spelling is
-open — `prune s` reads as "remove things from s", where `deletes s` misreads as
-"deletes s itself". Proposed in #806; the `take`-parameter half of it is only
-sound once #804 is fixed.
+Revoking every local is a blunt instrument. The L3 call would take out `b` and
+`root`, which survive it. And notice the asymmetry: a link in a *field* comes
+through the same call perfectly — nulled if its target died, untouched if it
+didn't. The fixup is exact. Only locals get the sledgehammer, and only because
+the fixup can't reach them.
+
+So reach them — but only where it matters. A local link needs no registration in
+ordinary code, which is what makes it free. It needs registration for the
+duration of one call: the one that can delete.
+
+```rask
+let kid = scene.nodes.insert(...)   // plain Link<Node>, unregistered, checkless
+cascade(scene, parent)              // compiler registers `kid` across this call;
+                                    // the callee's deletes null it if it dies
+if kid? as k { ... }                // `kid` is Link<Node>? on this side of the call
+```
+
+The compiler knows which link locals are live across the call, so it brackets the
+call with register/unregister. No stack scan — the same reverse-edge index the
+store already keeps, with a handful of stack slots added to it for the length of
+one call. Inside, `delete` nulls them the same way it nulls a field.
+
+What that buys, on the L3 call:
+
+| Local | Under revoke-all | Under registration |
+|---|---|---|
+| `a2` (died in the cascade) | unusable | `none` — the check catches it |
+| `b` (survived) | unusable | `Link<T>?`, and the check succeeds |
+| `root` (survived) | unusable | `Link<T>?`, and the check succeeds |
+
+A check that succeeds beats a name you may never use again. And the cost lands
+exactly where the risk is: you held a link across something that could delete, so
+you check it once afterwards. That is the transparency principle rather than a
+concession to it.
+
+The type of a link local therefore widens at a deleting call — `Link<T>` before,
+`Link<T>?` after. Rask already narrows the other way (`x? as v`), so the
+machinery is not new, only the direction. The cost is that the widening is
+triggered by the callee's signature, which is not visible at the call site; the
+disclosure is the error at the next use, the same way `take` discloses itself.
+
+**Still needs the annotation.** Registration only pays for itself if it happens
+at deleting calls and nowhere else. Bracket *every* call taking the store
+mutably and every link local becomes optional after every `push_back` — which is
+the "ask whether the thing you just made exists" outcome already rejected. So
+`deleting` earns its keep twice: it says the delete can happen, and it says where
+to spend the registration.
+
+**Not built.** A new parameter mode is a language change. Proposed in #806, with
+the registration refinement; the `take`-parameter half is only sound once #804 is
+fixed.
+
+**On the spelling.** `deleting s: Store<T>` over `prune s`: the model already has
+exactly one verb for this — the method is `delete`, the error says "use after
+delete", the mechanism is delete-time fixup — and a second word for one concept
+makes the language bigger for nothing. The price is grammatical: `mutate`, `take`
+and `own` are imperatives, and `deleting` is a participle. `delete s` would match
+them and then read as "deletes s itself", which is the one thing it doesn't mean;
+`mutate s` has no such competing reading, which is why that mode gets away with
+the imperative.
 
 ## Finding 2: links carry write permission, and edge writes mutate their target
 
