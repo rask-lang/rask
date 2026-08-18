@@ -76,6 +76,16 @@ pub struct OwnershipChecker<'a> {
     binding_types: HashMap<String, Type>,
     /// Bindings that are @resource types (must be consumed).
     resource_bindings: HashSet<String>,
+    /// For a binding that isn't a resource itself but *holds* one, the field
+    /// paths that still owe consumption.
+    ///
+    /// `struct Pair { a: Conn, b: Conn }` gives `p` two debts, and `p.a.close()`
+    /// pays one of them. Tracking the obligation on the binding alone can only be
+    /// all-or-nothing: either a projection discharges the whole holder — so
+    /// `p.b` leaks silently — or it discharges nothing, and `w.conn.close()` on a
+    /// wrapper with one resource can't be written at all, because there is no
+    /// `w.close()` to call (#828).
+    resource_field_debts: HashMap<String, Vec<Vec<String>>>,
     /// Of those, the ones `own` allocated. They follow the same rules — L1–L6 are
     /// shared between `@resource` and `Owned<T>` — but the fix is `drop(name)`,
     /// so the diagnostic differs (#819).
@@ -133,6 +143,7 @@ impl<'a> OwnershipChecker<'a> {
             current_block: 0,
             current_stmt: 0,
             resource_bindings: HashSet::new(),
+            resource_field_debts: HashMap::new(),
             owned_bindings: HashSet::new(),
             borrowed_params: HashMap::new(),
             mutate_params: HashMap::new(),
@@ -419,7 +430,8 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(param.name.clone(), BindingState::Owned);
                 // Check if it's a resource type
                 if self.is_resource_type_name(&param.ty) {
-                    self.resource_bindings.insert(param.name.clone());
+                    let ty = self.declared_type_from_name(&param.ty);
+                    self.register_resource_binding(&param.name.clone(), ty.as_ref());
                 }
             } else if param.is_mutate {
                 // Mutate parameters: treat as owned within the body.
@@ -610,7 +622,8 @@ impl<'a> OwnershipChecker<'a> {
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
-                    self.resource_bindings.insert(name.clone());
+                    let value_ty = self.program.node_types.get(&init.id).cloned();
+                    self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.track_owned_binding(name, init);
             }
@@ -665,7 +678,8 @@ impl<'a> OwnershipChecker<'a> {
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
-                    self.resource_bindings.insert(name.clone());
+                    let value_ty = self.program.node_types.get(&init.id).cloned();
+                    self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.track_owned_binding(name, init);
             }
@@ -1192,10 +1206,24 @@ impl<'a> OwnershipChecker<'a> {
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        let name = name.clone();
-                        let sink = method.clone();
-                        self.consume_binding(&name, expr.span, Some(&sink));
+                    match &object.kind {
+                        ExprKind::Ident(name) => {
+                            let name = name.clone();
+                            let sink = method.clone();
+                            self.consume_binding(&name, expr.span, Some(&sink));
+                        }
+                        // `w.conn.close()` — the receiver is a field, so the
+                        // binding itself isn't moved (`w.label` stays readable),
+                        // but the field it owed is paid. Only the named field:
+                        // discharging the whole holder is how `p.a.close()` came
+                        // to silently cover `p.b` (#828).
+                        ExprKind::Field { .. } => {
+                            let (root, path) = Self::extract_root_and_fields(object);
+                            if let (Some(root), Some(path)) = (root, path) {
+                                self.pay_field_debt(&root, &path);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2091,6 +2119,14 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn is_copy(&self, ty: &Type) -> bool {
+        // L1: a linear value is never Copy, whatever its size or its fields.
+        // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
+        // this said Copy — and `consume_arg` skips a Copy argument, so passing a
+        // connection to a `take` parameter consumed nothing and the caller was
+        // then told it had leaked the value it had just handed away.
+        if self.program.types.is_linear_value(ty) {
+            return false;
+        }
         match ty {
             // Primitives are always Copy
             Type::Unit | Type::None | Type::Bool | Type::Char => true,
@@ -3363,6 +3399,106 @@ impl<'a> OwnershipChecker<'a> {
         self.bindings.remove(name);
     }
 
+
+    /// Register a resource binding, recording per-field debts when the value
+    /// isn't a resource itself but holds one.
+    ///
+    /// A `@resource` value owes itself and there is nothing to break down. A
+    /// plain struct that happens to carry one owes exactly those fields, and
+    /// consuming `p.a` should pay that debt and no other (#828).
+    fn register_resource_binding(&mut self, name: &str, ty: Option<&Type>) {
+        self.resource_bindings.insert(name.to_string());
+        let Some(ty) = ty else { return };
+        let paths = self.resource_field_paths(ty, 0);
+        if !paths.is_empty() {
+            self.resource_field_debts.insert(name.to_string(), paths);
+        }
+    }
+
+    /// The field paths inside `ty` that owe consumption, or empty when `ty` owes
+    /// as a whole.
+    ///
+    /// Empty for an `@resource` type — the value *is* the obligation — and empty
+    /// for anything the walk can't name a path into: a tuple, an optional, an
+    /// enum payload. Those keep the whole-value obligation, which is the
+    /// conservative answer.
+    fn resource_field_paths(&self, ty: &Type, depth: u32) -> Vec<Vec<String>> {
+        if depth > 8 {
+            return Vec::new();
+        }
+        let Some(id) = self.named_type_id(ty) else { return Vec::new() };
+        let Some(rask_types::TypeDef::Struct { fields, is_resource, .. }) =
+            self.program.types.get(id)
+        else {
+            return Vec::new();
+        };
+        // The value is the obligation; there is nothing to split.
+        if *is_resource {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (fname, fty) in fields {
+            if !self.program.types.is_linear_value(fty) {
+                continue;
+            }
+            let inner = self.resource_field_paths(fty, depth + 1);
+            if inner.is_empty() {
+                out.push(vec![fname.clone()]);
+            } else {
+                for mut path in inner {
+                    let mut full = vec![fname.clone()];
+                    full.append(&mut path);
+                    out.push(full);
+                }
+            }
+        }
+        out
+    }
+
+    /// The declared type a written name refers to, optional stripped — the shape
+    /// `resource_field_paths` needs, which `type_from_name` doesn't give for a
+    /// declared struct (it answers `UnresolvedGeneric` for anything with `<`).
+    fn declared_type_from_name(&self, ty_name: &str) -> Option<Type> {
+        let name = Self::strip_optional(ty_name);
+        let base = name.split('<').next().unwrap_or(name).trim();
+        self.program.types.get_type_id(base).map(Type::Named)
+    }
+
+    /// The `TypeId` behind a named or unresolved-named type.
+    fn named_type_id(&self, ty: &Type) -> Option<rask_types::TypeId> {
+        match ty {
+            Type::Named(id) => Some(*id),
+            Type::UnresolvedNamed(name) => {
+                let base = name.split('<').next().unwrap_or(name).trim();
+                self.program.types.get_type_id(base)
+            }
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        }
+    }
+
+    /// A `take self` call on `root.a.b` pays that debt. Returns true when it
+    /// matched one, so the caller knows not to fall through to the whole-binding
+    /// consumption.
+    fn pay_field_debt(&mut self, root: &str, path: &[String]) -> bool {
+        let Some(debts) = self.resource_field_debts.get_mut(root) else {
+            return false;
+        };
+        let before = debts.len();
+        // Consuming `w.inner` pays for everything under it, since the value that
+        // held them is gone.
+        debts.retain(|d| !d.starts_with(path));
+        if debts.len() == before {
+            return false;
+        }
+        if debts.is_empty() {
+            // Everything it owed is paid, so the binding itself is discharged.
+            self.resource_bindings.remove(root);
+            self.resource_field_debts.remove(root);
+        }
+        true
+    }
+
     fn check_resource_consumption(&mut self, span: Span) {
         let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
         names.sort();
@@ -3387,6 +3523,23 @@ impl<'a> OwnershipChecker<'a> {
             }
             // Not registered with ensure: must be consumed (Moved) before exit.
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                // A holder that owes named fields is reported by field, so the
+                // message points at what's actually still open rather than at a
+                // binding with no `close()` of its own (#828).
+                if let Some(debts) = self.resource_field_debts.get(&name) {
+                    let mut paths: Vec<String> = debts
+                        .iter()
+                        .map(|d| format!("{}.{}", name, d.join(".")))
+                        .collect();
+                    paths.sort();
+                    for path in paths {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ResourceNotConsumed { name: path },
+                            span,
+                        });
+                    }
+                    continue;
+                }
                 let kind = if self.owned_bindings.contains(&name) {
                     OwnershipErrorKind::OwnedNotConsumed { name }
                 } else {

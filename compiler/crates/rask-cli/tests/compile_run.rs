@@ -4900,6 +4900,38 @@ fn error_optional_resource_not_consumed() {
     );
 }
 
+// #828: the obligation used to live on the binding alone, which can only be
+// all-or-nothing. A holder owes each resource field separately now, so
+// `p.a.close()` pays one debt and the other is still reported — by field path,
+// which is also a better message than one naming a binding with no `close()`.
+//
+// The `is_copy` half is the same family: a `@resource` is never Copy, and
+// `Conn { id: i64 }` is eight bytes of Copy field so it read as Copy. A Copy
+// argument isn't consumed, so passing a connection to a `take` parameter
+// consumed nothing and the caller was told it leaked what it had handed away.
+#[test]
+fn error_resource_field_debts() {
+    let (failed, out) = compile_error_output("resource_field_debts.rk");
+    assert!(failed, "an unpaid resource field must be rejected: {}", out);
+    assert_eq!(out.matches("E0805").count(), 3, "exactly three unpaid fields: {}", out);
+    assert!(
+        out.contains("resource `p.b` must be consumed"),
+        "one of two fields closed leaves the other: {}", out,
+    );
+    assert!(
+        out.contains("resource `w.conn` must be consumed"),
+        "a single resource field is named by path: {}", out,
+    );
+    assert!(
+        out.contains("resource `o.inner.conn` must be consumed"),
+        "a nested path is named in full: {}", out,
+    );
+    assert!(
+        !out.contains("resource `p` must"),
+        "the holder isn't the thing that leaked: {}", out,
+    );
+}
+
 // #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
 // annotation type-checked clean. The annotation's whole job is to move the
 // break from the call sites to the declaration, so an unenforced one is worse
