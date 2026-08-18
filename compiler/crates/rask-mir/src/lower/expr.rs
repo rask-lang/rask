@@ -3952,51 +3952,18 @@ impl<'a> MirLowerer<'a> {
                             return Ok(Some((MirOperand::Local(result_local), ret_ty)));
                         }
 
-                        // Comptime global: TABLE.get(0) → GlobalRef + Vec_get
-                        if let Some(meta) = self.ctx.comptime_globals.get(name) {
-                            let type_prefix = meta.type_prefix.clone();
-                            let elem_count = meta.elem_count;
-
-                            // Load the comptime global data pointer
-                            let global_local = self.builder.alloc_temp(MirType::Ptr);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                                dst: global_local,
-                                name: name.clone(),
-                            }));
-
-                            // Wrap raw data into a Vec: rask_vec_from_static(ptr, count, elem_size)
-                            let vec_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(vec_local),
-                                func: FunctionRef::internal("rask_vec_from_static".to_string()),
-                                args: vec![
-                                    MirOperand::Local(global_local),
-                                    MirOperand::Constant(MirConst::Int(elem_count as i64)),
-                                    // Comptime array globals hold i64 elements.
-                                    MirOperand::Constant(MirConst::Int(8)),
-                                ],
-                            }));
-
-                            // Dispatch method using the type prefix
-                            let func_name = format!("{}_{}", type_prefix, method);
-                            let mut arg_operands = vec![MirOperand::Local(vec_local)];
-                            for arg in args {
-                                let (op, _) = self.lower_expr(&arg.expr)?;
-                                arg_operands.push(op);
-                            }
-                            let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
-                            let result_local = self.builder.alloc_temp(ret_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
-                                args: arg_operands,
-                            }));
-                            return Ok(Some((MirOperand::Local(result_local), ret_ty)));
-                        }
+                        // A folded comptime const is *not* handled here. It
+                        // used to be — this arm built the receiver itself and
+                        // dispatched `{type_prefix}_{method}` — and that second
+                        // implementation of receiver lowering got everything wrong
+                        // that the ordinary path gets right: it wrapped scalars in
+                        // a Vec, spelled the prefix with Miri's Rust variant names,
+                        // and skipped the arithmetic/bit/hash lowering entirely, so
+                        // `N + 1` on a comptime const emitted a call to `i64_add`
+                        // (#824). Declining leaves the receiver to `lower_expr`,
+                        // whose `Ident` arm knows how to read a folded const, and
+                        // the rest of the method chain then treats it like any
+                        // other value of its type.
 
                         // Enum variant constructor: Shape.Circle(r)
                         // Extract layout data before mutable borrows in lower_expr.

@@ -305,3 +305,68 @@ func array_len() -> u64 {
 test "types.arrays — typed array-repeat resolves .len()" {
     assert array_len() == 5
 }
+
+// ── A folded const is used like any other value of its type (#824) ───
+//
+// A method call whose receiver is a comptime-folded const took its own lowering
+// path, which built the receiver by hand and dispatched `{prefix}_{method}`.
+// Three things went wrong there and the const form was broken at every width:
+// every global got wrapped in a Vec, so `to_string` was handed a Vec instead of
+// the number; the prefix was spelled with the MIR evaluator's Rust names, so the
+// call went to `I64_to_string`, which doesn't exist; and arithmetic never got
+// that far, so `N + 1` emitted a call to `i64_add`. Now the receiver goes through
+// ordinary expression lowering and the rest follows.
+
+const CT_I64: i64 = comptime { 100 + 1 }
+const CT_U32: u32 = comptime { 7 * 6 }
+const CT_I16: i16 = comptime { 0 - 300 }
+const CT_U64: u64 = comptime { 18446744073709551615 }
+const CT_BOOL: bool = comptime { 3 > 2 }
+const CT_CHAR: char = comptime { 'z' }
+
+test "ctrl.comptime — a folded const interpolates at its own width" {
+    assert "{CT_I64}" == "101"
+    assert "{CT_U32}" == "42"
+    assert "{CT_I16}" == "-300"
+    // Above i64::MAX: the unsigned reading is the right one.
+    assert "{CT_U64}" == "18446744073709551615"
+    assert "{CT_BOOL}" == "true"
+    assert "{CT_CHAR}" == "z"
+}
+
+test "ctrl.comptime — a folded const does arithmetic" {
+    assert CT_I64 + 1 == 102
+    assert CT_U32 * 2 == 84
+    assert CT_I16 - 1 == -301
+    assert CT_I64 > 100
+}
+
+test "ctrl.comptime — a method call on a folded const" {
+    let neg: i32 = 0 - 5
+    assert CT_I16.abs() == 300
+    assert neg.abs() == 5
+    assert CT_I64.to_string() == "101"
+}
+
+test "ctrl.comptime — a folded const bound to a local keeps its width" {
+    let n = CT_U64
+    assert "{n}" == "18446744073709551615"
+    let w = CT_U32
+    assert w + 1 == 43
+}
+
+// A `string` can't be written into a data section as its characters — the
+// runtime value is two words, not the bytes — so this const isn't folded to a
+// global at all; it's evaluated where it's used. It used to fold to the raw
+// UTF-8 and then `to_uppercase` was handed those bytes.
+comptime func greeting() -> string {
+    return "hei"
+}
+
+const CT_STR: string = comptime { greeting() }
+
+test "ctrl.comptime — a folded string const is still a string" {
+    assert CT_STR == "hei"
+    assert CT_STR.to_uppercase() == "HEI"
+    assert CT_STR.len() == 3
+}

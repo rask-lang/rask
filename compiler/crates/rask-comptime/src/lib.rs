@@ -439,10 +439,17 @@ impl ComptimeValue {
         }
     }
 
-    /// Type prefix for method dispatch when embedded as a comptime global.
+    /// Type prefix for method dispatch when embedded as a comptime global — the
+    /// Rask type name, which is what a method call is prefixed with
+    /// (`i64_to_string`, `string_to_uppercase`, `Vec_get`).
+    ///
+    /// `type_name` spells a string `String`, for error messages; the dispatch
+    /// prefix is `string`. Keep this in step with `MiriValue::type_prefix`,
+    /// which writes the same field (#824).
     pub fn type_prefix(&self) -> &'static str {
         match self {
             ComptimeValue::Array(_) => "Vec",
+            ComptimeValue::String(_) => "string",
             _ => self.type_name(),
         }
     }

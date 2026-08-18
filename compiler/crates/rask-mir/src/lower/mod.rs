@@ -4728,6 +4728,38 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
     }
 }
 
+/// The dispatch prefix for a builtin type named in source, which is the spelling
+/// a folded comptime const carries in `ComptimeGlobalMeta.type_prefix`.
+///
+/// Goes through `builtin_method_prefix` so the width collapse — narrow integers
+/// dispatch on their widest sibling — is stated in one place. A folded const used
+/// its own type name as the prefix directly, so `const B: u32 = comptime { … }`
+/// interpolated into a string emitted `u32_to_string`, which no backend has
+/// (#824).
+pub fn builtin_method_prefix_for_name(name: &str) -> Option<&'static str> {
+    let ty = match name {
+        "i8" => Type::I8,
+        "i16" => Type::I16,
+        "i32" => Type::I32,
+        "i64" => Type::I64,
+        "i128" => Type::I128,
+        "u8" => Type::U8,
+        "u16" => Type::U16,
+        "u32" => Type::U32,
+        "u64" => Type::U64,
+        "u128" => Type::U128,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
+        "bool" => Type::Bool,
+        "char" => Type::Char,
+        // A string receiver never reaches `builtin_method_prefix` — it comes out
+        // of `stdlib_type_prefix` instead — but it is spelled the same either way.
+        "string" => return Some("string"),
+        _ => return None,
+    };
+    builtin_method_prefix(&ty)
+}
+
 
 /// Extract type prefix from a type annotation string.
 ///

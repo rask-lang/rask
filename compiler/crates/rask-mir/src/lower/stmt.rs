@@ -334,7 +334,13 @@ impl<'a> MirLowerer<'a> {
                         }));
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                     }
-                    self.meta_mut(name).type_prefix = Some(meta.type_prefix.clone());
+                    // The tracked prefix is what later method calls on this
+                    // binding dispatch through, and a scalar's dispatch prefix
+                    // isn't its type name — narrow widths ride the 64-bit symbols.
+                    let prefix = super::builtin_method_prefix_for_name(&meta.type_prefix)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| meta.type_prefix.clone());
+                    self.meta_mut(name).type_prefix = Some(prefix);
                     return Ok(());
                 }
                 self.lower_binding(name, ty.as_deref(), init)
