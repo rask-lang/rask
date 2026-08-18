@@ -791,8 +791,8 @@ impl<'a> MirLowerer<'a> {
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => MirType::U64,
                     Some(IntSuffix::Isize) => MirType::isize_ty(),
                     Some(IntSuffix::Usize) => MirType::usize_ty(),
-                    Some(IntSuffix::I128) => MirType::I128,
-                    Some(IntSuffix::U128) => MirType::U128,
+                    Some(IntSuffix::I128) | Some(IntSuffix::I128ByMagnitude) => MirType::I128,
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => MirType::U128,
                     // An unsuffixed literal the checker didn't pin down takes the
                     // language's own default rather than counting as a failure to
                     // resolve — type.primitives/L1 says an integer literal
@@ -823,9 +823,11 @@ impl<'a> MirLowerer<'a> {
                 // A literal too big for `i64` gets `U64ByMagnitude` from the
                 // lexer — that's about how it was *written*, not what it is. If
                 // the checker settled the node at 128 bits, take that: otherwise
-                // `let u: u128 = 18446744073709551615` became a `u64` whose bit
-                // pattern is -1 and then sign-extended to `u128::MAX` (#762).
-                let ty = if matches!(suffix, None | Some(IntSuffix::U64ByMagnitude)) {
+                // `let u: u128 = 18446744073709551615` came out a `u64` (#762).
+                let ty = if matches!(
+                    suffix,
+                    None | Some(IntSuffix::U64ByMagnitude) | Some(IntSuffix::I128ByMagnitude)
+                ) {
                     match self.ctx.lookup_node_type(expr.id) {
                         Some(wide @ (MirType::I128 | MirType::U128)) => wide,
                         _ => ty,
@@ -833,15 +835,15 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     ty
                 };
-                // A 128-bit slot needs the widening decided here, where the
-                // signedness is still known. The lexer carries a literal as a
-                // 64-bit *bit pattern* — `u64::MAX` arrives as -1 — so an
-                // unsigned target reads the payload back as `u64` first, or the
-                // constant would sign-extend to all ones (#762).
+                // The token already holds the literal's own value at 128 bits,
+                // so a wide slot just takes it. `MirConst::Int128` is a bit
+                // pattern either way, which is what the one range `i128` can't
+                // represent — a `u128` above `i128::MAX` — needs (#800).
                 let konst = match ty {
-                    MirType::I128 => MirConst::Int128(*val as i128),
-                    MirType::U128 => MirConst::Int128(*val as u64 as i128),
-                    _ => MirConst::Int(*val),
+                    MirType::I128 | MirType::U128 => MirConst::Int128(*val),
+                    // Anything that doesn't fit a narrower slot was already
+                    // reported out of range by the checker.
+                    _ => MirConst::Int(*val as i64),
                 };
                 Ok((MirOperand::Constant(konst), ty))
             }
@@ -6355,7 +6357,7 @@ impl<'a> MirLowerer<'a> {
 
         // Every argument is a literal the desugar pass put there.
         let int_arg = |i: usize| match &args[i].expr.kind {
-            ExprKind::Int(n, _) => *n,
+            ExprKind::Int(n, _) => *n as i64,
             _ => 0,
         };
         let fill = match &args[4].expr.kind {

@@ -1232,6 +1232,49 @@ fn error_mixed_signedness_arithmetic() {
     );
 }
 
+// #800: a token carries an `i128`, so the question moved from "does this parse"
+// to "does the slot hold it". Each band has to name its own range — landing all
+// three on one generic "invalid literal" is what sent people hunting for a typo
+// that wasn't there.
+#[test]
+fn error_int_literal_out_of_range() {
+    let (failed, out) = compile_error_output("int_literal_range.rk");
+    assert!(failed, "a literal past its slot must not compile: {}", out);
+    for ty in ["`i64`", "`i128`", "`u128`"] {
+        assert!(
+            out.contains(&format!("out of range for {}", ty)),
+            "should name {} as the range that was missed: {}", ty, out,
+        );
+    }
+    // The `u128` case is negative, so the message has to keep the sign rather
+    // than print the magnitude it would wrap to.
+    assert!(
+        out.contains("`-170141183460469231731687303715884105728` doesn't fit in `u128`"),
+        "a negative literal keeps its sign in the message: {}", out,
+    );
+}
+
+// The two ends nothing can hold: digits past `u128::MAX` stop in the lexer, and
+// a negative below `i128::MIN` stops in the parser's sign fold.
+#[test]
+fn error_int_literal_unwritable() {
+    let (failed, out) = compile_error_output("int_literal_unwritable.rk");
+    assert!(failed, "an unwritable literal must not compile: {}", out);
+    assert!(
+        out.contains("too large for any integer type"),
+        "past u128::MAX names no type at all: {}", out,
+    );
+    assert!(
+        out.contains("too small for `i128`"),
+        "below i128::MIN names the widest signed type: {}", out,
+    );
+    // "unexpected character" is the wrong frame for digits that read fine.
+    assert!(
+        !out.contains("unexpected character"),
+        "the digits aren't the problem: {}", out,
+    );
+}
+
 // The other half of ORD4: comparison across signedness stays legal and answers
 // by value. Enforcing the arithmetic half must not touch it.
 #[test]

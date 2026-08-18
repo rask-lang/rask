@@ -23,6 +23,8 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [not_iterable.rk](not_iterable.rk) | `for` over something with no elements — an integer, a string, a struct (E0827), and an index type check that only reaches a container arrived at through a field (#632) |
 | [implicit_widening_limits.rk](implicit_widening_limits.rk) | The int→int pairs CV1a does *not* make implicit: `u64`→`i64`, `i64`→`u64`, `u32`→`i32`, `u8`→`i8`, and plain narrowing (CV1a, CV2) |
 | [mixed_signedness_arithmetic.rk](mixed_signedness_arithmetic.rk) | `+ - * / %` and `& \| ^ << >>` between a signed and an unsigned integer (ORD4, E0371) — comparison is the exception and stays legal (#778) |
+| [int_literal_range.rk](int_literal_range.rk) | An integer literal past the slot it lands in: needs 128 bits in an `i64`, one past `i128::MAX`, negative in a `u128` (E0825, #800) |
+| [int_literal_unwritable.rk](int_literal_unwritable.rk) | The two ends no type holds — digits past `u128::MAX` (lexer) and a negative below `i128::MIN` (parser sign fold) (#800) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |

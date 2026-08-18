@@ -33,11 +33,18 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L3: Suffixed** | Type suffix | `42u8`, `3.14f32` | As specified |
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
-| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64` |
+| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64`, then `i128` |
 | **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
+| **L8: Literal ceiling** | Digits past `u128::MAX` | `340282366920938463463374607431768211456` | Compile error |
 
-L6 only moves the *default*. Context still wins: `const x: i64 = 5` is an `i64`.
-A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
+L6 only moves the *default*. Context still wins, all the way up: `const x: i64 = 5`
+is an `i64`, and `const x: u128 = 100000000000000000000` is a `u128` even though the
+same digits on their own would default to `i128`. Magnitude only rules types *out*.
+
+L8 is where digits stop. `u128` is the widest integer type, so a literal above
+`u128::MAX` names a value nothing can hold and gets said so plainly, rather than
+reading as a typo. Going the other way, a negative literal has to land in a signed
+type, so `i128::MIN` is the floor.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
@@ -341,7 +348,8 @@ mut port: u16 = header.port   // Native u16
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Integer literal out of range | L1/L3 | Compile error |
+| Integer literal out of range | L1/L3/L7 | Compile error |
+| Integer literal past `u128::MAX` | L8 | Compile error |
 | Unsuffixed literal ambiguous | L1/L4 | Defaults to `i32` or `f64` |
 | `n as char` | CH5 | Compile error — use `char.from_u32(n)` |
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |

@@ -344,10 +344,12 @@ pub enum ComptimeValue {
     I16(i16),
     I32(i32),
     I64(i64),
+    I128(i128),
     U8(u8),
     U16(u16),
     U32(u32),
     U64(u64),
+    U128(u128),
     F32(f32),
     F64(f64),
     Char(char),
@@ -380,10 +382,12 @@ impl PartialEq for ComptimeValue {
             (ComptimeValue::I16(a), ComptimeValue::I16(b)) => a == b,
             (ComptimeValue::I32(a), ComptimeValue::I32(b)) => a == b,
             (ComptimeValue::I64(a), ComptimeValue::I64(b)) => a == b,
+            (ComptimeValue::I128(a), ComptimeValue::I128(b)) => a == b,
             (ComptimeValue::U8(a), ComptimeValue::U8(b)) => a == b,
             (ComptimeValue::U16(a), ComptimeValue::U16(b)) => a == b,
             (ComptimeValue::U32(a), ComptimeValue::U32(b)) => a == b,
             (ComptimeValue::U64(a), ComptimeValue::U64(b)) => a == b,
+            (ComptimeValue::U128(a), ComptimeValue::U128(b)) => a == b,
             (ComptimeValue::F32(a), ComptimeValue::F32(b)) => a == b,
             (ComptimeValue::F64(a), ComptimeValue::F64(b)) => a == b,
             (ComptimeValue::Char(a), ComptimeValue::Char(b)) => a == b,
@@ -415,10 +419,12 @@ impl ComptimeValue {
             ComptimeValue::I16(_) => "i16",
             ComptimeValue::I32(_) => "i32",
             ComptimeValue::I64(_) => "i64",
+            ComptimeValue::I128(_) => "i128",
             ComptimeValue::U8(_) => "u8",
             ComptimeValue::U16(_) => "u16",
             ComptimeValue::U32(_) => "u32",
             ComptimeValue::U64(_) => "u64",
+            ComptimeValue::U128(_) => "u128",
             ComptimeValue::F32(_) => "f32",
             ComptimeValue::F64(_) => "f64",
             ComptimeValue::Char(_) => "char",
@@ -486,6 +492,8 @@ impl ComptimeValue {
             ComptimeValue::U16(v) => Some(*v as i64),
             ComptimeValue::U32(v) => Some(*v as i64),
             ComptimeValue::U64(v) => Some(*v as i64), // May overflow
+            ComptimeValue::I128(v) => Some(*v as i64),  // May overflow
+            ComptimeValue::U128(v) => Some(*v as i64),  // May overflow
             _ => None,
         }
     }
@@ -501,6 +509,11 @@ impl ComptimeValue {
             ComptimeValue::U16(v) => (*v as i128, CtInt::U16),
             ComptimeValue::U32(v) => (*v as i128, CtInt::U32),
             ComptimeValue::U64(v) => (*v as i128, CtInt::U64),
+            ComptimeValue::I128(v) => (*v, CtInt::I128),
+            // Comptime arithmetic runs in an `i128`, so a `u128` past
+            // `i128::MAX` has nowhere to be computed. Refusing here gives
+            // "not a comptime integer" instead of a wrong number (#802).
+            ComptimeValue::U128(v) => (i128::try_from(*v).ok()?, CtInt::U128),
             _ => return None,
         })
     }
@@ -541,6 +554,8 @@ impl ComptimeValue {
             ComptimeValue::U16(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::U32(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::U64(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::I128(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::U128(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::F32(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::F64(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::Char(c) => (*c as u32).to_le_bytes().to_vec(),
@@ -791,30 +806,46 @@ impl ControlFlow {
 /// Integer width of a comptime value, for width-aware overflow checks (CT1).
 /// I64 doubles as the unsuffixed-literal default.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CtInt { I8, I16, I32, I64, U8, U16, U32, U64 }
+enum CtInt { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
 
 impl CtInt {
-    fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64) }
+    fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64 | CtInt::I128) }
     fn bits(self) -> u32 {
         match self {
             CtInt::I8 | CtInt::U8 => 8,
             CtInt::I16 | CtInt::U16 => 16,
             CtInt::I32 | CtInt::U32 => 32,
             CtInt::I64 | CtInt::U64 => 64,
+            CtInt::I128 | CtInt::U128 => 128,
         }
     }
     fn name(self) -> &'static str {
         match self {
             CtInt::I8 => "i8", CtInt::I16 => "i16", CtInt::I32 => "i32", CtInt::I64 => "i64",
+            CtInt::I128 => "i128",
             CtInt::U8 => "u8", CtInt::U16 => "u16", CtInt::U32 => "u32", CtInt::U64 => "u64",
+            CtInt::U128 => "u128",
         }
     }
-    fn min(self) -> i128 { if self.signed() { -(1i128 << (self.bits() - 1)) } else { 0 } }
+    fn min(self) -> i128 {
+        match self {
+            CtInt::I128 => i128::MIN,
+            _ if self.signed() => -(1i128 << (self.bits() - 1)),
+            _ => 0,
+        }
+    }
+    /// The comptime ceiling. `u128` stops at `i128::MAX` rather than its own
+    /// max because the evaluator computes in an `i128` — a wrong answer is
+    /// worse than a refusal (#802).
     fn max(self) -> i128 {
-        if self.signed() { (1i128 << (self.bits() - 1)) - 1 } else { (1i128 << self.bits()) - 1 }
+        match self {
+            CtInt::I128 | CtInt::U128 => i128::MAX,
+            _ if self.signed() => (1i128 << (self.bits() - 1)) - 1,
+            _ => (1i128 << self.bits()) - 1,
+        }
     }
     /// Pick the more specific kind. I64 is the untyped default and yields.
     fn unify(self, other: CtInt) -> CtInt {
@@ -829,10 +860,12 @@ impl CtInt {
             CtInt::I16 => ComptimeValue::I16(v as i16),
             CtInt::I32 => ComptimeValue::I32(v as i32),
             CtInt::I64 => ComptimeValue::I64(v as i64),
+            CtInt::I128 => ComptimeValue::I128(v),
             CtInt::U8 => ComptimeValue::U8(v as u8),
             CtInt::U16 => ComptimeValue::U16(v as u16),
             CtInt::U32 => ComptimeValue::U32(v as u32),
             CtInt::U64 => ComptimeValue::U64(v as u64),
+            CtInt::U128 => ComptimeValue::U128(v as u128),
         }
     }
     fn wrap(self, v: i128) -> i128 {
@@ -956,23 +989,32 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::I8) => ComptimeValue::I8(*v as i8),
                     Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
                     Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
-                    Some(IntSuffix::I64) => ComptimeValue::I64(*v),
+                    Some(IntSuffix::I64) => ComptimeValue::I64(*v as i64),
                     Some(IntSuffix::Isize) => if rask_ast::primitives::pointer_bits() == 32 {
                         ComptimeValue::I32(*v as i32)
                     } else {
-                        ComptimeValue::I64(*v)
+                        ComptimeValue::I64(*v as i64)
                     },
                     Some(IntSuffix::U8) => ComptimeValue::U8(*v as u8),
                     Some(IntSuffix::U16) => ComptimeValue::U16(*v as u16),
                     Some(IntSuffix::U32) => ComptimeValue::U32(*v as u32),
-                    Some(IntSuffix::U64) => ComptimeValue::U64(*v as u64),
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => {
+                        ComptimeValue::U64(*v as u64)
+                    }
                     Some(IntSuffix::Usize) => if rask_ast::primitives::pointer_bits() == 32 {
                         ComptimeValue::U32(*v as u32)
                     } else {
                         ComptimeValue::U64(*v as u64)
                     },
-                    // I128/U128 aren't distinct comptime variants; keep i64.
-                    _ => ComptimeValue::I64(*v),
+                    Some(IntSuffix::I128) | Some(IntSuffix::I128ByMagnitude) => {
+                        ComptimeValue::I128(*v)
+                    }
+                    // Above `i128::MAX` the token carries a bit pattern, so
+                    // read it back as the unsigned value it stands for.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => {
+                        ComptimeValue::U128(*v as u128)
+                    }
+                    None => ComptimeValue::I64(*v as i64),
                 }
             }
             ExprKind::Float(v, _) => ComptimeValue::F64(*v),

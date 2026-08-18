@@ -14,14 +14,14 @@ use rask_ast::Span;
 impl ToDiagnostic for rask_lexer::LexError {
     fn to_diagnostic(&self) -> Diagnostic {
         let mut diag = Diagnostic::error(&self.message)
-            .with_code("E0001")
-            .with_primary(self.span, "unexpected character");
+            .with_code(self.code)
+            .with_primary(self.span, self.label);
 
         if let Some(ref hint) = self.hint {
             diag = diag
                 .with_help(hint.as_str())
                 .with_fix(hint.as_str())
-                .with_why("the lexer expected a valid token at this position");
+                .with_why(self.why);
         }
 
         diag

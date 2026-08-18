@@ -16,7 +16,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     /// Integer literal
-    Int(i64, Option<IntSuffix>),
+    Int(i128, Option<IntSuffix>),
     /// Float literal
     Float(f64, Option<FloatSuffix>),
     /// String literal

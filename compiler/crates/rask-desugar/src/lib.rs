@@ -1052,7 +1052,7 @@ impl Desugarer {
         let int_arg = |this: &mut Self, n: i64| CallArg {
             name: None,
             mode: ArgMode::Default,
-            expr: Expr { id: this.fresh_id(), kind: ExprKind::Int(n, None), span },
+            expr: Expr { id: this.fresh_id(), kind: ExprKind::Int(i128::from(n), None), span },
         };
         let args = vec![
             int_arg(self, ty),

@@ -508,9 +508,30 @@ impl Interpreter {
                 // Kind comes from an explicit suffix, else the checker's
                 // inferred type for this literal (defaults to i32). This is
                 // where width first attaches to a value (type.overflow).
+                // A literal that needed 64 or 128 bits for its magnitude still
+                // leaves the type open — the marker says which types it *can't*
+                // be. So the checker's answer decides for those too, same as for
+                // a literal with no suffix at all (#800).
+                let open = matches!(
+                    suffix,
+                    None | Some(IntSuffix::U64ByMagnitude) | Some(IntSuffix::I128ByMagnitude)
+                );
+                if open {
+                    match self.node_types.get(&expr.id) {
+                        Some(rask_types::Type::I128) => return Ok(Value::Int128(*n)),
+                        Some(rask_types::Type::U128) => return Ok(Value::Uint128(*n as u128)),
+                        _ => {}
+                    }
+                }
                 let kind = match suffix {
-                    Some(IntSuffix::I128) => return Ok(Value::Int128(*n as i128)),
-                    Some(IntSuffix::U128) => return Ok(Value::Uint128(*n as u128)),
+                    Some(IntSuffix::I128) | Some(IntSuffix::I128ByMagnitude) => {
+                        return Ok(Value::Int128(*n))
+                    }
+                    // Past `i128::MAX` the token holds a bit pattern; reading
+                    // it back as `u128` is what recovers the value.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => {
+                        return Ok(Value::Uint128(*n as u128))
+                    }
                     Some(IntSuffix::I8) => IntKind::I8,
                     Some(IntSuffix::I16) => IntKind::I16,
                     Some(IntSuffix::I32) => IntKind::I32,
@@ -520,10 +541,17 @@ impl Interpreter {
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
                     Some(IntSuffix::Usize) => IntKind::usize_kind(),
-                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
+                    Some(IntSuffix::U64) => IntKind::U64,
+                    // The marker's own band is the fallback when the checker
+                    // left nothing behind.
+                    Some(IntSuffix::U64ByMagnitude) => self
+                        .node_types
+                        .get(&expr.id)
+                        .map(IntKind::from_type)
+                        .unwrap_or(IntKind::U64),
                     None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
                 };
-                Ok(Value::Int(*n, kind))
+                Ok(Value::Int(*n as i64, kind))
             }
             // Same as the integer literal above: the suffix wins, otherwise
             // take the width the checker inferred. This is where a float's

@@ -222,7 +222,7 @@ pub struct TypeChecker {
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
-    pub(super) pending_int_literals: Vec<(i64, bool, Type, rask_ast::Span)>,
+    pub(super) pending_int_literals: Vec<(i128, bool, Type, rask_ast::Span)>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,

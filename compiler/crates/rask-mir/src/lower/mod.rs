@@ -2882,10 +2882,18 @@ impl<'a> MirLowerer<'a> {
                         Some(rask_ast::token::IntSuffix::U32) => MirType::U32,
                         Some(rask_ast::token::IntSuffix::U64)
                         | Some(rask_ast::token::IntSuffix::U64ByMagnitude) => MirType::U64,
+                        Some(rask_ast::token::IntSuffix::I128)
+                        | Some(rask_ast::token::IntSuffix::I128ByMagnitude) => MirType::I128,
+                        Some(rask_ast::token::IntSuffix::U128)
+                        | Some(rask_ast::token::IntSuffix::U128ByMagnitude) => MirType::U128,
                         _ => MirType::I64,
                     }
                 };
-                Some((MirOperand::Constant(MirConst::Int(*val)), ty))
+                let konst = match ty {
+                    MirType::I128 | MirType::U128 => MirConst::Int128(*val),
+                    _ => MirConst::Int(*val as i64),
+                };
+                Some((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, _) => {
                 let ty = if let Some(hint) = ty_hint {
@@ -4580,7 +4588,7 @@ mod tests {
         Span::new(0, 0)
     }
 
-    fn int_expr(val: i64) -> Expr {
+    fn int_expr(val: i128) -> Expr {
         Expr { id: NodeId(100), kind: ExprKind::Int(val, None), span: sp() }
     }
 

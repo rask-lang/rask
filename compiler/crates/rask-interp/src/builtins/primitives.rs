@@ -215,19 +215,19 @@ impl Interpreter {
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
             "shl" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shl(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds i128 bit width (128)", b)))
             }
             "shr" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shr(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds i128 bit width (128)", b)))
             }
             "bit_not" => Ok(Value::Int128(!a)),
             "abs" => a.checked_abs().map(Value::Int128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
-            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
+            "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -271,17 +271,17 @@ impl Interpreter {
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
             "shl" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shl(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds u128 bit width (128)", b)))
             }
             "shr" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shr(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds u128 bit width (128)", b)))
             }
             "bit_not" => Ok(Value::Uint128(!a)),
-            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
+            "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {

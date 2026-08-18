@@ -130,10 +130,18 @@ impl TypeChecker {
     /// Falls through to normal inference for non-literal or suffixed expressions.
     pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
         match &expr.kind {
-            ExprKind::Int(value, None) if Self::is_integer_type(expected) => {
+            // An unsuffixed literal takes the slot's type, including the two
+            // magnitude bands that only rule types out. Taking the expectation
+            // is what turns `let a: i128 = <too big>` into "this literal is out
+            // of range for `i128`" instead of a type mismatch against whatever
+            // the literal would have defaulted to.
+            ExprKind::Int(value, suffix)
+                if Self::is_integer_type(expected) && Self::int_literal_is_open(suffix) =>
+            {
                 let ty = expected.clone();
                 self.node_types.insert(expr.id, ty.clone());
-                self.pending_int_literals.push((*value, false, ty.clone(), expr.span));
+                let bit_pattern = Self::int_literal_is_bit_pattern(*value, suffix);
+                self.pending_int_literals.push((*value, bit_pattern, ty.clone(), expr.span));
                 return ty;
             }
             ExprKind::Float(_, None) if Self::is_float_type(expected) => {
@@ -255,6 +263,32 @@ impl TypeChecker {
         self.trait_coercions.insert(expr.id, trait_name.clone());
     }
 
+    /// True when the literal's own spelling doesn't pin a type, so the slot it
+    /// lands in decides. The magnitude markers count: they say what a literal
+    /// *can't* be, not what it is.
+    fn int_literal_is_open(suffix: &Option<rask_ast::token::IntSuffix>) -> bool {
+        use rask_ast::token::IntSuffix;
+        matches!(
+            suffix,
+            None
+                | Some(IntSuffix::U64ByMagnitude)
+                | Some(IntSuffix::I128ByMagnitude)
+                | Some(IntSuffix::U128ByMagnitude)
+        )
+    }
+
+    /// Whether the token carries a bit pattern rather than a number. Only one
+    /// band does: a `u128` above `i128::MAX`, which is the single value range
+    /// the `i128` a token travels in can't represent.
+    fn int_literal_is_bit_pattern(
+        value: i128,
+        suffix: &Option<rask_ast::token::IntSuffix>,
+    ) -> bool {
+        use rask_ast::token::IntSuffix;
+        matches!(suffix, Some(IntSuffix::U128ByMagnitude))
+            || (matches!(suffix, Some(IntSuffix::U128)) && value < 0)
+    }
+
     fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
@@ -274,15 +308,22 @@ impl TypeChecker {
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
-                    Some(IntSuffix::I128) => Type::I128,
                     Some(IntSuffix::Isize) => Type::isize_ty(),
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
-                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => Type::U64,
-                    Some(IntSuffix::U128) => Type::U128,
+                    Some(IntSuffix::U64) => Type::U64,
+                    Some(IntSuffix::I128) => Type::I128,
+                    // Past `i128::MAX` only `u128` is left, so the magnitude
+                    // does pin the type. Below that it just rules types *out* —
+                    // `100000000000000000000` is as good a `u128` as an `i128`,
+                    // so it stays open like any other unsuffixed literal and
+                    // `validate_pending_int_literals` catches a bad landing.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => Type::U128,
                     Some(IntSuffix::Usize) => Type::usize_ty(),
-                    None => {
+                    None
+                    | Some(IntSuffix::U64ByMagnitude)
+                    | Some(IntSuffix::I128ByMagnitude) => {
                         let var = self.ctx.fresh_literal_var(LiteralKind::Integer);
                         // The default is i32 (type.primitives/L1), but a literal
                         // too big for i32 has to land somewhere it fits, or
@@ -293,13 +334,13 @@ impl TypeChecker {
                         var
                     }
                 };
-                // Tokens carry an `i64`, so a literal above `i64::MAX` arrives
-                // as its bit pattern. That only ever shows up as a negative
-                // value under an unsigned suffix — `-1u64` parses as `neg(1)`,
-                // never as `Int(-1, u64)` — so the two cases don't collide.
-                let above_i64 = matches!(suffix, Some(IntSuffix::U64ByMagnitude))
-                    || (*value < 0 && matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128));
-                self.pending_int_literals.push((*value, above_i64, ty.clone(), expr.span));
+                // Tokens carry an `i128`, so only the very top band — above
+                // `i128::MAX`, where just `u128` reaches — still arrives as a
+                // bit pattern. That shows up as a negative value under an
+                // unsigned suffix; `-1u128` parses as `neg(1)`, never as
+                // `Int(-1, u128)`, so the two cases don't collide.
+                let bit_pattern = Self::int_literal_is_bit_pattern(*value, suffix);
+                self.pending_int_literals.push((*value, bit_pattern, ty.clone(), expr.span));
                 ty
             }
             ExprKind::Float(_, suffix) => {
@@ -2700,7 +2741,7 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind;
 
         // Extract step value from literal
-        let step_val: Option<i64> = match &step_arg.expr.kind {
+        let step_val: Option<i128> = match &step_arg.expr.kind {
             ExprKind::Int(v, _) => Some(*v),
             // After desugar, `-1` becomes `(1).neg()`
             ExprKind::MethodCall { object, method: neg_method, args: neg_args, .. }
@@ -3611,18 +3652,34 @@ impl TypeChecker {
     /// the low byte.
     pub(super) fn validate_pending_int_literals(&mut self) {
         let pending = std::mem::take(&mut self.pending_int_literals);
-        for (value, above_i64, ty, span) in pending {
+        for (value, bit_pattern, ty, span) in pending {
             let ty = self.ctx.apply(&ty);
             let Some((min, max)) = int_range(&ty) else { continue };
-            // Above i64::MAX the value is a bit pattern, not a number: read the
-            // magnitude back out before comparing.
-            let v = if above_i64 { i128::from(value as u64) } else { i128::from(value) };
-            let fits = v >= min && v <= max;
+            // Compare as sign plus magnitude: a `u128` above `i128::MAX` is the
+            // one literal that doesn't fit an `i128`, and it arrives as a bit
+            // pattern rather than a number.
+            let (negative, magnitude) = if bit_pattern {
+                (false, value as u128)
+            } else if value < 0 {
+                (true, value.unsigned_abs())
+            } else {
+                (false, value as u128)
+            };
+            let fits = if negative {
+                min < 0 && magnitude <= min.unsigned_abs()
+            } else {
+                magnitude <= max
+            };
             if fits {
                 continue;
             }
+            let literal = if negative {
+                format!("-{}", magnitude)
+            } else {
+                magnitude.to_string()
+            };
             self.errors.push(TypeError::IntLiteralOutOfRange {
-                literal: v.to_string(),
+                literal,
                 ty,
                 min: min.to_string(),
                 max: max.to_string(),
@@ -4154,12 +4211,14 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// a float target takes any literal, and an unresolved type has nothing to say.
 /// i128/u128 are checked as i128, which can't represent all of u128; the top of
 /// that range needs 128-bit literals to reach anyway.
-fn int_range(ty: &Type) -> Option<(i128, i128)> {
+/// The inclusive range of an integer type. The top is a `u128` because
+/// `u128::MAX` is the one bound no signed type can hold.
+fn int_range(ty: &Type) -> Option<(i128, u128)> {
     Some(match prim_of(ty)? {
-        Prim::Int { bits: 128, signed: false } => (0, i128::MAX),
-        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX),
-        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1),
-        Prim::Int { bits, signed: false } => (0, (1i128 << bits) - 1),
+        Prim::Int { bits: 128, signed: false } => (0, u128::MAX),
+        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX as u128),
+        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1u128 << (bits - 1)) - 1),
+        Prim::Int { bits, signed: false } => (0, (1u128 << bits) - 1),
         _ => return None,
     })
 }

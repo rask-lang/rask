@@ -414,7 +414,7 @@ mod tests {
         Span::new(0, 0)
     }
 
-    fn int_expr(val: i64) -> Expr {
+    fn int_expr(val: i128) -> Expr {
         Expr {
             id: NodeId(100),
             kind: ExprKind::Int(val, None),

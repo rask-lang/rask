@@ -3486,20 +3486,40 @@ impl Parser {
                             let kind = ExprKind::Int(-v, None);
                             return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
                         }
-                        // Only the lexer's "too big for i64" marker folds; an
-                        // explicitly written `u64` keeps meaning `u64`.
+                        // Only the lexer's "too big for the last type" markers
+                        // fold; an explicitly written `u64` keeps meaning `u64`.
+                        // Negating moves the literal down one band: what needed
+                        // `u64` for its magnitude needs `i64` or `i128` once
+                        // it's negative.
                         Some(IntSuffix::U64ByMagnitude) => {
-                            if v == i64::MIN {
-                                let kind = ExprKind::Int(i64::MIN, None);
+                            // `-9223372036854775808` is `i64::MIN`, the one
+                            // value that fits going down but not going up.
+                            let kind = if v == -i128::from(i64::MIN) {
+                                ExprKind::Int(i128::from(i64::MIN), None)
+                            } else {
+                                ExprKind::Int(-v, Some(IntSuffix::I128ByMagnitude))
+                            };
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        Some(IntSuffix::I128ByMagnitude) => {
+                            let kind = ExprKind::Int(-v, Some(IntSuffix::I128ByMagnitude));
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        // Above `i128::MAX` the token carries a bit pattern.
+                        // `i128::MIN` is exactly that bit pattern, so it's the
+                        // only one a `-` can rescue.
+                        Some(IntSuffix::U128ByMagnitude) => {
+                            if v == i128::MIN {
+                                let kind = ExprKind::Int(i128::MIN, Some(IntSuffix::I128ByMagnitude));
                                 return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
                             }
                             return Err(ParseError {
                                 span: self.span(start, end),
-                                message: format!("integer literal `-{}` is too small for `i64`", v as u64),
-                                hint: Some(format!("the smallest `i64` is {}", i64::MIN)),
+                                message: format!("integer literal `-{}` is too small for `i128`", v as u128),
+                                hint: Some(format!("the smallest `i128` is {}", i128::MIN)),
                                 why: Some(
-                                    "integer literals are `i64` unless a suffix says otherwise, and \
-                                     there is no wider signed type to hold this one"
+                                    "a negative literal has to land in a signed type, and `i128` is \
+                                     the widest one"
                                         .to_string(),
                                 ),
                             });

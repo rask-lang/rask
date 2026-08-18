@@ -218,7 +218,9 @@ impl Interpreter {
                 // Bounds are literal chars or ints, checked by the parser.
                 let in_range = match (value, &start.kind, &end.kind) {
                     (Value::Char(c), ExprKind::Char(s), ExprKind::Char(e)) => c >= s && c <= e,
-                    (Value::Int(n, _), ExprKind::Int(s, _), ExprKind::Int(e, _)) => n >= s && n <= e,
+                    (Value::Int(n, _), ExprKind::Int(s, _), ExprKind::Int(e, _)) => {
+                        i128::from(*n) >= *s && i128::from(*n) <= *e
+                    }
                     _ => false,
                 };
                 if in_range { Some(HashMap::new()) } else { None }
@@ -283,8 +285,8 @@ impl Interpreter {
 
     pub(super) fn values_equal(&self, value: &Value, lit_expr: &Expr) -> bool {
         match (&value, &lit_expr.kind) {
-            (Value::Int(a, _), ExprKind::Int(b, _)) => *a == *b,
-            (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b as i128,
+            (Value::Int(a, _), ExprKind::Int(b, _)) => i128::from(*a) == *b,
+            (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b,
             (Value::Uint128(a), ExprKind::Int(b, _)) => *a == *b as u128,
             (Value::Float(a, _), ExprKind::Float(b, _)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,

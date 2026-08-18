@@ -463,6 +463,27 @@ impl Interpreter {
         }
     }
 
+    /// A shift or `pow` exponent, which the checker types the same as the
+    /// receiver — so a 128-bit receiver gets a 128-bit exponent. It's a count,
+    /// not a value, so widening it back down is the whole job (#800).
+    pub(crate) fn expect_shift_amount(&self, args: &[Value], idx: usize) -> Result<i64, RuntimeError> {
+        match args.get(idx) {
+            Some(Value::Int(n, _)) => Ok(*n),
+            // Out of `i64` range is out of any bit width, so clamping high is
+            // the same answer the caller's own overflow check would give.
+            Some(Value::Int128(n)) => Ok(i64::try_from(*n).unwrap_or(i64::MAX)),
+            Some(Value::Uint128(n)) => Ok(i64::try_from(*n).unwrap_or(i64::MAX)),
+            Some(v) => Err(RuntimeError::TypeError(format!(
+                "expected int, got {}",
+                v.type_name()
+            ))),
+            None => Err(RuntimeError::ArityMismatch {
+                expected: idx + 1,
+                got: args.len(),
+            }),
+        }
+    }
+
     /// Helper to extract a float from args.
     pub(crate) fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {

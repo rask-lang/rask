@@ -17,12 +17,11 @@
 // has no lowering rule for `smul_overflow`/`umul_overflow` or for any of
 // `sdiv`/`udiv`/`srem`/`urem` at that width.
 //
-// Every value here is written at or below `u64::MAX`, and the results past that
-// boundary are checked as *relationships* rather than literals — the lexer still
-// parses a literal into 64 bits, so a number above `u64::MAX` can't be written
-// on either side of a comparison. That's the remaining half of #762, and it
-// comes last on purpose: widening the lexer first would turn today's honest
-// "doesn't compile" into a program that compiles and truncates.
+// The relationship checks below (`sum / 2 == a`, `sum > a`) are how this file
+// was written when a literal parsed into 64 bits and nothing above `u64::MAX`
+// could be spelled. Tokens carry an `i128` now (#800), so the literal checks at
+// the bottom pin the same values directly — both styles stay, because a
+// relationship and a literal fail in different ways.
 
 test "type.primitives — i128 addition past the 64-bit boundary" {
     let a: i128 = 9223372036854775807
@@ -131,6 +130,85 @@ test "type.primitives — bitwise and shifts work at 128 bits" {
     assert high & one == 0
     assert (high | one) - high == one
     assert high ^ high == 0
+}
+
+// ---------------------------------------------------------------------------
+// Literals at the full width (#800). Everything above needed a relationship
+// because the number couldn't be written; these say it outright.
+// ---------------------------------------------------------------------------
+
+test "type.primitives — a literal at the 128-bit boundaries" {
+    let max: i128 = 170141183460469231731687303715884105727
+    let min: i128 = -170141183460469231731687303715884105728
+    assert max > 0
+    assert min < 0
+    assert max - 1 == 170141183460469231731687303715884105726
+    assert min + 1 == -170141183460469231731687303715884105727
+    assert "{max}" == "170141183460469231731687303715884105727"
+    assert "{min}" == "-170141183460469231731687303715884105728"
+}
+
+test "type.primitives — a u128 literal above i128::MAX" {
+    let max: u128 = 340282366920938463463374607431768211455
+    assert max / 2 == 170141183460469231731687303715884105727
+    assert max - 340282366920938463463374607431768211454 == 1
+    assert "{max}" == "340282366920938463463374607431768211455"
+}
+
+test "type.primitives — the results the older tests could only compare" {
+    let a: i128 = 9223372036854775807
+    assert a + a == 18446744073709551614
+    assert a * 4 == 36893488147419103228
+
+    let u: u128 = 18446744073709551615
+    assert u + u == 36893488147419103230
+
+    let one: i128 = 1
+    assert one << 100 == 1267650600228229401496703205376
+}
+
+// The magnitude says which types a literal can't be, not which one it is: the
+// same digits land in an `i128` or a `u128` depending on the slot.
+test "type.primitives — a wide literal takes the type of its slot" {
+    let signed: i128 = 100000000000000000000
+    let unsigned: u128 = 100000000000000000000
+    assert "{signed}" == "100000000000000000000"
+    assert "{unsigned}" == "100000000000000000000"
+    assert signed * 2 == 200000000000000000000
+    assert unsigned * 2 == 200000000000000000000
+}
+
+// A suffix and a radix reach the same value; `_` separators are invisible.
+test "type.primitives — suffixes, radixes and separators at 128 bits" {
+    let suffixed = 200000000000000000000i128
+    let unsigned = 300000000000000000000u128
+    assert "{suffixed}" == "200000000000000000000"
+    assert "{unsigned}" == "300000000000000000000"
+
+    let hex: u128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    assert hex == 340282366920938463463374607431768211455
+
+    let separated: i128 = 170_141_183_460_469_231_731_687_303_715_884_105_727
+    assert separated == 170141183460469231731687303715884105727
+}
+
+// An unsuffixed literal with nothing to constrain it defaults to `i32`, then
+// `i64`, then `i128` — whichever is the first that holds it.
+test "type.primitives — a wide literal with no slot defaults to i128" {
+    let inferred = 100000000000000000000
+    assert inferred / 100000000000000000 == 1000
+    assert "{inferred}" == "100000000000000000000"
+}
+
+// 128-bit Map keys (#663) needed a writable wide literal before they could be
+// exercised at all.
+test "type.primitives — a 128-bit value works as a Map key" {
+    mut m = Map<i128, string>.new()
+    m.insert(170141183460469231731687303715884105727, "max")
+    m.insert(-170141183460469231731687303715884105728, "min")
+    assert (m.get(170141183460469231731687303715884105727) ?? "?") == "max"
+    assert (m.get(-170141183460469231731687303715884105728) ?? "?") == "min"
+    assert m.len() == 2
 }
 
 func main() {}
