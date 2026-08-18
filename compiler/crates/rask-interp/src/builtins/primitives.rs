@@ -259,6 +259,46 @@ impl Interpreter {
                 crate::builtins::fnv1a(&(a as u128).to_le_bytes()) as i64,
                 crate::value::IntKind::U64,
             )),
+            // AR3: the floored answer, always non-negative.
+            "mod" => {
+                let b = self.expect_int128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                a.checked_rem_euclid(b)
+                    .map(Value::Int128)
+                    .ok_or_else(|| RuntimeError::IntegerOverflow(format!(
+                        "integer overflow: {}.mod({}) exceeds range", a, b
+                    )))
+            }
+            // std.bits B1–B3 at 128 bits (#822). Rust's primitives have every
+            // one of these; the 64-bit path above needs masking because it
+            // carries narrower widths in a u64, and at the full width there is
+            // nothing to mask.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
+                let u = a as u128;
+                let out = match method {
+                    "count_ones" => return Ok(Value::int(u.count_ones() as i64)),
+                    "count_zeros" => return Ok(Value::int(u.count_zeros() as i64)),
+                    "leading_zeros" => return Ok(Value::int(u.leading_zeros() as i64)),
+                    "leading_ones" => return Ok(Value::int(u.leading_ones() as i64)),
+                    "trailing_zeros" => return Ok(Value::int(u.trailing_zeros() as i64)),
+                    "trailing_ones" => return Ok(Value::int(u.trailing_ones() as i64)),
+                    "reverse_bits" => u.reverse_bits(),
+                    // Little-endian hosts: to_be swaps, to_le is the identity.
+                    "swap_bytes" | "to_be" => u.swap_bytes(),
+                    "to_le" => u,
+                    "rotate_left" | "rotate_right" => {
+                        let n = (self.expect_shift_amount(args, 0)? as u32) % 128;
+                        if method == "rotate_left" { u.rotate_left(n) } else { u.rotate_right(n) }
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::Int128(out as i128))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i128".to_string(),
                 method: method.to_string(),
@@ -318,6 +358,42 @@ impl Interpreter {
                 crate::builtins::fnv1a(&a.to_le_bytes()) as i64,
                 crate::value::IntKind::U64,
             )),
+            // AR3: unsigned is already non-negative, so `mod` and `%` coincide.
+            "mod" => {
+                let b = self.expect_uint128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Uint128(a % b))
+            }
+            // std.bits B1–B3 at 128 bits (#822). Rust's primitives have every
+            // one of these; the 64-bit path above needs masking because it
+            // carries narrower widths in a u64, and at the full width there is
+            // nothing to mask.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
+                let u = a as u128;
+                let out = match method {
+                    "count_ones" => return Ok(Value::int(u.count_ones() as i64)),
+                    "count_zeros" => return Ok(Value::int(u.count_zeros() as i64)),
+                    "leading_zeros" => return Ok(Value::int(u.leading_zeros() as i64)),
+                    "leading_ones" => return Ok(Value::int(u.leading_ones() as i64)),
+                    "trailing_zeros" => return Ok(Value::int(u.trailing_zeros() as i64)),
+                    "trailing_ones" => return Ok(Value::int(u.trailing_ones() as i64)),
+                    "reverse_bits" => u.reverse_bits(),
+                    // Little-endian hosts: to_be swaps, to_le is the identity.
+                    "swap_bytes" | "to_be" => u.swap_bytes(),
+                    "to_le" => u,
+                    "rotate_left" | "rotate_right" => {
+                        let n = (self.expect_shift_amount(args, 0)? as u32) % 128;
+                        if method == "rotate_left" { u.rotate_left(n) } else { u.rotate_right(n) }
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::Uint128(out))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "u128".to_string(),
                 method: method.to_string(),

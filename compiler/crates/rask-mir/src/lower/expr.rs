@@ -5864,7 +5864,8 @@ impl<'a> MirLowerer<'a> {
         }
 
         if matches!(obj_ty, MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                          | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+                          | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                          | MirType::I128 | MirType::U128)
         {
             if let Some(handled) = self.lower_int_bit_method(method, args, &obj_op, obj_ty)? {
                 return Ok(Some(handled));

@@ -211,4 +211,55 @@ test "type.primitives — a 128-bit value works as a Map key" {
     assert m.len() == 2
 }
 
+// ── std.bits at 128 bits (#822) ─────────────────────────────────────
+//
+// The checker accepted every one of these on `i128`/`u128` and neither backend
+// had any: native fell past the width guard in `lower_int_bit_method` into the
+// `{Type}_{method}` dispatch chain — "Function not found: i128_count_ones", a
+// codegen error after a clean typecheck — and the interpreter had no arms.
+//
+// Cranelift legalizes all of them at 128 bits, and Rust's primitives have them,
+// so both sides are the same operation at the full width with nothing to mask.
+
+test "std.bits/B1 — bit inspection on i128" {
+    let a: i128 = 5
+    assert a.count_ones() == 2
+    assert a.count_zeros() == 126
+    assert a.leading_zeros() == 125
+    assert a.trailing_zeros() == 0
+    assert a.leading_ones() == 0
+    assert a.trailing_ones() == 1
+}
+
+test "std.bits/B1 — permutation on i128 spans the full width" {
+    let a: i128 = 5
+    // 0b101 reversed puts bits at 127 and 125, which reads negative as an i128.
+    assert a.reverse_bits() == -127605887595351923798765477786913079296
+    // The low byte moves to the top: 5 << 120.
+    assert a.swap_bytes() == 6646139978924579364519035301401722880
+    assert a.rotate_left(1) == 10
+    // The low bit wraps to bit 127.
+    assert a.rotate_right(1) == -170141183460469231731687303715884105726
+}
+
+test "std.bits/B2 — byte order on u128" {
+    let b: u128 = 255
+    assert b.count_ones() == 8
+    assert b.to_le() == 255
+    assert b.to_be() == 338953138925153547590470800371487866880
+    assert b.swap_bytes() == 338953138925153547590470800371487866880
+}
+
+test "type.overflow/AR3 — the floored modulo at 128 bits" {
+    let a: i128 = -7
+    let b: i128 = 3
+    assert a.mod(b) == 2
+    assert a.rem(b) == -1
+
+    // Unsigned is already non-negative, so `mod` and `%` coincide.
+    let u: u128 = 340282366920938463463374607431768211455
+    let d: u128 = 10
+    assert u.mod(d) == 5
+}
+
 func main() {}
