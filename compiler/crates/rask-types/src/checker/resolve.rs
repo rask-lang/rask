@@ -1246,6 +1246,7 @@ impl TypeChecker {
                     self.unify(&ret, &self.ordering_type(), span)
                 }
                 "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
+                "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
             },
             // Raw pointers. The eager path in check_expr catches these when the
@@ -1654,6 +1655,7 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::Char, span)?;
                 self.unify(ret, &self.ordering_type(), span)
             }
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
             // CH3: runtime construction returns `char?` — `none` on invalid scalar.
             "from_u32" if args.len() == 1 => {
                 self.unify(&args[0], &Type::U32, span)?;
@@ -3588,6 +3590,10 @@ impl TypeChecker {
             // uses them (`hton_u16` is `x.to_be()`), but nothing registered
             // them, so the stdlib's own definitions didn't resolve.
             "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
+            // HA1: every integer width is Hashable, and `Hashable` is
+            // `hash(self) -> u64`. The trait table said so and this didn't, so the
+            // conformance held while the call was rejected (#813).
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
             _ => Err(TypeError::NoSuchMethod {
                 ty: ty.clone(),
                 method: method.to_string(),

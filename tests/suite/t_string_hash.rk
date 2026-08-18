@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// string.hash() — declared in the stdlib but implemented in neither backend
-// until now, so a custom Hashable that delegated to it failed to compile.
+// `.hash()` on the scalar Hashable types (type.generics/HA1).
+//
+// `string.hash()` was declared in the stdlib but implemented in neither backend,
+// so a custom Hashable that delegated to it failed to compile. The integer widths,
+// `bool` and `char` were the other half: the trait table listed them as Hashable —
+// so the conformance held — while the *call* was rejected with "no method `hash`",
+// and a nominal newtype listing `Hashable` type-checked and then failed at codegen
+// (#813).
+//
+// Every one of them is FNV-1a over the value's little-endian bytes at its own
+// width, which is what an int-keyed Map buckets with — so a value and the same
+// value used as a key agree, and so do the two backends.
+//
+// Floats are excluded on purpose (HA4): `NaN != NaN` breaks the contract.
 
 test "equal strings hash equal" {
     assert_eq("hei".hash(), "hei".hash())
@@ -43,6 +55,89 @@ extend EmailAddress with Hashable {
 test "a custom Hashable can delegate to string.hash()" {
     let a = EmailAddress { raw: "Bo@Example.IO" }
     let b = EmailAddress { raw: "bo@example.io" }
+    assert a == b
+    assert_eq(a.hash(), b.hash())
+}
+
+// ── The scalar types (#813) ─────────────────────────────────────────
+
+type Id = u64 with (Equal, Hashable)
+
+test "type.generics/HA1 — every integer width hashes" {
+    let a: u64 = 5
+    let b: u64 = 5
+    assert_eq(a.hash(), b.hash())
+    let other: u64 = 6
+    assert a.hash() != other.hash()
+
+    // The width is part of it: the same number in a narrower slot hashes fewer
+    // bytes, so it isn't the same hash.
+    let narrow: u32 = 5
+    assert narrow.hash() != a.hash()
+
+    // Signed, and negative.
+    let neg: i16 = -300
+    let same: i16 = -300
+    assert_eq(neg.hash(), same.hash())
+
+    // 128-bit, both signednesses.
+    let big: i128 = -5
+    let big2: i128 = -5
+    assert_eq(big.hash(), big2.hash())
+    let ubig: u128 = 5
+    assert ubig.hash() != a.hash()
+}
+
+test "type.generics/HA1 — bool and char hash" {
+    assert_eq(true.hash(), true.hash())
+    assert true.hash() != false.hash()
+
+    let a: char = 'a'
+    let same: char = 'a'
+    assert_eq(a.hash(), same.hash())
+    assert a.hash() != 'b'.hash()
+}
+
+test "type.aliases/T11 — a nominal newtype delegates to what it wraps" {
+    let id = Id(1)
+    let same = Id(1)
+    assert_eq(id.hash(), same.hash())
+
+    // Transparent: the newtype and the underlying value hash alike.
+    let raw: u64 = 1
+    assert_eq(id.hash(), raw.hash())
+}
+
+test "type.generics/HA1 — a hash agrees with the bucket its key lands in" {
+    // Not an equality assertion — a Map hashes through the runtime, not through
+    // this method — but a lookup that finds its key is the observable half.
+    mut m: Map<u64, string> = Map.new()
+    m.insert(5, "five")
+    let k: u64 = 5
+    assert m[k] == "five"
+    let same: u64 = 5
+    assert_eq(k.hash(), same.hash())
+}
+
+// A custom Hashable over an integer field, which is what HA1 exists for.
+struct Version {
+    public major: u32
+    public minor: u32
+}
+
+extend Version with Equal {
+    func eq(self, other: Version) -> bool {
+        return self.major == other.major
+    }
+}
+
+extend Version with Hashable {
+    func hash(self) -> u64 { return self.major.hash() }
+}
+
+test "a custom Hashable can delegate to an integer's hash" {
+    let a = Version { major: 1, minor: 0 }
+    let b = Version { major: 1, minor: 9 }
     assert a == b
     assert_eq(a.hash(), b.hash())
 }

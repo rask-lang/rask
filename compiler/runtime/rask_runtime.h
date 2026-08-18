@@ -367,6 +367,7 @@ RaskMap *rask_map_clone(const RaskMap *m);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
+uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);

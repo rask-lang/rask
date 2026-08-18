@@ -417,6 +417,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_len", "rask_string_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_eq", "rask_string_eq", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_hash", "rask_string_hash", &[types::I64], Some(types::I64), false),
+        // `x.hash()` on an integer, a bool or a char (HA1). (lo, hi, width) —
+        // width bytes taken little-endian from lo and then hi, so one entry point
+        // covers a 1-byte bool through a 16-byte u128 (#813).
+        StdlibEntry::simple("int_hash", "rask_int_hash", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_c_str", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),

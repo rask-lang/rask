@@ -433,3 +433,17 @@ impl Interpreter {
         })
     }
 }
+
+/// FNV-1a over bytes — what `x.hash()` answers on every scalar type.
+///
+/// The same function the C runtime's `rask_hash_bytes` computes, so the two
+/// backends agree on a value's hash and a value agrees with itself used as a Map
+/// key (HA1, #813). Unseeded: a hash has to be as stable as `==`.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}

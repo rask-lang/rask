@@ -5853,6 +5853,16 @@ impl<'a> MirLowerer<'a> {
         // machine instruction on the receiver's own width, so they belong here
         // rather than in the `{Type}_{method}` dispatch chain (which had no
         // `i64_count_ones` to find, #397).
+        // `x.hash()` on any of the scalar Hashable types (HA1). Not an operator
+        // method, but like the bit methods it's a single call on the receiver's own
+        // width rather than a `{Type}_{method}` body, and there was no `u64_hash`
+        // for the dispatch chain to find (#813).
+        if method == "hash" && args.is_empty() {
+            if let Some(handled) = self.lower_scalar_hash(&obj_op, obj_ty) {
+                return Ok(Some(handled));
+            }
+        }
+
         if matches!(obj_ty, MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
                           | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
         {
@@ -5901,6 +5911,78 @@ impl<'a> MirLowerer<'a> {
         }
         } // end if !skip_binop
         Ok(None)
+    }
+
+    /// `x.hash()` on an integer, a bool or a char — FNV-1a over the value's
+    /// little-endian bytes, which is what an int-keyed Map buckets with, so a
+    /// value and the same value used as a key agree (HA1, #813).
+    ///
+    /// The runtime takes the bytes as two words plus a width rather than an
+    /// address: a 128-bit value lives in a register pair and has no address to
+    /// spell here.
+    fn lower_scalar_hash(
+        &mut self,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Option<super::TypedOperand> {
+        // `string.hash()` has a runtime function of its own — it hashes the
+        // contents, not the 16-byte header. Routed here anyway so the result is
+        // typed `u64`, which is what the signature says: taken from the stdlib
+        // metadata it came back `i64` and the top half of the range printed as a
+        // negative number, while `u64.hash()` beside it printed unsigned (#813).
+        if matches!(obj_ty, MirType::String) {
+            let out = self.builder.alloc_temp(MirType::U64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(out),
+                func: FunctionRef::internal("string_hash".to_string()),
+                args: vec![obj_op.clone()],
+            }));
+            return Some((MirOperand::Local(out), MirType::U64));
+        }
+        let width = match obj_ty {
+            MirType::Bool | MirType::I8 | MirType::U8 => 1,
+            MirType::I16 | MirType::U16 => 2,
+            MirType::I32 | MirType::U32 | MirType::Char => 4,
+            MirType::I64 | MirType::U64 => 8,
+            MirType::I128 | MirType::U128 => 16,
+            _ => return None,
+        };
+        // Widened to a word for the call. Sign or zero extension makes no
+        // difference: only the low `width` bytes are read.
+        let (lo, hi) = if width == 16 {
+            let low = self.builder.alloc_temp(MirType::U64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: low,
+                rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: MirType::U64 },
+            }));
+            let shifted = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: shifted,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Shr,
+                    left: obj_op.clone(),
+                    right: MirOperand::Constant(MirConst::Int(64)),
+                },
+            }));
+            let high = self.builder.alloc_temp(MirType::U64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: high,
+                rvalue: MirRValue::Cast {
+                    value: MirOperand::Local(shifted),
+                    target_ty: MirType::U64,
+                },
+            }));
+            (MirOperand::Local(low), MirOperand::Local(high))
+        } else {
+            (obj_op.clone(), MirOperand::Constant(MirConst::Int(0)))
+        };
+        let out = self.builder.alloc_temp(MirType::U64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(out),
+            func: FunctionRef::internal("int_hash".to_string()),
+            args: vec![lo, hi, MirOperand::Constant(MirConst::Int(width))],
+        }));
+        Some((MirOperand::Local(out), MirType::U64))
     }
 
     /// std.bits B1 bit methods on an integer receiver.

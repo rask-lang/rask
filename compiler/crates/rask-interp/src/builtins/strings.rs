@@ -64,15 +64,13 @@ impl Interpreter {
                 Ok(Value::vec(vec![Value::int(start as i64), Value::int(end as i64)]))
             }
             // FNV-1a over the bytes — the same function the native runtime
-            // and string-keyed maps use, so both backends agree.
+            // and string-keyed maps use, so both backends agree. Typed `u64`,
+            // which is what the signature says: as a plain int it rendered the
+            // top half of the range as a negative number (#813).
             "hash" => {
                 let guard = s.lock().unwrap();
-                let mut h: u64 = 0xcbf29ce484222325;
-                for b in guard.as_bytes() {
-                    h ^= *b as u64;
-                    h = h.wrapping_mul(0x100000001b3);
-                }
-                Ok(Value::int(h as i64))
+                let h = crate::builtins::fnv1a(guard.as_bytes());
+                Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug_string" => {

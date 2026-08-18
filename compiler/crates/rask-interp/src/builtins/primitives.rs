@@ -76,6 +76,17 @@ impl Interpreter {
                 _ => fallback,
             }
         }
+        // HA1: FNV-1a over the value's little-endian bytes at its own width, which
+        // is what native's `rask_int_hash` computes and what an int-keyed Map
+        // buckets with. The width is part of the answer, so a value that never got
+        // a slot type takes `i32`, the unsuffixed-literal default (L1) and the
+        // width native gives it.
+        if method == "hash" && args.is_empty() {
+            let width = (kind.bits().unwrap_or(32) / 8) as usize;
+            let bytes = (a as u64).to_le_bytes();
+            let h = crate::builtins::fnv1a(&bytes[..width]);
+            return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
+        }
         if let Some(op) = ArithOp::from_method(method) {
             let b = self.expect_int(args, 0)?;
             let k = arg_kind(args);
@@ -243,6 +254,11 @@ impl Interpreter {
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            // HA1, over all 16 little-endian bytes.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&(a as u128).to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i128".to_string(),
                 method: method.to_string(),
@@ -297,6 +313,11 @@ impl Interpreter {
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            // HA1, over all 16 little-endian bytes.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&a.to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "u128".to_string(),
                 method: method.to_string(),
@@ -398,6 +419,10 @@ impl Interpreter {
             "ge" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a >= b)) }
             "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&[a as u8]) as i64,
+                crate::value::IntKind::U64,
+            )),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "bool".to_string(),
                 method: method.to_string(),
@@ -433,6 +458,11 @@ impl Interpreter {
             "gt" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c > other)) }
             "ge" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c >= other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
+            // A char is its 4-byte Unicode scalar, same as native.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&(c as u32).to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
             "to_int" => Ok(Value::int(c as i64)),
             _ => Err(RuntimeError::NoSuchMethod {
