@@ -11,7 +11,6 @@
 # The differential harness treats both files as expected-red (non-fatal).
 
 # --- spec-heavy pending features ---
-p07_owned.rk               # mem.owned Owned<T> / `own` linear heap pointer — unimplemented
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented
 p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
 p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)
