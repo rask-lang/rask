@@ -1918,6 +1918,96 @@ fn fmt_normalizes_spacing() {
     assert!(formatted.contains("let x = 42"), "should add spaces: {}", formatted);
 }
 
+// #801: a file the parser rejects used to come back out unchanged with exit 0,
+// so `fmt --check` reported it as formatted. That made `--check` useless as a
+// gate — the one case you most want it to speak up about was the one it passed.
+#[test]
+fn fmt_check_fails_on_a_file_that_does_not_parse() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmtbroken_{}_{}.rk", std::process::id(), id));
+    std::fs::write(&tmp, "func main( {\n  let x =\n}\n").unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("--check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let _ = std::fs::remove_file(&tmp);
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.status.success(), "a syntax error must fail --check: {}", combined);
+    assert!(
+        !combined.contains('\u{2713}'),
+        "and must not report the file as formatted: {}", combined,
+    );
+    assert!(
+        combined.contains("error["),
+        "it should say what's wrong, the way `rask check` does: {}", combined,
+    );
+}
+
+// Writing mode matters more than preview: it used to rewrite the file with its
+// own echoed copy, harmless only because the copy was byte-identical.
+#[test]
+fn fmt_write_leaves_an_unparseable_file_alone() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmtbrokenw_{}_{}.rk", std::process::id(), id));
+    let original = "func main( {\n  let x =\n}\n";
+    std::fs::write(&tmp, original).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("-w")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let after = std::fs::read_to_string(&tmp).unwrap();
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(!out.status.success(), "writing mode fails too");
+    assert_eq!(after, original, "the file is left exactly as it was");
+}
+
+// A trailing comment is part of ordinary annotated code, and the formatter used
+// to move every one of them onto a line of its own — which would have made
+// `--check` fail across the whole tree once it started working (#801).
+#[test]
+fn fmt_check_passes_code_with_trailing_comments() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmttrailing_{}_{}.rk", std::process::id(), id));
+    std::fs::write(
+        &tmp,
+        "func main() {\n    let a = 4  // one\n    let b = 5  // another\n    println(\"{a} {b}\")\n}\n",
+    )
+    .unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("--check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(out.status.success(), "trailing comments are already formatted: {}", combined);
+}
+
 // ─── rask lint integration ──────────────────────────────────
 
 fn lint_output(source: &str) -> String {

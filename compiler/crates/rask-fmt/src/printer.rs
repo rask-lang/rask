@@ -108,30 +108,57 @@ impl<'a> Printer<'a> {
 
     /// Try to emit a trailing comment on the same line as the code.
     /// Returns true if a trailing comment was emitted.
+    ///
+    /// The test is on the comment's own line, not on the span it came after: a
+    /// statement's span runs to the newline that terminates it, and that newline
+    /// is *past* the trailing comment, so comparing against the span end said
+    /// "not on this line" every time. Every trailing comment in the tree was
+    /// getting moved onto a line of its own, which changes what it annotates —
+    /// `let a = 4  // one` documents `a`, and above the next line it reads as
+    /// documenting that instead (#801).
     fn try_emit_trailing_comment(&mut self, span_end: usize) -> bool {
-        if let Some(c) = self.comments.peek_next() {
-            // Find actual content end (skip trailing whitespace in span)
-            let bytes = self.source.as_bytes();
+        let Some(c) = self.comments.peek_next() else { return false };
+        let (cstart, cend) = (c.span.start, c.span.end);
+        if cstart >= self.source.len() {
+            return false;
+        }
+        let bytes = self.source.as_bytes();
+
+        // A comment with nothing but whitespace before it on its line is a
+        // standalone comment and keeps its own line.
+        let mut line_start = cstart;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        let before = &self.source[line_start..cstart];
+        if before.trim().is_empty() {
+            return false;
+        }
+
+        if cstart >= span_end {
+            // The span stopped before the comment, so "same line" is the gap.
             let mut content_end = span_end;
             while content_end > 0 && bytes[content_end - 1].is_ascii_whitespace() {
                 content_end -= 1;
             }
-            // Check if comment is on the same line (no newline between content and comment)
-            if c.span.start > content_end && c.span.start < self.source.len() {
-                let gap = &self.source[content_end..c.span.start];
-                if !gap.contains('\n') {
-                    let Some(c) = self.comments.advance() else { return false; };
-                    // Preserve original spacing or use standard 2-space gap
-                    let spaces = gap.len().max(2);
-                    for _ in 0..spaces {
-                        self.output.push(' ');
-                    }
-                    self.output.push_str(&c.text);
-                    return true;
-                }
+            if self.source[content_end..cstart].contains('\n') {
+                return false;
             }
+        } else if cend < span_end && !self.source[cend..span_end].trim().is_empty() {
+            // The span swallowed the comment. Only the last comment in it
+            // trails the statement — one partway through a multi-line statement
+            // stays where it is.
+            return false;
         }
-        false
+
+        let Some(c) = self.comments.advance() else { return false };
+        // Preserve the original spacing, with a two-space minimum.
+        let spaces = (before.len() - before.trim_end().len()).max(2);
+        for _ in 0..spaces {
+            self.output.push(' ');
+        }
+        self.output.push_str(&c.text);
+        true
     }
 
     /// Get the indentation level (in spaces) of a source position by scanning back to line start.

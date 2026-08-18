@@ -6,7 +6,27 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
-use crate::{output, Format, collect_rk_files};
+use rask_diagnostics::{Diagnostic, ToDiagnostic};
+
+use crate::{output, show_diagnostics, Format, collect_rk_files};
+
+/// Turn a formatter refusal into the same diagnostics `rask check` would print.
+/// There's nothing to format from a source the parser didn't understand, and
+/// silence there is what made `fmt --check` pass every file with a syntax error
+/// in it (#801).
+fn report_format_error(err: &rask_fmt::FormatError, source: &str, file: &str) -> usize {
+    let (diags, phase): (Vec<Diagnostic>, &str) = match err {
+        rask_fmt::FormatError::Lex(errors) => {
+            (errors.iter().map(|e| e.to_diagnostic()).collect(), "lex")
+        }
+        rask_fmt::FormatError::Parse(errors) => {
+            (errors.iter().map(|e| e.to_diagnostic()).collect(), "parse")
+        }
+    };
+    let count = diags.len();
+    show_diagnostics(&diags, source, file, phase, Format::Human);
+    count
+}
 
 pub fn cmd_fmt_stdin() {
     use std::io::Read;
@@ -15,7 +35,14 @@ pub fn cmd_fmt_stdin() {
         eprintln!("{}: reading stdin: {}", output::error_label(), e);
         process::exit(1);
     });
-    print!("{}", rask_fmt::format_source(&source));
+    match rask_fmt::try_format_source(&source) {
+        Ok(formatted) => print!("{}", formatted),
+        Err(err) => {
+            let count = report_format_error(&err, &source, "<stdin>");
+            eprintln!("\n{}", output::banner_fail("Format", count));
+            process::exit(1);
+        }
+    }
 }
 
 pub fn cmd_fmt(path: &str, check_only: bool, write_in_place: bool) {
@@ -43,7 +70,14 @@ pub fn cmd_fmt(path: &str, check_only: bool, write_in_place: bool) {
             }
         };
 
-        let formatted = rask_fmt::format_source(&source);
+        let formatted = match rask_fmt::try_format_source(&source) {
+            Ok(f) => f,
+            Err(err) => {
+                report_format_error(&err, &source, file);
+                had_failure = true;
+                continue;
+            }
+        };
 
         if check_only {
             if formatted == source {
