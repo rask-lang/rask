@@ -7,7 +7,7 @@ struct ApiUser {
     @rename("user_name")
     public name: string
 
-    @skip
+    @no_serialize
     public cache_key: string
 
     @default(0)

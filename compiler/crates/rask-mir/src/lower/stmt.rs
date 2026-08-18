@@ -1057,7 +1057,7 @@ impl<'a> MirLowerer<'a> {
                     type_name,
                     offset: fl.offset,
                     size: fl.size,
-                    is_public: true,
+                    is_public: fl.is_public,
                     serial_name: field_attrs::serial_name(&fl.attrs, &fl.name),
                     is_skipped: field_attrs::is_skipped(&fl.attrs),
                     has_default: fl.has_declared_default

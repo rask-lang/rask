@@ -1114,7 +1114,7 @@ pub struct MirLowerer<'a> {
 /// One field's compile-time-known metadata inside an unrolled `comptime for
 /// field in reflect.fields<T>()` body (CT48–CT54). Mirrors the interpreter's
 /// FieldInfo shape (rask-interp/src/stdlib/reflect.rs) so native and interp
-/// agree; `is_public` has no source in `FieldLayout` so it defaults to `true`.
+/// agree.
 #[derive(Clone)]
 pub(crate) struct ReflectFieldConst {
     pub(crate) name: String,
@@ -5427,6 +5427,7 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                        is_public: true,
                     }],
                 },
                 VariantLayout {
@@ -5442,6 +5443,7 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                        is_public: true,
                     }],
                 },
             ],
@@ -5590,8 +5592,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
                     ],
                 },
             ],

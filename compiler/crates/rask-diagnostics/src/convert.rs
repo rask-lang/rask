@@ -1521,6 +1521,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("the type in a type pattern must appear in the Result's error union")
                     .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
             }
+            BadFieldAnnotation { attr, field, problem, fix, span } => {
+                Diagnostic::error(format!("`@{}` on field `{}`: {}", attr, field, problem))
+                    .with_code("E0376")
+                    .with_primary(*span, format!("`@{}` here", attr))
+                    .with_fix(fix.clone())
+                    .with_why("a serialization annotation the compiler can't act on is worse than one it rejects — the wire format would differ from what the source says [std.encoding/E19, E21]")
+            }
+
             LegacyWrapperConstructor { name, span } => {
                 let (what, fix) = match name.as_str() {
                     "Some" => (

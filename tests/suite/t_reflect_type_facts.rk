@@ -67,3 +67,24 @@ test "std.reflect/is_optional sees the wrapper, not the payload" {
 test "std.reflect/fields still unrolls in a comptime for" {
     assert field_names() == "x:f64 y:f64 "
 }
+
+// #603: `is_public` had no source in `FieldLayout`, so native answered `true`
+// for every field while the interpreter read the real visibility — a `private`
+// field looked public on one backend and not the other. The layout carries it
+// now.
+struct Mixed {
+    public shown: i64
+    private hidden: i64 = 0
+}
+
+func visibility_report() -> string {
+    mut out = ""
+    comptime for field in reflect.fields<Mixed>() {
+        out = "{out}{field.name}={field.is_public} "
+    }
+    return out
+}
+
+test "std.reflect — a field's visibility survives to both backends" {
+    assert visibility_report() == "shown=true hidden=false "
+}

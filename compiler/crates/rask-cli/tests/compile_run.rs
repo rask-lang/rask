@@ -4623,3 +4623,21 @@ fn i128_overflow_and_div_zero_panic_on_both_backends() {
         }
     }
 }
+
+// #603: an annotation the compiler silently ignores is worse than one it
+// rejects — the wire format then differs from what the source says, and nothing
+// at the declaration or the encode site tells you. `@skip` in particular reads
+// as "excluded" and serialized the field anyway.
+#[test]
+fn error_field_annotation_forms() {
+    let (failed, out) = compile_error_output("field_annotation_forms.rk");
+    assert!(failed, "unusable annotations must not compile: {}", out);
+    assert!(
+        out.contains("E0376") && out.contains("`@skip`") && out.contains("@no_serialize"),
+        "should name the replacement for `@skip`: {}", out,
+    );
+    assert!(
+        out.matches("the serialized key has to be a string literal").count() == 2,
+        "both bad `@rename` forms should be rejected: {}", out,
+    );
+}

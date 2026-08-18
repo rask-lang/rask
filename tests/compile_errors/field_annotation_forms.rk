@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Serialization annotations the compiler can't act on (std.encoding/E19, E21).
+//
+// An annotation the compiler silently ignores is worse than one it rejects:
+// the wire format then differs from what the source says, and nothing at the
+// declaration or the encode site tells you. Both of these used to type-check
+// clean and do nothing (#603).
+
+// ERROR: `@skip` is now `@no_serialize` [E0376]
+// "skip from what?" had no answer — the field-level concept is "not part of
+// this type's serialized form, either direction". Left alone the old spelling
+// reads as excluded and serializes the field anyway.
+struct Session {
+    public id: i64
+    @skip
+    public token: string = ""
+}
+
+// ERROR: `@rename` needs a string literal [E0376]
+struct Bare {
+    @rename(user_name)
+    public name: string
+}
+
+// ERROR: `@rename` needs a string literal, not a number [E0376]
+struct Numbered {
+    @rename(5)
+    public name: string
+}
+
+func main() {
+    let s = Session { id: 1, token: "t" }
+    let b = Bare { name: "ada" }
+    let n = Numbered { name: "ada" }
+    println("{s.id} {b.name} {n.name}")
+}

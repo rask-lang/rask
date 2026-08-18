@@ -95,10 +95,11 @@ impl Interpreter {
                     "serial_name".to_string(),
                     Value::String(Arc::new(Mutex::new(serial_name))),
                 );
-                // E19: @skip excludes a field from serialization.
+                // E19: @no_serialize excludes a field from serialization, in
+                // both directions.
                 fields.insert(
                     "is_skipped".to_string(),
-                    Value::Bool(has_attr(&f.attrs, "skip")),
+                    Value::Bool(has_attr(&f.attrs, "no_serialize")),
                 );
                 // E20/FD6: a declared default (`x: T = v`) or a decode-only
                 // @default(expr) makes the field optional during decode.

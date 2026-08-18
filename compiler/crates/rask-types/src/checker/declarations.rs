@@ -168,6 +168,49 @@ impl TypeChecker {
 
     /// PC3: single uppercase letters are reserved for type parameters —
     /// declaring a concrete type with one would make signatures ambiguous.
+    /// E19/E21: serialization annotations the compiler has to be able to act on.
+    ///
+    /// `@rename` takes a string literal and `@default` a comptime expression,
+    /// both checked here rather than at the encode site — an annotation the
+    /// compiler silently ignores is worse than one it rejects, because the wire
+    /// format then differs from what the source says.
+    ///
+    /// `@skip` is the old spelling of `@no_serialize`. It's recognized only to
+    /// say so: left alone it reads as "excluded" and serializes the field.
+    fn check_field_annotations(&mut self, s: &rask_ast::decl::StructDecl) {
+        use rask_ast::decl::field_attrs;
+        for field in &s.fields {
+            if field_attrs::uses_old_skip(&field.attrs) {
+                self.errors.push(TypeError::BadFieldAnnotation {
+                    attr: "skip".to_string(),
+                    field: field.name.clone(),
+                    problem: "skip from what? the name didn't say, so it was renamed"
+                        .to_string(),
+                    fix: "@no_serialize".to_string(),
+                    span: field.name_span,
+                });
+            }
+            for attr in &field.attrs {
+                let attr = attr.trim();
+                let Some(arg) = attr.strip_prefix("rename") else { continue };
+                let inner = arg.trim_start().strip_prefix('(').and_then(|a| a.strip_suffix(')'));
+                let names_a_key = inner
+                    .map(str::trim)
+                    .is_some_and(|a| a.starts_with('"') && a.ends_with('"') && a.len() >= 2);
+                if !names_a_key {
+                    self.errors.push(TypeError::BadFieldAnnotation {
+                        attr: "rename".to_string(),
+                        field: field.name.clone(),
+                        problem: "the serialized key has to be a string literal"
+                            .to_string(),
+                        fix: format!("@rename(\"{}\")", field.name),
+                        span: field.name_span,
+                    });
+                }
+            }
+        }
+    }
+
     fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
         if is_type_param_name(name) {
             self.errors.push(TypeError::SingleLetterTypeName {
@@ -242,8 +285,10 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
-        // E19: a `@skip` field never reaches the wire, so it can't disqualify
-        // the type from Encode/Decode.
+        self.check_field_annotations(s);
+
+        // E19: a `@no_serialize` field never reaches the wire, so it can't
+        // disqualify the type from Encode/Decode.
         let skipped_fields: Vec<String> = s
             .fields
             .iter()

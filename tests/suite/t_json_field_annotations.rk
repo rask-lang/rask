@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Field annotations on the JSON path: @rename, @skip, @default
+// Field annotations on the JSON path: @rename, @no_serialize, @default
 // (std.encoding/E18–E20, std.json/J8–J9).
 //
 // These decide both what a decode looks for and what an encode writes, so each
 // one is checked in both directions. `{` opens interpolation, hence the doubled
 // braces in the JSON literals.
+//
+// `@no_serialize` was `@skip` until E19 renamed it — "skip from what?" had no
+// answer, and the field-level concept is "not part of this type's serialized
+// form, either direction". The old spelling is a compile error rather than a
+// silent no-op, because left alone it reads as excluded and serializes the
+// field anyway (#603).
 
 import json
 
@@ -17,20 +23,20 @@ struct ApiUser {
     @default("user")
     public role: string
 
-    @skip
+    @no_serialize
     public cache_key: string
 }
 
 struct Skipped {
     public id: i64
 
-    @skip
+    @no_serialize
     public note: string
 
-    @skip
+    @no_serialize
     public tags: Vec<string>
 
-    @skip
+    @no_serialize
     public seen: i64?
 }
 
@@ -80,7 +86,7 @@ test "std.encoding — a present key beats the @default" {
 }
 
 // E19
-test "std.encoding — @skip keeps a field out of the encoded object" {
+test "std.encoding — @no_serialize keeps a field out of the encoded object" {
     let u = json.decode<ApiUser>("{{\"user_name\":\"a\",\"age\":1}}") catch e => {
         assert false
         return
@@ -104,7 +110,7 @@ test "std.encoding — a skipped field decodes to its type's empty value" {
 
 // E19 again, from the type-system side: a field that can't be serialized would
 // disqualify the whole struct, but a skipped one never reaches the wire, so it
-// doesn't get a vote. Without this, `@skip` was advice the checker ignored.
+// doesn't get a vote. Without this, `@no_serialize` was advice the checker ignored.
 trait Opaque {
     func tag(self) -> i64
 }
@@ -118,13 +124,13 @@ extend Marker with Opaque {
 }
 
 struct HasOpaque {
-    @skip
+    @no_serialize
     public probe: any Opaque
 
     public n: i64
 }
 
-test "std.encoding — a @skip field doesn't block Encode/Decode" {
+test "std.encoding — a @no_serialize field doesn't block Encode/Decode" {
     let h = json.decode<HasOpaque>("{{\"n\":3}}") catch e => {
         assert false
         return

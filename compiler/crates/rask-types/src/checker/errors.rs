@@ -650,6 +650,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E19/E21: a serialization annotation the compiler can't act on — the old
+    /// `@skip` spelling, or `@rename` given something that isn't a string.
+    #[error("`@{attr}` on field `{field}`: {problem}")]
+    BadFieldAnnotation {
+        attr: String,
+        field: String,
+        problem: String,
+        fix: String,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -952,6 +963,7 @@ impl TypeError {
             | StepDirectionMismatch { .. }
             | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
+            | BadFieldAnnotation { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }
