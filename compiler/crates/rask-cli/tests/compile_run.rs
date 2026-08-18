@@ -1961,6 +1961,53 @@ fn lint_leaves_correct_remainder_indexing_alone() {
     );
 }
 
+// #585: context clauses bubble — every callee's contexts show up on its callers
+// — so a deep call chain accumulates them until the signature stops saying what
+// the function takes and starts listing what the program owns. A lint rather
+// than a language rule: four is sometimes the honest shape.
+#[test]
+fn lint_flags_a_signature_with_more_than_three_contexts() {
+    let output = lint_output(
+        "struct World { n: i64 }\n\
+         struct Physics { n: i64 }\n\
+         struct Audio { n: i64 }\n\
+         struct Input { n: i64 }\n\
+         func tick(dt: i64) using world: World, physics: Physics, audio: Audio, input: Input {\n\
+         \x20   println(\"{dt}\")\n\
+         }\n\
+         func main() {\n\
+         \x20   println(\"hi\")\n\
+         }\n",
+    );
+    assert!(
+        output.contains("too-many-contexts"),
+        "four context clauses should be flagged: {}", output,
+    );
+    assert!(
+        output.contains("`tick`") && output.contains("world, physics, audio, input"),
+        "should name the function and every clause: {}", output,
+    );
+}
+
+#[test]
+fn lint_leaves_three_contexts_alone() {
+    let output = lint_output(
+        "struct World { n: i64 }\n\
+         struct Physics { n: i64 }\n\
+         struct Audio { n: i64 }\n\
+         func tick(dt: i64) using world: World, physics: Physics, audio: Audio {\n\
+         \x20   println(\"{dt}\")\n\
+         }\n\
+         func main() {\n\
+         \x20   println(\"hi\")\n\
+         }\n",
+    );
+    assert!(
+        !output.contains("too-many-contexts"),
+        "three is the limit, not the trigger: {}", output,
+    );
+}
+
 // ─── rask api integration ───────────────────────────────────
 
 #[test]

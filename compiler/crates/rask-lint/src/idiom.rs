@@ -345,6 +345,63 @@ pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic
         .collect()
 }
 
+/// idiom/too-many-contexts: a signature that has become an environment dump.
+///
+/// Context clauses bubble: every callee's contexts appear on its callers, so a
+/// deep call chain accumulates them. Past a few, the signature stops telling you
+/// what the function takes and starts listing what the program owns — which is
+/// the friction the complexity stress test named (#585).
+///
+/// A lint, not a language rule: four contexts is sometimes the honest shape, and
+/// the three ways out are all restructurings the author has to choose between.
+pub fn check_too_many_contexts(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    const MAX_CONTEXTS: usize = 3;
+    let mut diags = Vec::new();
+    for decl in decls {
+        for f in decl_fns(decl) {
+            let count = f.context_clauses.len();
+            if count <= MAX_CONTEXTS {
+                continue;
+            }
+            // The clause that took it over, so the underline lands on one
+            // clause rather than the whole signature.
+            let offender = &f.context_clauses[MAX_CONTEXTS];
+            let (line, col) = util::line_col(source, offender.span.start);
+            let source_line = util::get_source_line(source, line);
+            let names: Vec<String> = f
+                .context_clauses
+                .iter()
+                .map(|c| c.name.clone().unwrap_or_else(|| c.ty.clone()))
+                .collect();
+            diags.push(LintDiagnostic {
+                rule: "idiom/too-many-contexts".to_string(),
+                severity: Severity::Warning,
+                message: format!(
+                    "`{}` takes {} context clauses ({}) — past three the signature reads as an environment dump rather than a signature",
+                    f.name,
+                    count,
+                    names.join(", "),
+                ),
+                location: LintLocation { line, column: col, source_line },
+                fix: "group the contexts into one struct and pass that, pass the individual fields the body actually uses, or split the function"
+                    .to_string(),
+            });
+        }
+    }
+    diags
+}
+
+/// Every function declaration in a decl — free functions, methods, tests.
+fn decl_fns(decl: &Decl) -> Vec<&rask_ast::decl::FnDecl> {
+    match &decl.kind {
+        DeclKind::Fn(f) => vec![f],
+        DeclKind::Struct(s) => s.methods.iter().collect(),
+        DeclKind::Enum(e) => e.methods.iter().collect(),
+        DeclKind::Impl(i) => i.methods.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// idiom/large-unsafe-block: Flag unsafe blocks with too many statements.
 /// Big unsafe blocks defeat the purpose — keep them minimal so each unsafe
 /// operation is visible and auditable (mem.unsafe/U4).
