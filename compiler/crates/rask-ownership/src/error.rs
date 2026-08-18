@@ -67,6 +67,26 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// mem.parameters/PM2 with PM6: a `mutate` parameter consumed and not
+    /// replaced.
+    ///
+    /// `mutate` is exclusive access, so taking the value out and writing a
+    /// replacement back is the point of the mode — `out.push(b.build()); b =
+    /// StringBuilder.new()`. What it isn't is a way to give the value away: PM2
+    /// promises the caller their value is still there when the call returns, and
+    /// nothing checked that anything was put back.
+    #[error("gave `{name}` away and didn't put anything back")]
+    MutateParamLeftEmpty {
+        name: String,
+        /// Where it was consumed.
+        consumed_at: Span,
+        /// The parameter's declaration.
+        declared_at: Span,
+        /// True when only *some* paths consumed it — the message differs, and so
+        /// does the fix.
+        maybe: bool,
+    },
+
     /// SM2: a `@small` type grew past the 16-byte copy threshold.
     ///
     /// The break belongs at the annotation, not at the call sites: adding a

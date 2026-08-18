@@ -1924,6 +1924,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
+                let label = if *maybe {
+                    format!("`{}` is given away on some paths here and not replaced", name)
+                } else {
+                    format!("`{}` is given away here and not replaced", name)
+                };
+                let fix = if *maybe {
+                    format!("put a value back on every path — or move the `{}` out of the branch", name)
+                } else {
+                    format!("assign a replacement before returning: `{} = …`", name)
+                };
+                Diagnostic::error(format!("gave `{}` away and didn't put anything back", name))
+                    .with_code("E0836")
+                    .with_primary(*consumed_at, label)
+                    .with_secondary(*declared_at, format!("`{}` is declared `mutate`", name))
+                    .with_fix(fix)
+                    .with_why("a `mutate` parameter is exclusive access, not ownership: the caller keeps the value and reads it after the call. Taking it out and writing a replacement back is what the mode is for — leaving the slot empty hands them a hole [mem.parameters/PM2, PM6]".to_string())
+            }
+
             ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
                 let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
                 let label = match sink {

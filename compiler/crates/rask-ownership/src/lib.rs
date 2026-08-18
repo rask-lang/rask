@@ -80,6 +80,10 @@ pub struct OwnershipChecker<'a> {
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
     borrowed_params: HashMap<String, (Span, bool)>,
+    /// `mutate` parameters: name → declaration span. Consuming one is allowed —
+    /// that's what exclusive access is for — but the value has to be back before
+    /// the function returns (#815).
+    mutate_params: HashMap<String, Span>,
     /// Resource bindings registered with `ensure` (consumption committed).
     ensure_registered: HashSet<String>,
     /// Span of the `ensure` statement that registered each resource (C4 diagnostics).
@@ -126,6 +130,7 @@ impl<'a> OwnershipChecker<'a> {
             current_stmt: 0,
             resource_bindings: HashSet::new(),
             borrowed_params: HashMap::new(),
+            mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
             in_ensure: false,
@@ -385,7 +390,11 @@ impl<'a> OwnershipChecker<'a> {
 
         // Register parameters as owned or borrowed bindings
         self.borrowed_params.clear();
+        self.mutate_params.clear();
         for param in &fn_decl.params {
+            if param.is_mutate {
+                self.mutate_params.insert(param.name.clone(), param.name_span);
+            }
             if !param.is_take && !param.is_mutate {
                 // What the caller lent out. Giving it away is an error — they keep
                 // it and go on using it (#804).
@@ -434,7 +443,9 @@ impl<'a> OwnershipChecker<'a> {
         self.check_block(&fn_decl.body);
 
         // Check for unconsumed resources at function exit
-        self.check_resource_consumption(fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
+        let exit_span = fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0));
+        self.check_resource_consumption(exit_span);
+        self.check_mutate_params_refilled(exit_span);
     }
 
     fn check_block(&mut self, stmts: &[Stmt]) {
@@ -3001,6 +3012,36 @@ impl<'a> OwnershipChecker<'a> {
                     span,
                 });
             }
+        }
+    }
+
+    /// PM2: a `mutate` parameter is still there when the call returns, so one
+    /// that was consumed has to have been replaced on every path.
+    ///
+    /// Consuming one is legitimate — `out.push(b.build()); b = StringBuilder.new()`
+    /// is what exclusive access is for. Consuming it and putting nothing back is
+    /// not: the caller reads a hole, and nothing checked for it (#815). A
+    /// reassignment sets the binding back to `Owned`, so the state at exit is the
+    /// whole test.
+    fn check_mutate_params_refilled(&mut self, span: Span) {
+        let mut names: Vec<(String, Span)> =
+            self.mutate_params.iter().map(|(n, s)| (n.clone(), *s)).collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, declared_at) in names {
+            let (consumed_at, maybe) = match self.bindings.get(&name) {
+                Some(BindingState::Moved { at }) => (*at, false),
+                Some(BindingState::MaybeMoved { at }) => (*at, true),
+                _ => continue,
+            };
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::MutateParamLeftEmpty {
+                    name,
+                    consumed_at,
+                    declared_at,
+                    maybe,
+                },
+                span,
+            });
         }
     }
 

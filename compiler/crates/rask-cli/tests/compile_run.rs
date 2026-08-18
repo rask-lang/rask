@@ -4786,6 +4786,32 @@ fn error_int_float_arithmetic() {
     );
 }
 
+// mem.parameters/PM2: a `mutate` parameter is still there when the call returns,
+// so one that was consumed has to have been replaced. Consuming it *is* allowed —
+// that's the difference from a plain borrow — and nothing checked that anything
+// went back, so `drain(mutate b)` handed the caller a hole (#815).
+#[test]
+fn error_mutate_param_left_empty() {
+    let (failed, out) = compile_error_output("mutate_param_left_empty.rk");
+    assert!(failed, "a consumed `mutate` parameter must be replaced: {}", out);
+    assert_eq!(out.matches("E0836").count(), 2, "two sites, no more: {}", out);
+    assert!(
+        out.contains("didn't put anything back"),
+        "should say what's missing: {}", out,
+    );
+    assert!(
+        out.contains("on some paths"),
+        "the one-path case reads differently: {}", out,
+    );
+    assert!(
+        out.contains("is declared `mutate`"),
+        "should point at the declaration: {}", out,
+    );
+    // Consume-and-replace is the legitimate pattern and must not be flagged.
+    assert!(!out.contains("`flush_into`"), "replace is fine: {}", out);
+    assert!(!out.contains("`consume`"), "and so is `take`: {}", out);
+}
+
 // mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
 // can't be given away. This made "consumed exactly once" false in the shipped
 // compiler — the interpreter caught the double-consume with a runtime flag, and
