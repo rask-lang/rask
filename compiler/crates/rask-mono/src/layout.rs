@@ -701,6 +701,7 @@ mod tests {
                     .into_iter()
                     .map(|(vname, field_tys)| Variant {
                         name: vname.to_string(),
+                        name_span: dummy_span(),
                         fields: field_tys
                             .into_iter()
                             .enumerate()

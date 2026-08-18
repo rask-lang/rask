@@ -3114,6 +3114,7 @@ mod tests {
                 type_params: vec![],
                 variants: variants.iter().map(|v| Variant {
                     name: v.to_string(),
+                    name_span: Span::new(0, 0),
                     fields: vec![],
                     attrs: vec![],
                     discriminant: None,

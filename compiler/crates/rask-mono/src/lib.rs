@@ -1126,6 +1126,7 @@ mod tests {
                     variants: vec![
                         Variant {
                             name: "Alpha".to_string(),
+                            name_span: sp(),
                             fields: vec![
                                 Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
                                 Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },

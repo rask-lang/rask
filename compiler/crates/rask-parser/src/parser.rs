@@ -1994,7 +1994,10 @@ impl Parser {
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
 
-        for i in (1..items.len()).rev() {
+        // Forward order: `pending_decls` is consumed FIFO, so pushing in reverse
+        // (which is what the LIFO drain used to need) would hand the imports back
+        // last-first.
+        for i in 1..items.len() {
             let (ref name, ref alias) = items[i];
             let mut path = base_path.clone();
             path.push(name.clone());
