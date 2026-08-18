@@ -697,8 +697,8 @@ Everything the model needs stops being bespoke:
 | a link can be returned from a function | unlike other views, nothing can relocate the pointee |
 | `s.delete(n)` is legal while holding `n` | `take link` consumes exactly that view |
 | `s.delete(m)` is legal while holding `n` | different view, untouched — no conflict |
-| `s.clear()` conflicts with every live link | S5 exclusive access: it deletes without naming a victim |
-| a `deleting` call conflicts with every live link | same, one call frame out |
+| `s.clear()` kills every link local from there on | it deletes without naming a victim, so any name may be the dead one |
+| a `deleting` call kills them the same way | same, one call frame out |
 | a field must be `Link<T>?` | S3 no-escape: a view cannot be stored in a struct, so a field has to be the store-maintained kind instead |
 
 The bespoke revoke becomes S5, which Rask already has vocabulary and diagnostics
@@ -708,80 +708,63 @@ for. The error moves too, and moves in the right direction — it fires at the
 end of this block". Today's E0328 blames the later read for something the earlier
 line caused.
 
-The one honest cost of block scoping: an unnamed delete conflicts with a live link
-even if the link is never used again, so the fix is to open a scope or drop the
-name rather than to rely on a last use. That is Rask's existing bargain, not a new
-one — and rewriting the corpus to obey it cost three sites across twelve programs.
-Two of the three are bare scopes, and both are in the same place: a `clear` at the
-end of a test that built a graph. That is the shape to watch — a naked `{ }` whose
-only job is to end views reads like a mistake to anyone who doesn't know the rule.
+#### A link needs the move checker, not a lifetime
 
-**Site one, L3's `main`.** Building the tree opens a view per node, and
-`delete_subtree` is an unnamed delete, so the two can't overlap. The fix is to
-give the build its own scope and hand back the one link that has to survive it —
-which the delete then consumes, leaving nothing live across it:
+One thing this framing must not smuggle in. S1 says a view lasts to the end of the
+enclosing block, and reading that literally would make an unnamed delete conflict
+with a link that is merely still *in scope*, forcing a bare `{ }` around any
+build-then-clear. I wrote the corpus that way and it was wrong twice over.
+
+First, it is not what the compiler does. Rask does not enforce S5 for ordinary
+views at all today — this typechecks:
 
 ```rask
-// before — root, b, a1 and a2 are all live views at the delete
-let root = scene.nodes.insert(...)
-scene.root = root
-let a  = add_child(scene, root, "a")
-let b  = add_child(scene, root, "b")
-let a1 = add_child(scene, a, "a1")
-let a2 = add_child(scene, a, "a2")
-reparent(a1, b)
-scene.selected = a2
-delete_subtree(scene, a)
-
-// after
-func build(mutate scene: Scene) -> Link<SceneNode> {
-    let root = scene.nodes.insert(...)
-    scene.root = root
-    let a  = add_child(scene, root, "a")
-    let b  = add_child(scene, root, "b")
-    let a1 = add_child(scene, a, "a1")
-    let a2 = add_child(scene, a, "a2")
-    reparent(a1, b)
-    scene.selected = a2      // a field, so the store maintains it past this scope
-    return a
-}
-
-func main() {
-    mut scene = Scene { nodes: Store.new(), root: none, selected: none }
-    let doomed = build(scene)
-    delete_subtree(scene, doomed)
-    report(scene)
-}
+let v = o.inner
+o.inner = Inner { a: 9, b: 9, c: 9 }   // mutate the source
+println("{v.a}")                       // and read the view afterwards
 ```
 
-It reads as an ordinary refactor — the setup was a paragraph of `main` that wanted
-to be a function anyway — and the output is still byte-identical to the handle
-version. Note what survives the scope and what doesn't: `scene.root` and
-`scene.selected` are fields, so the store maintains them; the six locals were
-views, and views end.
+and so does the `Vec` version, where the push may reallocate. So appealing to
+"S1 is lexical, that's the existing bargain" was reading spec text, not behaviour.
 
-**Sites two and three, both `clear` tests in p11.** Same shape, a bare scope
-instead of a function:
+Second, and more to the point, links do not need a lifetime rule. The safety
+requirement is *no read through a link after its node is freed* — a question about
+uses, not about regions. The tracking already built answers exactly that: an
+unnamed delete marks every link local dead from that statement forward, so reads
+above it are fine and reads below it are errors. Nothing has to end.
 
 ```rask
-{
-    let a = s.insert(...)
-    let b = s.insert(...)
-    let c = s.insert(...)
-    s.delete(b)              // names its victim: ends exactly b's view
-    ...
-}
-s.clear()                    // names none: needs every view closed
+let a = s.insert(...)
+let b = s.insert(...)
+assert s.contains(a)
+s.delete(b)              // names its victim: only `b` dies
+s.clear()                // names none: every link local dies from here
+assert s.is_empty()      // fine — nothing reads a link below the clear
 ```
+
+That is the move checker's kill/use propagation, which Rask has and uses for
+`take`. It is not lifetime inference: it never computes a region or checks
+containment, it propagates "this name is dead from here" forward through the CFG.
+Conflating the two is what produced the braces.
+
+So the fixed-source finding stands on its own — it is what lets a link be *held* at
+all without `with`, since nothing can relocate the node — and the delete rule is
+separate and use-based.
+
+**Cost on the corpus: nothing.** Rewriting all twelve link programs to obey the
+use-based rule changed no real code. Three places named a link below an unnamed
+delete, and all three were dead `let _ = x` statements whose only job was consuming
+a binding; moving them above the delete, or dropping them, is the whole diff. L3's
+`main` keeps its original shape and is still byte-identical to the handle version.
 
 **Everything else was already legal.** L1, L2, fan-in, sparse-delete and
-unlink-on-overwrite all delete by naming a victim, and a named delete ends exactly
-one view — so holding `n1`, `n3` and `n4` across `remove(list, n2)` is fine and
+unlink-on-overwrite all delete by naming a victim, and a named delete kills exactly
+one name — so holding `n1`, `n3` and `n4` across `remove(list, n2)` is fine and
 stays fine. The only program the rule rejects is `cascade_hole_links.rk`, which is
-the one with the bug, and it rejects it at the call rather than at the read.
+the one with the bug, and it rejects the read.
 
-**A gap this turned up in what was already shipped.** Asking whether the bare
-scope is really about `clear` produced the same shape with no `clear` in it, in one
+**A gap this turned up in what was already shipped.** Asking whether the bare scope
+was really about `clear` produced the same shape with no `clear` in it, in one
 function body:
 
 ```rask
@@ -796,12 +779,12 @@ println("first.id = {first.id}")   // printed 1, from a freed node
 `delete` takes its link, so the tracker was consuming `n` and considering the job
 done — but `n` is not a node the caller named, it is the loop's pick, and any other
 link local may be the one that just died. So a `delete` whose argument came from
-iterating the store now revokes every other link local into it, exactly as `clear`
+iterating the store now kills every other link local into it, exactly as `clear`
 does. The diagnostic hedges correctly, because the loop may or may not reach the
 node in question: *"`first` may name a deleted node — possible use after free"*.
 
-This is the same distinction the `deleting` proposal rests on — a named victim ends
-one view, an unnamed one ends all of them — and it turns out to be needed inside a
+This is the same distinction the `deleting` proposal rests on — a named victim kills
+one name, an unnamed one kills all of them — and it turns out to be needed inside a
 single body too, not only across a call. Which is a point in the proposal's favour:
 the rule was already load-bearing before the annotation existed.
 

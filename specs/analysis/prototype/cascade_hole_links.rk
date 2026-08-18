@@ -13,9 +13,10 @@
 // Run it: prints "kid" for a node that is no longer in the store.
 //
 // This is also the one program in the corpus that the proposed rule rejects, and
-// rejects at the right line. Under S5 `cascade` would be declared
-// `deleting scene: Scene`, and `kid` is a live link view at the call — so the
-// error lands on `cascade(scene, parent)`, not on the read two lines later.
+// it is rejected for the right reason: `cascade` would be declared
+// `deleting scene: Scene`, which kills every link local into that store from the
+// call onward — and the last line reads one of them. Nothing else in the corpus
+// reads a link local after an unnamed delete, so nothing else has to change.
 
 struct Node {
     name: string
