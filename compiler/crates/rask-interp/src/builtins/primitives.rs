@@ -211,7 +211,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let overflow = |op: &str, b: i128| RuntimeError::IntegerOverflow(format!(
-            "integer overflow: {} {} {} exceeds i128 range", a, op, b
+            "integer overflow: {} {} {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a, op, b
         ));
         match method {
             "add" => { let b = self.expect_int128(args, 0)?; a.checked_add(b).map(Value::Int128).ok_or_else(|| overflow("+", b)) }
@@ -228,7 +228,7 @@ impl Interpreter {
                 a.checked_rem(b).map(Value::Int128).ok_or_else(|| overflow("%", b))
             }
             "neg" => a.checked_neg().map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a))),
             "eq" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
@@ -250,9 +250,9 @@ impl Interpreter {
             }
             "bit_not" => Ok(Value::Int128(!a)),
             "abs" => a.checked_abs().map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a))),
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             // HA1, over all 16 little-endian bytes.
             "hash" => Ok(Value::Int(
@@ -314,7 +314,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let overflow = |op: &str, b: u128| RuntimeError::IntegerOverflow(format!(
-            "integer overflow: {} {} {} exceeds u128 range", a, op, b
+            "integer overflow: {} {} {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, op, b
         ));
         match method {
             "add" => { let b = self.expect_uint128(args, 0)?; a.checked_add(b).map(Value::Uint128).ok_or_else(|| overflow("+", b)) }
@@ -351,7 +351,7 @@ impl Interpreter {
             }
             "bit_not" => Ok(Value::Uint128(!a)),
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             // HA1, over all 16 little-endian bytes.
             "hash" => Ok(Value::Int(

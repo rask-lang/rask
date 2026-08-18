@@ -2741,6 +2741,56 @@ fn overflow_narrow_literal_panics() {
     assert_panics_both("overflow_narrow_literal.rk", "overflow");
 }
 
+// The message names the type that overflowed and the range it holds, on both
+// backends. Native used to print "integer overflow in addition" and nothing
+// else, where the interpreter printed "integer overflow: 2147483647 + 1 exceeds
+// i32 range [-2147483648, 2147483647]" for the same event — so a user who hit
+// one natively had no way to tell which of the expression's widths ran out.
+//
+// The operand values stay interpreter-only: native's message is a static string
+// picked at codegen, and the values aren't known until it runs. The type and its
+// range are, and those are what the reader needs.
+fn assert_names_type_and_range(fixture: &str, ty: &str, range: &str) {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, _) = run_capture(mode, fixture);
+        let combined = format!("{}{}", stdout, stderr);
+        assert!(
+            combined.contains(ty),
+            "{} on {}: message should name `{}`, got:\n{}", fixture, mode, ty, combined,
+        );
+        assert!(
+            combined.contains(range),
+            "{} on {}: message should carry the range `{}`, got:\n{}",
+            fixture, mode, range, combined,
+        );
+    }
+}
+
+#[test]
+fn overflow_messages_name_the_type_and_its_range() {
+    let i32_range = "[-2147483648, 2147483647]";
+    assert_names_type_and_range("overflow_add.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_mul.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_neg.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_div_min.rk", "i32", i32_range);
+    // A narrower width, so a message hard-coded at i32 wouldn't pass.
+    assert_names_type_and_range("overflow_sub.rk", "u8", "[0, 255]");
+    assert_names_type_and_range("overflow_narrow_literal.rk", "u8", "[0, 255]");
+}
+
+#[test]
+fn a_shift_past_the_width_names_the_width() {
+    // SH1's message is the bit width rather than a range.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, _) = run_capture(mode, "overflow_shift.rk");
+        let combined = format!("{}{}", stdout, stderr);
+        assert!(
+            combined.contains("i32 bit width (32)"),
+            "{}: shift message should name the width, got:\n{}", mode, combined,
+        );
+    }
+}
+
 #[test]
 fn comptime_overflow_is_compile_error() {
     // CT1: overflow during comptime evaluation fails compilation with a

@@ -47,17 +47,95 @@ pub(crate) fn copy_bytes(
 // Checked-arithmetic panic messages (type.overflow). Registered as string
 // globals unconditionally (see `register_strings`) so the message prints in
 // both debug and release builds — OV4 requires consistent behavior.
-pub(crate) const OV_ADD: &str = "integer overflow in addition";
-pub(crate) const OV_SUB: &str = "integer overflow in subtraction";
-pub(crate) const OV_MUL: &str = "integer overflow in multiplication";
-pub(crate) const OV_NEG: &str = "integer overflow in negation";
+//
+// Each names the type that overflowed and the range it holds. Native used to
+// print "integer overflow in addition" and nothing else, where the interpreter
+// printed "integer overflow: 200 + 100 exceeds u8 range [0, 255]" for the same
+// event — a user who hit one natively had no way to tell which of the
+// expression's widths ran out. The operand values can't be in a static message,
+// but the type and its range can, and those are what the reader needs.
 pub(crate) const OV_DIV_ZERO: &str = "division by zero";
-pub(crate) const OV_DIV_OVERFLOW: &str = "integer overflow in division (MIN / -1)";
-pub(crate) const OV_SHIFT: &str = "shift amount exceeds bit width";
 
-/// All overflow panic messages, registered up front by codegen.
-pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
-    OV_ADD, OV_SUB, OV_MUL, OV_NEG, OV_DIV_ZERO, OV_DIV_OVERFLOW, OV_SHIFT,
+/// Which check fired, for picking the message.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OvKind {
+    Add,
+    Sub,
+    Mul,
+    Neg,
+    DivMinByNegOne,
+    Shift,
+}
+
+/// Build the seven messages for one integer type, and the accessor over them.
+macro_rules! overflow_messages {
+    ($($ty:literal, $bits:literal, $unsigned:literal, $range:literal;)*) => {
+        /// Every overflow message codegen can emit, registered up front.
+        pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
+            OV_DIV_ZERO,
+            $(
+                concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
+                concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
+                concat!("integer overflow: multiplication exceeds ", $ty, " range ", $range),
+                concat!("integer overflow: negation exceeds ", $ty, " range ", $range),
+                concat!("integer overflow: dividing ", $ty, " MIN by -1 exceeds ", $ty, " range ", $range),
+                concat!("shift amount exceeds ", $ty, " bit width (", stringify!($bits), ")"),
+            )*
+        ];
+
+        /// The message for one check on one integer type.
+        ///
+        /// `bits` and `unsigned` come from the reconciled operand type at the
+        /// operation, so they name the width that actually ran out rather than
+        /// the widest one in the expression.
+        pub(crate) fn overflow_message(kind: OvKind, bits: u32, unsigned: bool) -> &'static str {
+            match (bits, unsigned) {
+                $(
+                    ($bits, $unsigned) => match kind {
+                        OvKind::Add => concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
+                        OvKind::Sub => concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
+                        OvKind::Mul => concat!("integer overflow: multiplication exceeds ", $ty, " range ", $range),
+                        OvKind::Neg => concat!("integer overflow: negation exceeds ", $ty, " range ", $range),
+                        OvKind::DivMinByNegOne => concat!("integer overflow: dividing ", $ty, " MIN by -1 exceeds ", $ty, " range ", $range),
+                        OvKind::Shift => concat!("shift amount exceeds ", $ty, " bit width (", stringify!($bits), ")"),
+                    },
+                )*
+                // Not a width the language has. Falling back to the i64 wording
+                // beats printing a range that isn't this type's.
+                _ => match kind {
+                    OvKind::Add => "integer overflow in addition",
+                    OvKind::Sub => "integer overflow in subtraction",
+                    OvKind::Mul => "integer overflow in multiplication",
+                    OvKind::Neg => "integer overflow in negation",
+                    OvKind::DivMinByNegOne => "integer overflow in division (MIN / -1)",
+                    OvKind::Shift => "shift amount exceeds bit width",
+                },
+            }
+        }
+    };
+}
+
+overflow_messages! {
+    "i8",   8,   false, "[-128, 127]";
+    "i16",  16,  false, "[-32768, 32767]";
+    "i32",  32,  false, "[-2147483648, 2147483647]";
+    "i64",  64,  false, "[-9223372036854775808, 9223372036854775807]";
+    "i128", 128, false, "[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]";
+    "u8",   8,   true,  "[0, 255]";
+    "u16",  16,  true,  "[0, 65535]";
+    "u32",  32,  true,  "[0, 4294967295]";
+    "u64",  64,  true,  "[0, 18446744073709551615]";
+    "u128", 128, true,  "[0, 340282366920938463463374607431768211455]";
+}
+
+/// The fallbacks, also registered so an unexpected width still finds a global.
+pub(crate) const OVERFLOW_FALLBACKS: &[&str] = &[
+    "integer overflow in addition",
+    "integer overflow in subtraction",
+    "integer overflow in multiplication",
+    "integer overflow in negation",
+    "integer overflow in division (MIN / -1)",
+    "shift amount exceeds bit width",
 ];
 
 /// Read-only context bundling parameters for lowering functions.
@@ -1681,7 +1759,10 @@ impl<'a> FunctionBuilder<'a> {
                             let min = builder.ins().iconst(val_ty, Self::type_min_i64(val_ty));
                             builder.ins().icmp(IntCC::Equal, val, min)
                         };
-                        Self::guard_overflow(builder, ctx, overflowed, OV_NEG);
+                        Self::guard_overflow(
+                            builder, ctx, overflowed,
+                            overflow_message(OvKind::Neg, val_ty.bits(), unsigned),
+                        );
                         builder.ins().ineg(val)
                     }
                     // Logical NOT: XOR with 1 to flip the boolean bit.
@@ -2942,13 +3023,15 @@ impl<'a> FunctionBuilder<'a> {
             // and division and remainder have no rule at all, so those three go
             // through the runtime and come back with a status (#762).
             if int_ty == types::I128 && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Mod) {
+                let mul = overflow_message(OvKind::Mul, 128, is_unsigned);
+                let div = overflow_message(OvKind::DivMinByNegOne, 128, is_unsigned);
                 let (name, overflow_msg) = match (op, is_unsigned) {
-                    (BinOp::Mul, false) => ("rask_i128_mul", OV_MUL),
-                    (BinOp::Mul, true) => ("rask_u128_mul", OV_MUL),
-                    (BinOp::Div, false) => ("rask_i128_div", OV_DIV_OVERFLOW),
-                    (BinOp::Div, true) => ("rask_u128_div", OV_DIV_OVERFLOW),
-                    (BinOp::Mod, false) => ("rask_i128_rem", OV_DIV_OVERFLOW),
-                    _ => ("rask_u128_rem", OV_DIV_OVERFLOW),
+                    (BinOp::Mul, false) => ("rask_i128_mul", mul),
+                    (BinOp::Mul, true) => ("rask_u128_mul", mul),
+                    (BinOp::Div, false) => ("rask_i128_div", div),
+                    (BinOp::Div, true) => ("rask_u128_div", div),
+                    (BinOp::Mod, false) => ("rask_i128_rem", div),
+                    _ => ("rask_u128_rem", div),
                 };
                 return Self::emit_i128_helper(builder, ctx, name, lhs_val, rhs_val, overflow_msg);
             }
@@ -2959,7 +3042,10 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().sadd_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(builder, ctx, of, OV_ADD);
+                    Self::guard_overflow(
+                        builder, ctx, of,
+                        overflow_message(OvKind::Add, int_ty.bits(), is_unsigned),
+                    );
                     res
                 }
                 BinOp::Sub => {
@@ -2968,7 +3054,10 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().ssub_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(builder, ctx, of, OV_SUB);
+                    Self::guard_overflow(
+                        builder, ctx, of,
+                        overflow_message(OvKind::Sub, int_ty.bits(), is_unsigned),
+                    );
                     res
                 }
                 BinOp::Mul => {
@@ -2977,7 +3066,10 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().smul_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(builder, ctx, of, OV_MUL);
+                    Self::guard_overflow(
+                        builder, ctx, of,
+                        overflow_message(OvKind::Mul, int_ty.bits(), is_unsigned),
+                    );
                     res
                 }
                 BinOp::Div if is_unsigned => {
@@ -3021,15 +3113,15 @@ impl<'a> FunctionBuilder<'a> {
                 BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
                 BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
                 BinOp::Shl => {
-                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty, is_unsigned);
                     builder.ins().ishl(lhs_val, rhs_val)
                 }
                 BinOp::Shr if is_unsigned => {
-                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty, is_unsigned);
                     builder.ins().ushr(lhs_val, rhs_val)
                 }
                 BinOp::Shr => {
-                    Self::guard_shift(builder, ctx, rhs_val, int_ty);
+                    Self::guard_shift(builder, ctx, rhs_val, int_ty, is_unsigned);
                     builder.ins().sshr(lhs_val, rhs_val)
                 }
                 // Rotation wraps within the width, so it needs no shift guard:
@@ -5094,7 +5186,10 @@ impl<'a> FunctionBuilder<'a> {
         let l_is_min = builder.ins().icmp(IntCC::Equal, lhs, min);
         let r_is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
         let both = builder.ins().band(l_is_min, r_is_neg1);
-        Self::guard_overflow(builder, ctx, both, OV_DIV_OVERFLOW);
+        Self::guard_overflow(
+            builder, ctx, both,
+            overflow_message(OvKind::DivMinByNegOne, ty.bits(), false),
+        );
     }
 
     /// Call a 128-bit runtime helper and turn its status into the usual panic.
@@ -5132,17 +5227,24 @@ impl<'a> FunctionBuilder<'a> {
 
     /// SH1: panic when the shift amount is >= the operand's bit width.
     /// Unsigned comparison also catches negative amounts.
-    fn guard_shift(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, amount: Value, ty: Type) {
+    fn guard_shift(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        amount: Value,
+        ty: Type,
+        unsigned: bool,
+    ) {
+        let msg = overflow_message(OvKind::Shift, ty.bits(), unsigned);
         // `iconst` stops at 64 bits, so a 128-bit width is built from halves.
         if ty == types::I128 {
             let bits = Self::iconst_i128(builder, ty.bits() as i128);
             let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
-            Self::guard_overflow(builder, ctx, bad, OV_SHIFT);
+            Self::guard_overflow(builder, ctx, bad, msg);
             return;
         }
         let bits = builder.ins().iconst(ty, ty.bits() as i64);
         let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
-        Self::guard_overflow(builder, ctx, bad, OV_SHIFT);
+        Self::guard_overflow(builder, ctx, bad, msg);
     }
 
     /// Signed minimum of an integer type as an i64 immediate.
