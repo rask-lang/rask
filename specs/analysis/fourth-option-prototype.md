@@ -530,6 +530,39 @@ puts the revocation back where the checker can see it. And a link kept in a
 delete happens — the runtime fixup has no such gap, because a field is an edge
 the store indexes.
 
+### Exactly where the compiler stops being sure
+
+There are three ways a delete can happen at a call, and only one of them is
+actually uncertain.
+
+| At a call, the callee gets… | Can it delete? | Does the caller find out? |
+|---|---|---|
+| `take n: Link<T>` | yes | yes — the name is consumed at the call site |
+| `n: Link<T>` (borrow) | **should be no** | — |
+| `mutate s: Store<T>` | yes, by re-deriving links from `s.nodes()` | **no** |
+
+The middle row is where the interesting part is. A borrow parameter means the
+caller keeps ownership, so the callee should not be able to hand it to `delete`,
+whose parameter is `take link`. It can today:
+
+```rask
+func sneaky(mutate s: Store<Node>, n: Link<Node>) {
+    s.delete(n)            // `n` is a borrow parameter, but delete consumes it
+}
+sneaky(s, n)
+println("{n.name}")        // reads a freed node, no diagnostic
+```
+
+That is not a Store problem. Any borrow parameter can be fed to any `take`
+parameter, which lets a callee consume a `@resource` the caller still holds and
+turns a linearity violation into a runtime panic. Filed as #804; when it is
+fixed, the middle row becomes a real "no" and passing a link is certain either
+way.
+
+So the residual hole is one row wide: **handing the store to something that can
+delete**. That is genuinely undecidable without knowing whether the callee
+deletes, which is the effect discussed above.
+
 ## Finding 2: links carry write permission, and edge writes mutate their target
 
 Two things, both about a link being more powerful than it looks.
