@@ -1055,14 +1055,16 @@ multiplicities, cascade policies, `@lazy` and batches — features. After runnin
 it, those are all accessories. Three things outrank them, and none was on the
 list:
 
-1. **The locals rule is settled and built** — compile-time delete tracking. What
-   remains is the case the compiler can't see: a call taking the store mutably that
-   deletes inside. Rask's exclusivity rule is the right shape; `insert` stays
-   exempt.
+1. **The locals rule is settled and mostly built** — compile-time delete
+   tracking, covering named deletes, `clear`, and bulk-delete loops. What remains
+   is the call the compiler can't see: a store passed mutably to something that
+   deletes inside. That needs the `deleting` parameter mode (#806), which needs
+   #804 first.
 2. **Read-only links** — put writability in the type (`mut Link<T>`, default
    read-only, matching `let`/`mut` and parameter modes). Not a context: a link
    escapes the context that made it, demonstrated above. Not a binding mode: local,
-   and `with … as` versus `? as` don't even agree on mutability today.
+   and `with … as` versus `? as` don't even agree on mutability today. Designed,
+   not built — and now the largest unbuilt item.
 3. **The representation note** — say plainly that flat-graph zero-copy
    persistence is what's being traded away, and that graph `Encode` gains an id
    assignment pass. No escalation needed; the tier was already narrow.
@@ -1070,6 +1072,33 @@ list:
 Two smaller ones the fixup surfaced: required edges need a delete policy the
 moment batches admit them (cascade/restrict stops being deferrable), and edge
 writes need Transparency of Cost to bless them explicitly.
+
+### The ledger, and what the decision actually is
+
+The model works. L1 and L3 produce output byte-identical to the handle versions
+with less code, L2 loses the dance, delete cost is linear in in-degree and
+independent of store size, and edges stay correct through container churn without
+anyone writing fixup code.
+
+What it costs is three concepts, against the one runtime check handles spend:
+
+| Addition | Status |
+|---|---|
+| kill/use tracking for link locals — a named delete kills one name, an unnamed one kills all | built |
+| `deleting` parameter mode, composing with `mutate` | designed, #806 |
+| `mut Link<T>` — writability in the type | designed, unbuilt |
+| B1/B2 amendment: a third container class, grows in count but never relocates | designed, unbuilt |
+
+The first reuses machinery Rask already has for `take`, so it adds no new analysis
+class — which is the answer to "complexity is conserved". The rest are genuinely
+new surface.
+
+So the decision is not "does the model work" — it does. It is whether `deleting`
+and `mut Link<T>` are acceptable additions to the language. If they are, links win
+on ergonomics and the checkless read is real. If either is not, handles stay,
+because without them the model is either unsound (no `deleting`: cascade delete is
+a use after free, demonstrated) or unable to express read-only access at all (no
+`mut Link<T>`).
 
 ## Running it
 
