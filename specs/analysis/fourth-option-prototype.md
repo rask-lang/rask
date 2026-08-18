@@ -633,58 +633,85 @@ And of the three, only `delete_subtree` is called by a caller that holds locals
 main holds none. So the annotation would change one call site in the corpus, and
 that call site is the one with the bug.
 
-### Revoking is too coarse, and the fixup already knows how to be precise
+### Revoking is too coarse, and the `?` already says which discipline applies
 
-Revoking every local is a blunt instrument. The L3 call would take out `b` and
-`root`, which survive it. And notice the asymmetry: a link in a *field* comes
-through the same call perfectly — nulled if its target died, untouched if it
-didn't. The fixup is exact. Only locals get the sledgehammer, and only because
-the fixup can't reach them.
+Revoking every local at a `deleting` call is blunt: the L3 call would take out
+`b` and `root`, which survive it. And the asymmetry points at the answer — a link
+in a *field* comes through that same call exactly right, nulled if its target
+died and untouched if it didn't. The fixup is precise. Only locals get the
+sledgehammer, and only because the fixup can't reach them.
 
-So reach them — but only where it matters. A local link needs no registration in
-ordinary code, which is what makes it free. It needs registration for the
-duration of one call: the one that can delete.
+**The first fix I tried was worse than the problem.** Have the compiler register
+the live link locals across the call and widen their type afterwards: `Link<T>`
+before the call, `Link<T>?` after. Precise, and it needs nothing from the
+programmer. It is also sneaky in a way nothing else in Rask is.
 
-```rask
-let kid = scene.nodes.insert(...)   // plain Link<Node>, unregistered, checkless
-cascade(scene, parent)              // compiler registers `kid` across this call;
-                                    // the callee's deletes null it if it dies
-if kid? as k { ... }                // `kid` is Link<Node>? on this side of the call
+Compare it with `take`, which is the closest existing thing. `take` is invisible
+at the call site too — `eat(bag)` carries no marker, and the caller learns about
+it at the next use:
+
+```
+error[E0800]: use of moved value: `bag`
+  |     println("{eat(bag)}")
+  |                   --- value moved here
+  |     println("{bag.items.len()}")
+  |               ^^^ value used here after move
 ```
 
-The compiler knows which link locals are live across the call, so it brackets the
-call with register/unregister. No stack scan — the same reverse-edge index the
-store already keeps, with a handful of stack slots added to it for the length of
-one call. Inside, `delete` nulls them the same way it nulls a field.
+But `take` revokes a *name*. One outcome, one error, and the error names the call
+and says what happened to the value. Nothing about `bag`'s type changed; `bag`
+stopped existing. Widening instead keeps the name alive with a different type,
+which is worse three ways: the failure is a type error rather than a revocation,
+so it doesn't name its cause; one variable has two types in one body depending on
+where you stand; and `take`'s rule is learnable once, where predicting a widening
+means knowing which links a callee might delete. Dropped.
 
-What that buys, on the L3 call:
+**What replaces it is already the rule in this document.** The table above says a
+`Link<T>?` slot is one the store maintains and a `Link<T>` slot is one the
+compiler guarantees. That was stated for fields. Say it for locals too, and the
+programmer picks:
 
-| Local | Under revoke-all | Under registration |
+| Local declaration | Keeper | At a `deleting` call |
 |---|---|---|
-| `a2` (died in the cascade) | unusable | `none` — the check catches it |
-| `b` (survived) | unusable | `Link<T>?`, and the check succeeds |
-| `root` (survived) | unusable | `Link<T>?`, and the check succeeds |
+| `let kid = s.insert(...)` — `Link<T>` | the compiler | revoked; use after it won't compile |
+| `mut kid: Link<T>? = s.insert(...)` | the store | registered, nulled if its target died |
 
-A check that succeeds beats a name you may never use again. And the cost lands
-exactly where the risk is: you held a link across something that could delete, so
-you check it once afterwards. That is the transparency principle rather than a
-concession to it.
+```rask
+mut keep: Link<Node>? = scene.nodes.insert(...)   // I said this might vanish
+let quick = scene.nodes.insert(...)              // I said it won't have to
 
-The type of a link local therefore widens at a deleting call — `Link<T>` before,
-`Link<T>?` after. Rask already narrows the other way (`x? as v`), so the
-machinery is not new, only the direction. The cost is that the widening is
-triggered by the callee's signature, which is not visible at the call site; the
-disclosure is the error at the next use, the same way `take` discloses itself.
+cascade(scene, parent)
 
-**Still needs the annotation.** Registration only pays for itself if it happens
-at deleting calls and nowhere else. Bracket *every* call taking the store
-mutably and every link local becomes optional after every `push_back` — which is
-the "ask whether the thing you just made exists" outcome already rejected. So
-`deleting` earns its keep twice: it says the delete can happen, and it says where
-to spend the registration.
+if keep? as k { println(k.name) }   // survived: the check succeeds
+                                    // died: none, and the check catches it
+// `quick` is revoked here — declaring it non-optional was the claim that
+// nothing would delete it, and this call breaks that claim
+```
 
-**Not built.** A new parameter mode is a language change. Proposed in #806, with
-the registration refinement; the `take`-parameter half is only sound once #804 is
+Nothing silent, no flow-sensitive types, and one rule instead of two: the `?` is
+written where every other optional is written, and it means what it always means.
+The cost is visible at the declaration rather than inferred at a call — which is
+the transparency principle rather than a concession to it.
+
+Registration is then cheap and obvious: a local declared `Link<T>?` joins the
+same reverse-edge index a field joins, for as long as it is in scope. No stack
+scan, and non-optional locals — the common case — stay entirely free.
+
+**Cost on L3.** `main` holds `root`, `b`, `a1` and `a2` across
+`delete_subtree(scene, a)`. All four are plain `Link<SceneNode>`, so all four are
+revoked, and the program is unaffected because it uses none of them afterwards.
+Wanting `b` afterwards costs one `?` at its declaration and one check.
+
+**What the prototype does today.** The declaration form already typechecks and
+runs — `mut kid: Link<Node>? = s.insert(...)` is legal now. What is missing is the
+registration, so an optional local is not yet nulled by a delete; it is inert
+rather than maintained. Building it needs `Environment::get` to hand back owned
+values instead of `&Value`, since a slot the store can write into cannot also be
+lent out by reference. That is a real change to the interpreter's hot read path
+and is not made here.
+
+**Not built.** A new parameter mode is a language change. Proposed in #806 with
+the declared-optional rule; the `take`-parameter half is only sound once #804 is
 fixed.
 
 **On the spelling.** `deleting s: Store<T>` over `prune s`: the model already has
