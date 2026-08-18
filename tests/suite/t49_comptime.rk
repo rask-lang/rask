@@ -11,6 +11,58 @@
 // fail to link ("Function not found"). So a passing native run here IS the
 // compile-time-evaluation witness.
 
+// ── `if x? as v` inside comptime (#808) ─────────────────────────────
+//
+// The comptime evaluator dropped the presence binding: it evaluated the
+// condition as a plain bool and never defined `v`, so a body that read the
+// payload failed with "undefined variable". The interpreter and native both bind
+// it; comptime is the one that didn't.
+
+comptime func find_name(want: string) -> string? {
+    let names = ["ada", "bo", "cy"]
+    for n in names {
+        if n == want { return n }
+    }
+    return none
+}
+
+const HIT: string = comptime {
+    mut out = "unset"
+    if find_name("bo")? as hit {
+        out = "found {hit}"
+    } else {
+        out = "missing"
+    }
+    out
+}
+
+const MISS: string = comptime {
+    mut out = "unset"
+    if find_name("zz")? as hit {
+        out = "found {hit}"
+    } else {
+        out = "missing"
+    }
+    out
+}
+
+const SHADOWED: string = comptime {
+    mut out = "unset"
+    let maybe = find_name("cy")
+    // `as` can reuse the scrutinee's own name — ordinary shadowing, which is how
+    // the no-rename convenience is recovered per-site (OPT19's rationale).
+    if maybe? as maybe {
+        out = "shadowed {maybe}"
+    }
+    out
+}
+
+test "type.optionals/OPT19 — comptime binds the presence payload" {
+    assert HIT == "found bo"
+    assert MISS == "missing"
+    assert SHADOWED == "shadowed cy"
+}
+
 func main() {}
 
 // CT5 + CT10: comptime block, value is the last expression
