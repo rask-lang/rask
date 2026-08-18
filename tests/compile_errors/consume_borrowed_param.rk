@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A borrowed parameter can't be given away (mem.parameters/PM1, mem.linear/L1, #804).
+//
+// A parameter without `take` is the caller's value on loan: they keep it and go on
+// using it after the call. The body used to treat it as owned, so it could be fed
+// straight to a `take` parameter or a `take self` method with nothing said. That
+// made "consumed exactly once" false in the shipped compiler — the interpreter
+// caught the double-consume with a runtime flag, and native, which has no flag,
+// closed a live resource twice.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) {
+        println("closed {self.id}")
+    }
+}
+
+struct Bag {
+    items: Vec<i64>
+}
+
+func eat(take b: Bag) -> u64 {
+    return b.items.len()
+}
+
+// ERROR: `close` takes ownership and `c` is only borrowed [E0835]
+func handle(c: Conn) {
+    c.close()
+}
+
+// ERROR: same through a `take` parameter rather than a method [E0835]
+func relay(b: Bag) -> u64 {
+    return eat(b)
+}
+
+// ERROR: `own` at the call site doesn't create ownership either [E0835]
+func relay_own(b: Bag) -> u64 {
+    return eat(own b)
+}
+
+// The way to say it: `take` on the declaration, so the caller sees the value go.
+func proper(take b: Bag) -> u64 {
+    return eat(b)
+}
+
+func main() {
+    let c = Conn { id: 1 }
+    handle(c)
+    c.close()
+
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    println("{proper(Bag { items: v })}")
+}

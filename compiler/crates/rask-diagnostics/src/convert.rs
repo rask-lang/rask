@@ -1903,6 +1903,28 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
+                let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
+                    None => format!("this takes ownership, and `{}` isn't yours to give", name),
+                };
+                let mutate_note = if *is_mutate {
+                    " `mutate` is exclusive access — you may write through it, not give it away."
+                } else {
+                    ""
+                };
+                Diagnostic::error(format!("cannot give away `{}` — it's borrowed, not owned", name))
+                    .with_code("E0835")
+                    .with_primary(self.span, label)
+                    .with_secondary(*declared_at, format!("`{}` is declared as a {}", name, how))
+                    .with_fix(format!("take it: `take {}: …` in the signature — then the caller can see it goes", name))
+                    .with_why(format!(
+                        "the caller keeps a parameter it didn't mark `take` and goes on using it, so consuming it here would leave them holding something that's gone. For a `@resource` that's a second close of a real handle.{} [mem.parameters/PM1, mem.linear/L1]",
+                        mutate_note
+                    ))
+            }
+
             UseAfterMove { name, moved_at, reason } => {
                 use rask_ownership::MoveReason;
                 let (note, help) = match reason {

@@ -4767,6 +4767,38 @@ fn error_generic_struct_with_an_aggregate_type_arg() {
     );
 }
 
+// mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
+// can't be given away. This made "consumed exactly once" false in the shipped
+// compiler — the interpreter caught the double-consume with a runtime flag, and
+// native, which has no flag, closed a live `@resource` twice (#804).
+//
+// A `mutate` parameter is deliberately still allowed to be consumed: exclusive
+// access means taking the value out and writing a replacement back is the point.
+#[test]
+fn error_consume_borrowed_param() {
+    let (failed, out) = compile_error_output("consume_borrowed_param.rk");
+    assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
+    assert_eq!(out.matches("E0835").count(), 3, "three sites, no more: {}", out);
+    assert!(
+        out.contains("borrowed, not owned"),
+        "should say the parameter isn't owned: {}", out,
+    );
+    assert!(
+        out.contains("`close` takes ownership") && out.contains("`eat` takes ownership"),
+        "should name what the value was handed to: {}", out,
+    );
+    assert!(
+        out.contains("is declared as a borrowed parameter"),
+        "should point at the declaration: {}", out,
+    );
+    assert!(
+        out.contains("take c: "),
+        "should suggest `take` on the declaration: {}", out,
+    );
+    // `take` on the declaration is the fix, so that function must not be flagged.
+    assert!(!out.contains("`proper`"), "a take parameter is fine: {}", out);
+}
+
 // #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
 // annotation type-checked clean. The annotation's whole job is to move the
 // break from the call sites to the declaration, so an unenforced one is worse

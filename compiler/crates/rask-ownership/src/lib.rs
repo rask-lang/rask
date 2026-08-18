@@ -76,6 +76,10 @@ pub struct OwnershipChecker<'a> {
     binding_types: HashMap<String, Type>,
     /// Bindings that are @resource types (must be consumed).
     resource_bindings: HashSet<String>,
+    /// Parameters the caller only lent out: name → (declaration span, `mutate`).
+    /// A borrow can't be given away, so consuming one is an error rather than a
+    /// move (#804).
+    borrowed_params: HashMap<String, (Span, bool)>,
     /// Resource bindings registered with `ensure` (consumption committed).
     ensure_registered: HashSet<String>,
     /// Span of the `ensure` statement that registered each resource (C4 diagnostics).
@@ -121,6 +125,7 @@ impl<'a> OwnershipChecker<'a> {
             current_block: 0,
             current_stmt: 0,
             resource_bindings: HashSet::new(),
+            borrowed_params: HashMap::new(),
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
             in_ensure: false,
@@ -379,7 +384,21 @@ impl<'a> OwnershipChecker<'a> {
         }
 
         // Register parameters as owned or borrowed bindings
+        self.borrowed_params.clear();
         for param in &fn_decl.params {
+            if !param.is_take && !param.is_mutate {
+                // What the caller lent out. Giving it away is an error — they keep
+                // it and go on using it (#804).
+                //
+                // A `mutate` parameter is left out on purpose. It's exclusive
+                // access, so taking the value out and writing a replacement back is
+                // a legitimate pattern — `out.push(b.build()); b = StringBuilder.new()`
+                // is what `mutate` is *for*. What's missing there is the other half
+                // of the rule: consuming one and putting nothing back leaves the
+                // caller holding a hole, and nothing checks that yet.
+                self.borrowed_params
+                    .insert(param.name.clone(), (param.name_span, param.is_mutate));
+            }
             if param.is_take {
                 // `take` parameter: owned
                 self.bindings.insert(param.name.clone(), BindingState::Owned);
@@ -909,6 +928,10 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     let is_take_param =
                         callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                    let callee_name = match &func.kind {
+                        ExprKind::Ident(n) => Some(n.clone()),
+                        _ => None,
+                    };
                     if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -923,7 +946,7 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
-                        self.consume_arg(&arg.expr);
+                        self.consume_arg(&arg.expr, callee_name.as_deref());
                     }
                 }
             }
@@ -974,7 +997,7 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
-                        self.consume_arg(&arg.expr);
+                        self.consume_arg(&arg.expr, Some(method.as_str()));
                     }
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
@@ -1063,7 +1086,9 @@ impl<'a> OwnershipChecker<'a> {
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
                     if let ExprKind::Ident(name) = &object.kind {
-                        self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                        let name = name.clone();
+                        let sink = method.clone();
+                        self.consume_binding(&name, expr.span, Some(&sink));
                     }
                 }
             }
@@ -2710,7 +2735,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Mark an argument as consumed (moved) when it names a binding.
     /// Copy values (VS1/VS2) stay valid — passing them to `take`/`own` copies.
-    fn consume_arg(&mut self, arg_expr: &Expr) {
+    fn consume_arg(&mut self, arg_expr: &Expr, sink: Option<&str>) {
         if let ExprKind::Ident(name) = &arg_expr.kind {
             let is_copy = self
                 .binding_types
@@ -2718,9 +2743,32 @@ impl<'a> OwnershipChecker<'a> {
                 .map(|t| self.is_copy(t))
                 .unwrap_or(false);
             if !is_copy {
-                self.bindings.insert(name.clone(), BindingState::Moved { at: arg_expr.span });
+                self.consume_binding(name, arg_expr.span, sink);
             }
         }
+    }
+
+    /// Give a binding away: mark it moved, or refuse if it was only borrowed.
+    ///
+    /// A parameter without `take` is the caller's value on loan (PM1). Handing it
+    /// to a `take` parameter or a `take self` method used to just overwrite the
+    /// state with `Moved`, so the callee consumed something it didn't own and the
+    /// caller was never told — a double-close for a `@resource`, and a use of a
+    /// given-away value for anything else (#804).
+    fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
+        if let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(name) {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeBorrowedParam {
+                    name: name.to_string(),
+                    declared_at,
+                    is_mutate,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
+        self.bindings.insert(name.to_string(), BindingState::Moved { at: span });
     }
     /// Name of the type a receiver expression evaluates to. Handles resolved
     /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/

@@ -47,6 +47,26 @@ pub enum OwnershipErrorKind {
         reason: MoveReason,
     },
 
+    /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
+    /// lent out can't be given away.
+    ///
+    /// A parameter without `take` is a borrow — the caller keeps the value and
+    /// goes on using it. The body used to treat it as owned, so it could be fed
+    /// straight to a `take` parameter or a `take self` method with nothing said.
+    /// For a `@resource` that's a double-close the caller can't see; for a plain
+    /// value it's a use of something already given away.
+    #[error("cannot give away `{name}` — it's borrowed, not owned")]
+    ConsumeBorrowedParam {
+        name: String,
+        /// The parameter's declaration, to point at and to suggest `take` on.
+        declared_at: Span,
+        /// `mutate` reads differently from a plain borrow: it's exclusive access,
+        /// which is still not ownership.
+        is_mutate: bool,
+        /// What the value was being handed to, when it has a name.
+        sink: Option<String>,
+    },
+
     /// SM2: a `@small` type grew past the 16-byte copy threshold.
     ///
     /// The break belongs at the annotation, not at the call sites: adding a
