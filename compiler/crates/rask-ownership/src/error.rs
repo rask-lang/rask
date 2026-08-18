@@ -26,6 +26,10 @@ pub enum MoveReason {
     /// put and the thing it pointed at was freed, so every name for it is dead.
     /// The move checker is only the mechanism that proves it (analysis.fourth-option).
     LinkDeleted,
+    /// A `Link<T>` moved into another name the ordinary way. Nothing was deleted —
+    /// links are affine among locals so that two names for one node can't drift
+    /// apart, and this is that rule firing, not a use after free.
+    LinkMoved,
     /// Unknown or generic type.
     Unknown,
 }

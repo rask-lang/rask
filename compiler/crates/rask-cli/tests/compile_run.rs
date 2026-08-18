@@ -1725,15 +1725,14 @@ fn error_store_link_use_after_delete() {
         "must not suggest cloning — that would be a second dead pointer: {}",
         out
     );
-    // A read, a write, `contains`, a read after `clear`, and a read after a
-    // bulk-delete loop. `contains` is correct too: a non-optional link's type
-    // already asserts the node is alive, so asking is a question with no
-    // meaning. The last two are the unnamed deletes — they pick their own
-    // victims, so every other local link into the store has to go.
+    // Six: a read, a write, `contains`, a read after `clear`, a read after a
+    // bulk-delete loop, and a read through a *derived* alias of the deleted node.
+    // `contains` is correct too — a non-optional link's type already asserts the
+    // node is alive, so asking is a question with no meaning.
     assert_eq!(
         out.matches("error[E0328]").count(),
-        5,
-        "exactly the five uses after delete rejected: {}",
+        6,
+        "exactly the six uses after delete rejected: {}",
         out
     );
     assert!(
@@ -1744,6 +1743,26 @@ fn error_store_link_use_after_delete() {
     assert!(
         out.contains("may name a deleted node"),
         "the loop case is path-dependent, so it must hedge: {}",
+        out
+    );
+    // The intra-function sibling of the cascade hole: `t` came out of an edge, so
+    // it may be a second name for whatever the delete named.
+    assert!(
+        out.contains("`t` names a deleted node"),
+        "a derived alias must not survive a named delete: {}",
+        out
+    );
+    // And the other half — precision. `a` has its own `insert` behind it, so it
+    // cannot be a second name for `b`, and a blanket kill would flag it.
+    assert!(
+        !out.contains("`a` names a deleted node") && !out.contains("`a` may name"),
+        "a link with its own insert must survive an unrelated named delete: {}",
+        out
+    );
+    // Nothing here is an ordinary move, so no E0800 should leak into this fixture.
+    assert!(
+        !out.contains("E0800"),
+        "delete invalidation must not report as a move: {}",
         out
     );
 }

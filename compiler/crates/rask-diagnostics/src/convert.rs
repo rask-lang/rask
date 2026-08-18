@@ -1972,6 +1972,13 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("`{}` names a deleted node", name),
                         "read the node before deleting it".to_string(),
                     ),
+                    MoveReason::LinkMoved => (
+                        format!(
+                            "a `Link<T>` moves like any other name for a node — `{}` handed its node over rather than copying it",
+                            name
+                        ),
+                        "read through the new name, or keep the edge in a `Link<T>?` field where the store maintains it".to_string(),
+                    ),
                     MoveReason::Unknown => (
                         format!("`{}` was moved — assignment transfers ownership", name),
                         format!(

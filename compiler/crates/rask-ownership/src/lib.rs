@@ -88,6 +88,17 @@ pub struct OwnershipChecker<'a> {
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
     active_for_mutates: Vec<ForMutateInfo>,
+    /// Link locals whose initializer was a `store.insert(...)` — they name a node
+    /// nothing else in this body has a name for, so a delete elsewhere can't be
+    /// deleting them. Every other link local is *derived* (a field read, an
+    /// iteration binding, a call result) and may alias whatever a delete names.
+    /// `take` parameters whose type is a link: the caller consumed the name at the
+    /// call site, so deleting one here is already visible to them.
+    take_link_params: HashSet<String>,
+    identified_links: HashSet<String>,
+    /// Spans where a link was consumed by `store.delete(...)`, so a use-after-move
+    /// on a link can tell "the node was deleted here" from "you moved it here".
+    link_delete_spans: std::collections::HashSet<Span>,
     /// Loops iterating a `Store`'s own nodes: (element type key, binding names).
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
@@ -131,6 +142,9 @@ impl<'a> OwnershipChecker<'a> {
             frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
+            take_link_params: HashSet::new(),
+            identified_links: HashSet::new(),
+            link_delete_spans: std::collections::HashSet::new(),
             store_iterations: Vec::new(),
             param_type_strings: HashMap::new(),
             borrow_bindings: HashMap::new(),
@@ -340,14 +354,12 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Const(_) => {} // Module-level consts handled differently
             DeclKind::Test(test_decl) => {
                 // Check test body like a function
-                self.bindings.clear();
-                self.borrows.clear();
+                self.reset_body_state();
                 self.check_block(&test_decl.body);
             }
             DeclKind::Benchmark(bench_decl) => {
                 // Check benchmark body like a function
-                self.bindings.clear();
-                self.borrows.clear();
+                self.reset_body_state();
                 self.check_block(&bench_decl.body);
             }
             DeclKind::Package(_) | DeclKind::CImport(_) => {}
@@ -356,10 +368,23 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// Per-body state. `binding_types` and `binding_decl_blocks` were not being
+    /// reset, so a name declared in one body stayed typed in the next — latent
+    /// until something iterated the map to decide which names to invalidate, at
+    /// which point a `first` from one test body got marked dead in another.
+    fn reset_body_state(&mut self) {
+        self.bindings.clear();
+        self.binding_types.clear();
+        self.binding_decl_blocks.clear();
+        self.identified_links.clear();
+        self.take_link_params.clear();
+        self.link_delete_spans.clear();
+        self.borrows.clear();
+    }
+
     fn check_fn(&mut self, fn_decl: &FnDecl) {
         // Reset state for each function (local analysis only)
-        self.bindings.clear();
-        self.borrows.clear();
+        self.reset_body_state();
         self.resource_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
@@ -374,6 +399,12 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(name) = &clause.name {
                     self.frozen_contexts.insert(name.clone());
                 }
+            }
+        }
+
+        for param in &fn_decl.params {
+            if param.is_take && param.ty.starts_with("Link<") {
+                self.take_link_params.insert(param.name.clone());
             }
         }
 
@@ -555,6 +586,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                    self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
                 }
                 // SL1: inherit scope limit from closure expression
@@ -598,6 +630,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
+                    self.record_link_provenance(name, &t, init);
                     // SL1: Only a projection (field/index) borrow creates a borrow view.
                     // Whole-variable moves create owned bindings; closures can capture freely.
                     let (_, projection) = Self::extract_root_and_fields(init);
@@ -855,8 +888,8 @@ impl<'a> OwnershipChecker<'a> {
                     match state {
                         BindingState::Moved { at } => {
                             let reason = self.program.node_types.get(&expr.id)
-                                .map(|ty| self.move_reason(ty))
-                                .unwrap_or_else(|| self.move_reason_for(name));
+                                .map(|ty| self.move_reason_at(ty, *at))
+                                .unwrap_or_else(|| self.move_reason_for_at(name, *at));
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMove {
                                     name: name.clone(),
@@ -868,8 +901,8 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         BindingState::MaybeMoved { at } => {
                             let reason = self.program.node_types.get(&expr.id)
-                                .map(|ty| self.move_reason(ty))
-                                .unwrap_or_else(|| self.move_reason_for(name));
+                                .map(|ty| self.move_reason_at(ty, *at))
+                                .unwrap_or_else(|| self.move_reason_for_at(name, *at));
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMaybeMove {
                                     name: name.clone(),
@@ -1005,15 +1038,27 @@ impl<'a> OwnershipChecker<'a> {
                         self.consume_arg(&arg.expr);
                     }
                 }
-                // `store.delete(n)` where `n` came from iterating the store is not
-                // the caller naming a victim — it is whichever node the loop
-                // reached. Every other link local into that store may be the one
-                // that just died, so they all go, same as at a `clear`.
-                if method == "delete"
-                    && self.receiver_type_name(object).as_deref() == Some("Store")
-                    && args.first().is_some_and(|a| self.is_store_iteration_binding(&a.expr))
+                // A delete names its victim only if the argument is a link this
+                // body can vouch for: one `insert` handed over, or one a caller
+                // passed by `take`. Anything else — a field read, an iteration
+                // binding, a call result — may alias any node in the store, so
+                // every *derived* link local has to die with it. And a delete of
+                // an unvouched-for link is not a named delete at all: it takes
+                // everything, the same way `clear` does.
+                if method == "delete" && self.receiver_type_name(object).as_deref() == Some("Store")
                 {
-                    self.kill_links_into_store(object, expr.span);
+                    let named = args.first().is_some_and(|a| self.is_identified_link(&a.expr));
+                    if named {
+                        self.kill_derived_links_into_store(object, expr.span);
+                    } else {
+                        self.kill_links_into_store(object, expr.span);
+                    }
+                    if let Some(a) = args.first() {
+                        if let ExprKind::Ident(_) = &a.expr.kind {
+                            self.link_delete_spans.insert(a.expr.span);
+                        }
+                    }
+                    self.link_delete_spans.insert(expr.span);
                 }
                 // `store.clear()` deletes every node at once. It names no link,
                 // so a local link into that store has to die here the same way
@@ -1022,6 +1067,9 @@ impl<'a> OwnershipChecker<'a> {
                 if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Store")
                 {
                     self.kill_links_into_store(object, expr.span);
+                    // A clear is a delete, so the names it kills must report as
+                    // freed rather than as moved.
+                    self.link_delete_spans.insert(expr.span);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
@@ -1454,8 +1502,24 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(&clause.body);
                 self.bindings = pre_handler;
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
+            ExprKind::IsPresent { expr: inner, binding } => {
                 self.check_expr(inner);
+                // OPT19: `x? as v` introduces `v` in the then-branch, and the pass
+                // was dropping it. Only links are registered here: `v` is a
+                // *derived* name for whatever `x` pointed at, so a delete of that
+                // node has to kill it, and nothing else was tracking it. Kept to
+                // links deliberately — widening it to every `? as` binding changes
+                // resource and linearity behaviour that has its own tests.
+                if let Some(name) = binding {
+                    if let Some(ty) = self.program.node_types.get(&inner.id).cloned() {
+                        let narrowed = ty.as_option().cloned().unwrap_or(ty);
+                        if self.is_link_type(&narrowed) {
+                            self.bindings.insert(name.clone(), BindingState::Owned);
+                            self.binding_types.insert(name.clone(), narrowed);
+                            self.identified_links.remove(name);
+                        }
+                    }
+                }
             }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
@@ -1737,6 +1801,64 @@ impl<'a> OwnershipChecker<'a> {
                 Some(format!("{}", self.program.types.resolve_type_names(t)))
             }
             rask_types::GenericArg::ConstUsize(n) => Some(n.to_string()),
+        }
+    }
+
+    /// Record whether a new link local names a node nothing else in this body
+    /// knows about. Only a direct `store.insert(...)` qualifies: a field read, an
+    /// iteration binding or a call result may be a second name for a node some
+    /// other local also names, and a delete of either invalidates both.
+    fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
+        if !self.is_link_type(ty) {
+            return;
+        }
+        let from_insert = matches!(
+            &init.kind,
+            ExprKind::MethodCall { object, method, .. }
+                if method == "insert" && self.receiver_type_name(object).as_deref() == Some("Store")
+        );
+        if from_insert {
+            self.identified_links.insert(name.to_string());
+        } else {
+            self.identified_links.remove(name);
+        }
+    }
+
+    /// True if this argument is a link the body can vouch for: an `insert` result,
+    /// or a `take` parameter the caller already gave up.
+    fn is_identified_link(&self, arg: &Expr) -> bool {
+        let ExprKind::Ident(name) = &arg.kind else {
+            return false;
+        };
+        self.identified_links.contains(name) || self.take_link_params.contains(name)
+    }
+
+    /// Kill only the *derived* link locals — the ones that may be a second name
+    /// for whatever just died. Locals with their own `insert` behind them name
+    /// distinct nodes and survive.
+    fn kill_derived_links_into_store(&mut self, store: &Expr, span: Span) {
+        let elem = self
+            .program
+            .node_types
+            .get(&store.id)
+            .and_then(|ty| self.elem_key(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                self.is_link_type(ty)
+                    && !self.identified_links.contains(name.as_str())
+                    && !self.take_link_params.contains(name.as_str())
+                    && matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                    && (elem.is_none() || self.elem_key(ty) == elem)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name, BindingState::Moved { at: span });
         }
     }
 
@@ -2229,6 +2351,24 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Determine why a type is move-only (not Copy).
+    /// `move_reason`, but told where the invalidation happened. A link is only
+    /// reported as deleted if that span really was a `delete` — an ordinary move
+    /// into another name is a move, and saying "deleted here" about a `let` that
+    /// deleted nothing is worse than saying nothing at all.
+    fn move_reason_at(&self, ty: &Type, at: Span) -> MoveReason {
+        if self.is_link_type(ty) && !self.link_delete_spans.contains(&at) {
+            return MoveReason::LinkMoved;
+        }
+        self.move_reason(ty)
+    }
+
+    fn move_reason_for_at(&self, name: &str, at: Span) -> MoveReason {
+        match self.binding_types.get(name) {
+            Some(ty) => self.move_reason_at(ty, at),
+            None => MoveReason::Unknown,
+        }
+    }
+
     fn move_reason(&self, ty: &Type) -> MoveReason {
         // A link isn't moved anywhere — `delete` frees its node, which kills every
         // name for it. Report it as what it is rather than as a transfer.

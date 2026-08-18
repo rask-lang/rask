@@ -788,6 +788,64 @@ one name, an unnamed one kills all of them — and it turns out to be needed ins
 single body too, not only across a call. Which is a point in the proposal's favour:
 the rule was already load-bearing before the annotation existed.
 
+#### Does a named delete conflict with derived views in the same body? Yes.
+
+Pushed on directly, and the answer is the cascade hole's little sibling:
+
+```rask
+let a = s.insert(Node { id: 1, peer: none })
+let b = s.insert(Node { id: 2, peer: none })
+a.peer = b
+if a.peer? as t {
+    s.delete(b)          // names `b` — kills the name `b`
+    let x = t.id         // read a freed node; `t` is the same node
+}
+```
+
+`t` is a *derived* name: it came out of an edge, so nothing tied it to `b`. A named
+delete kills one name only if the body can vouch for that name — and vouching means
+provenance, the same three-source split #806 applies across a call, applied within
+one body:
+
+| Where the link came from | On a named delete of something else |
+|---|---|
+| `store.insert(...)` in this body | survives — it names a node nothing else here names |
+| a `take` parameter | survives — the caller gave that specific node up |
+| anything else: an edge read, an iteration binding, a call result | **dies** — it may be a second name for whatever was named |
+
+So it is not a fourth concept and not an S5 extension. It is the *same* provenance
+rule, and finding it needed intra-function as well as cross-function is evidence the
+rule is real rather than an artefact of the call boundary.
+
+**It is precise where precision matters.** The paired case has to keep working, and
+it does — `a` has its own `insert` behind it, so it cannot be a second name for `b`:
+
+```rask
+s.delete(b)
+println("{a.name}")      // fine, no error
+```
+
+A blanket "any delete kills every link" would flag that, and it is the ordinary
+shape — p11's scalar-edge test, `unlink_on_overwrite_links.rk` and
+`sparse_delete_links.rk` all do exactly this. Both halves are asserted in
+`store_link_use_after_delete.rk`, and the fixture also asserts no `E0800` leaks in,
+so a delete can never be reported as an ordinary move.
+
+**Ergonomics re-check, since the flagship derives constantly.** The L2 loop binds
+`t` from `e.target` on every iteration, and `remove` binds `p` and `x` from
+`n.prev`/`n.next`. Neither reads a derived name *after* a delete, so nothing
+changes: all twelve programs and both suite files pass untouched. The cost only
+appears if you delete while holding a derived name and then read it — which is the
+bug.
+
+**Two things this turned up.** The ownership pass was dropping the `as v` binding on
+`x?` (`IsPresent`) entirely, so no rule at all applied to it — now registered for
+link types, deliberately narrow, since widening it to every `? as` binding moves
+resource and linearity behaviour that has its own tests. And `binding_types` was
+never reset between function bodies, so a name declared in one body stayed typed in
+the next; harmless until something iterated the map to decide what to invalidate,
+at which point a `first` from one test body got marked dead in another.
+
 #### The `?` opts out of the whole discipline
 
 A local declared `Link<T>?` is not a view at all — it is a slot the store
@@ -1084,7 +1142,7 @@ What it costs is three concepts, against the one runtime check handles spend:
 
 | Addition | Status |
 |---|---|
-| kill/use tracking for link locals — a named delete kills one name, an unnamed one kills all | built |
+| kill/use tracking for link locals — a named delete kills one name plus every derived alias, an unnamed one kills all | built |
 | `deleting` parameter mode, composing with `mutate` | designed, #806 |
 | `mut Link<T>` — writability in the type | designed, unbuilt |
 | B1/B2 amendment: a third container class, grows in count but never relocates | designed, unbuilt |

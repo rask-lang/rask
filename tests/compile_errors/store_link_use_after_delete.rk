@@ -62,10 +62,41 @@ func bulk_loop_after_delete() {
     println("{n.name}")         // ERROR: E0328
 }
 
+// The intra-function sibling of the cascade hole. `t` is a *derived* name — read
+// out of an edge, so nothing tied it to `b` — and it may be pointing at whatever
+// the delete names. A named delete kills one name only if the body can vouch for
+// it, which means an `insert` it made or a `take` a caller handed over. Everything
+// else dies with the delete.
+func derived_alias_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let a = store.insert(Node { name: "a", next: none })
+    let b = store.insert(Node { name: "b", next: none })
+    a.next = b
+
+    if a.next? as t {
+        store.delete(b)
+        let _ = t.name          // ERROR: E0328 — `t` may be `b`
+    }
+}
+
+// The other half of the same rule: `a` survives, because it has its own `insert`
+// behind it and so cannot be a second name for `b`. This is the precision that
+// makes the rule usable rather than a blanket kill.
+func unrelated_link_survives_a_named_delete() {
+    mut store: Store<Node> = Store.new()
+    let a = store.insert(Node { name: "a", next: none })
+    let b = store.insert(Node { name: "b", next: none })
+    a.next = b
+    store.delete(b)
+    println("{a.name}")         // fine — no error here
+}
+
 func main() {
     read_after_delete()
     write_after_delete()
     ask_after_delete()
     clear_after_delete()
     bulk_loop_after_delete()
+    derived_alias_after_delete()
+    unrelated_link_survives_a_named_delete()
 }
