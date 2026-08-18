@@ -4831,6 +4831,39 @@ fn error_consume_borrowed_param() {
     assert!(!out.contains("`proper`"), "a take parameter is fine: {}", out);
 }
 
+// mem.linear/L1 and L3 for an `Owned` local. `own` allocates and there is exactly
+// one owner who consumes it exactly once; nothing checked that, which stopped
+// mattering only because `drop` didn't exist. It does now (#739), so leaking a box
+// left the allocation unfreed and dropping one twice compiled and then aborted the
+// process with a double free (#819).
+//
+// `Owned<T>` erases to `T` in the checker so OW5's transparency works, so there's
+// no type to look at — the `own` in the source is the signal, and the box is linear
+// however small its payload.
+#[test]
+fn error_owned_not_consumed() {
+    let (failed, out) = compile_error_output("owned_not_consumed.rk");
+    assert!(failed, "an unconsumed `own` value must be rejected: {}", out);
+    assert_eq!(out.matches("E0837").count(), 2, "two leaks: {}", out);
+    assert_eq!(out.matches("E0800").count(), 2, "two second-consumes: {}", out);
+    assert!(
+        out.contains("allocated with `own` and never dropped"),
+        "should say what wasn't done: {}", out,
+    );
+    assert!(
+        out.contains("fix: drop(p)"),
+        "should suggest drop, not .close(): {}", out,
+    );
+    assert!(
+        out.contains("is an Owned box — it was consumed there"),
+        "the second consume should blame the box, not the copy threshold: {}", out,
+    );
+    assert!(
+        !out.contains("copy threshold"),
+        "an Owned box is linear whatever its payload's size: {}", out,
+    );
+}
+
 // #587: `@small` parsed and then did nothing — a 24-byte struct carrying the
 // annotation type-checked clean. The annotation's whole job is to move the
 // break from the call sites to the declaration, so an unenforced one is worse

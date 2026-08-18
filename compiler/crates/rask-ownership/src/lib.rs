@@ -17,7 +17,7 @@ pub use error::{
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{ArgMode, Expr, ExprKind, Pattern};
+use rask_ast::expr::{ArgMode, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_types::{ParamMode, Type, TypedProgram};
@@ -76,6 +76,10 @@ pub struct OwnershipChecker<'a> {
     binding_types: HashMap<String, Type>,
     /// Bindings that are @resource types (must be consumed).
     resource_bindings: HashSet<String>,
+    /// Of those, the ones `own` allocated. They follow the same rules — L1–L6 are
+    /// shared between `@resource` and `Owned<T>` — but the fix is `drop(name)`,
+    /// so the diagnostic differs (#819).
+    owned_bindings: HashSet<String>,
     /// Parameters the caller only lent out: name → (declaration span, `mutate`).
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
@@ -129,6 +133,7 @@ impl<'a> OwnershipChecker<'a> {
             current_block: 0,
             current_stmt: 0,
             resource_bindings: HashSet::new(),
+            owned_bindings: HashSet::new(),
             borrowed_params: HashMap::new(),
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
@@ -366,6 +371,7 @@ impl<'a> OwnershipChecker<'a> {
         self.bindings.clear();
         self.borrows.clear();
         self.resource_bindings.clear();
+        self.owned_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
         self.frozen_contexts.clear();
@@ -442,8 +448,14 @@ impl<'a> OwnershipChecker<'a> {
         // Check function body
         self.check_block(&fn_decl.body);
 
-        // Check for unconsumed resources at function exit
-        let exit_span = fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0));
+        // Check for unconsumed resources at function exit. The closing brace, not
+        // the last statement — "goes out of scope here" pointing at whatever
+        // happened to be written last reads as an accusation of that line.
+        let exit_span = if fn_decl.span.end > fn_decl.span.start {
+            Span::new(fn_decl.span.end.saturating_sub(1), fn_decl.span.end)
+        } else {
+            fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0))
+        };
         self.check_resource_consumption(exit_span);
         self.check_mutate_params_refilled(exit_span);
     }
@@ -594,6 +606,7 @@ impl<'a> OwnershipChecker<'a> {
                 } else if self.expr_is_resource_type(init) {
                     self.resource_bindings.insert(name.clone());
                 }
+                self.track_owned_binding(name, init);
             }
             StmtKind::MutTuple { patterns, init } => {
                 self.check_expr(init);
@@ -642,6 +655,7 @@ impl<'a> OwnershipChecker<'a> {
                 } else if self.expr_is_resource_type(init) {
                     self.resource_bindings.insert(name.clone());
                 }
+                self.track_owned_binding(name, init);
             }
             StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
@@ -856,9 +870,17 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(state) = self.bindings.get(name) {
                     match state {
                         BindingState::Moved { at } => {
-                            let reason = self.program.node_types.get(&expr.id)
-                                .map(|ty| self.move_reason(ty))
-                                .unwrap_or_else(|| self.move_reason_for(name));
+                            // The binding's own reason first: an `Owned` box reads
+                            // as its payload type, so going by the node's type
+                            // blamed the copy threshold and suggested `.clone()`
+                            // on something that had just been freed (#819).
+                            let reason = if self.owned_bindings.contains(name) {
+                                MoveReason::Owned
+                            } else {
+                                self.program.node_types.get(&expr.id)
+                                    .map(|ty| self.move_reason(ty))
+                                    .unwrap_or_else(|| self.move_reason_for(name))
+                            };
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMove {
                                     name: name.clone(),
@@ -869,9 +891,17 @@ impl<'a> OwnershipChecker<'a> {
                             });
                         }
                         BindingState::MaybeMoved { at } => {
-                            let reason = self.program.node_types.get(&expr.id)
-                                .map(|ty| self.move_reason(ty))
-                                .unwrap_or_else(|| self.move_reason_for(name));
+                            // The binding's own reason first: an `Owned` box reads
+                            // as its payload type, so going by the node's type
+                            // blamed the copy threshold and suggested `.clone()`
+                            // on something that had just been freed (#819).
+                            let reason = if self.owned_bindings.contains(name) {
+                                MoveReason::Owned
+                            } else {
+                                self.program.node_types.get(&expr.id)
+                                    .map(|ty| self.move_reason(ty))
+                                    .unwrap_or_else(|| self.move_reason_for(name))
+                            };
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMaybeMove {
                                     name: name.clone(),
@@ -910,7 +940,16 @@ impl<'a> OwnershipChecker<'a> {
                 // #296/PM3: a `take` parameter consumes its argument regardless of
                 // call-site `own`. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
-                    self.fn_take_params.get(name).cloned()
+                    // `drop` is a compiler builtin, so it has no declaration in
+                    // `decls` for the take-parameter scan to find — and without
+                    // that, `drop(p)` didn't consume `p`: the leak was reported on
+                    // a value that had just been freed, and freeing it twice drew
+                    // no error at all (#819). mem.owned/OW3 says it consumes.
+                    if name == "drop" {
+                        Some(vec![true])
+                    } else {
+                        self.fn_take_params.get(name).cloned()
+                    }
                 } else {
                     None
                 };
@@ -1010,6 +1049,12 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         self.consume_arg(&arg.expr, Some(method.as_str()));
                     }
+                }
+                // `List.Cons(1, rest)` — a variant constructor takes its payload by
+                // value, so a box handed to one is consumed. After the args have
+                // been read, same reason as the struct literal above.
+                if self.names_a_variant(object, method) {
+                    self.consume_owned_into_aggregate(expr);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
@@ -1146,11 +1191,19 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(spread) = spread {
                     self.check_expr(spread);
                 }
+                // Storing a box in a field hands ownership to the aggregate. After
+                // the reads, not before — marking it moved first turns the very
+                // read that moves it into a use-after-move. Only `own` bindings
+                // here: a `@resource` in a struct field is a separate question this
+                // pass doesn't answer yet, and answering it by accident would
+                // change what existing programs compile (#819).
+                self.consume_owned_into_aggregate(expr);
             }
             ExprKind::Array(elements) => {
                 for elem in elements {
                     self.check_expr(elem);
                 }
+                self.consume_owned_into_aggregate(expr);
             }
             ExprKind::ArrayRepeat { value, count } => {
                 self.check_expr(value);
@@ -1160,6 +1213,7 @@ impl<'a> OwnershipChecker<'a> {
                 for elem in elements {
                     self.check_expr(elem);
                 }
+                self.consume_owned_into_aggregate(expr);
             }
             ExprKind::Range { start, end, inclusive: _ } => {
                 if let Some(start) = start {
@@ -1695,8 +1749,14 @@ impl<'a> OwnershipChecker<'a> {
     /// Non-Copy + `const` (is_mutable=false): block-scoped borrow.
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
-            // Copy types: both source and target remain valid (VS1/VS2)
-            if self.is_copy(ty) {
+            // Copy types: both source and target remain valid (VS1/VS2). An
+            // `Owned` box is never one of them however small its payload — there
+            // is one owner, and moving it hands that over (#819).
+            let names_an_owned_box = match &expr.kind {
+                ExprKind::Ident(name) => self.owned_bindings.contains(name),
+                _ => false,
+            };
+            if self.is_copy(ty) && !names_an_owned_box {
                 return;
             }
 
@@ -2181,6 +2241,12 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Look up the move reason for a binding by name.
     fn move_reason_for(&self, name: &str) -> MoveReason {
+        // Checked before the type: an `Owned<Big>` binding reads as a `Big`, so
+        // the type alone would blame the copy threshold and suggest `.clone()` —
+        // which for an already-dropped box is the wrong advice entirely.
+        if self.owned_bindings.contains(name) {
+            return MoveReason::Owned;
+        }
         if let Some(ty) = self.binding_types.get(name) {
             self.move_reason(ty)
         } else {
@@ -2748,11 +2814,16 @@ impl<'a> OwnershipChecker<'a> {
     /// Copy values (VS1/VS2) stay valid — passing them to `take`/`own` copies.
     fn consume_arg(&mut self, arg_expr: &Expr, sink: Option<&str>) {
         if let ExprKind::Ident(name) = &arg_expr.kind {
-            let is_copy = self
-                .binding_types
-                .get(name)
-                .map(|t| self.is_copy(t))
-                .unwrap_or(false);
+            // An `Owned` box reads as its payload, so a small payload made the
+            // binding look Copy and `drop(p)` consumed nothing — the leak was
+            // reported on a freed value and `drop(p); drop(p)` drew no error at
+            // all. Linearity is a property of the box, not of what's in it (#819).
+            let is_copy = !self.owned_bindings.contains(name)
+                && self
+                    .binding_types
+                    .get(name)
+                    .map(|t| self.is_copy(t))
+                    .unwrap_or(false);
             if !is_copy {
                 self.consume_binding(name, arg_expr.span, sink);
             }
@@ -3045,6 +3116,104 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// `own expr` allocates, so the binding it initializes is linear (L1–L6, same
+    /// rules as `@resource`).
+    ///
+    /// The `own` in the source is the signal, not the type: `Owned<T>` erases to
+    /// `T` in the checker so OW5's transparency works, which leaves nothing in the
+    /// type to look at. A scalar is excluded — it was never allocated, so
+    /// `Owned<i32>` really is an `i32` and there is nothing to free (#819).
+    fn track_owned_binding(&mut self, name: &str, init: &Expr) {
+        if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Own, .. }) {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&init.id) else { return };
+        if !self.own_allocates(ty) {
+            return;
+        }
+        self.resource_bindings.insert(name.to_string());
+        self.owned_bindings.insert(name.to_string());
+    }
+
+    /// Consume any `own` box stored into an aggregate being built here.
+    ///
+    /// The same walk `consume_returned_resources` does, restricted to owned
+    /// bindings: a box in a struct field, a tuple or array element, or an enum
+    /// variant payload belongs to the aggregate now, so the binding it came from
+    /// has given it away.
+    fn consume_owned_into_aggregate(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if self.owned_bindings.contains(name) {
+                    self.consume_binding(name, expr.span, None);
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.consume_owned_into_aggregate(e);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.consume_owned_into_aggregate(&f.value);
+                }
+                if let Some(s) = spread {
+                    self.consume_owned_into_aggregate(s);
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. }
+                if self.names_a_variant(object, method) =>
+            {
+                for arg in args {
+                    self.consume_owned_into_aggregate(&arg.expr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Does `own` on a value of this type allocate?
+    ///
+    /// Only what *is* its bytes. A scalar fits the slot a pointer would occupy, so
+    /// `own 42` is 42 and there is nothing to free; a `Vec`, `Map` or any other box
+    /// is already a pointer to its own storage. Same rule lowering applies —
+    /// `MirType::passed_by_address` — which is what keeps the check and the
+    /// allocation talking about the same set of values.
+    fn own_allocates(&self, ty: &Type) -> bool {
+        match ty {
+            Type::String
+            | Type::Tuple(_)
+            | Type::Array { .. }
+            | Type::Union(_)
+            | Type::Result { .. }
+            | Type::SimdVector { .. }
+            | Type::TraitObject { .. } => true,
+            Type::Named(id) => matches!(
+                self.program.types.get(*id),
+                Some(
+                    rask_types::TypeDef::Struct { .. }
+                        | rask_types::TypeDef::Enum { .. }
+                        | rask_types::TypeDef::Union { .. }
+                )
+            ),
+            Type::UnresolvedNamed(name) => self
+                .program
+                .types
+                .get_type_id(name)
+                .is_some_and(|id| self.own_allocates(&Type::Named(id))),
+            // A generic instantiation of a user struct or enum is its bytes; the
+            // box family and the collections are pointers, and their names are the
+            // ones the type table doesn't hold a struct def for.
+            Type::Generic { base, .. } => self.own_allocates(&Type::Named(*base)),
+            Type::UnresolvedGeneric { name, .. } => self
+                .program
+                .types
+                .get_type_id(name)
+                .is_some_and(|id| self.own_allocates(&Type::Named(id))),
+            _ => false,
+        }
+    }
+
     /// At function exit, emit errors for unconsumed @resource bindings, and C4
     /// errors for ensured resources whose consumption isn't statically definite.
     fn check_resource_consumption(&mut self, span: Span) {
@@ -3071,10 +3240,12 @@ impl<'a> OwnershipChecker<'a> {
             }
             // Not registered with ensure: must be consumed (Moved) before exit.
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
-                self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ResourceNotConsumed { name },
-                    span,
-                });
+                let kind = if self.owned_bindings.contains(&name) {
+                    OwnershipErrorKind::OwnedNotConsumed { name }
+                } else {
+                    OwnershipErrorKind::ResourceNotConsumed { name }
+                };
+                self.errors.push(OwnershipError { kind, span });
             }
         }
     }

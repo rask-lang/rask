@@ -19,4 +19,7 @@ func main() {
 
     // The borrow didn't consume — p is still usable.
     println("still owned {(*p).x} {(*p).y}")
+
+    // And it still has to be consumed exactly once (mem.linear/L1, #819).
+    drop(p)
 }

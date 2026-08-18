@@ -1999,6 +1999,16 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("`{}` is @resource — must be consumed exactly once", type_name),
                         "restructure so the resource is only used once".to_string(),
                     ),
+                    MoveReason::Owned => (
+                        format!(
+                            "`{}` is an Owned box — it was consumed there, and its \
+                             memory went with it",
+                            name
+                        ),
+                        "consume it once. If two owners are really needed, clone the \
+                         value into a second box"
+                            .to_string(),
+                    ),
                     MoveReason::Unknown => (
                         format!("`{}` was moved — assignment transfers ownership", name),
                         format!(
@@ -2021,6 +2031,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     MoveReason::Resource { type_name } => format!(
                         "`{}` is @resource — moved on one branch but not the other",
                         type_name
+                    ),
+                    MoveReason::Owned => format!(
+                        "`{}` is an Owned box — consumed on one branch but not the other, \
+                         and after the branches join the compiler has to assume it went",
+                        name
                     ),
                     _ => format!(
                         "`{}` is moved on one branch but not the other — after the branches \
@@ -2135,6 +2150,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("call `.close()` on `{}` or use `ensure` for cleanup", name))
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+
+            OwnedNotConsumed { name } => {
+                Diagnostic::error(format!(
+                    "`{}` was allocated with `own` and never dropped",
+                    name
+                ))
+                .with_code("E0837")
+                .with_primary(self.span, "the value goes out of scope here, still owned")
+                .with_help(format!(
+                    "consume it exactly once: `drop({})`, hand it to a `take` parameter, \
+                     store it in a field, or return it",
+                    name
+                ))
+                .with_fix(format!("drop({})", name))
+                .with_why(
+                    "an Owned value has one owner and must be consumed exactly once \
+                     (mem.linear/L1) — nothing else frees it",
+                )
             }
 
             ResourceNotConsumedInClosure { name, context } => {

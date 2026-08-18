@@ -80,7 +80,9 @@ drop(ptr)                         // Now consumed
 |------|-------------|
 | **OW5: Transparent** | `Owned<T>` unifies with `T` in type checking; code accepting `T` also accepts `Owned<T>` |
 
-Full linearity enforcement (OW1-OW4) is a Phase 4 compiler feature. OW5 is a deliberate simplification — auto-deref without ceremony.
+OW5 is a deliberate simplification — auto-deref without ceremony.
+
+Linearity is enforced for an `own` local: one that nothing consumes is an error, and so is a second consume. Consuming means `drop(name)`, handing it to a `take` parameter, storing it in a field, tuple, array or enum payload, or returning it. `ensure` covers the error paths. This is the same rule set `@resource` follows; the `own` in the source is what marks the binding, since OW5 leaves nothing in the type to look at.
 
 OW5's transparency has one consequence worth stating: nothing in the *type* distinguishes a value from a pointer to it, so the compiler tracks which is which by where the value came from. `own` allocates and hands back the pointer; a binding takes it over rather than copying out of it; a declared `Owned<T>` slot given something that is already a box stores it as-is rather than boxing twice. A scalar is never boxed — it fits its slot — so `Owned<i32>` really is an `i32`, and dropping one frees nothing.
 

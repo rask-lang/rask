@@ -22,6 +22,9 @@ pub enum MoveReason {
     Unique { type_name: String },
     /// Type is marked @resource.
     Resource { type_name: String },
+    /// The binding holds an `Owned` box — `own` allocated it and something has
+    /// already consumed it, so a second use is a second free (mem.linear/L3).
+    Owned,
     /// Unknown or generic type.
     Unknown,
 }
@@ -149,6 +152,14 @@ pub enum OwnershipErrorKind {
     /// Resource type not consumed before scope exit.
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
+        name: String,
+    },
+
+    /// mem.linear/L1 for an `Owned<T>` local: `own` allocated and nothing
+    /// consumed it. Kept apart from `ResourceNotConsumed` because the fix is
+    /// `drop(name)`, not `.close()`.
+    #[error("`{name}` must be dropped before the end of this block")]
+    OwnedNotConsumed {
         name: String,
     },
 
