@@ -2954,6 +2954,19 @@ impl TypeChecker {
         }
     }
 
+    /// Check one argument against the type the receiver's type arguments say it
+    /// must be, and *report* a mismatch.
+    ///
+    /// The Map methods used to write `let _ = self.unify(&args[0], &key_type, …)`,
+    /// so a wrong key was unified and the failure dropped. On a `Map<TaskId, string>`
+    /// that let `m.insert(1, "a")` through — a raw `i32` into a nominal slot, which
+    /// T9 exists to forbid — and on a struct key it let anything through (#812).
+    fn check_arg_against(&mut self, arg: &Type, expected: &Type, span: Span) {
+        if let Err(e) = self.unify(arg, expected, span) {
+            self.errors.push(e);
+        }
+    }
+
     /// Resolve instance methods on Map<K, V>.
     pub(super) fn resolve_map_method(
         &mut self,
@@ -2976,21 +2989,21 @@ impl TypeChecker {
 
         match method {
             "insert" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &key_type, span);
-                let _ = self.unify(&args[1], &val_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
+                self.check_arg_against(&args[1], &val_type, span);
                 self.unify(ret, &Type::I64, span)
             }
             "contains_key" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::Bool, span)
             }
             "get" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 let opt_ty = Type::option(val_type);
                 self.unify(ret, &opt_ty, span)
             }
             "remove" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::I64, span)
             }
             "len" if args.is_empty() => {

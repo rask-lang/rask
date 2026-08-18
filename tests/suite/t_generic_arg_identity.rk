@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type argument that names a user type stays that type (#812).
+//
+// The runtime half of `tests/compile_errors/generic_arg_identity.rk`. The two
+// spellings of an explicit type argument have to mean the same thing — writing
+// them on the constructor and annotating the binding used to take different paths,
+// and only one of them resolved the argument names.
+
+type TaskId = u64 with (Equal, Hashable)
+
+struct Key {
+    public n: i64
+}
+
+extend Key with Equal {
+    func eq(self, other: Key) -> bool {
+        return self.n == other.n
+    }
+}
+
+extend Key with Hashable {
+    func hash(self) -> u64 {
+        return self.n.clamp<u64>()
+    }
+}
+
+test "type.generics — a nominal key works with either spelling" {
+    mut on_ctor = Map<TaskId, string>.new()
+    on_ctor.insert(TaskId(1), "a")
+    assert (on_ctor.get(TaskId(1)) ?? "?") == "a"
+
+    mut on_binding: Map<TaskId, string> = Map.new()
+    on_binding.insert(TaskId(1), "a")
+    assert (on_binding.get(TaskId(1)) ?? "?") == "a"
+}
+
+test "type.generics — a struct key works with either spelling" {
+    mut on_ctor = Map<Key, string>.new()
+    on_ctor.insert(Key { n: 7 }, "seven")
+    assert (on_ctor.get(Key { n: 7 }) ?? "?") == "seven"
+
+    mut on_binding: Map<Key, string> = Map.new()
+    on_binding.insert(Key { n: 7 }, "seven")
+    assert (on_binding.get(Key { n: 7 }) ?? "?") == "seven"
+}
+
+// A user type in the *value* position, which is the same substitution one slot
+// over.
+test "type.generics — a user type as the value" {
+    mut m = Map<string, Key>.new()
+    m.insert("a", Key { n: 3 })
+    let got = m.get("a") ?? Key { n: 0 }
+    assert got.n == 3
+}
+
+// A type *parameter* still has to stay open — the fix must not resolve `T` to
+// something, or a generic function couldn't take a literal.
+func first_or<T>(xs: Vec<T>, fallback: T) -> T {
+    if xs.len() > 0 {
+        return xs[0]
+    }
+    return fallback
+}
+
+test "type.generics — an open type parameter still takes a literal" {
+    mut xs: Vec<i64> = Vec.new()
+    assert first_or(xs, 9) == 9
+    xs.push(4)
+    assert first_or(xs, 9) == 4
+}
+
+func main() {}

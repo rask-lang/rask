@@ -1232,6 +1232,28 @@ fn error_mixed_signedness_arithmetic() {
     );
 }
 
+// #812: `resolve_named` resolved a generic type's *base* and left its arguments
+// alone, so `Map<TaskId, string>` held `UnresolvedNamed("TaskId")` for a type
+// declared in the same file. An unresolved name is treated as "fits anything" —
+// which is right for an open type parameter and wrong for a declared type — so the
+// key position accepted anything at all. Only the form that writes the arguments
+// on the constructor was affected; annotating the binding took a path that
+// resolved them.
+#[test]
+fn error_generic_arg_keeps_its_identity() {
+    let (failed, out) = compile_error_output("generic_arg_identity.rk");
+    assert!(failed, "a wrong key or value type must not compile: {}", out);
+    // The nominal case gets T9's message, the struct case the ordinary mismatch.
+    assert!(
+        out.contains("expected `TaskId`"),
+        "should name the nominal key type: {}", out,
+    );
+    assert!(
+        out.contains("expected `Key`"),
+        "should name the struct key and value type: {}", out,
+    );
+}
+
 // #304: newline continuation is decided by the first token of the next line, and
 // `+` `-` `*` `<` `>` are excluded because each has a second meaning there. `+` has
 // no prefix reading at all, so a line starting with one isn't a continuation *or* a

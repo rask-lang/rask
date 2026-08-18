@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type argument that names a user type keeps its identity (#812).
+//
+// `resolve_named` resolved the *base* of a generic type and left its arguments
+// alone, so `Map<TaskId, string>` held `UnresolvedNamed("TaskId")` for a type that
+// was declared right there. Every check treats an unresolved name as "fits
+// anything" — correctly, since that's what an open type parameter like `T` looks
+// like — so the key position accepted anything at all.
+//
+// It only showed in the form that writes the arguments on the *constructor*.
+// Annotating the binding (`mut m: Map<TaskId, string> = Map.new()`) went through a
+// path that resolved them, so the same mistake was caught there and nowhere else.
+
+type TaskId = u64 with (Equal, Hashable)
+
+struct Key {
+    public n: i64
+}
+
+func main() {
+    mut ids = Map<TaskId, string>.new()
+    // ERROR: a raw `i32` doesn't convert to a nominal type [E0340, type.aliases/T9]
+    ids.insert(1, "a")
+    // ERROR: same for a read [E0340]
+    let found = ids.get(2) ?? "none"
+
+    mut keyed = Map<Key, string>.new()
+    // ERROR: `i64` is not a `Key` [E0308]
+    keyed.insert(1, "b")
+
+    mut vals = Map<string, Key>.new()
+    // ERROR: the value position too — `i64` is not a `Key` [E0308]
+    vals.insert("k", 2)
+
+    println("{found}")
+}

@@ -27,6 +27,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [int_literal_unwritable.rk](int_literal_unwritable.rk) | The two ends no type holds — digits past `u128::MAX` (lexer) and a negative below `i128::MIN` (parser sign fold) (#800) |
 | [untyped_bindings.rk](untyped_bindings.rk) | Bindings that carried no type at all, so a wrong annotation unified happily: a struct-variant pattern's fields, an `is` binding, a tuple `for` binding (E0308, #809) |
 | [newline_continuation.rk](newline_continuation.rk) | A line starting with `+` — excluded from newline continuation (P3) and not a statement either (#304) |
+| [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0340/E0308, #812) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
