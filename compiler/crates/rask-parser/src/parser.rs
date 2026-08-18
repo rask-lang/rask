@@ -5163,13 +5163,36 @@ impl Parser {
                     self.advance();
                     let binding = self.expect_ident()?;
                     Ok(Pattern::TypePat { ty_name: name, binding: Some(binding) })
-                } else if self.check(&TokenKind::LBrace) && name.contains('.') && self.allow_brace_expr {
-                    // Struct variant pattern: Enum.Variant { field1, field2 }
-                    // Only for qualified names, and only when braces are allowed (not in while/if conditions)
+                } else if self.check(&TokenKind::LBrace)
+                    && self.allow_brace_expr
+                    && (name.contains('.') || Self::is_type_name(&name))
+                {
+                    // A struct pattern: `Point { x, y }`, or an enum's
+                    // struct-shaped variant, `Enum.Variant { field1, field2 }`.
+                    //
+                    // Only qualified names used to be accepted, so the plain
+                    // struct form the spec documents — `Point { x: 0, y }` in
+                    // structs.md and SYNTAX.md — didn't parse at all. Both spec
+                    // blocks are `test: skip`, which is why nothing noticed.
+                    //
+                    // Braces have to be allowed: in `if p is Point { … }` the
+                    // `{` opens the branch, and that's what `allow_brace_expr`
+                    // is for.
                     self.advance();
                     self.skip_newlines();
                     let mut fields = Vec::new();
+                    let mut rest = false;
                     while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                        // `..` ignores the fields the pattern doesn't name, which
+                        // is also how a `private` field is skipped (structs.md's
+                        // "Partial patterns").
+                        if self.match_token(&TokenKind::DotDot) {
+                            rest = true;
+                            self.skip_newlines();
+                            let _ = self.match_token(&TokenKind::Comma);
+                            self.skip_newlines();
+                            continue;
+                        }
                         let field_name = self.expect_ident()?;
                         let pattern = if self.match_token(&TokenKind::Colon) {
                             self.parse_pattern()?
@@ -5186,7 +5209,7 @@ impl Parser {
                         }
                     }
                     self.expect(&TokenKind::RBrace)?;
-                    Ok(Pattern::Struct { name, fields, rest: false })
+                    Ok(Pattern::Struct { name, fields, rest })
                 } else {
                     Ok(Pattern::Ident(name))
                 }

@@ -246,6 +246,17 @@ impl<'a> MirLowerer<'a> {
             return self.lower_flat_match(scrutinee, scrutinee_op, scrutinee_ty, arms);
         }
 
+        // A `match` on a plain struct: the arms name fields, not variants, so
+        // it's an ordered if-chain over field tests rather than a tag switch.
+        // structs.md and SYNTAX.md both document it and neither backend had it —
+        // the parser only accepted the qualified `Enum.Variant { … }` form, so it
+        // never reached lowering at all (#307).
+        if matches!(scrutinee_ty, MirType::Struct(_))
+            && arms.iter().any(|a| matches!(&a.pattern, Pattern::Struct { .. }))
+        {
+            return self.lower_struct_match(scrutinee_op, scrutinee_ty, arms);
+        }
+
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
 
         let is_result_or_option = if !is_enum {
@@ -1107,6 +1118,172 @@ impl<'a> MirLowerer<'a> {
 
     /// Chain lowering for scalar (int/char) matches that include range patterns.
     /// Each arm becomes a boolean test branching to the body or the next arm.
+    /// `match p { Point { x: 0, y } => …, Point { x, y } => … }`.
+    ///
+    /// Arms are tried in order. An arm matches when every field pattern that
+    /// tests a value agrees; field patterns that only bind always agree, and are
+    /// what the body reads. Modelled on `lower_scalar_chain_match` — the shape is
+    /// the same, the condition is per-field instead of on the scrutinee (#307).
+    pub(super) fn lower_struct_match(
+        &mut self,
+        scrutinee_op: MirOperand,
+        scrutinee_ty: MirType,
+        arms: &[rask_ast::expr::MatchArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
+
+        let merge_block = self.builder.create_block();
+        let arm_body_blocks: Vec<BlockId> =
+            arms.iter().map(|_| self.builder.create_block()).collect();
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        let mut result_ty = MirType::Void;
+
+        for (i, arm) in arms.iter().enumerate() {
+            let next_arm = if i + 1 < arms.len() {
+                self.builder.create_block()
+            } else {
+                merge_block
+            };
+
+            // Every field the pattern names is read once, whether it's tested or
+            // bound — a test needs the value and so does the body.
+            let mut reads: Vec<(String, crate::LocalId, MirType, &Pattern)> = Vec::new();
+            if let Pattern::Struct { fields, .. } = &arm.pattern {
+                for (field_name, field_pat) in fields {
+                    let Some((field_idx, field_layout)) =
+                        self.struct_field(&scrutinee_ty, field_name)
+                    else {
+                        continue;
+                    };
+                    let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+                    // Named for the binding when there is one, so debug info and
+                    // the local's name agree.
+                    let local_name = match field_pat {
+                        Pattern::Ident(binding) => binding.clone(),
+                        _ => format!("__match_{}", field_name),
+                    };
+                    let local = self.builder.alloc_local(local_name, field_ty.clone());
+                    let rvalue = MirRValue::Field {
+                        base: scrutinee_op.clone(),
+                        field_index: field_idx as u32,
+                        byte_offset: Some(field_layout.offset),
+                        access: FieldAccess::for_field(&field_ty, field_layout.size),
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue,
+                    }));
+                    reads.push((field_name.clone(), local, field_ty, field_pat));
+                }
+            }
+
+            // A pattern that only binds is a catch-all: nothing to test.
+            let tests: Vec<(crate::LocalId, &Pattern)> = reads
+                .iter()
+                .filter(|(_, _, _, pat)| {
+                    !matches!(pat, Pattern::Ident(_) | Pattern::Wildcard)
+                })
+                .map(|(_, local, _, pat)| (*local, *pat))
+                .collect();
+
+            if tests.is_empty() {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: arm_body_blocks[i],
+                }));
+            } else {
+                let n = tests.len();
+                for (j, (local, pat)) in tests.into_iter().enumerate() {
+                    let last = j + 1 == n;
+                    // Each test's success moves to the next one; the last one's
+                    // success is the arm body. Any failure skips to the next arm.
+                    let pass = if last {
+                        arm_body_blocks[i]
+                    } else {
+                        self.builder.create_block()
+                    };
+                    self.emit_pattern_test(&MirOperand::Local(local), pat, pass, next_arm)?;
+                    if !last {
+                        self.builder.switch_to_block(pass);
+                    }
+                }
+            }
+
+            self.builder.switch_to_block(arm_body_blocks[i]);
+
+            // The bindings the body reads.
+            for (_, local, field_ty, pat) in &reads {
+                if let Pattern::Ident(binding) = pat {
+                    if let Some(p) = self.mir_type_name(field_ty) {
+                        self.meta_mut(binding.as_str()).type_prefix = Some(p);
+                    }
+                    self.locals
+                        .insert(binding.clone(), (*local, field_ty.clone()));
+                }
+            }
+            // A whole-value catch-all (`p => …`) binds the struct itself.
+            if let Pattern::Ident(name) = &arm.pattern {
+                let bind_local = self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: bind_local,
+                    rvalue: MirRValue::Use(scrutinee_op.clone()),
+                }));
+                self.locals
+                    .insert(name.clone(), (bind_local, scrutinee_ty.clone()));
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: next_arm,
+                }));
+                self.builder.switch_to_block(guard_pass);
+            }
+
+            let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
+            if i == 0 {
+                result_ty = arm_ty;
+            }
+
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(body_val),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+            }
+
+            if next_arm != merge_block {
+                self.builder.switch_to_block(next_arm);
+            }
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// A struct field's index and layout by name.
+    fn struct_field(
+        &self,
+        ty: &MirType,
+        field_name: &str,
+    ) -> Option<(usize, rask_mono::FieldLayout)> {
+        let MirType::Struct(crate::types::StructLayoutId { id, .. }) = ty else {
+            return None;
+        };
+        let layout = self.ctx.struct_layouts.get(*id as usize)?;
+        layout
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == field_name)
+            .map(|(i, f)| (i, f.clone()))
+    }
+
     pub(super) fn lower_scalar_chain_match(
         &mut self,
         scrutinee_op: MirOperand,

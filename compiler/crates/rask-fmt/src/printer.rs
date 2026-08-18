@@ -1869,9 +1869,7 @@ impl<'a> Printer<'a> {
                         if i > 0 {
                             self.emit(", ");
                         }
-                        self.emit(&field.name);
-                        self.emit(": ");
-                        self.format_expr(&field.value);
+                        self.format_field_init(field);
                     }
                     self.emit(" }");
                 } else {
@@ -1880,9 +1878,7 @@ impl<'a> Printer<'a> {
                     self.indent += 1;
                     for field in fields {
                         self.emit_indent();
-                        self.emit(&field.name);
-                        self.emit(": ");
-                        self.format_expr(&field.value);
+                        self.format_field_init(field);
                         self.emit(",");
                         self.emit_newline();
                     }
@@ -2338,6 +2334,23 @@ impl<'a> Printer<'a> {
         self.comments
             .peek_next()
             .is_some_and(|c| c.span.start >= span.start && c.span.start < span.end)
+    }
+
+    /// One field of a struct literal.
+    ///
+    /// `Point { x, y }` is shorthand for `x: x, y: y` and the printer expanded
+    /// it — the punning the parser has always accepted came back out long-form
+    /// (#307). Both spellings mean the same thing, so the short one wins.
+    fn format_field_init(&mut self, field: &FieldInit) {
+        if let ExprKind::Ident(name) = &field.value.kind {
+            if *name == field.name {
+                self.emit(&field.name);
+                return;
+            }
+        }
+        self.emit(&field.name);
+        self.emit(": ");
+        self.format_expr(&field.value);
     }
 
     fn fields_fit_one_line(&self, fields: &[FieldInit]) -> bool {

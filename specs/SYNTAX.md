@@ -325,7 +325,15 @@ let user = User {
 
 // Update syntax
 let updated = User { email: "new@example.com", ..user }
+
+// Field shorthand — a local with the field's name needs no colon
+let email = "new@example.com"
+let renamed = User { email, ..user }
 ```
+
+The shorthand is the struct literal only. A call has no equivalent: `f(x)` is
+positional and `f(x: x)` is a named argument, so there's nothing for `f(x)` to be
+short for.
 
 **Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` trait or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
 
@@ -717,13 +725,22 @@ match response {
     HttpError as e => handle_error(e),
 }
 
-// Destructuring
+// Destructuring — `x: 0` tests a value, `y` binds one (same shorthand)
 match point {
     Point { x: 0, y } => println("on y-axis at {y}"),
     Point { x, y: 0 } => println("on x-axis at {x}"),
     Point { x, y } => println("at ({x}, {y})"),
 }
+
+// `..` covers the fields the pattern doesn't name
+match vertex {
+    Vertex { x, .. } => println("x is {x}"),
+}
 ```
+
+Arms are tried in order, so the general one goes last. Braces make this a `match`
+form: in `if point is Point { … }` the `{` opens the branch, so an `is` test names
+the type and nothing else.
 
 ### Pattern Matching in Conditions: `is`
 
