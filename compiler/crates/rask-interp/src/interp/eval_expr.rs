@@ -1069,6 +1069,11 @@ impl Interpreter {
                     // pointer never reaches the interpreter to begin with;
                     // `unsafe` code is native-only.
                     UnaryOp::Deref => Ok(val),
+                    // `own` heap-allocates on native (#739); the interpreter's
+                    // values are already independent of any stack frame, so
+                    // there's nothing further to do here — same OW5
+                    // transparency as Deref above.
+                    UnaryOp::Own => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",

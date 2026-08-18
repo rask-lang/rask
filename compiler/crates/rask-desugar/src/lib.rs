@@ -1300,8 +1300,8 @@ fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
     match op {
         UnaryOp::Neg => Some("neg"),
         UnaryOp::BitNot => Some("bit_not"),
-        // Logical not, reference, and deref remain as unary operators
-        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref => None,
+        // Logical not, reference, deref, and own remain as unary operators
+        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Own => None,
     }
 }
 

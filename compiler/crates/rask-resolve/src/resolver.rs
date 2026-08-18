@@ -98,6 +98,7 @@ impl Resolver {
             ("assert_eq", BuiltinFunctionKind::AssertEq, None),
             ("skip", BuiltinFunctionKind::Skip, Some("!")),
             ("expect_fail", BuiltinFunctionKind::ExpectFail, None),
+            ("drop", BuiltinFunctionKind::Drop, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
