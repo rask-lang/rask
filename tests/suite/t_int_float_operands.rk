@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What still mixes with a float, now that a mixed *variable* is rejected (#816).
+//
+// An unsuffixed literal takes the type of the slot it lands in, so `x + 1` on an
+// `f64` is `x + 1.0` — that has to keep working. The interpreter didn't have it:
+// its value carries no slot type, so the `1` arrived as an integer and the
+// arithmetic refused it, while native computed the float. Mixing a float with an
+// integer *variable* is a compile error, so an integer reaching float arithmetic
+// at runtime is always this case.
+//
+// The rejection is pinned by `tests/compile_errors/int_float_arithmetic.rk`.
+
+func scale(x: f64) -> f64 {
+    return x * 2 + 1
+}
+
+test "type.primitives/CV1a — an integer literal takes the float slot" {
+    let x: f64 = 2.5
+    assert x + 1 == 3.5
+    assert x - 1 == 1.5
+    assert x * 2 == 5.0
+    assert x / 2 == 1.25
+    assert scale(2.5) == 6.0
+}
+
+test "type.primitives/CV1a — the literal on the left too" {
+    let x: f64 = 0.5
+    assert 1 + x == 1.5
+    assert 2 * x == 1.0
+}
+
+// An integer converted on purpose is the way to mix a variable in.
+test "type.primitives/CV1a — a written conversion mixes them" {
+    let i: i64 = 5
+    let f: f64 = 0.5
+    assert i.round<f64>() + f == 5.5
+    assert f + i.round<f64>() == 5.5
+}
+
+// Same-kind arithmetic is untouched.
+test "type.primitives — same-kind arithmetic is unchanged" {
+    let a: f64 = 1.5
+    let b: f64 = 2.5
+    assert a + b == 4.0
+
+    let i: i64 = 7
+    let j: i64 = 2
+    assert i / j == 3
+    assert i % j == 1
+}
+
+func main() {}

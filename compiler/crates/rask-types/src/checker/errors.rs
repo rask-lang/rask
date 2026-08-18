@@ -176,6 +176,11 @@ pub enum TypeError {
     /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
     #[error("`{op}` between `{left}` and `{right}` — one is signed, the other isn't")]
     MixedSignednessArithmetic { op: &'static str, left: Type, right: Type, span: Span },
+    /// CV1a: int→float is never implicit, so an integer and a float can't meet
+    /// under an arithmetic operator. It type-checked, and native answered with an
+    /// integer — the float operand was dropped without a word (#816).
+    #[error("`{op}` between `{left}` and `{right}` — one is an integer, the other a float")]
+    IntFloatArithmetic { op: &'static str, left: Type, right: Type, span: Span },
     /// ER11: `T or E` (E ≠ none) only auto-wraps at `return`.
     #[error("`{value}` doesn't become a `{target}` here — auto-wrap is return-only")]
     NoAutoWrapOutsideReturn { value: Type, target: Type, span: Span },
@@ -911,6 +916,11 @@ impl TypeError {
             }
 
             MixedSignednessArithmetic { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
+            }
+
+            IntFloatArithmetic { left, right, .. } => {
                 *left = f(left);
                 *right = f(right);
             }

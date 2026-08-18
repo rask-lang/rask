@@ -684,6 +684,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
             }
 
+            IntFloatArithmetic { op, left, right, span } => {
+                let (int_ty, float_ty) = if matches!(left, rask_types::Type::F32 | rask_types::Type::F64) {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                Diagnostic::error(format!(
+                    "`{}` between `{}` and `{}` — one is an integer, the other a float",
+                    op, left, right
+                ))
+                    .with_code("E0371")
+                    .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
+                    .with_fix(format!(
+                        "bring the `{int_ty}` over and say what happens when it doesn't land exactly: `x.round<{float_ty}>()` is the usual one, and `x as {float_ty}` is only for the widths where it can't lose anything"
+                    ))
+                    .with_why(
+                        "int→float is never implicit — a wide integer doesn't survive the trip (past 2^53 an `i64` loses its low bits in an `f64`), so the conversion has to be written. Native took the left operand's type and dropped the other side, which is why this was a wrong answer rather than an error [type.primitives/CV1a]"
+                            .to_string(),
+                    )
+            }
+
             MixedSignednessArithmetic { op, left, right, span } => {
                 Diagnostic::error(format!(
                     "`{}` between `{}` and `{}` — one is signed, the other isn't",

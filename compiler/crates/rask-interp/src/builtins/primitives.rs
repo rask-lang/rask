@@ -51,6 +51,19 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         use crate::interp::overflow::{checked_binop, checked_neg, ArithOp};
+        // `1 + x` on an `f64`: the receiver is the unsuffixed literal, so the
+        // integer path runs with a float argument. The literal should have taken
+        // the slot's type — native computes 1.5 — and the value carries no slot
+        // type, so this is where it takes it. Mixing a float with an integer
+        // *variable* is a compile error, so the other operand being a float means
+        // the receiver is that literal (#816).
+        if let Some(Value::Float(_, kb)) = args.first() {
+            let is_operator = ArithOp::from_method(method).is_some()
+                || matches!(method, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "compare");
+            if is_operator {
+                return self.call_float_method(a as f64, *kb, method, args);
+            }
+        }
         let arg_kind = |args: &[Value]| match args.first() {
             Some(Value::Int(_, k)) => kind.unify(*k),
             _ => kind,

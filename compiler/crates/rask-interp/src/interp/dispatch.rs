@@ -485,9 +485,17 @@ impl Interpreter {
     }
 
     /// Helper to extract a float from args.
+    ///
+    /// An `Int` counts. An unsuffixed literal in a float position is a `1` that
+    /// should have become `1.0` — the checker takes the slot's type and the
+    /// interpreter's value doesn't carry that, so `x + 1` on an `f64` arrived here
+    /// as an integer and was refused, while native computed 3.5. Mixing a float
+    /// with an integer *variable* is a compile error now (#816), so anything that
+    /// reaches this point is the literal case.
     pub(crate) fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {
             Some(Value::Float(n, _)) => Ok(*n),
+            Some(Value::Int(n, _)) => Ok(*n as f64),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected float, got {}",
                 v.type_name()

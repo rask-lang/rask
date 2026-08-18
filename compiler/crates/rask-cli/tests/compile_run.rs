@@ -4767,6 +4767,25 @@ fn error_generic_struct_with_an_aggregate_type_arg() {
     );
 }
 
+// type.primitives/CV1a: int→float is never implicit, and nothing enforced it for
+// arithmetic. `i64 + f64` type-checked; native took the left operand's type and
+// dropped the float, so `5 + 0.5` answered `5`, while the interpreter refused the
+// same program at runtime (#816).
+#[test]
+fn error_int_float_arithmetic() {
+    let (failed, out) = compile_error_output("int_float_arithmetic.rk");
+    assert!(failed, "mixing an integer and a float must be rejected: {}", out);
+    assert_eq!(out.matches("E0371").count(), 4, "one per operator: {}", out);
+    assert!(
+        out.contains("one is an integer, the other a float"),
+        "should say which is which: {}", out,
+    );
+    assert!(
+        out.contains("x.round<f64>()"),
+        "should suggest the conversion: {}", out,
+    );
+}
+
 // mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
 // can't be given away. This made "consumed exactly once" false in the shipped
 // compiler — the interpreter caught the double-consume with a runtime flag, and

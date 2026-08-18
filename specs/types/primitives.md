@@ -361,6 +361,7 @@ mut port: u16 = header.port   // Native u16
 | `x.round<T>()` int→int | CV14 | Compile error — nothing to round; use `to`/`wrap`/`clamp` |
 | `f64` → `f32` overflowing the range | CV14 | `.round<f32>()` gives ±infinity (IEEE), no failure |
 | `let x: f64 = my_i32` | CV1a | Compile error — int→float is never implicit; write `my_i32 as f64` |
+| `my_f64 + my_i64` | CV1a | Compile error (E0371) — same rule under an operator, either way round. An unsuffixed literal is not affected: it takes the slot's type, so `my_f64 + 1` is `my_f64 + 1.0` |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |

@@ -3460,6 +3460,37 @@ impl TypeChecker {
         })
     }
 
+    /// CV1a: int→float is never implicit, so an integer and a float can't meet
+    /// under an arithmetic operator either. `i64 + f64` type-checked and native
+    /// answered with an integer — the float operand was dropped, silently, while
+    /// the interpreter refused the same program at runtime (#816).
+    ///
+    /// Both sides have to be settled primitives. An unsuffixed literal is still a
+    /// variable here, which is what lets `x + 1` on an `f64` take the slot's type
+    /// and become `x + 1.0`.
+    fn reject_int_float_mix(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let arg = self.ctx.apply(arg);
+        let recv_int = Self::integer_is_signed(recv).is_some();
+        let arg_int = Self::integer_is_signed(&arg).is_some();
+        let recv_float = matches!(recv, Type::F32 | Type::F64);
+        let arg_float = matches!(arg, Type::F32 | Type::F64);
+        if (recv_int && arg_float) || (recv_float && arg_int) {
+            return Err(TypeError::IntFloatArithmetic {
+                op: Self::operator_spelling(method),
+                left: recv.clone(),
+                right: arg,
+                span,
+            });
+        }
+        Ok(())
+    }
+
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
@@ -3483,6 +3514,12 @@ impl TypeChecker {
             "bit_xor" => "^",
             "shl" => "<<",
             "shr" => ">>",
+            "eq" => "==",
+            "ne" => "!=",
+            "lt" => "<",
+            "le" => "<=",
+            "gt" => ">",
+            "ge" => ">=",
             _ => "this operator",
         }
     }
@@ -3507,7 +3544,10 @@ impl TypeChecker {
             "add" | "sub" | "mul" | "div" | "rem" | "mod"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
                 if args.len() == 1 => {
-                if let Err(mixed) = self.reject_mixed_signedness(method, ty, &args[0], span) {
+                if let Err(mixed) = self
+                    .reject_mixed_signedness(method, ty, &args[0], span)
+                    .and_then(|()| self.reject_int_float_mix(method, ty, &args[0], span))
+                {
                     // Pin the result to the receiver on the way out. The
                     // operands are the complaint; leaving `ret` open turns one
                     // error into two, the second being "couldn't work out the
@@ -3587,6 +3627,12 @@ impl TypeChecker {
         match entry.sig {
             FloatSig::Unary => self.unify(ret, ty, span),
             FloatSig::BinaryFloat => {
+                // The other side of #816: `f64 + i64` was accepted too, and the
+                // discarded unify is why nothing said so.
+                if let Err(mixed) = self.reject_int_float_mix(method, ty, &args[0], span) {
+                    let _ = self.unify(ret, ty, span);
+                    return Err(mixed);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
