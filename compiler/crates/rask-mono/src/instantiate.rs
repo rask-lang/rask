@@ -738,6 +738,35 @@ pub fn type_param_names(decl: &Decl, type_args: &[Type]) -> Vec<String> {
     }
 }
 
+/// Instantiate binding an explicit list of parameter names, rather than reading
+/// them off the declaration.
+///
+/// A method on a generic type takes some of its parameters from the `extend`
+/// header — `extend One<A>` gives `get` its `A`, and `get`'s own signature has no
+/// record of that. The caller knows both lists, so it passes the joined one here
+/// (#814).
+pub fn instantiate_function_with_params(
+    decl: &Decl,
+    param_names: &[String],
+    type_args: &[Type],
+    next_node_id: &mut u32,
+) -> (Decl, HashMap<NodeId, NodeId>) {
+    let params: Vec<TypeParam> = param_names
+        .iter()
+        .map(|name| TypeParam {
+            name: name.clone(),
+            is_comptime: false,
+            comptime_type: None,
+            bounds: Vec::new(),
+        })
+        .collect();
+    let mut substitutor = TypeSubstitutor::new(&params, type_args);
+    substitutor.next_node_id = *next_node_id;
+    let cloned = substitutor.clone_decl(decl);
+    *next_node_id = substitutor.next_node_id;
+    (cloned, substitutor.node_origin)
+}
+
 pub fn instantiate_function_from(
     decl: &Decl,
     type_args: &[Type],

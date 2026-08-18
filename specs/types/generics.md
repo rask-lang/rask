@@ -18,6 +18,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
 | **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
 | **G6: Code specialization** | Each `<T>` usage generates specialized code (monomorphization) — fast calls, but increases binary size |
+| **G6a: Methods specialize with their type** | A method declared in `extend One<A>` is specialized per receiver instantiation, same as a generic function: `One<i64>.get()` and `One<Big>.get()` are two bodies. That's what lets each instantiation have a layout that fits its type argument — a struct or tuple argument *is* its bytes, so one shared body couldn't take both an 8-byte and a 24-byte `self`. A method with its own parameters specializes on the receiver's arguments and then its own |
 | **G7: Runtime polymorphism opt-in** | `any Trait` for heterogeneous collections; dispatch through function pointer table (vtable) |
 
 ## Trait Definition

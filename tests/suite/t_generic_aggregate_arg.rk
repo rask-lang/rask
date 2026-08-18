@@ -7,11 +7,10 @@
 // not hold for a struct, enum or tuple, which *is* its bytes and can be any size:
 // `One<Big>` stored 24 bytes into an 8-byte slot and segfaulted on the read back.
 //
-// Those instantiations get a layout of their own now. What's left is a method on
-// the generic type — `extend One<A>` compiles to one shared body, so it can't
-// serve both an 8-byte and a 24-byte `self`; such a type keeps the shared layout
-// and an aggregate argument is still a compile error. A generic *function* is
-// monomorphized, so it works.
+// Those instantiations get a layout of their own now, and a method on the generic
+// type gets a body per receiver instantiation to match (#814) — `One<Big>.get()`
+// and `One<i64>.get()` are two copies, so neither has to serve a `self` of the
+// other's width.
 
 struct Big {
     public a: i64
@@ -31,6 +30,41 @@ struct Pair<A, B> {
 enum Holder<T> {
     Empty
     Full(T)
+}
+
+extend One<A> {
+    func get(self) -> A {
+        return self.only
+    }
+
+    func wrapped(self) -> One<A> {
+        return One { only: self.only }
+    }
+
+    func replace(mutate self, take next: A) {
+        self.only = next
+    }
+}
+
+extend Pair<A, B> {
+    // The receiver's arguments bind in declaration order, and a method with its
+    // own parameters adds to them rather than replacing them.
+    func swapped(self) -> Pair<B, A> {
+        return Pair { first: self.second, second: self.first }
+    }
+
+    func tagged<C>(self, extra: C) -> Pair<A, C> {
+        return Pair { first: self.first, second: extra }
+    }
+}
+
+extend Holder<T> {
+    func or_default(self, fallback: T) -> T {
+        match self {
+            Holder.Full(v) => return v
+            Holder.Empty => return fallback
+        }
+    }
 }
 
 func only_of<A>(o: One<A>) -> A {
@@ -115,6 +149,43 @@ test "type.generics — a scalar argument, and a string" {
     let s = One { only: "hi" }
     assert s.only == "hi"
     assert only_of(s) == "hi"
+}
+
+test "type.generics — a method on the generic type sees the whole argument" {
+    let one = One { only: Big { a: 1, b: 2, c: 3 } }
+    assert one.get().c == 3
+    assert one.wrapped().only.b == 2
+
+    // The same method on a narrow instantiation is a separate copy.
+    let n = One { only: 5 }
+    assert n.get() == 5
+    let s = One { only: "hi" }
+    assert s.get() == "hi"
+}
+
+test "type.generics — a method that writes the aggregate field" {
+    mut one = One { only: Big { a: 0, b: 0, c: 0 } }
+    one.replace(Big { a: 4, b: 5, c: 6 })
+    assert one.only.b == 5
+}
+
+test "type.generics — two parameters through a method that reorders them" {
+    let p = Pair { first: 1, second: Big { a: 7, b: 8, c: 9 } }
+    let sw = p.swapped()
+    assert sw.first.b == 8
+    assert sw.second == 1
+
+    let tagged = p.tagged("x")
+    assert tagged.first == 1
+    assert tagged.second == "x"
+}
+
+test "type.generics — a method on a generic enum" {
+    let full = Holder.Full(Big { a: 1, b: 2, c: 3 })
+    assert full.or_default(Big { a: 0, b: 0, c: 0 }).b == 2
+
+    let empty: Holder<Big> = Holder.Empty
+    assert empty.or_default(Big { a: 0, b: 9, c: 0 }).b == 9
 }
 
 func main() {}

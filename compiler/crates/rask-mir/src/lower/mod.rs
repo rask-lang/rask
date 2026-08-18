@@ -642,17 +642,36 @@ impl<'a> MirContext<'a> {
         Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
     }
 
+    /// The instance layout name for a checker type, in either spelling.
+    ///
+    /// An instantiated copy's types were built by rewriting type strings, so its
+    /// `One<Big>` is an `UnresolvedGeneric` carrying a plain name rather than a
+    /// `Generic` carrying an interned id. Both name the same layout (#814).
+    fn instance_layout_name_of(&self, ty: Option<&Type>) -> Option<String> {
+        match ty? {
+            Type::Generic { base, args } => self.generic_instance_layout_name(base, args),
+            Type::UnresolvedGeneric { name, args } => {
+                let bare = name.split('<').next().unwrap_or(name).trim();
+                let mut arg_tys = Vec::with_capacity(args.len());
+                for arg in args {
+                    let rask_types::GenericArg::Type(t) = arg else { return None };
+                    arg_tys.push((**t).clone());
+                }
+                rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+            }
+            _ => None,
+        }
+    }
+
     /// The instance struct layout for a checker type, if it has one.
     pub fn generic_instance_struct(&self, ty: Option<&Type>) -> Option<(u32, &StructLayout)> {
-        let Type::Generic { base, args } = ty? else { return None };
-        let name = self.generic_instance_layout_name(base, args)?;
+        let name = self.instance_layout_name_of(ty)?;
         self.find_struct(&name)
     }
 
     /// The instance enum layout for a checker type, if it has one.
     pub fn generic_instance_enum(&self, ty: Option<&Type>) -> Option<(u32, &EnumLayout)> {
-        let Type::Generic { base, args } = ty? else { return None };
-        let name = self.generic_instance_layout_name(base, args)?;
+        let name = self.instance_layout_name_of(ty)?;
         self.find_enum(&name)
     }
 

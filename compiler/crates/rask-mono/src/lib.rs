@@ -260,6 +260,19 @@ fn type_arg_key(
         | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
         | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
         Type::Named(id) => bare_type_name(type_names.get(id)?),
+        // An argument substituted into an instantiated copy is named, not
+        // interned — the copy's types were built by rewriting strings, not by
+        // going back through the checker's table (#814).
+        Type::UnresolvedNamed(name) => bare_type_name(name),
+        Type::UnresolvedGeneric { name, args } => {
+            let base = bare_type_name(name);
+            let mut parts = Vec::with_capacity(args.len());
+            for arg in args {
+                let GenericArg::Type(inner) = arg else { return None };
+                parts.push(type_arg_key(inner, type_names)?);
+            }
+            format!("{}${}", base, parts.join("$"))
+        }
         Type::Generic { base, args } => {
             let base = bare_type_name(type_names.get(base)?);
             let mut parts = Vec::with_capacity(args.len());
@@ -297,6 +310,23 @@ fn inline_arg_size(
     cache: &LayoutCache,
 ) -> Option<u32> {
     match ty {
+        Type::UnresolvedNamed(name) => {
+            let id = type_defs.get_type_id(name)?;
+            inline_arg_size(&Type::Named(id), type_names, type_defs, cache)
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let base_name = bare_type_name(name);
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
+                .and_then(|n| cache.get(&n).map(|(size, _)| *size));
+            instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
+        }
         Type::Named(id) => {
             let def = type_defs.get(*id)?;
             if !matches!(
@@ -416,7 +446,17 @@ fn collect_generic_instances(
                 }
             }
         }
-        Type::UnresolvedGeneric { args, .. } => {
+        Type::UnresolvedGeneric { name, args } => {
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            if arg_tys.len() == args.len() {
+                out.push((bare_type_name(name), arg_tys));
+            }
             for arg in args {
                 if let GenericArg::Type(inner) = arg {
                     collect_generic_instances(inner, type_names, out);
@@ -595,28 +635,6 @@ pub fn monomorphize_with_packages(
             })
             .collect();
 
-        // A method on a generic type is a *single* body — `extend One<A>` compiles
-        // to one `One_get` whose `self` is the shared layout, and mono doesn't
-        // monomorphize it per receiver instantiation. Give such a type an instance
-        // layout and the caller passes 24 bytes to a body reading 8; the shared
-        // layout at least agrees with itself, and the struct-literal guard reports
-        // the aggregate argument as an error instead. Tracked separately — this is
-        // the remaining half of #781.
-        let has_generic_methods: HashSet<String> = decls
-            .iter()
-            .filter_map(|d| match &d.kind {
-                DeclKind::Impl(i) if !i.methods.is_empty() => {
-                    let base = bare_type_name(&i.target_ty);
-                    generic_decls.contains_key(&base).then_some(base)
-                }
-                DeclKind::Struct(s) if !s.methods.is_empty() => {
-                    Some(bare_type_name(&s.name))
-                }
-                DeclKind::Enum(e) if !e.methods.is_empty() => Some(bare_type_name(&e.name)),
-                _ => None,
-            })
-            .collect();
-
         let mut instances: Vec<(String, Vec<Type>)> = Vec::new();
         if !generic_decls.is_empty() {
             for ty in program
@@ -636,9 +654,6 @@ pub fn monomorphize_with_packages(
         let mut emitted: HashSet<String> = HashSet::new();
         for (base, args) in instances {
             let Some(decl) = generic_decls.get(&base) else { continue };
-            if has_generic_methods.contains(&base) {
-                continue;
-            }
             let Some(instance_name) = generic_instance_name(&base, &args, &type_names) else {
                 continue;
             };

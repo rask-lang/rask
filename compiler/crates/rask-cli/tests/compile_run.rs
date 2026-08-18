@@ -4741,30 +4741,17 @@ a up A lo a
     }
 }
 
-// A generic type *with methods* is laid out once for every instantiation, with a
-// word-sized placeholder per type parameter, so an aggregate type argument doesn't
-// fit its slot. The layout has to stay shared there: `extend One<A>` is one body,
-// and one body can't take both an 8-byte and a 24-byte `self`.
-//
-// Without methods the instantiation gets its own layout and this all works —
-// `tests/suite/t_generic_aggregate_arg.rk` is that half. What's left needs mono to
-// monomorphize a method per receiver instantiation, the way it already does for a
-// generic function (#781).
-//
-// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
+// A method on a generic type gets one body per receiver instantiation, so an
+// aggregate type argument reads back whole through it — `extend One<A>` used to be
+// a single body that couldn't serve both an 8-byte and a 24-byte `self`, and the
+// aggregate was refused (#781, #814).
 #[test]
-fn error_generic_struct_with_an_aggregate_type_arg() {
-    let (stdout, stderr, code) = run_capture("--native", "generic_aggregate_type_arg.rk");
-    let out = format!("{}{}", stdout, stderr);
-    assert_ne!(code, 0, "should be rejected, not run: {}", out);
-    assert!(
-        out.contains("doesn't fit") && out.contains("#781"),
-        "should name the limitation and the issue: {}", out,
-    );
-    assert!(
-        out.contains("`only`"),
-        "should name the field whose sizes disagree: {}", out,
-    );
+fn generic_struct_with_an_aggregate_type_arg_and_methods() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_aggregate_type_arg.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, "5\n1\n", "{}", mode);
+    }
 }
 
 // type.primitives/CV1a: int→float is never implicit, and nothing enforced it for

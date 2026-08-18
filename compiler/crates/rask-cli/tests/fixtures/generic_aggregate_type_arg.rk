@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// The half of #781 that's still an error.
+// A generic type with methods, instantiated with an inline aggregate (#781, #814).
 //
-// A generic type whose type argument is an inline aggregate gets a layout of its
-// own now — `tests/suite/t_generic_aggregate_arg.rk` covers what works.
+// `extend One<A>` used to compile to *one* `One_get` body, whose `self` had the
+// shared layout: a word-sized placeholder per type parameter. A 24-byte `Big`
+// doesn't fit that, so widening the layout meant the caller passed 24 bytes to a
+// body reading 8 — and the aggregate argument was refused outright instead.
 //
-// Not when the type has methods. `extend One<A>` compiles to *one* `One_get`
-// body, whose `self` is the shared layout, and mono doesn't monomorphize a method
-// per receiver instantiation the way it does a generic function. Widen the layout
-// and the caller passes 24 bytes to a body reading 8, which is a segfault rather
-// than an error — so such a type keeps the shared layout and the aggregate
-// argument is refused at the field whose two sizes disagree.
+// Mono monomorphizes such a method per receiver instantiation now, the way it
+// already did a generic function, so `One<i64>.get()` and `One<Big>.get()` are two
+// bodies with two layouts.
 //
-// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
+// `rask check` doesn't run MIR lowering, so this only ever showed up at run time.
 
 struct One<A> {
     public only: A
@@ -30,11 +29,11 @@ struct Big {
 }
 
 func main() {
-    // A scalar argument fits the placeholder slot, so this half is fine.
+    // A scalar argument fits the placeholder slot.
     let n = One { only: 5 }
     println("{n.get()}")
 
-    // ERROR: a 24-byte Big doesn't fit, and the shared method body can't widen.
+    // A 24-byte Big needs a layout of its own, and a body that agrees with it.
     let b = One { only: Big { a: 1, b: 2, c: 3 } }
     println("{b.get().a}")
 }

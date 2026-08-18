@@ -2277,12 +2277,12 @@ impl<'a> MirLowerer<'a> {
                         {
                             return Err(LoweringError::InvalidConstruct(format!(
                                 "field `{}` holds {} bytes but its slot is {} — this \
-                                 generic type has methods, so every instantiation shares \
-                                 one body and therefore one layout, laid out with a \
-                                 word-sized placeholder per type parameter. An aggregate \
-                                 type argument doesn't fit that. Drop the `extend` block, \
-                                 hold the aggregate behind a field of its own, or use a \
-                                 concrete type here (#781)",
+                                 instantiation is using the shared layout of a generic \
+                                 type, which gives every type parameter one word, and an \
+                                 aggregate that size doesn't fit. A settled instantiation \
+                                 gets a layout of its own; this one wasn't settled at the \
+                                 point the layout was picked. Hold the aggregate behind a \
+                                 field of its own, or use a concrete type here (#781, #814)",
                                 field.name, value_size, fl.size
                             )));
                         }
