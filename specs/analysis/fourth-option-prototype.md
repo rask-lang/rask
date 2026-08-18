@@ -711,7 +711,10 @@ line caused.
 The one honest cost of block scoping: an unnamed delete conflicts with a live link
 even if the link is never used again, so the fix is to open a scope or drop the
 name rather than to rely on a last use. That is Rask's existing bargain, not a new
-one — and rewriting the corpus to obey it cost two sites out of twelve programs.
+one — and rewriting the corpus to obey it cost three sites across twelve programs.
+Two of the three are bare scopes, and both are in the same place: a `clear` at the
+end of a test that built a graph. That is the shape to watch — a naked `{ }` whose
+only job is to end views reads like a mistake to anyone who doesn't know the rule.
 
 **Site one, L3's `main`.** Building the tree opens a view per node, and
 `delete_subtree` is an unnamed delete, so the two can't overlap. The fix is to
@@ -757,8 +760,8 @@ version. Note what survives the scope and what doesn't: `scene.root` and
 `scene.selected` are fields, so the store maintains them; the six locals were
 views, and views end.
 
-**Site two, the `clear` test in p11.** Same shape, one bare scope instead of a
-function:
+**Sites two and three, both `clear` tests in p11.** Same shape, a bare scope
+instead of a function:
 
 ```rask
 {
@@ -776,6 +779,31 @@ unlink-on-overwrite all delete by naming a victim, and a named delete ends exact
 one view — so holding `n1`, `n3` and `n4` across `remove(list, n2)` is fine and
 stays fine. The only program the rule rejects is `cascade_hole_links.rk`, which is
 the one with the bug, and it rejects it at the call rather than at the read.
+
+**A gap this turned up in what was already shipped.** Asking whether the bare
+scope is really about `clear` produced the same shape with no `clear` in it, in one
+function body:
+
+```rask
+let first = s.insert(Node { id: 1, peer: none })
+let _second = s.insert(Node { id: 2, peer: none })
+for n in s.nodes() {
+    s.delete(n)          // `n` is whichever node the loop reached
+}
+println("first.id = {first.id}")   // printed 1, from a freed node
+```
+
+`delete` takes its link, so the tracker was consuming `n` and considering the job
+done — but `n` is not a node the caller named, it is the loop's pick, and any other
+link local may be the one that just died. So a `delete` whose argument came from
+iterating the store now revokes every other link local into it, exactly as `clear`
+does. The diagnostic hedges correctly, because the loop may or may not reach the
+node in question: *"`first` may name a deleted node — possible use after free"*.
+
+This is the same distinction the `deleting` proposal rests on — a named victim ends
+one view, an unnamed one ends all of them — and it turns out to be needed inside a
+single body too, not only across a call. Which is a point in the proposal's favour:
+the rule was already load-bearing before the annotation existed.
 
 #### The `?` opts out of the whole discipline
 

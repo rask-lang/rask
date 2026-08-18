@@ -50,9 +50,22 @@ func clear_after_delete() {
     println("{n.name}")         // ERROR: E0328
 }
 
+func bulk_loop_after_delete() {
+    mut store: Store<Node> = Store.new()
+    let n = store.insert(Node { name: "n", next: none })
+    let _other = store.insert(Node { name: "o", next: none })
+    // `x` is whichever node the loop reached, not a node the caller named — so
+    // this is the same unnamed delete `clear` is, written longhand.
+    for x in store.nodes() {
+        store.delete(x)
+    }
+    println("{n.name}")         // ERROR: E0328
+}
+
 func main() {
     read_after_delete()
     write_after_delete()
     ask_after_delete()
     clear_after_delete()
+    bulk_loop_after_delete()
 }

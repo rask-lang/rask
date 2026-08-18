@@ -88,6 +88,10 @@ pub struct OwnershipChecker<'a> {
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
     active_for_mutates: Vec<ForMutateInfo>,
+    /// Loops iterating a `Store`'s own nodes: (element type key, binding names).
+    /// A `delete` of one of those bindings is picking an arbitrary node rather
+    /// than a node the caller named, so it invalidates every other link local.
+    store_iterations: Vec<(Option<String>, Vec<String>)>,
     /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
     param_type_strings: HashMap<String, String>,
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
@@ -127,6 +131,7 @@ impl<'a> OwnershipChecker<'a> {
             frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
+            store_iterations: Vec::new(),
             param_type_strings: HashMap::new(),
             borrow_bindings: HashMap::new(),
             binding_decl_blocks: HashMap::new(),
@@ -620,6 +625,10 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                let iterates_store = self.store_iteration_elem(iter);
+                if let Some(elem) = iterates_store {
+                    self.store_iterations.push((elem, binding_names.clone()));
+                }
                 // LP14/LP16: track for-mutate context
                 if *mutate {
                     let collection_name = Self::extract_iter_collection(iter);
@@ -634,6 +643,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names);
                 if *mutate {
                     self.active_for_mutates.pop();
+                }
+                if self.store_iteration_elem(iter).is_some() {
+                    self.store_iterations.pop();
                 }
             }
             StmtKind::Loop { label: _, body } => {
@@ -839,6 +851,16 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         self.consume_arg(&arg.expr);
                     }
+                }
+                // `store.delete(n)` where `n` came from iterating the store is not
+                // the caller naming a victim — it is whichever node the loop
+                // reached. Every other link local into that store may be the one
+                // that just died, so they all go, same as at a `clear`.
+                if method == "delete"
+                    && self.receiver_type_name(object).as_deref() == Some("Store")
+                    && args.first().is_some_and(|a| self.is_store_iteration_binding(&a.expr))
+                {
+                    self.kill_links_into_store(object, expr.span);
                 }
                 // `store.clear()` deletes every node at once. It names no link,
                 // so a local link into that store has to die here the same way
@@ -1563,6 +1585,42 @@ impl<'a> OwnershipChecker<'a> {
             }
             rask_types::GenericArg::ConstUsize(n) => Some(n.to_string()),
         }
+    }
+
+    /// Element type key if this expression iterates a `Store`'s nodes — either
+    /// `store.nodes()`/`store.links()` or the store itself.
+    fn store_iteration_elem(&self, iter: &Expr) -> Option<Option<String>> {
+        if let ExprKind::MethodCall { object, method, .. } = &iter.kind {
+            if matches!(method.as_str(), "nodes" | "links")
+                && self.receiver_type_name(object).as_deref() == Some("Store")
+            {
+                return Some(
+                    self.program
+                        .node_types
+                        .get(&object.id)
+                        .and_then(|ty| self.elem_key(ty)),
+                );
+            }
+        }
+        if self.receiver_type_name(iter).as_deref() == Some("Store") {
+            return Some(
+                self.program
+                    .node_types
+                    .get(&iter.id)
+                    .and_then(|ty| self.elem_key(ty)),
+            );
+        }
+        None
+    }
+
+    /// True if this argument names a binding introduced by iterating a store.
+    fn is_store_iteration_binding(&self, arg: &Expr) -> bool {
+        let ExprKind::Ident(name) = &arg.kind else {
+            return false;
+        };
+        self.store_iterations
+            .iter()
+            .any(|(_, names)| names.contains(name))
     }
 
     /// Mark every live local link with the store's element type as deleted.

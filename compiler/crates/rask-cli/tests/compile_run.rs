@@ -1420,19 +1420,25 @@ fn error_store_link_use_after_delete() {
         "must not suggest cloning — that would be a second dead pointer: {}",
         out
     );
-    // A read, a write, `contains`, and a read after `clear`. `contains` is
-    // correct too: a non-optional link's type already asserts the node is
-    // alive, so asking is a question with no meaning. `clear` is the one that
-    // names no link — it deletes every node, so it has to revoke every local.
+    // A read, a write, `contains`, a read after `clear`, and a read after a
+    // bulk-delete loop. `contains` is correct too: a non-optional link's type
+    // already asserts the node is alive, so asking is a question with no
+    // meaning. The last two are the unnamed deletes — they pick their own
+    // victims, so every other local link into the store has to go.
     assert_eq!(
         out.matches("error[E0328]").count(),
-        4,
-        "exactly the four uses after delete rejected: {}",
+        5,
+        "exactly the five uses after delete rejected: {}",
         out
     );
     assert!(
         out.contains("store.clear()"),
         "the `clear` case must be one of them: {}",
+        out
+    );
+    assert!(
+        out.contains("may name a deleted node"),
+        "the loop case is path-dependent, so it must hedge: {}",
         out
     );
 }
