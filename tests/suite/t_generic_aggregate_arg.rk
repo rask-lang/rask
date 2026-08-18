@@ -102,11 +102,16 @@ test "type.generics — a tuple argument lives inline too" {
     assert three.only.2 == 3
 }
 
-// The arguments that always fitted, so the shared layout still serves them and
-// nothing changed shape.
-test "type.generics — a scalar or string argument is unchanged" {
+// A scalar fits the shared layout and keeps using it. A `string` doesn't: it's 16
+// bytes, and the slot used to hold the pointer to them, which needed a reading
+// convention at every site that touched the slot. One site didn't have it, so a
+// string payload in a generic enum variant printed its address. It gets a real
+// 16-byte slot now.
+test "type.generics — a scalar argument, and a string" {
     let n = One { only: 5 }
     assert n.only == 5
+    assert only_of(n) == 5
+
     let s = One { only: "hi" }
     assert s.only == "hi"
     assert only_of(s) == "hi"

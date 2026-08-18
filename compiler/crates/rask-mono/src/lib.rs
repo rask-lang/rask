@@ -283,11 +283,13 @@ fn type_arg_key(
 /// How wide this type argument is *inline*, when it's the kind of argument that
 /// lives inline at all.
 ///
-/// The shared placeholder layout gives every type parameter one word, and that's
-/// right for more arguments than it looks. A scalar fits. A `string` is 16 bytes
-/// but a generic slot holds the pointer to them, by convention — and a `Vec`,
-/// `Map` or any other box is a pointer for the same reason. Only a struct, enum,
-/// union, tuple or array *is* its bytes, so only those can overflow the slot.
+/// The shared placeholder layout gives every type parameter one word. A scalar
+/// fits. A `Vec`, `Map` or any other box is a pointer, so it fits too. What
+/// doesn't is anything that *is* its bytes: a struct, enum, union, tuple, array,
+/// or a `string` — a string is 16 bytes of header, and a generic slot that only
+/// holds the pointer to them needs a reading convention of its own at every site
+/// that touches it. One of those sites didn't have it, so a `string` payload in a
+/// generic enum variant printed its address.
 fn inline_arg_size(
     ty: &Type,
     type_names: &HashMap<rask_types::TypeId, String>,
@@ -323,7 +325,9 @@ fn inline_arg_size(
                 .and_then(|n| cache.get(&n).map(|(size, _)| *size));
             instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
         }
-        Type::Tuple(_) | Type::Array { .. } => Some(type_size_align(ty, cache).0),
+        Type::Tuple(_) | Type::Array { .. } | Type::String => {
+            Some(type_size_align(ty, cache).0)
+        }
         _ => None,
     }
 }
@@ -551,16 +555,16 @@ pub fn monomorphize_with_packages(
         }
     }
 
-    // One layout per *instantiation*, but only where the shared one is too
-    // small. The placeholder above gives every type parameter a word, which is
-    // right for a scalar argument and right for a `string` (a pointer to its
-    // bytes). It is wrong for a struct, enum or tuple argument, which lives
-    // inline and can be any size: `One<Big>` stored 24 bytes into an 8-byte slot
-    // and segfaulted on the read back (#781).
+    // One layout per *instantiation*, but only where the shared one is too small.
+    // The placeholder above gives every type parameter a word, which is right for
+    // a scalar and right for anything boxed (a `Vec`, a `Map`, a `Shared`) since
+    // those are pointers. It is wrong for anything that *is* its bytes — a struct,
+    // enum, union, tuple, array, or a `string`: `One<Big>` stored 24 bytes into an
+    // 8-byte slot and segfaulted on the read back (#781).
     //
-    // Emitted only when the instantiated layout is *bigger* than the shared one,
-    // so `One<i32>` and `One<string>` keep using the shared layout and nothing
-    // that worked changes shape.
+    // Emitted only when the instantiated layout is bigger than the shared one, so
+    // `One<i32>` keeps using the shared layout and nothing that worked changes
+    // shape.
     {
         let type_names: HashMap<rask_types::TypeId, String> = program
             .types
@@ -642,9 +646,6 @@ pub fn monomorphize_with_packages(
                 continue;
             }
             // Only when an argument can actually overflow the shared slot.
-            // `One<string>` must *not* get its own layout: a string in a generic
-            // field is the pointer to its bytes, so a 16-byte slot there would
-            // leave the second word unwritten.
             let overflows = args.iter().any(|a| {
                 inline_arg_size(a, &type_names, &program.types, &layout_cache)
                     .is_some_and(|size| size > 8)

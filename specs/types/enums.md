@@ -346,6 +346,22 @@ extend Maybe<T> {
 | `self` (default) | Borrow (compiler infers read vs mutate) |
 | `take self` | Consumes enum |
 
+### Naming the type arguments
+
+A variant with a payload infers the arguments from it — `Maybe.Present(4)` is a
+`Maybe<i64>`. A fieldless variant has nothing to infer from, so it can be written
+out at the variant instead of annotating the binding.
+
+| Rule | Description |
+|------|-------------|
+| **E4a: Arguments at the variant** | `Maybe<i64>.Missing` and `Maybe<i64>.Present(4)` both name the instantiation. Optional wherever inference reaches an answer; the only way to say it for a fieldless variant of a generic enum |
+
+<!-- test: parse -->
+```rask
+let missing = Maybe<i64>.Missing
+let present = Maybe<i64>.Present(4)
+```
+
 ## Recursive Enums
 
 Self-referential enums need explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md).

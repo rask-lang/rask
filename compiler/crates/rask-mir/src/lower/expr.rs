@@ -1572,10 +1572,12 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // Enum variant access: Color.Red (no parens, fieldless variant)
+                // Enum variant access: Color.Red (no parens, fieldless variant).
+                // `find_enum_written` so `Holder<i64>.Empty` resolves too — the
+                // parser folds the written type arguments into the name (#782).
                 if let ExprKind::Ident(name) = &object.kind {
                     if !self.locals.contains_key(name) {
-                        if let Some((idx, layout)) = self.ctx.find_enum(name) {
+                        if let Some((idx, layout)) = self.ctx.find_enum_written(name) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == *field) {
                                 let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
                                 let result_local = self.builder.alloc_temp(enum_ty.clone());
@@ -3943,7 +3945,7 @@ impl<'a> MirLowerer<'a> {
                         let enum_variant = self
                             .ctx
                             .generic_instance_enum(self.ctx.lookup_raw_type(expr.id))
-                            .or_else(|| self.ctx.find_enum(name))
+                            .or_else(|| self.ctx.find_enum_written(name))
                             .and_then(|(idx, layout)| {
                             let variant = layout.variants.iter().find(|v| v.name == *method)?;
                             Some((

@@ -662,6 +662,23 @@ impl<'a> MirContext<'a> {
         ty.size()
     }
 
+    /// `find_enum`, accepting a name with written type arguments.
+    ///
+    /// `Holder<i64>.Full(4)` reaches lowering as the name `Holder<i64>`; the
+    /// layouts are keyed by the bare name. `find_struct_written` has done this for
+    /// structs since the beginning, which is why the struct form worked and the
+    /// enum form didn't (#782).
+    pub fn find_enum_written(&self, name: &str) -> Option<(u32, &EnumLayout)> {
+        if let Some(found) = self.find_enum(name) {
+            return Some(found);
+        }
+        let base = name.split('<').next()?.trim();
+        if base == name {
+            return None;
+        }
+        self.find_enum(base)
+    }
+
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
         self.enum_layouts
             .iter()

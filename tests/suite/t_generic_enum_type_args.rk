@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writing a generic enum's type arguments at a variant (#782).
+//
+// The struct form has always worked — `One<Big> { only: … }` — and the enum form
+// didn't, in three different places at once. The checker lost the arguments (the
+// resolver points the name at the enum's symbol, whose type carries none), the
+// interpreter reported "undefined variable `Holder<i64>`" *at runtime*, and native
+// gave up during lowering naming an internal site.
+//
+// Accepting the form is the answer rather than rejecting it: inference covers a
+// variant with a payload, but `Holder.Empty` has nothing to infer from, so without
+// this there is no way to say what `T` is except an annotation on the binding.
+
+enum Holder<T> {
+    Empty
+    Full(T)
+}
+
+enum Two<A, B> {
+    Left(A)
+    Right(B)
+    Neither
+}
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+func held(h: Holder<i64>) -> i64 {
+    match h {
+        Holder.Full(v) => return v
+        Holder.Empty => return 0 - 1
+    }
+}
+
+test "type.enums — a payload variant takes written type arguments" {
+    let a = Holder<i64>.Full(4)
+    assert held(a) == 4
+}
+
+// The reason the form has to exist at all: a fieldless variant has no payload to
+// infer `T` from.
+test "type.enums — a fieldless variant takes written type arguments" {
+    let e = Holder<i64>.Empty
+    assert held(e) == 0 - 1
+    match e {
+        Holder.Full(_) => assert false
+        Holder.Empty => assert true
+    }
+}
+
+test "type.enums — two parameters, and the one that names neither" {
+    let l = Two<i64, string>.Left(3)
+    match l {
+        Two.Left(x) => assert x == 3
+        Two.Right(_) => assert false
+        Two.Neither => assert false
+    }
+
+    let n = Two<i64, string>.Neither
+    match n {
+        Two.Left(_) => assert false
+        Two.Right(_) => assert false
+        Two.Neither => assert true
+    }
+}
+
+test "type.enums — an aggregate payload with written arguments" {
+    let big = Holder<Big>.Full(Big { a: 1, b: 2, c: 3 })
+    match big {
+        Holder.Full(v) => assert v.b == 2
+        Holder.Empty => assert false
+    }
+}
+
+test "type.enums — nested instantiations" {
+    let n = Holder<Holder<i64>>.Full(Holder<i64>.Full(7))
+    match n {
+        Holder.Full(inner) => {
+            match inner {
+                Holder.Full(v) => assert v == 7
+                Holder.Empty => assert false
+            }
+        }
+        Holder.Empty => assert false
+    }
+}
+
+// A `string` payload was its own bug, found while testing this one: a string in a
+// generic slot used to be stored as the pointer to its 16 bytes, and the match
+// binding read the slot as a machine word, so `{v}` printed the address. The
+// instantiation gets a layout with a real 16-byte payload now, so there's no
+// pointer convention left to get wrong.
+test "type.enums — a string payload reads back as a string" {
+    let s = Holder<string>.Full("hi")
+    match s {
+        Holder.Full(v) => assert v == "hi"
+        Holder.Empty => assert false
+    }
+    // Inferred, which is how the bug showed up in the first place.
+    let inferred = Holder.Full("bye")
+    match inferred {
+        Holder.Full(v) => assert v == "bye"
+        Holder.Empty => assert false
+    }
+}
+
+// Inference is untouched — the arguments are optional, not required.
+test "type.enums — inference still fills the arguments in" {
+    let inferred = Holder.Full(9)
+    assert held(inferred) == 9
+}
+
+func main() {}

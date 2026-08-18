@@ -258,6 +258,25 @@ impl TypeChecker {
         Some(elem)
     }
 
+    /// A generic *enum* named with its type arguments written out —
+    /// `Holder<i64>` — as the instantiated type. `None` for anything else, so an
+    /// undefined variable still reports as one and a struct or container keeps
+    /// whatever path it already took.
+    fn spelled_out_enum_name(&self, name: &str) -> Option<Type> {
+        if !name.contains('<') {
+            return None;
+        }
+        let base = name.split('<').next()?.trim();
+        let type_id = self.types.get_type_id(base)?;
+        if !matches!(self.types.get(type_id), Some(TypeDef::Enum { .. })) {
+            return None;
+        }
+        match parse_type_string(name, &self.types) {
+            Ok(ty @ Type::Generic { .. }) => Some(ty),
+            _ => None,
+        }
+    }
+
     /// The `any Trait` type arguments a container was instantiated with.
     fn trait_object_type_args(ty: &Type) -> Vec<Type> {
         let args = match ty {
@@ -427,6 +446,19 @@ impl TypeChecker {
                         span: expr.span,
                     });
                     return Type::Error;
+                }
+                // `Holder<i64>.Empty` — the parser folds written type arguments into
+                // the name, so the object of that field access is an identifier
+                // nobody declared. The resolver still points it at the enum's
+                // symbol, whose type carries no arguments, so the variant reference
+                // came out with a fresh variable for `T` and the binding was
+                // "type is still open". A fieldless variant has no payload to infer
+                // from, so the written arguments are the only place `T` can come
+                // from. Ahead of the ordinary lookups because the resolver's answer
+                // is the one that loses them — and no variable is spelled with
+                // angle brackets (#782).
+                if let Some(ty) = self.spelled_out_enum_name(name) {
+                    return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
                     ty
