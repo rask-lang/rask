@@ -88,3 +88,88 @@ func visibility_report() -> string {
 test "std.reflect — a field's visibility survives to both backends" {
     assert visibility_report() == "shown=true hidden=false "
 }
+
+// ── #791: the two that need only the declaration ─────────────────────
+//
+// Five reflect methods answered with an honest error because "neither backend
+// has what they need". That was right for `size_of`/`align_of`/`is_copy`, which
+// need a size — and the compiler still has two size models that disagree. It was
+// wrong for these two: both are questions about the *declaration*, and the
+// declaration is exactly what a layout has thrown away by the time it exists.
+// Native reads the checker's type table now, the interpreter reads its AST maps,
+// and one classifier turns either into the same answer.
+
+@resource
+struct Conn {
+    public fd: i64
+}
+
+struct Entity {
+    public id: i64
+    public pos: Point
+    public alive: bool
+}
+
+struct Named {
+    public label: string
+    public n: i32
+}
+
+struct Linked {
+    public id: i64
+    public peer: Handle<Point>
+}
+
+enum Shape { Circle(f64), Square(Point) }
+
+enum Payload { Text(string), Empty }
+
+type NodeId = u64
+
+test "mem.resource-types — is_resource reads the annotation" {
+    assert reflect.is_resource<Conn>()
+    assert !reflect.is_resource<Point>()
+    assert !reflect.is_resource<i64>()
+}
+
+test "mem.relocatable/FL2 — the primitives are flat" {
+    assert reflect.is_flat<i32>()
+    assert reflect.is_flat<u64>()
+    assert reflect.is_flat<f64>()
+    assert reflect.is_flat<bool>()
+    assert reflect.is_flat<char>()
+}
+
+test "mem.relocatable/FL1 — the heap-backed types are not" {
+    assert !reflect.is_flat<string>()
+    assert !reflect.is_flat<Vec<i32>>()
+    assert !reflect.is_flat<Map<string, i32>>()
+}
+
+test "mem.relocatable/FL1 — a struct follows its fields, recursively" {
+    assert reflect.is_flat<Point>()
+    assert reflect.is_flat<Entity>()
+    assert !reflect.is_flat<Named>()
+    // A resource is never flat, whatever it holds.
+    assert !reflect.is_flat<Conn>()
+}
+
+test "mem.relocatable/FL3 — a handle field keeps a struct flat" {
+    assert reflect.is_flat<Handle<Point>>()
+    assert reflect.is_flat<Linked>()
+}
+
+test "mem.relocatable/FL5 — an enum follows its variant payloads" {
+    assert reflect.is_flat<Colour>()
+    assert reflect.is_flat<Shape>()
+    assert !reflect.is_flat<Payload>()
+}
+
+test "type.aliases/T11 — a nominal newtype is as flat as what it wraps" {
+    assert reflect.is_flat<NodeId>()
+}
+
+test "mem.relocatable/FL1 — an optional follows its payload" {
+    assert reflect.is_flat<Point?>()
+    assert !reflect.is_flat<Named?>()
+}

@@ -273,6 +273,7 @@ impl<'a> MirContext<'a> {
             call_targets,
             type_names,
             // Straight off the checker — never optional.
+            type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             trait_coercions: &typed.trait_coercions,
             error_wraps: &typed.error_wraps,
@@ -367,6 +368,13 @@ pub struct MirContext<'a> {
     pub node_types: &'a HashMap<NodeId, Type>,
     /// TypeId → name mapping from the type checker, for resolving Named types.
     pub type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// The checker's type table.
+    ///
+    /// A layout has dropped `@resource` and substituted its field types by the
+    /// time it exists, and `std.reflect`'s `is_resource` and flatness walk are
+    /// asking about exactly those (#791). This is the declarations as the checker
+    /// recorded them — the same thing the interpreter reads off its AST maps.
+    pub type_defs: &'a rask_types::TypeTable,
     /// Comptime-evaluated global constants (name → metadata).
     /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
     pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
@@ -493,12 +501,15 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_TYPE_DEFS: std::sync::LazyLock<rask_types::TypeTable> =
+            std::sync::LazyLock::new(Default::default);
         MirContext {
             struct_layouts: &[],
             mutate_self_fns: None,
             enum_layouts: &[],
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
+            type_defs: &EMPTY_TYPE_DEFS,
             comptime_globals: &EMPTY_COMPTIME,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
@@ -5765,6 +5776,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5773,6 +5785,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
@@ -5837,6 +5850,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5845,6 +5859,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
@@ -5915,6 +5930,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5923,6 +5939,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),

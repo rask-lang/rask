@@ -244,6 +244,7 @@ impl Interpreter {
                             a.name.clone(),
                             Value::NominalConstructor { type_name: a.name.clone() },
                         );
+                        self.nominal_targets.insert(a.name.clone(), a.target.clone());
                     }
                 }
                 _ => {}

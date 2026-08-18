@@ -49,7 +49,11 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
-`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer` and `is_float` fold to constants on both backends. `size_of`, `align_of`, `is_copy`, `is_resource` and `is_flat` are not implemented on either — they need the monomorphized layout, which only the native backend has, and giving one backend a real number while the other guessed would make the two disagree. Both report it rather than answering (#791).
+`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer`, `is_float`, `is_resource` and `is_flat` fold to constants on both backends.
+
+`size_of`, `align_of` and `is_copy` don't. They need a size, and the compiler has two of them: the language model behind the 16-byte Copy threshold (`i32` is 4 bytes, which is what the example below counts with) and the 8-byte-slot model codegen lays out with, where every scalar takes a word. They disagree about every struct with a narrow field, so answering with either would bake the choice in before it's made. Both backends report it rather than guessing (#791).
+
+`is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.
 
 <!-- test: skip -->
 ```rask

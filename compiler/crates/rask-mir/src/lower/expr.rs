@@ -5484,13 +5484,56 @@ impl<'a> MirLowerer<'a> {
             )));
         };
 
+        // The layouts answer "is this declared"; the checker's type table answers
+        // the rest. A layout has dropped `@resource` and substituted its field
+        // types by the time it exists, and those are exactly what `is_resource`
+        // and the flatness walk are asking about (#791). The interpreter reads the
+        // same declarations off its AST maps, so the classifier gets the same
+        // input from both sides.
         struct MirDecls<'a, 'b>(&'a super::MirContext<'b>);
+        impl MirDecls<'_, '_> {
+            fn def(&self, name: &str) -> Option<&rask_types::TypeDef> {
+                let bare = name.split('<').next().unwrap_or(name).trim();
+                self.0.type_defs.get(self.0.type_defs.get_type_id(bare)?)
+            }
+        }
         impl reflect::ReflectDecls for MirDecls<'_, '_> {
             fn declares_struct(&self, name: &str) -> bool {
                 self.0.find_struct(name).is_some()
             }
             fn declares_enum(&self, name: &str) -> bool {
                 self.0.find_enum(name).is_some()
+            }
+            fn is_resource(&self, name: &str) -> bool {
+                // `File` is the compiler's own resource — no declaration carries
+                // the annotation for it, and the runtime tracks it as one.
+                name == "File"
+                    || matches!(self.def(name), Some(rask_types::TypeDef::Struct { is_resource: true, .. }))
+            }
+            fn member_type_names(&self, name: &str) -> Option<Vec<String>> {
+                let spell = |t: &rask_types::Type| {
+                    format!("{}", self.0.type_defs.resolve_type_names(t))
+                };
+                match self.def(name)? {
+                    rask_types::TypeDef::Struct { fields, .. } => {
+                        Some(fields.iter().map(|(_, t)| spell(t)).collect())
+                    }
+                    rask_types::TypeDef::Enum { variants, .. } => Some(
+                        variants.iter().flat_map(|(_, payload)| payload.iter().map(&spell)).collect(),
+                    ),
+                    rask_types::TypeDef::Union { fields, .. } => {
+                        Some(fields.iter().map(|(_, t)| spell(t)).collect())
+                    }
+                    rask_types::TypeDef::NominalAlias { underlying, .. } => Some(vec![spell(underlying)]),
+                    rask_types::TypeDef::Trait { .. } => None,
+                }
+            }
+            fn type_params(&self, name: &str) -> Vec<String> {
+                match self.def(name) {
+                    Some(rask_types::TypeDef::Struct { type_params, .. })
+                    | Some(rask_types::TypeDef::Enum { type_params, .. }) => type_params.clone(),
+                    _ => Vec::new(),
+                }
             }
         }
 
