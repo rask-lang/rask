@@ -41,7 +41,14 @@ jobs:
 
           # Cross-repository PRs point at a fork's branch. Their headRefName can
           # collide with a real branch here, so they never enter the list.
-          gh pr list --state merged --limit 500 \
+          #
+          # The limit is a ceiling on how far back the job looks, not a page
+          # size — merged PRs past it are never considered, and their branches
+          # would stay forever. 352 merged as of 2026-08-18; the summary below
+          # warns when the list comes back full so the number gets raised
+          # before that happens silently.
+          MERGED_LIMIT=1000
+          gh pr list --state merged --limit "$MERGED_LIMIT" \
             --json headRefName,isCrossRepository \
             --jq '.[] | select(.isCrossRepository == false) | .headRefName' \
             | sort -u > /tmp/merged.txt
@@ -80,7 +87,12 @@ jobs:
           done < /tmp/merged.txt
 
           echo "---"
-          echo "branches with a merged PR: $(wc -l < /tmp/merged.txt)"
+          merged_count=$(wc -l < /tmp/merged.txt)
+          if [ "$merged_count" -ge "$MERGED_LIMIT" ]; then
+            echo "WARNING: hit MERGED_LIMIT ($MERGED_LIMIT). Older merged PRs"
+            echo "         were not looked at — raise the limit."
+          fi
+          echo "branches with a merged PR: $merged_count"
           echo "deleted (or would delete): $deleted"
           echo "kept for an open PR:       $kept"
           echo "dry run:                   $DRY_RUN"
