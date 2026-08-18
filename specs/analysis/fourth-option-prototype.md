@@ -633,22 +633,17 @@ And of the three, only `delete_subtree` is called by a caller that holds locals
 main holds none. So the annotation would change one call site in the corpus, and
 that call site is the one with the bug.
 
-### Revoking is too coarse, and the `?` already says which discipline applies
+### Revoking is too coarse, and a link turns out to be a borrow after all
 
-Revoking every local at a `deleting` call is blunt: the L3 call would take out
-`b` and `root`, which survive it. And the asymmetry points at the answer — a link
-in a *field* comes through that same call exactly right, nulled if its target
-died and untouched if it didn't. The fixup is precise. Only locals get the
-sledgehammer, and only because the fixup can't reach them.
+Revoking every local at a `deleting` call works and reads like a bolt-on: a
+bespoke rule that exists only for links, with a bespoke error. Two earlier
+attempts at something better failed, and then the borrowing spec turned out to
+already contain the answer.
 
-**The first fix I tried was worse than the problem.** Have the compiler register
-the live link locals across the call and widen their type afterwards: `Link<T>`
-before the call, `Link<T>?` after. Precise, and it needs nothing from the
-programmer. It is also sneaky in a way nothing else in Rask is.
-
-Compare it with `take`, which is the closest existing thing. `take` is invisible
-at the call site too — `eat(bag)` carries no marker, and the caller learns about
-it at the next use:
+**Rejected: silent widening.** Register the live link locals across the call and
+widen their type afterwards — `Link<T>` before, `Link<T>?` after. Precise, and
+free at the source level. Also sneaky in a way nothing else in Rask is. Compare
+`take`, the closest existing thing, which is invisible at the call site too:
 
 ```
 error[E0800]: use of moved value: `bag`
@@ -658,61 +653,115 @@ error[E0800]: use of moved value: `bag`
   |               ^^^ value used here after move
 ```
 
-But `take` revokes a *name*. One outcome, one error, and the error names the call
-and says what happened to the value. Nothing about `bag`'s type changed; `bag`
-stopped existing. Widening instead keeps the name alive with a different type,
-which is worse three ways: the failure is a type error rather than a revocation,
-so it doesn't name its cause; one variable has two types in one body depending on
-where you stand; and `take`'s rule is learnable once, where predicting a widening
-means knowing which links a callee might delete. Dropped.
+`take` revokes a *name*. One outcome, one error, and the error names the call and
+says what happened to the value. Nothing about `bag`'s type changed — `bag`
+stopped existing. Widening keeps the name alive with a different type: the failure
+is a type error rather than a revocation so it never names its cause, one variable
+has two types in one body depending on where you stand, and `take`'s rule is
+learnable once where predicting a widening means knowing which links a callee
+might delete.
 
-**What replaces it is already the rule in this document.** The table above says a
-`Link<T>?` slot is one the store maintains and a `Link<T>` slot is one the
-compiler guarantees. That was stated for fields. Say it for locals too, and the
-programmer picks:
+**Rejected earlier, on a mistake: "a local link is a borrow of the store."** The
+argument against it was that a borrow has to end before the next mutation, and
+ending it at last use is NLL — the lifetime-shaped analysis Rask exists to refuse.
+That argument assumed *every* store mutation conflicts with the borrow. It
+doesn't. `insert` cannot invalidate a link, so nothing needs the borrow to end
+early, and block scoping is enough.
 
-| Local declaration | Keeper | At a `deleting` call |
-|---|---|---|
-| `let kid = s.insert(...)` — `Link<T>` | the compiler | revoked; use after it won't compile |
-| `mut kid: Link<T>? = s.insert(...)` | the store | registered, nulled if its target died |
+#### Why a Store is a fixed source
+
+`borrowing.md` splits containers by one test, and states the reason plainly:
+
+> Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map`
+> rehashes. Block-scoped views into them would dangle.
+
+That is the whole basis for giving growable sources expression-only views and
+`with`. **A Store never relocates a node.** A link is a pointer to the node
+itself, not an index into a slot table, so inserting cannot move what a link
+points at. Measured: 5001 inserts while holding a link to the first node, and the
+link still reads and writes it. A `Vec` view would have dangled hundreds of
+reallocations ago.
+
+So the Store is the first container that grows in count while keeping every
+address fixed, and by B1/B2's own criterion it earns block-scoped views (S1–S5)
+rather than `with`. That is not a special case carved out for links — it is the
+existing test, applied to a container nobody had.
+
+#### What that buys
+
+Everything the model needs stops being bespoke:
+
+| Behaviour | Now derived from |
+|---|---|
+| `l.field` reads with no check | it is a view, and views are trustworthy for their duration |
+| a link can be returned from a function | unlike other views, nothing can relocate the pointee |
+| `s.delete(n)` is legal while holding `n` | `take link` consumes exactly that view |
+| `s.delete(m)` is legal while holding `n` | different view, untouched — no conflict |
+| `s.clear()` conflicts with every live link | S5 exclusive access: it deletes without naming a victim |
+| a `deleting` call conflicts with every live link | same, one call frame out |
+| a field must be `Link<T>?` | S3 no-escape: a view cannot be stored in a struct, so a field has to be the store-maintained kind instead |
+
+The bespoke revoke becomes S5, which Rask already has vocabulary and diagnostics
+for. The error moves too, and moves in the right direction — it fires at the
+`clear` or the call rather than at a later read, and it can name both ends:
+"cannot delete from `s` here — `kid` is a live link into it, from line 12 to the
+end of this block". Today's E0328 blames the later read for something the earlier
+line caused.
+
+The one honest cost of block scoping: an unnamed delete conflicts with a live link
+even if the link is never used again, so the fix is to open a block or drop the
+name rather than to rely on a last use. That is Rask's existing bargain, not a new
+one.
+
+#### The `?` opts out of the whole discipline
+
+A local declared `Link<T>?` is not a view at all — it is a slot the store
+maintains, exactly like a field:
 
 ```rask
-mut keep: Link<Node>? = scene.nodes.insert(...)   // I said this might vanish
-let quick = scene.nodes.insert(...)              // I said it won't have to
+mut keep: Link<Node>? = scene.nodes.insert(...)   // store-maintained slot
+let quick = scene.nodes.insert(...)              // a view
 
-cascade(scene, parent)
+cascade(scene, parent)      // deleting: conflicts with `quick`, not with `keep`
 
-if keep? as k { println(k.name) }   // survived: the check succeeds
-                                    // died: none, and the check catches it
-// `quick` is revoked here — declaring it non-optional was the claim that
-// nothing would delete it, and this call breaks that claim
+if keep? as k { println(k.name) }   // survived: check succeeds
+                                     // died: none, check catches it
 ```
 
-Nothing silent, no flow-sensitive types, and one rule instead of two: the `?` is
-written where every other optional is written, and it means what it always means.
-The cost is visible at the declaration rather than inferred at a call — which is
-the transparency principle rather than a concession to it.
+One rule with two mechanisms, chosen by the `?`, which is where every other
+optional in the language is chosen. Registration for the optional case is then the
+same reverse-edge index a field joins; views cost nothing.
 
-Registration is then cheap and obvious: a local declared `Link<T>?` joins the
-same reverse-edge index a field joins, for as long as it is in scope. No stack
-scan, and non-optional locals — the common case — stay entirely free.
+#### `deleting` composes with `mutate`
+
+They answer different questions for the caller — "can the contents change?" and
+"can my links die?" — so neither implies the other and both can appear:
+
+```rask
+func report(s: Store<Node>)                      // read only
+func add(mutate s: Store<Node>)                  // inserts; links survive
+func gc(deleting s: Store<Node>)                 // deletes; cannot insert
+func compact(mutate deleting s: Store<Node>)     // both
+```
+
+`deleting` grants only the unnamed delete — `delete(take n)` needs no annotation
+in any of these, because the `take` already tells the caller which view died.
 
 **Cost on L3.** `main` holds `root`, `b`, `a1` and `a2` across
-`delete_subtree(scene, a)`. All four are plain `Link<SceneNode>`, so all four are
-revoked, and the program is unaffected because it uses none of them afterwards.
-Wanting `b` afterwards costs one `?` at its declaration and one check.
+`delete_subtree(scene, a)`, all plain `Link<SceneNode>`, so all four conflict —
+and the program is unaffected because it uses none of them afterwards. Wanting `b`
+afterwards costs one `?` at its declaration and one check.
 
-**What the prototype does today.** The declaration form already typechecks and
-runs — `mut kid: Link<Node>? = s.insert(...)` is legal now. What is missing is the
-registration, so an optional local is not yet nulled by a delete; it is inert
-rather than maintained. Building it needs `Environment::get` to hand back owned
-values instead of `&Value`, since a slot the store can write into cannot also be
-lent out by reference. That is a real change to the interpreter's hot read path
-and is not made here.
+**What the prototype does today.** `mut kid: Link<Node>? = s.insert(...)` already
+typechecks and runs, but nothing registers it, so it is inert rather than
+maintained. Building that needs `Environment::get` to hand back owned values
+instead of `&Value` — a slot the store writes into cannot also be lent out by
+reference — which is the interpreter's hot read path and not a change to make in
+passing.
 
-**Not built.** A new parameter mode is a language change. Proposed in #806 with
-the declared-optional rule; the `take`-parameter half is only sound once #804 is
-fixed.
+**Not built.** A new parameter mode is a language change, and treating a Store as
+a fixed source is an amendment to `borrowing.md` B1/B2. Both proposed in #806; the
+`take`-parameter half is only sound once #804 is fixed.
 
 **On the spelling.** `deleting s: Store<T>` over `prune s`: the model already has
 exactly one verb for this — the method is `delete`, the error says "use after

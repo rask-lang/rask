@@ -175,6 +175,25 @@ test "clear nulls edges, it does not just empty the store" {
     }
 }
 
+test "inserting never moves a node, so a link stays valid across growth" {
+    mut s: Store<Node> = Store.new()
+    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+
+    // This is why a link can be a block-scoped view where a Vec element can't:
+    // a Vec reallocates and a Pool compacts, but a link points at the node
+    // itself, so growing the store cannot move what it points at.
+    mut i = 0
+    while i < 2000 {
+        let _ = s.insert(Node { id: 99, hits: 0, peer: none })
+        i += 1
+    }
+
+    assert_eq(s.len(), 2001)
+    assert_eq(first.id, 1)
+    first.hits += 3
+    assert_eq(first.hits, 3)
+}
+
 test "a delete in one store leaves another store's edges alone" {
     mut left: Store<Node> = Store.new()
     mut right: Store<Node> = Store.new()
