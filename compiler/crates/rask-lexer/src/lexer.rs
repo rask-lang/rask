@@ -433,13 +433,25 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 let Some(&hole_start) = holes.last() else {
                     return Some(pos + 1);
                 };
-                // A hole that is empty so far isn't a hole — it's the `{"key":
-                // ...}` of a JSON body, and the string ended at this quote all
-                // along (#506).
+                let after = skip_nested_string(bytes, pos)?;
+                // A hole that is empty so far *and* whose literal is followed by
+                // a colon isn't a hole — it's the `{"key": …}` of a JSON body,
+                // and the string ended at this quote all along (#506).
+                //
+                // The emptiness alone used to be enough, which threw out every
+                // expression that simply begins with a literal:
+                // `"{"lit".len()}"`, `"{"a" < "b"}"`, `"{"42".parse<i64>() …}"`
+                // all ended the string at the inner quote and the rest was
+                // parsed as code (#877). What follows the literal is what tells
+                // the two apart: a colon in JSON, a `.` or an operator in an
+                // expression.
                 if bytes[hole_start..pos].iter().all(|b| b.is_ascii_whitespace()) {
-                    return None;
+                    let next = bytes[after..].iter().find(|b| !b.is_ascii_whitespace());
+                    if next == Some(&b':') {
+                        return None;
+                    }
                 }
-                pos = skip_nested_string(bytes, pos)?;
+                pos = after;
                 continue;
             }
             b'\n' if !holes.is_empty() => return None,

@@ -226,7 +226,7 @@ impl<'a> MirLowerer<'a> {
             // on a `Vec<i64>` sent it to the string one and printed nothing.
             "join" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object)
-                    .filter(|c| !c.adapters.is_empty())
+                    .filter(|c| !c.adapters.is_empty() || self.source_is_a_sequence(c.source))
                 {
                     let (vec_op, _) = self.lower_iter_collect(&chain)?;
                     let (sep_op, _) = self.lower_expr(&args[0].expr)?;
@@ -378,6 +378,34 @@ impl<'a> MirLowerer<'a> {
 
     /// The base name of a recorded receiver prefix, which can carry its generic
     /// arguments — `Vec<i64>` is still a Vec.
+    /// Is this chain source already a sequence — an `Iterator<T>` — rather than a
+    /// collection?
+    ///
+    /// It decides who answers `join` on a chain with no adapters. A `Vec` answers
+    /// it itself and picks the right runtime by element type, so
+    /// `numbers.join(", ")` on a `Vec<i64>` has to keep going there. A sequence
+    /// has nothing to answer with: `s.split(", ").join("|")` reached codegen as a
+    /// call to `Iterator_join`, which nothing emits, while
+    /// `s.split(", ").to_vec().join("|")` two characters longer worked (#878).
+    ///
+    /// Asked positively, off the checker's own type. Asking the other way round —
+    /// "is this *not* a Vec" — answers yes whenever the prefix simply wasn't
+    /// recorded, which sent `Vec<i64>.join` down the materializing path and
+    /// printed nothing.
+    fn source_is_a_sequence(&self, source: &Expr) -> bool {
+        let name = match self.ctx.lookup_raw_type(source.id) {
+            Some(rask_types::Type::UnresolvedGeneric { name, .. }) => name.clone(),
+            Some(rask_types::Type::Generic { base, .. }) => {
+                match self.ctx.type_names.get(base) {
+                    Some(n) => n.clone(),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        name.split('<').next().unwrap_or(&name).trim() == "Iterator"
+    }
+
     fn prefix_is(prefix: &Option<String>, want: &str) -> bool {
         prefix
             .as_deref()
