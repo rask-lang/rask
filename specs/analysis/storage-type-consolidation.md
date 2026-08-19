@@ -170,16 +170,41 @@ see below: atomics need an API that doesn't look like locking, so they keep
 their own type.)
 
 **Why the type stays uniform.** The strategy is a defaulted type parameter —
-`Shared<T, S = Readers>` — resolved at monomorphization, exactly like the
-allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and more
-importantly a function written `func serve(c: Shared<Config>)` accepts every
-variant. Today, `Mutex<T>` and `Shared<T>` being separate types means an API
-must pick one and callers must match it; consolidating removes that too.
+`Shared<T, S = Local>` — resolved at monomorphization, exactly like the
+allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and one type covers
+what `Mutex<T>` and `Shared<T>` need two of today: an API no longer has to pick
+a lock type that its callers must then match.
+
+### One rule for what bare `Shared<T>` means
+
+**`Shared<T>` means `Shared<T, Local>`, in every position.** A `let`, a
+parameter, a return type, a field: the same type expression means the same
+thing everywhere. A function that works with any strategy says so:
+
+<!-- test: skip -->
+```rask
+func serve(c: Shared<Config>)                    // Local only
+func serve<S>(c: Shared<Config, S>)              // any strategy
+```
+
+Earlier drafts of this document had it both ways — bare-in-parameter accepting
+every variant while bare-in-`let` defaulted to `Local` — which would make one
+type expression mean two things depending on where it sits. That is the
+elision-shaped context-dependence this language removes everywhere else, so it
+loses to the version that costs ceremony: a strategy-agnostic API writes its
+type parameter.
+
+The ceremony is real and worth naming. Every function that genuinely doesn't
+care gains `<S>`, and library code that wants to accept all three has to say so
+rather than getting it by default. The alternative — bare means "any" in
+signatures — buys that back and pays for it with a positional rule, and a
+positional rule is the more expensive of the two.
 
 This is *not* the objection that killed folding `Cell` into the lock family.
-There, the parameter would have carried **semantics** — thread-safe or not,
-which changes what the code means. Here every variant is equally correct and
-they differ only in speed, so a caller can never be wrong, only suboptimal.
+There, the parameter carries **semantics** — sendable across tasks or not,
+which changes what the code means, and is exactly why the default has to be the
+conservative one. Between `Readers` and `Mutex` the choice is only speed, and a
+caller can be suboptimal but never wrong.
 
 **Which way the default should lean.** Conservative. A reader of
 `Shared.new(x)` should never discover it was secretly doing something
@@ -216,9 +241,20 @@ though the type doesn't. (An earlier draft called it `Exclusive`, which is
 both non-standard and misleading: a plain mutex covers reads *and* writes, so
 "exclusive" describes the locking, not what you're allowed to do.)
 
-Write the bare `Shared<i64>` and you get the task-local default; write the
-parameter and you've said it out loud. Constructor and annotation agree, and either one
-alone is enough for a reader to know what they have.
+Write the bare `Shared<i64>` and you get `Local` — in a `let`, a parameter, a
+field or a return type alike (see the rule above). Write the strategy and you've
+said it out loud. Constructor and annotation agree, and either one alone is
+enough for a reader to know what they have.
+
+**On the name.** A `Shared<T>` whose default cannot be shared between tasks
+reads oddly, and anyone arriving from Rust or Go will assume thread-safe until
+told otherwise. Kept deliberately: the sharing in the name is among
+*accessors* — several names reaching one value through a box — and the task
+question is the strategy's business. What makes it a wrong assumption rather
+than a trap is that it fails loudly at the boundary, not quietly at runtime:
+sending a `Shared<T, Local>` is `SH7`, and the error names the fix. Noted here
+so the tension is a decision on the record rather than an omission someone
+files a bug about.
 
 ### Accessing
 
@@ -250,7 +286,18 @@ site. Read/write intent becomes visible in code that currently hides it.
 **Uniformity is the point:** `read()` under the `Mutex` strategy takes the
 exclusive lock — slower than `Readers` would be there, never wrong. Code
 written generically over the strategy compiles and behaves correctly against
-all three, which is what makes the parameter safe to default.
+all three.
+
+**`staged()` composes per strategy.** `ctrl.panic` specifies staged access on
+`Mutex` (`with mutex.staged() as v { }`, `conc.sync/ST1–ST4`) — a copy that
+commits as one move on non-panic exit and is discarded on unwind, so a
+multi-field update can't be seen torn. Under the unified type it stays available
+wherever it means something: legal on `Mutex` and `Readers`, and rejected on
+`Local`, where there is no other task to observe a torn update and no unwind
+boundary to protect against. `tool.warnings/W9` (`torn_lock_update`) keeps its
+escape hatch: it fires on a `with` block over a sync box that assigns two or
+more fields without `staged()`, and that means the two shared strategies, so the
+warning and its remedy survive the merge together. A `Local` box never trips it.
 
 ## `Atomic` earns its own type after all
 
