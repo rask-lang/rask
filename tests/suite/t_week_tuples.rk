@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: tuples.
+//
+// Anonymous product types, for when naming fields adds nothing. Covers building
+// one, reading by `.0`/`.1`, destructuring in a `let`, in a `for`, nesting,
+// returning a tuple from a function, tuples in a Vec and as Map values, mixed
+// element types, and destructuring a Map's `(key, value)` pairs.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func min_max(v: Vec<i32>) -> (i32, i32) {
+    mut lo = v[0]
+    mut hi = v[0]
+    for x in v {
+        if x < lo: lo = x
+        if x > hi: hi = x
+    }
+    return (lo, hi)
+}
+
+func divmod(a: i32, b: i32) -> (i32, i32) {
+    return (a / b, a % b)
+}
+
+func labelled() -> (string, i32, bool) {
+    return ("name", 3, true)
+}
+
+test "building a tuple and reading its elements" {
+    let p = (1, 2)
+    assert p.0 == 1
+    assert p.1 == 2
+    let t = (1, 2, 3)
+    assert t.0 == 1
+    assert t.1 == 2
+    assert t.2 == 3
+}
+
+test "an annotated tuple type" {
+    let p: (i32, string) = (42, "hello")
+    assert p.0 == 42
+    assert p.1 == "hello"
+}
+
+test "destructuring in a let" {
+    let (a, b) = (1, 2)
+    assert a == 1
+    assert b == 2
+    let (x, y, z) = (10, 20, 30)
+    assert x + y + z == 60
+}
+
+test "mixed element types" {
+    let t = ("s", 1, true, 'c')
+    assert t.0 == "s"
+    assert t.1 == 1
+    assert t.2
+    assert t.3 == 'c'
+}
+
+// `n.0.0` doesn't parse — `0.0` lexes as a float (#914). Both spellings that do
+// work are here: parenthesise the first access, or destructure.
+test "nesting" {
+    let n: ((i32, i32), string) = ((1, 2), "point")
+    assert (n.0).0 == 1
+    assert (n.0).1 == 2
+    assert n.1 == "point"
+    let (inner, label) = n
+    assert inner.0 == 1
+    assert inner.1 == 2
+    assert label == "point"
+}
+
+test "returning a tuple from a function" {
+    let (lo, hi) = min_max([3, 1, 4, 1, 5])
+    assert lo == 1
+    assert hi == 5
+    let (q, r) = divmod(17, 5)
+    assert q == 3
+    assert r == 2
+}
+
+test "a three-element return with mixed types" {
+    let (name, count, flag) = labelled()
+    assert name == "name"
+    assert count == 3
+    assert flag
+}
+
+test "reading a returned tuple without destructuring" {
+    let t = divmod(9, 4)
+    assert t.0 == 2
+    assert t.1 == 1
+}
+
+test "tuples in a Vec" {
+    let v: Vec<(i32, string)> = [(1, "one"), (2, "two")]
+    assert v.len() == 2
+    assert v[0].0 == 1
+    assert v[1].1 == "two"
+}
+
+test "destructuring while iterating a Vec of tuples" {
+    let v: Vec<(i32, i32)> = [(1, 10), (2, 20), (3, 30)]
+    mut keys = 0
+    mut vals = 0
+    for (k, n) in v {
+        keys = keys + k
+        vals = vals + n
+    }
+    assert keys == 6
+    assert vals == 60
+}
+
+test "a Map's pairs destructure" {
+    mut m: Map<string, i32> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    mut names = ""
+    mut total = 0
+    for (k, v) in m {
+        names = "{names}{k}"
+        total = total + v
+    }
+    assert names.len() == 2
+    assert total == 3
+}
+
+test "a tuple holding a struct" {
+    let t = (Point { x: 1, y: 2 }, "origin-ish")
+    assert t.0.x == 1
+    assert t.0.y == 2
+    assert t.1 == "origin-ish"
+}
+
+test "a tuple as a Map value" {
+    mut m: Map<string, (i32, i32)> = Map.new()
+    m.insert("p", (3, 4))
+    assert m.get("p")!.0 == 3
+    assert m.get("p")!.1 == 4
+}
+
+test "tuples compare element by element" {
+    assert (1, 2) == (1, 2)
+    assert (1, 2) != (1, 3)
+    assert ("a", 1) == ("a", 1)
+}
+
+func main() {}

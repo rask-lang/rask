@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic struct declared with implicit single-letter parameters — #913.
+//
+// `struct Pair { first: T, second: U }` is SYNTAX.md's generic-struct example,
+// and the type it declares can never be written down: annotating it, returning
+// it, or passing it to a parameter that names the instantiation is all
+// "expected `Pair<i32, string>`, found `Pair`". The struct literal gets the bare
+// type `Pair`, with no argument list to unify against.
+//
+// Declaring the parameters explicitly — `struct Pair2<T, U>` — works everywhere,
+// which is what `t_week_generics.rk` uses.
+//
+// type.generics/PC1 lists struct fields as a signature position and says
+// "Explicit `<T>` stays optional". It isn't: it's mandatory the moment the type
+// has to be named, which is as soon as it appears in a signature.
+//
+// The unannotated path is fine, which is why this hid — reading fields and
+// calling methods on the inferred value all works.
+
+struct Pair {
+    first: T
+    second: U
+}
+
+struct Wrapper {
+    value: T
+}
+
+extend Wrapper {
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+func make(a: T, b: U) -> Pair<T, U> {
+    return Pair { first: a, second: b }
+}
+
+func take_wrapped(w: Wrapper<i32>) -> i32 {
+    return w.get()
+}
+
+test "type.generics — the inferred form works, which is the control" {
+    let a = Wrapper { value: 1 }
+    assert a.get() == 1
+    let p = Pair { first: 1, second: "one" }
+    assert p.first == 1
+    assert p.second == "one"
+}
+
+test "type.generics — an implicit-param struct can be annotated" {
+    let a: Wrapper<i32> = Wrapper { value: 2 }
+    assert a.get() == 2
+    let p: Pair<i32, string> = Pair { first: 3, second: "three" }
+    assert p.first == 3
+}
+
+test "type.generics — an implicit-param struct can be returned" {
+    let p = make(1, "one")
+    assert p.first == 1
+    assert p.second == "one"
+}
+
+test "type.generics — an implicit-param struct can be passed at an instantiation" {
+    let a = Wrapper { value: 5 }
+    assert take_wrapped(a) == 5
+}
+
+test "type.generics — an implicit-param struct can be a collection element" {
+    let ws: Vec<Wrapper<i32>> = [Wrapper { value: 1 }, Wrapper { value: 2 }]
+    mut total = 0
+    for w in ws {
+        total = total + w.get()
+    }
+    assert total == 3
+}
+
+func main() {}

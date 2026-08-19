@@ -1,0 +1,202 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: generic functions and generic types.
+//
+// A single uppercase letter in type position is a type parameter with no `<T>`
+// declaration needed — for *functions*. For a struct or enum the implicit form
+// produces a type that can never be named at an instantiation (#913), so every
+// generic type here declares its parameters explicitly. Covers the implicit form
+// on functions, the explicit `<Name>` list, same-letter-means-same-type, a
+// `where` bound, a generic struct at several instantiations, a generic enum,
+// nesting one instantiation inside another, and a method on a generic type.
+//
+// A generic *method* whose return mentions a type parameter is broken natively
+// (#916, and #887 for the own-parameter case), so those live in
+// `t_week_generic_method_return.rk`.
+
+struct Pair<T, U> {
+    first: T
+    second: U
+}
+
+struct Wrapper<T> {
+    value: T
+}
+
+struct Cache<Key, Value> {
+    keys: Vec<Key>
+    values: Vec<Value>
+}
+
+enum Slot<T> {
+    Empty
+    Filled(T)
+}
+
+trait Sized2 {
+    func measure(self) -> i64
+}
+
+struct Line {
+    len: i64
+}
+
+extend Line with Sized2 {
+    func measure(self) -> i64 {
+        return self.len
+    }
+}
+
+extend Wrapper {
+    func get(self) -> T {
+        return self.value
+    }
+
+}
+
+extend Cache<Key, Value> {
+    func count(self) -> usize {
+        return self.keys.len()
+    }
+}
+
+// Implicit type parameter.
+func identity(x: T) -> T {
+    return x
+}
+
+// Same letter twice means the same type.
+func pick_first(a: T, b: T) -> T {
+    return a
+}
+
+func swap_them(a: T, b: T) -> (T, T) {
+    return (b, a)
+}
+
+// Two parameters.
+func make_pair(a: T, b: U) -> Pair<T, U> {
+    return Pair { first: a, second: b }
+}
+
+// Explicit list with descriptive names. Deliberately *not* named `Output`: a
+// declared parameter loses to a stdlib type of the same name, and `os.Output`
+// exists (#915).
+func convert<Input, Outcome>(x: Input, f: func(Input) -> Outcome) -> Outcome {
+    return f(x)
+}
+
+// A where bound.
+func total_length<T>(items: Vec<T>) -> i64 where T: Sized2 {
+    mut sum = 0
+    for it in items {
+        sum = sum + it.measure()
+    }
+    return sum
+}
+
+func unwrap_slot(s: Slot<i64>) -> i64 {
+    return match s {
+        Empty => -1,
+        Filled(v) => v,
+    }
+}
+
+test "type.generics — an implicit type parameter at several types" {
+    assert identity(42) == 42
+    assert identity("abc") == "abc"
+    assert identity(true)
+    let f: f64 = 1.5
+    assert identity(f) == 1.5
+}
+
+test "type.generics — the same letter means the same type" {
+    assert pick_first(1, 2) == 1
+    assert pick_first("a", "b") == "a"
+    let (x, y) = swap_them(1, 2)
+    assert x == 2
+    assert y == 1
+}
+
+test "type.generics — two type parameters" {
+    let p = make_pair(1, "one")
+    assert p.first == 1
+    assert p.second == "one"
+    let q = make_pair("k", 2.5)
+    assert q.first == "k"
+    assert q.second == 2.5
+}
+
+test "type.generics — an explicit parameter list" {
+    let same: i32 = convert(21, |x| x * 2)
+    assert same == 42
+    let differing: string = convert(3, |x| "n{x}")
+    assert differing == "n3"
+    let counted: usize = convert("ab", |s| s.len())
+    assert counted == 2
+}
+
+// Integer instantiations only: a method returning the receiver's own type
+// parameter isn't monomorphized on native, so a float comes back as its bit
+// pattern and a string segfaults (#916). Field reads are fine at every type, so
+// those cover the rest here.
+test "type.generics — a generic struct at several instantiations" {
+    let a: Wrapper<i32> = Wrapper { value: 1 }
+    assert a.get() == 1
+    let b: Wrapper<i64> = Wrapper { value: 2 }
+    assert b.get() == 2
+    let c: Wrapper<bool> = Wrapper { value: true }
+    assert c.get()
+    // Reading the field directly works at any type.
+    let d: Wrapper<f64> = Wrapper { value: 0.5 }
+    assert d.value == 0.5
+    let e: Wrapper<string> = Wrapper { value: "s" }
+    assert e.value == "s"
+}
+
+test "type.generics — a generic type with named parameters" {
+    mut ks: Vec<string> = Vec.new()
+    ks.push("a")
+    ks.push("b")
+    mut vs: Vec<i32> = Vec.new()
+    vs.push(1)
+    vs.push(2)
+    let c = Cache { keys: ks, values: vs }
+    assert c.count() == 2
+}
+
+test "type.generics — a generic enum" {
+    assert unwrap_slot(Slot.Filled(9)) == 9
+    assert unwrap_slot(Slot.Empty) == -1
+}
+
+test "type.generics — a where bound" {
+    let lines: Vec<Line> = [Line { len: 3 }, Line { len: 4 }]
+    assert total_length(lines) == 7
+    mut empty: Vec<Line> = Vec.new()
+    assert total_length(empty) == 0
+}
+
+test "type.generics — one instantiation nested inside another" {
+    let inner: Wrapper<i32> = Wrapper { value: 5 }
+    let outer: Wrapper<Wrapper<i32>> = Wrapper { value: inner }
+    assert outer.value.value == 5
+}
+
+test "type.generics — a generic struct inside a collection" {
+    let ws: Vec<Wrapper<i32>> = [Wrapper { value: 1 }, Wrapper { value: 2 }]
+    mut total = 0
+    for w in ws {
+        total = total + w.get()
+    }
+    assert total == 3
+}
+
+test "type.generics — a generic function taking a collection of its parameter" {
+    let a = identity([1, 2, 3])
+    assert a.len() == 3
+    let strs: Vec<string> = ["x"]
+    let b = identity(strs)
+    assert b.len() == 1
+}
+
+func main() {}

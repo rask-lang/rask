@@ -34,6 +34,7 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
+t_week_optional_field_chains.rk # `?.` onto an optional-typed field loses the value — #917 (native)
 t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acquires the optional tag — #909 (interp)
 
 # --- shared / both-backend bugs ---
@@ -48,6 +49,9 @@ t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acq
 t_day_array_writes.rk         # [T; N] element store width — #902 (native), plus push/pop on a fixed array — #901 (both)
 t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
+t_week_generic_struct_naming.rk # a struct with implicit single-letter params can't be named at an instantiation — #913 (both)
+t_week_generic_param_shadowing.rk # a declared type parameter loses to a stdlib type of that name — #915 (both)
+t_week_generic_method_return.rk # a method returning the receiver's type parameter isn't monomorphized — #916 (native)
 t_week_enum_named_payloads.rk # `Variant { field }` pattern never matches — #910 (interp); matched by arm position, not tag — #911 (native)
 t_day_unsigned_to_float.rk    # `unsigned as f64` uses fcvt_from_sint — #907 (native)
 t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906 (native)
