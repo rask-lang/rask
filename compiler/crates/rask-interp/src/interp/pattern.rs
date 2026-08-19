@@ -524,7 +524,12 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
         // so it can't verify `<i32>` matches. rask#217 generic type patterns.
         Value::Vec(_) => ty_name.split('<').next() == Some("Vec"),
         Value::Map(_) => ty_name.split('<').next() == Some("Map"),
-        _ => false,
+        // Everything else answers with its own runtime type name — Duration,
+        // Instant, File, Cell, Shared, TcpConnection, and the 128-bit integers.
+        // A catch-all `false` here said "no" for every one of them, so
+        // `r is Duration` on a `Duration or TimeError` took the else branch and
+        // bound the Duration as if it were the error.
+        other => other.type_name() == ty_name.split('<').next().unwrap_or(ty_name),
     }
 }
 

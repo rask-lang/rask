@@ -3423,6 +3423,16 @@ impl<'a> MirLowerer<'a> {
         if name == "none" {
             return true;
         }
+        // An optional has no *named* absent side — `none` is the only way to
+        // spell it, and that's the line above. Everything else names the
+        // payload, whatever the payload's MIR type looks like. Without this an
+        // opaque stdlib type that lowers to a bare `i64` (Duration, Instant)
+        // reached the uppercase-means-err guess at the bottom, and
+        // `d is Duration` on a `Duration?` tested the absent tag — false for a
+        // value that was right there.
+        if matches!(val_ty, MirType::Option(_)) {
+            return false;
+        }
         // Exact identity match wins.
         if let Some(ok) = ok_ty {
             if self.mir_type_name(ok).as_deref() == Some(name) {
