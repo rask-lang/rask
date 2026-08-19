@@ -289,6 +289,17 @@ fn type_arg_key(
             }
             format!("tup{}", parts.join("$"))
         }
+        // Spelled exactly as the source writes it, because MIR reaches the same
+        // layout from a type *string* — `Wrap<i64?>` there splits into the
+        // argument `i64?`, and the two have to agree on the key (#872).
+        Type::Result { ok, err } if **err == Type::None => {
+            format!("{}?", type_arg_key(ok, type_names)?)
+        }
+        Type::Result { ok, err } => format!(
+            "{} or {}",
+            type_arg_key(ok, type_names)?,
+            type_arg_key(err, type_names)?,
+        ),
         _ => return None,
     })
 }
@@ -355,7 +366,12 @@ fn inline_arg_size(
                 .and_then(|n| cache.get(&n).map(|(size, _)| *size));
             instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
         }
-        Type::Tuple(_) | Type::Array { .. } | Type::String => {
+        // A `T?` or a `T or E` is its bytes too — 16 for an optional scalar, 24
+        // for a result — so a generic slot that only holds a word can't take
+        // one. Without this `Wrap { value: opt(3) }` was refused outright:
+        // nothing emitted an instance layout, so the shared 8-byte slot was all
+        // there was (#872).
+        Type::Tuple(_) | Type::Array { .. } | Type::String | Type::Result { .. } => {
             Some(type_size_align(ty, cache).0)
         }
         _ => None,
@@ -415,6 +431,22 @@ fn arg_as_cache_name(
                 .filter(|n| cache.contains_key(n));
             Type::UnresolvedNamed(instance.unwrap_or(base_name))
         }
+        // A shape that holds other types has to be walked, not just handed over.
+        // `i64 or MyErr` sized its error side as one word, because a `Named`
+        // buried inside it never reached the rename and `type_size_align` can't
+        // resolve an id — so the layout came out 32 bytes where MIR wanted 40
+        // (#872).
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(arg_as_cache_name(ok, type_names, cache)),
+            err: Box::new(arg_as_cache_name(err, type_names, cache)),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems.iter().map(|e| arg_as_cache_name(e, type_names, cache)).collect(),
+        ),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(arg_as_cache_name(elem, type_names, cache)),
+            len: *len,
+        },
         other => other.clone(),
     }
 }

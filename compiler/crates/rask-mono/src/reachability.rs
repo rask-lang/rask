@@ -66,12 +66,22 @@ pub fn mangle_name(base: &str, type_args: &[Type]) -> String {
 /// `Pair<i64, Big>` becomes `Pair$i64$Big`. A `<` in a symbol name is what
 /// `strip_written_type_args` cuts off, so `get$Wrap<i64>` would come back out of
 /// it as `get$Wrap` — a name for a different instantiation (#871).
+///
+/// `?` and ` or ` get names of their own rather than being dropped: `i64?` and
+/// `i64` are different instantiations of the same method and can't share a
+/// symbol (#872).
 fn symbol_spelling(ty: &Type) -> String {
     let spelled = format!("{}", ty);
-    if !spelled.contains('<') {
+    if spelled.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return spelled;
     }
-    spelled.replace(", ", "$").replace('<', "$").replace('>', "")
+    spelled
+        .replace(" or ", "$or$")
+        .replace('?', "$opt")
+        .replace(", ", "$")
+        .replace('<', "$")
+        .replace('>', "")
+        .replace(' ', "_")
 }
 
 /// Drives monomorphization: reachability first, instantiation on demand.
@@ -815,6 +825,32 @@ impl<'a> Monomorphizer<'a> {
         (names, self_ty)
     }
 
+    /// A method's own type arguments, minus any that name one of the owning
+    /// type's parameters.
+    ///
+    /// `func wrapped_width(self) -> i64 where T: Sized2` inside `extend Wrap<T>`
+    /// puts `T` in the *method's* parameter list — a `where` clause adds an entry
+    /// for any name it doesn't already find there, and the parser can't see that
+    /// the enclosing header declared it. The receiver has already bound `T`, so
+    /// taking a second argument for it bound it twice, and the second one was an
+    /// unsolved inference variable. The copy came out as
+    /// `Wrap_wrapped_width$Wide__` with `_` substituted over `Wide`, and
+    /// `self.value.width()` then had no receiver type to dispatch on (#872).
+    fn own_type_args(&self, qualified: &str, args: Vec<Type>) -> Vec<Type> {
+        let Some(owner) = self.method_owners.get(qualified) else { return args };
+        let Some(decl) = self.method_table.get(qualified) else { return args };
+        let DeclKind::Fn(f) = &decl.kind else { return args };
+        if f.type_params.len() != args.len() {
+            return args;
+        }
+        f.type_params
+            .iter()
+            .zip(args)
+            .filter(|(tp, _)| !owner.params.contains(&tp.name))
+            .map(|(_, a)| a)
+            .collect()
+    }
+
     /// The resolved type arguments at a call site. A node inside an
     /// instantiated copy has an id the checker never saw, so its arguments come
     /// from what `carry_node_records` substituted.
@@ -834,7 +870,9 @@ impl<'a> Monomorphizer<'a> {
         let Some(typed) = self.typed else { return args };
         args.into_iter()
             .map(|arg| match &arg {
-                Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                Type::Generic { .. }
+                | Type::UnresolvedGeneric { .. }
+                | Type::Result { .. } => {
                     Self::nameable_type(&arg, &typed.types).unwrap_or(arg)
                 }
                 _ => arg,
@@ -907,7 +945,9 @@ impl<'a> Monomorphizer<'a> {
                 // and the fallback then bound the method's parameter to the
                 // *inner* argument — `Wrap<Wrap<i64>>.get()` compiled as if it
                 // returned an i64 (#871).
-                Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                Type::Generic { .. }
+                | Type::UnresolvedGeneric { .. }
+                | Type::Result { .. } => {
                     match Self::nameable_type(t.as_ref(), &typed.types) {
                         Some(named) => out.push(named),
                         None => return Vec::new(),
@@ -949,6 +989,15 @@ impl<'a> Monomorphizer<'a> {
             Type::UnresolvedGeneric { name, args } => {
                 Self::nameable_generic(&bare(name), args, types)
             }
+            // `T?` is a `Result` whose error side is `none`, so both shapes come
+            // through here. A generic type instantiated with one needs its own
+            // body: an optional is 16 bytes and a result 24, where the shared
+            // layout's slot is 8 (#872).
+            Type::Result { ok, err } => Some(Type::Result {
+                ok: Box::new(Self::nameable_type(ok, types)?),
+                err: Box::new(Self::nameable_type(err, types)?),
+            }),
+            Type::None | Type::Unit => Some(ty.clone()),
             _ => None,
         }
     }
@@ -1188,8 +1237,9 @@ impl<'a> Monomorphizer<'a> {
                             } else {
                                 Vec::new()
                             };
+                            let own_args = self.own_type_args(&qualified, type_args.clone());
                             let type_args: Vec<Type> =
-                                recv_args.into_iter().chain(type_args.clone()).collect();
+                                recv_args.into_iter().chain(own_args).collect();
                             // A method with type parameters gets one body per set
                             // of arguments, same as a generic function — so the
                             // call has to name the copy. Only where there's a body

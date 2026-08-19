@@ -846,7 +846,7 @@ impl<'a> MirContext<'a> {
                     );
                 }
                 // "T or E" → Result<T, E>
-                if let Some(or_pos) = name.find(" or ") {
+                if let Some(or_pos) = find_top_level_or(name) {
                     let ok_str = name[..or_pos].trim();
                     let err_str = name[or_pos + 4..].trim();
                     return MirType::Result {
@@ -4779,6 +4779,25 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
             f.name
         ),
     }
+}
+
+/// The first ` or ` that isn't inside `<…>` or `(…)`.
+///
+/// `Wrap<i64 or MyErr>` is one type, not a result. Splitting on the first ` or `
+/// anywhere made it `Wrap<i64` or `MyErr>`, so a method on it took a `self` typed
+/// as a result of two nonsense halves (#872).
+fn find_top_level_or(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' if depth == 0 && bytes[i..].starts_with(b" or ") => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {
