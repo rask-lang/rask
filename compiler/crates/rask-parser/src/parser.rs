@@ -4620,7 +4620,19 @@ impl Parser {
         let start = self.current().span.start;
         self.expect(&TokenKind::Match)?;
 
-        let scrutinee = self.parse_expr()?;
+        // The `{` after a scrutinee always opens the arms, never a struct
+        // literal — same rule `if`, `while` and `for` already use for their
+        // condition. Without it a scrutinee that is a bare capitalised name read
+        // as a struct literal and the first arm was parsed as a field:
+        //
+        //     const LIMIT = 49
+        //     match LIMIT { 49 => … }
+        //     error[E0100]: Expected name, found a number
+        //
+        // `match lower { 49 => … }` and `match (LIMIT) { … }` both worked, which
+        // is why it took a `const` in a match to find it (#884). Matching on a
+        // struct literal directly still works with the parens.
+        let scrutinee = self.parse_expr_no_braces()?;
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();

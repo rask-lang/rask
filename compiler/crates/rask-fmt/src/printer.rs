@@ -2014,7 +2014,7 @@ impl<'a> Printer<'a> {
                 if !source_is_multiline && all_arms_simple && arms.len() <= 4 {
                     // Inline style: match x { 1 => "one", 2 => "two" }
                     self.emit("match ");
-                    self.format_expr(scrutinee);
+                    self.format_match_scrutinee(scrutinee);
                     self.emit(" { ");
                     for (i, arm) in arms.iter().enumerate() {
                         if i > 0 {
@@ -2041,7 +2041,7 @@ impl<'a> Printer<'a> {
                 } else {
                     // Multi-line style: no commas
                     self.emit("match ");
-                    self.format_expr(scrutinee);
+                    self.format_match_scrutinee(scrutinee);
                     self.emit(" {");
                     self.emit_newline();
                     self.indent += 1;
@@ -2686,6 +2686,37 @@ impl<'a> Printer<'a> {
     }
 
     // --- Patterns ---
+
+    /// A match scrutinee, parenthesised when it starts with a struct literal.
+    ///
+    /// The `{` after a scrutinee opens the arms, so a leading struct literal has
+    /// to say where it ends. Re-emitting `match (Point { x: 0 }).x` without the
+    /// parens produced `match Point { x: 0 }.x`, which doesn't parse — the
+    /// round-trip gate caught it the same day the parser rule landed (#884).
+    fn format_match_scrutinee(&mut self, scrutinee: &Expr) {
+        if Self::starts_with_struct_literal(scrutinee) {
+            self.emit("(");
+            self.format_expr(scrutinee);
+            self.emit(")");
+        } else {
+            self.format_expr(scrutinee);
+        }
+    }
+
+    /// Is a struct literal the leftmost thing in this expression? Only the
+    /// leftmost matters: anything further right is already inside brackets or
+    /// behind an operator by the time the arms' `{` could be confused with it.
+    fn starts_with_struct_literal(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::StructLit { .. } => true,
+            ExprKind::Field { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::MethodCall { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::Index { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::Binary { left, .. } => Self::starts_with_struct_literal(left),
+            ExprKind::Cast { expr, .. } => Self::starts_with_struct_literal(expr),
+            _ => false,
+        }
+    }
 
     fn format_pattern(&mut self, pattern: &Pattern) {
         match pattern {

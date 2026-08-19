@@ -2806,7 +2806,22 @@ impl TypeChecker {
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.sort_by_key(key_fn) -> ()
+            //
+            // The key type comes from the closure. Leaving it free was harmless
+            // while the body was native — nothing read it — and fatal once
+            // `sort_by_key` was written in Rask over `sort_by`: the body compares
+            // two keys, and an unresolved key type reached MIR as `compare` on a
+            // receiver with no type at all (#887).
             "sort_by_key" if args.len() == 1 => {
+                let key = self.ctx.fresh_var();
+                let _ = self.unify(
+                    &args[0],
+                    &Type::Fn {
+                        params: vec![inner_type.clone()],
+                        ret: Box::new(key),
+                    },
+                    span,
+                );
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove_adjacent_duplicates() -> ()

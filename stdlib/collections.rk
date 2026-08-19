@@ -171,6 +171,11 @@ extend Vec<T> {
     public func sort_by(mutate self, f: func(T, T) -> Ordering) {}
 
     /// Sort by a key extracted from each element.
+    ///
+    /// Native has no lowering — see #886, and #887 for why a Rask body over
+    /// `sort_by` doesn't work yet: the body compares two keys, and `K` is the
+    /// method's own type parameter. The copy is made with it unsubstituted, so
+    /// `compare` lands on a receiver with no type at all.
     @native
     public func sort_by_key(mutate self, f: func(T) -> K) {}
 
@@ -192,6 +197,12 @@ extend Vec<T> {
     public func wide(self) -> Wide<T> {}
 
     /// Map then flatten results.
+    ///
+    /// Native has no lowering — see #886, and #887 for why a Rask body doesn't
+    /// work yet: `U` is the method's own type parameter, nothing resolves it at
+    /// the call site, and a copy made with it unsubstituted lays the result out
+    /// at the wrong width. A `Vec<string>` came back with its first element
+    /// truncated and the rest gone.
     @native
     public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> {}
 
@@ -212,6 +223,10 @@ extend Vec<T> {
     public func enumerate(self) -> Vec<(usize, T)> {}
 
     /// Zip with another vector into pairs.
+    ///
+    /// Native has no lowering — see #886, and #887 for why a Rask body doesn't
+    /// work yet: `U` is the method's own type parameter and nothing resolves it
+    /// at the call site, so the pair's second slot gets the wrong width.
     @native
     public func zip(self, other: Vec<U>) -> Vec<(T, U)> {}
 
@@ -391,8 +406,19 @@ extend Map<K, V> {
 
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
-    @native
-    public func insert_if_missing(mutate self, key: K, f: func() -> V) {}
+    ///
+    /// Written in Rask over `contains_key` and `insert`: it's a condition around
+    /// two primitives, and native had no lowering for it at all —
+    /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
+    /// the interpreter's own copy ran (#886). One source, so the two can't
+    /// disagree about it.
+    public func insert_if_missing(mutate self, key: K, f: func() -> V) -> void {
+        if self.contains_key(key) {
+            return
+        }
+        self.insert(key, f())
+        return
+    }
 
     /// Insert default if key absent, then modify the value. One hash lookup.
     /// Panics on alloc failure.

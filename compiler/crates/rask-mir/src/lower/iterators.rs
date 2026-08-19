@@ -275,6 +275,17 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
+            // `v.enumerate()` on its own is `v.iter().enumerate().to_vec()`.
+            // Same argument as `map`/`filter` above, and the adapter already
+            // existed — only the standalone spelling was missing, so it reached
+            // codegen as `Vec_enumerate`, which nothing emits (#886).
+            "enumerate" if args.is_empty() => {
+                if let Some(mut chain) = self.try_parse_iter_chain(object) {
+                    chain.adapters.push(super::IterAdapter::Enumerate);
+                    let result = self.lower_iter_collect(&chain)?;
+                    return Ok(Some(result));
+                }
+            }
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {

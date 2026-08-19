@@ -899,12 +899,26 @@ RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
     const char *end = p + slen;
     const char *sepd = str_data(sep);
 
+    // An empty separator matches at every boundary — before the first
+    // character, between each pair, and after the last — so "ab" gives
+    // ["", "a", "b", ""] and "" gives ["", ""]. This branch pushed one *byte*
+    // per character and no empties, so it answered 2 pieces for "ab" where the
+    // interpreter answered 4, and cut a multi-byte character in half (#888).
     if (sep_len == 0) {
-        for (int64_t i = 0; i < slen; i++) {
+        RaskStr edge;
+        str_make_sso(&edge, p, 0);
+        rask_vec_push(v, &edge);
+        int64_t i = 0;
+        while (i < slen) {
+            int64_t w;
+            str_decode_at(p, slen, i, &w);
             RaskStr c;
-            str_make_sso(&c, p + i, 1);
+            str_make(&c, p + i, w);
             rask_vec_push(v, &c);
+            i += w;
         }
+        str_make_sso(&edge, p, 0);
+        rask_vec_push(v, &edge);
         return v;
     }
 
