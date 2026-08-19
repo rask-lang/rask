@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What `Map.insert` hands back — #903.
+//
+// `insert` is declared to return the value it displaced, so it's how you tell a
+// new key from an overwrite in one call. On native it returns the C runtime's
+// internal "did I replace something" flag instead: always 1 for an overwrite
+// whatever the old value was, and present-with-0 for a fresh key that displaced
+// nothing. A string value crashes outright — the flag gets read as a string
+// pointer and dereferenced.
+//
+// The rest of the Map surface is green and lives in `t_day_map.rk`.
+
+test "std.collections — a fresh key displaces nothing" {
+    mut m = Map.new()
+    assert m.insert("k", 1) == none
+}
+
+test "std.collections — an overwrite hands back the old value" {
+    mut m = Map.new()
+    m.insert("k", 7)
+    assert m.insert("k", 8)! == 7
+    assert m.get("k")! == 8
+    assert m.len() == 1
+}
+
+test "std.collections — the old value is the old value, not the flag" {
+    mut m = Map.new()
+    m.insert("k", 99)
+    assert m.insert("k", 100)! == 99
+}
+
+test "std.collections — a displaced string comes back whole" {
+    mut m: Map<string, string> = Map.new()
+    m.insert("a", "one")
+    assert m.insert("a", "two")! == "one"
+    assert m.get("a")! == "two"
+}
+
+test "std.collections — a fresh string key displaces nothing" {
+    mut m: Map<string, string> = Map.new()
+    assert m.insert("a", "one") == none
+}
+
+func main() {}

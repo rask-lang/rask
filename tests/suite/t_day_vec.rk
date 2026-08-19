@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: Vec — build it, index it, walk it, shrink it.
+//
+// push/pop/len/index/get/first/last/insert/remove/clear/contains/reverse, the
+// literal form, and iteration. `get` hands back an absent value for an
+// out-of-range index while `[]` panics, which is the distinction worth knowing
+// on the first day.
+
+test "a fresh Vec is empty" {
+    mut v = Vec.new()
+    v.push(1)
+    v.pop()
+    assert v.len() == 0
+    assert v.is_empty()
+}
+
+test "push then index" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    assert v.len() == 3
+    assert v[0] == 10
+    assert v[1] == 20
+    assert v[2] == 30
+}
+
+// C4: the slot picks the shape. Annotated `Vec<T>`, the literal is a Vec; left
+// bare it is a fixed `[T; N]`, which is what `t_day_arrays.rk` covers.
+test "the literal form" {
+    let v: Vec<i32> = [1, 2, 3]
+    assert v.len() == 3
+    assert v[0] == 1
+    assert v[2] == 3
+    let strs: Vec<string> = ["a", "b"]
+    assert strs.len() == 2
+    assert strs[1] == "b"
+}
+
+test "pop returns the last element and shrinks" {
+    mut v: Vec<i32> = [1, 2, 3]
+    assert v.pop()! == 3
+    assert v.len() == 2
+    assert v.pop()! == 2
+    assert v.pop()! == 1
+    assert v.pop() == none
+    assert v.is_empty()
+}
+
+test "get is absent out of range, index panics" {
+    let v: Vec<i32> = [1, 2, 3]
+    assert v.get(0)! == 1
+    assert v.get(2)! == 3
+    assert v.get(3) == none
+    assert (v.get(99) ?? -1) == -1
+}
+
+test "first and last" {
+    let v: Vec<i32> = [5, 6, 7]
+    assert v.first()! == 5
+    assert v.last()! == 7
+    mut empty: Vec<i32> = Vec.new()
+    assert empty.first() == none
+    assert empty.last() == none
+}
+
+test "set replaces in place" {
+    mut v: Vec<i32> = [1, 2, 3]
+    v.set(1, 99)
+    assert v[1] == 99
+    assert v.len() == 3
+}
+
+test "insert and remove shift the rest" {
+    mut v: Vec<i32> = [1, 2, 3]
+    v.insert(1, 99)
+    assert v.len() == 4
+    assert v[1] == 99
+    assert v[2] == 2
+    let gone = v.remove(1)
+    assert gone == 99
+    assert v.len() == 3
+    assert v[1] == 2
+}
+
+test "clear empties it" {
+    mut v: Vec<i32> = [1, 2, 3]
+    v.clear()
+    assert v.is_empty()
+    assert v.len() == 0
+    v.push(1)
+    assert v.len() == 1
+}
+
+test "contains, reverse, swap" {
+    mut v: Vec<i32> = [1, 2, 3]
+    assert v.contains(2)
+    assert !v.contains(99)
+    v.reverse()
+    assert v[0] == 3
+    assert v[2] == 1
+    v.swap(0, 2)
+    assert v[0] == 1
+    assert v[2] == 3
+}
+
+test "sum, min, max" {
+    let v: Vec<i32> = [3, 1, 4, 1, 5]
+    assert v.sum() == 14
+    assert v.min()! == 1
+    assert v.max()! == 5
+}
+
+test "iterating and building at the same time" {
+    let src: Vec<i32> = [1, 2, 3, 4]
+    mut evens = Vec.new()
+    for x in src {
+        if x % 2 == 0: evens.push(x)
+    }
+    assert evens.len() == 2
+    assert evens[0] == 2
+    assert evens[1] == 4
+}
+
+test "a Vec of strings joins" {
+    let v: Vec<string> = ["a", "b", "c"]
+    assert v.join(",") == "a,b,c"
+    assert v.join("") == "abc"
+}
+
+func main() {}

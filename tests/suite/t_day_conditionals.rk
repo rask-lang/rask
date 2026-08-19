@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: bool, if/else, and the logical operators.
+//
+// Both if forms — `: expr` for one expression and braces for a block — as a
+// statement and as an expression, else-if chains, short-circuit evaluation
+// (proved by a side effect that must not happen), and the comparison operators
+// feeding into them.
+
+func classify(n: i32) -> string {
+    if n > 0: return "positive"
+    else if n < 0: return "negative"
+    else: return "zero"
+}
+
+// The side effect goes through a struct field: `mutate` on a bare primitive does
+// not write back to the caller (#899), which would make every case below look
+// like a short circuit.
+struct Counter {
+    n: i32
+}
+
+func bump(mutate c: Counter) -> bool {
+    c.n = c.n + 1
+    return true
+}
+
+test "bool literals and negation" {
+    let t = true
+    let f = false
+    assert t
+    assert !f
+    assert !!t
+    assert t != f
+}
+
+test "if as a statement, both forms" {
+    mut hit = 0
+    if true: hit = 1
+    assert hit == 1
+    if false: hit = 2
+    assert hit == 1
+    if true {
+        hit = 3
+        hit = hit + 1
+    }
+    assert hit == 4
+}
+
+test "if/else" {
+    let x = 5
+    mut label = ""
+    if x > 0 {
+        label = "positive"
+    } else {
+        label = "non-positive"
+    }
+    assert label == "positive"
+}
+
+test "if as an expression" {
+    let x = 5
+    assert (if x > 0: "pos" else: "neg") == "pos"
+    let y = -5
+    assert (if y > 0: "pos" else: "neg") == "neg"
+}
+
+test "else-if chain" {
+    assert classify(3) == "positive"
+    assert classify(-3) == "negative"
+    assert classify(0) == "zero"
+}
+
+test "and, or" {
+    assert true && true
+    assert !(true && false)
+    assert !(false && true)
+    assert !(false && false)
+    assert true || true
+    assert true || false
+    assert false || true
+    assert !(false || false)
+}
+
+test "and short-circuits before the right side runs" {
+    mut c = Counter { n: 0 }
+    let r = false && bump(mutate c)
+    assert !r
+    assert c.n == 0
+}
+
+test "or short-circuits before the right side runs" {
+    mut c = Counter { n: 0 }
+    let r = true || bump(mutate c)
+    assert r
+    assert c.n == 0
+}
+
+test "the right side does run when the left does not decide it" {
+    mut c = Counter { n: 0 }
+    let r = true && bump(mutate c)
+    assert r
+    assert c.n == 1
+    let r2 = false || bump(mutate c)
+    assert r2
+    assert c.n == 2
+}
+
+test "comparison feeding a condition" {
+    let a = 3
+    let b = 7
+    assert a < b && b > a
+    assert a != b && !(a == b)
+    assert a <= 3 && a >= 3
+    let in_range = a >= 1 && a <= 5
+    assert in_range
+}
+
+test "nested conditions with parentheses" {
+    let x = 5
+    let y = 10
+    assert (x > 0 && y < 20) || x == 0
+    assert !((x > 100) || (y > 100))
+}
+
+func main() {}

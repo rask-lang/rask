@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: while, for-in, loop, break and continue.
+//
+// Ranges are the day-one way to count, so `0..n` (exclusive) and `0..=n`
+// (inclusive) are both pinned — off-by-one here is the classic first-hour bug.
+// `loop` with `break value` and labelled breaks out of a nested loop are here
+// too, since neither has an obvious shape to guess at.
+
+test "while counts down" {
+    mut n = 5
+    mut steps = 0
+    while n > 0 {
+        n = n - 1
+        steps = steps + 1
+    }
+    assert n == 0
+    assert steps == 5
+}
+
+test "while with an inline body" {
+    mut n = 0
+    while n < 3: n = n + 1
+    assert n == 3
+}
+
+test "a while whose condition starts false never runs" {
+    mut hit = 0
+    while false: hit = 1
+    assert hit == 0
+}
+
+test "for over an exclusive range" {
+    mut seen = Vec.new()
+    for i in 0..4 {
+        seen.push(i)
+    }
+    assert seen.len() == 4
+    assert seen[0] == 0
+    assert seen[3] == 3
+}
+
+test "for over an inclusive range" {
+    mut seen = Vec.new()
+    for i in 0..=4 {
+        seen.push(i)
+    }
+    assert seen.len() == 5
+    assert seen[4] == 4
+}
+
+test "an empty range runs zero times" {
+    mut count = 0
+    for _ in 0..0 {
+        count = count + 1
+    }
+    assert count == 0
+    for _ in 5..2 {
+        count = count + 1
+    }
+    assert count == 0
+}
+
+test "for over a Vec" {
+    mut v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    mut total = 0
+    for x in v {
+        total = total + x
+    }
+    assert total == 60
+}
+
+test "break leaves the loop early" {
+    mut last = 0
+    for i in 0..100 {
+        if i == 5: break
+        last = i
+    }
+    assert last == 4
+}
+
+test "continue skips the rest of the body" {
+    mut total = 0
+    for i in 0..10 {
+        if i % 2 == 1: continue
+        total = total + i
+    }
+    assert total == 20
+}
+
+test "loop with break value" {
+    mut n = 0
+    let found = loop {
+        n = n + 1
+        if n * n > 50: break n
+    }
+    assert found == 8
+}
+
+test "a labelled break leaves the outer loop" {
+    mut hits = 0
+    outer: for i in 0..5 {
+        for j in 0..5 {
+            hits = hits + 1
+            if i == 2 && j == 2: break outer
+        }
+    }
+    assert hits == 13
+}
+
+test "nested loops without a label" {
+    mut pairs = 0
+    for i in 0..3 {
+        for j in 0..3 {
+            if j > i: continue
+            pairs = pairs + 1
+        }
+    }
+    assert pairs == 6
+}
+
+func main() {}
