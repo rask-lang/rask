@@ -1289,9 +1289,15 @@ an assignment that reads as touching `a` also modifies `b`. In the real design
 that is a store into `b`'s intrusive-list header. In this prototype it is a write
 to a third object neither name mentions — the store's backlink index — which is
 arguably the worse of the two for reading. Either way, Transparency of Cost
-should be made to bless this explicitly rather than inherit it: an edge write is
-not the integer copy a handle write is, and the litmus already prices it at ~4–8
-stores against 1–2.
+should be made to bless this explicitly rather than inherit it. The sentence it
+needs, for whichever spec ends up owning `Store`:
+
+> Assigning a link into an edge writes the target as well as the holder: the
+> store records the incoming edge so that `delete` can find it. An edge write is
+> ~4–8 stores where a handle write is 1–2, and `a.target = b` modifies `b`.
+
+That is a cost the principle requires be visible, and it currently isn't stated
+anywhere normative — only measured here.
 
 ## Finding 3: the #626 trade is real but smaller than it first looks
 
@@ -1464,7 +1470,7 @@ What it costs is three concepts, against the one runtime check handles spend:
 | Addition | Status |
 |---|---|
 | kill/use tracking for link locals — a named delete kills one name plus every derived alias, an unnamed one kills all | built |
-| `deleting` parameter mode, implying `mutate` | **built** — one word, one declaration, no call-site change |
+| `deleting` parameter mode, implying `mutate` | **built and accepted** — one word on the declaration, `deleting` at the call site by PM5 |
 | ~~`mut Link<T>` — writability in the type~~ | **withdrawn** — breaks the box-family rule, and can't stay one bit |
 | B1/B2 amendment: a third container class, grows in count but never relocates | designed, unbuilt |
 
@@ -1472,12 +1478,10 @@ The first reuses machinery Rask already has for `take`, so it adds no new analys
 class — which is the answer to "complexity is conserved". The rest are genuinely
 new surface.
 
-So the decision is not "does the model work" — it does. With `mut Link<T>`
-withdrawn and the cross-task case answered by `snapshot`, one question is left,
-and it is the only language change on the list:
+Both questions this analysis ended on are now answered.
 
-1. **Is `deleting` an acceptable parameter mode?** It is built and the corpus is
-   converted: three declarations gained the word, zero call sites changed, both
+1. ~~Is `deleting` an acceptable parameter mode?~~ **Accepted.** Built, and the
+   corpus converted: three declarations gained the word, eight call sites, both
    litmus pairs still byte-identical. Without it the model is unsound — cascade
    delete is a use after free, demonstrated. Against it, the handle model spends
    context clauses, `frozen`, `WeakHandle`, generation coalescing and the W2a–d
@@ -1489,6 +1493,27 @@ and it is the only language change on the list:
    call to translate a root. What remains is a lint for read-only *intent*, which
    is information rather than enforcement — principle 5's job, not the type
    system's.
+
+### What accepting it does not yet decide
+
+`deleting` is a parameter mode in service of `Store`/`Link`, and `Store` is not in
+`specs/` — it lives here, in an exploration. So the mode is settled and the fold-in
+is not. Three things it needs before it is a language feature rather than a
+prototype:
+
+- **`mem.parameters` gains a fourth mode.** PM1–PM3 enumerate borrow/mutate/take;
+  `deleting` sits above `mutate` and needs its own row, plus PM4/PM5 saying the
+  call-site marker is the signature's word.
+- **A normative home for `Store`/`Link`.** Everything asserted here — delete-time
+  fixup, root edges, the E0327 required-edge rule, `snapshot`/`corresponding` — is
+  spec text living in an analysis document.
+- **Whether `Pool`/`Handle` stays.** The litmus programs are written both ways and
+  both work. Nothing here argues for removing handles; a handle is still the only
+  thing that survives a round trip, which is what `mem.relocatable` and #626 are
+  built on. Two coexisting models is a decision, not a default.
+
+Native codegen is separate and unstarted: all of this is interpreter-only, which is
+why `p11`–`p14` are registered pending.
 
 ## Running it
 
