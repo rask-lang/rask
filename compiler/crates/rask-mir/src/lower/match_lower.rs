@@ -741,18 +741,73 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            // A plain binding pattern is a catch-all that also *names* the
+            // value — `match n { x if x < 0 => … }`. The switch above routes it
+            // to the default and nothing bound `x`, so the guard referred to a
+            // variable that didn't exist:
+            //
+            //     error: MIR lowering 'bucket': unresolved variable `x`
+            //
+            // The if-chain path taken by a match with range patterns has always
+            // bound it; this one hadn't. Before the guard, because the guard is
+            // usually what reads it (#875).
+            if let Pattern::Ident(name) = &arm.pattern {
+                let names_a_variant = self.resolve_pattern_tag(name).is_some()
+                    || (has_tag && (is_result_or_option || is_variant_name(name)));
+                if !names_a_variant {
+                    let bind_local =
+                        self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: bind_local,
+                        rvalue: MirRValue::Use(scrutinee_op.clone()),
+                    }));
+                    if let Some(prefix) = self.mir_type_name(&scrutinee_ty) {
+                        self.meta_mut(name).type_prefix = Some(prefix);
+                    }
+                    self.locals.insert(name.clone(), (bind_local, scrutinee_ty.clone()));
+                }
+            }
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
-                let guard_fail_block = if i + 1 < arm_blocks.len() {
-                    arm_blocks[i + 1]
-                } else if default_block == arm_blocks[i] {
-                    // Last arm, and it's the catch-all that the switch already
-                    // defaults to. Falling back to `default_block` here would
-                    // branch this block at itself and spin.
-                    merge_block
-                } else {
-                    default_block
-                };
+                // A failed guard falls through to the next arm that would take
+                // the value whatever it is — the next catch-all below this one —
+                // not to the next arm's body. If that one is guarded too, it
+                // tests its own guard and falls through again, so a run of
+                // guarded catch-alls is tried in order.
+                //
+                // The switch dispatches once. Handing the failure to
+                // `arm_blocks[i + 1]` runs that arm's body whether its pattern
+                // matches or not, which is invisible while the guarded arms sit
+                // at the end (every arm below them is a catch-all anyway) and
+                // wrong the moment one doesn't:
+                //
+                //   match n {
+                //       x if x < 0 => "neg"
+                //       0 => "zero"
+                //       _ => "big"
+                //   }
+                //
+                // 5 took the default to the guarded arm, failed the guard, and
+                // fell into the `0` arm: "zero" (#875).
+                //
+                // With no catch-all below, the match isn't exhaustive and there
+                // is nothing to fall through to — `merge_block`, which also
+                // keeps a last guarded catch-all from branching at itself.
+                let guard_fail_block = ((i + 1)..arms.len())
+                    .find(|&j| {
+                        let unconditional = match &arms[j].pattern {
+                            Pattern::Wildcard => true,
+                            Pattern::Ident(n) => {
+                                self.resolve_pattern_tag(n).is_none()
+                                    && !(has_tag && (is_result_or_option || is_variant_name(n)))
+                            }
+                            _ => false,
+                        };
+                        unconditional
+                    })
+                    .map(|j| arm_blocks[j])
+                    .unwrap_or(merge_block);
                 let guard_pass_block = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: guard_val,
