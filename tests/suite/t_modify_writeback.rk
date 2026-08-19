@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `modify` keeps what the closure left behind (#843).
+//
+// It didn't. `Vec.modify`, `Map.modify` and `Map.modify_with_default` all called
+// the closure with a *copy* of the element and threw the copy away, so the name
+// was the only thing that modified anything:
+//
+//     mut v: Vec<i64> = [1, 2, 3]
+//     v.modify(0, |mutate x: i64| { x = x + 100; return x })
+//     // answered 101, and left the element at 1
+//
+// The spec's own reason for the entry API is a closure that writes:
+//
+//     map.modify_with_default(user_id, || User.new(user_id), |u| {
+//         u.last_seen = now()
+//         u.visit_count += 1
+//     })
+//
+// which did nothing at all.
+//
+// These are interpreter-only for now — `Vec.modify` and `Map.modify` still fail
+// in codegen with "Function not found", tracked in #842.
+
+test "modify — a scalar element keeps the closure's value" {
+    mut v: Vec<i64> = [1, 2, 3]
+    let r = v.modify(0, |mutate x: i64| {
+        x = x + 100
+        return x
+    })
+    assert_eq(r ?? -1, 101)
+    assert_eq(v.join(","), "101,2,3")
+}
+
+test "modify — an untouched element is left alone" {
+    mut v: Vec<i64> = [1, 2, 3]
+    let r = v.modify(1, |mutate x: i64| {
+        return x * 2
+    })
+    assert_eq(r ?? -1, 4)
+    assert_eq(v.join(","), "1,2,3")
+}
+
+test "modify — out of range is none, and changes nothing" {
+    mut v: Vec<i64> = [1, 2, 3]
+    let r = v.modify(9, |mutate x: i64| {
+        x = 0
+        return x
+    })
+    assert r is none
+    assert_eq(v.join(","), "1,2,3")
+}
+
+struct Counter {
+    hits: i64
+}
+
+test "modify — a struct element keeps a field write" {
+    mut cs: Vec<Counter> = [Counter { hits: 1 }, Counter { hits: 2 }]
+    let r = cs.modify(1, |mutate c: Counter| {
+        c.hits = c.hits + 10
+        return c.hits
+    })
+    assert_eq(r ?? -1, 12)
+    assert_eq(cs[1].hits, 12)
+    // The other element is untouched.
+    assert_eq(cs[0].hits, 1)
+}
+
+test "modify — read is the same call without the write-back" {
+    let v: Vec<i64> = [1, 2, 3]
+    let r = v.read(1, |x| {
+        return x * 2
+    })
+    assert_eq(r ?? -1, 4)
+    let missing = v.read(9, |x| {
+        return x * 2
+    })
+    assert missing is none
+}
+
+test "modify — a Map value keeps the closure's value" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    let r = m.modify("a", |mutate n: i64| {
+        n = n + 5
+        return n
+    })
+    assert_eq(r ?? -1, 6)
+    assert_eq(m.get("a") ?? -1, 6)
+
+    let absent = m.modify("nope", |mutate n: i64| {
+        n = 99
+        return n
+    })
+    assert absent is none
+}
+
+// The entry API: the first call inserts the default and then modifies it, the
+// second finds what the first left.
+test "modify — modify_with_default accumulates across calls" {
+    mut counts: Map<string, i64> = Map.new()
+    let first = counts.modify_with_default("x", || {
+        return 0
+    }, |mutate n: i64| {
+        n = n + 1
+        return n
+    })
+    let second = counts.modify_with_default("x", || {
+        return 0
+    }, |mutate n: i64| {
+        n = n + 1
+        return n
+    })
+    assert_eq(first, 1)
+    assert_eq(second, 2)
+    assert_eq(counts.get("x") ?? -1, 2)
+}
+
+test "modify — modify_with_default on a struct value" {
+    mut users: Map<string, Counter> = Map.new()
+    let r = users.modify_with_default("u", || {
+        return Counter { hits: 0 }
+    }, |mutate c: Counter| {
+        c.hits = c.hits + 1
+        return c.hits
+    })
+    assert_eq(r, 1)
+    let stored = users.get("u")
+    if stored is Counter as c {
+        assert_eq(c.hits, 1)
+    } else {
+        assert false
+    }
+}
+
+func main() {}

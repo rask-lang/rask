@@ -2239,6 +2239,16 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         self.emit(", ");
                     }
+                    // The mode. Dropping it changed what the closure was
+                    // allowed to do: `|mutate x: i64| { x = x + 100 }` came back
+                    // as `|x: i64| { … }`, which is a write to a read-only
+                    // parameter — a file that compiled before `rask fmt` and not
+                    // after (#805's family, found via #843).
+                    if param.is_take {
+                        self.emit("take ");
+                    } else if param.is_mutate {
+                        self.emit("mutate ");
+                    }
                     self.emit(&param.name);
                     if let Some(ref ty) = param.ty {
                         self.emit(": ");

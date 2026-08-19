@@ -8,6 +8,57 @@ use crate::value::{BuiltinKind, FloatKind, Value};
 use super::{Interpreter, RuntimeError};
 
 impl Interpreter {
+    /// Call a closure and hand back both its result and the final value of its
+    /// first parameter.
+    ///
+    /// `modify` gives the closure mutable access to the element and is supposed
+    /// to keep whatever the closure leaves there. It didn't: it called the
+    /// closure with a copy and threw the copy away, so
+    /// `v.modify(0, |mutate x: i64| { x = x + 100; return x })` answered 101 and
+    /// left the element at 1 — and the spec's own
+    /// `|u| { u.visit_count += 1 }` example did nothing at all (#843).
+    ///
+    /// The interpreter's closure values carry parameter *names* and nothing
+    /// else, with no `mutate` marker, so the write-back can't be keyed off the
+    /// declaration the way `mutate_writebacks` is for a named function. Reading
+    /// the binding back out before the scope is popped is the same snapshot,
+    /// taken from the other side. Whether the closure was *allowed* to write is
+    /// the checker's business, and it already enforces `mutate`.
+    pub(crate) fn call_closure_keeping_arg(
+        &mut self,
+        func: Value,
+        args: Vec<Value>,
+    ) -> Result<(Value, Option<Value>), RuntimeError> {
+        if let Value::Closure { params, body, captured_env } = func {
+            self.env.push_scope();
+            for (name, val) in captured_env {
+                self.env.define(name, val);
+            }
+            let first = params.first().cloned();
+            for (param, arg) in params.iter().zip(args.into_iter()) {
+                self.env.define(param.clone(), arg.copy_on_bind());
+            }
+            let result = self.eval_expr(&body).map_err(|diag| diag.error);
+            let final_arg = first.and_then(|name| self.env.get(&name).cloned());
+            self.env.pop_scope();
+            let value = match result {
+                Ok(v) => v,
+                Err(RuntimeError::Return(v)) => v,
+                Err(e) => return Err(e),
+            };
+            return Ok((value, final_arg));
+        }
+        // A named function passed where a closure was expected keeps the
+        // ordinary path; its `mutate` snapshot is already recorded by index.
+        let value = self.call_value(func, args)?;
+        let written = self
+            .mutate_writebacks
+            .iter()
+            .find(|(i, _)| *i == 0)
+            .map(|(_, v)| v.clone());
+        Ok((value, written))
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name } => {

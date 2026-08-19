@@ -10,6 +10,13 @@
 # lag both count. See docs/TESTING.md for the full map.
 
 # --- native codegen bugs (interp correct) ---
+t_modify_writeback.rk      # std.collections — #842 (native). `Vec.modify`,
+#   `Vec.read`, `Map.modify` and `Map.modify_with_default` reach codegen as
+#   "Function not found" — the closure accessors were never lowered. The
+#   interpreter runs all of them, and #843's write-back fix is what this file
+#   asserts: `modify` used to call the closure with a copy and throw the copy
+#   away, so the name was the only thing that modified anything.
+
 # (os.pid/env_vars native, Cell/Mutex, and math moved to pending_features.txt —
 #  they are "backend not built", not regressions)
 #
