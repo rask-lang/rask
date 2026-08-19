@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: 128-bit integers.
+//
+// `i128` and `u128` are 16 bytes and carry values no 64-bit type can hold, which
+// is the whole point — every test here uses a number past 2^64 so a narrowed
+// operand would be visible. `t_i128_arithmetic.rk` covers the arithmetic that
+// #762 fixed; this file is the surrounding surface: literals, comparison,
+// conversion, bit work, and interpolation.
+//
+// Two holes, both probed elsewhere. An i128 inside an *aggregate* — a Vec element
+// or a struct field — doesn't compile on native at all, and neither does a
+// `to<T>()` narrowing *out* of 128 bits (#933, `t_month_i128_aggregates.rk`). And
+// `u64 as u128` sign-extends on the interpreter (#934,
+// `t_month_u128_widening.rk`).
+
+func double_wide(n: i128) -> i128 {
+    return n * 2
+}
+
+test "type.primitives — a value past 2^64 survives a round trip" {
+    let big: i128 = 18446744073709551617
+    assert big == 18446744073709551617
+    assert big > 18446744073709551615
+    assert big != 18446744073709551616
+}
+
+test "type.primitives — u128 above the i128 range" {
+    let big: u128 = 340282366920938463463374607431768211455
+    assert big == 340282366920938463463374607431768211455
+    assert big > 18446744073709551615
+}
+
+test "type.primitives — comparison at 128 bits" {
+    let a: i128 = 18446744073709551617
+    let b: i128 = 18446744073709551618
+    assert a < b
+    assert b > a
+    assert a <= a
+    assert a >= a
+    assert a != b
+}
+
+test "type.primitives — negative i128" {
+    let a: i128 = -18446744073709551617
+    assert a < 0
+    assert a == -18446744073709551617
+    assert -a == 18446744073709551617
+    assert a.abs() == 18446744073709551617
+}
+
+test "type.primitives — addition and subtraction past 64 bits" {
+    let a: i128 = 18446744073709551616
+    let b: i128 = 1
+    assert a + b == 18446744073709551617
+    assert a - b == 18446744073709551615
+    assert a + a == 36893488147419103232
+}
+
+test "type.primitives — multiplication that needs the full width" {
+    let a: i128 = 4294967296
+    assert a * a == 18446744073709551616
+    let b: i128 = 1000000000000
+    assert b * b == 1000000000000000000000000
+}
+
+test "type.primitives — division and remainder past 64 bits" {
+    let a: i128 = 36893488147419103232
+    assert a / 2 == 18446744073709551616
+    assert a % 2 == 0
+    let b: i128 = 18446744073709551617
+    assert b / 2 == 9223372036854775808
+    assert b % 2 == 1
+}
+
+test "type.primitives — a 128-bit value through a function" {
+    let a: i128 = 18446744073709551616
+    assert double_wide(a) == 36893488147419103232
+    let b: i128 = 0
+    assert double_wide(b) == 0
+}
+
+// Values below the source's sign bit only: `u64 as u128` sign-extends on the
+// interpreter, so u64 max comes back as u128 max (#934).
+test "type.primitives — widening into i128 with as" {
+    let small: i64 = 9223372036854775807
+    let wide = small as i128
+    assert wide == 9223372036854775807
+    assert wide + 1 == 9223372036854775808
+    let u: u64 = 100
+    assert (u as u128) == 100
+    let m: u32 = 4000000000
+    assert (m as u128) == 4000000000
+}
+
+test "type.primitives — bit work at 128 bits" {
+    let a: i128 = 1
+    assert (a << 64) == 18446744073709551616
+    assert ((a << 64) >> 64) == 1
+    let mask: u128 = 18446744073709551615
+    assert (mask & 255) == 255
+    assert (mask | 0) == 18446744073709551615
+}
+
+test "type.primitives — a 128-bit value interpolates" {
+    let a: i128 = 18446744073709551617
+    assert "{a}" == "18446744073709551617"
+    let n: i128 = -1
+    assert "{n}" == "-1"
+}
+
+test "type.primitives — accumulating past 64 bits in a loop" {
+    mut acc: i128 = 0
+    let step: i128 = 4611686018427387904
+    for _ in 0..8 {
+        acc = acc + step
+    }
+    assert acc == 36893488147419103232
+}
+
+func main() {}

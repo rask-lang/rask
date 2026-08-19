@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `u64 as u128` — #934.
+//
+// Widening an unsigned 64-bit value to 128 bits sign-extends on the interpreter, so
+// u64 max comes back as u128 max — every bit set, because the top bit was set and
+// the extension filled all 64 new bits with it. Native is correct, which is the
+// less common direction.
+//
+// Only values above the source's sign bit are affected, and only the unsigned
+// path: a small u64 and every signed case are right on both backends. That's why
+// this hides — a test with `let u: u64 = 100` never sees it.
+//
+// Same shape as #907 in the other backend, where `unsigned as f64` uses the signed
+// int-to-float conversion natively and `u8 255 as f64` is -1. Both are the `as`
+// path forgetting to ask whether the source is unsigned, one per backend, and both
+// only show above the sign bit — worth fixing as a pair.
+
+test "type.primitives — u64 max widens to u128 unchanged" {
+    let u: u64 = 18446744073709551615
+    assert (u as u128) == 18446744073709551615
+}
+
+test "type.primitives — a u64 just above the sign bit" {
+    let u: u64 = 9223372036854775808
+    assert (u as u128) == 9223372036854775808
+}
+
+test "type.primitives — u32 max widens to u128 unchanged" {
+    let u: u32 = 4294967295
+    assert (u as u128) == 4294967295
+}
+
+test "type.primitives — u16 and u8 maxima widen unchanged" {
+    let a: u16 = 65535
+    assert (a as u128) == 65535
+    let b: u8 = 255
+    assert (b as u128) == 255
+}
+
+// Controls: correct on both backends today.
+test "type.primitives — a u64 below the sign bit is the first control" {
+    let u: u64 = 100
+    assert (u as u128) == 100
+}
+
+test "type.primitives — signed widening is the second control" {
+    let i: i64 = 9223372036854775807
+    assert (i as i128) == 9223372036854775807
+    let n: i64 = -1
+    assert (n as i128) == -1
+}
+
+func main() {}

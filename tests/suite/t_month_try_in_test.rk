@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try` inside a `test` block — #932.
+//
+// A `try` in a test block emits a propagation edge, the synthetic test function's
+// signature is void, and native fails the Cranelift verifier:
+//
+//     error: compile: codegen '__test_0': Cranelift error:
+//       ... message: "arguments of return must match function signature"
+//
+// The `try` succeeding doesn't help — the propagation edge existing is enough. It
+// also survives `rask check`, so the file type-checks, `--interp` passes, and only
+// the native build says anything, in a message that names an internal symbol and a
+// Cranelift structure and never mentions `try` or the line.
+//
+// The check already exists and just doesn't fire for results: `try` on an
+// *optional* in a test block is rejected properly, on both backends, with
+//
+//     error[E0317]: `try` can only be used within a function
+//
+// so the language has already decided to reject `try` here rather than let a test
+// block propagate. The result-shaped `try` isn't reaching E0317 and falls through
+// to codegen instead — a missed check, not an open design question. Extending
+// E0317's check to the `T or E` path turns the Cranelift error into that message.
+//
+// (That message's "not inside a function" is literally false — it *is* inside a
+// test block — and its fix line says to move the `try` into a function body, which
+// isn't what you want to do to a test. `catch _ =>` and `!` are.)
+//
+// The three controls at the bottom all work today. The suite's existing JSON tests
+// use `catch`, which is why this never came up — but `try` is the shorter, more
+// natural spelling for a test that expects success, so it's what anyone writing a
+// new fallible-API test reaches for.
+
+enum MyErr {
+    Bad
+}
+
+extend MyErr with Error {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func might_fail(ok: bool) -> i64 or MyErr {
+    if !ok: return MyErr.Bad
+    return 7
+}
+
+func uses_try() -> i64 or MyErr {
+    let v = try might_fail(true)
+    return v
+}
+
+test "type.errors — try on a result inside a test block" {
+    let v = try might_fail(true)
+    assert v == 7
+}
+
+test "type.errors — two trys in one test block" {
+    let a = try might_fail(true)
+    let b = try might_fail(true)
+    assert a + b == 14
+}
+
+// Controls: these three work on both backends.
+test "type.errors — catch in the same position is the first control" {
+    let v = might_fail(true) catch _ => -1
+    assert v == 7
+}
+
+test "type.errors — ! in the same position is the second control" {
+    let v = might_fail(true)!
+    assert v == 7
+}
+
+test "type.errors — try inside a plain function is the third control" {
+    assert uses_try()! == 7
+}
+
+func main() {}
