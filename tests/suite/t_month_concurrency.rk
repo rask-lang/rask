@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: threads and channels.
+//
+// `Thread.spawn(own || { … })` starts an OS thread and hands back a handle whose
+// `join()` waits for it. `own` moves the captures in, so the thread owns what it
+// touches. Channels carry values between threads: `send` and `receive` are both
+// fallible, and a cloned sender gives each thread its own handle to one channel.
+//
+// Everything here is deterministic — every thread is joined before anything reads
+// what it produced, so output is identical on both backends and in any scheduling
+// order.
+//
+// Two things are deliberately not here. Bare `spawn { … }` — green tasks — is
+// interp-undefined (#267); SYNTAX.md still shows that form but CLAUDE.md's Decided
+// table settles it as `spawn(|| {})`, and `Thread.spawn` is what works on both
+// backends today. `select` is covered by `t_select.rk` and `p06_select.rk`.
+
+import thread.Thread
+import sync.Mutex
+
+func sum_to(n: i64) -> i64 {
+    mut acc = 0
+    mut i = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    return acc
+}
+
+test "conc.async — a thread runs and join waits for it" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    Thread.spawn(own || {
+        let _ = tx.send(42)
+        return
+    }).join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 42
+}
+
+test "conc.async — a thread computing through a function" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    Thread.spawn(own || {
+        let _ = tx.send(sum_to(10))
+        return
+    }).join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 55
+}
+
+test "conc.async — a thread capturing a surrounding binding" {
+    let k = 7
+    let (tx, rx) = Channel<i64>.buffered(1)
+    Thread.spawn(own || {
+        let _ = tx.send(k * 6)
+        return
+    }).join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 42
+}
+
+test "conc.async — three threads, each joined, results drained" {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let ta = tx.clone()
+    let tb = tx.clone()
+    let tc = tx.clone()
+    let h1 = Thread.spawn(own || { let _ = ta.send(100); return })
+    let h2 = Thread.spawn(own || { let _ = tb.send(200); return })
+    let h3 = Thread.spawn(own || { let _ = tc.send(300); return })
+    h1.join()
+    h2.join()
+    h3.join()
+    mut total = 0
+    mut n = 0
+    while rx.try_receive() is i64 as v {
+        total = total + v
+        n = n + 1
+        if n > 3 {
+            assert false, "drain did not terminate"
+            return
+        }
+    }
+    assert n == 3
+    // Order is not guaranteed; the sum is.
+    assert total == 600
+}
+
+test "conc.async — a handle joined after other work" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    let h = Thread.spawn(own || {
+        let _ = tx.send(9)
+        return
+    })
+    // Independent work while the thread runs.
+    let local = sum_to(4)
+    h.join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 9
+    assert local == 10
+}
+
+// `own ||` moves the captures in, so a Mutex handed to a thread is gone from the
+// caller — sharing one across two threads needs a `Shared`, not a move. Here the
+// thread owns its Mutex outright and reports through a channel, which is the
+// deterministic shape. `t_month_boxes.rk` covers Mutex on its own.
+test "conc.sync — a thread owning a Mutex reports its result" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    mut m = Mutex.new(0)
+    Thread.spawn(own || {
+        with m.lock() as v {
+            v = v + 1
+        }
+        with m.lock() as v {
+            v = v + 1
+        }
+        with m.lock() as v {
+            let _ = tx.send(v)
+        }
+        return
+    }).join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 2
+}
+
+test "conc.channels — a value sent is a value received" {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let _ = tx.send(7)
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 7
+}
+
+test "conc.channels — several values arrive in order" {
+    let (tx, rx) = Channel<i64>.buffered(8)
+    let _ = tx.send(1)
+    let _ = tx.send(2)
+    let _ = tx.send(3)
+    mut seen = Vec.new()
+    while rx.try_receive() is i64 as v {
+        seen.push(v)
+    }
+    assert seen.len() == 3
+    assert seen[0] == 1
+    assert seen[1] == 2
+    assert seen[2] == 3
+}
+
+test "conc.channels — try_receive on an empty channel is absent" {
+    let (tx, rx) = Channel<i64>.buffered(2)
+    let _ = tx.send(1)
+    assert rx.try_receive() is i64
+    // Drained now.
+    assert !(rx.try_receive() is i64)
+}
+
+test "conc.channels — a producer thread and a counted drain" {
+    let (tx, rx) = Channel<i64>.buffered(16)
+    Thread.spawn(own || {
+        mut i = 1
+        while i <= 5 {
+            let _ = tx.send(i)
+            i = i + 1
+        }
+        return
+    }).join()
+    mut total = 0
+    mut n = 0
+    while rx.try_receive() is i64 as v {
+        total = total + v
+        n = n + 1
+        if n > 5 {
+            assert false, "drain did not terminate"
+            return
+        }
+    }
+    assert n == 5
+    assert total == 15
+}
+
+test "conc.async — a thread moving a Vec in with own" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    mut data: Vec<i64> = Vec.new()
+    data.push(1)
+    data.push(2)
+    data.push(3)
+    Thread.spawn(own || {
+        mut acc = 0
+        for x in data {
+            acc = acc + x
+        }
+        let _ = tx.send(acc)
+        return
+    }).join()
+    mut got = 0
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 6
+}
+
+func main() {}
