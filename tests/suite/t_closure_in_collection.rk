@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Calling a closure that came out of a collection (#867).
+// Calling a closure that came out of a collection (#869).
 //
 // `for f in fs { f(5) }` over a `Vec<func(i64) -> i64>` didn't compile:
 //
@@ -16,7 +16,7 @@
 //
 // Calling a *closure parameter* that holds a function is the same gap one level
 // down — `fs.map(|f| { return f(3) })` still fails natively and runs on the
-// interpreter. That one's #868; it wants the same registration where closure
+// interpreter. That one's #870; it wants the same registration where closure
 // parameters are bound.
 
 func twice(x: i64) -> i64 {

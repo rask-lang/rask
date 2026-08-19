@@ -2147,7 +2147,7 @@ impl<'a> MirLowerer<'a> {
     /// lowered `f(5)` as a call to a *function named `f`*, found no signature
     /// for it, and gave up on the return type — "couldn't work out a type here"
     /// out of MIR lowering, while `let g = fs[0]` two lines away was fine
-    /// (#867). The interpreter has no such split and ran both.
+    /// (#869). The interpreter has no such split and ran both.
     fn note_closure_binding(&mut self, name: &str, source: &Expr) {
         let Some(source_ty) = self.ctx.lookup_raw_type(source.id) else { return };
         let Some(elem) = self.checker_elem_of(source_ty) else { return };
