@@ -461,6 +461,15 @@ int8_t rask_fs_exists(const RaskStr *path) {
 
 // ─── More FS module ───────────────────────────────────────────────
 
+// Did `fopen` fail? The handle *is* the value a `File` carries, and a failed
+// open is NULL — so `fs.open` can check it and build the IoError in Rask,
+// where both backends read the same source. Before this the NULL sailed
+// through as a successful `File`, and the failure only surfaced on the first
+// read as "file handle is closed" (#858).
+int64_t rask_file_is_null(int64_t file) {
+    return file == 0 ? 1 : 0;
+}
+
 int64_t rask_fs_open(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");

@@ -955,8 +955,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Self-hosted from stdlib/fs.rk. Remaining C runtime stubs:
         StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
-        StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("fs_open_handle", "rask_fs_open", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("fs_create_handle", "rask_fs_create", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_is_null", "rask_file_is_null", &[types::I64], Some(types::I64), false),
         // `fs.metadata` and `Metadata`'s accessors used to live here. It's a
         // plain Rask struct built by Rask code now — see stdlib/fs.rk (#674).
 

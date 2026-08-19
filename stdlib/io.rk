@@ -256,6 +256,11 @@ extend Buffer {
 public struct File { }
 
 extend File {
+    /// True when the handle is NULL — a failed `fopen`. `fs.open` uses it to
+    /// tell success from failure, since the runtime can't build an `IoError`.
+    @native("rask_file_is_null")
+    func is_null(self) -> bool {}
+
     /// Read the entire file contents as bytes.
     @native("rask_file_read_bytes")
     public func read_bytes(self) -> Vec<u8> or IoError {}

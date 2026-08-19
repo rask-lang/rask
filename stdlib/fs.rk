@@ -63,12 +63,35 @@ struct fs { }
 
 extend fs {
     /// Open a file at the given path.
-    @native("rask_fs_open")
-    public func open(path: string) -> File or IoError {}
+    ///
+    /// The check is here rather than in the runtime because the runtime can't
+    /// build an `IoError` — it's a Rask enum. `fopen` answers NULL on failure,
+    /// and that NULL used to sail through as a successful `File`: the failure
+    /// only surfaced on the first read, as "file handle is closed" (#858).
+    public func open(path: string) -> File or IoError {
+        let f = fs.open_handle(path)
+        if f.is_null() {
+            return IoError.last_os_error()
+        }
+        return f
+    }
 
     /// Create a new file at the given path.
+    public func create(path: string) -> File or IoError {
+        let f = fs.create_handle(path)
+        if f.is_null() {
+            return IoError.last_os_error()
+        }
+        return f
+    }
+
+    /// The raw `fopen`, with no answer for failure. `open` is the one to call.
+    @native("rask_fs_open")
+    func open_handle(path: string) -> File {}
+
+    /// The raw `fopen` in write mode. `create` is the one to call.
     @native("rask_fs_create")
-    public func create(path: string) -> File or IoError {}
+    func create_handle(path: string) -> File {}
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {

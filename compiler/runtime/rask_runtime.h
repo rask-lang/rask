@@ -500,6 +500,7 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
+int64_t     rask_file_is_null(int64_t file);
 void        rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and
