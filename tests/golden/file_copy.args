@@ -1,0 +1,7 @@
+# One invocation per line; stdout is concatenated in this order.
+# Paths are relative to the repo root.
+#
+# The copy goes to /tmp with -f, so it's idempotent: both backends write the
+# same destination and neither cares whether the other got there first.
+--help
+-v -f tests/fixtures/grep_input.txt /tmp/rask_gate_file_copy.txt

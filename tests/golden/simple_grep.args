@@ -1,0 +1,7 @@
+# One invocation per line; stdout is concatenated in this order.
+# Paths are relative to the repo root.
+#
+# A pattern that matches nothing exits 1, grep-style, and the gate treats a
+# nonzero exit as a failure — so both invocations here match.
+alpha tests/fixtures/grep_input.txt
+delta tests/fixtures/grep_input.txt
