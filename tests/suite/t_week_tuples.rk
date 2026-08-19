@@ -61,16 +61,19 @@ test "mixed element types" {
     assert t.3 == 'c'
 }
 
-// `n.0.0` doesn't parse — `0.0` lexes as a float (#914). Both spellings that do
-// work are here: parenthesise the first access, or destructure.
+// `n.0.0` doesn't parse — `0.0` lexes as a float (#914). `(n.0).0` does, but
+// `rask fmt` strips those parens inside an `assert` and hands back the form that
+// doesn't parse (#921). So nested access goes through a binding here, which is
+// the idiomatic spelling anyway.
 test "nesting" {
     let n: ((i32, i32), string) = ((1, 2), "point")
-    assert (n.0).0 == 1
-    assert (n.0).1 == 2
-    assert n.1 == "point"
-    let (inner, label) = n
+    let inner = n.0
     assert inner.0 == 1
     assert inner.1 == 2
+    assert n.1 == "point"
+    let (pair, label) = n
+    assert pair.0 == 1
+    assert pair.1 == 2
     assert label == "point"
 }
 

@@ -17,3 +17,4 @@ p10_binary.rk              # type.binary @binary parse/build (native gap; interp
 
 # --- declared-but-unbuilt stdlib surface ---
 t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912
+t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920

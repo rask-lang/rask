@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: turning text into numbers and numbers into text.
+//
+// `parse_int` and `parse_float` for the common cases, `parse<T>()` when the
+// target type says which, and what each of them does with input that isn't a
+// number — a failure, so `catch` handles it, never `??`. Then the other
+// direction: interpolation, `to_string`, and padding/precision through format
+// specifiers.
+
+func parse_or(s: string, fallback: i64) -> i64 {
+    return s.parse_int() catch _ => fallback
+}
+
+test "std.string — parse_int on well-formed input" {
+    assert "42".parse_int()! == 42
+    assert "0".parse_int()! == 0
+    assert "-17".parse_int()! == -17
+    assert "1000000".parse_int()! == 1000000
+}
+
+test "std.string — parse_int rejects what isn't an integer" {
+    assert ("".parse_int() catch _ => -1) == -1
+    assert ("abc".parse_int() catch _ => -1) == -1
+    assert ("12a".parse_int() catch _ => -1) == -1
+    assert ("1.5".parse_int() catch _ => -1) == -1
+    // Leading and trailing whitespace is trimmed, per the stdlib doc comment —
+    // this is a success, not a failure.
+    assert " 42 ".parse_int()! == 42
+}
+
+test "std.string — parse_float" {
+    assert "1.5".parse_float()! == 1.5
+    assert "0.0".parse_float()! == 0.0
+    assert "-2.25".parse_float()! == -2.25
+    // An integer literal is a valid float.
+    assert "3".parse_float()! == 3.0
+}
+
+test "std.string — parse_float rejects what isn't a number" {
+    assert ("".parse_float() catch _ => -1.0) == -1.0
+    assert ("abc".parse_float() catch _ => -1.0) == -1.0
+    assert ("1.2.3".parse_float() catch _ => -1.0) == -1.0
+}
+
+test "std.string — parse<T> takes its target from the slot" {
+    let a: i32 = "7".parse()!
+    assert a == 7
+    let b: i64 = "8".parse()!
+    assert b == 8
+    let c: f64 = "1.5".parse()!
+    assert c == 1.5
+    let d: u8 = "200".parse()!
+    assert d == 200
+}
+
+// `parse<T>` does not check the target's range — #919, probed in
+// `t_week_parse_range.rk`. These are values that fit.
+test "std.string — parse<T> at each target width" {
+    let a: u8 = "255".parse()!
+    assert a == 255
+    let b: i8 = "-128".parse()!
+    assert b == -128
+    let c: u16 = "65535".parse()!
+    assert c == 65535
+    let d: i64 = "-9000000000".parse()!
+    assert d == -9000000000
+}
+
+test "std.string — a parse failure handled by a helper" {
+    assert parse_or("5", -1) == 5
+    assert parse_or("nope", -1) == -1
+    assert parse_or("", 99) == 99
+}
+
+test "std.fmt — numbers into text through interpolation" {
+    let n = 42
+    assert "{n}" == "42"
+    let neg = -7
+    assert "{neg}" == "-7"
+    let f: f64 = 1.5
+    assert "{f}" == "1.5"
+    let b = true
+    assert "{b}" == "true"
+}
+
+test "std.fmt — to_string" {
+    assert 42.to_string() == "42"
+    // Bound first: `rask fmt` strips the parens from `(-7).to_string()` and
+    // `-7.to_string()` then parses as `-(7.to_string())` — #921.
+    let neg = -7
+    assert neg.to_string() == "-7"
+    assert true.to_string() == "true"
+    let f: f64 = 0.5
+    assert f.to_string() == "0.5"
+}
+
+test "std.fmt — width and alignment specifiers" {
+    let n = 7
+    assert "{n:3}" == "  7"
+    assert "{n:<3}" == "7  "
+    assert "{n:>3}" == "  7"
+    assert "{n:03}" == "007"
+}
+
+test "std.fmt — float precision" {
+    let f: f64 = 3.14159
+    assert "{f:.2}" == "3.14"
+    assert "{f:.0}" == "3"
+    assert "{f:.4}" == "3.1416"
+}
+
+test "std.fmt — hex and binary" {
+    let n = 255
+    assert "{n:x}" == "ff"
+    assert "{n:X}" == "FF"
+    assert "{n:b}" == "11111111"
+    assert "{n:o}" == "377"
+}
+
+test "a parse then a format, round-tripped" {
+    let text = "123"
+    let n = text.parse_int()!
+    assert "{n}" == text
+    let f = "2.5".parse_float()!
+    assert "{f}" == "2.5"
+}
+
+test "parsing a whole line of numbers" {
+    let line = "1,2,3,4"
+    mut total = 0
+    for piece in line.split(",") {
+        total = total + piece.parse_int()!
+    }
+    assert total == 10
+}
+
+func main() {}
