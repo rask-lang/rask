@@ -260,6 +260,20 @@ impl<'a> MirLowerer<'a> {
             })
             .unwrap_or_default();
 
+        // The same parameter list, unconverted. A function type has no MIR shape
+        // beyond "pointer", so whether a parameter holds one is only visible
+        // before the conversion.
+        let checked_param_tys: Vec<rask_types::Type> = closure_id
+            .and_then(|id| self.ctx.lookup_raw_type(id))
+            .and_then(|ty| match ty {
+                rask_types::Type::Fn { params, .. } => Some(params.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        // Parameter names this closure registered as callable, so they can be
+        // taken back out of the outer lowerer's sets afterwards.
+        let mut callable_params: Vec<String> = Vec::new();
+
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
@@ -272,6 +286,27 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:param"));
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
             closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
+            // A parameter that holds a function — `fs.map(|f| { return f(3) })`.
+            // Registering it is what makes the call site emit an indirect call
+            // instead of looking for a function named `f`; without it, lowering
+            // found no signature and gave up on the return type (#870). The same
+            // registration a `for` binding gets in #869, one level down.
+            if let Some(rask_types::Type::Fn { ret, .. }) = checked_param_tys.get(i) {
+                let ret_mir = self.ctx.type_to_mir(ret.as_ref());
+                if self.closure_locals.insert(param.name.clone()) {
+                    callable_params.push(param.name.clone());
+                }
+                self.func_sigs.insert(
+                    param.name.clone(),
+                    super::FuncSig {
+                        ret_ty: ret_mir,
+                        scalar_mutate_params: Vec::new(),
+                        aggregate_mutate_params: Vec::new(),
+                        ret_vec_elem: None,
+                        param_ty_strs: Vec::new(),
+                    },
+                );
+            }
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
             } else if let Some(s) = ty_str.as_deref() {
@@ -315,6 +350,12 @@ impl<'a> MirLowerer<'a> {
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.loop_stack = saved_loop_stack;
+            // The closure's parameters are out of scope again — don't leave a
+            // name like `f` registered as callable for the enclosing function.
+            for name in &callable_params {
+                self.closure_locals.remove(name);
+                self.func_sigs.remove(name);
+            }
 
             let (body_val, _body_ty) = body_result?;
 

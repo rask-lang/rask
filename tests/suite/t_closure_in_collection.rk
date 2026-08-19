@@ -14,10 +14,10 @@
 // didn't, so `f(5)` lowered as a call to a *function named `f`*, found no
 // signature for it, and gave up on the return type.
 //
-// Calling a *closure parameter* that holds a function is the same gap one level
-// down — `fs.map(|f| { return f(3) })` still fails natively and runs on the
-// interpreter. That one's #870; it wants the same registration where closure
-// parameters are bound.
+// Calling a *closure parameter* that holds a function was the same gap one level
+// down (#870), and needed the registration in two more places: an inlined
+// adapter closure over a Vec of functions, and a synthesized closure whose
+// parameter is declared as a function type.
 
 func twice(x: i64) -> i64 {
     return x * 2
@@ -79,6 +79,40 @@ test "closures in a Vec — through iter()" {
         out.push(f(0))
     }
     assert_eq(out.join(","), "1,2")
+}
+
+// #870: `f` is the adapter closure's own parameter, holding a function. The
+// adapter path inlines the body rather than synthesizing a closure, so it needs
+// its own registration.
+test "closures in a Vec — an adapter closure can call its parameter" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(|x| {
+        return x * 2
+    })
+    fs.push(|x| {
+        return x * 5
+    })
+    mut total = 0
+    for n in fs.map(|f| {
+        return f(3)
+    }) {
+        total = total + n
+    }
+    assert_eq(total, 21)
+}
+
+// #870 again, the other shape: a closure whose parameter is *declared* as a
+// function type. This one is synthesized rather than inlined.
+test "closures — a declared function parameter is callable" {
+    let call_with = |g: func(i64) -> i64| {
+        return g(5)
+    }
+    let double = |x| {
+        return x * 2
+    }
+    assert_eq(call_with(double), 10)
+    assert_eq(call_with(twice), 10)
+    assert_eq(call_with(thrice), 15)
 }
 
 test "closures in a Vec — an empty Vec iterates zero times" {

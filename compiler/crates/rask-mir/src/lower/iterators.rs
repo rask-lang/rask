@@ -1025,6 +1025,17 @@ impl<'a> MirLowerer<'a> {
         let mut current_op = elem_op;
         let mut current_ty = elem_ty;
 
+        // When the source holds functions, an adapter's closure parameter holds
+        // one too, and calling it needs the same registration a `for` binding
+        // gets (#869). Without it `fs.map(|f| { return f(3) })` lowered `f(3)` as
+        // a call to a function named `f`, found no signature for it, and gave up
+        // on the return type (#870).
+        //
+        // Registered across the whole chain rather than per adapter: a closure
+        // parameter's name is scoped to its own closure anyway, and the names
+        // come back out at the end.
+        let callable_params = self.register_callable_adapter_params(chain);
+
         for adapter in &chain.adapters {
             match adapter {
                 super::IterAdapter::Filter { closure } => {
@@ -1066,7 +1077,69 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        for name in &callable_params {
+            self.closure_locals.remove(name);
+            self.func_sigs.remove(name);
+        }
         Ok((current_op, current_ty))
+    }
+
+    /// Register every adapter closure's parameters as callable, when the source
+    /// holds functions. Returns the names so they can be taken back out.
+    ///
+    /// Only up to the first `map`: after one, the element is whatever that
+    /// closure returned, so a later adapter's parameter isn't a function any
+    /// more.
+    fn register_callable_adapter_params(&mut self, chain: &super::IterChain<'_>) -> Vec<String> {
+        let Some(ret) = self.source_elem_fn_ret(chain.source) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for adapter in &chain.adapters {
+            let closure = match adapter {
+                super::IterAdapter::Map { closure } | super::IterAdapter::Filter { closure } => {
+                    closure
+                }
+                _ => continue,
+            };
+            if let ExprKind::Closure { params, .. } = &closure.kind {
+                for p in params {
+                    if self.closure_locals.insert(p.name.clone()) {
+                        names.push(p.name.clone());
+                    }
+                    self.func_sigs.insert(
+                        p.name.clone(),
+                        super::FuncSig {
+                            ret_ty: ret.clone(),
+                            scalar_mutate_params: Vec::new(),
+                            aggregate_mutate_params: Vec::new(),
+                            ret_vec_elem: None,
+                            param_ty_strs: Vec::new(),
+                        },
+                    );
+                }
+            }
+            if matches!(adapter, super::IterAdapter::Map { .. }) {
+                break;
+            }
+        }
+        names
+    }
+
+    /// The MIR return type of the functions a source holds, when it holds
+    /// functions. `Vec<func(i64) -> i64>` answers `i64`; anything else answers
+    /// nothing.
+    fn source_elem_fn_ret(&self, source: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(source.id)?;
+        let (name, args) = self.generic_head(ty)?;
+        if !matches!(name.as_str(), "Vec" | "Iterator") {
+            return None;
+        }
+        let rask_types::GenericArg::Type(elem) = args.first()? else { return None };
+        match &**elem {
+            rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
+            _ => None,
+        }
     }
 
     /// Emit the increment block: idx += 1, goto check
