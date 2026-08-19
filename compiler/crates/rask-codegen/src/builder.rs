@@ -548,13 +548,41 @@ impl<'a> FunctionBuilder<'a> {
         //
         // Create Cranelift blocks for all cleanup sub-blocks first so
         // Branch terminators can reference them.
-        let mut cleanup_block_map: HashMap<BlockId, cranelift_codegen::ir::Block> = HashMap::new();
-        for &bid in &cleanup_only {
-            let cl_block = builder.create_block();
-            cleanup_block_map.insert(bid, cl_block);
-        }
+        //
+        // Per chain, not once for the whole function. The same `ensure` shows
+        // up in several chains — an inner `with` puts its own release in front
+        // of the outer one — and with one Cranelift block per MIR block the
+        // second chain lowered its statements and its `return` on top of the
+        // first chain's, right after that block's terminator (#836).
+        let mut all_cleanup_blocks: Vec<cranelift_codegen::ir::Block> = Vec::new();
 
         for (chain, &shared_block) in &cleanup_chain_blocks {
+            // What this chain can reach: its own members, plus the sub-blocks
+            // (handler and done blocks) hanging off them.
+            let mut used: HashSet<BlockId> = HashSet::new();
+            {
+                let mut queue: Vec<BlockId> = chain.clone();
+                while let Some(bid) = queue.pop() {
+                    if !used.insert(bid) {
+                        continue;
+                    }
+                    if let Some(b) = self.mir_fn.blocks.iter().find(|b| b.id == bid) {
+                        for succ in rask_mir::analysis::cfg::successors(&b.terminator) {
+                            if cleanup_only.contains(&succ) {
+                                queue.push(succ);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut cleanup_block_map: HashMap<BlockId, cranelift_codegen::ir::Block> =
+                HashMap::new();
+            for &bid in &used {
+                let cl_block = builder.create_block();
+                all_cleanup_blocks.push(cl_block);
+                cleanup_block_map.insert(bid, cl_block);
+            }
+
             builder.switch_to_block(shared_block);
 
             // Add return value as block parameter if function returns a value
@@ -666,7 +694,7 @@ impl<'a> FunctionBuilder<'a> {
             // Process sub-blocks (handler blocks, done blocks) that aren't
             // in the chain but are reachable from chain blocks.
             let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
-            for &bid in &cleanup_only {
+            for &bid in &used {
                 if chain_set.contains(&bid) {
                     continue; // Already processed above
                 }
@@ -785,7 +813,7 @@ impl<'a> FunctionBuilder<'a> {
         for &shared_block in cleanup_chain_blocks.values() {
             builder.seal_block(shared_block);
         }
-        for &cl_block in cleanup_block_map.values() {
+        for &cl_block in &all_cleanup_blocks {
             builder.seal_block(cl_block);
         }
 
