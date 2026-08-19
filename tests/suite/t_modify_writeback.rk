@@ -18,8 +18,12 @@
 //
 // which did nothing at all.
 //
-// These are interpreter-only for now — `Vec.modify` and `Map.modify` still fail
-// in codegen with "Function not found", tracked in #842.
+// None of the closure accessors lowered natively either — `Vec.read`,
+// `Vec.modify`, `Map.modify` and `Map.modify_with_default` all reached codegen as
+// "Function not found" (#842). They inline the closure body now, which is what
+// makes the write-back nearly free: the parameter *is* a local, so a body that
+// assigns to it has already produced the new element, and putting it back is one
+// `Vec_set`/`Map_insert`.
 
 test "modify — a scalar element keeps the closure's value" {
     mut v: Vec<i64> = [1, 2, 3]
