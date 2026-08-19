@@ -48,6 +48,9 @@
 t_day_array_writes.rk         # [T; N] element store width — #902 (native), plus push/pop on a fixed array — #901 (both)
 t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
+t_day_unsigned_to_float.rk    # `unsigned as f64` uses fcvt_from_sint — #907 (native)
+t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906 (native)
+t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both); inferred string param reaches MIR as void — #905 (native)
 
 # --- E0361: binding whose type inference left open (#620) ---
 # Empty. All 19 files that lit up when E0361 went on by default now compile.

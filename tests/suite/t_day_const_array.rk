@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An array whose size is a named const — #906.
+//
+// `const W = 4` then `[i32; W]` is the ordinary way to write a fixed array whose
+// size has a name. Native loses the length: resolving the declared type doesn't
+// evaluate `W`, so the MIR type comes out `[i32; 0]`, `len()` folds to the
+// constant 0, and `for x in a` — which reads its bound off the same type — runs
+// zero times. The elements are all present; indexing reads them fine.
+//
+// The silent `for` is the dangerous half. Nothing crashes and no wrong number
+// gets printed; the loop just does nothing.
+//
+// A literal size works on both backends and is covered in `t_day_arrays.rk`.
+
+const W = 4
+const H = 2
+
+test "std.collections — a const-sized array knows its length" {
+    let a: [i32; W] = [1, 2, 3, 4]
+    assert a.len() == 4
+}
+
+test "std.collections — a const-sized array of i64 knows its length" {
+    let a: [i64; W] = [1, 2, 3, 4]
+    assert a.len() == 4
+}
+
+test "std.collections — iterating a const-sized array visits every element" {
+    let a: [i32; W] = [1, 2, 3, 4]
+    mut total = 0
+    for x in a {
+        total = total + x
+    }
+    assert total == 10
+}
+
+test "std.collections — the elements themselves are there either way" {
+    let a: [i32; W] = [1, 2, 3, 4]
+    assert a[0] == 1
+    assert a[3] == 4
+}
+
+test "std.collections — a smaller const size" {
+    let a: [i32; H] = [7, 8]
+    assert a.len() == 2
+    assert a[1] == 8
+}
+
+func main() {}
