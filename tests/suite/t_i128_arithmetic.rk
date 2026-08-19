@@ -353,17 +353,10 @@ func fixed_mul(x: i64, y: i64) -> i64 {
 }
 
 test "type.primitives — 128-bit intermediates in a fixed-point multiply" {
-    // The operands are locals rather than literals because a literal on the
-    // left of `<<` doesn't take the binding's annotation — `let a: i64 = 2 << 40`
-    // shifts at i32 and panics on both backends (#833).
-    let shift: i64 = 32
-    let base_two: i64 = 2
-    let base_three: i64 = 3
-    let two = base_two << shift
-    let three = base_three << shift
-    assert (fixed_mul(two, three) >> shift) == 6
+    let two: i64 = 2 << 32
+    let three: i64 = 3 << 32
+    assert (fixed_mul(two, three) >> 32) == 6
 
-    let base_neg: i64 = -2
-    let neg_two = base_neg << shift
-    assert (fixed_mul(neg_two, three) >> shift) == -6
+    let neg_two: i64 = -2 << 32
+    assert (fixed_mul(neg_two, three) >> 32) == -6
 }

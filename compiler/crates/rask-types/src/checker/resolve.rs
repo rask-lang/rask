@@ -84,6 +84,19 @@ impl TypeChecker {
         matches!(method, "neg" | "abs" | "bit_not")
     }
 
+    /// The shifts. `x << n` keeps `x`'s type and takes `n` at its own, which is
+    /// why they're not homogeneous — but the *result* half still holds, and
+    /// that's what lets an annotation settle a literal receiver.
+    ///
+    /// Without it `let a: i64 = 2 << 40` left `2` unconstrained: nothing tied it
+    /// to the argument (correctly) and nothing tied it to the result either, so
+    /// it defaulted to `i32` before the annotation was consulted and the program
+    /// panicked at runtime with "shift amount exceeds i32 bit width" for an
+    /// expression whose only written type is `i64` (#833).
+    fn is_shift(method: &str) -> bool {
+        matches!(method, "shl" | "shr")
+    }
+
     /// A concrete number. Deliberately excludes nominal types with operator
     /// impls: `5 + meters` should still be rejected, not quietly given the
     /// newtype's type.
@@ -621,6 +634,31 @@ impl TypeChecker {
                     // to the post-defaulting retry, which has one — otherwise
                     // `n.abs()` type-checks and MIR still has to guess its
                     // receiver (#425).
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty, method, args, ret, span, call_node,
+                    });
+                    return Ok(progress);
+                }
+                // A shift's result has the receiver's type, whatever the shift
+                // amount is. Same shape as the unary case above: tie the two
+                // together so the call site settles both, and hand the dispatch
+                // record to the post-defaulting retry.
+                if self.ctx.literal_vars.contains_key(id) && Self::is_shift(&method) {
+                    let progress = self.unify(&ret, &ty, span)?;
+                    // A shift amount written as a bare literal has no type of
+                    // its own to defend, and ORD4 puts the shifts with
+                    // arithmetic — a `u64` receiver and an `i32` amount is a
+                    // mixed-signedness error. Defaulting the literal to `i32`
+                    // made `let u: u64 = 1 << 63` that error, for a line with no
+                    // `i32` in it. A *typed* amount is left alone: `u64 << u8`
+                    // is legal and this must not narrow it.
+                    if let [arg] = args.as_slice() {
+                        if matches!(self.ctx.apply(arg),
+                            Type::Var(arg_id) if self.ctx.literal_vars.contains_key(&arg_id))
+                        {
+                            self.unify(arg, &ty, span)?;
+                        }
+                    }
                     self.deferred_methods.push(TypeConstraint::HasMethod {
                         ty, method, args, ret, span, call_node,
                     });
