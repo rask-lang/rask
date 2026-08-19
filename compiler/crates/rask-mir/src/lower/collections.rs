@@ -139,6 +139,29 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
+    /// Re-indent an encoded JSON string when the call was `encode_pretty`.
+    ///
+    /// The struct and Vec encoders build text directly, so there's no value
+    /// tree to hand a pretty printer — the indentation goes on afterwards, to
+    /// the same shape `JsonValue.to_string_pretty` writes (#847).
+    pub(super) fn maybe_json_pretty(
+        &mut self,
+        encoded: TypedOperand,
+        pretty: bool,
+    ) -> TypedOperand {
+        if !pretty {
+            return encoded;
+        }
+        let (op, _) = encoded;
+        let dst = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(dst),
+            func: FunctionRef::internal("json_pretty".to_string()),
+            args: vec![op],
+        }));
+        (MirOperand::Local(dst), MirType::String)
+    }
+
     pub(super) fn lower_json_encode_struct(
         &mut self,
         struct_op: MirOperand,

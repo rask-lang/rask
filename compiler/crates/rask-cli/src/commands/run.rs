@@ -602,7 +602,11 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
             continue;
         }
 
-        let name = parse_json_str(line, "name").unwrap_or("?");
+        // The name is JSON-escaped on the way out, so it comes back escaped.
+        // Unescaped nothing used to escape it either, and a test whose name
+        // held a quote lost everything after it (#849).
+        let name = unescape_json_str(parse_json_str(line, "name").unwrap_or("?"));
+        let name = name.as_str();
         let passed_val = line.contains("\"passed\":true");
         let duration_ns = parse_json_i64(line, "duration_ns").unwrap_or(0);
         let duration = std::time::Duration::from_nanos(duration_ns as u64);
@@ -702,6 +706,32 @@ fn json_escape(s: &str) -> String {
 /// lines so a multi-line diff stays under the test name instead of falling
 /// back to column 0. Without this an `assert_eq` failure printed its `\n`
 /// literally and the whole diff ran together on one line.
+/// Undo the escaping the test harness applies to a JSON string value. Same
+/// rules as `format_test_error`, minus its message-specific newline indent.
+fn unescape_json_str(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 fn format_test_error(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();

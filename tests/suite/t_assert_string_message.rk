@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A failed string assertion shows the string, not four bytes of its header
+// (#848).
+//
+// `rask_assert_eq_fail_str` and `rask_assert_fail_cmp_str` were declared as
+// taking `const char *`, and codegen passes a `RaskStr *` — a 16-byte value
+// whose first bytes are either the characters themselves (short strings live
+// inline) or a heap pointer. So `%s` printed the text for anything up to the
+// inline cap and garbage past it:
+//
+//     assert_eq(long_string, "A")
+//     // got:      "\xdcBW6"
+//
+// Short strings worked by accident, which is every string in the test suite,
+// which is why nobody saw it.
+//
+// A test can't assert on its own failure message, so this checks the passing
+// side at every length and leaves the message shape to the issue.
+
+func long_text() -> string {
+    return "a fairly long string that will not fit in the inline buffer"
+}
+
+func exactly(n: usize) -> string {
+    mut b = StringBuilder.new()
+    mut i: usize = 0
+    while i < n {
+        b.push_char('x')
+        i = i + 1
+    }
+    return b.build()
+}
+
+test "std.testing — assert_eq on strings either side of the inline cap" {
+    // Inline.
+    assert_eq(exactly(0), "")
+    assert_eq(exactly(1), "x")
+    assert_eq(exactly(15), "xxxxxxxxxxxxxxx")
+    // Heap.
+    assert_eq(exactly(16), "xxxxxxxxxxxxxxxx")
+    assert_eq(exactly(64), exactly(64))
+    assert_eq(long_text(), "a fairly long string that will not fit in the inline buffer")
+}
+
+test "std.testing — `assert a == b` on the same strings" {
+    assert exactly(15) == "xxxxxxxxxxxxxxx"
+    assert exactly(16) == "xxxxxxxxxxxxxxxx"
+    assert long_text() == "a fairly long string that will not fit in the inline buffer"
+    assert long_text() != "something else entirely, also long enough to be on the heap"
+}
+
+// The comparison itself was never the broken part — only the message — so a
+// mismatch still has to be a mismatch.
+test "std.testing — unequal long strings compare unequal" {
+    let a = "the quick brown fox jumps over the lazy dog"
+    let b = "the quick brown fox jumps over the lazy cat"
+    assert !(a == b)
+    assert a != b
+    assert_eq(a == b, false)
+}
+
+func main() {}

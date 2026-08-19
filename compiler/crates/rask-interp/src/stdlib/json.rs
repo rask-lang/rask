@@ -157,7 +157,10 @@ impl Interpreter {
         fields: &[Value],
         method: &str,
     ) -> Result<Value, RuntimeError> {
-        if method != "message" {
+        // `to_string` too: an error carrying a `message()` renders through
+        // Displayable, so `println("{e}")` worked on native and failed here
+        // with "no method `to_string` on type `JsonError`" (#847).
+        if !matches!(method, "message" | "to_string") {
             return Err(RuntimeError::NoSuchMethod {
                 ty: "JsonError".to_string(),
                 method: method.to_string(),
@@ -236,35 +239,69 @@ impl<'a> JsonParser<'a> {
         }
     }
 
+    /// Bytes in, UTF-8 out.
+    ///
+    /// This used to push each raw byte with `c as char`, which reads a UTF-8
+    /// continuation byte as the Latin-1 character of the same number — so
+    /// decoding `{"name": "é"}` gave back `Ã©`, and every non-ASCII string that
+    /// went through `json.decode` on the interpreter came out mojibake while
+    /// native was fine. A `\u` pair for an astral character wasn't combined
+    /// either, so an emoji became two replacement characters (#847).
     fn parse_string_raw(&mut self) -> Result<String, String> {
         self.expect(b'"')?;
-        let mut s = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut push_char = |bytes: &mut Vec<u8>, c: char| {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        };
         loop {
             match self.advance() {
-                Some(b'"') => return Ok(s),
+                Some(b'"') => {
+                    return String::from_utf8(bytes)
+                        .map_err(|_| format!("string is not valid UTF-8 at byte {}", self.pos))
+                }
                 Some(b'\\') => {
                     match self.advance() {
-                        Some(b'"') => s.push('"'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'/') => s.push('/'),
-                        Some(b'b') => s.push('\u{08}'),
-                        Some(b'f') => s.push('\u{0C}'),
-                        Some(b'n') => s.push('\n'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b't') => s.push('\t'),
+                        Some(b'"') => bytes.push(b'"'),
+                        Some(b'\\') => bytes.push(b'\\'),
+                        Some(b'/') => bytes.push(b'/'),
+                        Some(b'b') => bytes.push(0x08),
+                        Some(b'f') => bytes.push(0x0C),
+                        Some(b'n') => bytes.push(b'\n'),
+                        Some(b'r') => bytes.push(b'\r'),
+                        Some(b't') => bytes.push(b'\t'),
                         Some(b'u') => {
                             let hex = self.parse_hex4()?;
-                            if let Some(c) = char::from_u32(hex) {
-                                s.push(c);
+                            // A high surrogate is half a character: JSON spells
+                            // anything above the BMP as a pair.
+                            let cp = if (0xD800..0xDC00).contains(&hex)
+                                && self.peek() == Some(b'\\')
+                            {
+                                let save = self.pos;
+                                self.advance();
+                                if self.peek() == Some(b'u') {
+                                    self.advance();
+                                    let low = self.parse_hex4()?;
+                                    if (0xDC00..0xE000).contains(&low) {
+                                        0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00)
+                                    } else {
+                                        self.pos = save;
+                                        hex
+                                    }
+                                } else {
+                                    self.pos = save;
+                                    hex
+                                }
                             } else {
-                                s.push('\u{FFFD}');
-                            }
+                                hex
+                            };
+                            push_char(&mut bytes, char::from_u32(cp).unwrap_or('\u{FFFD}'));
                         }
                         Some(c) => return Err(format!("invalid escape '\\{}' at byte {}", c as char, self.pos)),
                         None => return Err("unexpected end of input in string escape".to_string()),
                     }
                 }
-                Some(c) => s.push(c as char),
+                Some(c) => bytes.push(c),
                 None => return Err("unexpected end of input in string".to_string()),
             }
         }
@@ -647,7 +684,11 @@ fn value_to_json(
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
-        Value::Int(n, _) => Ok(make_json_number(*n as f64)),
+        // Keep the integer. Through `f64` an `i64` past 2^53 lost its low bits:
+        // `9007199254740993` encoded as `…992` here while native, which writes
+        // the field straight out, kept it exactly (#847). The Number variant's
+        // stringifier already renders an integer payload.
+        Value::Int(n, k) => Ok(make_json_int(*n, *k)),
         Value::Float(f, _) => Ok(make_json_number(*f)),
         Value::String(s) => Ok(make_json_string(&s.lock().unwrap())),
         Value::Vec(v) => {
@@ -739,6 +780,15 @@ fn make_json_number(n: f64) -> Value {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
         fields: vec![Value::Float(n, FloatKind::Untyped)],
+        variant_index: 2, origin: None,
+    }
+}
+
+fn make_json_int(n: i64, kind: crate::value::IntKind) -> Value {
+    Value::Enum {
+        name: "JsonValue".to_string(),
+        variant: "Number".to_string(),
+        fields: vec![Value::Int(n, kind)],
         variant_index: 2, origin: None,
     }
 }

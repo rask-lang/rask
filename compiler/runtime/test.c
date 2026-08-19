@@ -64,6 +64,21 @@ void rask_check_fail(const char *msg) {
     fprintf(stderr, "check failed: %s\n", rask_check_last_msg);
 }
 
+// A test name is a string literal, so it can hold a quote, a backslash or a
+// newline. The error message was escaped for the JSON line and the name wasn't,
+// so a name containing `"` ended the JSON string early and the CLI's reader
+// stopped there — the rest of the name simply vanished (#849).
+static void json_print_escaped(const char *s) {
+    for (const char *p = s; *p; p++) {
+        if (*p == '"') printf("\\\"");
+        else if (*p == '\\') printf("\\\\");
+        else if (*p == '\n') printf("\\n");
+        else if (*p == '\r') printf("\\r");
+        else if (*p == '\t') printf("\\t");
+        else putchar(*p);
+    }
+}
+
 // Run a single test: catch panics, print JSON result line.
 // Returns 0 on pass, 1 on fail.
 int rask_test_run(test_fn fn, const char *name) {
@@ -98,8 +113,10 @@ int rask_test_run(test_fn fn, const char *name) {
 
     // Handle skipped tests — use panic message as skip reason
     if (was_skipped) {
-        printf("{\"name\":\"%s\",\"passed\":true,\"duration_ns\":%lld,\"skipped\":\"",
-               name, (long long)elapsed_ns);
+        printf("{\"name\":\"");
+           json_print_escaped(name);
+           printf("\",\"passed\":true,\"duration_ns\":%lld,\"skipped\":\"",
+               (long long)elapsed_ns);
         const char *reason = error_msg ? error_msg : (rask_test_skip_reason ? rask_test_skip_reason : "");
         for (const char *p = reason; *p; p++) {
             if (*p == '"') printf("\\\"");
@@ -118,14 +135,18 @@ int rask_test_run(test_fn fn, const char *name) {
         if (failed) {
             // Expected failure occurred — pass
             if (error_msg) free(error_msg);
-            printf("{\"name\":\"%s\",\"passed\":true,\"duration_ns\":%lld}\n",
-                   name, (long long)elapsed_ns);
+            printf("{\"name\":\"");
+               json_print_escaped(name);
+               printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
+                   (long long)elapsed_ns);
             fflush(stdout);
             return 0;
         } else {
             // Expected failure but test passed — fail
-            printf("{\"name\":\"%s\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"expected failure but test passed\"}\n",
-                   name, (long long)elapsed_ns);
+            printf("{\"name\":\"");
+               json_print_escaped(name);
+               printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"expected failure but test passed\"}\n",
+                   (long long)elapsed_ns);
             fflush(stdout);
             return 1;
         }
@@ -140,8 +161,10 @@ int rask_test_run(test_fn fn, const char *name) {
 
     // Normal case: escape quotes in error message for JSON
     if (failed) {
-        printf("{\"name\":\"%s\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"",
-               name, (long long)elapsed_ns);
+        printf("{\"name\":\"");
+           json_print_escaped(name);
+           printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"",
+               (long long)elapsed_ns);
         if (error_msg) {
             for (const char *p = error_msg; *p; p++) {
                 if (*p == '"') printf("\\\"");
@@ -155,8 +178,10 @@ int rask_test_run(test_fn fn, const char *name) {
         }
         printf("\"}\n");
     } else {
-        printf("{\"name\":\"%s\",\"passed\":true,\"duration_ns\":%lld}\n",
-               name, (long long)elapsed_ns);
+        printf("{\"name\":\"");
+           json_print_escaped(name);
+           printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
+               (long long)elapsed_ns);
     }
     fflush(stdout);
 

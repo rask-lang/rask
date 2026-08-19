@@ -204,14 +204,22 @@ void rask_assert_fail_cmp_char(int64_t left, int64_t right,
     rask_panic_at(file, line, col, buf);
 }
 
-void rask_assert_fail_cmp_str(const char *left, const char *right,
+// The two string operands arrive as `RaskStr *`, not as C strings. Read as
+// `const char *` they printed the struct's first bytes — which for a short
+// string *are* the characters, because those live inline, and for anything
+// past the inline cap are a pointer. So a long string's assertion message came
+// out as four bytes of garbage while a short one looked perfect (#848).
+void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assertion failed: \"%s\" %s \"%s\"",
-             left ? left : "(null)", op ? op : "?",
-             right ? right : "(null)");
+             "assertion failed: \"%.*s\" %s \"%.*s\"",
+             left ? (int)rask_string_len(left) : 6,
+             left ? rask_string_ptr(left) : "(null)",
+             op ? op : "?",
+             right ? (int)rask_string_len(right) : 6,
+             right ? rask_string_ptr(right) : "(null)");
     rask_panic_at(file, line, col, buf);
 }
 
@@ -269,12 +277,15 @@ void rask_assert_eq_fail_f64(double got, double expected,
     assert_eq_fail_fmt(g, e, file, line, col);
 }
 
-void rask_assert_eq_fail_str(const char *got, const char *expected,
+void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      \"%s\"\n  expected: \"%s\"",
-             got ? got : "(null)", expected ? expected : "(null)");
+             "assert_eq failed\n  got:      \"%.*s\"\n  expected: \"%.*s\"",
+             got ? (int)rask_string_len(got) : 6,
+             got ? rask_string_ptr(got) : "(null)",
+             expected ? (int)rask_string_len(expected) : 6,
+             expected ? rask_string_ptr(expected) : "(null)");
     rask_panic_at(file, line, col, buf);
 }
 

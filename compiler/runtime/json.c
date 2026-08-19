@@ -222,9 +222,16 @@ static int json_hex4(JsonScan *s, uint32_t *out) {
 
 // Parses a quoted string into `out`. Returns 0 and sets the error on failure.
 static int json_scan_string(JsonScan *s, const char *base, RaskStr *out) {
-    if (s->p >= s->end || *s->p != '"') {
-        json_fail(RASK_JSON_ERR_PARSE, "expected a string at byte %lld",
-                  (long long)json_offset(s, base));
+    if (s->p >= s->end) {
+        json_fail(RASK_JSON_ERR_PARSE, "unexpected end of input, expected '\"'");
+        return 0;
+    }
+    if (*s->p != '"') {
+        // Says which character it found, the way the interpreter's message
+        // does — the two wordings were the last thing left disagreeing about a
+        // failed decode (#847).
+        json_fail(RASK_JSON_ERR_PARSE, "expected '\"', found '%c' at byte %lld",
+                  *s->p, (long long)json_offset(s, base));
         return 0;
     }
     s->p++;
@@ -1026,4 +1033,85 @@ void rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape
     json_write_shaped(&b, src, shape);
     rask_string_from_bytes(out, b.data ? b.data : "null", b.len ? b.len : 4);
     rask_free(b.data);
+}
+
+// Re-indent compact JSON text into the form `JsonValue.to_string_pretty`
+// produces: two spaces per level, `": "` after a key, and `[]` / `{}` left
+// inline when empty.
+//
+// `json.encode_pretty` on a struct shared the compact encoder with
+// `json.encode` and came back identical to it, while the interpreter — which
+// routes a JsonValue through the Rask pretty printer — indented (#847). The
+// struct encoder writes text, not a value tree, so the indentation goes on
+// afterwards.
+void rask_json_pretty(RaskStr *out, const RaskStr *compact) {
+    int64_t len = rask_string_len(compact);
+    const char *d = rask_string_ptr(compact);
+
+    // Worst case: a newline plus two spaces per level at every structural
+    // character. Depth is bounded by the input length, so bound the growth by
+    // a factor rather than trying to be exact.
+    size_t cap = (size_t)len * 4 + 64;
+    char *buf = (char *)rask_alloc((int64_t)cap);
+    size_t o = 0;
+    int depth = 0;
+    int in_string = 0;
+
+    #define PUSH(ch) do { if (o + 1 < cap) buf[o++] = (ch); } while (0)
+    #define INDENT(n) do { for (int _i = 0; _i < (n) * 2; _i++) PUSH(' '); } while (0)
+
+    for (int64_t i = 0; i < len; i++) {
+        char c = d[i];
+        if (in_string) {
+            PUSH(c);
+            if (c == '\\' && i + 1 < len) { i++; PUSH(d[i]); }
+            else if (c == '"') { in_string = 0; }
+            continue;
+        }
+        switch (c) {
+            case '"':
+                in_string = 1;
+                PUSH(c);
+                break;
+            case '{':
+            case '[': {
+                char close = c == '{' ? '}' : ']';
+                if (i + 1 < len && d[i + 1] == close) {
+                    PUSH(c);
+                    PUSH(close);
+                    i++;
+                } else {
+                    PUSH(c);
+                    PUSH('\n');
+                    depth++;
+                    INDENT(depth);
+                }
+                break;
+            }
+            case '}':
+            case ']':
+                PUSH('\n');
+                depth--;
+                INDENT(depth);
+                PUSH(c);
+                break;
+            case ',':
+                PUSH(c);
+                PUSH('\n');
+                INDENT(depth);
+                break;
+            case ':':
+                PUSH(c);
+                PUSH(' ');
+                break;
+            default:
+                PUSH(c);
+                break;
+        }
+    }
+    #undef PUSH
+    #undef INDENT
+
+    rask_string_from_bytes(out, buf, (int64_t)o);
+    rask_realloc(buf, (int64_t)cap, 0);
 }

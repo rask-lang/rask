@@ -742,7 +742,7 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
 void rask_assert_fail_cmp_char(int64_t left, int64_t right,
                                const char *op, const char *file,
                                int32_t line, int32_t col);
-void rask_assert_fail_cmp_str(const char *left, const char *right,
+void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_f64(double left, double right,
@@ -760,7 +760,7 @@ void rask_assert_eq_fail_char(int64_t got, int64_t expected,
                               const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_f64(double got, double expected,
                              const char *file, int32_t line, int32_t col);
-void rask_assert_eq_fail_str(const char *got, const char *expected,
+void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail(const char *file, int32_t line, int32_t col);
 

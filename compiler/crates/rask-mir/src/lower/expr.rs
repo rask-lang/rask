@@ -4095,10 +4095,19 @@ impl<'a> MirLowerer<'a> {
                             && matches!(method.as_str(), "encode" | "encode_pretty")
                             && args.len() == 1
                         {
+                            // The struct and Vec encoders below write compact
+                            // text, not a value tree, so the pretty variant came
+                            // back identical to `encode` while the interpreter —
+                            // which routes a JsonValue through the Rask pretty
+                            // printer — indented. Indent the text afterwards
+                            // (#847). The JsonValue path is already right: it
+                            // picks the pretty body by name.
+                            let pretty = method == "encode_pretty";
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
                             if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
-                                    return self.lower_json_encode_struct(arg_op, layout.clone()).map(Some);
+                                    let encoded = self.lower_json_encode_struct(arg_op, layout.clone())?;
+                                    return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                                 }
                             }
 
@@ -4156,7 +4165,8 @@ impl<'a> MirLowerer<'a> {
                                     .map(|t| self.ctx.type_to_mir(t))
                                     .or(elem_from_sig)
                                     .or_else(|| self.vec_elem_of_expr(&args[0].expr));
-                                return self.lower_json_encode_vec(arg_op, elem_ty, elem_mir).map(Some);
+                                let encoded = self.lower_json_encode_vec(arg_op, elem_ty, elem_mir)?;
+                                return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                             }
 
                             // A JsonValue has a Rask encoder — `stringify_value`
@@ -4204,7 +4214,8 @@ impl<'a> MirLowerer<'a> {
                                 func: FunctionRef::internal(helper.to_string()),
                                 args: vec![arg_op],
                             }));
-                            return Ok(Some((MirOperand::Local(result_local), MirType::I64)));
+                            let encoded = (MirOperand::Local(result_local), MirType::I64);
+                            return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                         }
 
                         // json.decode<T> — describe T to the runtime, decode into it
