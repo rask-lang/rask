@@ -57,9 +57,8 @@ fn check_addr(addr: &str) -> Option<&'static str> {
     if at == 0 {
         return Some("invalid socket address");
     }
-    match addr[at + 1..].parse::<i64>() {
-        Ok(port) if (0..=65535).contains(&port) => {}
-        _ => return Some("invalid port value"),
+    if addr[at + 1..].parse::<u16>().is_err() {
+        return Some("invalid port value");
     }
     None
 }

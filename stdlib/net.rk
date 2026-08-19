@@ -47,16 +47,12 @@ extend net {
         }
         let start = at + 1
         let port = addr.substring(start.wrap<usize>(), addr.len())
-        // `parse<i64>` and an explicit range, not `parse<u16>`: parsing into a
-        // narrow width doesn't range-check on either backend, and native stored
-        // the low 16 bits — `tcp_listen("127.0.0.1:99999")` bound port 34463 and
-        // reported success (#864).
-        let n = port.parse<i64>()
+        // `parse<u16>` is the range check: a port is a u16, and #837 made a
+        // narrow parse reject anything that doesn't fit rather than keeping the
+        // low bits. The C side used to take `atoi` and mask, so
+        // `tcp_listen("127.0.0.1:99999")` bound port 34463 and said it worked.
+        let n = port.parse<u16>()
         n catch e => {
-            return IoError.Other("invalid port value")
-        }
-        let value = try n
-        if value < 0 || value > 65535 {
             return IoError.Other("invalid port value")
         }
         return
