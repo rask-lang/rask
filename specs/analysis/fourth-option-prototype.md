@@ -1339,8 +1339,70 @@ R2/*Deep* — and #626's tier C — is a traversal that walks heap contents; for
 it has to assign ids during the walk instead of copying integers straight out.
 That is an implementation cost in `Encode`, not a lost capability.
 
+### It may not cost that much: self-relative edges
+
+The premise of the trade is "a link is an address, and addresses don't survive
+being moved". That is true of an *absolute* address. It is not true of a
+**self-relative** one.
+
+Store a link in a field as a signed offset from the field's own address to the
+target node, rather than as a pointer. Following it is
+
+```
+target = (byte*)&field + offset
+```
+
+— one add, no base register, no context, no lookup. And the arena becomes
+position-independent: write it to disk, mmap it at any address, send it to another
+process, and every edge still resolves, because both endpoints moved by the same
+delta. That is what handles bought, without the indirection they charge for it.
+
+**It fits what is already here.** Three pieces of this design were built for other
+reasons and turn out to be exactly what this needs:
+
+- Node addresses are already promised stable — measured at 2001 inserts with a
+  link to the first node still live. Self-relative offsets need precisely that:
+  an arena that never relocates its contents.
+- The backlink index already enumerates every field holding a link. That is the
+  delete-time fixup, and it is the same enumeration a serializer needs.
+- `snapshot()` already deep-copies and re-points every edge. Serializing is that
+  walk with a different destination. The document already says the fixup is a
+  relocation engine; this is cashing that in.
+
+**The split that makes it work.** Fields hold self-relative offsets; locals hold
+absolute pointers. A local is a register with no stable address to be relative to,
+so it cannot be self-relative — and it never needs to be, because a local is not
+part of the data. Field-to-local is one add, local-to-field one subtract, and that
+asymmetry already exists: the store maintains fields, the compiler tracks locals.
+
+Following an edge costs one add more than today. A handle costs an index, a bounds
+check, a generation check, then base + index × stride. Still far cheaper, and still
+branchless.
+
+**The obvious bonus does not work.** It is tempting to use offset 0 as `none` and
+get `Link<T>?` with no tag byte. A self-edge is legal — `a.peer = a`, asserted in
+p11 — and if `peer` sits at the node's base the offset from the field to its own
+node is exactly 0. So 0 is a real value; the sentinel has to be something else, or
+the tag gets paid.
+
+**What it recovers, and what it does not.** It recovers the graph *shape*: a store
+of flat nodes with link edges becomes mmap-and-go. It does not recover node
+*payloads* — `string`, `Vec` and `Map` fields are heap pointers no matter how edges
+are encoded, and FL1 excludes them from tier A regardless. So this restores tier-A
+eligibility for exactly the node shapes that had it, which is the slice measured
+above as the real loss.
+
+Two things it breaks that are worth naming. Cross-store edges stop working: p11
+asserts one, and self-relative is meaningful only within a single arena — a
+cross-store edge needs a store id plus an offset, which is a handle. And a handle
+keeps one property no offset can have: it is an identifier you can *send* — put in
+a message, write in a config, hand to another process — because it means something
+without reference to a position inside an arena.
+
 So the honest version: **adopting links costs zero-copy persistence for flat
-graphs, and makes graph `Encode` do id assignment.** Worth stating in the
+graphs, and makes graph `Encode` do id assignment** — unless edges are stored
+self-relative, in which case most of it comes back and what is left is cross-store
+edges and sendable identifiers. Worth stating in the
 representation decision rather than leaving as "narrow in practice", because the
 reason it is narrow is FL1, not the feature's importance — but it does not need to
 be escalated to the reliability direction the way I first wrote it.
