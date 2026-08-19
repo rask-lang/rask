@@ -907,7 +907,7 @@ what compiles rather than what was sketched.
 // picks its own nodes to delete: says so
 func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
     let kids = n.children.clone()
-    for c in kids { delete_subtree(mutate scene, c) }
+    for c in kids { delete_subtree(deleting scene, c) }
     scene.nodes.delete(n)
 }
 
@@ -917,17 +917,31 @@ func remove(mutate list: List, take n: Link<Node>) {
     list.nodes.delete(n)
 }
 
-delete_subtree(mutate scene, doomed)      // unchanged — `mutate`, as before
+delete_subtree(deleting scene, doomed)    // PM5: the signature's word
 ```
 
-**The mark goes on the declaration only, and Rask's own rule says which.** E0373
-requires `mutate` at the call site, and gives the reason: the compiler backstops a
-misread *move*, because using a moved value is an error, but nothing backstops a
-misread mutation — both readings are legal code, so the one that can't be caught
-gets written down. Apply that test to deletion and it comes out the other way: a
-misread delete *is* backstopped, by the use-after-delete error on the caller's next
-read. So the call site needs no new marker, and the only new text in the feature is
-one word on the signature.
+**The mark goes on both ends, and PM5 is what decides it.** My first answer was
+that the call site needs no marker: E0373 exists because a misread mutation has
+nothing to catch it, while a misread delete does — the use-after-delete error on the
+caller's next read. That reasoning is sound for `take`, whose call-site `own` is
+optional (PM3) precisely because use-after-move catches a misread. But `deleting` is
+not a refinement of `take`; it implies `mutate`, so PM4 already applies to it, and
+the only open question was which word. PM5 answers that:
+
+> **PM5: Marker follows the signature.** PM4 is syntactic: the marker is required
+> exactly when the parameter is declared `mutate`.
+
+Writing `mutate` at a call whose parameter is declared `deleting` is the marker
+*not* following the signature. And the substantive reason agrees: with `mutate` at
+the call site, two different contracts print identically — "the contents may
+change" and "your links into this store are revoked". `take`'s conflation with a
+plain borrow is tolerable because its blast radius is one name; a `deleting` call
+takes out every link into the store, including ones the reader never connected —
+`kid`, in the cascade program, was never passed to anything.
+
+So `delete_subtree(deleting scene, doomed)`. E0330 when a `deleting` parameter gets
+`mutate`, with the one-token fix, exactly as E0373 does for the plain case. Cost on
+the corpus: eight call sites.
 
 **`deleting` implies `mutate`.** Treating them as orthogonal was wrong — you cannot
 delete a node without mutating the store it lives in. The consequence showed up
@@ -983,9 +997,9 @@ under-killing is a use after free.
 
 **Measured cost of the conversion.** One `deleting` in the L3 program
 (`delete_subtree`), two in the no-locals list (`remove_at`, `remove_value`, both of
-which delete a node found by walking `list.head`), and `take` added to two `remove`s
-— which #804 requires anyway. **Zero call sites changed**, and both litmus pairs
-still produce output byte-identical to their handle versions.
+which delete a node found by walking `list.head`), `take` added to two `remove`s —
+which #804 requires anyway — and eight call sites where `mutate` became `deleting`.
+Both litmus pairs still produce output byte-identical to their handle versions.
 
 The only program that stops compiling is `cascade_hole_links.rk`, which is the one
 with the bug, and it is rejected at the read with `kid` named:
@@ -1053,11 +1067,11 @@ nothing. `delete s` would match `mutate`/`take`/`own` grammatically and then rea
 competing reading, which is why that mode gets away with the imperative. The price
 of `deleting` is that it is a participle among imperatives.
 
-**Call-site marker.** `delete_subtree(deleting scene, doomed)`, mirroring `mutate`.
-Rejected by the E0373 test above: the misread is caught, so the marker is noise on
-every call. It would also read badly once `deleting` implies `mutate` — either the
-call says both words, or `deleting` at the call site silently means "and mutate
-too".
+**No call-site marker**, on the grounds that the misread is caught. Tried and
+rejected — see above. The E0373 rationale is about `take`-shaped modes, and
+`deleting` is `mutate`-shaped; PM5 settles which word rather than whether. The
+call site says `deleting` alone, which carries the `mutate` it implies, so there
+is never a call that writes both.
 
 **An attribute instead of a mode.** `@deletes(scene)` above the function. Modes
 belong with parameters, and attributes are an unspecified area of the language

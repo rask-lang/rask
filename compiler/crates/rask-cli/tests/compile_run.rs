@@ -1671,9 +1671,11 @@ fn store_link_cascade_delete_is_rejected() {
         "the caller's *other* link is what dies, not just the one passed in: {}",
         text
     );
+    // PM5: the marker follows the signature, so a `deleting` parameter takes
+    // `deleting` at the call site. Two different contracts, two different words.
     assert!(
-        text.contains("cascade(mutate scene, parent)"),
-        "the call site marks `mutate` and nothing else: {}",
+        text.contains("cascade(deleting scene, parent)"),
+        "the call site names the mode the signature declares: {}",
         text
     );
     assert!(

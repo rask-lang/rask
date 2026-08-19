@@ -1407,6 +1407,7 @@ impl<'a> Printer<'a> {
         }
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
+            ArgMode::Deleting => self.emit("deleting "),
             ArgMode::Own => self.emit("own "),
             ArgMode::Default => {}
         }

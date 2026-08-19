@@ -12,15 +12,14 @@
 // into that store. The last line is the error:
 //
 //   error[E0328]: `kid` names a deleted node — this is a use after free
-//        cascade(mutate scene, parent)
+//        cascade(deleting scene, parent)
 //        ----------------------------- the node `kid` names was deleted here
 //        println("kid.name = ...")
 //                             ^^^ `kid` points at freed memory from here on
 //
-// Note the call site is unchanged: `mutate scene`, exactly what a mutating call
-// already writes. `deleting` implies `mutate`, and the extra word lives only on
-// the declaration — deletion is backstopped by this error, mutation is not, which
-// is the rule E0373 already applies.
+// The call site says `deleting scene`, not `mutate scene`: PM5 has the marker
+// follow the signature, and a `deleting` parameter is a different contract from a
+// `mutate` one — the caller's links into that store are revoked here.
 
 struct Node {
     name: string
@@ -37,7 +36,7 @@ struct Scene {
 func cascade(deleting scene: Scene, take n: Link<Node>) {
     let kids = n.kids.clone()
     for c in kids {
-        cascade(mutate scene, c)
+        cascade(deleting scene, c)
     }
     scene.nodes.delete(n)
 }
@@ -49,7 +48,7 @@ func main() {
     let kid = scene.nodes.insert(Node { name: "kid", kids: Vec.new() })
     parent.kids.push(kid)
 
-    cascade(mutate scene, parent)
+    cascade(deleting scene, parent)
 
     // `kid` was deleted inside `cascade`. The store agrees it is gone. The name
     // still reads it.

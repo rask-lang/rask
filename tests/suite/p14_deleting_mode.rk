@@ -69,9 +69,9 @@ test "a deleting call revokes the caller's links" {
     // Read what is needed before the call: after it, no link into `s` is usable.
     let before = a.id
 
-    // `mutate` at the call site, not `deleting` — the mark lives on the
-    // declaration, and `deleting` isn't even accepted here.
-    assert_eq(drop_all(mutate s), 2)
+    // PM5: the marker follows the signature, so a `deleting` parameter takes
+    // `deleting` at the call site — `mutate` would print two contracts the same.
+    assert_eq(drop_all(deleting s), 2)
 
     assert_eq(before, 1)
     assert s.is_empty()

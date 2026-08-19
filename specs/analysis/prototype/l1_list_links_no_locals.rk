@@ -106,17 +106,17 @@ func main() {
     print_backward(list)
 
     println("-- remove the middle node (2)")
-    remove_value(mutate list, 2)
+    remove_value(deleting list, 2)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the head (1)")
-    remove_value(mutate list, 1)
+    remove_value(deleting list, 1)
     print_forward(list)
     print_backward(list)
 
     println("-- remove the tail (4)")
-    remove_value(mutate list, 4)
+    remove_value(deleting list, 4)
     print_forward(list)
     print_backward(list)
 

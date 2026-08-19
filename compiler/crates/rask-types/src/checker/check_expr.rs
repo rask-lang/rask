@@ -2302,8 +2302,10 @@ impl TypeChecker {
         // Validate each argument annotation
         for (i, (arg, &param_id)) in args.iter().zip(param_ids.iter()).enumerate() {
             let Some(param_sym) = self.resolved.symbols.get(param_id) else { continue };
-            let (is_take, is_mutate) = match &param_sym.kind {
-                SymbolKind::Parameter { is_take, is_mutate } => (*is_take, *is_mutate),
+            let (is_take, is_mutate, is_deleting) = match &param_sym.kind {
+                SymbolKind::Parameter { is_take, is_mutate, is_deleting } => {
+                    (*is_take, *is_mutate, *is_deleting)
+                }
                 _ => continue,
             };
 
@@ -2368,7 +2370,30 @@ impl TypeChecker {
                 (ArgMode::Default, _, true) => {}
                 // Correct annotations are fine
                 (ArgMode::Own, true, _) => {}
-                (ArgMode::Mutate, _, true) => {}
+                (ArgMode::Mutate, _, true) if !is_deleting => {}
+                (ArgMode::Deleting, _, _) if is_deleting => {}
+                // PM5: the marker follows the signature. A `deleting` parameter is
+                // a `mutate` parameter that may also delete nodes the caller
+                // never named, so the call site says the more specific word —
+                // otherwise two different contracts print identically.
+                (ArgMode::Mutate, _, _) if is_deleting => {
+                    let arg_text = Self::argument_text(&arg.expr)
+                        .unwrap_or_else(|| param_name.clone());
+                    self.errors.push(TypeError::MissingDeletingMarker {
+                        callee: callee_name.clone(),
+                        arg: arg_text,
+                        param_name: param_name.clone(),
+                        span: arg.expr.span,
+                    });
+                }
+                (ArgMode::Deleting, _, _) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "deleting".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
                 // Wrong annotation type: `mutate` where `take` expected
                 (ArgMode::Mutate, true, false) => {
                     self.errors.push(TypeError::UnexpectedAnnotation {

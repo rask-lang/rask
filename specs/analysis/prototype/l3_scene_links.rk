@@ -44,7 +44,7 @@ func reparent(n: Link<SceneNode>, new_parent: Link<SceneNode>) {
 func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
     let kids = n.children.clone()
     for c in kids {
-        delete_subtree(mutate scene, c)
+        delete_subtree(deleting scene, c)
     }
     scene.nodes.delete(n)
 }
@@ -94,6 +94,6 @@ func main() {
     // that kills `root`, `b`, `a1` and `a2` from here on — but they are finished
     // with above, so no restructuring is needed. `scene.selected` survives
     // because it is a field, and the store nulls it.
-    delete_subtree(mutate scene, a)
+    delete_subtree(deleting scene, a)
     report(scene)
 }

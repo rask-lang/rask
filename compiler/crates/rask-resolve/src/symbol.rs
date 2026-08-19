@@ -23,6 +23,7 @@ pub enum SymbolKind {
         is_take: bool,
         /// Whether this parameter is mutable.
         is_mutate: bool,
+        is_deleting: bool,
     },
     /// A function.
     Function {

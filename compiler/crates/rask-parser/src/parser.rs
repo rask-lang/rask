@@ -4327,6 +4327,8 @@ impl Parser {
             let mode = if self.check(&TokenKind::MutateKw) {
                 self.advance();
                 ArgMode::Mutate
+            } else if self.match_contextual_mode("deleting") {
+                ArgMode::Deleting
             } else if self.check(&TokenKind::Own)
                 && !matches!(self.peek(1), TokenKind::Pipe | TokenKind::PipePipe)
             {

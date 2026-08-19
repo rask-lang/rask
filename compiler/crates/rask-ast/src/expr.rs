@@ -263,6 +263,11 @@ pub enum ArgMode {
     Own,
     /// `mutate expr` — mutable borrow (matches `mutate` param)
     Mutate,
+    /// `deleting expr` — may have nodes deleted from it (matches `deleting`
+    /// param). PM5: the marker follows the signature, and a `deleting` parameter
+    /// is a `mutate` parameter that may also delete, so the call site says the
+    /// more specific word (analysis.fourth-option).
+    Deleting,
 }
 
 /// A function call argument with optional name label and mode annotation.

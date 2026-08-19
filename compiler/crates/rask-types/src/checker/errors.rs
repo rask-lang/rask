@@ -324,6 +324,15 @@ pub enum TypeError {
     },
     /// PM4: an argument going into a `mutate` parameter is written
     /// `mutate arg`. Method receivers are exempt.
+    #[error("`{callee}` can delete from `{arg}` — say `deleting` at the call site")]
+    MissingDeletingMarker {
+        callee: String,
+        arg: String,
+        param_name: String,
+        span: Span,
+    },
+    /// PM4: an argument going into a `mutate` parameter is written
+    /// `mutate arg`. Method receivers are exempt.
     #[error("`{callee}` mutates `{arg}` — mark it at the call site")]
     MissingMutateMarker {
         callee: String,
@@ -953,6 +962,7 @@ impl TypeError {
             | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
+            | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
             | UnsafeRequired { .. }
             | TraitObjectSelfReturn { .. }

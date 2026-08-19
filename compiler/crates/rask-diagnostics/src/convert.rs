@@ -1016,6 +1016,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("annotations must match parameter declarations")
             }
 
+            MissingDeletingMarker { callee, arg, param_name, span } => {
+                Diagnostic::error(format!(
+                    "`{}` can delete from `{}` — say `deleting`, not `mutate`",
+                    callee, arg
+                ))
+                    .with_code("E0330")
+                    .with_primary(*span, format!("passed to the `deleting {}` parameter", param_name))
+                    .with_fix(format!("{}(deleting {}, …)", callee, arg))
+                    .with_why("PM5: the marker follows the signature. A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, and those are different contracts — writing `mutate` for both would print them the same. Your links into that store are revoked at this call, which is worth seeing here rather than discovering at the next read [mem.parameters/PM4, PM5, analysis.fourth-option]")
+            }
+
             MissingMutateMarker { callee, arg, param_name, span } => {
                 Diagnostic::error(format!(
                     "`{}` mutates `{}` — mark it at the call site",

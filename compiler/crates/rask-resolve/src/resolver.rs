@@ -1678,6 +1678,7 @@ impl Resolver {
                 SymbolKind::Parameter {
                     is_take: param.is_take,
                     is_mutate: param.is_mutate,
+                    is_deleting: param.is_deleting,
                 },
                 Some(param.ty.clone()),
                 Span::new(0, 0),
@@ -2490,6 +2491,7 @@ impl Resolver {
                         SymbolKind::Parameter {
                             is_take: false,
                             is_mutate: false,
+                                    is_deleting: false,
                         },
                         param.ty.clone(),
                         expr.span,
