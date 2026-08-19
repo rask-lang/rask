@@ -2900,6 +2900,15 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
+                // A stdlib type arrives here as its own *name* when the call
+                // that produced it went through the module-function path — a
+                // stub's return type is parsed before the type table exists, so
+                // `io.stdout()` gives back `UnresolvedNamed("Stdout")`. Method
+                // resolution already looks those up by name; this didn't, so
+                // `out.close()` discharged nothing and every program that
+                // acquired a standard stream was told it leaked the handle it had
+                // just closed (#859).
+                Type::UnresolvedNamed(name) => self.program.types.get_type_id(name),
                 _ => None,
             };
             if let Some(id) = type_id {

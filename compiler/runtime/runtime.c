@@ -932,6 +932,66 @@ int64_t rask_io_write_string(int64_t fd, int64_t str_ptr) {
     return written;
 }
 
+// ─── Standard streams ─────────────────────────────────────────────
+//
+// Through stdio rather than write(2), so a handle's output interleaves with
+// `println` in the order the program wrote it — `println` is buffered, and a
+// raw fd write would jump the queue.
+//
+// The stream is named by a number the Rask handle carries: 1 = stdout,
+// 2 = stderr, 0 = stdin. `Stdout`/`Stderr`/`Stdin` used to be empty structs with
+// no native entry point for anything (#859), which left the stream id nowhere to
+// live.
+static FILE *std_stream(int64_t which) {
+    if (which == 2) return stderr;
+    if (which == 0) return stdin;
+    return stdout;
+}
+
+int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
+    const RaskStr *s = (const RaskStr *)(uintptr_t)str_ptr;
+    if (!s) return 0;
+    FILE *f = std_stream(which);
+    int64_t len = rask_string_len(s);
+    if (len <= 0) return 0;
+    size_t n = fwrite(rask_string_ptr(s), 1, (size_t)len, f);
+    return n == (size_t)len ? len : -1;
+}
+
+// The bytes are gathered first: a `Vec<u8>` is contiguous only when the runtime
+// built it, and compiled Rask code gives every element its own slot (#863).
+int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
+    const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
+    int64_t len = rask_vec_len(v);
+    if (len <= 0) return 0;
+    char *bytes = (char *)rask_alloc(len);
+    for (int64_t i = 0; i < len; i++) {
+        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
+        bytes[i] = b ? (char)*b : 0;
+    }
+    size_t n = fwrite(bytes, 1, (size_t)len, std_stream(which));
+    rask_free(bytes);
+    return n == (size_t)len ? len : -1;
+}
+
+int64_t rask_io_std_flush(int64_t which) {
+    return fflush(std_stream(which)) == 0 ? 0 : -1;
+}
+
+// Read up to `max` bytes from stdin, stopping at end of input. Returns a
+// `Vec<u8>` cast to i64.
+int64_t rask_io_std_read_bytes(int64_t max) {
+    RaskVec *v = rask_vec_new(1);
+    if (max <= 0) return (int64_t)(uintptr_t)v;
+    for (int64_t i = 0; i < max; i++) {
+        int c = fgetc(stdin);
+        if (c == EOF) break;
+        uint8_t byte = (uint8_t)c;
+        rask_vec_push(v, &byte);
+    }
+    return (int64_t)(uintptr_t)v;
+}
+
 // Close a file descriptor.
 void rask_io_close_fd(int64_t fd) {
     close((int)fd);

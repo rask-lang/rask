@@ -529,6 +529,10 @@ RaskVec    *rask_file_lines(int64_t file);
 // ─── IO module ──────────────────────────────────────────────
 int64_t     rask_io_read_line(RaskStr *out, RaskStr *err_out);
 int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
+int64_t     rask_io_std_write_text(int64_t which, int64_t str_ptr);
+int64_t     rask_io_std_write_bytes(int64_t which, int64_t vec_ptr);
+int64_t     rask_io_std_flush(int64_t which);
+int64_t     rask_io_std_read_bytes(int64_t max);
 
 // ─── Time module ────────────────────────────────────────────
 // Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.

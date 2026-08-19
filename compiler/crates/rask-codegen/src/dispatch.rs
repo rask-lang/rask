@@ -979,6 +979,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Duration_nanos", "rask_time_Duration_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_seconds_f64", "rask_time_Duration_from_secs_f64", &[types::F64], Some(types::I64), false),
 
+        // ── Standard streams ───────────────────────────────────────
+        // The handle carries the stream number, so one entry per operation
+        // covers stdout, stderr and stdin (#859).
+        StdlibEntry::simple("io_write_std_text", "rask_io_std_write_text", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_write_std_bytes", "rask_io_std_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_flush_std", "rask_io_std_flush", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_read_std_bytes", "rask_io_std_read_bytes", &[types::I64], Some(types::I64), false),
+
         // ── I/O primitives ─────────────────────────────────────────
         StdlibEntry {
             mir_name: "io_read_string", c_name: "rask_io_read_until_close",

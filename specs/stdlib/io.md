@@ -134,7 +134,8 @@ for line in reader.lines() {
 |------|-------------|
 | **S1: Linear handles** | `Stdin`, `Stdout`, `Stderr` are `@resource` — must be consumed via `close()` or `ensure` |
 | **S2: Send not Sync** | Standard streams are `Send` but not `Sync`. Transfer via channel or protect with mutex |
-| **S3: Close semantics** | `close()` releases the handle, not the underlying fd (OS manages that at exit) |
+| **S3: Close semantics** | `close()` releases the handle, not the underlying fd (OS manages that at exit). It flushes, so nothing written through the handle is still buffered when it goes. `close(take self)` — a `mutate` receiver consumes nothing, and the obligation would never be dischargeable |
+| **S4: Ordering with `println`** | A handle's writes go through the same buffered stream `println` uses, so output appears in the order the program wrote it |
 
 | Type | Implements | Linear |
 |------|------------|--------|
