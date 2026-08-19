@@ -363,8 +363,12 @@ impl<'a> MirLowerer<'a> {
             }
             let field_shape = self.emit_shape(&field.ty)?;
             // A field with `@default` tolerates a missing key (E20) — the value
-            // is already in place, so the decoder leaves it alone.
-            let flags = if field_attrs::default_literal(&field.attrs).is_some() {
+            // is already in place, so the decoder leaves it alone. A *declared*
+            // default is the same question with a different spelling: a field
+            // the input leaves out takes it (type.structs/FD6). Only `@default`
+            // counted, so `tag: string = "fallback"` failed the decode with
+            // "missing field" (#853).
+            let flags = if Self::decode_default(field).is_some() {
                 FIELD_OPTIONAL
             } else {
                 0
@@ -385,6 +389,17 @@ impl<'a> MirLowerer<'a> {
         Some(shape)
     }
 
+    /// The literal a missing field falls back to: the `@default(…)` override
+    /// first, then the declared default.
+    ///
+    /// `@default` wins because it exists precisely to differ from the declared
+    /// one on decode (type.structs/FD6).
+    fn decode_default(field: &rask_mono::FieldLayout) -> Option<String> {
+        field_attrs::default_literal(&field.attrs)
+            .map(str::to_string)
+            .or_else(|| field.declared_default.clone())
+    }
+
     /// Write the values the decoder won't: `@default` literals, and a usable
     /// empty value for every `@skip` field. Recurses into nested structs so a
     /// skipped struct's own strings and collections come out valid too.
@@ -395,7 +410,7 @@ impl<'a> MirLowerer<'a> {
         for field in &layout.fields {
             let at = base + field.offset;
             let skipped = field_attrs::is_skipped(&field.attrs);
-            let default = field_attrs::default_literal(&field.attrs).map(str::to_string);
+            let default = Self::decode_default(field);
             if !skipped && default.is_none() {
                 // Not prefilled itself, but a nested struct may hold fields that are.
                 self.emit_prefilled_fields(dst, at, &field.ty);

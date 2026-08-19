@@ -963,7 +963,7 @@ fn json_to_typed(
                 if field_attrs::is_skipped(&field.attrs) {
                     fields.insert(
                         field.name.clone(),
-                        default_value(&field.attrs, &field.ty, struct_decls),
+                        default_value(field, struct_decls),
                     );
                     continue;
                 }
@@ -982,11 +982,14 @@ fn json_to_typed(
                     None if strip_optional(&field.ty).is_some() => {
                         fields.insert(field.name.clone(), option_none());
                     }
-                    // `@default` covers a missing key too (E20).
-                    None if field_attrs::default_literal(&field.attrs).is_some() => {
+                    // `@default` covers a missing key, and so does a declared
+                    // default — a field the input leaves out takes it
+                    // (E20, type.structs/FD6). Only `@default` counted, so
+                    // `tag: string = "fallback"` failed the decode (#853).
+                    None if decode_default(field).is_some() => {
                         fields.insert(
                             field.name.clone(),
-                            default_value(&field.attrs, &field.ty, struct_decls),
+                            default_value(field, struct_decls),
                         );
                     }
                     None => {
@@ -1003,19 +1006,47 @@ fn json_to_typed(
     }
 }
 
-/// The value a field that isn't read from the input starts at: its
-/// `@default(…)` literal when it has one, otherwise the type's empty value.
+/// The literal a field the input didn't supply falls back to: the
+/// `@default(…)` override first, then the declared default.
+///
+/// `@default` wins because it exists precisely to differ from the declared one
+/// on decode (type.structs/FD6). Mirrors `decode_default` in the MIR decoder,
+/// down to the literal's text form, so the two backends fill the same value.
+fn decode_default(field: &rask_ast::decl::Field) -> Option<String> {
+    field_attrs::default_literal(&field.attrs)
+        .map(str::to_string)
+        .or_else(|| field.default.as_ref().and_then(declared_literal_text))
+}
+
+/// A declared default's literal text. `None` for anything that isn't a plain
+/// literal, which stays construction-only rather than being guessed at.
+fn declared_literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
+    use rask_ast::expr::{ExprKind, UnaryOp};
+    match &e.kind {
+        ExprKind::Int(n, _) => Some(n.to_string()),
+        ExprKind::Float(f, _) => Some(f.to_string()),
+        ExprKind::Bool(b) => Some(b.to_string()),
+        ExprKind::String(s) => Some(format!("{:?}", s)),
+        ExprKind::Char(c) => Some(format!("'{}'", c)),
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
+            declared_literal_text(operand).map(|t| format!("-{t}"))
+        }
+        _ => None,
+    }
+}
+
+/// The value a field that isn't read from the input starts at: its default
+/// literal when it has one, otherwise the type's empty value.
 fn default_value(
-    attrs: &[String],
-    ty: &str,
+    field: &rask_ast::decl::Field,
     struct_decls: &HashMap<String, StructDecl>,
 ) -> Value {
-    if let Some(literal) = field_attrs::default_literal(attrs) {
-        if let Some(v) = literal_value(literal.trim(), ty) {
+    if let Some(literal) = decode_default(field) {
+        if let Some(v) = literal_value(literal.trim(), &field.ty) {
             return v;
         }
     }
-    empty_value(ty, struct_decls)
+    empty_value(&field.ty, struct_decls)
 }
 
 fn literal_value(literal: &str, ty: &str) -> Option<Value> {
