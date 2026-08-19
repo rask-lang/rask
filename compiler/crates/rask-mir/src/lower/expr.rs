@@ -232,6 +232,12 @@ impl<'a> MirLowerer<'a> {
         Self::vec_tracking_key(object)
             .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            // Push tracking only sees a Vec built in this function. A Vec that
+            // came back from a call has none, so `p.components().join(",")`
+            // took the integer join and printed the bytes of each component as
+            // numbers — `97,98,99` for `a,b,c` (#852). The checker knows the
+            // return type; ask it when tracking has nothing.
+            .or_else(|| self.collection_elem_of_expr(object))
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
@@ -245,7 +251,8 @@ impl<'a> MirLowerer<'a> {
     fn vec_elem_compare_fn(&self, object: &Expr) -> Option<String> {
         let elem = Self::vec_tracking_key(object)
             .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))?;
+                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .or_else(|| self.collection_elem_of_expr(object))?;
         if !matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
             return None;
         }
@@ -259,6 +266,7 @@ impl<'a> MirLowerer<'a> {
         Self::vec_tracking_key(object)
             .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+            .or_else(|| self.collection_elem_of_expr(object))
             .map_or(false, |ty| matches!(ty, MirType::F64 | MirType::F32))
     }
 
@@ -5690,9 +5698,20 @@ impl<'a> MirLowerer<'a> {
                     .ctx
                     .find_enum(module_name)
                     .is_some_and(|(_, layout)| layout.variants.iter().any(|v| v.name == *type_name));
+                // The qualifier is a module when it isn't a local and the
+                // *second* name is a type. `is_type_constructor_name` alone
+                // asks whether the qualifier is a known stdlib module, and it
+                // only knows the ones that have an `extend <module>` block in
+                // the stubs — `stdlib/path.rk` has only `extend Path`, so
+                // `path.Path.from("/a")` fell through to ordinary variable
+                // lookup and failed with "unresolved variable `path`" while
+                // the interpreter ran it fine (#851).
+                let names_a_type = self.ctx.find_struct(type_name).is_some()
+                    || self.ctx.find_enum(type_name).is_some()
+                    || rask_stdlib::mir_metadata::stdlib_type_names().contains(type_name);
                 if !self.locals.contains_key(module_name)
                     && !is_enum_variant
-                    && is_type_constructor_name(module_name)
+                    && (is_type_constructor_name(module_name) || names_a_type)
                 {
                     let func_name = format!("{}_{}", type_name, method);
                     let mut arg_operands = Vec::new();
