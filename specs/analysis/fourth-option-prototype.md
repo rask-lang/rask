@@ -955,6 +955,32 @@ That last row is the one that needed building twice. `delete_subtree` never dele
 a node it derived; it *recurses*, handing `c` from `n.children` to itself. Without
 that row, `take n` alone would have made the cascade compile again.
 
+**Which store gets blamed comes from the call, not from tracking the link.** The
+first cut gave up when a function had two store parameters, since a link's type
+can't say which store it belongs to — two `Store<Node>` parameters hand out links
+of identical type. Tracking each link's origin fixes that but guesses when a link
+arrives as a parameter. The exact answer needs neither: **a callee cannot delete a
+link without a store to delete it from**, and that store is an argument of the same
+call. So the blame is whichever store the consuming call hands over:
+
+```rask
+func from_left(mutate left: Store<Node>, mutate right: Store<Node>) {
+    for n in left.nodes() {
+        drop_one(mutate left, n)     // error names `left`, and only `left`
+        return
+    }
+}
+```
+
+`right` is never deleted from, so it is not asked to declare anything. A call that
+passes no store at all cannot delete the caller's node, and needs nothing.
+
+The link's origin is still tracked, for the other half — the caller-side revocation.
+`wipe(mutate a)` where `wipe` is `deleting` kills links that came out of `a` and
+leaves links into `b` alone, which the element type alone cannot separate. Where an
+origin isn't recorded the link dies anyway: over-killing is a rejected program,
+under-killing is a use after free.
+
 **Measured cost of the conversion.** One `deleting` in the L3 program
 (`delete_subtree`), two in the no-locals list (`remove_at`, `remove_value`, both of
 which delete a node found by walking `list.head`), and `take` added to two `remove`s

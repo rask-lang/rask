@@ -1616,8 +1616,16 @@ fn error_store_delete_undeclared() {
     // link you derived to something that consumes it.
     assert_eq!(
         out.matches("error[E0329]").count(),
-        3,
+        4,
         "each unnamed delete is reported once: {}",
+        out
+    );
+    // With two stores of the same node type, blame follows the store the consuming
+    // call receives — not a guess about where the link came from. So `left` is
+    // named and `right`, which nothing deletes from, is left out of it.
+    assert!(
+        out.contains("declare `deleting left`") && !out.contains("declare `deleting right`"),
+        "blame must land on the store the call hands over, and only that one: {}",
         out
     );
     assert!(

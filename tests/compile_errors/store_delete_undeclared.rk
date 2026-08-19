@@ -41,6 +41,20 @@ func drop_first(mutate g: Graph) {
     }
 }
 
+// Two stores of the same node type. Blame follows the store the consuming call
+// receives, not a guess about where the link came from — so `left` is named and
+// `right`, which nothing deletes from, is left alone.
+func from_left(mutate left: Store<Node>, mutate right: Store<Node>) {
+    for n in left.nodes() {
+        drop_bare(mutate left, n)   // ERROR: E0329 — declare `deleting left`
+        return
+    }
+}
+
+func drop_bare(mutate s: Store<Node>, take n: Link<Node>) {
+    s.delete(n)
+}
+
 func main() {
     mut g = Graph { nodes: Store.new() }
     let a = g.nodes.insert(Node { id: 1, peer: none })
@@ -48,4 +62,7 @@ func main() {
     drop_all(mutate g)
     wipe(mutate g)
     drop_first(mutate g)
+    mut l: Store<Node> = Store.new()
+    mut r: Store<Node> = Store.new()
+    from_left(mutate l, mutate r)
 }
