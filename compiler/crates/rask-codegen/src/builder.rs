@@ -3156,6 +3156,29 @@ impl<'a> FunctionBuilder<'a> {
                 // any amount is well-defined.
                 BinOp::RotateLeft => builder.ins().rotl(lhs_val, rhs_val),
                 BinOp::RotateRight => builder.ins().rotr(lhs_val, rhs_val),
+                // OV5 — the checked forms above with the guard taken off. The
+                // machine already wraps; the panic was the extra part.
+                BinOp::WrappingAdd => builder.ins().iadd(lhs_val, rhs_val),
+                BinOp::WrappingSub => builder.ins().isub(lhs_val, rhs_val),
+                BinOp::WrappingMul => builder.ins().imul(lhs_val, rhs_val),
+                // SH2 — the amount is masked to the width instead of trapping,
+                // so every amount means something. `x.wrapping_shl(9)` on a
+                // `u8` shifts by 1.
+                BinOp::WrappingShl => {
+                    let amount = Self::mask_shift_amount(builder, rhs_val, int_ty);
+                    builder.ins().ishl(lhs_val, amount)
+                }
+                BinOp::WrappingShr => {
+                    let amount = Self::mask_shift_amount(builder, rhs_val, int_ty);
+                    if is_unsigned {
+                        builder.ins().ushr(lhs_val, amount)
+                    } else {
+                        builder.ins().sshr(lhs_val, amount)
+                    }
+                }
+                BinOp::SaturatingAdd | BinOp::SaturatingSub | BinOp::SaturatingMul => {
+                    Self::emit_saturating(builder, *op, lhs_val, rhs_val, int_ty, is_unsigned)
+                }
                 BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
                 BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
                 BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
@@ -6776,6 +6799,82 @@ impl<'a> FunctionBuilder<'a> {
             return Self::iconst_i128(builder, n);
         }
         builder.ins().iconst(ty, n as i64)
+    }
+
+    /// SH2: mask a shift amount to the receiver's width, so every amount is
+    /// meaningful instead of a trap. `u8` masks to 0-7, `i64` to 0-63.
+    fn mask_shift_amount(builder: &mut ClifFunctionBuilder, amount: Value, ty: Type) -> Value {
+        let mask = Self::iconst_at(builder, ty, (ty.bits() as i128) - 1);
+        builder.ins().band(amount, mask)
+    }
+
+    /// OV5 saturating arithmetic: compute it wrapping, ask whether it
+    /// overflowed, and on overflow answer the limit it ran into rather than
+    /// the wrapped bits.
+    ///
+    /// Which limit depends on where the true answer went. Unsigned add and mul
+    /// can only run off the top, unsigned sub only off the bottom. Signed add
+    /// and sub overflow in the direction of the left operand's sign — the two
+    /// operands have to agree in sign for add to overflow at all, and disagree
+    /// for sub — and a signed product runs off the end its own sign points to.
+    fn emit_saturating(
+        builder: &mut ClifFunctionBuilder,
+        op: BinOp,
+        lhs: Value,
+        rhs: Value,
+        ty: Type,
+        is_unsigned: bool,
+    ) -> Value {
+        let (wrapped, overflowed) = match (op, is_unsigned) {
+            (BinOp::SaturatingAdd, true) => builder.ins().uadd_overflow(lhs, rhs),
+            (BinOp::SaturatingAdd, false) => builder.ins().sadd_overflow(lhs, rhs),
+            (BinOp::SaturatingSub, true) => builder.ins().usub_overflow(lhs, rhs),
+            (BinOp::SaturatingSub, false) => builder.ins().ssub_overflow(lhs, rhs),
+            (_, true) => builder.ins().umul_overflow(lhs, rhs),
+            (_, false) => builder.ins().smul_overflow(lhs, rhs),
+        };
+
+        let limit = if is_unsigned {
+            match op {
+                BinOp::SaturatingSub => Self::iconst_at(builder, ty, 0),
+                _ => Self::emit_type_max(builder, ty, true),
+            }
+        } else {
+            let max = Self::emit_type_max(builder, ty, false);
+            let min = Self::emit_type_min(builder, ty);
+            let zero = Self::iconst_at(builder, ty, 0);
+            let negative = match op {
+                BinOp::SaturatingMul => {
+                    // The product's sign is the operands' signs XORed.
+                    let l = builder.ins().icmp(IntCC::SignedLessThan, lhs, zero);
+                    let r = builder.ins().icmp(IntCC::SignedLessThan, rhs, zero);
+                    builder.ins().bxor(l, r)
+                }
+                // Add overflows away from zero, sub away from the right
+                // operand — either way the left operand's sign says which end.
+                _ => builder.ins().icmp(IntCC::SignedLessThan, lhs, zero),
+            };
+            builder.ins().select(negative, min, max)
+        };
+
+        builder.ins().select(overflowed, limit, wrapped)
+    }
+
+    /// The maximum of an integer type, at that type's own width. Unsigned
+    /// maxima are all-ones, which `iconst` takes as the same bit pattern as -1
+    /// at that width.
+    fn emit_type_max(builder: &mut ClifFunctionBuilder, ty: Type, unsigned: bool) -> Value {
+        if unsigned {
+            return Self::iconst_at(builder, ty, -1);
+        }
+        let n: i128 = match ty.bits() {
+            8 => i8::MAX as i128,
+            16 => i16::MAX as i128,
+            32 => i32::MAX as i128,
+            64 => i64::MAX as i128,
+            _ => i128::MAX,
+        };
+        Self::iconst_at(builder, ty, n)
     }
 
     /// The signed minimum of an integer type, at that type's own width.

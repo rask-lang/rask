@@ -3652,6 +3652,19 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
+            // type.integer-overflow OV5/SH2 — the ways out of the checked
+            // default. Same two operands and the same answer type as the
+            // operator each one shadows; only what happens on overflow differs.
+            // The shift forms take an amount of the receiver's own type, the
+            // way `shl` does.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul"
+            | "saturating_add" | "saturating_sub" | "saturating_mul"
+            | "wrapping_shl" | "wrapping_shr"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
             // std.bits B2/B3 — byte order. Same width in, same width out;
             // bits.rk documents these as methods on the integer types and
             // uses them (`hton_u16` is `x.to_be()`), but nothing registered

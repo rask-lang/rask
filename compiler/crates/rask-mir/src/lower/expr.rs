@@ -6106,10 +6106,20 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Option<super::TypedOperand>, LoweringError> {
         use crate::operand::UnaryOp as MirUnaryOp;
 
-        // Rotations take an amount; the rest are nullary.
+        // Rotations take an amount; the rest are nullary. The overflow escape
+        // hatches (OV5/SH2) ride along — same shape, one operand in, the
+        // receiver's type out.
         if let Some(rot) = match method {
             "rotate_left" => Some(crate::operand::BinOp::RotateLeft),
             "rotate_right" => Some(crate::operand::BinOp::RotateRight),
+            "wrapping_add" => Some(crate::operand::BinOp::WrappingAdd),
+            "wrapping_sub" => Some(crate::operand::BinOp::WrappingSub),
+            "wrapping_mul" => Some(crate::operand::BinOp::WrappingMul),
+            "wrapping_shl" => Some(crate::operand::BinOp::WrappingShl),
+            "wrapping_shr" => Some(crate::operand::BinOp::WrappingShr),
+            "saturating_add" => Some(crate::operand::BinOp::SaturatingAdd),
+            "saturating_sub" => Some(crate::operand::BinOp::SaturatingSub),
+            "saturating_mul" => Some(crate::operand::BinOp::SaturatingMul),
             _ => None,
         } {
             if args.len() != 1 {

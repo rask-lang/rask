@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The wrapping and saturating escape hatches (type.integer-overflow OV5, SH2).
+//
+// Arithmetic panics on overflow by default, which is the right default — but
+// hashing, checksums, PRNGs and ring buffers all *want* the wrap, and until now
+// there was no way to say so:
+//
+//     let a: i32 = 2147483647
+//     a.wrapping_add(1)   // error[E0313]: no method `wrapping_add` found for i32
+//
+// Every answer here is computed at the receiver's own width. That's the part
+// that's easy to get wrong: the interpreter keeps every machine integer in an
+// i64 slot, so `(200 as u8).wrapping_add(100)` is only 44 if the add happens in
+// 8 bits.
+//
+// `checked_*` and `overflowing_*` from the same table don't exist yet.
+
+test "overflow — wrapping add and sub at the ends of each width" {
+    let i8_max: i8 = 127
+    assert_eq(i8_max.wrapping_add(1), -128)
+    let i8_min: i8 = -128
+    assert_eq(i8_min.wrapping_sub(1), 127)
+
+    let u8_big: u8 = 200
+    assert_eq(u8_big.wrapping_add(100), 44)
+    let u8_small: u8 = 5
+    assert_eq(u8_small.wrapping_sub(10), 251)
+
+    let i32_max: i32 = 2147483647
+    assert_eq(i32_max.wrapping_add(1), -2147483648)
+
+    let i64_max: i64 = 9223372036854775807
+    assert_eq(i64_max.wrapping_add(1), -9223372036854775808)
+
+    let u64_max: u64 = 18446744073709551615
+    assert_eq(u64_max.wrapping_add(1), 0)
+}
+
+test "overflow — wrapping multiply keeps the low bits" {
+    let a: i8 = 127
+    assert_eq(a.wrapping_mul(2), -2)
+
+    let b: u8 = 200
+    assert_eq(b.wrapping_mul(3), 88)
+
+    let c: i32 = -2147483648
+    assert_eq(c.wrapping_mul(-1), -2147483648)
+
+    let d: u64 = 18446744073709551615
+    assert_eq(d.wrapping_mul(2), 18446744073709551614)
+}
+
+test "overflow — saturating pins to the end it ran into" {
+    let i8_max: i8 = 127
+    assert_eq(i8_max.saturating_add(1), 127)
+    let i8_min: i8 = -128
+    assert_eq(i8_min.saturating_sub(1), -128)
+
+    // Unsigned subtraction saturates at zero, not at the maximum.
+    let u8_small: u8 = 5
+    assert_eq(u8_small.saturating_sub(10), 0)
+    let u8_big: u8 = 200
+    assert_eq(u8_big.saturating_add(100), 255)
+    assert_eq(u8_big.saturating_mul(3), 255)
+}
+
+// A signed product runs off the end its own sign points to, so the limit
+// depends on both operands, not just the left one.
+test "overflow — saturating multiply picks its end by the product's sign" {
+    let pos: i8 = 127
+    let neg: i8 = -128
+    assert_eq(pos.saturating_mul(2), 127)
+    assert_eq(pos.saturating_mul(-2), -128)
+    assert_eq(neg.saturating_mul(2), -128)
+    assert_eq(neg.saturating_mul(-2), 127)
+
+    let i32_min: i32 = -2147483648
+    assert_eq(i32_min.saturating_mul(-1), 2147483647)
+
+    let u64_max: u64 = 18446744073709551615
+    assert_eq(u64_max.saturating_mul(2), 18446744073709551615)
+}
+
+test "overflow — nothing changes when the answer fits" {
+    let a: i32 = 5
+    assert_eq(a.wrapping_add(3), 8)
+    assert_eq(a.saturating_add(3), 8)
+    assert_eq(a.wrapping_sub(2), 3)
+    assert_eq(a.saturating_mul(4), 20)
+
+    let b: u8 = 10
+    assert_eq(b.wrapping_mul(2), 20)
+    assert_eq(b.saturating_sub(3), 7)
+}
+
+// SH2: the amount is masked to the width instead of panicking, so every
+// amount means something.
+test "overflow — wrapping shifts mask the amount" {
+    let a: u8 = 200
+    assert_eq(a.wrapping_shl(9), 144)
+    assert_eq(a.wrapping_shr(9), 100)
+
+    let one: i64 = 1
+    assert_eq(one.wrapping_shl(64), 1)
+    assert_eq(one.wrapping_shl(65), 2)
+}
+
+test "overflow — a wrapping right shift keeps the receiver's signedness" {
+    let signed: i32 = -8
+    assert_eq(signed.wrapping_shr(1), -4)
+
+    let unsigned: u32 = 4294967288
+    assert_eq(unsigned.wrapping_shr(1), 2147483644)
+}
+
+// CT2: the same hatches fold at compile time, where plain overflow is a
+// compile error.
+const WRAPPED: i32 = comptime {
+    let x: i32 = 2147483647
+    x.wrapping_add(1)
+}
+
+const SATURATED: u8 = comptime {
+    let x: u8 = 200
+    x.saturating_add(100)
+}
+
+const SHIFTED: u8 = comptime {
+    let x: u8 = 200
+    x.wrapping_shl(9)
+}
+
+test "overflow — the hatches fold at comptime" {
+    assert_eq(WRAPPED, -2147483648)
+    assert_eq(SATURATED, 255)
+    assert_eq(SHIFTED, 144)
+}
+
+// The reason any of this exists: a hash that's meant to wrap.
+test "overflow — an FNV-style hash runs to completion" {
+    mut hash: u32 = 2166136261
+    let bytes: Vec<u8> = [114, 97, 115, 107]
+    for byte in bytes {
+        hash = hash.wrapping_mul(16777619)
+        hash = hash.wrapping_add(byte as u32)
+    }
+    assert_eq(hash, 675472312)
+}
+
+func main() {}

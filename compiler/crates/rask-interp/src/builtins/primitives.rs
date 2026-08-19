@@ -14,6 +14,33 @@ fn mask_to_width(v: i64, width: u32) -> u64 {
     if width >= 64 { v as u64 } else { (v as u64) & ((1u64 << width) - 1) }
 }
 
+/// type.integer-overflow OV5/SH2 — one escape hatch, computed at the
+/// receiver's own width and signedness.
+///
+/// Every machine integer lives in an i64 slot here, so the width has to come
+/// back before the arithmetic: `(200 as u8).wrapping_add(100)` is 44, and it
+/// only is if the add happens in 8 bits. Rust's own methods carry the exact
+/// semantics — including `wrapping_shl` masking the amount to the width — so
+/// the receiver is cast down, the operation runs at that type, and the answer
+/// goes back into the slot.
+macro_rules! overflow_hatch {
+    ($method:expr, $a:expr, $b:expr, $ty:ty) => {{
+        let a = $a as $ty;
+        let b = $b as $ty;
+        let out: $ty = match $method {
+            "wrapping_add" => a.wrapping_add(b),
+            "wrapping_sub" => a.wrapping_sub(b),
+            "wrapping_mul" => a.wrapping_mul(b),
+            "saturating_add" => a.saturating_add(b),
+            "saturating_sub" => a.saturating_sub(b),
+            "saturating_mul" => a.saturating_mul(b),
+            "wrapping_shl" => a.wrapping_shl(b as u32),
+            _ => a.wrapping_shr(b as u32),
+        };
+        out as i64
+    }};
+}
+
 /// Put a width-masked result back into an i64, sign-extending when the
 /// receiver's type is signed so `-1i8` stays -1 rather than becoming 255.
 fn sign_extend(v: i64, width: u32, signed: bool) -> i64 {
@@ -149,6 +176,25 @@ impl Interpreter {
                     )))
             }
             "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
+            // OV5/SH2 — the ways out of the checked default.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul"
+            | "saturating_add" | "saturating_sub" | "saturating_mul"
+            | "wrapping_shl" | "wrapping_shr" => {
+                let b = self.expect_int(args, 0)?;
+                let width = kind.bits().unwrap_or(64);
+                let signed = kind.signed();
+                let out = match (width, signed) {
+                    (8, true) => overflow_hatch!(method, a, b, i8),
+                    (8, false) => overflow_hatch!(method, a, b, u8),
+                    (16, true) => overflow_hatch!(method, a, b, i16),
+                    (16, false) => overflow_hatch!(method, a, b, u16),
+                    (32, true) => overflow_hatch!(method, a, b, i32),
+                    (32, false) => overflow_hatch!(method, a, b, u32),
+                    (_, false) => overflow_hatch!(method, a, b, u64),
+                    _ => overflow_hatch!(method, a, b, i64),
+                };
+                Ok(Value::Int(sign_extend(out, width, signed), kind))
+            }
             // An unsigned receiver holds its bit pattern in the i64 slot, so
             // the top half of u64 prints negative without the width (#517).
             "to_string" | "debug_string" => {

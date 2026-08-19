@@ -149,6 +149,19 @@ pub enum BinOp {
     /// the receiver's width instead of falling off the end.
     RotateLeft,
     RotateRight,
+    /// type.integer-overflow OV5/SH2 — the escape hatches from the checked
+    /// default. Same arithmetic as Add/Sub/Mul, with the overflow guard
+    /// replaced: `Wrapping*` keeps the low bits, `Saturating*` pins to the
+    /// receiver type's min or max, and the shift forms mask the amount to the
+    /// width instead of trapping on it.
+    WrappingAdd,
+    WrappingSub,
+    WrappingMul,
+    WrappingShl,
+    WrappingShr,
+    SaturatingAdd,
+    SaturatingSub,
+    SaturatingMul,
 }
 
 #[derive(Debug, Clone, Copy)]
