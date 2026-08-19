@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// mem.boxes / mem.cell / conc.sync witnesses. Interp is correct; NATIVE is a
-// KNOWN-FAIL — Cell is unlinked in codegen (`Function not found: Cell_new`) and
-// Mutex `with .lock()` reads pointer garbage on native (#268). Tracked in
-// tests/known_divergences.txt; delete that line + this note when box codegen
-// lands. Do NOT weaken to make native pass.
+// mem.boxes / mem.cell / conc.sync witnesses.
 //
-// (Shared `with` access is broken on BOTH backends, so it isn't witnessed here.)
+// This was a known-fail for #268 — Cell unlinked in codegen ("Function not found:
+// Cell_new") and Mutex `with .lock()` reading pointer garbage on native. Box
+// codegen has landed: both tests pass on both backends and the
+// known_divergences.txt line is gone. The note saying otherwise was left behind,
+// and is corrected here rather than left to mislead the next reader.
+//
+// Shared `with` access works now too — `t_month_boxes.rk` covers read/write
+// alongside the rest of the family.
 
 import memory.Cell
 import sync.Mutex

@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Consuming a `@resource` from a `let` binding inside a loop — #928.
+//
+// `let h = Handle.open(i)` then `h.close()` is fine at the top level of a function
+// and rejected inside a loop body:
+//
+//     error[E0322]: cannot mutate `h` — declared `let`
+//         = fix: replace `let h` with `mut h`
+//
+// `close(take self)` consumes; it doesn't mutate. SYNTAX.md's `let` section says
+// so outright — "Moving/consuming is still fine on a `let` binding (`take self`
+// methods, passing as `take` parameter) — transfer of ownership is not mutation" —
+// and mem.parameters/PM2 repeats it.
+//
+// It needs all three ingredients: a @resource value, a `let` binding, and a loop
+// body. The three controls at the bottom each drop one and pass today, which
+// points at the resource-tracking branch having its own "allowed on a `let`?" test
+// that's missing the ownership-transfer exemption.
+//
+// Open-a-handle-per-iteration-and-close-it is the ordinary shape for a resource in
+// a loop, and the suggested `mut h` does compile — so a reader takes it and ends
+// up with a binding marked mutable for no reason, saying something false about
+// what happens to the value.
+
+@resource
+struct Handle {
+    id: i32
+}
+
+extend Handle {
+    func open(id: i32) -> Handle {
+        return Handle { id }
+    }
+
+    func close(take self) -> i32 {
+        return self.id
+    }
+}
+
+// Same shape, no @resource.
+struct Plain {
+    id: i32
+}
+
+extend Plain {
+    func close(take self) -> i32 {
+        return self.id
+    }
+}
+
+test "mem.resource — a let-bound resource consumed in a for body" {
+    mut total = 0
+    for i in 1..4 {
+        let h = Handle.open(i)
+        total = total + h.close()
+    }
+    assert total == 6
+}
+
+test "mem.resource — a let-bound resource consumed in a while body" {
+    mut total = 0
+    mut i = 1
+    while i < 4 {
+        let h = Handle.open(i)
+        total = total + h.close()
+        i = i + 1
+    }
+    assert total == 6
+}
+
+// Controls: each drops one ingredient and works today.
+test "mem.resource — outside a loop is the first control" {
+    let h = Handle.open(1)
+    assert h.close() == 1
+}
+
+test "mem.resource — mut in the loop is the second control" {
+    mut total = 0
+    for i in 1..4 {
+        mut h = Handle.open(i)
+        total = total + h.close()
+    }
+    assert total == 6
+}
+
+test "mem.resource — a non-resource struct is the third control" {
+    mut total = 0
+    for i in 1..4 {
+        let p = Plain { id: i }
+        total = total + p.close()
+    }
+    assert total == 6
+}
+
+func main() {}

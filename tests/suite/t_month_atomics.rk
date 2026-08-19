@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Atomics — #927. Unimplemented, so this drives the feature.
+//
+// `Atomic` has no operations on any spelling. `Atomic<i64>` and `AtomicI64` both
+// resolve as type names and then `new`, `load`, `store`, `add` are all "no method
+// found". There is no `Atomic` in `stdlib/*.rk` at all — the names come from the
+// compiler's type registry with nothing behind them.
+//
+// Everything here uses `Atomic<T>`, the only spelling mem.atomics/GA1 allows:
+// "There are no `AtomicU64`-style named types and no aliases". The registry
+// currently has the eleven named variants the spec rules out and nothing behind
+// the one it mandates — worth settling before there are call sites.
+//
+// `Ordering` does exist, so the enum these operations take is already there.
+//
+// mem.boxes/BX1 lists Atomic as the box family's adjacent member and boxes.md's
+// decision tree routes "single counter, flag, or pointer-sized value" to it, so a
+// reader following the documented procedure for a shared counter lands here.
+// `Mutex.new(0)` with `with m.lock()` is the working answer today and is covered
+// in `t_month_boxes.rk`.
+
+// A word-sized, padding-free, Copy struct — a legal payload per GA1.
+struct Slot {
+    index: i32
+    gen: i32
+}
+
+test "mem.atomics — new and load" {
+    let a = Atomic<i64>.new(7)
+    assert a.load(Ordering.SeqCst) == 7
+}
+
+test "mem.atomics — store replaces the value" {
+    let a = Atomic<i64>.new(0)
+    a.store(42, Ordering.SeqCst)
+    assert a.load(Ordering.SeqCst) == 42
+}
+
+test "mem.atomics — swap returns the old value" {
+    let a = Atomic<i64>.new(1)
+    assert a.swap(2, Ordering.SeqCst) == 1
+    assert a.load(Ordering.SeqCst) == 2
+}
+
+test "mem.atomics — an integer payload counts" {
+    let a = Atomic<i64>.new(0)
+    a.fetch_add(5, Ordering.SeqCst)
+    a.fetch_add(3, Ordering.SeqCst)
+    assert a.load(Ordering.SeqCst) == 8
+}
+
+test "mem.atomics — counting in a loop" {
+    let a = Atomic<i64>.new(0)
+    for _ in 0..10 {
+        a.fetch_add(1, Ordering.SeqCst)
+    }
+    assert a.load(Ordering.SeqCst) == 10
+}
+
+test "mem.atomics — a bool payload loads and stores" {
+    let flag = Atomic<bool>.new(false)
+    assert !flag.load(Ordering.SeqCst)
+    flag.store(true, Ordering.SeqCst)
+    assert flag.load(Ordering.SeqCst)
+}
+
+test "mem.atomics — a word-sized struct payload" {
+    let s = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+    s.store(Slot { index: 3, gen: 1 }, Ordering.SeqCst)
+    let got = s.load(Ordering.SeqCst)
+    assert got.index == 3
+    assert got.gen == 1
+}
+
+test "mem.atomics — default for a primitive payload" {
+    let a = Atomic<i64>.default()
+    assert a.load(Ordering.SeqCst) == 0
+}
+
+func main() {}
