@@ -3017,7 +3017,10 @@ impl TypeChecker {
             return Type::Error;
         }
 
-        if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
+        // Cloned rather than borrowed: recording a trait coercion below mutates
+        // the checker, and the borrow would outlive the whole body.
+        if let Some(sig) = self.types.builtin_modules.get_method(module, method).cloned() {
+            let mut trait_params: Vec<(Expr, Type, Type)> = Vec::new();
             // Check parameter count — skip for wildcard params (_Any accepts anything)
             let has_wildcard = sig.params.iter().any(|p| {
                 matches!(p, Type::UnresolvedNamed(n) if n == "_Any")
@@ -3033,13 +3036,25 @@ impl TypeChecker {
 
             // Check parameter types (skip _Any wildcards)
             if !has_wildcard {
-                for (param_ty, arg_ty) in sig.params.iter().zip(arg_types.iter()) {
+                for ((param_ty, arg_ty), arg) in
+                    sig.params.iter().zip(arg_types.iter()).zip(args.iter())
+                {
+                    // TR5: a concrete value flowing into an `any Trait`
+                    // parameter needs a vtable, and MIR builds it from this
+                    // note. A module function's arguments were the one call
+                    // position that never recorded it — `io.copy(buf, out)`
+                    // passed the raw struct pointer, and the first dispatch
+                    // through it jumped to address zero (#860).
+                    trait_params.push((arg.expr.clone(), param_ty.clone(), arg_ty.clone()));
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         param_ty.clone(),
                         arg_ty.clone(),
                         span,
                     ));
                 }
+            }
+            for (arg_expr, param_ty, arg_ty) in trait_params {
+                self.note_trait_coercion(&arg_expr, &param_ty, &arg_ty);
             }
 
             // If explicit type args provided (e.g., json.decode<Foo>),

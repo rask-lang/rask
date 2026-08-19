@@ -1,0 +1,200 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `io.Buffer` and `io.copy` (std.io B4, C1).
+//
+// Both were declared `@native` with no implementation anywhere:
+// `Buffer.new()` died in codegen with "Function not found: Buffer_new" and on
+// the interpreter with "type Buffer has no method 'new'". Nine methods, plus
+// `io.copy`, all in that state.
+//
+// They're Rask now — bytes and an index, nothing the machine has to be asked
+// about — so both backends run the same source. The read position lives in a
+// `Cell` because `Reader` takes `self`, not `mutate self`.
+//
+// Two things had to be fixed to get here:
+//   - `Reader.read(self, buf)` couldn't be implemented at all. Filling `buf` is
+//     the whole point of `read`, and a parameter is read-only unless it says
+//     `mutate`, so every possible body was rejected. The trait says
+//     `mutate buf` now.
+//   - `io.copy(reader, writer)` segfaulted on native. A stub's `any Trait`
+//     parameter parsed as the *name* "any Reader" rather than a trait object,
+//     so nothing recorded the coercion the argument needed and the raw struct
+//     pointer went in. The first dispatch through it jumped to address zero.
+
+import io
+import io.Buffer
+
+test "std.io — write then read gives back what went in" {
+    mut b = Buffer.new()
+    assert_eq(b.len(), 0)
+
+    let hi: Vec<u8> = [104, 105]
+    let n = b.write(hi)
+    if n is i64 as k {
+        assert_eq(k, 2)
+    } else as e {
+        assert false
+    }
+    assert_eq(b.len(), 2)
+
+    let w = b.write_text(" there")
+    w catch e => {
+        assert false
+    }
+    assert_eq(b.len(), 8)
+
+    let t = b.read_text()
+    if t is string as s {
+        assert_eq(s, "hi there")
+    } else as e {
+        assert false
+    }
+}
+
+test "std.io — a second read finds nothing left" {
+    mut b = Buffer.new()
+    let _ = b.write_text("once")
+    let first = b.read_text()
+    if first is string as s {
+        assert_eq(s, "once")
+    } else as e {
+        assert false
+    }
+    let second = b.read_text()
+    if second is string as s {
+        assert_eq(s.len(), 0)
+    } else as e {
+        assert false
+    }
+}
+
+test "std.io — Buffer.from starts at position zero" {
+    let abc: Vec<u8> = [65, 66, 67]
+    mut b = Buffer.from(abc)
+    assert_eq(b.len(), 3)
+    let bytes = b.read_bytes()
+    if bytes is Vec<u8> as v {
+        assert_eq(v.len(), 3)
+        assert_eq(v[0], 65)
+        assert_eq(v[2], 67)
+    } else as e {
+        assert false
+    }
+}
+
+// R1: `read` fills as much of the caller's buffer as there is left, and answers
+// 0 once the buffer is spent.
+test "std.io — read fills the caller's buffer a chunk at a time" {
+    let digits: Vec<u8> = [49, 50, 51, 52]
+    mut b = Buffer.from(digits)
+    mut dst: Vec<u8> = [0, 0]
+
+    let first = b.read(mutate dst)
+    if first is i64 as k {
+        assert_eq(k, 2)
+    } else as e {
+        assert false
+    }
+    assert_eq(dst[0], 49)
+    assert_eq(dst[1], 50)
+
+    let second = b.read(mutate dst)
+    if second is i64 as k {
+        assert_eq(k, 2)
+    } else as e {
+        assert false
+    }
+    assert_eq(dst[0], 51)
+    assert_eq(dst[1], 52)
+
+    let third = b.read(mutate dst)
+    if third is i64 as k {
+        assert_eq(k, 0)
+    } else as e {
+        assert false
+    }
+}
+
+test "std.io — an empty buffer reads as empty, not as an error" {
+    mut b = Buffer.new()
+    assert_eq(b.len(), 0)
+    let t = b.read_text()
+    if t is string as s {
+        assert_eq(s.len(), 0)
+    } else as e {
+        assert false
+    }
+    let bytes = b.read_bytes()
+    if bytes is Vec<u8> as v {
+        assert_eq(v.len(), 0)
+    } else as e {
+        assert false
+    }
+}
+
+// as_bytes is everything written, not just what's left to read.
+test "std.io — as_bytes ignores the read position" {
+    mut b = Buffer.new()
+    let _ = b.write_text("abc")
+    let _ = b.read_text()
+    assert_eq(b.as_bytes().len(), 3)
+    assert_eq(b.len(), 3)
+}
+
+test "std.io — non-ASCII text survives the round trip" {
+    mut b = Buffer.new()
+    let _ = b.write_text("héllo →")
+    let t = b.read_text()
+    if t is string as s {
+        assert_eq(s, "héllo →")
+    } else as e {
+        assert false
+    }
+}
+
+// R3: invalid UTF-8 is an IoError, the way every other failure on a stream is.
+test "std.io — bytes that aren't UTF-8 are an error, not a panic" {
+    let bad: Vec<u8> = [255, 254]
+    mut b = Buffer.from(bad)
+    let t = b.read_text()
+    if t is string as s {
+        assert false
+    } else as e {
+        assert e.message().contains("not valid UTF-8")
+    }
+}
+
+// C1: no handles to acquire, and it works over any Reader/Writer pair.
+test "std.io — copy moves every byte from reader to writer" {
+    let xyz: Vec<u8> = [120, 121, 122]
+    mut src = Buffer.from(xyz)
+    mut dst = Buffer.new()
+
+    let n = io.copy(src, dst)
+    if n is i64 as k {
+        assert_eq(k, 3)
+    } else as e {
+        assert false
+    }
+    assert_eq(dst.len(), 3)
+
+    let out = dst.read_text()
+    if out is string as s {
+        assert_eq(s, "xyz")
+    } else as e {
+        assert false
+    }
+}
+
+test "std.io — copying an empty reader copies nothing" {
+    mut src = Buffer.new()
+    mut dst = Buffer.new()
+    let n = io.copy(src, dst)
+    if n is i64 as k {
+        assert_eq(k, 0)
+    } else as e {
+        assert false
+    }
+    assert_eq(dst.len(), 0)
+}
+
+func main() {}

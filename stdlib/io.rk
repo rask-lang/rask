@@ -74,7 +74,10 @@ extend IoError {
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
 /// mirror the Writer trio (specs/stdlib/io.md R1-R3).
 public trait Reader {
-    func read(self, buf: Vec<u8>) -> i64 or IoError
+    /// `buf` is `mutate` because that's the whole point of `read` — it fills
+    /// the caller's buffer. Without it the trait was unimplementable: any body
+    /// that wrote into `buf` was rejected as mutating a read-only parameter.
+    func read(self, mutate buf: Vec<u8>) -> i64 or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
@@ -108,8 +111,16 @@ extend io {
     public func stderr() -> Stderr {}
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
-    @native
-    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {}
+    ///
+    /// C1: no handles to acquire. Written in Rask over the two traits, so any
+    /// Reader/Writer pair works and both backends agree — there was no native
+    /// entry point for this at all before.
+    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {
+        let bytes = try reader.read_bytes()
+        let n = bytes.len().wrap<i64>()
+        try writer.write_bytes(bytes)
+        return n
+    }
 }
 
 /// Standard input handle. Implements Reader. Must be consumed via close().
@@ -120,7 +131,7 @@ public struct Stdin {
 extend Stdin with Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
     @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError {}
+    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {}
 
     /// Read all remaining bytes.
     @native
@@ -199,55 +210,128 @@ extend Stderr {
     public func close(mutate self) {}
 }
 
-/// In-memory buffer implementing both Reader and Writer. Not linear.
-public struct Buffer { }
+/// In-memory buffer implementing both Reader and Writer (B4). Not linear —
+/// there's no OS resource behind it.
+///
+/// The read position lives in a `Cell` because `Reader` takes `self`, not
+/// `mutate self`. Reading has to advance the cursor, and a box is how a `self`
+/// method changes something.
+///
+/// Written in Rask rather than native: it's bytes and an index, nothing the
+/// machine has to be asked about, so both backends run this source. Before
+/// this the whole type was nine `@native` declarations with no implementation
+/// anywhere — `Buffer.new()` failed on both backends (#860).
+public struct Buffer {
+    data: Vec<u8>
+    pos: Cell<i64>
+}
 
 extend Buffer with Reader {
-    /// Read bytes from the buffer.
-    @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError {}
+    /// Read up to `buf.len()` bytes into `buf`, starting at the read position.
+    /// Returns how many were copied — 0 once the buffer is exhausted (R1).
+    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
+        let total = self.data.len().wrap<i64>()
+        let want = buf.len().wrap<i64>()
+        mut copied: i64 = 0
+        with self.pos as at {
+            mut from = at
+            while copied < want && from < total {
+                buf.set(copied, self.data.get(from) ?? 0)
+                copied = copied + 1
+                from = from + 1
+            }
+            at = from
+        }
+        return copied
+    }
 
-    /// Read all remaining bytes.
-    @native
-    public func read_bytes(self) -> Vec<u8> or IoError {}
+    /// Read everything left, and leave the position at the end (R2).
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        let total = self.data.len().wrap<i64>()
+        mut out: Vec<u8> = Vec.new()
+        with self.pos as at {
+            mut from = at
+            while from < total {
+                out.push(self.data.get(from) ?? 0)
+                from = from + 1
+            }
+            at = from
+        }
+        return out
+    }
 
-    /// Read all as UTF-8 string.
-    @native
-    public func read_text(self) -> string or IoError {}
+    /// Read everything left as UTF-8 (R3). Invalid bytes are an `IoError`, the
+    /// way every other failure on a stream is.
+    public func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes)
+        text catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return try text
+    }
 }
 
 extend Buffer with Writer {
-    /// Write bytes to the buffer.
-    @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError {}
+    /// Append bytes, and report how many went in (W1). A memory buffer never
+    /// writes short, so that's always all of them.
+    public func write(self, data: Vec<u8>) -> i64 or IoError {
+        mut written: i64 = 0
+        for byte in data {
+            self.data.push(byte)
+            written = written + 1
+        }
+        return written
+    }
 
-    /// Write all bytes.
-    @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
+    /// Append every byte (W2).
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        let _ = try self.write(data)
+        return
+    }
 
-    /// Write a string.
-    @native
-    public func write_text(self, s: string) -> void or IoError {}
+    /// Append a string's UTF-8 bytes (W4).
+    public func write_text(self, s: string) -> void or IoError {
+        let len = s.len().wrap<i64>()
+        mut i: i64 = 0
+        while i < len {
+            self.data.push(s.byte_at(i.wrap<usize>()) ?? 0)
+            i = i + 1
+        }
+        return
+    }
 }
 
 extend Buffer {
     /// Create an empty buffer.
-    @native
-    public func new() -> Buffer {}
+    public func new() -> Buffer {
+        return Buffer { data: Vec.new(), pos: Cell.new(0) }
+    }
 
-    /// Create a buffer initialized with data.
-    @native
-    public func from(data: Vec<u8>) -> Buffer {}
+    /// Create a buffer initialized with data, position at 0.
+    public func from(data: Vec<u8>) -> Buffer {
+        return Buffer { data, pos: Cell.new(0) }
+    }
 
-    /// View all written bytes.
-    @unimplemented
-    public func as_bytes(self) -> Vec<u8> {}
+    /// Every byte written, from the start — not just what's left to read.
+    ///
+    /// A copy, not a view. A borrowed slice into a struct field isn't
+    /// something Rask can express yet (#492), and a copy that says so beats a
+    /// name that promises otherwise.
+    public func as_bytes(self) -> Vec<u8> {
+        return self.data.clone()
+    }
 
     /// Total bytes written.
-    @native
-    public func len(self) -> i64 {}
+    public func len(self) -> i64 {
+        return self.data.len().wrap<i64>()
+    }
 
     /// Reset read position to 0.
+    ///
+    /// Still nothing: specs/stdlib/io.md says rewinding is
+    /// `seek(SeekFrom.Start(0))` and there is no `reset`, but `Seeker` isn't
+    /// implemented either, so neither spelling works. Tracked in #860.
     @unimplemented
     public func reset(mutate self) {}
 }

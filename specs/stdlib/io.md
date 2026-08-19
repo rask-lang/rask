@@ -42,12 +42,17 @@ enum IoError {
 <!-- test: skip -->
 ```rask
 trait Reader {
-    func read(self, buf: []u8) -> usize or IoError
+    func read(self, mutate buf: []u8) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
-    func read_exact(self, buf: []u8) -> void or IoError
+    func read_exact(self, mutate buf: []u8) -> void or IoError
 }
 ```
+
+`buf` is `mutate` because filling it is the whole point — a parameter is
+read-only unless it says so (`mem.parameters/PM2`), and without the marker the
+trait couldn't be implemented at all: every body that wrote into `buf` was
+rejected.
 
 Owned byte results are `Vec<u8>`; byte inputs are `[]u8` views — everywhere in the I/O surface.
 
@@ -152,6 +157,7 @@ try stdout.flush()
 | Rule | Description |
 |------|-------------|
 | **B4: In-memory** | `Buffer` implements both `Reader` and `Writer`. Not linear (no OS resource) |
+| **B5: Read position** | Reading advances a cursor. `Reader` takes `self`, not `mutate self`, so the cursor lives in a `Cell` — a `self` method changes something through a box |
 
 <!-- test: skip -->
 ```rask
@@ -165,7 +171,7 @@ let result = string.from_utf8(buf.as_bytes())  // "hello world"
 |--------|---------|-------------|
 | `Buffer.new()` | `Buffer` | Empty buffer |
 | `Buffer.from(data: []u8)` | `Buffer` | Initialized with data, position at 0 |
-| `as_bytes(self)` | `[]u8` | View of all written bytes |
+| `as_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy: a borrowed slice into a struct field isn't expressible yet |
 | `len(self)` | `usize` | Total bytes written |
 
 No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.

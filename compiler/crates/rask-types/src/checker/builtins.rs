@@ -103,6 +103,19 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
+    // `any Trait` — a trait object. Without this it came back as the *name*
+    // "any Reader", which prints exactly like the real type, so a module
+    // function's `any Trait` parameter looked perfectly fine and nothing
+    // recorded the TR5 coercion its argument needed. `io.copy(buf, out)` handed
+    // over a raw struct pointer, and the first dispatch through it jumped to
+    // address zero (#860). Same shape as the `*T` case above (#696).
+    if let Some(trait_name) = s.strip_prefix("any ") {
+        let trait_name = trait_name.trim();
+        if !trait_name.is_empty() {
+            return Type::TraitObject { trait_name: trait_name.to_string() };
+        }
+    }
+
     // `(A, B, ...)` — a tuple. Without this `char_indices() -> Iterator<(usize,
     // char)>` came back with two arguments, `(usize` and `char)`, because the
     // comma inside the parens read as the generic's own separator. `t.0` then
