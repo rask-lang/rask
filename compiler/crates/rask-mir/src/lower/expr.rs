@@ -5106,6 +5106,28 @@ impl<'a> MirLowerer<'a> {
         }));
         self.flush_elem_writebacks(wb_mark);
 
+        // An `f32` receiver dispatches to the `f64` symbol — there's one `sqrt`
+        // in libm and one entry per method in the table — so the argument is
+        // promoted on the way in and the answer comes back at double width.
+        // Handing that straight back left `(2.0 as f32).sqrt()` as
+        // 1.4142135623730951 while the interpreter, which computes at the
+        // receiver's own width, said 1.4142135. Round the answer back to the
+        // width the method was called at (#844).
+        if matches!(obj_ty, MirType::F32)
+            && matches!(ret_ty, MirType::F64)
+            && final_name.starts_with("f64_")
+        {
+            let narrowed = self.builder.alloc_temp(MirType::F32);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: narrowed,
+                rvalue: MirRValue::Cast {
+                    value: MirOperand::Local(result_local),
+                    target_ty: MirType::F32,
+                },
+            }));
+            return Ok((MirOperand::Local(narrowed), MirType::F32));
+        }
+
         // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
         if matches!(final_name.as_str(),
             "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"

@@ -44,4 +44,33 @@ extend char {
     /// Simple 1:1 uppercase mapping.
     @native("rask_char_to_uppercase")
     public func to_uppercase(self) -> char {}
+
+    /// True if this is a control character (Unicode category Cc).
+    @native("rask_char_is_control")
+    public func is_control(self) -> bool {}
+
+    /// True if this is an ASCII letter. False for every scalar above 127,
+    /// whatever its Unicode class says.
+    @native("rask_char_is_ascii_alphabetic")
+    public func is_ascii_alphabetic(self) -> bool {}
+
+    /// True if this is an ASCII digit (0-9).
+    @native("rask_char_is_ascii_digit")
+    public func is_ascii_digit(self) -> bool {}
+
+    /// True if this is an ASCII hex digit (0-9, a-f, A-F).
+    @native("rask_char_is_ascii_hexdigit")
+    public func is_ascii_hexdigit(self) -> bool {}
+
+    /// True if this is ASCII punctuation.
+    @native("rask_char_is_ascii_punctuation")
+    public func is_ascii_punctuation(self) -> bool {}
+
+    /// ASCII-only lowercase. Leaves everything else alone.
+    @native("rask_char_to_ascii_lowercase")
+    public func to_ascii_lowercase(self) -> char {}
+
+    /// ASCII-only uppercase. Leaves everything else alone.
+    @native("rask_char_to_ascii_uppercase")
+    public func to_ascii_uppercase(self) -> char {}
 }

@@ -287,6 +287,13 @@ int64_t rask_char_is_alphabetic(int32_t c);
 int64_t rask_char_is_numeric(int32_t c);
 int64_t rask_char_is_alphanumeric(int32_t c);
 int64_t rask_char_is_whitespace(int32_t c);
+int64_t rask_char_is_control(int32_t c);
+int64_t rask_char_is_ascii_alphabetic(int32_t c);
+int64_t rask_char_is_ascii_digit(int32_t c);
+int64_t rask_char_is_ascii_hexdigit(int32_t c);
+int64_t rask_char_is_ascii_punctuation(int32_t c);
+int64_t rask_char_to_ascii_lowercase(int32_t c);
+int64_t rask_char_to_ascii_uppercase(int32_t c);
 int64_t rask_char_is_uppercase(int32_t c);
 int64_t rask_char_is_lowercase(int32_t c);
 int64_t rask_char_to_int(int32_t c);
@@ -325,6 +332,22 @@ int rask_case_map(uint32_t cp, int to_upper, uint32_t out[3]);
 
 /// The single-scalar answer, for `char.to_uppercase()`/`to_lowercase()`.
 uint32_t rask_case_map_one(uint32_t cp, int to_upper);
+
+/// An inclusive scalar range in a character-class table.
+typedef struct {
+    uint32_t lo;
+    uint32_t hi;
+} RaskCharRange;
+
+/// What `char.is_alphabetic()` and friends answer from. Generated from Rust's
+/// own predicates, same as the case tables — `is_alphabetic` used to be "any
+/// scalar above 127", so `'\u{20AC}'` and a combining accent were letters.
+#define RASK_CLASS_ALPHABETIC 0
+#define RASK_CLASS_NUMERIC    1
+#define RASK_CLASS_LOWERCASE  2
+#define RASK_CLASS_UPPERCASE  3
+#define RASK_CLASS_CONTROL    4
+int rask_char_class(uint32_t cp, int which);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);

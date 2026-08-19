@@ -1163,6 +1163,58 @@ void rask_bool_to_string(RaskStr *out, int64_t val) {
 //
 // `buf` should be RASK_F64_BUF_SIZE bytes: a large magnitude in fixed notation
 // needs room for every digit before the decimal point.
+// Spell out a `%g` result that came back in exponent form, keeping exactly the
+// digits it chose.
+//
+// Re-rendering with `%.*f` looked like the same thing and isn't: for 1e300 the
+// shortest round-trip is one significant digit, so the decimal count comes out
+// negative, and `%.0f` prints the double's *exact* value — 1 followed by 300
+// digits of binary residue instead of 300 zeros. The interpreter prints the
+// digits that round-trip and pads (#845).
+static void str_expand_exponent(char *buf, size_t n) {
+    char *e = strchr(buf, 'e');
+    if (!e) return;
+
+    int exp10 = atoi(e + 1);
+
+    // Split the mantissa into sign, integer digits and fraction digits.
+    char digits[64];
+    size_t d = 0;
+    int negative = 0;
+    for (const char *p = buf; p < e && d + 1 < sizeof digits; p++) {
+        if (*p == '-') { negative = 1; continue; }
+        if (*p == '+' || *p == '.') continue;
+        digits[d++] = *p;
+    }
+    digits[d] = '\0';
+    const char *dot = strchr(buf, '.');
+    int int_digits = dot && dot < e ? (int)(dot - buf - negative) : (int)d;
+
+    // Where the decimal point lands once the exponent is applied.
+    int point = int_digits + exp10;
+
+    char outbuf[512];
+    size_t o = 0;
+    if (negative && o + 1 < sizeof outbuf) outbuf[o++] = '-';
+
+    if (point <= 0) {
+        // 0.000…digits
+        if (o + 2 < sizeof outbuf) { outbuf[o++] = '0'; outbuf[o++] = '.'; }
+        for (int i = 0; i < -point && o + 1 < sizeof outbuf; i++) outbuf[o++] = '0';
+        for (size_t i = 0; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+    } else if ((size_t)point >= d) {
+        // digits followed by trailing zeros, no fraction.
+        for (size_t i = 0; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+        for (size_t i = d; i < (size_t)point && o + 1 < sizeof outbuf; i++) outbuf[o++] = '0';
+    } else {
+        for (size_t i = 0; i < (size_t)point && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+        if (o + 1 < sizeof outbuf) outbuf[o++] = '.';
+        for (size_t i = (size_t)point; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+    }
+    outbuf[o] = '\0';
+    snprintf(buf, n, "%s", outbuf);
+}
+
 void rask_fmt_double(char *buf, size_t n, double val) {
     if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
     if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
@@ -1175,14 +1227,8 @@ void rask_fmt_double(char *buf, size_t n, double val) {
     if (prec >= 17) snprintf(buf, n, "%.17g", val);
 
     // %g switches to exponent form once the magnitude passes the precision.
-    // Re-render those with the same significant digits, spelled out.
-    if (strchr(buf, 'e')) {
-        int exp10 = (int)floor(log10(fabs(val)));
-        int decimals = prec - 1 - exp10;
-        if (decimals < 0) decimals = 0;
-        if (decimals > 320) decimals = 320;
-        snprintf(buf, n, "%.*f", decimals, val);
-    }
+    // Spell those out with the digits it already chose.
+    str_expand_exponent(buf, n);
 }
 
 // Same idea for f32. Widening to double first and formatting as a double
@@ -1200,13 +1246,7 @@ void rask_fmt_float(char *buf, size_t n, float val) {
     }
     if (prec >= 9) snprintf(buf, n, "%.9g", (double)val);
 
-    if (strchr(buf, 'e')) {
-        int exp10 = (int)floorf(log10f(fabsf(val)));
-        int decimals = prec - 1 - exp10;
-        if (decimals < 0) decimals = 0;
-        if (decimals > 60) decimals = 60;
-        snprintf(buf, n, "%.*f", decimals, (double)val);
-    }
+    str_expand_exponent(buf, n);
 }
 
 void rask_f64_to_string(RaskStr *out, double val) {
@@ -1390,18 +1430,20 @@ int64_t rask_char_is_ascii(int32_t c) {
     return (c >= 0 && c <= 127) ? 1 : 0;
 }
 
+// The generated Unicode tables, same source as the case mappings. These used to
+// be guesses: `is_alphabetic` said yes to every scalar above 127, so `€`, an em
+// dash and a combining accent were all letters, and `is_numeric` knew about four
+// Latin-1 fractions and nothing else (#846).
 int64_t rask_char_is_alphabetic(int32_t c) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
-    if (c > 127) return 1;
-    return 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_ALPHABETIC);
 }
 
 int64_t rask_char_is_numeric(int32_t c) {
-    if (c >= '0' && c <= '9') return 1;
-    if (c >= 0x00B2 && c <= 0x00B3) return 1;
-    if (c == 0x00B9) return 1;
-    if (c >= 0x00BC && c <= 0x00BE) return 1;
-    return 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_NUMERIC);
+}
+
+int64_t rask_char_is_control(int32_t c) {
+    return rask_char_class((uint32_t)c, RASK_CLASS_CONTROL);
 }
 
 int64_t rask_char_is_alphanumeric(int32_t c) {
@@ -1412,12 +1454,40 @@ int64_t rask_char_is_whitespace(int32_t c) {
     return str_is_white_space((uint32_t)c);
 }
 
+// std.primitives' ASCII half of the char table: fast, ASCII-only, and false
+// for everything above 127 whatever its Unicode class says.
+int64_t rask_char_is_ascii_alphabetic(int32_t c) {
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_digit(int32_t c) {
+    return (c >= '0' && c <= '9') ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_hexdigit(int32_t c) {
+    return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+         || (c >= 'A' && c <= 'F')) ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_punctuation(int32_t c) {
+    return ((c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x40)
+         || (c >= 0x5B && c <= 0x60) || (c >= 0x7B && c <= 0x7E)) ? 1 : 0;
+}
+
+int64_t rask_char_to_ascii_lowercase(int32_t c) {
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+int64_t rask_char_to_ascii_uppercase(int32_t c) {
+    return (c >= 'a' && c <= 'z') ? c - 32 : c;
+}
+
 int64_t rask_char_is_uppercase(int32_t c) {
-    return (c >= 'A' && c <= 'Z') ? 1 : 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_UPPERCASE);
 }
 
 int64_t rask_char_is_lowercase(int32_t c) {
-    return (c >= 'a' && c <= 'z') ? 1 : 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_LOWERCASE);
 }
 
 int64_t rask_char_to_int(int32_t c) {
