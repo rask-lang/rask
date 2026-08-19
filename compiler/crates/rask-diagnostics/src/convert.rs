@@ -2102,6 +2102,21 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
             }
 
+            UndeclaredDelete { param, operation } => {
+                Diagnostic::error(format!(
+                    "this can delete nodes the caller never named — declare `deleting {}`",
+                    param
+                ))
+                .with_code("E0329")
+                .with_primary(self.span, format!("{} chooses which nodes die", operation))
+                .with_help(format!(
+                    "declare it: `deleting {}: Store<…>` — or delete only links the caller handed over, as `take` parameters",
+                    param
+                ))
+                .with_fix(format!("deleting {}", param))
+                .with_why("`delete(take link)` is safe for the caller because the link is consumed at the call site — they can see the name die. A delete that chooses its own victim can't be seen from outside, so the caller's links are revoked at the call instead, and `deleting` is what tells them to expect it. `mutate` doesn't imply it: inserting and writing can't invalidate a link, deleting can")
+            }
+
             ResourceNotConsumedOpaque { name, where_ } => {
                 Diagnostic::error(format!(
                     "resource `{}` must be consumed before scope exit",

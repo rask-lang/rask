@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// The hole in the compile-time delete tracking, reduced to twelve lines.
+// The hole that `deleting` closes, in twelve lines. This program is REJECTED — it
+// is kept as the demonstration, not as something that runs.
 //
-// This is not a hypothetical. It was found in l3_scene_links.rk — the program
-// written to show the model working — where `delete_subtree(scene, a)` deletes
-// a's whole subtree and `main` then uses `a2`, one of the nodes it deleted.
+// It was a live use after free before the mode existed: `cascade` took the store
+// mutably, chose its own nodes to delete, and nothing at the call site said the
+// caller's links could die. It was found in l3_scene_links.rk, the program written
+// to show the model working, where `delete_subtree(scene, a)` deleted `a2` and
+// main read it afterwards.
 //
-// The rule the compiler enforces is "a delete you can see revokes the name it
-// names". `cascade` deletes nodes the caller named, and the caller never sees
-// it: the store goes in mutably, no link comes out, and the nodes to delete are
-// re-derived inside from a field. Nothing at the call site changes.
+// Now `cascade` has to say `deleting scene`, and the call revokes every link local
+// into that store. The last line is the error:
 //
-// Run it: prints "kid" for a node that is no longer in the store.
+//   error[E0328]: `kid` names a deleted node — this is a use after free
+//        cascade(mutate scene, parent)
+//        ----------------------------- the node `kid` names was deleted here
+//        println("kid.name = ...")
+//                             ^^^ `kid` points at freed memory from here on
 //
-// This is also the one program in the corpus that the proposed rule rejects, and
-// it is rejected for the right reason: `cascade` would be declared
-// `deleting scene: Scene`, which kills every link local into that store from the
-// call onward — and the last line reads one of them. Nothing else in the corpus
-// reads a link local after an unnamed delete, so nothing else has to change.
+// Note the call site is unchanged: `mutate scene`, exactly what a mutating call
+// already writes. `deleting` implies `mutate`, and the extra word lives only on
+// the declaration — deletion is backstopped by this error, mutation is not, which
+// is the rule E0373 already applies.
 
 struct Node {
     name: string
@@ -30,7 +34,7 @@ struct Scene {
 // Deletes `n` and everything under it. `n` is accounted for — the caller handed
 // it over. The children are not: they come out of `n.kids`, and the caller may
 // be holding links to them.
-func cascade(mutate scene: Scene, n: Link<Node>) {
+func cascade(deleting scene: Scene, take n: Link<Node>) {
     let kids = n.kids.clone()
     for c in kids {
         cascade(mutate scene, c)

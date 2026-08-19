@@ -40,7 +40,7 @@ func push_back(mutate list: List, value: i32) -> Link<Node> {
 
 // Splice, then delete. No `list.head = none` / `list.tail = none` case for
 // the last node: those are root edges, so the delete nulls them.
-func remove(mutate list: List, n: Link<Node>) {
+func remove(mutate list: List, take n: Link<Node>) {
     if n.prev? as p { p.next = n.next } else { list.head = n.next }
     if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
     list.nodes.delete(n)

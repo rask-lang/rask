@@ -114,6 +114,14 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// analysis.fourth-option: an unnamed delete through a parameter that didn't
+    /// declare `deleting`. The caller was never told its links could die here.
+    #[error("`{operation}` through `{param}` deletes nodes the caller never named")]
+    UndeclaredDelete {
+        param: String,
+        operation: String,
+    },
+
     /// A binding that holds a resource the field walk could not name — inside a
     /// `Vec`, a `Map`, an optional, a tuple, an enum payload. The obligation falls
     /// back to the whole binding, and `where_` says which shape forced that so the

@@ -268,7 +268,7 @@ impl Desugarer {
                 name_span: sp,
                 ty: "Self".to_string(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             }],
             ret_ty: Some("string".to_string()),

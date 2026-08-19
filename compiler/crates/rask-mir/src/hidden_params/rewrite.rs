@@ -75,7 +75,7 @@ fn rewrite_fn(pass: &mut HiddenParamPass, qname: &str, f: &mut FnDecl) {
                 name_span: Span::new(0, 0),
                 ty: req.param_type.clone(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             });
 

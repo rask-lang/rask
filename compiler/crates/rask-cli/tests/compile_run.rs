@@ -1598,25 +1598,80 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 // `Pool`+`Handle` and with `Store`+`Link` produces the same output. That is what
 // makes the ergonomics comparison in the write-up a comparison rather than two
 // unrelated programs, so it is asserted rather than eyeballed.
-// analysis.fourth-option: the compile-time delete tracking only sees deletes
-// written in the current body. A function that takes the store mutably and
-// derives its own links to delete — cascade delete — is invisible at the call
-// site, and the caller's local link keeps reading a freed node.
+// analysis.fourth-option: the cascade hole, closed by the `deleting` parameter
+// mode. A function that takes the store mutably and picks its own nodes to delete
+// has to say so, and the call then revokes every link local into that store.
 //
-// This asserts the hole is still open, so it fails loudly the day a `deleting`-style
-// parameter mode closes it. When that happens, flip this to a compile-error
-// fixture instead of deleting it.
+// Asserts the rejection, and that the call site needed no new marker — the mark is
+// on the declaration, because this very error backstops the misread while a misread
+// mutation has nothing to catch it (the rule E0373 already applies).
+// analysis.fourth-option: which deletes need `deleting` and which don't. The line
+// is whether the caller can see it: a link consumed at the call site is visible, a
+// node the callee picked is not.
 #[test]
-fn store_link_cascade_delete_is_the_documented_hole() {
-    let (out, code) = run_interp_repo_path("specs/analysis/prototype/cascade_hole_links.rk");
-    assert_eq!(code, 0, "the hole means this still compiles and runs: {out}");
-    assert!(
-        out.contains("store len = 0"),
-        "the cascade really did delete both nodes: {out}"
+fn error_store_delete_undeclared() {
+    let (failed, out) = compile_error_output("store_delete_undeclared.rk");
+    assert!(failed, "an undeclared unnamed delete must be rejected: {}", out);
+    // Three ways to pick your own victim: walk the store, clear it, or hand a
+    // link you derived to something that consumes it.
+    assert_eq!(
+        out.matches("error[E0329]").count(),
+        3,
+        "each unnamed delete is reported once: {}",
+        out
     );
     assert!(
-        out.contains("kid.name = kid"),
-        "and the caller's link still reads the freed node — this is the hole: {out}"
+        out.contains("declare `deleting g`"),
+        "the fix names the parameter: {}",
+        out
+    );
+    // And the one that deletes only what it was handed needs nothing — a `take`
+    // parameter is already visible at the call site.
+    assert!(
+        !out.contains("drop_one(mutate g, a)"),
+        "deleting a `take` parameter must not need the annotation: {}",
+        out
+    );
+}
+
+#[test]
+fn store_link_cascade_delete_is_rejected() {
+    let rask = rask_binary();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("specs/analysis/prototype/cascade_hole_links.rk");
+    let out = Command::new(&rask)
+        .args(["check"])
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "reading a link after a `deleting` call must be rejected: {}",
+        text
+    );
+    assert!(
+        text.contains("E0328") && text.contains("`kid` names a deleted node"),
+        "the caller's *other* link is what dies, not just the one passed in: {}",
+        text
+    );
+    assert!(
+        text.contains("cascade(mutate scene, parent)"),
+        "the call site marks `mutate` and nothing else: {}",
+        text
+    );
+    assert!(
+        !text.contains("E0329"),
+        "the declaration is correct, so no undeclared-delete error: {}",
+        text
     );
 }
 

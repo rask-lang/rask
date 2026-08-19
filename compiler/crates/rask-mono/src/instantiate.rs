@@ -223,7 +223,7 @@ impl TypeSubstitutor {
             name_span: param.name_span.clone(),
             ty: self.substitute_type_string(&param.ty),
             is_take: param.is_take,
-            is_mutate: param.is_mutate,
+            is_mutate: param.is_mutate, is_deleting: false,
             default: param.default.as_ref().map(|e| self.clone_expr(e)),
         }
     }

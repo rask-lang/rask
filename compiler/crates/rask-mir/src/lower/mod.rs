@@ -4797,7 +4797,7 @@ mod tests {
                         name_span: sp(),
                         ty: ty.to_string(),
                         is_take: false,
-                        is_mutate: false,
+                        is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),

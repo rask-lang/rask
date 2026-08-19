@@ -42,7 +42,7 @@ func push_back(mutate list: List, value: i32) {
 
 // Unchanged from the ordinary version: a parameter link is a borrow the caller
 // already holds in a field, which the rule permits.
-func remove(mutate list: List, n: Link<Node>) {
+func remove(mutate list: List, take n: Link<Node>) {
     if n.prev? as p { p.next = n.next } else { list.head = n.next }
     if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
     list.nodes.delete(n)
@@ -50,7 +50,7 @@ func remove(mutate list: List, n: Link<Node>) {
 
 // Removing by position instead of by a stashed link. This is what the caller has
 // to do without locals — and it is the honest cost of the rule.
-func remove_at(mutate list: List, index: i32) {
+func remove_at(deleting list: List, index: i32) {
     mut cur = list.head
     mut i = 0
     while cur? as n {
@@ -63,7 +63,7 @@ func remove_at(mutate list: List, index: i32) {
     }
 }
 
-func remove_value(mutate list: List, value: i32) {
+func remove_value(deleting list: List, value: i32) {
     mut cur = list.head
     while cur? as n {
         if n.value == value {

@@ -896,14 +896,119 @@ passing.
 a fixed source is an amendment to `borrowing.md` B1/B2. Both proposed in #806; the
 `take`-parameter half is only sound once #804 is fixed.
 
-**On the spelling.** `deleting s: Store<T>` over `prune s`: the model already has
-exactly one verb for this — the method is `delete`, the error says "use after
-delete", the mechanism is delete-time fixup — and a second word for one concept
-makes the language bigger for nothing. The price is grammatical: `mutate`, `take`
-and `own` are imperatives, and `deleting` is a participle. `delete s` would match
-them and then read as "deletes s itself", which is the one thing it doesn't mean;
-`mutate s` has no such competing reading, which is why that mode gets away with
-the imperative.
+### `deleting`, built — where the mark goes and why
+
+Implemented as a parameter mode, and the corpus converted, so the shape below is
+what compiles rather than what was sketched.
+
+**What it looks like.** One word on one declaration, and nothing at the call site:
+
+```rask
+// picks its own nodes to delete: says so
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids { delete_subtree(mutate scene, c) }
+    scene.nodes.delete(n)
+}
+
+// deletes exactly what it was handed: says nothing
+func remove(mutate list: List, take n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    list.nodes.delete(n)
+}
+
+delete_subtree(mutate scene, doomed)      // unchanged — `mutate`, as before
+```
+
+**The mark goes on the declaration only, and Rask's own rule says which.** E0373
+requires `mutate` at the call site, and gives the reason: the compiler backstops a
+misread *move*, because using a moved value is an error, but nothing backstops a
+misread mutation — both readings are legal code, so the one that can't be caught
+gets written down. Apply that test to deletion and it comes out the other way: a
+misread delete *is* backstopped, by the use-after-delete error on the caller's next
+read. So the call site needs no new marker, and the only new text in the feature is
+one word on the signature.
+
+**`deleting` implies `mutate`.** Treating them as orthogonal was wrong — you cannot
+delete a node without mutating the store it lives in. The consequence showed up
+immediately in real code: with `deleting` alone the call site's `mutate scene` was
+rejected as an unexpected annotation. So it is a lattice, not a product:
+`s` → `mutate s` → `deleting s`. Either order parses and both words are legal, but
+`deleting s` alone is the idiom.
+
+**Contextual, not reserved.** `deleting` is only a mode when a parameter name or
+another mode word follows it, so `func d(deleting: i32)` and
+`struct Job { deleting: bool }` both keep working. A mode word that steals an
+ordinary identifier costs more than it is worth.
+
+**Where the line falls.** Three ways to delete something the caller never named,
+all rejected without the declaration, and one that needs nothing:
+
+| In the callee | Needs `deleting`? |
+|---|---|
+| `store.delete(n)` where `n` is a `take` parameter | no — the caller watched the name die |
+| `store.delete(n)` where `n` came from iteration or an edge | **yes** |
+| `store.clear()` | **yes** — names no victim at all |
+| handing a derived link to any `take` parameter | **yes** — a delete in disguise |
+
+That last row is the one that needed building twice. `delete_subtree` never deletes
+a node it derived; it *recurses*, handing `c` from `n.children` to itself. Without
+that row, `take n` alone would have made the cascade compile again.
+
+**Measured cost of the conversion.** One `deleting` in the L3 program
+(`delete_subtree`), two in the no-locals list (`remove_at`, `remove_value`, both of
+which delete a node found by walking `list.head`), and `take` added to two `remove`s
+— which #804 requires anyway. **Zero call sites changed**, and both litmus pairs
+still produce output byte-identical to their handle versions.
+
+The only program that stops compiling is `cascade_hole_links.rk`, which is the one
+with the bug, and it is rejected at the read with `kid` named:
+
+```
+error[E0328]: `kid` names a deleted node — this is a use after free
+     cascade(mutate scene, parent)
+     ----------------------------- the node `kid` names was deleted here
+     println("kid.name = …")
+                          ^^^ `kid` points at freed memory from here on
+```
+
+`kid` was never passed to anything. That is the hole closing.
+
+### Alternatives considered
+
+**Spelling.** `deleting s` over `prune s`: the model already has one verb for this —
+the method is `delete`, the error says "use after delete", the mechanism is
+delete-time fixup — and a second word for one concept makes the language bigger for
+nothing. `delete s` would match `mutate`/`take`/`own` grammatically and then read as
+"deletes s itself", which is the one thing it does not mean; `mutate s` has no
+competing reading, which is why that mode gets away with the imperative. The price
+of `deleting` is that it is a participle among imperatives.
+
+**Call-site marker.** `delete_subtree(deleting scene, doomed)`, mirroring `mutate`.
+Rejected by the E0373 test above: the misread is caught, so the marker is noise on
+every call. It would also read badly once `deleting` implies `mutate` — either the
+call says both words, or `deleting` at the call site silently means "and mutate
+too".
+
+**An attribute instead of a mode.** `@deletes(scene)` above the function. Modes
+belong with parameters, and attributes are an unspecified area of the language
+(`TODO.md`) — building on one to avoid a keyword is a worse trade than the keyword.
+
+**Inference instead of a declaration.** Propagate "may delete this store" through
+the call graph and require nothing. Rejected: errors would appear at call sites
+whose cause is three functions away, and it is order-dependent whole-program
+analysis — the "explodes 20 lines later" failure that `borrowing.md`'s rationale
+exists to avoid.
+
+**No annotation, conservative rule.** "Passing a store mutably revokes local links
+into it." Ruled out by the flagship list: `push_back` takes `mutate list: List` and
+`main` calls it four times while holding `n1..n4`, so the second call would revoke
+the first call's result.
+
+**Linear threading.** `func cascade(take scene: Scene) -> Scene`, so the caller
+visibly loses and regains the store. Rejected: it is ceremony on every call for
+information one word carries, and it still would not revoke the caller's *links*
+without the same rule underneath.
 
 ## Finding 2: links carry write permission, and edge writes mutate their target
 
@@ -1276,7 +1381,7 @@ What it costs is three concepts, against the one runtime check handles spend:
 | Addition | Status |
 |---|---|
 | kill/use tracking for link locals — a named delete kills one name plus every derived alias, an unnamed one kills all | built |
-| `deleting` parameter mode, composing with `mutate` | designed, #806 |
+| `deleting` parameter mode, implying `mutate` | **built** — one word, one declaration, no call-site change |
 | ~~`mut Link<T>` — writability in the type~~ | **withdrawn** — breaks the box-family rule, and can't stay one bit |
 | B1/B2 amendment: a third container class, grows in count but never relocates | designed, unbuilt |
 
@@ -1288,11 +1393,12 @@ So the decision is not "does the model work" — it does. With `mut Link<T>`
 withdrawn and the cross-task case answered by `snapshot`, one question is left,
 and it is the only language change on the list:
 
-1. **Is `deleting` an acceptable parameter mode?** Without it the model is unsound:
-   cascade delete is a use after free, demonstrated. Measured cost is three of
-   seventeen corpus functions and one call site. Against it, the handle model
-   spends context clauses, `frozen`, `WeakHandle`, generation coalescing and the
-   W2a–d exceptions — so the signature-surface arithmetic favours it.
+1. **Is `deleting` an acceptable parameter mode?** It is built and the corpus is
+   converted: three declarations gained the word, zero call sites changed, both
+   litmus pairs still byte-identical. Without it the model is unsound — cascade
+   delete is a use after free, demonstrated. Against it, the handle model spends
+   context clauses, `frozen`, `WeakHandle`, generation coalescing and the W2a–d
+   exceptions, so the signature-surface arithmetic favours it.
 2. ~~Is a task-local graph acceptable?~~ **Answered by `Store.snapshot()`, which
    is built.** The store crosses and no link does, so read-parallel access works
    without a read-only type: `spawn(own || { walk(frame) })` while the original

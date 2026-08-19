@@ -102,6 +102,9 @@ pub struct OwnershipChecker<'a> {
     /// stopped it. These owe the whole binding; the reason rides along so the
     /// error can say why it named the root.
     coarse_resources: HashMap<String, String>,
+    /// Parameters declared `deleting`: the caller was told this call may delete
+    /// nodes it never named, so an unnamed delete through them is allowed.
+    deleting_params: HashSet<String>,
     take_link_params: HashSet<String>,
     identified_links: HashSet<String>,
     /// Spans where a link was consumed by `store.delete(...)`, so a use-after-move
@@ -130,6 +133,8 @@ pub struct OwnershipChecker<'a> {
     /// Free-function `take` parameters by name → per-position take flags.
     /// Lets a call consume arguments to `take` params without call-site `own` (#296).
     fn_take_params: HashMap<String, Vec<bool>>,
+    /// Per function name, which parameters carry `deleting`.
+    fn_deleting_params: HashMap<String, Vec<bool>>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -152,6 +157,7 @@ impl<'a> OwnershipChecker<'a> {
             active_for_mutates: Vec::new(),
             resource_fields: HashMap::new(),
             coarse_resources: HashMap::new(),
+            deleting_params: HashSet::new(),
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
@@ -162,6 +168,7 @@ impl<'a> OwnershipChecker<'a> {
             scope_limited_closures: HashMap::new(),
             last_closure_scope_limit: None,
             fn_take_params: HashMap::new(),
+            fn_deleting_params: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -173,6 +180,8 @@ impl<'a> OwnershipChecker<'a> {
         for decl in decls {
             if let DeclKind::Fn(fn_decl) = &decl.kind {
                 let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
+                let deletings: Vec<bool> = fn_decl.params.iter().map(|p| p.is_deleting).collect();
+                self.fn_deleting_params.insert(fn_decl.name.clone(), deletings);
                 if takes.iter().any(|&t| t) {
                     self.fn_take_params.insert(fn_decl.name.clone(), takes);
                 }
@@ -400,6 +409,7 @@ impl<'a> OwnershipChecker<'a> {
         self.identified_links.clear();
         self.resource_fields.clear();
         self.coarse_resources.clear();
+        self.deleting_params.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
         self.store_iterations.clear();
@@ -423,6 +433,9 @@ impl<'a> OwnershipChecker<'a> {
         for param in &fn_decl.params {
             if param.is_take && param.ty.starts_with("Link<") {
                 self.take_link_params.insert(param.name.clone());
+            }
+            if param.is_deleting {
+                self.deleting_params.insert(param.name.clone());
             }
         }
 
@@ -842,6 +855,20 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let iterates_store = self.store_iteration_elem(iter);
                 if let Some(elem) = iterates_store {
+                    // The element of a store iteration is a link, and the binding
+                    // needs the type recorded or nothing downstream can tell it is
+                    // one — that is what makes it a *derived* link rather than an
+                    // untyped name.
+                    if let ForBinding::Single(name) = binding {
+                        if let Some(ty) = self
+                            .program
+                            .node_types
+                            .get(&iter.id)
+                            .and_then(|t| Self::sequence_element(t))
+                        {
+                            self.binding_types.insert(name.clone(), ty);
+                        }
+                    }
                     self.store_iterations.push((elem, binding_names.clone()));
                 }
                 // LP14/LP16: track for-mutate context
@@ -974,6 +1001,12 @@ impl<'a> OwnershipChecker<'a> {
                 } else {
                     None
                 };
+                let callee_deletings: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
+                    self.fn_deleting_params.get(name).cloned()
+                } else {
+                    None
+                };
+                let mut deleting_args: Vec<Expr> = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as function argument
@@ -999,6 +1032,18 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     let is_take_param =
                         callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                    // Passing a store to a `deleting` parameter revokes every link
+                    // local into it — but not until the rest of the arguments have
+                    // been checked, or a link passed alongside it reads as already
+                    // dead at its own call.
+                    if callee_deletings
+                        .as_ref()
+                        .and_then(|d| d.get(i))
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        deleting_args.push(arg.expr.clone());
+                    }
                     if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -1013,8 +1058,12 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
+                        self.require_deleting_for_derived_consume(&arg.expr, expr.span);
                         self.consume_arg(&arg.expr);
                     }
+                }
+                for store_arg in &deleting_args {
+                    self.kill_links_for_deleting_arg(store_arg, expr.span);
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
@@ -1064,6 +1113,9 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
+                        if method != "delete" {
+                            self.require_deleting_for_derived_consume(&arg.expr, expr.span);
+                        }
                         self.consume_arg(&arg.expr);
                     }
                 }
@@ -1088,6 +1140,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                     self.link_delete_spans.insert(expr.span);
+                    if !named {
+                        self.require_deleting(object, "`delete` here", expr.span);
+                    }
                 }
                 // `store.clear()` deletes every node at once. It names no link,
                 // so a local link into that store has to die here the same way
@@ -1099,6 +1154,7 @@ impl<'a> OwnershipChecker<'a> {
                     // A clear is a delete, so the names it kills must report as
                     // freed rather than as moved.
                     self.link_delete_spans.insert(expr.span);
+                    self.require_deleting(object, "`clear` here", expr.span);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
@@ -1946,6 +2002,149 @@ impl<'a> OwnershipChecker<'a> {
         self.store_iterations
             .iter()
             .any(|(_, names)| names.contains(name))
+    }
+
+    /// Handing a link to a `take` parameter is handing it to something that may
+    /// delete it. If the link is one this body derived — out of an edge, out of
+    /// iteration — the caller never named it, so this is an unnamed delete wearing
+    /// a call's clothing and needs the same declaration.
+    fn require_deleting_for_derived_consume(&mut self, arg: &Expr, span: Span) {
+        let ExprKind::Ident(name) = &arg.kind else { return };
+        let Some(ty) = self.binding_types.get(name) else { return };
+        if !self.is_link_type(ty) || self.is_identified_link(arg) {
+            return;
+        }
+        // Which store it belongs to isn't recoverable from the link, so this is
+        // exact only when the body has one store-bearing parameter — the ordinary
+        // case. With none, there is nothing the caller could be holding.
+        // Parameters aren't in `binding_types` — only locals are — so the type is
+        // resolved from the declared name instead.
+        let mut stores: Vec<String> = self
+            .param_type_strings
+            .iter()
+            .filter(|(_, ty_str)| self.type_string_holds_store(ty_str))
+            .map(|(n, _)| n.clone())
+            .collect();
+        stores.sort();
+        if stores.len() != 1 || self.deleting_params.contains(&stores[0]) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::UndeclaredDelete {
+                param: stores[0].clone(),
+                operation: format!("handing `{}` to something that consumes it", name),
+            },
+            span,
+        });
+    }
+
+    /// An unnamed delete reaches nodes the caller never handed over, so the
+    /// parameter it goes through has to say so. A store this body owns outright is
+    /// exempt — the caller has no links into it to lose.
+    fn require_deleting(&mut self, store: &Expr, op: &str, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(store).0 else {
+            return;
+        };
+        if !self.param_type_strings.contains_key(&root) || self.deleting_params.contains(&root) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::UndeclaredDelete {
+                param: root,
+                operation: op.to_string(),
+            },
+            span,
+        });
+    }
+
+    /// At a call passing `arg` to a `deleting` parameter, the callee picks which
+    /// nodes die, so every link local into that store dies here.
+    fn kill_links_for_deleting_arg(&mut self, arg: &Expr, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(arg).0 else {
+            return;
+        };
+        let elem = self
+            .binding_types
+            .get(&root)
+            .and_then(|ty| self.store_elem_of(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                self.is_link_type(ty)
+                    && matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                    && (elem.is_none() || self.elem_key(ty) == elem)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+        }
+        self.link_delete_spans.insert(span);
+    }
+
+    /// Element type of a sequence type (`Vec<T>`, `Store<T>`), if it has one.
+    fn sequence_element(ty: &rask_types::Type) -> Option<rask_types::Type> {
+        let args = match ty {
+            rask_types::Type::Generic { args, .. } => args,
+            rask_types::Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }
+    }
+
+    /// Does a declared type name hold a `Store` — directly or in a field?
+    fn type_string_holds_store(&self, ty_str: &str) -> bool {
+        let base = ty_str.split('<').next().unwrap_or(ty_str).trim();
+        if base == "Store" {
+            return true;
+        }
+        match self.program.types.get_type_id(base) {
+            Some(id) => self.store_elem_of(&rask_types::Type::Named(id)).is_some(),
+            None => false,
+        }
+    }
+
+    /// Element type of a `Store<T>`, looking through a struct that holds one.
+    fn store_elem_of(&self, ty: &rask_types::Type) -> Option<String> {
+        if self.type_name_of(ty).as_deref() == Some("Store") {
+            return self.elem_key(ty);
+        }
+        let id = match ty {
+            rask_types::Type::Named(id) => *id,
+            rask_types::Type::Generic { base, .. } => *base,
+            _ => return None,
+        };
+        let rask_types::TypeDef::Struct { fields, .. } = self.program.types.get(id)? else {
+            return None;
+        };
+        fields
+            .clone()
+            .into_iter()
+            .find_map(|(_, fty)| self.store_elem_of(&fty))
+    }
+
+    fn type_name_of(&self, ty: &rask_types::Type) -> Option<String> {
+        match ty {
+            rask_types::Type::UnresolvedGeneric { name, .. } => {
+                Some(name.split('<').next().unwrap_or(name).to_string())
+            }
+            rask_types::Type::Generic { base, .. } => {
+                let n = self.program.types.type_name(*base);
+                Some(n.split('<').next().unwrap_or(&n).to_string())
+            }
+            rask_types::Type::Named(id) => {
+                let n = self.program.types.type_name(*id);
+                Some(n.split('<').next().unwrap_or(&n).to_string())
+            }
+            _ => None,
+        }
     }
 
     /// Mark every live local link with the store's element type as deleted.

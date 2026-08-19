@@ -1118,7 +1118,7 @@ mod tests {
                 name_span: sp(),
                 ty: ty.into(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             }).collect(),
             ret_ty: None,
