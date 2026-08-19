@@ -18,3 +18,4 @@ p10_binary.rk              # type.binary @binary parse/build (native gap; interp
 p11_store_link.rk          # analysis.fourth-option Store<T>/Link<T> — no native lowering (interp green)
 p12_store_link_churn.rk    # analysis.fourth-option edge lists/indexes under churn — same native gap
 p13_store_snapshot.rk      # analysis.fourth-option Store.snapshot — same native gap
+p14_deleting_mode.rk       # analysis.fourth-option `deleting` parameter mode — same native gap

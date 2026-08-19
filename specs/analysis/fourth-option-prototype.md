@@ -1000,6 +1000,49 @@ error[E0328]: `kid` names a deleted node — this is a use after free
 
 `kid` was never passed to anything. That is the hole closing.
 
+### What enforces it, and why it isn't inferred
+
+**Forgetting it is a compile error in the callee, not a silent fallthrough.** The
+check is local: inside the body, a delete whose victim wasn't handed over is
+visible without looking at any caller. Every route was tested — a delete of a
+derived link, a `clear`, handing a derived link to a `take` parameter, a delete
+through a method receiver, and a delete inside a closure that captured the store.
+Each reports E0329 naming the parameter to declare.
+
+Which raises the obvious question: **if the compiler can see it, why write it?**
+
+The detection is local, so inference is possible — this is not a technical
+limitation. Three reasons not to, and the first is decisive.
+
+**`mutate` is equally inferable and required anyway.** Whether a function writes
+its parameter is derivable from its body, and Rask still makes you write `mutate` —
+at the declaration *and* the call site (PM4). The precedent already answers this: a
+signature is a contract, and a fact that changes what callers may assume is written
+down rather than recomputed. Against that bar `deleting` asks for less, since it
+needs no call-site marker.
+
+**Inferred, the propagation becomes invisible.** Add a delete deep inside a helper
+and every transitive caller's contract changes with no diff at any intermediate
+signature — a caller three levels up starts getting "your link died here" while
+nothing it can see has changed. Declared, the same edit forces the word up the
+chain one signature at a time, and each step is a reviewable change. This is the
+"looks fine then explodes 20 lines later" failure `borrowing.md`'s own rationale
+exists to avoid.
+
+**Inferred, it breaks callers without an API change.** A library could turn a
+non-deleting function into a deleting one and ship it as a patch release; every
+caller holding links breaks, and the signature is byte-identical. Declared, that is
+a visible breaking change.
+
+So: transparency and signalling, but specifically about *diffs*. The word doesn't
+tell the compiler anything it couldn't work out — it tells the next reader, and the
+review, and the version history.
+
+**What should be automatic is adding it, not requiring it.** The error already
+carries the exact fix (`deleting scene`), which is what `suggestions.rs` exists for.
+Mandatory in the source, one keystroke to satisfy, is the right split — the same
+place `mutate`'s PM4 marker landed.
+
 ### Alternatives considered
 
 **Spelling.** `deleting s` over `prune s`: the model already has one verb for this —

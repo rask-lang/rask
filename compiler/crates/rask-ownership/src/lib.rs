@@ -149,6 +149,9 @@ pub struct OwnershipChecker<'a> {
     fn_take_params: HashMap<String, Vec<bool>>,
     /// Per function name, which parameters carry `deleting`.
     fn_deleting_params: HashMap<String, Vec<bool>>,
+    /// (type, method) -> (is the receiver `deleting`, which parameters are). Built
+    /// here rather than carried on `MethodSig`, which has 46 construction sites.
+    method_deleting: HashMap<(String, String), (bool, Vec<bool>)>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -187,6 +190,7 @@ impl<'a> OwnershipChecker<'a> {
             last_closure_scope_limit: None,
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
+            method_deleting: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -196,6 +200,33 @@ impl<'a> OwnershipChecker<'a> {
         // Collect `take`-parameter positions for every free function so calls
         // can consume the matching argument (PM3) without call-site `own` (#296).
         for decl in decls {
+            // Methods too: `sc.purge()` has to revoke the caller's links when
+            // `purge` is declared `deleting self`, and the receiver is where that
+            // declaration sits.
+            if let DeclKind::Impl(impl_decl) = &decl.kind {
+                let ty = impl_decl
+                    .target_ty
+                    .split('<')
+                    .next()
+                    .unwrap_or(&impl_decl.target_ty)
+                    .to_string();
+                for m in &impl_decl.methods {
+                    let self_deleting = m
+                        .params
+                        .iter()
+                        .any(|p| p.name == "self" && p.is_deleting);
+                    let params: Vec<bool> = m
+                        .params
+                        .iter()
+                        .filter(|p| p.name != "self")
+                        .map(|p| p.is_deleting)
+                        .collect();
+                    if self_deleting || params.iter().any(|d| *d) {
+                        self.method_deleting
+                            .insert((ty.clone(), m.name.clone()), (self_deleting, params));
+                    }
+                }
+            }
             if let DeclKind::Fn(fn_decl) = &decl.kind {
                 let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
                 let deletings: Vec<bool> = fn_decl.params.iter().map(|p| p.is_deleting).collect();
@@ -1135,6 +1166,24 @@ impl<'a> OwnershipChecker<'a> {
                         store_args.push(root);
                     }
                 }
+                // `deleting` on a method: the receiver carries it as often as a
+                // parameter does, and a call has to revoke the caller's links
+                // either way.
+                let mut method_deleting_args: Vec<Expr> = Vec::new();
+                if let Some(recv_ty) = self.receiver_type_name(object) {
+                    if let Some((self_deleting, param_deleting)) =
+                        self.method_deleting.get(&(recv_ty, method.clone())).cloned()
+                    {
+                        if self_deleting {
+                            method_deleting_args.push((**object).clone());
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            if param_deleting.get(i).copied().unwrap_or(false) {
+                                method_deleting_args.push(arg.expr.clone());
+                            }
+                        }
+                    }
+                }
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as method argument
@@ -1218,6 +1267,9 @@ impl<'a> OwnershipChecker<'a> {
                     // freed rather than as moved.
                     self.link_delete_spans.insert(expr.span);
                     self.require_deleting(object, "`clear` here", expr.span);
+                }
+                for store_arg in &method_deleting_args {
+                    self.kill_links_for_deleting_arg(store_arg, expr.span);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
