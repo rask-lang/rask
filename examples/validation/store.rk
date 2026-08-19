@@ -103,6 +103,22 @@ extend Store {
         let h = self.by_id.get(id) ?? {
             return StoreError.NotFound(id.value)
         }
+        // Sweep h out of every other task's deps first — otherwise the
+        // dependent tasks are left holding a stale handle that panics the
+        // next time anything (e.g. task_is_blocked) walks it (#740).
+        //
+        // Written as a manual loop rather than `t.deps.filter(...)`: filter
+        // on a Vec field reached through pool[h] projection crashes native
+        // codegen (#866), regardless of element type or closure.
+        for other in self.tasks.handles() {
+            with self.tasks[other] as t {
+                mut kept: Vec<Handle<Task>> = Vec.new()
+                for dep in t.deps {
+                    if dep != h { kept.push(dep) }
+                }
+                t.deps = kept
+            }
+        }
         self.tasks.remove(h)
         self.by_id.remove(id)
         return
