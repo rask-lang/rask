@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// TD3: a super-trait's method through the sub-trait's object (#873).
+//
+// `trait Shouty: Speak` promises both `shout` and `say`, and the interpreter
+// delivered both — it looks a method up by name. Native didn't:
+//
+//     func both(x: any Shouty) -> string { return "{x.say()}/{x.shout()}" }
+//
+//     error: MIR lowering 'both': method `say` on receiver of unresolved type —
+//     dispatch could not determine a stdlib type prefix
+//
+// The vtable's slot list came from the trait's own declared methods, so
+// `Shouty` had one slot and `say` had nowhere to dispatch through. The list is
+// built from one helper now, and that helper walks the super-traits — the vtable
+// layout and MIR's dispatch offsets read the same list, so they can't disagree
+// about which slot a method is in.
+
+trait Speak {
+    func say(self) -> string
+}
+
+trait Shouty: Speak {
+    func shout(self) -> string
+}
+
+// Two levels up, and a second super-trait alongside.
+trait Loud {
+    func volume(self) -> i64
+}
+
+trait Deafening: Shouty, Loud {
+    func peak(self) -> i64
+}
+
+struct Horn {
+    id: i64
+}
+
+extend Horn with Shouty {
+    func say(self) -> string {
+        return "beep{self.id}"
+    }
+
+    func shout(self) -> string {
+        return "BEEP{self.id}"
+    }
+}
+
+struct Siren {
+    id: i64
+}
+
+extend Siren with Deafening {
+    func say(self) -> string {
+        return "wail{self.id}"
+    }
+
+    func shout(self) -> string {
+        return "WAIL{self.id}"
+    }
+
+    func volume(self) -> i64 {
+        return 11
+    }
+
+    func peak(self) -> i64 {
+        return 120
+    }
+}
+
+func sub_method(x: any Shouty) -> string {
+    return x.shout()
+}
+
+func super_method(x: any Shouty) -> string {
+    return x.say()
+}
+
+func all_three(x: any Deafening) -> string {
+    return "{x.say()}/{x.shout()}/{x.volume()}/{x.peak()}"
+}
+
+test "supertrait — the sub-trait's own method still dispatches" {
+    let h = Horn { id: 1 }
+    assert_eq(sub_method(h as any Shouty), "BEEP1")
+}
+
+test "supertrait — the inherited method dispatches too" {
+    let h = Horn { id: 2 }
+    assert_eq(super_method(h as any Shouty), "beep2")
+}
+
+test "supertrait — two levels up and a second parent" {
+    let s = Siren { id: 3 }
+    assert_eq(all_three(s as any Deafening), "wail3/WAIL3/11/120")
+}
+
+// A sub-trait object in a collection: every element dispatches through the same
+// vtable layout, so a wrong slot shows up as the wrong method being called.
+test "supertrait — through a Vec of sub-trait objects" {
+    mut xs: Vec<any Shouty> = Vec.new()
+    xs.push(Horn { id: 4 })
+    xs.push(Siren { id: 5 })
+    mut out: Vec<string> = Vec.new()
+    for x in xs {
+        out.push("{x.say()}:{x.shout()}")
+    }
+    assert_eq(out.join(","), "beep4:BEEP4,wail5:WAIL5")
+}
+
+// A value declared as the parent's object still works — nothing about the
+// sub-trait's extra slots may shift the parent's.
+test "supertrait — the parent's own object is unchanged" {
+    let h = Horn { id: 6 }
+    let p = h as any Speak
+    assert_eq(p.say(), "beep6")
+}
+
+func main() {}

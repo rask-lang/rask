@@ -354,9 +354,40 @@ impl TypeTable {
     }
 
     /// G1: does the type declare (or auto-derive) conformance to the trait?
+    ///
+    /// TD3: a sub-trait requires everything its super-traits require, so
+    /// declaring the sub-trait declares the parents too. Without that,
+    /// `extend Horn with Shouty` — where `trait Shouty: Speak` — left
+    /// `horn as any Speak` refused for a trait the type demonstrably implements,
+    /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
         let base = Self::conformance_key(trait_name);
-        self.conformances.get(&type_id).is_some_and(|set| set.contains(&base))
+        let Some(set) = self.conformances.get(&type_id) else {
+            return false;
+        };
+        if set.contains(&base) {
+            return true;
+        }
+        set.iter()
+            .any(|declared| self.trait_extends(declared, &base, &mut Vec::new()))
+    }
+
+    /// Is `target` somewhere in `trait_name`'s super-trait closure? `seen` keeps
+    /// a cycle in the graph from recursing forever.
+    fn trait_extends(&self, trait_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
+        if seen.iter().any(|s| s == trait_name) {
+            return false;
+        }
+        seen.push(trait_name.to_string());
+        let Some(TypeDef::Trait { super_traits, .. }) =
+            self.get_type_id(trait_name).and_then(|id| self.get(id))
+        else {
+            return false;
+        };
+        let parents: Vec<String> = super_traits.iter().map(|s| Self::conformance_key(s)).collect();
+        parents
+            .iter()
+            .any(|p| p == target || self.trait_extends(p, target, seen))
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.

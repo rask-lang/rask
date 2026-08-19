@@ -1212,10 +1212,43 @@ pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
 /// method with its own type parameters, or one returning `Self`, has no vtable
 /// slot.
 pub fn object_compatible_methods(types: &TypeTable, trait_name: &str) -> Vec<String> {
+    object_compatible_methods_seen(types, trait_name, &mut Vec::new())
+}
+
+/// `object_compatible_methods`, refusing to walk a super-trait twice — a cycle
+/// in the graph would otherwise recurse forever.
+fn object_compatible_methods_seen(
+    types: &TypeTable,
+    trait_name: &str,
+    seen: &mut Vec<String>,
+) -> Vec<String> {
     let base = trait_name.split('<').next().unwrap_or(trait_name);
+    if seen.iter().any(|s| s == base) {
+        return Vec::new();
+    }
+    seen.push(base.to_string());
     if let Some(def) = types.get_type_id(base).and_then(|id| types.get(id)) {
-        let names = def.object_compatible_method_names();
+        let mut names = def.object_compatible_method_names();
         if !names.is_empty() {
+            // A super-trait's methods are part of the sub-trait's contract, so
+            // they need vtable slots of their own. `trait Shouty: Speak` listed
+            // only `shout`, so `x.say()` on an `any Shouty` had no slot to
+            // dispatch through — MIR gave up on it while the interpreter, which
+            // looks the method up by name, ran it (#873).
+            //
+            // Declared methods first, then inherited, which is the order the
+            // checker's own merge uses. Both the vtable layout and MIR's
+            // dispatch offsets read this one list, so they agree by
+            // construction whatever the order is.
+            if let TypeDef::Trait { super_traits, .. } = def {
+                for parent in super_traits {
+                    for m in object_compatible_methods_seen(types, parent, seen) {
+                        if !names.contains(&m) {
+                            names.push(m);
+                        }
+                    }
+                }
+            }
             return names;
         }
     }
