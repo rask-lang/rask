@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: the `test` block itself, and the assertion forms inside it.
+//
+// This file tests the testing machinery, so every assertion here has to *pass* —
+// a test can't check its own failure without failing. What it can pin: bare
+// `assert`, `assert` with a message, `assert_eq` and how it differs, several
+// assertions per block, a test that only prints, tests reading module-level
+// declarations and calling each other's helpers, and that each block gets its own
+// scope so a `mut` in one can't leak into the next.
+
+const SHARED = 10
+
+struct Counter {
+    n: i32
+}
+
+func double(x: i32) -> i32 {
+    return x * 2
+}
+
+func build() -> Counter {
+    return Counter { n: 0 }
+}
+
+test "std.testing — a bare assert on a true expression" {
+    assert true
+    assert 1 == 1
+    assert !false
+    assert 2 + 2 == 4
+}
+
+test "std.testing — assert with a message" {
+    let x = 5
+    assert x > 0, "x must be positive"
+    assert x == 5, "x should still be 5"
+}
+
+test "std.testing — assert_eq reports got and expected" {
+    assert_eq(1 + 1, 2)
+    assert_eq("ab", "ab")
+    assert_eq(true, true)
+    assert_eq(double(21), 42)
+}
+
+test "std.testing — assert_eq on the values a bare assert would also take" {
+    let a = 3
+    assert_eq(a, 3)
+    assert a == 3
+}
+
+test "std.testing — several assertions in one block, all reached" {
+    mut hits = 0
+    assert true
+    hits = hits + 1
+    assert hits == 1
+    hits = hits + 1
+    assert hits == 2
+    assert hits != 1
+}
+
+test "std.testing — a block that only prints still counts as a test" {
+    println("this block asserts nothing but must still run")
+    assert true
+}
+
+test "std.testing — a test reads a module const" {
+    assert SHARED == 10
+    assert SHARED * 2 == 20
+}
+
+test "std.testing — a test calls a module function" {
+    assert double(1) == 2
+    assert double(-1) == -2
+    let c = build()
+    assert c.n == 0
+}
+
+// Each block has its own scope: this `total` and the next block's are unrelated.
+test "std.testing — a mut binding is local to its block (first)" {
+    mut total = 100
+    total = total + 1
+    assert total == 101
+}
+
+test "std.testing — a mut binding is local to its block (second)" {
+    mut total = 0
+    total = total + 1
+    assert total == 1
+}
+
+test "std.testing — a test builds and mutates a struct" {
+    mut c = build()
+    c.n = 5
+    assert c.n == 5
+    c.n = c.n + 1
+    assert c.n == 6
+}
+
+test "std.testing — assertions on collections built in the block" {
+    mut v: Vec<i32> = Vec.new()
+    for i in 0..4 {
+        v.push(i * i)
+    }
+    assert v.len() == 4
+    assert_eq(v[3], 9)
+    assert v.sum() == 14
+}
+
+test "std.testing — a name with punctuation and spaces in it" {
+    assert true
+}
+
+test "std.testing — assert on a negated comparison" {
+    let a = 1
+    let b = 2
+    assert !(a > b)
+    assert !(a == b)
+    assert !!(a < b)
+}
+
+func main() {}

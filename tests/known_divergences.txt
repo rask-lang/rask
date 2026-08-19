@@ -53,6 +53,8 @@ t_week_generic_struct_naming.rk # a struct with implicit single-letter params ca
 t_week_generic_param_shadowing.rk # a declared type parameter loses to a stdlib type of that name — #915 (both)
 t_week_generic_method_return.rk # a method returning the receiver's type parameter isn't monomorphized — #916 (native)
 t_week_enum_named_payloads.rk # `Variant { field }` pattern never matches — #910 (interp); matched by arm position, not tag — #911 (native)
+t_week_opaque_struct_fields.rk # Duration/Instant lay out at size 0 as a struct field — #924 (native)
+t_week_import_alias.rk        # `import X as Y` carries the name but not the methods — #923 (both)
 t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
 t_day_unsigned_to_float.rk    # `unsigned as f64` uses fcvt_from_sint — #907 (native)
 t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906 (native)
