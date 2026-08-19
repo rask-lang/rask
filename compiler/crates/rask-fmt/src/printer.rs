@@ -182,6 +182,11 @@ impl<'a> Printer<'a> {
     /// Convert parser-normalized types back to Rask syntax.
     /// E.g., `Result<i32, string>` → `i32 or string`.
     fn format_type(&self, ty: &str) -> String {
+        // The parser normalises `void` to `()`, which isn't spellable in source —
+        // printing it back produced `-> () or E` and a parse error (#896).
+        if ty == "()" {
+            return "void".to_string();
+        }
         if let Some(inner) = ty.strip_prefix("Result<") {
             if let Some(inner) = inner.strip_suffix('>') {
                 // Find the top-level comma (not inside nested angle brackets)
@@ -400,20 +405,25 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// `deleting` before `mutate`: it implies `mutate`, so printing both would be
+    /// redundant and printing only `mutate` would lose the declaration — which
+    /// then contradicts the call site's `deleting` marker.
+    fn emit_param_mode(&mut self, param: &Param) {
+        if param.is_take {
+            self.emit("take ");
+        } else if param.is_deleting {
+            self.emit("deleting ");
+        } else if param.is_mutate {
+            self.emit("mutate ");
+        }
+    }
+
     fn format_param(&mut self, param: &Param) {
         if param.name == "self" {
-            if param.is_take {
-                self.emit("take ");
-            } else if param.is_mutate {
-                self.emit("mutate ");
-            }
+            self.emit_param_mode(param);
             self.emit("self");
         } else {
-            if param.is_take {
-                self.emit("take ");
-            } else if param.is_mutate {
-                self.emit("mutate ");
-            }
+            self.emit_param_mode(param);
             self.emit(&param.name);
             if !param.ty.is_empty() {
                 self.emit(": ");
@@ -1455,9 +1465,12 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
+                // A unary operator binds tighter than every binary one, so a binary
+                // or range operand keeps its parentheses — `!(5 < 3)` is not
+                // `!5 < 3` (#896).
                 let needs_parens = matches!(operand.kind, ExprKind::IsPattern { .. });
                 if needs_parens { self.emit("("); }
-                self.format_expr(operand);
+                self.format_expr_inner(operand, Some(POSTFIX_PREC));
                 if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
@@ -1472,7 +1485,7 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::MethodCall { object, method, type_args, args } => {
-                self.format_expr(object);
+                self.format_expr_inner(object, Some(POSTFIX_PREC));
                 self.emit(".");
                 self.emit(method);
                 if let Some(ref targs) = type_args {
@@ -1490,7 +1503,7 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::Field { object, field } => {
-                self.format_expr(object);
+                self.format_expr_inner(object, Some(POSTFIX_PREC));
                 self.emit(".");
                 self.emit(field);
             }
@@ -1535,6 +1548,13 @@ impl<'a> Printer<'a> {
                 self.format_branch(then_branch);
                 if let Some(ref else_br) = else_branch {
                     self.emit(" else");
+                    // ER22: `else as e` binds the complement branch. `If` already
+                    // prints this; `IfLet` was dropping it, which is the same
+                    // shape as #885 — a binding field the printer never read.
+                    if let Some(name) = else_binding {
+                        self.emit(" as ");
+                        self.emit(name);
+                    }
                     self.format_branch(else_br);
                 }
             }
@@ -1618,9 +1638,15 @@ impl<'a> Printer<'a> {
                 self.emit(" => ");
                 self.format_expr(&clause.body);
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
+            ExprKind::IsPresent { expr: inner, binding } => {
                 self.format_expr(inner);
                 self.emit("?");
+                // OPT19: `x? as v` introduces `v` in the then-branch. Dropping it
+                // rewrote working code into code that doesn't resolve (#885).
+                if let Some(name) = binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
             }
             ExprKind::Unwrap { expr: inner, message } => {
                 self.format_expr(inner);
@@ -1643,8 +1669,14 @@ impl<'a> Printer<'a> {
                 self.format_expr(default);
             }
             ExprKind::Range { start, end, inclusive } => {
+                // A range in a postfix position needs its own parentheses:
+                // `(1..10).rev()` is not `1..10.rev()`.
+                let need_parens = parent_prec.is_some_and(|pp| RANGE_PREC < pp);
+                if need_parens {
+                    self.emit("(");
+                }
                 if let Some(ref s) = start {
-                    self.format_expr(s);
+                    self.format_expr_inner(s, Some(RANGE_PREC));
                 }
                 if *inclusive {
                     self.emit("..=");
@@ -1652,7 +1684,10 @@ impl<'a> Printer<'a> {
                     self.emit("..");
                 }
                 if let Some(ref e) = end {
-                    self.format_expr(e);
+                    self.format_expr_inner(e, Some(RANGE_PREC));
+                }
+                if need_parens {
+                    self.emit(")");
                 }
             }
             ExprKind::StructLit { name, fields, spread } => {
@@ -2052,6 +2087,14 @@ impl<'a> Printer<'a> {
 }
 
 // --- Operator helpers ---
+
+/// Tighter than every binary operator, so a binary expression in one of these
+/// positions has to be parenthesised. There is no `Paren` node in the AST — the
+/// printer reconstructs parentheses from precedence — so a position that forgets
+/// to pass its binding power silently reassociates the expression (#896).
+const POSTFIX_PREC: u8 = 11;
+/// `..` binds tighter than `+`, so `(i + 1)..n` needs its parens kept.
+const RANGE_PREC: u8 = 10;
 
 fn precedence(op: &BinOp) -> u8 {
     match op {

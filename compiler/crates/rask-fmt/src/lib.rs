@@ -54,6 +54,86 @@ mod tests {
         assert_eq!(once, twice, "formatting should be idempotent");
     }
 
+    /// #885: the printer dropped the `as v` binding on `x?`, rewriting working
+    /// code into code that no longer resolves. Idempotence alone didn't catch it —
+    /// the output was a stable, valid parse of a *different* program — so this
+    /// checks the binding survives rather than only that a second pass agrees.
+    #[test]
+    fn preserves_optional_test_binding() {
+        let input = "func main() {\n    if h.p? as old {\n        println(\"{old}\")\n    }\n}\n";
+        let once = format_source(input);
+        assert!(
+            once.contains("if h.p? as old {"),
+            "the `as` binding must survive formatting: {}",
+            once
+        );
+        let twice = format_source(&once);
+        assert_eq!(once, twice, "and it must be idempotent: {}", once);
+    }
+
+    /// The same form without a binding must not gain one.
+    #[test]
+    fn optional_test_without_binding_stays_bare() {
+        let input = "func main() {\n    if h.p? {\n        println(\"yes\")\n    }\n}\n";
+        let once = format_source(input);
+        assert!(
+            once.contains("if h.p? {") && !once.contains(" as "),
+            "a bare `?` must stay bare: {}",
+            once
+        );
+    }
+
+    /// #896: parentheses carry precedence, and there is no `Paren` node — the
+    /// printer reconstructs them. A position that forgot to pass its binding power
+    /// silently reassociated the expression, so `(a + b).sqrt()` became
+    /// `a + b.sqrt()`: compiles, runs, different answer.
+    #[test]
+    fn keeps_parentheses_that_carry_precedence() {
+        let cases = [
+            ("(dx * dx + dy * dy).sqrt()", "method receiver"),
+            ("(i + 1)..n", "range operand"),
+            ("(1..10).rev()", "range as receiver"),
+            ("!(5 < 3)", "unary operand"),
+            ("(a + b).field", "field access"),
+        ];
+        for (expr, what) in cases {
+            let input = format!("func main() {{\n    let x = {}\n}}\n", expr);
+            let once = format_source(&input);
+            assert!(
+                once.contains(expr),
+                "{} lost its parentheses: {}",
+                what,
+                once
+            );
+            assert_eq!(format_source(&once), once, "and must be idempotent: {}", once);
+        }
+    }
+
+    /// The parser normalises `void` to `()`, which isn't spellable in source.
+    #[test]
+    fn prints_void_not_unit() {
+        let input = "func f() -> void or string {\n    return \"x\"\n}\n";
+        let once = format_source(input);
+        assert!(
+            once.contains("-> void or string") && !once.contains("-> ()"),
+            "`void` must not print as `()`: {}",
+            once
+        );
+    }
+
+    /// ER22: `else as e` binds the complement branch. `If` printed it; `IfLet`
+    /// dropped it — the same shape as #885.
+    #[test]
+    fn preserves_else_binding() {
+        let input = "func main() {\n    if r is Ok(v) {\n        println(v)\n    } else as e {\n        println(e)\n    }\n}\n";
+        let once = format_source(input);
+        assert!(
+            once.contains("} else as e {"),
+            "the else-binding must survive: {}",
+            once
+        );
+    }
+
     #[test]
     fn preserves_comments() {
         let input = "// This is a comment\nfunc main() {}\n";
