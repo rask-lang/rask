@@ -100,6 +100,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
 | **probe** — i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 10/10 | BUILD-FAIL | #933 |
 | **probe** — `u64 as u128` | `t_month_u128_widening.rk` | 4/6 | 6/6 | #934 |
+| **probe** — unsafe blocks and raw pointers | `t_month_unsafe.rk` | 1/6 | 6/6 | #935 |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
 
 ---
@@ -121,11 +122,17 @@ day one).
 harness (`tests/http_api_harness.sh`) own them; a file the differential harness
 runs on every invocation shouldn't be binding ports.
 
-**`unsafe` and C interop.** Not covered here. It needs a C toolchain and a
-companion object file to be meaningful, which is a build-system shape rather than
-a single-file one. `specs/memory/unsafe.md` is the spec; nothing in
-`tests/suite/` exercises it today, and it's the largest genuinely uncovered area
-this sweep found.
+**C interop, but not `unsafe`.** I initially wrote the whole area off as needing a
+C toolchain and a companion object file. The raw-pointer half turns out to be
+perfectly testable in one file, and doing so found #935 — the interpreter treats a
+raw pointer as a plain i64, so `*p` silently yields 0 while native reads the byte.
+`t_month_unsafe.rk` covers dereference, `read()`, `offset()`, and the U3 and UF1
+forms.
+
+What genuinely does need a build harness is the C-interop half: `compile_rust()` in
+a build script, the C ABI, cbindgen, linking a real object file. That stays
+uncovered. `&x` to take a raw pointer to a local also isn't available on either
+backend, so `as_ptr()` is the only way to get a pointer today.
 
 **The build system and multi-package projects.** `tests/projects_gate.sh` and
 `tests/examples_gate.sh` are the right harnesses for this — a suite file can't

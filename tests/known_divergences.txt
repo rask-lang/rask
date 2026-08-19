@@ -36,6 +36,7 @@
 # --- interpreter lag (native correct) ---
 t_week_optional_field_chains.rk # `?.` onto an optional-typed field loses the value — #917 (native)
 t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acquires the optional tag — #909 (interp)
+t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, pointer methods missing — #935 (interp)
 
 # --- shared / both-backend bugs ---
 # (none right now — t_parse_float was the last one, fixed in #610: a float
