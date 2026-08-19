@@ -44,6 +44,25 @@ func drain(mutate b: Bag) -> usize {
     return eat(b)               // ERROR: E0807 — nothing replaces `b`
 }
 
+// A resource behind `mutate` can't be given away even with a replacement put
+// back: "Resource types must be consumed exactly once. Only `take` parameters can
+// consume them" (mem.parameters). The replacement rule below it is for ordinary
+// move-only values, where the spec is silent.
+func churn(mutate c: Conn) -> i32 {
+    let n = c.close()           // ERROR: E0806
+    c = Conn { id: 2 }
+    return n
+}
+
+// An early return is an exit. The replacement below it never runs on this path,
+// so the caller gets its binding back empty.
+func early(mutate b: Bag, cond: bool) -> usize {
+    let n = eat(b)
+    if cond { return n }        // ERROR: E0807 — `b` is empty here
+    b = Bag { items: Vec.new() }
+    return n
+}
+
 func main() {
     mut v: Vec<i32> = Vec.new()
     v.push(1)
@@ -52,4 +71,7 @@ func main() {
     let _ = c.close()
     mut bag = Bag { items: v }
     println("{relay(bag)} {relay_own(bag)} {drain(mutate bag)}")
+    mut c2 = Conn { id: 9 }
+    println("{churn(mutate c2)} {early(mutate bag, true)}")
+    let _ = c2.close()
 }

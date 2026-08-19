@@ -111,6 +111,9 @@ pub struct OwnershipChecker<'a> {
     /// `mutate` parameters: consumable, but whatever is taken out has to be put
     /// back before the function returns (#804).
     mutate_params: HashSet<String>,
+    /// Names already reported by an exit check, so a body with several returns
+    /// doesn't repeat itself.
+    exit_reported: HashSet<String>,
     deleting_params: HashSet<String>,
     /// Which store a link local came out of, by root name. A link's *type* can't
     /// say — two `Store<Node>` parameters give links of the same type — so the
@@ -170,6 +173,7 @@ impl<'a> OwnershipChecker<'a> {
             coarse_resources: HashMap::new(),
             borrow_params: HashSet::new(),
             mutate_params: HashSet::new(),
+            exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
             link_store_root: HashMap::new(),
             take_link_params: HashSet::new(),
@@ -425,6 +429,7 @@ impl<'a> OwnershipChecker<'a> {
         self.coarse_resources.clear();
         self.borrow_params.clear();
         self.mutate_params.clear();
+        self.exit_reported.clear();
         self.deleting_params.clear();
         self.link_store_root.clear();
         self.take_link_params.clear();
@@ -464,7 +469,16 @@ impl<'a> OwnershipChecker<'a> {
             // `b = StringBuilder.new()`), so this is tracked at exit rather than
             // banned at the consume.
             if param.is_mutate && param.name != "self" {
-                self.mutate_params.insert(param.name.clone());
+                // "Resource types must be consumed exactly once. Only `take`
+                // parameters can consume them" (mem.parameters). So a resource
+                // behind a `mutate` borrow can't be given away even if something
+                // is put back — the replacement rule below is for ordinary
+                // move-only values, where the spec is silent.
+                if self.is_resource_type_name(&param.ty) {
+                    self.borrow_params.insert(param.name.clone());
+                } else {
+                    self.mutate_params.insert(param.name.clone());
+                }
             }
         }
 
@@ -833,6 +847,10 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
+                    // Control leaves here, so this is an exit like any other. The
+                    // end-of-body check alone misses an early return that skips a
+                    // consume or a replacement.
+                    self.check_exit_obligations(stmt.span);
                     // SL2: Check if returning a scope-limited closure
                     if let ExprKind::Ident(name) = &expr.kind {
                         if self.scope_limited_closures.contains_key(name) {
@@ -857,6 +875,9 @@ impl<'a> OwnershipChecker<'a> {
                             span: stmt.span,
                         });
                     }
+                } else {
+                    // A bare `return` is an exit too.
+                    self.check_exit_obligations(stmt.span);
                 }
             }
             StmtKind::While { cond, body, .. } => {
@@ -3420,12 +3441,24 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// What must hold wherever control leaves the body: every resource consumed,
+    /// every `mutate` parameter refilled. Reported at each `return` as well as at
+    /// the end, because an early return is an exit and the end-of-body check can't
+    /// see it.
+    fn check_exit_obligations(&mut self, span: Span) {
+        self.check_resource_consumption(span);
+        self.check_mutate_params_replaced(span);
+    }
+
     /// A `mutate` parameter that was consumed and never reassigned leaves the
     /// caller holding a value that was moved out from under it.
     fn check_mutate_params_replaced(&mut self, span: Span) {
         let mut names: Vec<String> = self.mutate_params.iter().cloned().collect();
         names.sort();
         for name in names {
+            if !self.exit_reported.insert(name.clone()) {
+                continue;
+            }
             let gone = matches!(
                 self.bindings.get(&name),
                 Some(BindingState::Moved { .. }) | Some(BindingState::MaybeMoved { .. })
@@ -3871,6 +3904,9 @@ impl<'a> OwnershipChecker<'a> {
             }
             // Not registered with ensure: must be consumed (Moved) before exit.
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                if !self.exit_reported.insert(name.clone()) {
+                    continue;
+                }
                 let kind = match self.coarse_resources.get(&name) {
                     Some(where_) => OwnershipErrorKind::ResourceNotConsumedOpaque {
                         name,
@@ -3899,10 +3935,12 @@ impl<'a> OwnershipChecker<'a> {
                 continue;
             }
             for path in paths {
+                let named = format!("{}.{}", root, path);
+                if !self.exit_reported.insert(named.clone()) {
+                    continue;
+                }
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ResourceNotConsumed {
-                        name: format!("{}.{}", root, path),
-                    },
+                    kind: OwnershipErrorKind::ResourceNotConsumed { name: named },
                     span,
                 });
             }

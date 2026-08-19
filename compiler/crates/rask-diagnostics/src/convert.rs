@@ -2114,15 +2114,12 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_code("E0807")
                 .with_primary(self.span, format!("`{}` is still empty when this returns", name))
+                .with_secondary(*consumed_at, format!("`{}` was consumed here", name))
                 .with_help(format!(
                     "assign {} to `{}` before returning, or declare it `take {}` and return the replacement",
                     ctor, name, name
                 ))
                 .with_fix(format!("{} = {}", name, ctor))
-                .with_note(format!(
-                    "consumed at line {}",
-                    consumed_at.start
-                ))
                 .with_why("`mutate` lends the value and takes it back — the caller keeps using the same binding afterwards. Consuming it is allowed, because consume-and-replace is a real pattern, but the slot has to hold something again by the time control leaves [mem.parameters/PM3]")
             }
 

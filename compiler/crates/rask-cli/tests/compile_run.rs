@@ -1844,6 +1844,28 @@ fn error_resource_field_partially_consumed() {
 // ran the cleanup twice, caught only by the interpreter's runtime flag while
 // native had none. `mutate` is the exception, and only half of one: consuming an
 // exclusive borrow is fine if something is put back.
+// mem.linear/L1 has to hold at every exit. The consumption check ran at the end of
+// the body only, so an early `return` that skipped a `.close()` compiled clean —
+// pre-existing, and the same mechanism as a `mutate` parameter left empty on one
+// path.
+#[test]
+fn error_resource_leaked_on_early_return() {
+    let (failed, out) = compile_error_output("resource_leaked_on_early_return.rk");
+    assert!(failed, "an early return that skips the close must be rejected: {}", out);
+    assert!(
+        out.contains("E0805") && out.contains("must be consumed"),
+        "the ordinary linearity error, reported at the return: {}",
+        out
+    );
+    // One report, not one per exit.
+    assert_eq!(
+        out.matches("error[E0805]").count(),
+        1,
+        "a body with several exits reports each name once: {}",
+        out
+    );
+}
+
 #[test]
 fn error_consumed_borrow_param() {
     let (failed, out) = compile_error_output("consumed_borrow_param.rk");
@@ -1855,17 +1877,21 @@ fn error_consumed_borrow_param() {
         "the @resource double-close must be caught: {}",
         out
     );
+    // Plain twice, a call-site `own` that doesn't buy the permission, and a
+    // resource behind `mutate` — which stays banned even with a replacement put
+    // back, because mem.parameters says only `take` may consume a resource.
     assert_eq!(
         out.matches("error[E0806]").count(),
-        3,
-        "plain, and a call-site `own` doesn't buy the permission either: {}",
+        4,
+        "every way of giving away a borrow: {}",
         out
     );
-    // `mutate` consumes legally but owes a replacement, which is a different error.
+    // `mutate` on an ordinary move-only value consumes legally but owes a
+    // replacement — a different error, and owed at every exit, not just the last.
     assert_eq!(
         out.matches("error[E0807]").count(),
-        1,
-        "a consumed `mutate` parameter with nothing put back: {}",
+        2,
+        "one with no replacement at all, one where an early return skips it: {}",
         out
     );
     assert!(
