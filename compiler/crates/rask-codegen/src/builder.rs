@@ -1744,7 +1744,7 @@ impl<'a> FunctionBuilder<'a> {
                             MirOperand::Constant(MirConst::Int(n)) => *n,
                             _ => unreachable!(),
                         };
-                        builder.ins().iconst(val_ty, n.wrapping_neg())
+                        Self::iconst_at(builder, val_ty, (n as i128).wrapping_neg())
                     }
                     UnaryOp::Neg => {
                         // OV1: negation overflows at signed MIN (and for any
@@ -1753,10 +1753,10 @@ impl<'a> FunctionBuilder<'a> {
                             .map(|t| t.is_unsigned())
                             .unwrap_or(false);
                         let overflowed = if unsigned {
-                            let zero = builder.ins().iconst(val_ty, 0);
+                            let zero = Self::iconst_at(builder, val_ty, 0);
                             builder.ins().icmp(IntCC::NotEqual, val, zero)
                         } else {
-                            let min = builder.ins().iconst(val_ty, Self::type_min_i64(val_ty));
+                            let min = Self::emit_type_min(builder, val_ty);
                             builder.ins().icmp(IntCC::Equal, val, min)
                         };
                         Self::guard_overflow(
@@ -3097,7 +3097,7 @@ impl<'a> FunctionBuilder<'a> {
                 BinOp::Mod if is_unsigned => {
                     if let Some(k) = Self::const_power_of_two(right) {
                         let ty = builder.func.dfg.value_type(lhs_val);
-                        let mask = builder.ins().iconst(ty, (1i64 << k) - 1);
+                        let mask = Self::iconst_at(builder, ty, (1i128 << k) - 1);
                         builder.ins().band(lhs_val, mask)
                     } else {
                         Self::guard_div_zero(builder, ctx, rhs_val, int_ty);
@@ -5186,15 +5186,15 @@ impl<'a> FunctionBuilder<'a> {
 
     /// OV2: panic (with a message) when the divisor is zero.
     fn guard_div_zero(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, rhs: Value, ty: Type) {
-        let zero = builder.ins().iconst(ty, 0);
+        let zero = Self::iconst_at(builder, ty, 0);
         let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
         Self::guard_overflow(builder, ctx, is_zero, OV_DIV_ZERO);
     }
 
     /// OV3: panic when a signed division would overflow (`MIN / -1`).
     fn guard_div_overflow(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, lhs: Value, rhs: Value, ty: Type) {
-        let min = builder.ins().iconst(ty, Self::type_min_i64(ty));
-        let neg1 = builder.ins().iconst(ty, -1);
+        let min = Self::emit_type_min(builder, ty);
+        let neg1 = Self::iconst_at(builder, ty, -1);
         let l_is_min = builder.ins().icmp(IntCC::Equal, lhs, min);
         let r_is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
         let both = builder.ins().band(l_is_min, r_is_neg1);
@@ -5257,16 +5257,6 @@ impl<'a> FunctionBuilder<'a> {
         let bits = builder.ins().iconst(ty, ty.bits() as i64);
         let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
         Self::guard_overflow(builder, ctx, bad, msg);
-    }
-
-    /// Signed minimum of an integer type as an i64 immediate.
-    fn type_min_i64(ty: Type) -> i64 {
-        match ty.bits() {
-            8 => i8::MIN as i64,
-            16 => i16::MIN as i64,
-            32 => i32::MIN as i64,
-            _ => i64::MIN,
-        }
     }
 
     /// Emit a cold panic block: call rask_panic_at with the given message, then trap.
@@ -6728,6 +6718,38 @@ impl<'a> FunctionBuilder<'a> {
         let lo = builder.ins().iconst(types::I64, n as u64 as i64);
         let hi = builder.ins().iconst(types::I64, (n >> 64) as u64 as i64);
         builder.ins().iconcat(lo, hi)
+    }
+
+    /// An integer constant at any width, including 128 bits.
+    ///
+    /// `iconst` has no I128 rule — Cranelift builds a 128-bit constant by
+    /// concatenating two 64-bit halves. Emitting `iconst.i128` doesn't fail at
+    /// the builder; it fails in the *verifier*, as a bare `unreachable!()` with
+    /// no message, so the compiler panics rather than reporting anything. Every
+    /// guard that builds a constant at the operand's own type has to come
+    /// through here (#832).
+    fn iconst_at(builder: &mut ClifFunctionBuilder, ty: Type, n: i128) -> Value {
+        if ty == types::I128 {
+            return Self::iconst_i128(builder, n);
+        }
+        builder.ins().iconst(ty, n as i64)
+    }
+
+    /// The signed minimum of an integer type, at that type's own width.
+    ///
+    /// The old version capped at `i64::MIN`, which is both the wrong number for
+    /// a 128-bit type and — through `iconst` — an instruction Cranelift has no
+    /// rule for. `let a: i128 = 5` and then `-a` was enough to panic the
+    /// compiler (#832).
+    fn emit_type_min(builder: &mut ClifFunctionBuilder, ty: Type) -> Value {
+        let n: i128 = match ty.bits() {
+            8 => i8::MIN as i128,
+            16 => i16::MIN as i128,
+            32 => i32::MIN as i128,
+            64 => i64::MIN as i128,
+            _ => i128::MIN,
+        };
+        Self::iconst_at(builder, ty, n)
     }
 
     fn lower_operand_typed(

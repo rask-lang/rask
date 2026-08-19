@@ -308,3 +308,62 @@ test "ctrl.comptime — a folded 128-bit value survives the fold" {
 }
 
 func main() {}
+
+// ── Negation at 128 bits crashed the compiler (#832) ─────────────────
+//
+// The overflow guards build their `MIN` constant at the operand's own type, and
+// `type_min_i64` capped at `i64::MIN` and emitted it with `iconst`. Cranelift
+// has no `iconst` rule at 128 bits — a 128-bit constant is two 64-bit halves
+// concatenated — so `let a: i128 = 5` followed by `-a` produced IR the verifier
+// rejected. And the verifier's rejection is a bare `unreachable!()` with no
+// message, so the compiler panicked instead of reporting anything:
+//
+//     internal error: entered unreachable code
+//       cranelift-codegen/src/verifier/mod.rs:1634
+//
+// Four lines of Rask. It's what stopped `projects/raido` from building, whose
+// fixed-point `Number.mul` negates an `i128` intermediate.
+
+test "type.primitives — negating a 128-bit value" {
+    let a: i128 = 5
+    assert -a == -5
+
+    let big: i128 = 170141183460469231731687303715884105727
+    assert -big == -170141183460469231731687303715884105726 - 1
+
+    let neg: i128 = -42
+    assert -neg == 42
+}
+
+// The fixed-point multiply from raido: widen to 128, take the magnitude, shift
+// back, and put the sign on by negating.
+func fixed_mul(x: i64, y: i64) -> i64 {
+    let a = x as i128
+    let b = y as i128
+    let sign = if a < 0 != b < 0 {
+        -1
+    } else {
+        1
+    }
+    let result = (a.abs() * b.abs()) >> 32
+    if sign < 0 {
+        return (-result).wrap<i64>()
+    }
+    return result.wrap<i64>()
+}
+
+test "type.primitives — 128-bit intermediates in a fixed-point multiply" {
+    // The operands are locals rather than literals because a literal on the
+    // left of `<<` doesn't take the binding's annotation — `let a: i64 = 2 << 40`
+    // shifts at i32 and panics on both backends (#833).
+    let shift: i64 = 32
+    let base_two: i64 = 2
+    let base_three: i64 = 3
+    let two = base_two << shift
+    let three = base_three << shift
+    assert (fixed_mul(two, three) >> shift) == 6
+
+    let base_neg: i64 = -2
+    let neg_two = base_neg << shift
+    assert (fixed_mul(neg_two, three) >> shift) == -6
+}
