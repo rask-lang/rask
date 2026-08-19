@@ -664,6 +664,20 @@ impl TypeChecker {
                     });
                     return Ok(progress);
                 }
+                // The mirror of the optional's own `eq` rule: `5 == a` with an
+                // optional on the right leaves the literal free, and it
+                // defaults to `i32` against an `i64?`. The bare side is meant
+                // as the payload wherever it's written (#834).
+                if self.ctx.literal_vars.contains_key(id)
+                    && Self::is_homogeneous_comparison(&method)
+                {
+                    if let [arg] = args.as_slice() {
+                        if let Some(inner) = self.ctx.apply(arg).as_option().cloned() {
+                            self.unify(&ty, &inner, span)?;
+                            return self.unify(&ret, &Type::Bool, span);
+                        }
+                    }
+                }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
                 {
@@ -3410,7 +3424,22 @@ impl TypeChecker {
         match method {
             // `x == none` desugars to `x.eq(none)`. Equality on a zero-field
             // type is ordinary; `tool.lint/I5` steers it toward `x is none`.
-            "eq" | "ne" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
+            //
+            // A bare *literal* on the other side is meant as the payload, and
+            // nothing else constrains it — `let a: i64? = 5` then `a == 5` left
+            // the `5` free, so it defaulted to `i32` and the comparison was
+            // between an `i64?` and an `i32`. Lowering then had a mismatch it
+            // couldn't wrap, and codegen read the scalar as an address (#834).
+            // Only a literal: a typed argument keeps its own type, and `none`
+            // has its own.
+            "eq" | "ne" if args.len() == 1 => {
+                if let Type::Var(id) = self.ctx.apply(&args[0]) {
+                    if self.ctx.literal_vars.contains_key(&id) {
+                        let _ = self.unify(&args[0], inner, span);
+                    }
+                }
+                self.unify(ret, &Type::Bool, span)
+            }
             _ => Err(Self::wrapper_method_cut(self_ty, method, span)),
         }
     }

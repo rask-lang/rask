@@ -129,6 +129,17 @@ impl TypeChecker {
     /// Infer expression type with an expected type hint for unsuffixed literals.
     /// Falls through to normal inference for non-literal or suffixed expressions.
     pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
+        // A bare number filling a `T?` slot is the payload, not the slot. An
+        // optional expectation says nothing an integer literal can take, so the
+        // literal stayed open and defaulted to `i32`: `a[1] = 5` into an
+        // `[i64?; 3]` stored four bytes into an eight-byte payload, and the
+        // upper half came back as whatever the stack held (#835).
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+            if let Some(inner) = expected.as_option() {
+                let inner = inner.clone();
+                return self.infer_expr_expecting(expr, &inner);
+            }
+        }
         match &expr.kind {
             // An unsuffixed literal takes the slot's type, including the two
             // magnitude bands that only rule types out. Taking the expectation

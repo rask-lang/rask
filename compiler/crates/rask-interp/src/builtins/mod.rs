@@ -126,6 +126,29 @@ impl Interpreter {
             }
         }
 
+        // `5 == a` with an optional on the right. Equality is symmetric, and
+        // the optional side is the one that knows how to compare against a
+        // bare payload — dispatching on the receiver alone sent this to the
+        // scalar method, which refused the enum it was handed (#834).
+        if matches!(method, "eq" | "ne")
+            && args.len() == 1
+            && !matches!(&receiver, Value::Enum { name, .. } if name == "Option")
+        {
+            let opt = match args.first() {
+                Some(Value::Enum { name, variant, fields, .. }) if name == "Option" => {
+                    Some((variant.clone(), fields.clone()))
+                }
+                _ => None,
+            };
+            if let Some((variant, fields)) = opt {
+                let eq = self.call_option_method(&variant, &fields, "eq", vec![receiver])?;
+                return Ok(match (method, eq) {
+                    ("ne", Value::Bool(b)) => Value::Bool(!b),
+                    (_, v) => v,
+                });
+            }
+        }
+
         match &receiver {
             Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),

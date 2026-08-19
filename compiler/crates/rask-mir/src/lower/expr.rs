@@ -1003,8 +1003,16 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 let (left_op, left_ty) = self.lower_expr(left)?;
-                let (right_op, _) = self.lower_expr(right)?;
+                let (right_op, right_ty) = self.lower_expr(right)?;
                 let mir_op = lower_binop(*op);
+                // `x == v` with a `T?` on one side and a bare `T` on the other:
+                // wrap the bare side, which is what every other position does
+                // and what the interpreter answers (#834).
+                let (left_op, right_op) = if matches!(mir_op, crate::operand::BinOp::Eq | crate::operand::BinOp::Ne) {
+                    self.align_optional_compare(left_op, &left_ty, right_op, &right_ty)
+                } else {
+                    (left_op, right_op)
+                };
                 let result_ty = binop_result_type(&mir_op, &left_ty);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
 
@@ -3543,6 +3551,12 @@ impl<'a> MirLowerer<'a> {
                         || matches!(right_ty, MirType::I128);
                     let is_u128 = matches!(left_ty, MirType::U128)
                         || matches!(right_ty, MirType::U128);
+                    // Every cmp helper takes a raw scalar, and an optional is a
+                    // slot with a present flag next to the payload. Passing the
+                    // slot where a number is expected reinterprets its address,
+                    // so an optional operand reports without the values (#834).
+                    let is_optional = matches!(left_ty, MirType::Option(_))
+                        || matches!(right_ty, MirType::Option(_));
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
                     } else if is_float {
@@ -3560,7 +3574,7 @@ impl<'a> MirLowerer<'a> {
                     // operand has to be widened to it. An f32 or a char reached
                     // the f64/i64 helper at its own width and Cranelift
                     // rejected the call outright (#332).
-                    let (left_op, right_op) = if is_string {
+                    let (left_op, right_op) = if is_string || is_optional {
                         (left_op, right_op)
                     } else {
                         let want = if is_float {
@@ -3577,11 +3591,19 @@ impl<'a> MirLowerer<'a> {
                             self.widen_for_assert_helper(right_op, &right_ty, &want),
                         )
                     };
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: None,
-                        func: FunctionRef::internal(fail_fn.to_string()),
-                        args: vec![left_op, right_op, op_const],
-                    }));
+                    if is_optional {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("assert_fail".to_string()),
+                            args: vec![],
+                        }));
+                    } else {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal(fail_fn.to_string()),
+                            args: vec![left_op, right_op, op_const],
+                        }));
+                    }
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
                     self.builder.switch_to_block(ok_block);
@@ -5907,14 +5929,21 @@ impl<'a> MirLowerer<'a> {
         if !skip_binop {
         if let Some(mir_binop) = operator_method_to_binop(method) {
             if args.len() == 1 {
-                let (rhs, _) = self.lower_expr(&args[0].expr)?;
+                let (rhs, rhs_ty) = self.lower_expr(&args[0].expr)?;
+                // `a == v` is `a.eq(v)` after desugaring, so the optional/bare
+                // mismatch arrives here rather than at the `Binary` arm (#834).
+                let (lhs, rhs) = if matches!(mir_binop, crate::operand::BinOp::Eq | crate::operand::BinOp::Ne) {
+                    self.align_optional_compare(obj_op.clone(), obj_ty, rhs, &rhs_ty)
+                } else {
+                    (obj_op.clone(), rhs)
+                };
                 let result_ty = binop_result_type(&mir_binop, obj_ty);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
                     rvalue: MirRValue::BinaryOp {
                         op: mir_binop,
-                        left: obj_op.clone(),
+                        left: lhs,
                         right: rhs,
                     },
                 }));

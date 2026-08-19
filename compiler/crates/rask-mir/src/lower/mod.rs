@@ -2245,6 +2245,49 @@ impl<'a> MirLowerer<'a> {
         cur_op
     }
 
+    /// `x == v` where `x` is a `T?` and `v` is a bare `T`: wrap the bare side so
+    /// both are optionals, which is the comparison codegen already knows.
+    ///
+    /// The checker accepts the mixed form and the interpreter answers it by
+    /// wrapping, the way every other position auto-wraps a bare value. MIR
+    /// emitted a raw compare between a 16-byte optional slot and a scalar
+    /// instead, and codegen then read the scalar as an address — so
+    /// `let a: bool? = true` then `if a == true` failed Cranelift's verifier
+    /// (`load.i8 v10 ; v10 = 1`, loading from the address 1), and the `i64?`
+    /// spelling segfaulted at runtime while the interpreter printed the answer
+    /// (#834).
+    ///
+    /// `x == none` is untouched: `none`'s type isn't the payload's, so neither
+    /// side matches.
+    pub(crate) fn align_optional_compare(
+        &mut self,
+        left: MirOperand,
+        left_ty: &MirType,
+        right: MirOperand,
+        right_ty: &MirType,
+    ) -> (MirOperand, MirOperand) {
+        let payload_of = |ty: &MirType| match ty {
+            MirType::Option(inner) => Some((**inner).clone()),
+            _ => None,
+        };
+        // An equality operand is an argument position — `a == v` is `a.eq(v)`
+        // after desugaring, and `v` is the argument.
+        let site = rask_ast::coercion::CoercionSite::Argument;
+        if let Some(inner) = payload_of(left_ty) {
+            if &inner == right_ty {
+                let wrapped = self.coerce_into_wrapper(site, right, right_ty, left_ty);
+                return (left, wrapped);
+            }
+        }
+        if let Some(inner) = payload_of(right_ty) {
+            if &inner == left_ty {
+                let wrapped = self.coerce_into_wrapper(site, left, left_ty, right_ty);
+                return (wrapped, right);
+            }
+        }
+        (left, right)
+    }
+
     /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
     /// owns that rule, this just applies it. Returns the operand unchanged when
     /// it is already that wide.
