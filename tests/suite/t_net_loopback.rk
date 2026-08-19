@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The `net` module over loopback, on both backends (std.net).
+//
+// Four separate faults, all found by running every operation on both backends
+// and diffing:
+//
+//   1. `write_bytes` sent every second byte as seven NULs. The runtime took
+//      element 0's address as the start of a byte buffer, but a `Vec<u8>` is
+//      only contiguous when the runtime built it — compiled Rask code gives
+//      every element its own 8-byte slot. "hello" left as "h\0\0\0\0\0\0\0e\0…"
+//      and the far end read one character.
+//   2. `read_text`/`write_text` had no native entry point at all: codegen said
+//      "Function not found: TcpConnection_write_text" while the interpreter ran
+//      them. They're Rask now, over `read_bytes`/`write_bytes`, so which byte
+//      sequences are legal is decided once.
+//   3. A refused connection trapped. The adapter that turns a negative return
+//      into the error side has no way to build an `IoError` — it's a Rask enum —
+//      so it left the raw -1 as the payload, and matching -1 as an enum tag is
+//      an out-of-range match: SIGILL. The check lives in Rask now.
+//   4. `tcp_listen("not-an-address")` succeeded. The runtime filled in whichever
+//      half of "host:port" was missing, so it bound 0.0.0.0:0 and handed back a
+//      listener. `tcp_listen("127.0.0.1:99999")` bound port 34463.
+//
+// One thing still differs and isn't tested here: `clone` on a connection dups
+// the descriptor natively and shares one stream on the interpreter, so closing
+// the original ends the connection on one backend and not the other.
+
+import net
+
+// Everything the happy path does, in one function so the handles stay in scope.
+func echo_once(payload: string) -> string or IoError {
+    mut listener = try net.tcp_listen("127.0.0.1:0")
+    let addr = listener.local_addr()
+    mut client = try net.tcp_connect(addr)
+    mut server = try listener.accept()
+
+    try client.write_text(payload)
+    let _ = client.close()
+
+    let text = server.read_text()
+    let _ = server.close()
+    let _ = listener.close()
+    return try text
+}
+
+func echo_bytes(payload: Vec<u8>) -> Vec<u8> or IoError {
+    mut listener = try net.tcp_listen("127.0.0.1:0")
+    let addr = listener.local_addr()
+    mut client = try net.tcp_connect(addr)
+    mut server = try listener.accept()
+
+    try client.write_bytes(payload)
+    let _ = client.close()
+
+    let got = server.read_bytes()
+    let _ = server.close()
+    let _ = listener.close()
+    return try got
+}
+
+func bound_addr() -> string or IoError {
+    mut listener = try net.tcp_listen("127.0.0.1:0")
+    let addr = listener.local_addr()
+    let _ = listener.close()
+    return addr
+}
+
+test "std.net — a listener binds loopback on a real port" {
+    let a = bound_addr()
+    if a is string as addr {
+        assert addr.contains("127.0.0.1")
+        assert !addr.ends_with(":0")
+    } else {
+        assert false
+    }
+}
+
+test "std.net — text goes across intact" {
+    let got = echo_once("hello over tcp")
+    if got is string as s {
+        assert_eq(s, "hello over tcp")
+    } else {
+        assert false
+    }
+}
+
+// The byte-spreading bug: only the first byte survived, so anything past one
+// character is the real test.
+test "std.net — every byte arrives, not every eighth" {
+    mut payload: Vec<u8> = Vec.new()
+    mut i = 0
+    while i < 300 {
+        payload.push(((i % 26) + 97).wrap<u8>())
+        i = i + 1
+    }
+    let got = echo_bytes(payload)
+    if got is Vec<u8> as v {
+        assert_eq(v.len(), 300)
+        assert_eq(v[0], 97)
+        assert_eq(v[25], 122)
+        assert_eq(v[26], 97)
+        assert_eq(v[299], 97 + 13)
+    } else {
+        assert false
+    }
+}
+
+test "std.net — non-ASCII survives the round trip" {
+    let got = echo_once("héllo →")
+    if got is string as s {
+        assert_eq(s, "héllo →")
+    } else {
+        assert false
+    }
+}
+
+test "std.net — an empty payload reads as empty" {
+    let got = echo_once("")
+    if got is string as s {
+        assert_eq(s.len(), 0)
+    } else {
+        assert false
+    }
+}
+
+// This used to be a SIGILL: the -1 the syscall returned became the error
+// payload, and matching it as an `IoError` tag trapped.
+test "std.net — a refused connection is an error, not a trap" {
+    let c = net.tcp_connect("127.0.0.1:1")
+    if c is TcpConnection as conn {
+        assert false
+    } else as e {
+        assert e.message().contains("refused")
+    }
+}
+
+// An address is a host and a port. The runtime used to fill in the missing half.
+test "std.net — a malformed address is refused, not guessed at" {
+    let no_colon = net.tcp_listen("not-an-address")
+    if no_colon is TcpListener as l {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid socket address")
+    }
+
+    let no_host = net.tcp_listen(":8080")
+    if no_host is TcpListener as l {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid socket address")
+    }
+
+    let no_port = net.tcp_connect("127.0.0.1")
+    if no_port is TcpConnection as c {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid socket address")
+    }
+
+    // 99999 & 0xFFFF is 34463 — native bound that and reported success.
+}
+
+test "std.net — a port outside 0..65535 is refused" {
+    let empty = net.tcp_connect("127.0.0.1:")
+    if empty is TcpConnection as c {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid port value")
+    }
+
+    let words = net.tcp_connect("127.0.0.1:notanumber")
+    if words is TcpConnection as c {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid port value")
+    }
+    let too_big = net.tcp_listen("127.0.0.1:99999")
+    if too_big is TcpListener as l {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "invalid port value")
+    }
+}
+
+// getaddrinfo doesn't set errno, so asking the OS why answered "Success
+// (os error 0)" for a failure. It's its own case now.
+test "std.net — a name that resolves to nothing says so" {
+    let u = net.tcp_connect("no-such-host.invalid:80")
+    if u is TcpConnection as c {
+        assert false
+    } else as e {
+        assert_eq(e.message(), "could not resolve no-such-host.invalid:80")
+    }
+}
+
+func main() {}

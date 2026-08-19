@@ -21,7 +21,9 @@ func main() -> void or Error {
         seed_store()
 
         println("listening on {cfg.addr()}")
-        try http.serve(cfg.addr(), |req| { route(req) })
+        try http.serve(cfg.addr(), |req| {
+            route(req)
+        })
     }
 }
 
@@ -57,9 +59,5 @@ func seed_store() {
 }
 
 func seed_specs() -> Vec<SeedSpec> {
-    return Vec.from([
-        SeedSpec { title: "write the spec", priority: Priority.High },
-        SeedSpec { title: "review the diff", priority: Priority.Medium },
-        SeedSpec { title: "ship it", priority: Priority.Urgent },
-    ])
+    return Vec.from([SeedSpec { title: "write the spec", priority: Priority.High }, SeedSpec { title: "review the diff", priority: Priority.Medium }, SeedSpec { title: "ship it", priority: Priority.Urgent }])
 }

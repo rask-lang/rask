@@ -87,6 +87,39 @@ impl TypeSubstitutor {
             return format!("{}", ty);
         }
 
+        // `func(A, B) -> R` — a function type. Its parts are types too, and
+        // nothing substituted them: `f: func() -> V` in a `Map<K, V>` method
+        // stayed `func() -> V` in the copy, so the call through it took the
+        // return as a word. A `V` that was a string came back as a pointer and
+        // the value stored was garbage (#887).
+        //
+        // Before the ` or ` split and the generic branch: `func() -> i64 or E`
+        // would split at the arrow's right and `func() -> Vec<V>` ends in `>`.
+        if let Some(rest) = s.strip_prefix("func") {
+            let rest = rest.trim_start();
+            if let Some(close) = closing_paren(rest) {
+                let params = &rest[1..close];
+                let tail = rest[close + 1..].trim();
+                let params_sub = if params.trim().is_empty() {
+                    String::new()
+                } else {
+                    split_type_args(params)
+                        .iter()
+                        .map(|a| self.substitute_type_string(a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return match tail.strip_prefix("->") {
+                    Some(r) if !r.trim().is_empty() => format!(
+                        "func({}) -> {}",
+                        params_sub,
+                        self.substitute_type_string(r.trim()),
+                    ),
+                    _ => format!("func({})", params_sub),
+                };
+            }
+        }
+
         // Option shorthand: "T?" → substitute T, re-append "?"
         if let Some(inner) = s.strip_suffix('?') {
             let inner_sub = self.substitute_type_string(inner);
@@ -176,6 +209,7 @@ impl TypeSubstitutor {
             type_params: Vec::new(), // Removed after instantiation
             variants: e.variants.iter().map(|v| rask_ast::decl::Variant {
                 name: v.name.clone(),
+                name_span: v.name_span,
                 fields: v.fields.iter().map(|f| rask_ast::decl::Field {
                     name: f.name.clone(),
                     name_span: f.name_span.clone(),
@@ -270,9 +304,16 @@ impl TypeSubstitutor {
                     init: self.clone_expr(init),
                 },
 
-                StmtKind::Assign { target, value } => StmtKind::Assign {
+                StmtKind::LetStruct { pattern, init, is_mut } => StmtKind::LetStruct {
+                    pattern: self.clone_pattern(pattern),
+                    init: self.clone_expr(init),
+                    is_mut: *is_mut,
+                },
+
+                StmtKind::Assign { target, value, op } => StmtKind::Assign {
                     target: self.clone_expr(target),
                     value: self.clone_expr(value),
+                    op: *op,
                 },
 
                 StmtKind::Return(opt_expr) => {
@@ -736,6 +777,35 @@ pub fn type_param_names(decl: &Decl, type_args: &[Type]) -> Vec<String> {
     }
 }
 
+/// Instantiate binding an explicit list of parameter names, rather than reading
+/// them off the declaration.
+///
+/// A method on a generic type takes some of its parameters from the `extend`
+/// header — `extend One<A>` gives `get` its `A`, and `get`'s own signature has no
+/// record of that. The caller knows both lists, so it passes the joined one here
+/// (#814).
+pub fn instantiate_function_with_params(
+    decl: &Decl,
+    param_names: &[String],
+    type_args: &[Type],
+    next_node_id: &mut u32,
+) -> (Decl, HashMap<NodeId, NodeId>) {
+    let params: Vec<TypeParam> = param_names
+        .iter()
+        .map(|name| TypeParam {
+            name: name.clone(),
+            is_comptime: false,
+            comptime_type: None,
+            bounds: Vec::new(),
+        })
+        .collect();
+    let mut substitutor = TypeSubstitutor::new(&params, type_args);
+    substitutor.next_node_id = *next_node_id;
+    let cloned = substitutor.clone_decl(decl);
+    *next_node_id = substitutor.next_node_id;
+    (cloned, substitutor.node_origin)
+}
+
 pub fn instantiate_function_from(
     decl: &Decl,
     type_args: &[Type],
@@ -780,4 +850,26 @@ pub fn instantiate_function_from(
     let cloned = substitutor.clone_decl(decl);
     *next_node_id = substitutor.next_node_id;
     (cloned, substitutor.node_origin)
+}
+
+/// The `)` matching a leading `(`, or `None` when `s` doesn't start with one or
+/// the parens don't balance.
+fn closing_paren(s: &str) -> Option<usize> {
+    if !s.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

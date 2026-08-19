@@ -1,8 +1,11 @@
-// Generates compiler/runtime/unicode_case.c from Rust's own Unicode case data.
+// Generates compiler/runtime/unicode_case.c from Rust's own Unicode data:
+// the case mappings, and the character classes `char.is_alphabetic()` and
+// friends answer from.
 //
-// Native case conversion was ASCII-only; the interpreter uses Rust's std, which
-// does full Unicode. The interpreter is the reference, so the tables come from
-// the same source it uses.
+// Native case conversion was ASCII-only, and the classifications were worse —
+// `is_alphabetic` said yes to every scalar above 127, so `'€'` and a combining
+// accent were letters. The interpreter is the reference and it is Rust's std,
+// so the tables come from the same source it uses.
 use std::fmt::Write as _;
 
 fn main() {
@@ -14,8 +17,26 @@ fn main() {
     // buffer from a justified constant rather than a guess.
     let mut max_ratio = 1.0f64;
 
+    // Character classes, as sorted inclusive ranges. Same walk, same source.
+    let classes: [(&str, fn(char) -> bool); 5] = [
+        ("ALPHABETIC", |c| c.is_alphabetic()),
+        ("NUMERIC", |c| c.is_numeric()),
+        ("LOWERCASE", |c| c.is_lowercase()),
+        ("UPPERCASE", |c| c.is_uppercase()),
+        ("CONTROL", |c| c.is_control()),
+    ];
+    let mut class_ranges: Vec<Vec<(u32, u32)>> = vec![Vec::new(); classes.len()];
+
     for cp in 0u32..=0x10FFFF {
         let Some(c) = char::from_u32(cp) else { continue };
+        for (i, (_, test)) in classes.iter().enumerate() {
+            if test(c) {
+                match class_ranges[i].last_mut() {
+                    Some(last) if last.1 + 1 == cp => last.1 = cp,
+                    _ => class_ranges[i].push((cp, cp)),
+                }
+            }
+        }
         let src_len = c.len_utf8();
         let up: Vec<char> = c.to_uppercase().collect();
         let lo: Vec<char> = c.to_lowercase().collect();
@@ -94,6 +115,22 @@ fn main() {
         writeln!(out, "static const int {}_LEN = {};\n", name, v.len()).unwrap();
     };
 
+    let emit_ranges = |out: &mut String, name: &str, v: &[(u32, u32)]| {
+        writeln!(out, "static const RaskCharRange RASK_{}[] = {{", name).unwrap();
+        for chunk in v.chunks(4) {
+            out.push_str("   ");
+            for (lo, hi) in chunk {
+                write!(out, " {{0x{:04X},0x{:04X}}},", lo, hi).unwrap();
+            }
+            out.push('\n');
+        }
+        writeln!(out, "}};").unwrap();
+        writeln!(out, "static const int RASK_{}_LEN = {};\n", name, v.len()).unwrap();
+    };
+    for (i, (name, _)) in classes.iter().enumerate() {
+        emit_ranges(&mut out, name, &class_ranges[i]);
+    }
+
     emit_simple(&mut out, "RASK_UPPER_SIMPLE", &simple_up);
     emit_simple(&mut out, "RASK_LOWER_SIMPLE", &simple_lo);
     emit_multi(&mut out, "RASK_UPPER_MULTI", &multi_up);
@@ -153,6 +190,34 @@ uint32_t rask_case_map_one(uint32_t cp, int to_upper) {
     rask_case_map(cp, to_upper, out);
     return out[0];
 }
+
+static int range_contains(const RaskCharRange *tbl, int len, uint32_t cp) {
+    int lo = 0, hi = len - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (cp < tbl[mid].lo) { hi = mid - 1; }
+        else if (cp > tbl[mid].hi) { lo = mid + 1; }
+        else { return 1; }
+    }
+    return 0;
+}
+
+int rask_char_class(uint32_t cp, int which) {
+    switch (which) {
+        case RASK_CLASS_ALPHABETIC:
+            return range_contains(RASK_ALPHABETIC, RASK_ALPHABETIC_LEN, cp);
+        case RASK_CLASS_NUMERIC:
+            return range_contains(RASK_NUMERIC, RASK_NUMERIC_LEN, cp);
+        case RASK_CLASS_LOWERCASE:
+            return range_contains(RASK_LOWERCASE, RASK_LOWERCASE_LEN, cp);
+        case RASK_CLASS_UPPERCASE:
+            return range_contains(RASK_UPPERCASE, RASK_UPPERCASE_LEN, cp);
+        case RASK_CLASS_CONTROL:
+            return range_contains(RASK_CONTROL, RASK_CONTROL_LEN, cp);
+        default:
+            return 0;
+    }
+}
 "#);
 
     std::fs::write("compiler/runtime/unicode_case.c", out).unwrap();
@@ -164,4 +229,7 @@ uint32_t rask_case_map_one(uint32_t cp, int to_upper) {
         multi_lo.len(),
         max_ratio.ceil() as i32
     );
+    for (i, (name, _)) in classes.iter().enumerate() {
+        eprintln!("  {}: {} ranges", name, class_ranges[i].len());
+    }
 }

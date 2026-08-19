@@ -217,6 +217,301 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
     sorted
 }
 
+/// The layout name of one instantiation of a generic type — `One$Big`,
+/// `Pair$i64$Big`.
+///
+/// `mangle_name` does this for functions, whose type arguments arrive already
+/// normalized to names. A type argument here hasn't been: it can be a
+/// `Named(TypeId)`, which prints as `<type#N>`. So the id gets resolved, and an
+/// argument that can't be named at all means there is no instance layout to make
+/// — the caller falls back to the shared placeholder layout.
+///
+/// MIR asks the same question of the same function, so the two agree by
+/// construction rather than by convention.
+pub fn generic_instance_name(
+    base: &str,
+    args: &[Type],
+    type_names: &HashMap<rask_types::TypeId, String>,
+) -> Option<String> {
+    if args.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::with_capacity(args.len());
+    for arg in args {
+        parts.push(type_arg_key(arg, type_names)?);
+    }
+    Some(format!("{}${}", base, parts.join("$")))
+}
+
+fn bare_type_name(name: &str) -> String {
+    name.split('<').next().unwrap_or(name).trim().to_string()
+}
+
+/// One type argument, spelled so it can key a layout. `None` for anything whose
+/// identity isn't settled — an inference variable, an unresolved parameter name,
+/// a shape with one of those inside.
+fn type_arg_key(
+    ty: &Type,
+    type_names: &HashMap<rask_types::TypeId, String>,
+) -> Option<String> {
+    use rask_types::GenericArg;
+    Some(match ty {
+        Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
+        Type::Named(id) => bare_type_name(type_names.get(id)?),
+        // An argument substituted into an instantiated copy is named, not
+        // interned — the copy's types were built by rewriting strings, not by
+        // going back through the checker's table (#814).
+        Type::UnresolvedNamed(name) => bare_type_name(name),
+        Type::UnresolvedGeneric { name, args } => {
+            let base = bare_type_name(name);
+            let mut parts = Vec::with_capacity(args.len());
+            for arg in args {
+                let GenericArg::Type(inner) = arg else { return None };
+                parts.push(type_arg_key(inner, type_names)?);
+            }
+            format!("{}${}", base, parts.join("$"))
+        }
+        Type::Generic { base, args } => {
+            let base = bare_type_name(type_names.get(base)?);
+            let mut parts = Vec::with_capacity(args.len());
+            for arg in args {
+                let GenericArg::Type(inner) = arg else { return None };
+                parts.push(type_arg_key(inner, type_names)?);
+            }
+            format!("{}${}", base, parts.join("$"))
+        }
+        Type::Tuple(elems) => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for elem in elems {
+                parts.push(type_arg_key(elem, type_names)?);
+            }
+            format!("tup{}", parts.join("$"))
+        }
+        // Spelled exactly as the source writes it, because MIR reaches the same
+        // layout from a type *string* — `Wrap<i64?>` there splits into the
+        // argument `i64?`, and the two have to agree on the key (#872).
+        Type::Result { ok, err } if **err == Type::None => {
+            format!("{}?", type_arg_key(ok, type_names)?)
+        }
+        Type::Result { ok, err } => format!(
+            "{} or {}",
+            type_arg_key(ok, type_names)?,
+            type_arg_key(err, type_names)?,
+        ),
+        _ => return None,
+    })
+}
+
+/// How wide this type argument is *inline*, when it's the kind of argument that
+/// lives inline at all.
+///
+/// The shared placeholder layout gives every type parameter one word. A scalar
+/// fits. A `Vec`, `Map` or any other box is a pointer, so it fits too. What
+/// doesn't is anything that *is* its bytes: a struct, enum, union, tuple, array,
+/// or a `string` — a string is 16 bytes of header, and a generic slot that only
+/// holds the pointer to them needs a reading convention of its own at every site
+/// that touches it. One of those sites didn't have it, so a `string` payload in a
+/// generic enum variant printed its address.
+fn inline_arg_size(
+    ty: &Type,
+    type_names: &HashMap<rask_types::TypeId, String>,
+    type_defs: &rask_types::TypeTable,
+    cache: &LayoutCache,
+) -> Option<u32> {
+    match ty {
+        Type::UnresolvedNamed(name) => {
+            let id = type_defs.get_type_id(name)?;
+            inline_arg_size(&Type::Named(id), type_names, type_defs, cache)
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let base_name = bare_type_name(name);
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
+                .and_then(|n| cache.get(&n).map(|(size, _)| *size));
+            instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
+        }
+        Type::Named(id) => {
+            let def = type_defs.get(*id)?;
+            if !matches!(
+                def,
+                rask_types::TypeDef::Struct { .. }
+                    | rask_types::TypeDef::Enum { .. }
+                    | rask_types::TypeDef::Union { .. }
+            ) {
+                return None;
+            }
+            let name = bare_type_name(type_names.get(id)?);
+            cache.get(&name).map(|(size, _)| *size)
+        }
+        // A nested instantiation is as wide as *its* layout — `One<One<Big>>` has
+        // to see 24, not the 8 the shared `One` layout reports.
+        Type::Generic { base, args } => {
+            let base_name = bare_type_name(type_names.get(base)?);
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
+                .and_then(|n| cache.get(&n).map(|(size, _)| *size));
+            instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
+        }
+        // A `T?` or a `T or E` is its bytes too — 16 for an optional scalar, 24
+        // for a result — so a generic slot that only holds a word can't take
+        // one. Without this `Wrap { value: opt(3) }` was refused outright:
+        // nothing emitted an instance layout, so the shared 8-byte slot was all
+        // there was (#872).
+        Type::Tuple(_) | Type::Array { .. } | Type::String | Type::Result { .. } => {
+            Some(type_size_align(ty, cache).0)
+        }
+        _ => None,
+    }
+}
+
+/// How deeply a type argument nests other types. Used only to order layout
+/// construction, so the exact numbers don't matter beyond inner < outer.
+fn type_depth(ty: &Type) -> u32 {
+    use rask_types::GenericArg;
+    match ty {
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            1 + args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some(type_depth(t)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
+            1 + elems.iter().map(type_depth).max().unwrap_or(0)
+        }
+        Type::Slice(inner) | Type::RawPtr(inner) => 1 + type_depth(inner),
+        Type::Array { elem, .. } => 1 + type_depth(elem),
+        Type::Result { ok, err } => 1 + type_depth(ok).max(type_depth(err)),
+        _ => 0,
+    }
+}
+
+/// A type argument respelled so `type_size_align` can find it: a name the layout
+/// cache holds. A nested instantiation resolves to its own instance layout when
+/// there is one, and to the shared layout otherwise.
+fn arg_as_cache_name(
+    ty: &Type,
+    type_names: &HashMap<rask_types::TypeId, String>,
+    cache: &LayoutCache,
+) -> Type {
+    match ty {
+        Type::Named(id) => type_names
+            .get(id)
+            .map(|n| Type::UnresolvedNamed(bare_type_name(n)))
+            .unwrap_or_else(|| ty.clone()),
+        Type::Generic { base, args } => {
+            let Some(base_name) = type_names.get(base).map(|n| bare_type_name(n)) else {
+                return ty.clone();
+            };
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
+                .filter(|n| cache.contains_key(n));
+            Type::UnresolvedNamed(instance.unwrap_or(base_name))
+        }
+        // A shape that holds other types has to be walked, not just handed over.
+        // `i64 or MyErr` sized its error side as one word, because a `Named`
+        // buried inside it never reached the rename and `type_size_align` can't
+        // resolve an id — so the layout came out 32 bytes where MIR wanted 40
+        // (#872).
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(arg_as_cache_name(ok, type_names, cache)),
+            err: Box::new(arg_as_cache_name(err, type_names, cache)),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems.iter().map(|e| arg_as_cache_name(e, type_names, cache)).collect(),
+        ),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(arg_as_cache_name(elem, type_names, cache)),
+            len: *len,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Every generic struct/enum instantiation this type mentions, at any depth.
+fn collect_generic_instances(
+    ty: &Type,
+    type_names: &HashMap<rask_types::TypeId, String>,
+    out: &mut Vec<(String, Vec<Type>)>,
+) {
+    use rask_types::GenericArg;
+    match ty {
+        Type::Generic { base, args } => {
+            if let Some(name) = type_names.get(base) {
+                let arg_tys: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if arg_tys.len() == args.len() {
+                    out.push((bare_type_name(name), arg_tys));
+                }
+            }
+            for arg in args {
+                if let GenericArg::Type(inner) = arg {
+                    collect_generic_instances(inner, type_names, out);
+                }
+            }
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            if arg_tys.len() == args.len() {
+                out.push((bare_type_name(name), arg_tys));
+            }
+            for arg in args {
+                if let GenericArg::Type(inner) = arg {
+                    collect_generic_instances(inner, type_names, out);
+                }
+            }
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for elem in elems {
+                collect_generic_instances(elem, type_names, out);
+            }
+        }
+        Type::Slice(inner) | Type::RawPtr(inner) => {
+            collect_generic_instances(inner, type_names, out)
+        }
+        Type::Array { elem, .. } => collect_generic_instances(elem, type_names, out),
+        Type::Result { ok, err } => {
+            collect_generic_instances(ok, type_names, out);
+            collect_generic_instances(err, type_names, out);
+        }
+        _ => {}
+    }
+}
+
 /// Monomorphize a type-checked program.
 ///
 /// Architecture: reachability drives instantiation (tree-shaking).
@@ -332,6 +627,111 @@ pub fn monomorphize_with_packages(
         }
     }
 
+    // One layout per *instantiation*, but only where the shared one is too small.
+    // The placeholder above gives every type parameter a word, which is right for
+    // a scalar and right for anything boxed (a `Vec`, a `Map`, a `Shared`) since
+    // those are pointers. It is wrong for anything that *is* its bytes — a struct,
+    // enum, union, tuple, array, or a `string`: `One<Big>` stored 24 bytes into an
+    // 8-byte slot and segfaulted on the read back (#781).
+    //
+    // Emitted only when the instantiated layout is bigger than the shared one, so
+    // `One<i32>` keeps using the shared layout and nothing that worked changes
+    // shape.
+    {
+        let type_names: HashMap<rask_types::TypeId, String> = program
+            .types
+            .iter()
+            .enumerate()
+            .map(|(i, def)| {
+                let name = match def {
+                    rask_types::TypeDef::Struct { name, .. }
+                    | rask_types::TypeDef::Enum { name, .. }
+                    | rask_types::TypeDef::Trait { name, .. }
+                    | rask_types::TypeDef::Union { name, .. }
+                    | rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
+                };
+                (rask_types::TypeId(i as u32), name)
+            })
+            .collect();
+
+        let generic_decls: HashMap<String, &Decl> = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Struct(s) if !s.type_params.is_empty() => {
+                    Some((s.name.split('<').next().unwrap_or(&s.name).to_string(), d))
+                }
+                DeclKind::Enum(e) if !e.type_params.is_empty() => {
+                    Some((e.name.split('<').next().unwrap_or(&e.name).to_string(), d))
+                }
+                _ => None,
+            })
+            .collect();
+
+        let mut instances: Vec<(String, Vec<Type>)> = Vec::new();
+        if !generic_decls.is_empty() {
+            for ty in program
+                .node_types
+                .values()
+                .chain(mono.instantiated_node_types.values())
+            {
+                collect_generic_instances(ty, &type_names, &mut instances);
+            }
+        }
+
+        // Shallowest first. `One<One<Big>>` can only be sized once `One$Big` is in
+        // the cache, and depth is enough of an order for that — a type argument is
+        // always shallower than the instantiation that holds it.
+        instances.sort_by_key(|(_, args)| args.iter().map(type_depth).max().unwrap_or(0));
+
+        let mut emitted: HashSet<String> = HashSet::new();
+        for (base, args) in instances {
+            let Some(decl) = generic_decls.get(&base) else { continue };
+            let Some(instance_name) = generic_instance_name(&base, &args, &type_names) else {
+                continue;
+            };
+            if !emitted.insert(instance_name.clone()) {
+                continue;
+            }
+            // Only when an argument can actually overflow the shared slot.
+            let overflows = args.iter().any(|a| {
+                inline_arg_size(a, &type_names, &program.types, &layout_cache)
+                    .is_some_and(|size| size > 8)
+            });
+            if !overflows {
+                continue;
+            }
+            // The type arguments have to be nameable to the layout code too —
+            // `type_size_align` reads the cache by name, and a `Named(id)` isn't
+            // one. A nested instantiation is named by its own instance layout.
+            let named_args: Vec<Type> = args
+                .iter()
+                .map(|a| arg_as_cache_name(a, &type_names, &layout_cache))
+                .collect();
+            let shared = layout_cache.get(&base).map(|(size, _)| *size).unwrap_or(0);
+            match &decl.kind {
+                DeclKind::Struct(_) => {
+                    let mut layout = compute_struct_layout(decl, &named_args, &layout_cache);
+                    if layout.size <= shared {
+                        continue;
+                    }
+                    layout.name = instance_name.clone();
+                    layout_cache.insert(instance_name, (layout.size, layout.align));
+                    struct_layouts.push(layout);
+                }
+                DeclKind::Enum(_) => {
+                    let mut layout = compute_enum_layout(decl, &named_args, &layout_cache);
+                    if layout.size <= shared {
+                        continue;
+                    }
+                    layout.name = instance_name.clone();
+                    layout_cache.insert(instance_name, (layout.size, layout.align));
+                    enum_layouts.push(layout);
+                }
+                _ => {}
+            }
+        }
+    }
+
     // `Ordering` has no decl to compute a layout from — the compiler registers
     // it instead. Give it one anyway so it behaves like every other fieldless
     // enum downstream: `compare` can hand back a real Ordering value rather
@@ -414,7 +814,7 @@ mod tests {
         Span::new(0, 0)
     }
 
-    fn int_expr(val: i64) -> Expr {
+    fn int_expr(val: i128) -> Expr {
         Expr {
             id: NodeId(100),
             kind: ExprKind::Int(val, None),
@@ -720,8 +1120,8 @@ mod tests {
                     name: "Color".to_string(),
                     type_params: vec![],
                     variants: vec![
-                        Variant { name: "Red".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                        Variant { name: "Green".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Red".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Green".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -773,6 +1173,7 @@ mod tests {
                     variants: vec![
                         Variant {
                             name: "Alpha".to_string(),
+                            name_span: sp(),
                             fields: vec![
                                 Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
                                 Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
@@ -780,7 +1181,7 @@ mod tests {
                             attrs: vec![],
                             discriminant: None,
                         },
-                        Variant { name: "Beta".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Beta".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1209,8 +1610,8 @@ mod tests {
                     name: "Color".to_string(),
                     type_params: vec![],
                     variants: vec![
-                        Variant { name: "Red".to_string(), fields: vec![], attrs: vec![], discriminant: None },
-                        Variant { name: "Blue".to_string(), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Red".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
+                        Variant { name: "Blue".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
                     ],
                     methods: vec![
                         make_method("default", vec![], Some("Color"), vec![return_stmt(None)]),

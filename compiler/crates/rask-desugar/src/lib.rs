@@ -13,6 +13,7 @@
 //! These passes run before type checking.
 
 mod defaults;
+mod trait_defaults;
 pub use defaults::is_valid_default_expr;
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, TraitDecl, ImplDecl};
@@ -56,9 +57,16 @@ pub struct DesugarError {
 
 /// Desugar phase, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
+    // TD2: a trait method with a body becomes a real method on every conformer
+    // that doesn't write its own. Before anything else walks the tree, so the
+    // copies get desugared with everything else — and so `scan_error_message_types`
+    // sees a `message()` a trait supplied by default.
+    let injected = trait_defaults::inject(decls);
+
     let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
     desugarer.scan_error_message_types(decls);
-    for decl in decls.iter_mut() {
+    for (index, decl) in decls.iter_mut().enumerate() {
+        desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
         desugarer.desugar_decl(decl);
     }
     let errors = std::mem::take(&mut desugarer.errors);
@@ -82,6 +90,14 @@ enum TemplatePiece {
 /// The desugaring context.
 struct Desugarer {
     next_id: u32,
+    /// Positions in the current `extend` block whose method body was copied out
+    /// of a trait's default (TD2). Those bodies carry the trait's own NodeIds,
+    /// and `node_types` is keyed by id — two conformers sharing them would
+    /// overwrite each other's inferred types — so the traversal hands out fresh
+    /// ones on the way through.
+    injected_methods: std::collections::HashSet<usize>,
+    /// Set while walking one of those bodies.
+    renumber: bool,
     errors: Vec<DesugarError>,
     /// Type names known to implement `Error` (ER37): `@message` enums and
     /// any type with a manual `message()` method. A single-payload `@message`
@@ -93,6 +109,8 @@ impl Desugarer {
     fn new(start_id: u32) -> Self {
         Self {
             next_id: start_id,
+            injected_methods: std::collections::HashSet::new(),
+            renumber: false,
             errors: Vec::new(),
             error_message_types: std::collections::HashSet::new(),
         }
@@ -317,19 +335,26 @@ impl Desugarer {
     }
 
     fn desugar_impl(&mut self, i: &mut ImplDecl) {
-        for method in &mut i.methods {
+        let injected = std::mem::take(&mut self.injected_methods);
+        for (index, method) in i.methods.iter_mut().enumerate() {
+            self.renumber = injected.contains(&index);
             self.desugar_fn(method);
         }
+        self.renumber = false;
     }
 
     fn desugar_stmt(&mut self, stmt: &mut Stmt) {
+        if self.renumber {
+            stmt.id = self.fresh_id();
+        }
         match &mut stmt.kind {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } => self.desugar_expr(init),
             StmtKind::Let { init, .. } => self.desugar_expr(init),
             StmtKind::MutTuple { init, .. } => self.desugar_expr(init),
             StmtKind::LetTuple { init, .. } => self.desugar_expr(init),
-            StmtKind::Assign { target, value } => {
+            StmtKind::LetStruct { init, .. } => self.desugar_expr(init),
+            StmtKind::Assign { target, value, .. } => {
                 self.desugar_expr(target);
                 self.desugar_expr(value);
             }
@@ -386,6 +411,10 @@ impl Desugarer {
     }
 
     fn desugar_expr(&mut self, expr: &mut Expr) {
+        if self.renumber {
+            expr.id = self.fresh_id();
+        }
+
         // `format(template, args…)` is rewritten from its raw template before
         // anything walks into it — the template is compile-time input, and the
         // rewrite desugars the argument expressions itself (std.fmt/CM2, CM5).
@@ -1052,7 +1081,7 @@ impl Desugarer {
         let int_arg = |this: &mut Self, n: i64| CallArg {
             name: None,
             mode: ArgMode::Default,
-            expr: Expr { id: this.fresh_id(), kind: ExprKind::Int(n, None), span },
+            expr: Expr { id: this.fresh_id(), kind: ExprKind::Int(i128::from(n), None), span },
         };
         let args = vec![
             int_arg(self, ty),

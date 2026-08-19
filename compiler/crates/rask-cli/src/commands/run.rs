@@ -103,6 +103,8 @@ fn decls_with_rask_stdlib(decls: &[rask_ast::decl::Decl]) -> Vec<rask_ast::decl:
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
+    // `program_args` already starts with the script path — main.rs puts it
+    // there — so this is argv as std.os/A1 describes it.
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
@@ -328,7 +330,9 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
-    let mut interp = rask_interp::Interpreter::new();
+    // Same as `cmd_run`: the program name is argv[0], so a test that reads
+    // `os.args()` sees what it would see natively (std.os/A1).
+    let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
@@ -602,7 +606,11 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
             continue;
         }
 
-        let name = parse_json_str(line, "name").unwrap_or("?");
+        // The name is JSON-escaped on the way out, so it comes back escaped.
+        // Unescaped nothing used to escape it either, and a test whose name
+        // held a quote lost everything after it (#849).
+        let name = unescape_json_str(parse_json_str(line, "name").unwrap_or("?"));
+        let name = name.as_str();
         let passed_val = line.contains("\"passed\":true");
         let duration_ns = parse_json_i64(line, "duration_ns").unwrap_or(0);
         let duration = std::time::Duration::from_nanos(duration_ns as u64);
@@ -702,6 +710,32 @@ fn json_escape(s: &str) -> String {
 /// lines so a multi-line diff stays under the test name instead of falling
 /// back to column 0. Without this an `assert_eq` failure printed its `\n`
 /// literally and the whole diff ran together on one line.
+/// Undo the escaping the test harness applies to a JSON string value. Same
+/// rules as `format_test_error`, minus its message-specific newline indent.
+fn unescape_json_str(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 fn format_test_error(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
@@ -802,7 +836,7 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
 fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
-    let mut interp = rask_interp::Interpreter::new();
+    let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
     interp.set_node_types(result.typed.node_types.clone());
     interp.set_error_wraps(result.typed.error_wraps.clone());
     interp.set_try_chain_placement(result.typed.try_chain_placement.clone());

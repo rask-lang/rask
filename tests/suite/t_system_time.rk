@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `SystemTime` — wall-clock time relative to the UNIX epoch (std.time W1-W3).
+//
+// It was three `@native` declarations with nothing behind them on either
+// backend: `SystemTime.now()` died in codegen with "Function not found:
+// SystemTime_now" and on the interpreter with "type SystemTime has no method
+// 'now'". The six epoch conversions next to them were `@unimplemented`.
+//
+// It's a Rask struct holding nanoseconds now, so both backends run the same
+// arithmetic. Only the clock read itself is native — `time.wall_clock_nanos()`.
+
+import time
+import time.SystemTime
+import time.Duration
+
+test "std.time — the epoch is zero on every scale" {
+    let epoch = SystemTime.unix_epoch()
+    assert_eq(epoch.unix_seconds(), 0)
+    assert_eq(epoch.unix_millis(), 0)
+    assert_eq(epoch.unix_nanos(), 0)
+}
+
+test "std.time — a stored timestamp round-trips" {
+    let t = SystemTime.from_unix_seconds(1709251200)
+    assert_eq(t.unix_seconds(), 1709251200)
+    assert_eq(t.unix_millis(), 1709251200000)
+    assert_eq(t.unix_nanos(), 1709251200000000000)
+
+    let m = SystemTime.from_unix_millis(1709251200123)
+    assert_eq(m.unix_seconds(), 1709251200)
+    assert_eq(m.unix_millis(), 1709251200123)
+}
+
+test "std.time — before 1970 is negative, not a huge positive" {
+    let t = SystemTime.from_unix_seconds(-86400)
+    assert_eq(t.unix_seconds(), -86400)
+    assert_eq(t.unix_millis(), -86400000)
+}
+
+test "std.time — duration_since measures forward and refuses backward" {
+    let early = SystemTime.from_unix_seconds(1709251200)
+    let late = SystemTime.from_unix_millis(1709251200123)
+
+    let forward = late.duration_since(early)
+    if forward is Duration as span {
+        assert_eq(span.as_millis(), 123)
+    } else as e {
+        assert(false)
+    }
+
+    let backward = early.duration_since(late)
+    if backward is Duration as span {
+        assert(false)
+    } else as e {
+        assert_eq(e.message(), "clock went backward")
+    }
+}
+
+test "std.time — shifting by a duration and back lands where it started" {
+    let t = SystemTime.from_unix_seconds(1709251200)
+    let later = t + Duration.seconds(60)
+    assert_eq(later.unix_seconds(), 1709251260)
+    let back = later - Duration.seconds(60)
+    assert_eq(back.unix_seconds(), 1709251200)
+    assert(back == t)
+}
+
+test "std.time — comparison on two wall-clock points" {
+    let a = SystemTime.from_unix_seconds(100)
+    let b = SystemTime.from_unix_seconds(200)
+    assert(a < b)
+    assert(a <= b)
+    assert(b > a)
+    assert(b >= a)
+    assert(a == a)
+    assert(!(a == b))
+}
+
+// The clock's actual reading is the machine's, so this checks the shape: a
+// plausible year, and agreement between the two ways of asking.
+test "std.time — now() reads a plausible wall clock" {
+    let now = SystemTime.now()
+    assert(now.unix_seconds() > 1700000000)
+    assert(now.unix_seconds() < 4102444800)
+
+    let since_epoch = now.duration_since(SystemTime.unix_epoch())
+    if since_epoch is Duration as span {
+        assert_eq(span.as_seconds().wrap<i64>(), now.unix_seconds())
+    } else as e {
+        assert(false)
+    }
+
+    let elapsed = now.elapsed()
+    if elapsed is Duration as span {
+        assert(span.as_millis() < 5000)
+    } else as e {
+        assert(false)
+    }
+}
+
+func main() {}

@@ -32,12 +32,7 @@ struct BlockIndex {
 
 // ─── Write ──────────────────────────────────────────────────────────
 
-func write_sstable(
-    id: i32,
-    level: i32,
-    dir: string,
-    entries: Vec<KeyValue>,
-) -> SstMeta or SstError {
+func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> SstMeta or SstError {
     if entries.is_empty() {
         return SstError.WriteFailure("cannot write empty SSTable")
     }
@@ -93,30 +88,34 @@ func write_sstable(
         out.push("===\n")
     }
 
-    fs.write_text(path, out.build())
-        catch e => return SstError.WriteFailure("cannot write {path}: {e}")
+    fs.write_text(path, out.build()) catch e => {
+        return SstError.WriteFailure("cannot write {path}: {e}")
+    }
 
     let min_key = entries[0].key
     let max_key = entries[entries.len() - 1].key
 
     return SstMeta {
-        id: id,
-        level: level,
-        path: path,
-        min_key: min_key,
-        max_key: max_key,
+        id,
+        level,
+        path,
+        min_key,
+        max_key,
         entry_count: entries.len().wrap<i32>(),
-        bloom: bloom,
+        bloom,
     }
 }
 
 // ─── Read ───────────────────────────────────────────────────────────
 
 func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or SstError {
-    let content = fs.read_text(path)
-        catch e => return SstError.ReadFailure("cannot read {path}: {e}")
+    let content = fs.read_text(path) catch e => {
+        return SstError.ReadFailure("cannot read {path}: {e}")
+    }
 
-    let sep_pos = content.index_of("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
+    let sep_pos = content.index_of("---\n") ?? {
+        return SstError.IndexCorrupt("missing data separator in {path}")
+    }
     let data = content[sep_pos + 4..].to_string()
 
     mut current_block = 0
@@ -155,8 +154,9 @@ func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or Ss
 }
 
 func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
-    let content = fs.read_text(path)
-        catch e => return SstError.ReadFailure("cannot read index: {path}: {e}")
+    let content = fs.read_text(path) catch e => {
+        return SstError.ReadFailure("cannot read index: {path}: {e}")
+    }
 
     mut index = Vec.new()
     for line in content.lines() {
@@ -168,8 +168,12 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         let parts = entry.split("\t").to_vec()
         if parts.len() < 3 { continue }
 
-        let offset = parts[1].trim().parse_int() is i64 as v else { continue }
-        let count = parts[2].trim().parse_int() is i64 as v else { continue }
+        let offset = parts[1].trim().parse_int() is i64 as v else {
+            continue
+        }
+        let count = parts[2].trim().parse_int() is i64 as v else {
+            continue
+        }
 
         index.push(BlockIndex {
             first_key: parts[0].to_string(),
@@ -181,8 +185,9 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
 }
 
 func read_sstable_bloom(path: string) -> BloomFilter or SstError {
-    let content = fs.read_text(path)
-        catch e => return SstError.ReadFailure("cannot read bloom: {path}: {e}")
+    let content = fs.read_text(path) catch e => {
+        return SstError.ReadFailure("cannot read bloom: {path}: {e}")
+    }
 
     for line in content.lines() {
         let trimmed = line.trim().to_string()
@@ -196,10 +201,13 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
 }
 
 func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
-    let content = fs.read_text(path)
-        catch e => return SstError.ReadFailure("cannot read {path}: {e}")
+    let content = fs.read_text(path) catch e => {
+        return SstError.ReadFailure("cannot read {path}: {e}")
+    }
 
-    let sep_pos = content.index_of("---\n") ?? return SstError.IndexCorrupt("missing data separator in {path}")
+    let sep_pos = content.index_of("---\n") ?? {
+        return SstError.IndexCorrupt("missing data separator in {path}")
+    }
     let data = content[sep_pos + 4..].to_string()
 
     mut entries = Vec.new()
@@ -207,7 +215,9 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
         let trimmed = line.trim().to_string()
         if trimmed.is_empty() { continue }
         if trimmed == "===" { continue }
-        let kv = decode_kv(trimmed) is KeyValue as entry else { continue }
+        let kv = decode_kv(trimmed) is KeyValue as entry else {
+            continue
+        }
         entries.push(kv)
     }
     return entries
@@ -238,7 +248,9 @@ func find_block_for_key(index: Vec<BlockIndex>, key: string) -> i32? {
 func discover_sstables(dir: string) -> Vec<SstMeta> {
     mut metas = Vec.new()
 
-    let files = fs.list_dir(dir) is Vec<string> as f else { return metas }
+    let files = fs.list_dir(dir) is Vec<string> as f else {
+        return metas
+    }
 
     for file in files {
         if !file.ends_with(".sst") { continue }
@@ -246,14 +258,24 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         let stem = file[0..file.len() - 4].to_string()
         if !stem.starts_with("L") { continue }
 
-        let underscore = stem.index_of("_") ?? continue
-        let level = stem[1..underscore].parse_int() is i64 as v else { continue }
-        let id = stem[underscore + 1..].parse_int() is i64 as v else { continue }
+        let underscore = stem.index_of("_") ?? {
+            continue
+        }
+        let level = stem[1..underscore].parse_int() is i64 as v else {
+            continue
+        }
+        let id = stem[underscore + 1..].parse_int() is i64 as v else {
+            continue
+        }
 
         let path = "{dir}/{file}"
 
-        let bloom = read_sstable_bloom(path) is BloomFilter as b else { continue }
-        let index = read_sstable_index(path) is Vec<BlockIndex> as idx else { continue }
+        let bloom = read_sstable_bloom(path) is BloomFilter as b else {
+            continue
+        }
+        let index = read_sstable_index(path) is Vec<BlockIndex> as idx else {
+            continue
+        }
         if index.is_empty() { continue }
 
         let min_key = index[0].first_key
@@ -273,11 +295,11 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         metas.push(SstMeta {
             id: id.wrap<i32>(),
             level: level.wrap<i32>(),
-            path: path,
-            min_key: min_key,
-            max_key: max_key,
-            entry_count: entry_count,
-            bloom: bloom,
+            path,
+            min_key,
+            max_key,
+            entry_count,
+            bloom,
         })
     }
 
@@ -287,11 +309,19 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "find block for key" {
-    let index = Vec.from([
-        BlockIndex { first_key: "aaa", offset: 0, count: 64 },
-        BlockIndex { first_key: "mmm", offset: 1, count: 64 },
-        BlockIndex { first_key: "zzz", offset: 2, count: 32 },
-    ])
+    let index = Vec.from([BlockIndex {
+        first_key: "aaa",
+        offset: 0,
+        count: 64,
+    }, BlockIndex {
+        first_key: "mmm",
+        offset: 1,
+        count: 64,
+    }, BlockIndex {
+        first_key: "zzz",
+        offset: 2,
+        count: 32,
+    }])
 
     assert find_block_for_key(index, "abc")! == 0
     assert find_block_for_key(index, "nnn")! == 1

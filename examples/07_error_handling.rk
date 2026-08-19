@@ -1,10 +1,13 @@
 // Learn: Error handling with T or E and try
 
-enum DivError { Msg(string) }
+enum DivError {
+    Msg(string)
+}
+
 extend DivError {
     func message(self) -> string {
         match self {
-            DivError.Msg(m) => return m,
+            DivError.Msg(m) => return m
         }
     }
 }
@@ -52,6 +55,8 @@ func divide(a: i32, b: i32) -> i32 or DivError {
 
 func safe_calc() -> i32 {
     // `catch` gives the value straight out, so the rest reads flat
-    let x = divide(20, 4) catch _ => return 0
+    let x = divide(20, 4) catch _ => {
+        return 0
+    }
     return x * 2
 }

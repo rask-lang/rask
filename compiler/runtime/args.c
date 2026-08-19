@@ -79,6 +79,80 @@ RaskVec *rask_os_env_vars(void) {
     return v;
 }
 
+// os.set_env(name, value) / os.remove_env(name)
+//
+// These had no native entry at all — `os.set_env(…)` reached codegen as
+// "Function not found: os_set_env" while the interpreter ran it (#855).
+void rask_os_set_env(const RaskStr *name, const RaskStr *value) {
+    int64_t nlen = rask_string_len(name);
+    if (nlen <= 0 || nlen >= RASK_ENV_NAME_MAX) return;
+    char nbuf[RASK_ENV_NAME_MAX];
+    memcpy(nbuf, rask_string_ptr(name), (size_t)nlen);
+    nbuf[nlen] = '\0';
+
+    int64_t vlen = value ? rask_string_len(value) : 0;
+    char *vbuf = (char *)rask_alloc(vlen + 1);
+    if (vlen > 0) memcpy(vbuf, rask_string_ptr(value), (size_t)vlen);
+    vbuf[vlen] = '\0';
+
+    // setenv copies both strings, so the buffer can go back straight away.
+    setenv(nbuf, vbuf, 1);
+    rask_realloc(vbuf, vlen + 1, 0);
+}
+
+void rask_os_remove_env(const RaskStr *name) {
+    int64_t nlen = rask_string_len(name);
+    if (nlen <= 0 || nlen >= RASK_ENV_NAME_MAX) return;
+    char nbuf[RASK_ENV_NAME_MAX];
+    memcpy(nbuf, rask_string_ptr(name), (size_t)nlen);
+    nbuf[nlen] = '\0';
+    unsetenv(nbuf);
+}
+
+// os.args() -> Vec<string>. The argv the runtime was started with.
+RaskVec *rask_os_args(void) {
+    RaskVec *v = rask_vec_new(16);
+    int64_t n = rask_args_count();
+    for (int64_t i = 0; i < n; i++) {
+        const char *a = rask_args_get(i);
+        if (!a) continue;
+        RaskStr s;
+        rask_string_from(&s, a);
+        rask_vec_push(v, &s);
+    }
+    return v;
+}
+
+// os.platform() / os.arch() — what the binary was built for, which is what the
+// interpreter reports from the host it runs on.
+void rask_os_platform(RaskStr *out) {
+#if defined(__linux__)
+    rask_string_from(out, "linux");
+#elif defined(__APPLE__)
+    rask_string_from(out, "macos");
+#elif defined(_WIN32)
+    rask_string_from(out, "windows");
+#elif defined(__FreeBSD__)
+    rask_string_from(out, "freebsd");
+#else
+    rask_string_from(out, "unknown");
+#endif
+}
+
+void rask_os_arch(RaskStr *out) {
+#if defined(__x86_64__) || defined(_M_X64)
+    rask_string_from(out, "x86_64");
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    rask_string_from(out, "aarch64");
+#elif defined(__i386__)
+    rask_string_from(out, "x86");
+#elif defined(__arm__)
+    rask_string_from(out, "arm");
+#else
+    rask_string_from(out, "unknown");
+#endif
+}
+
 // os.env_or(name, default) -> string
 void rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def) {
     const char *val = env_lookup(name);

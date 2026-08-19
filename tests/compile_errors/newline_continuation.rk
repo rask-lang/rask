@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The excluded half of newline continuation (type.operators/P3, #304).
+//
+// A line starting with `+` doesn't continue the expression above it — and `+` has
+// no prefix meaning either, so the line isn't a statement on its own. That makes
+// it a parse error, which is the good outcome: the other excluded operators have a
+// prefix reading, so a line starting with one silently becomes a separate
+// statement instead.
+//
+// `tests/suite/t_newline_continuation.rk` has the whole rule running: what
+// continues, and what `-` does instead.
+
+func sum_attempt(a: i64) -> i64 {
+    let b = a
+    // ERROR: `+` doesn't continue the line above, and can't start a statement [E0100]
+    + a
+    return b
+}
+
+func main() {
+    println("{sum_attempt(5)}")
+}

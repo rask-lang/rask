@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A holder owes each resource field separately (mem.linear/L1, #828).
+//
+// The obligation used to live on the binding alone, which can only be
+// all-or-nothing. Either a projection discharges the whole holder — so a struct
+// with two resource fields loses the second one silently — or it discharges
+// nothing, and `w.conn.close()` on a wrapper with one resource can't be written
+// at all, because there's no `w.close()` to call.
+//
+// `p` owes `{a, b}` now. `p.a.close()` pays one of them, scope exit reports
+// whatever's left by field path, and handing the whole holder away pays them all.
+
+@resource
+struct Conn {
+    public id: i64
+}
+
+extend Conn {
+    public func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+struct Pair {
+    public a: Conn
+    public b: Conn
+}
+
+struct Wrapper {
+    public conn: Conn
+    public label: string
+}
+
+struct Outer {
+    public inner: Wrapper
+}
+
+func make_pair() -> Pair {
+    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+}
+
+func make_wrapper() -> Wrapper {
+    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+}
+
+func make_outer() -> Outer {
+    return Outer { inner: Wrapper { conn: Conn { id: 4 }, label: "o" } }
+}
+
+// ERROR: resource `p.b` must be consumed before scope exit [E0805]
+func closes_one_of_two() -> i64 {
+    let p = make_pair()
+    return p.a.close()
+}
+
+// ERROR: resource `w.conn` must be consumed before scope exit [E0805]
+func closes_neither() -> string {
+    let w = make_wrapper()
+    return w.label
+}
+
+// ERROR: resource `o.inner.conn` must be consumed before scope exit [E0805]
+// The path names the field, not the binding — `o` has no `close()` to suggest.
+func leaves_a_nested_one() -> i64 {
+    let o = make_outer()
+    return 0
+}
+
+// ── The versions that are fine ──────────────────────────────────────
+
+// Both fields paid.
+func closes_both() -> i64 {
+    let p = make_pair()
+    return p.a.close() + p.b.close()
+}
+
+// One resource field, and the holder stays readable after it's paid — this is
+// the shape that couldn't be written at all before.
+func closes_the_one_field() -> string {
+    let w = make_wrapper()
+    let n = w.conn.close()
+    return "{w.label}{n}"
+}
+
+// A nested path.
+func closes_through_a_nested_path() -> i64 {
+    let o = make_outer()
+    return o.inner.conn.close()
+}
+
+// Handing the whole holder away pays every field with it.
+func takes_pair(take p: Pair) -> i64 {
+    return p.a.close() + p.b.close()
+}
+
+func hands_it_over() -> i64 {
+    let p = make_pair()
+    return takes_pair(p)
+}
+
+func main() -> i64 {
+    let n = closes_both() + closes_through_a_nested_path() + hands_it_over()
+    println(closes_the_one_field())
+    return n
+}

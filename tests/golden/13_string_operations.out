@@ -1,0 +1,38 @@
+Original: Hello, Rask!
+
+Length: 12
+
+Lowercase: hello, rask!
+Uppercase: HELLO, RASK!
+
+Original: '   spaces everywhere   '
+Trimmed: 'spaces everywhere'
+Trim start: 'spaces everywhere   '
+Trim end: '   spaces everywhere'
+
+Contains 'quick'
+Starts with 'The'
+Ends with 'fox'
+
+Words: [one] [two] [three] [four] [five] 
+
+Fruits: apple banana orange grape 
+
+Slice [0..5]: Hello
+Slice [7..]: World!
+
+Name: Alice, Age: 30
+
+Point (10, 20)
+
+Parsed number: 42
+Expected error: non-numeric character
+
+Combined: Hello World
+
+Iterating chars: a b c 
+
+Original: foo bar foo
+Replaced: baz bar baz
+
+Repeated: ababab

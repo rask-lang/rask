@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` parameter has to be back before the call returns
+// (mem.parameters/PM2, PM6, #815).
+//
+// `mutate` is exclusive access, not ownership: the caller keeps the value and goes
+// on reading it. That makes taking the value out and writing a replacement back
+// legitimate — it's what the mode is for. Consuming it and putting nothing back is
+// not, and nothing checked for it, so `drain(mutate b)` handed the caller a hole.
+
+func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
+    if !b.is_empty() {
+        out.push(b.build())
+        // Replaced, so this one is fine.
+        b = StringBuilder.new()
+    }
+}
+
+// ERROR: consumed and nothing put back [E0836, PM2]
+func drain(mutate b: StringBuilder) -> string {
+    return b.build()
+}
+
+// ERROR: consumed on one path only, and not replaced there either [E0836]
+func maybe_drain(mutate out: Vec<string>, mutate b: StringBuilder) {
+    if !b.is_empty() {
+        out.push(b.build())
+    }
+}
+
+// The way to say "this function keeps it": `take`.
+func consume(take b: StringBuilder) -> string {
+    return b.build()
+}
+
+func main() {
+    mut out: Vec<string> = Vec.new()
+    mut b = StringBuilder.new()
+    b.push("x")
+    flush_into(mutate out, mutate b)
+    println("{out.len()} {consume(b)}")
+}

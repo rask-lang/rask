@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `@resource` inside an optional is still linear (mem.linear/L1, #827).
+//
+// `Conn?` carried no obligation at all: the annotated path asks the type table
+// for `"Conn?"`, which isn't a name in it, and never fell through to what the
+// checker already knew about the initializer. A program that made a connection,
+// wrapped it and dropped it compiled clean and leaked with no diagnostic.
+//
+// The `? as` binding was the other half. OPT19 calls it "the payload read out of
+// the scrutinee" — for a Copy payload that reads as a copy, which is why writing
+// through it is rejected. A linear payload can't be copied, so the only coherent
+// reading is a move: the binding holds the resource inside the branch, and the
+// optional doesn't hold it afterwards.
+//
+// `tests/compile_errors/optional_resource.rk` is the rejecting half. This is the
+// half that has to keep working — consuming the binding is what discharges the
+// optional, so every one of these would be a false "leaked" error if only the
+// registration had landed.
+
+@resource
+struct Conn {
+    public id: i64
+}
+
+extend Conn {
+    public func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+func open_conn(n: i64) -> Conn? {
+    if n > 0 {
+        return Conn { id: n }
+    }
+    return none
+}
+
+func closed_through_the_binding(n: i64) -> i64 {
+    mut maybe: Conn? = open_conn(n)
+    if maybe? as conn {
+        return conn.close()
+    }
+    return 0
+}
+
+test "mem.linear/L1 — consuming the payload discharges the optional" {
+    assert_eq(closed_through_the_binding(7), 7)
+}
+
+test "mem.linear/L1 — an absent optional has nothing to consume" {
+    assert_eq(closed_through_the_binding(0), 0)
+}
+
+// A `none` start that gets filled: the obligation appears with the value.
+func filled_then_closed() -> i64 {
+    mut c: Conn? = none
+    c = Conn { id: 11 }
+    if c? as conn {
+        return conn.close()
+    }
+    return 0
+}
+
+test "mem.linear/L1 — a none binding filled later is consumed later" {
+    assert_eq(filled_then_closed(), 11)
+}
+
+// Never filled — the binding holds nothing all the way to scope exit.
+func never_filled() -> i64 {
+    mut c: Conn? = none
+    if c? as conn {
+        return conn.close()
+    }
+    return -1
+}
+
+test "mem.linear/L1 — a none binding that stays none is fine" {
+    assert_eq(never_filled(), -1)
+}
+
+// L2: handing it back is consuming it — the caller takes the obligation.
+func hands_it_back(n: i64) -> Conn? {
+    let maybe: Conn? = open_conn(n)
+    return maybe
+}
+
+test "mem.linear/L2 — returning an optional resource passes the obligation on" {
+    if hands_it_back(3)? as conn {
+        assert_eq(conn.close(), 3)
+    }
+}
+
+// A struct field of type `Conn?` — the holder carries the obligation.
+struct Holder {
+    public link: Conn?
+}
+
+extend Holder {
+    public func release(take self) -> i64 {
+        // `take` first: a `? as` binding is the payload read out of the
+        // scrutinee, and reading it out of a *field* would be a partial move
+        // (OPT25). `take self.link` moves the whole optional out, and the
+        // binding comes off the local.
+        let inner = take self.link
+        if inner? as conn {
+            return conn.close()
+        }
+        return 0
+    }
+}
+
+test "mem.linear/L1 — an optional resource field travels with its holder" {
+    let h = Holder { link: Conn { id: 5 } }
+    assert_eq(h.release(), 5)
+}
+
+func main() {}

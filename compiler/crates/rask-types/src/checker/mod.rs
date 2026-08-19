@@ -30,7 +30,7 @@ mod resolved_types;
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, InvalidCastClass, IndexErrorKind, TraitBoundContext};
+pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
 pub use declarations::signature_type_param_names;
 
@@ -246,7 +246,7 @@ pub struct TypeChecker {
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
-    pub(super) pending_int_literals: Vec<(i64, bool, Type, rask_ast::Span)>,
+    pub(super) pending_int_literals: Vec<(i128, bool, Type, rask_ast::Span)>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,

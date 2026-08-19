@@ -297,6 +297,11 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 
     let package_names = collect_builtin_imports(&parse_result.decls);
 
+    // --- Comptime folds (CT1) ---
+    if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
+        diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
+    }
+
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         return PipelineOutput::fail(diags);
     }
@@ -313,6 +318,34 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
         },
         diags,
     )
+}
+
+
+/// CT1: a comptime initializer that overflows or divides by zero is a compile
+/// error, so `rask check` has to run the fold to answer "does this compile".
+///
+/// It didn't, and the two paths that go through it disagreed with the one that
+/// doesn't: `rask check` said OK to a program `rask run` refused, and the
+/// interpreter reported the same overflow at *runtime* under its own code
+/// (R0017) instead of as the compile error it is (#325).
+///
+/// Monomorphization is what `evaluate_comptime_globals` needs and nothing else
+/// here does, so it's built and thrown away. A program with no comptime const
+/// pays for it and gets nothing; that's the price of check and run agreeing.
+fn comptime_diagnostics_for(
+    decls: &[Decl],
+    typed: &rask_types::TypedProgram,
+    cfg: &CfgConfig,
+) -> Vec<Diagnostic> {
+    if !decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls))) {
+        return Vec::new();
+    }
+    let Ok(mono) = rask_mono::monomorphize(typed, decls) else {
+        // Monomorphization has its own diagnostics on the compile path; check
+        // stays quiet about them rather than reporting them twice.
+        return Vec::new();
+    };
+    evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1
 }
 
 /// Check a multi-file package.
@@ -439,6 +472,11 @@ pub fn check_package(
     // --- Cleanup order (mem.resource-types/EO1) ---
     for w in rask_effects::ensure_order::check(&pkg_ctx.all_decls) {
         diags.push(ensure_order_to_diagnostic(&w));
+    }
+
+    // --- Comptime folds (CT1) ---
+    if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
+        diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
 
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {

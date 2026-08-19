@@ -43,9 +43,9 @@ extend Version {
         }
 
         return Version {
-            major: major,
-            minor: minor,
-            patch: patch,
+            major,
+            minor,
+            patch,
         }
     }
 
@@ -111,21 +111,17 @@ extend Constraint {
                 }
                 return v < next_minor
             }
-            Exact(target) => {
-                return v == target
-            }
-            Minimum(min) => {
-                return v >= min
-            }
+            Exact(target) => return v == target
+            Minimum(min) => return v >= min
         }
     }
 
     func to_string(self) -> string {
         match self {
-            Compatible(v) => return "^{v.to_string()}",
-            Tilde(v) => return "~{v.to_string()}",
-            Exact(v) => return "={v.to_string()}",
-            Minimum(v) => return ">={v.to_string()}",
+            Compatible(v) => return "^{v.to_string()}"
+            Tilde(v) => return "~{v.to_string()}"
+            Exact(v) => return "={v.to_string()}"
+            Minimum(v) => return ">={v.to_string()}"
         }
     }
 }
@@ -142,7 +138,7 @@ enum VersionError {
 extend VersionError {
     func message(self) -> string {
         match self {
-            InvalidFormat(msg) => return "invalid version: {msg}",
+            InvalidFormat(msg) => return "invalid version: {msg}"
         }
     }
 }
@@ -156,9 +152,9 @@ enum ManifestError {
 extend ManifestError {
     func message(self) -> string {
         match self {
-            ParseError(line, msg) => return "manifest line {line}: {msg}",
-            MissingField(field) => return "missing required field: {field}",
-            InvalidConstraint(msg) => return "bad constraint: {msg}",
+            ParseError(line, msg) => return "manifest line {line}: {msg}"
+            MissingField(field) => return "missing required field: {field}"
+            InvalidConstraint(msg) => return "bad constraint: {msg}"
         }
     }
 }
@@ -173,12 +169,10 @@ enum RegistryError {
 extend RegistryError {
     func message(self) -> string {
         match self {
-            PackageNotFound(name) => return "package not found: {name}",
-            NetworkError(msg) => return "network error: {msg}",
-            ChecksumMismatch(pkg, expected, got) => {
-                return "checksum mismatch for {pkg}: expected {expected}, got {got}"
-            }
-            IoError(msg) => return "I/O error: {msg}",
+            PackageNotFound(name) => return "package not found: {name}"
+            NetworkError(msg) => return "network error: {msg}"
+            ChecksumMismatch(pkg, expected, got) => return "checksum mismatch for {pkg}: expected {expected}, got {got}"
+            IoError(msg) => return "I/O error: {msg}"
         }
     }
 }
@@ -192,18 +186,21 @@ enum ResolveError {
 extend ResolveError {
     func message(self) -> string {
         match self {
-            Conflict(pkg, a, b) => return "version conflict for {pkg}: {a} vs {b}",
-            Cycle(chain) => return "dependency cycle: {chain}",
-            NoMatch(pkg, constraint) => return "no version of {pkg} satisfies {constraint}",
+            Conflict(pkg, a, b) => return "version conflict for {pkg}: {a} vs {b}"
+            Cycle(chain) => return "dependency cycle: {chain}"
+            NoMatch(pkg, constraint) => return "no version of {pkg} satisfies {constraint}"
         }
     }
 }
 
-enum IoErrorMsg { Msg(string) }
+enum IoErrorMsg {
+    Msg(string)
+}
+
 extend IoErrorMsg {
     func message(self) -> string {
         match self {
-            IoErrorMsg.Msg(m) => return m,
+            IoErrorMsg.Msg(m) => return m
         }
     }
 }
@@ -219,11 +216,11 @@ enum FetchError {
 extend FetchError {
     func message(self) -> string {
         match self {
-            Manifest(e) => return e.message(),
-            Version(e) => return e.message(),
-            Registry(e) => return e.message(),
-            Resolve(e) => return e.message(),
-            Io(e) => return "I/O error: {e.message()}",
+            Manifest(e) => return e.message()
+            Version(e) => return e.message()
+            Registry(e) => return e.message()
+            Resolve(e) => return e.message()
+            Io(e) => return "I/O error: {e.message()}"
         }
     }
 }
@@ -276,8 +273,12 @@ struct LockedPackage {
 //   }
 
 func load_manifest(path: string) -> Manifest or FetchError {
-    let content = fs.read_text(path) catch e => return FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
-    return parse_manifest(content) catch e => return FetchError.Manifest(e)
+    let content = fs.read_text(path) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot read {path}: {e.message()}"))
+    }
+    return parse_manifest(content) catch e => {
+        return FetchError.Manifest(e)
+    }
 }
 
 func parse_manifest(content: string) -> Manifest or ManifestError {
@@ -330,7 +331,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
         return ManifestError.InvalidConstraint("bad package version: {version_str}")
     }
 
-    return Manifest { name: name, version: version, deps: deps }
+    return Manifest { name, version, deps }
 }
 
 // Extract the nth quoted string from a line, or error.
@@ -338,9 +339,13 @@ func extract_nth_quoted(line: string, n: i32, line_num: i32, label: string) -> s
     mut pos = 0
     mut found = 0
     while found <= n {
-        let open = line[pos..].index_of("\"") ?? return ManifestError.ParseError(line_num, "expected quoted {label}")
+        let open = line[pos..].index_of("\"") ?? {
+            return ManifestError.ParseError(line_num, "expected quoted {label}")
+        }
         let start = pos + open + 1
-        let close = line[start..].index_of("\"") ?? return ManifestError.ParseError(line_num, "unterminated {label}")
+        let close = line[start..].index_of("\"") ?? {
+            return ManifestError.ParseError(line_num, "unterminated {label}")
+        }
         if found == n {
             return line[start..start + close].to_string()
         }
@@ -364,7 +369,7 @@ func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError 
     let constraint = Constraint.parse(constraint_str) is Constraint as c else {
         return ManifestError.InvalidConstraint(constraint_str)
     }
-    return Dependency { name: name, constraint: constraint }
+    return Dependency { name, constraint }
 }
 
 // ─── Registry ───────────────────────────────────────────────────────
@@ -407,13 +412,19 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
     let parsed = json.decode<JsonValue>(index_content) is JsonValue as v else {
         return RegistryError.IoError("invalid JSON in {index_path}")
     }
-    let version_list = parsed.as_array() ?? return RegistryError.IoError("expected array in {index_path}")
+    let version_list = parsed.as_array() ?? {
+        return RegistryError.IoError("expected array in {index_path}")
+    }
 
     mut versions = Vec.new()
     for entry in version_list {
-        let ver_str = entry.as_string() ?? continue
+        let ver_str = entry.as_string() ?? {
+            continue
+        }
         let meta_path = "{root}/{name}/{ver_str}/meta.json"
-        let meta = load_package_meta(meta_path) is PackageMeta as m else { continue }
+        let meta = load_package_meta(meta_path) is PackageMeta as m else {
+            continue
+        }
         versions.push(meta)
     }
 
@@ -463,10 +474,16 @@ func json_arr_field(m: Map<string, JsonValue>, key: string) -> Vec<JsonValue>? {
 // Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
 // Takes the parsed JSON object value, avoiding type duplication.
 func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
-    let m = obj.as_object() ?? return RegistryError.IoError("expected object in {source}")
+    let m = obj.as_object() ?? {
+        return RegistryError.IoError("expected object in {source}")
+    }
 
-    let name = json_str_field(m, "name") ?? return RegistryError.IoError("missing 'name' in {source}")
-    let ver_str = json_str_field(m, "version") ?? return RegistryError.IoError("missing 'version' in {source}")
+    let name = json_str_field(m, "name") ?? {
+        return RegistryError.IoError("missing 'name' in {source}")
+    }
+    let ver_str = json_str_field(m, "version") ?? {
+        return RegistryError.IoError("missing 'version' in {source}")
+    }
     let checksum = json_str_field(m, "checksum") ?? ""
     let version = Version.parse(ver_str) is Version as v else {
         return RegistryError.IoError("bad version in {source}: {ver_str}")
@@ -475,20 +492,24 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
     mut deps = Vec.new()
     if json_arr_field(m, "deps")? as dep_arr {
         for d_val in dep_arr {
-            let d_obj = d_val.as_object() ?? continue
+            let d_obj = d_val.as_object() ?? {
+                continue
+            }
             let dn = json_str_field(d_obj, "name") ?? ""
             let dc = json_str_field(d_obj, "constraint") ?? ""
             if dn.is_empty() || dc.is_empty() { continue }
-            let constraint = Constraint.parse(dc) is Constraint as c else { continue }
-            deps.push(Dependency { name: dn, constraint: constraint })
+            let constraint = Constraint.parse(dc) is Constraint as c else {
+                continue
+            }
+            deps.push(Dependency { name: dn, constraint })
         }
     }
 
     return PackageMeta {
-        name: name,
-        version: version,
-        checksum: checksum,
-        deps: deps,
+        name,
+        version,
+        checksum,
+        deps,
     }
 }
 
@@ -524,11 +545,15 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
     let parsed = json.decode<JsonValue>(resp.body) is JsonValue as v else {
         return RegistryError.NetworkError("invalid JSON from registry for {name}")
     }
-    let arr = parsed.as_array() ?? return RegistryError.NetworkError("expected array from registry for {name}")
+    let arr = parsed.as_array() ?? {
+        return RegistryError.NetworkError("expected array from registry for {name}")
+    }
 
     mut versions = Vec.new()
     for entry in arr {
-        let meta = parse_meta_from_json(entry, name) is PackageMeta as m else { continue }
+        let meta = parse_meta_from_json(entry, name) is PackageMeta as m else {
+            continue
+        }
         versions.push(meta)
     }
 
@@ -598,17 +623,12 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
 
     return DepGraph {
         packages: state.packages,
-        root: root,
+        root,
         by_name: state.by_name,
     }
 }
 
-func resolve_one(
-    name: string,
-    constraint: Constraint,
-    registry: any Registry,
-    mutate state: ResolveState,
-) -> Handle<ResolvedPkg> or FetchError {
+func resolve_one(name: string, constraint: Constraint, registry: any Registry, mutate state: ResolveState) -> Handle<ResolvedPkg> or FetchError {
     // Check for circular dependency
     for v in state.visiting {
         if v == name {
@@ -619,7 +639,9 @@ func resolve_one(
 
     // Already resolved? Check compatibility.
     if state.by_name.contains_key(name) {
-        let existing_handle = state.by_name.get(name) ?? return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
+        let existing_handle = state.by_name.get(name) ?? {
+            return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
+        }
         let existing_handle = existing_handle.clone()
 
         with state.packages[existing_handle] as existing {
@@ -628,24 +650,23 @@ func resolve_one(
             }
             let con_str = constraint.to_string()
             let ver_str = existing.meta.version.to_string()
-            return FetchError.Resolve(ResolveError.Conflict(
-                name,
-                ver_str,
-                con_str,
-            ))
+            return FetchError.Resolve(ResolveError.Conflict(name, ver_str, con_str))
         }
     }
 
     // Query registry for available versions
-    let versions = registry.available(name)
-        catch e => return FetchError.Registry(e)
+    let versions = registry.available(name) catch e => {
+        return FetchError.Registry(e)
+    }
 
     // Filter to satisfying versions, pick newest via sort_by
     let want = constraint.clone()
     mut candidates = versions.filter(own |m| want.satisfies(m.version.clone()))
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
-    let meta = candidates.first() ?? return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
+    let meta = candidates.first() ?? {
+        return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
+    }
 
     let handle = state.packages.insert(ResolvedPkg {
         meta: PackageMeta {
@@ -706,10 +727,10 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
             }
 
             items.push(FetchItem {
-                name: name,
+                name,
                 version: pkg.meta.version,
                 checksum: pkg.meta.checksum,
-                cache_path: cache_path,
+                cache_path,
             })
         }
     }
@@ -721,7 +742,7 @@ func verify_checksum(data: string, expected: string, pkg_name: string) -> void o
     // Simple hash: sum all bytes mod 2^32 (real impl would SHA-256)
     mut hash: i64 = 0
     for ch in data.chars() {
-        hash = (hash * 31 + (ch as u32) as i64) % 4294967296
+        hash = (hash * 31 + ((ch as u32) as i64)) % 4294967296
     }
     let got = "{hash}"
     if got != expected {
@@ -737,11 +758,7 @@ enum FetchResult {
     Failed(FetchError)
 }
 
-func fetch_packages(
-    graph: DepGraph,
-    registry: any Registry,
-    cache_dir: string,
-) -> void or FetchError {
+func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) -> void or FetchError {
     fs.create_dir_all(cache_dir)
 
     let items = collect_fetch_items(graph, cache_dir)
@@ -763,7 +780,9 @@ func fetch_packages(
             let item_counter = counter.clone()
             spawn(own || {
                 if fetch_one(item, registry) is string as path {
-                    with item_counter.lock() as c { c += 1 }
+                    with item_counter.lock() as c {
+                        c += 1
+                    }
                     let _ = item_tx.send(FetchResult.Done(path))
                 } else as e {
                     let _ = item_tx.send(FetchResult.Failed(e))
@@ -791,7 +810,9 @@ func fetch_packages(
             return e
         }
 
-        let fetched = with counter.lock() as c { c }
+        let fetched = with counter.lock() as c {
+            c
+        }
         println("Fetched {fetched} packages")
     }
 
@@ -799,16 +820,18 @@ func fetch_packages(
 }
 
 func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError {
-    let pkg_path = registry.fetch_package(item.name, item.version)
-        catch e => return FetchError.Registry(e)
+    let pkg_path = registry.fetch_package(item.name, item.version) catch e => {
+        return FetchError.Registry(e)
+    }
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
         let content = fs.read_text("{pkg_path}/meta.json") is string as c else {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
-        verify_checksum(content, item.checksum, item.name)
-            catch e => return FetchError.Registry(e)
+        verify_checksum(content, item.checksum, item.name) catch e => {
+            return FetchError.Registry(e)
+        }
     }
 
     return "fetch   {item.name}@{item.version.to_string()}"
@@ -828,8 +851,9 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
     // Write to temp file, rename on success. ensure cleans up on error.
     let tmp_path = "{path}.tmp"
 
-    mut tmp_file = fs.create(tmp_path)
-        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
+    mut tmp_file = fs.create(tmp_path) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
+    }
     ensure fs.remove_file(tmp_path)
 
     mut out = StringBuilder.new()
@@ -863,13 +887,15 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         }
     }
 
-    tmp_file.write(out.build())
-        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
+    tmp_file.write(out.build()) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
+    }
     tmp_file.close()
 
     // Atomic rename: success path — cancels ensure (EN6)
-    fs.rename(tmp_path, path)
-        catch e => return FetchError.Io(IoErrorMsg.Msg("cannot rename lock file: {e.message()}"))
+    fs.rename(tmp_path, path) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot rename lock file: {e.message()}"))
+    }
 
     return ()
 }
@@ -931,9 +957,13 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
 }
 
 func extract_quoted_value(line: string) -> string {
-    let first = line.index_of("\"") ?? return ""
+    let first = line.index_of("\"") ?? {
+        return ""
+    }
     let rest = first + 1
-    let second = line[rest..].index_of("\"") ?? return ""
+    let second = line[rest..].index_of("\"") ?? {
+        return ""
+    }
     return line[rest..rest + second].to_string()
 }
 
@@ -952,12 +982,7 @@ func topo_sort(graph: DepGraph) -> Vec<Handle<ResolvedPkg>> {
     return order
 }
 
-func topo_visit(
-    graph: DepGraph,
-    handle: Handle<ResolvedPkg>,
-    mutate visited: Map<string, bool>,
-    mutate order: Vec<Handle<ResolvedPkg>>,
-) {
+func topo_visit(graph: DepGraph, handle: Handle<ResolvedPkg>, mutate visited: Map<string, bool>, mutate order: Vec<Handle<ResolvedPkg>>) {
     let name = graph.packages[handle].meta.name
     if visited.contains_key(name) { return }
     visited.insert(name, true)
@@ -1007,7 +1032,9 @@ func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
             let ver = pkg.meta.version.to_string()
 
             if old_lock.contains_key(pkg.meta.name) {
-                let locked = old_lock.get(pkg.meta.name) ?? continue
+                let locked = old_lock.get(pkg.meta.name) ?? {
+                    continue
+                }
                 if locked.version == ver {
                     unchanged += 1
                 } else {
@@ -1067,11 +1094,9 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
                 i += 1
                 if i < args.len() {
                     match args[i] {
-                        "local" => result.registry_type = RegistryType.Local,
-                        "http" => result.registry_type = RegistryType.Http,
-                        _ => return FetchError.Io(IoErrorMsg.Msg(
-                            "unknown registry type: {args[i]} (expected 'local' or 'http')"
-                        )),
+                        "local" => result.registry_type = RegistryType.Local
+                        "http" => result.registry_type = RegistryType.Http
+                        _ => return FetchError.Io(IoErrorMsg.Msg("unknown registry type: {args[i]} (expected 'local' or 'http')"))
                     }
                 }
             }
@@ -1109,7 +1134,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
                 print_usage()
                 std.exit(0)
             }
-            _ => positional.push(arg.to_string()),
+            _ => positional.push(arg.to_string())
         }
         i += 1
     }
@@ -1147,8 +1172,8 @@ func print_usage() {
 
 func create_registry(args: CliArgs) -> any Registry {
     match args.registry_type {
-        Http => return HttpRegistry { base_url: args.registry_url },
-        Local => return LocalRegistry { root: args.registry_path },
+        Http => return HttpRegistry { base_url: args.registry_url }
+        Local => return LocalRegistry { root: args.registry_path }
     }
 }
 
@@ -1205,7 +1230,9 @@ func run(args: CliArgs) -> void or FetchError {
                     let ver = pkg.meta.version.to_string()
 
                     if old_lock.contains_key(pkg.meta.name) {
-                        let locked = old_lock.get(pkg.meta.name) ?? continue
+                        let locked = old_lock.get(pkg.meta.name) ?? {
+                            continue
+                        }
                         if locked.version != ver {
                             println("  DRIFT {pkg.meta.name}: locked={locked.version}, resolved={ver}")
                             drift = true

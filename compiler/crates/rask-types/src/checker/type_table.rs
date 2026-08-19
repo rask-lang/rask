@@ -7,7 +7,7 @@ use rask_ast::NodeId;
 
 use super::builtins::BuiltinModules;
 use super::type_defs::{BinaryStructInfo, TypeDef};
-use super::errors::TypeError;
+use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
@@ -45,6 +45,15 @@ pub struct TypeTable {
     pub(super) builtin_modules: BuiltinModules,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
+    /// Field names of a struct-shaped enum variant, keyed by
+    /// `(enum TypeId, variant name)` and in declaration order.
+    ///
+    /// `TypeDef::Enum` keeps payload types positionally, which is all a tuple
+    /// variant needs. A struct variant's pattern names its fields
+    /// (`Outer.Named { code, kind }`), so matching them to types needs the names
+    /// too — without them the checker gave every field a fresh variable and
+    /// `let x: i64 = kind` type-checked (#809).
+    pub(super) variant_field_names: HashMap<(TypeId, String), Vec<String>>,
     /// AST declarations contributing methods to each type: the `struct`/`enum`
     /// itself plus every `extend` block bound to it.
     ///
@@ -75,6 +84,7 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             binary_structs: HashMap::new(),
+            variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
             conformances: HashMap::new(),
             conformance_conditions: HashMap::new(),
@@ -304,6 +314,21 @@ impl TypeTable {
         self.resolve_name(name).map(Type::Named)
     }
 
+    /// The `(field name, type)` pairs of a struct-shaped enum variant named
+    /// `Enum.Variant`, in declaration order. `None` for anything else — a plain
+    /// struct, a tuple variant, an unknown name.
+    pub fn struct_variant_fields(&self, qualified: &str) -> Option<Vec<(String, Type)>> {
+        let (enum_name, variant) = qualified.rsplit_once('.')?;
+        let enum_id = self.get_type_id(enum_name)?;
+        let names = self.variant_field_names.get(&(enum_id, variant.to_string()))?;
+        let TypeDef::Enum { variants, .. } = self.get(enum_id)? else { return None };
+        let (_, types) = variants.iter().find(|(v, _)| v == variant)?;
+        if names.len() != types.len() {
+            return None;
+        }
+        Some(names.iter().cloned().zip(types.iter().cloned()).collect())
+    }
+
     /// Get a type definition by ID.
     pub fn get(&self, id: TypeId) -> Option<&TypeDef> {
         self.types.get(id.0 as usize)
@@ -329,9 +354,40 @@ impl TypeTable {
     }
 
     /// G1: does the type declare (or auto-derive) conformance to the trait?
+    ///
+    /// TD3: a sub-trait requires everything its super-traits require, so
+    /// declaring the sub-trait declares the parents too. Without that,
+    /// `extend Horn with Shouty` — where `trait Shouty: Speak` — left
+    /// `horn as any Speak` refused for a trait the type demonstrably implements,
+    /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
         let base = Self::conformance_key(trait_name);
-        self.conformances.get(&type_id).is_some_and(|set| set.contains(&base))
+        let Some(set) = self.conformances.get(&type_id) else {
+            return false;
+        };
+        if set.contains(&base) {
+            return true;
+        }
+        set.iter()
+            .any(|declared| self.trait_extends(declared, &base, &mut Vec::new()))
+    }
+
+    /// Is `target` somewhere in `trait_name`'s super-trait closure? `seen` keeps
+    /// a cycle in the graph from recursing forever.
+    fn trait_extends(&self, trait_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
+        if seen.iter().any(|s| s == trait_name) {
+            return false;
+        }
+        seen.push(trait_name.to_string());
+        let Some(TypeDef::Trait { super_traits, .. }) =
+            self.get_type_id(trait_name).and_then(|id| self.get(id))
+        else {
+            return false;
+        };
+        let parents: Vec<String> = super_traits.iter().map(|s| Self::conformance_key(s)).collect();
+        parents
+            .iter()
+            .any(|p| p == target || self.trait_extends(p, target, seen))
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.
@@ -519,17 +575,52 @@ impl TypeTable {
     /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,
     /// `Map<string, File>` inside a tuple, a `Vec<File>` return of a `func`
     /// type) are caught at their innermost violation.
-    /// HA4: the float key of a `Map` nested anywhere in this type, if there is
-    /// one. `f32`/`f64` are not Hashable — `NaN != NaN` breaks the contract that
-    /// equal keys hash equal — so they can't key a Map.
-    pub fn find_float_map_key(&self, ty: &Type) -> Option<Type> {
+    /// HA1/HA4: a Map key has to be Hashable. `Some((ty, fix))` names the key
+    /// that isn't, plus which way out to offer.
+    ///
+    /// This used to test `F32 | F64` by name, so the rule held for the one type
+    /// that motivated it and nothing else — a struct with a float field got in,
+    /// and so did a nominal newtype that declared no conformance (#812). The
+    /// diagnostic already said "is not Hashable"; now the check is that.
+    ///
+    /// A key whose type isn't settled yet is left alone: an inference variable or
+    /// an unresolved name (an open type parameter) says nothing either way, and
+    /// reporting one would flag every generic container.
+    fn unhashable_key(&self, key: &Type) -> Option<(Type, MapKeyFix)> {
+        match key {
+            Type::Var(_)
+            | Type::Error
+            | Type::UnresolvedNamed(_)
+            | Type::UnresolvedGeneric { .. } => None,
+            settled if crate::traits::implements_trait(self, settled, "Hashable") => None,
+            settled => Some((settled.clone(), self.map_key_fix(settled))),
+        }
+    }
+
+    /// Which advice fits this key type.
+    fn map_key_fix(&self, key: &Type) -> MapKeyFix {
+        if matches!(key, Type::F32 | Type::F64) {
+            return MapKeyFix::Float;
+        }
+        let id = match key {
+            Type::Named(id) => Some(*id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+        match id.and_then(|id| self.get(id)) {
+            Some(TypeDef::NominalAlias { .. }) => MapKeyFix::NominalClause,
+            _ => MapKeyFix::ExtendBlock,
+        }
+    }
+
+    pub fn find_unhashable_map_key(&self, ty: &Type) -> Option<(Type, MapKeyFix)> {
         let args = match ty {
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
                 if full.split('<').next() == Some("Map") {
                     if let Some(GenericArg::Type(k)) = args.first() {
-                        if matches!(**k, Type::F32 | Type::F64) {
-                            return Some((**k).clone());
+                        if let Some(bad) = self.unhashable_key(k) {
+                            return Some(bad);
                         }
                     }
                 }
@@ -538,8 +629,8 @@ impl TypeTable {
             Type::UnresolvedGeneric { name, args } => {
                 if name.split('<').next() == Some("Map") {
                     if let Some(GenericArg::Type(k)) = args.first() {
-                        if matches!(**k, Type::F32 | Type::F64) {
-                            return Some((**k).clone());
+                        if let Some(bad) = self.unhashable_key(k) {
+                            return Some(bad);
                         }
                     }
                 }
@@ -566,7 +657,7 @@ impl TypeTable {
             }
             _ => {}
         }
-        nested.into_iter().find_map(|t| self.find_float_map_key(t))
+        nested.into_iter().find_map(|t| self.find_unhashable_map_key(t))
     }
 
     pub fn find_linear_container(&self, ty: &Type) -> Option<(String, Type)> {

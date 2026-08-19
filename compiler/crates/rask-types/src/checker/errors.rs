@@ -5,6 +5,20 @@ use rask_ast::Span;
 
 use crate::types::{Type, TypeVarId};
 
+/// Which way out of an unhashable Map key to offer. The type decides: a float
+/// can never be a key, while a struct or a newtype just hasn't said it hashes
+/// yet — and those two say it in different syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapKeyFix {
+    /// HA4: `f32`/`f64` are excluded outright. Key on the bits instead.
+    Float,
+    /// A nominal newtype — the traits it inherits are the ones its `with (…)`
+    /// clause names.
+    NominalClause,
+    /// Anything else — an `extend T with Hashable` block declares it.
+    ExtendBlock,
+}
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -162,6 +176,11 @@ pub enum TypeError {
     /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
     #[error("`{op}` between `{left}` and `{right}` — one is signed, the other isn't")]
     MixedSignednessArithmetic { op: &'static str, left: Type, right: Type, span: Span },
+    /// CV1a: int→float is never implicit, so an integer and a float can't meet
+    /// under an arithmetic operator. It type-checked, and native answered with an
+    /// integer — the float operand was dropped without a word (#816).
+    #[error("`{op}` between `{left}` and `{right}` — one is an integer, the other a float")]
+    IntFloatArithmetic { op: &'static str, left: Type, right: Type, span: Span },
     /// ER11: `T or E` (E ≠ none) only auto-wraps at `return`.
     #[error("`{value}` doesn't become a `{target}` here — auto-wrap is return-only")]
     NoAutoWrapOutsideReturn { value: Type, target: Type, span: Span },
@@ -283,6 +302,13 @@ pub enum TypeError {
     WithGuardEscapes {
         name: String,
         type_name: String,
+        span: Span,
+    },
+    /// conc.sync/R4: bare `with shared as v` — the lock has to be named.
+    #[error("`with {name} as {binding}` doesn't say which lock")]
+    BareSharedWith {
+        name: String,
+        binding: String,
         span: Span,
     },
     #[error("cannot mutate `{source_var}` while viewed by `{view_var}`")]
@@ -720,6 +746,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `as` to a target that is neither a number nor a trait object. There is
+    /// no third meaning for `as`, and accepting one silently let
+    /// `[1, 2, 3] as Vec<i64>` through as a pointer reinterpretation (#862).
+    #[error("`as` doesn't convert to `{target_name}`")]
+    AsCastNotConvertible {
+        src_ty: Type,
+        /// Original target spelling, for the message and the suggested fix.
+        target_name: String,
+        span: Span,
+    },
+
     /// type.primitives CV5–CV10: a conversion form applied to the wrong
     /// source/target kind (e.g. `floor` on an integer).
     #[error("invalid conversion: {message}")]
@@ -760,10 +797,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.generics/HA4: `f32`/`f64` are not Hashable, so they can't key a Map.
-    #[error("a float can't key a Map")]
-    FloatMapKey {
+    /// type.generics/HA1, HA4: a Map key has to be Hashable.
+    #[error("`{key}` can't key a Map")]
+    UnhashableMapKey {
         key: Type,
+        /// Which way out to offer — the advice differs per kind of type.
+        fix: MapKeyFix,
         span: Span,
     },
 
@@ -859,7 +898,6 @@ impl TypeError {
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
             | CoalesceOnResult { found, .. }
-            | CoalesceOnNonOptional { found, .. }
             | ForceUnwrapOnNonOptional { found, .. }
             | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }
@@ -881,7 +919,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
-            FloatMapKey { key, .. } => *key = f(key),
+            UnhashableMapKey { key, .. } => *key = f(key),
             ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
             DuplicateSumVariant { ty, variant, .. } => {
@@ -899,6 +937,10 @@ impl TypeError {
                 *dst_ty = f(dst_ty);
             }
 
+            AsCastNotConvertible { src_ty, .. } => {
+                *src_ty = f(src_ty);
+            }
+
             Mismatch { expected, found, .. } => {
                 *expected = f(expected);
                 *found = f(found);
@@ -910,6 +952,11 @@ impl TypeError {
             }
 
             MixedSignednessArithmetic { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
+            }
+
+            IntFloatArithmetic { left, right, .. } => {
                 *left = f(left);
                 *right = f(right);
             }
@@ -957,6 +1004,7 @@ impl TypeError {
             | StringSliceStored { .. }
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
+            | BareSharedWith { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }

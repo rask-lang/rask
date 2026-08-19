@@ -436,8 +436,21 @@ impl TypeChecker {
 
         let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
 
+        // Field names for the struct-shaped variants, so a pattern that names
+        // them can be matched against the positional payload types (#809).
+        let variant_names: Vec<(String, Vec<String>)> = e
+            .variants
+            .iter()
+            .map(|v| {
+                (
+                    v.name.clone(),
+                    v.fields.iter().map(|f| f.name.clone()).collect(),
+                )
+            })
+            .collect();
+
         let type_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
-        self.types.register_type(TypeDef::Enum {
+        let enum_id = self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
             type_params,
             variants,
@@ -445,7 +458,13 @@ impl TypeChecker {
             // ER42/L1: refined by `propagate_resource_linearity` once all
             // declarations are visible.
             is_transitive_resource: false,
-        })
+        });
+        for (variant, field_names) in variant_names {
+            self.types
+                .variant_field_names
+                .insert((enum_id, variant), field_names);
+        }
+        enum_id
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {

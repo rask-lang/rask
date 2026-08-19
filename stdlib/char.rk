@@ -3,45 +3,74 @@
 extend char {
     /// Number of bytes needed to encode this char in UTF-8 (1–4).
     @native("rask_char_len_utf8")
-    public func len_utf8(self) -> usize { }
+    public func len_utf8(self) -> usize {}
 
     /// True if this is an ASCII character (0x00–0x7F).
     @native("rask_char_is_ascii")
-    public func is_ascii(self) -> bool { }
+    public func is_ascii(self) -> bool {}
 
     /// True if this is a Unicode alphabetic character.
     @native("rask_char_is_alphabetic")
-    public func is_alphabetic(self) -> bool { }
+    public func is_alphabetic(self) -> bool {}
 
     /// True if this is a Unicode numeric character (includes ½, ³, etc.).
     @native("rask_char_is_numeric")
-    public func is_numeric(self) -> bool { }
+    public func is_numeric(self) -> bool {}
 
     /// True if this is an ASCII digit (0-9).
     @native("rask_char_is_digit")
-    public func is_digit(self) -> bool { }
+    public func is_digit(self) -> bool {}
 
     /// True if this is a Unicode alphanumeric character.
     @native("rask_char_is_alphanumeric")
-    public func is_alphanumeric(self) -> bool { }
+    public func is_alphanumeric(self) -> bool {}
 
     /// True if this is a Unicode whitespace character.
     @native("rask_char_is_whitespace")
-    public func is_whitespace(self) -> bool { }
+    public func is_whitespace(self) -> bool {}
 
     /// True if this is an uppercase character.
     @native("rask_char_is_uppercase")
-    public func is_uppercase(self) -> bool { }
+    public func is_uppercase(self) -> bool {}
 
     /// True if this is a lowercase character.
     @native("rask_char_is_lowercase")
-    public func is_lowercase(self) -> bool { }
+    public func is_lowercase(self) -> bool {}
 
     /// Simple 1:1 lowercase mapping.
     @native("rask_char_to_lowercase")
-    public func to_lowercase(self) -> char { }
+    public func to_lowercase(self) -> char {}
 
     /// Simple 1:1 uppercase mapping.
     @native("rask_char_to_uppercase")
-    public func to_uppercase(self) -> char { }
+    public func to_uppercase(self) -> char {}
+
+    /// True if this is a control character (Unicode category Cc).
+    @native("rask_char_is_control")
+    public func is_control(self) -> bool {}
+
+    /// True if this is an ASCII letter. False for every scalar above 127,
+    /// whatever its Unicode class says.
+    @native("rask_char_is_ascii_alphabetic")
+    public func is_ascii_alphabetic(self) -> bool {}
+
+    /// True if this is an ASCII digit (0-9).
+    @native("rask_char_is_ascii_digit")
+    public func is_ascii_digit(self) -> bool {}
+
+    /// True if this is an ASCII hex digit (0-9, a-f, A-F).
+    @native("rask_char_is_ascii_hexdigit")
+    public func is_ascii_hexdigit(self) -> bool {}
+
+    /// True if this is ASCII punctuation.
+    @native("rask_char_is_ascii_punctuation")
+    public func is_ascii_punctuation(self) -> bool {}
+
+    /// ASCII-only lowercase. Leaves everything else alone.
+    @native("rask_char_to_ascii_lowercase")
+    public func to_ascii_lowercase(self) -> char {}
+
+    /// ASCII-only uppercase. Leaves everything else alone.
+    @native("rask_char_to_ascii_uppercase")
+    public func to_ascii_uppercase(self) -> char {}
 }

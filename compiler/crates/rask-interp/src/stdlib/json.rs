@@ -157,7 +157,10 @@ impl Interpreter {
         fields: &[Value],
         method: &str,
     ) -> Result<Value, RuntimeError> {
-        if method != "message" {
+        // `to_string` too: an error carrying a `message()` renders through
+        // Displayable, so `println("{e}")` worked on native and failed here
+        // with "no method `to_string` on type `JsonError`" (#847).
+        if !matches!(method, "message" | "to_string") {
             return Err(RuntimeError::NoSuchMethod {
                 ty: "JsonError".to_string(),
                 method: method.to_string(),
@@ -236,35 +239,69 @@ impl<'a> JsonParser<'a> {
         }
     }
 
+    /// Bytes in, UTF-8 out.
+    ///
+    /// This used to push each raw byte with `c as char`, which reads a UTF-8
+    /// continuation byte as the Latin-1 character of the same number — so
+    /// decoding `{"name": "é"}` gave back `Ã©`, and every non-ASCII string that
+    /// went through `json.decode` on the interpreter came out mojibake while
+    /// native was fine. A `\u` pair for an astral character wasn't combined
+    /// either, so an emoji became two replacement characters (#847).
     fn parse_string_raw(&mut self) -> Result<String, String> {
         self.expect(b'"')?;
-        let mut s = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut push_char = |bytes: &mut Vec<u8>, c: char| {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        };
         loop {
             match self.advance() {
-                Some(b'"') => return Ok(s),
+                Some(b'"') => {
+                    return String::from_utf8(bytes)
+                        .map_err(|_| format!("string is not valid UTF-8 at byte {}", self.pos))
+                }
                 Some(b'\\') => {
                     match self.advance() {
-                        Some(b'"') => s.push('"'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'/') => s.push('/'),
-                        Some(b'b') => s.push('\u{08}'),
-                        Some(b'f') => s.push('\u{0C}'),
-                        Some(b'n') => s.push('\n'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b't') => s.push('\t'),
+                        Some(b'"') => bytes.push(b'"'),
+                        Some(b'\\') => bytes.push(b'\\'),
+                        Some(b'/') => bytes.push(b'/'),
+                        Some(b'b') => bytes.push(0x08),
+                        Some(b'f') => bytes.push(0x0C),
+                        Some(b'n') => bytes.push(b'\n'),
+                        Some(b'r') => bytes.push(b'\r'),
+                        Some(b't') => bytes.push(b'\t'),
                         Some(b'u') => {
                             let hex = self.parse_hex4()?;
-                            if let Some(c) = char::from_u32(hex) {
-                                s.push(c);
+                            // A high surrogate is half a character: JSON spells
+                            // anything above the BMP as a pair.
+                            let cp = if (0xD800..0xDC00).contains(&hex)
+                                && self.peek() == Some(b'\\')
+                            {
+                                let save = self.pos;
+                                self.advance();
+                                if self.peek() == Some(b'u') {
+                                    self.advance();
+                                    let low = self.parse_hex4()?;
+                                    if (0xDC00..0xE000).contains(&low) {
+                                        0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00)
+                                    } else {
+                                        self.pos = save;
+                                        hex
+                                    }
+                                } else {
+                                    self.pos = save;
+                                    hex
+                                }
                             } else {
-                                s.push('\u{FFFD}');
-                            }
+                                hex
+                            };
+                            push_char(&mut bytes, char::from_u32(cp).unwrap_or('\u{FFFD}'));
                         }
                         Some(c) => return Err(format!("invalid escape '\\{}' at byte {}", c as char, self.pos)),
                         None => return Err("unexpected end of input in string escape".to_string()),
                     }
                 }
-                Some(c) => s.push(c as char),
+                Some(c) => bytes.push(c),
                 None => return Err("unexpected end of input in string".to_string()),
             }
         }
@@ -647,7 +684,11 @@ fn value_to_json(
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
-        Value::Int(n, _) => Ok(make_json_number(*n as f64)),
+        // Keep the integer. Through `f64` an `i64` past 2^53 lost its low bits:
+        // `9007199254740993` encoded as `…992` here while native, which writes
+        // the field straight out, kept it exactly (#847). The Number variant's
+        // stringifier already renders an integer payload.
+        Value::Int(n, k) => Ok(make_json_int(*n, *k)),
         Value::Float(f, _) => Ok(make_json_number(*f)),
         Value::String(s) => Ok(make_json_string(&s.lock().unwrap())),
         Value::Vec(v) => {
@@ -655,6 +696,20 @@ fn value_to_json(
             let items: Result<Vec<Value>, RuntimeError> =
                 vec.iter().map(|v| value_to_json(v, struct_decls)).collect();
             Ok(make_json_array(items?))
+        }
+        // A struct-shaped enum variant (`Shape.Circle { radius: f64 }`) is a
+        // plain struct value here — the interpreter doesn't keep the enum
+        // identity on it — so it used to encode as `{"radius":1}`, dropping the
+        // variant name, while native panicked with what's missing. Anything
+        // that isn't a declared struct isn't one (#854).
+        Value::Struct(ref s) if !struct_decls.contains_key(&s.lock().unwrap().name) => {
+            let name = s.lock().unwrap().name.clone();
+            Err(RuntimeError::TypeError(format!(
+                "json.encode can't write `{}` yet: a variant with a payload needs \
+                 the tagged forms (std.encoding/E23, E24), and only unit variants \
+                 are implemented",
+                name
+            )))
         }
         Value::Struct(ref s) => {
             let guard = s.lock().unwrap();
@@ -707,6 +762,18 @@ fn value_to_json(
                 variant_index: *variant_index, origin: None,
             })
         }
+        // std.encoding/E22: a unit variant serializes as its own name. Native
+        // used to write the address of the enum's slot as a number here and say
+        // nothing; this side refused outright. Both were wrong (#854).
+        Value::Enum { variant, fields, .. } if fields.is_empty() => {
+            Ok(make_json_string(variant))
+        }
+        Value::Enum { name, .. } => Err(RuntimeError::TypeError(format!(
+            "json.encode can't write `{}` yet: a variant with a payload needs \
+             the tagged forms (std.encoding/E23, E24), and only unit variants \
+             are implemented",
+            name
+        ))),
         _ => Err(RuntimeError::TypeError(format!(
             "cannot convert {} to JSON",
             value.type_name()
@@ -739,6 +806,15 @@ fn make_json_number(n: f64) -> Value {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
         fields: vec![Value::Float(n, FloatKind::Untyped)],
+        variant_index: 2, origin: None,
+    }
+}
+
+fn make_json_int(n: i64, kind: crate::value::IntKind) -> Value {
+    Value::Enum {
+        name: "JsonValue".to_string(),
+        variant: "Number".to_string(),
+        fields: vec![Value::Int(n, kind)],
         variant_index: 2, origin: None,
     }
 }
@@ -913,7 +989,7 @@ fn json_to_typed(
                 if field_attrs::is_skipped(&field.attrs) {
                     fields.insert(
                         field.name.clone(),
-                        default_value(&field.attrs, &field.ty, struct_decls),
+                        default_value(field, struct_decls),
                     );
                     continue;
                 }
@@ -932,11 +1008,14 @@ fn json_to_typed(
                     None if strip_optional(&field.ty).is_some() => {
                         fields.insert(field.name.clone(), option_none());
                     }
-                    // `@default` covers a missing key too (E20).
-                    None if field_attrs::default_literal(&field.attrs).is_some() => {
+                    // `@default` covers a missing key, and so does a declared
+                    // default — a field the input leaves out takes it
+                    // (E20, type.structs/FD6). Only `@default` counted, so
+                    // `tag: string = "fallback"` failed the decode (#853).
+                    None if decode_default(field).is_some() => {
                         fields.insert(
                             field.name.clone(),
-                            default_value(&field.attrs, &field.ty, struct_decls),
+                            default_value(field, struct_decls),
                         );
                     }
                     None => {
@@ -953,19 +1032,47 @@ fn json_to_typed(
     }
 }
 
-/// The value a field that isn't read from the input starts at: its
-/// `@default(…)` literal when it has one, otherwise the type's empty value.
+/// The literal a field the input didn't supply falls back to: the
+/// `@default(…)` override first, then the declared default.
+///
+/// `@default` wins because it exists precisely to differ from the declared one
+/// on decode (type.structs/FD6). Mirrors `decode_default` in the MIR decoder,
+/// down to the literal's text form, so the two backends fill the same value.
+fn decode_default(field: &rask_ast::decl::Field) -> Option<String> {
+    field_attrs::default_literal(&field.attrs)
+        .map(str::to_string)
+        .or_else(|| field.default.as_ref().and_then(declared_literal_text))
+}
+
+/// A declared default's literal text. `None` for anything that isn't a plain
+/// literal, which stays construction-only rather than being guessed at.
+fn declared_literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
+    use rask_ast::expr::{ExprKind, UnaryOp};
+    match &e.kind {
+        ExprKind::Int(n, _) => Some(n.to_string()),
+        ExprKind::Float(f, _) => Some(f.to_string()),
+        ExprKind::Bool(b) => Some(b.to_string()),
+        ExprKind::String(s) => Some(format!("{:?}", s)),
+        ExprKind::Char(c) => Some(format!("'{}'", c)),
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
+            declared_literal_text(operand).map(|t| format!("-{t}"))
+        }
+        _ => None,
+    }
+}
+
+/// The value a field that isn't read from the input starts at: its default
+/// literal when it has one, otherwise the type's empty value.
 fn default_value(
-    attrs: &[String],
-    ty: &str,
+    field: &rask_ast::decl::Field,
     struct_decls: &HashMap<String, StructDecl>,
 ) -> Value {
-    if let Some(literal) = field_attrs::default_literal(attrs) {
-        if let Some(v) = literal_value(literal.trim(), ty) {
+    if let Some(literal) = decode_default(field) {
+        if let Some(v) = literal_value(literal.trim(), &field.ty) {
             return v;
         }
     }
-    empty_value(ty, struct_decls)
+    empty_value(&field.ty, struct_decls)
 }
 
 fn literal_value(literal: &str, ty: &str) -> Option<Value> {

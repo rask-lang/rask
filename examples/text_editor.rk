@@ -12,18 +12,18 @@ struct Line {
 
 // Edit commands that can be undone
 enum EditCommand {
-    InsertLine(after: i32, text: string),
-    DeleteLine(at: i32, deleted_text: string),
-    ModifyLine(at: i32, old_text: string, new_text: string),
+    InsertLine { after: i32, text: string }
+    DeleteLine { at: i32, deleted_text: string }
+    ModifyLine { at: i32, old_text: string, new_text: string }
 }
 
 extend EditCommand {
     // Create the inverse command for undo
     func inverse(self) -> EditCommand {
         return match self {
-            InsertLine(after, text) => EditCommand.DeleteLine(at: after + 1, deleted_text: text),
-            DeleteLine(at, deleted_text) => EditCommand.InsertLine(after: at - 1, text: deleted_text),
-            ModifyLine(at, old_text, new_text) => EditCommand.ModifyLine(at: at, old_text: new_text, new_text: old_text),
+            InsertLine(after, text) => EditCommand.DeleteLine(at: after + 1, deleted_text: text)
+            DeleteLine(at, deleted_text) => EditCommand.InsertLine(after: at - 1, text: deleted_text)
+            ModifyLine(at, old_text, new_text) => EditCommand.ModifyLine(at: at, old_text: new_text, new_text: old_text)
         }
     }
 }
@@ -64,17 +64,17 @@ extend Document {
     }
 
     func get_line(self, index: i32) -> string? {
-        if index < 0 || index >= self.line_count(): return none
+        if index < 0 || index >= self.line_count() { return none }
         let h = self.line_order[index]
         return self.lines[h].text
     }
 
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> void or Error {
-        let h = self.lines.insert(Line { text: text })
+        let h = self.lines.insert(Line { text })
         let raw_pos = (after + 1) as i64
         let cap = self.line_order.len().wrap<i64>()
-        let insert_pos = if raw_pos > cap: cap else: raw_pos
+        let insert_pos = if raw_pos > cap { cap } else { raw_pos }
         self.line_order.insert(insert_pos, h)
 
         // Record for undo
@@ -85,7 +85,7 @@ extend Document {
 
     // Delete a line at the given index
     func delete_line(self, at: i32) -> void or Error {
-        if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
+        if at < 0 || at >= self.line_count() { return Error.IndexOutOfBounds }
 
         let h = self.line_order.remove(at as i64)
         let deleted = self.lines.remove(h)!
@@ -98,7 +98,7 @@ extend Document {
 
     // Modify text at the given line
     func modify_line(self, at: i32, new_text: string) -> void or Error {
-        if at < 0 || at >= self.line_count(): return Error.IndexOutOfBounds
+        if at < 0 || at >= self.line_count() { return Error.IndexOutOfBounds }
 
         let h = self.line_order[at]
         let old_text = self.lines[h].text
@@ -112,7 +112,9 @@ extend Document {
 
     // Undo the last edit
     func undo(self) -> bool or Error {
-        let cmd = self.undo_stack.pop() ?? return false
+        let cmd = self.undo_stack.pop() ?? {
+            return false
+        }
 
         // Apply inverse without recording to undo stack
         try self.apply_command_silent(cmd.inverse())
@@ -122,7 +124,9 @@ extend Document {
 
     // Redo the last undone edit
     func redo(self) -> bool or Error {
-        let cmd = self.redo_stack.pop() ?? return false
+        let cmd = self.redo_stack.pop() ?? {
+            return false
+        }
 
         // Apply command without recording to undo stack
         try self.apply_command_silent(cmd.clone())
@@ -134,7 +138,7 @@ extend Document {
     func apply_command_silent(self, cmd: EditCommand) -> void or Error {
         match cmd {
             InsertLine(after, text) => {
-                let h = self.lines.insert(Line { text: text })
+                let h = self.lines.insert(Line { text })
                 self.line_order.insert((after + 1) as i64, h)
             }
             DeleteLine(at, _) => {
@@ -173,15 +177,15 @@ extend Document {
 
 // Simple command parser for the editor REPL
 enum EditorCommand {
-    Insert(after: i32, text: string),
-    Delete(line: i32),
-    Edit(line: i32, text: string),
-    Undo,
-    Redo,
-    Save(path: string),
-    Print,
-    Quit,
-    Help,
+    Insert { after: i32, text: string }
+    Delete { line: i32 }
+    Edit { line: i32, text: string }
+    Undo
+    Redo
+    Save { path: string }
+    Print
+    Quit
+    Help
 }
 
 func parse_command(input: string) -> EditorCommand? {
@@ -189,30 +193,36 @@ func parse_command(input: string) -> EditorCommand? {
     for part in input.trim().split_whitespace() {
         parts.push(part.to_string())
     }
-    if parts.is_empty(): return none
+    if parts.is_empty() { return none }
 
     match parts[0] {
         "i" | "insert" if parts.len() >= 3 => {
-            let after = parts[1].parse<i32>() catch _ => return none
+            let after = parts[1].parse<i32>() catch _ => {
+                return none
+            }
             let text = parts[2..].join(" ")
             return EditorCommand.Insert(after: after, text: text)
         }
         "d" | "delete" if parts.len() >= 2 => {
-            let line = parts[1].parse<i32>() catch _ => return none
+            let line = parts[1].parse<i32>() catch _ => {
+                return none
+            }
             return EditorCommand.Delete(line: line)
         }
         "e" | "edit" if parts.len() >= 3 => {
-            let line = parts[1].parse<i32>() catch _ => return none
+            let line = parts[1].parse<i32>() catch _ => {
+                return none
+            }
             let text = parts[2..].join(" ")
             return EditorCommand.Edit(line: line, text: text)
         }
-        "u" | "undo" => return EditorCommand.Undo,
-        "r" | "redo" => return EditorCommand.Redo,
-        "w" | "save" if parts.len() >= 2 => return EditorCommand.Save(path: parts[1]),
-        "p" | "print" => return EditorCommand.Print,
-        "q" | "quit" => return EditorCommand.Quit,
-        "h" | "help" => return EditorCommand.Help,
-        _ => return none,
+        "u" | "undo" => return EditorCommand.Undo
+        "r" | "redo" => return EditorCommand.Redo
+        "w" | "save" if parts.len() >= 2 => return EditorCommand.Save(path: parts[1])
+        "p" | "print" => return EditorCommand.Print
+        "q" | "quit" => return EditorCommand.Quit
+        "h" | "help" => return EditorCommand.Help
+        _ => return none
     }
 }
 
@@ -262,24 +272,20 @@ func main() -> void or Error {
                 try doc.modify_line(line - 1, text)
                 println("Modified line {line}")
             }
-            Undo => {
-                if try doc.undo(): println("Undone") else: println("Nothing to undo")
-            }
-            Redo => {
-                if try doc.redo(): println("Redone") else: println("Nothing to redo")
-            }
+            Undo => if try doc.undo() { println("Undone") } else { println("Nothing to undo") }
+            Redo => if try doc.redo() { println("Redone") } else { println("Nothing to redo") }
             Save(path) => {
                 try doc.save(path)
                 println("Saved to {path}")
             }
-            Print => doc.display(),
+            Print => doc.display()
             Quit => {
                 if doc.modified {
                     println("Warning: unsaved changes")
                 }
                 break
             }
-            Help => print_help(),
+            Help => print_help()
         }
     }
 

@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Newline continuation (type.operators/P3, #304).
+//
+// Newlines terminate statements, so an expression spanning lines is decided by
+// the *first token of the next line* — nothing about the previous line matters.
+// One token of lookahead is the whole rule.
+//
+// The exclusion list is the load-bearing half: `+` `-` `*` `<` `>` each have a
+// second meaning in line-leading position, so a line starting with one is a new
+// statement. The parser has done this since the beginning with nothing written
+// down and nothing testing it.
+
+struct Box2 {
+    public n: i64
+}
+
+extend Box2 {
+    func doubled(self) -> i64 {
+        return self.n * 2
+    }
+}
+
+enum Bad {
+    Nope
+}
+
+extend Bad {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func risky(n: i64) -> i64 or Bad {
+    if n > 0 {
+        return n
+    }
+    return Bad.Nope
+}
+
+test "type.operators/P3 — a postfix operator continues the line above" {
+    let b = Box2 { n: 21 }
+
+    let called = b
+        .doubled()
+    assert called == 42
+
+    let field = b
+        .n
+    assert field == 21
+
+    mut xs: Vec<i64> = Vec.new()
+    xs.push(5)
+    let indexed = xs
+        [0]
+    assert indexed == 5
+
+    let opt: i64? = 3
+    let tested = opt
+        ?
+    assert tested == true
+}
+
+test "type.operators/P3 — boolean and comparison continue" {
+    let ready = true
+    let paused = false
+
+    let both = ready
+        && paused
+    assert both == false
+
+    let either = ready
+        || paused
+    assert either == true
+
+    let eq = 1
+        == 1
+    assert eq == true
+
+    let le = 1
+        <= 2
+    assert le == true
+
+    let ne = 1
+        != 2
+    assert ne == true
+
+    let ge = 2
+        >= 1
+    assert ge == true
+}
+
+test "type.operators/P3 — bitwise, division and remainder continue" {
+    let and_bits = 6
+        & 3
+    assert and_bits == 2
+
+    let or_bits = 4
+        | 1
+    assert or_bits == 5
+
+    let xor_bits = 5
+        ^ 1
+    assert xor_bits == 4
+
+    let shifted = 1
+        << 3
+    assert shifted == 8
+
+    let back = 8
+        >> 2
+    assert back == 2
+
+    let divided = 10
+        / 2
+    assert divided == 5
+
+    let left = 10
+        % 3
+    assert left == 1
+}
+
+test "type.operators/P3 — the fallbacks and ranges continue" {
+    let missing: i64? = none
+    let coalesced = missing
+        ?? 7
+    assert coalesced == 7
+
+    let caught = risky(0 - 1)
+        catch _ => 0
+    assert caught == 0
+
+    mut half_open = 0
+    for i in 0
+        ..3 {
+        half_open = half_open + i
+    }
+    assert half_open == 3
+
+    mut inclusive = 0
+    for i in 0
+        ..=2 {
+        inclusive = inclusive + i
+    }
+    assert inclusive == 3
+}
+
+test "type.operators/P3 — `else` continues an `if`" {
+    let flag = false
+    let branch = if flag
+    {
+        1
+    }
+    else
+    {
+        2
+    }
+    assert branch == 2
+}
+
+// The excluded operators. If `-` continued, the assertion below would come out
+// differently — which is exactly the point of the exclusion.
+func minus_starts_a_statement(a: i64) -> i64 {
+    let b = a
+    - a
+    return b
+}
+
+test "type.operators/P3 — a line starting with `-` is a new statement" {
+    // Continuation would make this `a - a`, so 0.
+    assert minus_starts_a_statement(5) == 5
+}
+
+// `+` has no prefix meaning at all, so a line starting with one isn't a
+// continuation *or* a statement — it's a parse error, which is the better of the
+// two outcomes. `tests/compile_errors/newline_continuation.rk` pins that.
+
+// `<` and `>` are excluded because they also bracket generic arguments. On one
+// line they compare as usual; the exclusion is only about line-leading position.
+test "type.operators/P3 — comparison on one line is unaffected" {
+    let a = 2
+    assert a < 3
+    assert 3 > a
+}
+
+func main() {}

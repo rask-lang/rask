@@ -13,11 +13,14 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 |------|-------------|
 | **P1: Left-to-right** | All operators associate left-to-right unless noted |
 | **P2: No chaining comparisons** | `a < b < c` is disallowed; use `a < b && b < c` |
+| **P3: Newline continuation** | A line starting with an unambiguous infix or postfix operator continues the expression above it. `+` `-` `*` `<` `>` are excluded — see below |
+| **P4: Conversions bind tight** | `as` and the lossy conversion suffixes bind tighter than every binary operator, looser than unary and postfix. A cast takes one operand, never the expression around it |
 
 | Prec | Operators | Description | Assoc |
 |------|-----------|-------------|-------|
-| 15 | `()` `[]` `.` `?` `?.` `!` (postfix) | Grouping, indexing, field, absence, force | Left |
-| 14 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
+| 16 | `()` `[]` `.` `?` `?.` `!` (postfix) | Grouping, indexing, field, absence, force | Left |
+| 15 | `!` `~` `-` (unary) | NOT, bitwise NOT, negate | Right |
+| 14 | `as` `truncate` `saturate` `float` | Conversions (`type.conversions`) | Left |
 | 13 | `*` `/` `%` | Mul, div, remainder | Left |
 | 12 | `+` `-` | Add, subtract | Left |
 | 11 | `<<` `>>` | Bit shifts | Left |
@@ -31,7 +34,13 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | 3 | `..` `..=` | Range | None |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | Assignment | Right |
 
-Postfix `?`, `?.` and `!` bind with field access and calls at 15 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 15, prefix boolean NOT at 14.
+Postfix `?`, `?.` and `!` bind with field access and calls at 16 — tighter than everything below. `x! == y` is `(x!) == y`; `x?.f + 1` is `(x?.f) + 1`. Note the two `!`s: postfix force at 16, prefix boolean NOT at 15.
+
+**P4 (conversions):** `as` and the lossy suffixes bind tighter than every binary operator and looser than unary and postfix, so a cast takes exactly one operand and never the expression around it. `a + b as f64` and `a / b as f64` group the same way — `a OP (b as f64)` — and `-x as f64` is `(-x) as f64`, `v.len() as f64` is `(v.len()) as f64`. To cast a whole expression, parenthesise it: `(a * b) as f64`.
+
+`as` used to sit between `+ -` and `* / %`, which made those two lines group differently. Nothing chooses that placement on purpose, and it only ever showed up as a bug: `examples/sensor_processor.rk` read 2200.02 °C instead of 22.02, because `(base + noise) as f64 / 100.0` with the parens dropped reparsed as `base + ((noise as f64) / 100.0)` ([#817](https://github.com/rask-lang/rask/issues/817)).
+
+`rask fmt` writes the parentheses in anyway when a cast is a binary operand, so the grouping is visible at every site rather than only in the table.
 
 The fallbacks bind tighter than comparison, looser than the bitwise operators, so `port ?? 8080 == want` is `(port ?? 8080) == want` — the reading you want, without parens. `??` is **left**-associative, which is the correct grouping for a chain: the right side sets the result type, so `a ?? b ?? fallback` stays wrapped through `b` and collapses at `fallback` (`type.errors/ER14a`). The compiler doesn't implement the still-wrapped case yet — [#578](https://github.com/rask-lang/rask/issues/578).
 
@@ -47,6 +56,51 @@ So the two rules a parser needs: the *operand* chain is level-7-left, and everyt
 The `??` right side and the `catch` body may be a value or any divergence — `return`, `break`, `continue`, `panic(…)` — written where it happens (`type.optionals/OPT11`, `type.errors/ER14`). `catch`'s binder (`e =>` or `_ =>`) is mandatory. Inside a comma list a diverging right side needs parens (`type.errors/ER45a`).
 
 `try` attaches to the fallible step of the postfix chain rather than to the whole of it (`type.errors/ER16a`): `try store.get(id)` is `try (store.get(id))`, while `try read_file(p).len()` is `(try read_file(p)).len()`. The wrappers have no methods or fields at all, so exactly one placement type-checks — the compiler finds it, and no parens are ever needed.
+
+## Newline Continuation (P3)
+
+Newlines terminate statements (`SYNTAX.md`), so an expression that spans lines has
+to say so. Rask decides it from the *first token of the next line* — nothing about
+the previous line matters, which is what keeps the rule to one token of lookahead.
+
+These continue: `.` `?.` `?` `[` `&&` `||` `==` `!=` `<=` `>=` `&` `|` `^` `<<`
+`>>` `/` `%` `??` `catch` `..` `..=`, and `else`.
+
+<!-- test: parse -->
+```rask
+func all_clear(ready: bool, connected: bool, paused: bool) -> bool {
+    return ready
+        && connected
+        && !paused
+}
+```
+
+**Excluded: `+` `-` `*` `<` `>`.** Each has a second meaning at the start of a
+line, so a line beginning with one is a new statement:
+
+| Operator | The other reading |
+|---|---|
+| `-` | prefix negation — `-x` on its own line is a negation |
+| `*` | prefix dereference |
+| `<` `>` | generic argument brackets |
+| `+` | none, so a line starting with `+` is a parse error rather than a separate statement |
+
+<!-- test: parse -->
+```rask
+func gap(a: i64) -> i64 {
+    let b = a
+    - a          // a negation on its own, discarded: `b` is `a`
+    return b
+}
+```
+
+`a - b` written on one line is subtraction as usual; only the line-leading position
+is affected. Where a multi-line arithmetic expression is wanted, the operator goes
+at the end of the line above, or the whole expression in parentheses.
+
+The exclusion list is normative. Extending continuation to any of the five requires
+resolving the ambiguity rather than picking a winner — the failure mode to avoid is
+JavaScript's automatic semicolon insertion, which guesses from the previous line.
 
 ## Indexing
 

@@ -12,23 +12,23 @@ public struct Cell<T> { }
 extend Cell<T> {
     /// Heap-allocate `value` and hand back a cell holding it.
     @native("rask_cell_new")
-    public func new(value: T) -> Cell<T> { }
+    public func new(value: T) -> Cell<T> {}
 
     /// Copy the inner value out. Copy types only (CE6).
     @native("rask_cell_get")
-    public func get(self) -> T { }
+    public func get(self) -> T {}
 
     /// Replace the inner value.
     @native("rask_cell_set")
-    public func set(self, value: T) { }
+    public func set(self, value: T) {}
 
     /// Swap in a new value, return the old one.
     @native("rask_cell_replace")
-    public func replace(self, value: T) -> T { }
+    public func replace(self, value: T) -> T {}
 
     /// Consume the cell, return what it held.
     @native("rask_cell_get")
-    public func into_inner(take self) -> T { }
+    public func into_inner(take self) -> T {}
 }
 
 /// Arena allocator for graph structures. Elements are accessed via handles.
@@ -61,38 +61,38 @@ public struct Link<T> { }
 extend Store<T> {
     /// Create an empty store.
     @native("rask_store_new")
-    public func new() -> Store<T> { }
+    public func new() -> Store<T> {}
 
     /// Insert a node, returning a link to it.
     @native("rask_store_insert")
-    public func insert(mutate self, node: T) -> Link<T> { }
+    public func insert(mutate self, node: T) -> Link<T> {}
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
     /// returns. Takes the link: after this the caller's name for that node is
     /// revoked, which is what makes use-after-delete a compile error rather
     /// than a runtime check.
     @native("rask_store_delete")
-    public func delete(mutate self, take link: Link<T>) -> void { }
+    public func delete(mutate self, take link: Link<T>) -> void {}
 
     /// Number of live nodes.
     @native("rask_store_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the store holds no nodes.
     @native("rask_store_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// True if the link names a node in this store.
     @native("rask_store_contains")
-    public func contains(self, link: Link<T>) -> bool { }
+    public func contains(self, link: Link<T>) -> bool {}
 
     /// Links to every live node. This is what `for n in store` walks.
     @native("rask_store_nodes")
-    public func nodes(self) -> Vec<Link<T>> { }
+    public func nodes(self) -> Vec<Link<T>> {}
 
     /// Remove every node.
     @native("rask_store_clear")
-    public func clear(mutate self) -> void { }
+    public func clear(mutate self) -> void {}
 
     /// An independent copy of the whole graph, with every edge inside it
     /// re-pointed at the copy. Nothing is shared with the original, so the copy
@@ -103,131 +103,131 @@ extend Store<T> {
     /// O(nodes + edges). The same walk `delete` does, rewriting instead of
     /// nulling.
     @native("rask_store_snapshot")
-    public func snapshot(self) -> Store<T> { }
+    public func snapshot(self) -> Store<T> {}
 
     /// This snapshot's copy of the node `link` names, or `none` if that node
     /// isn't in here. A link is an address, so it can't name anything in a
     /// different allocation — this is the one translation at the boundary that
     /// buys you a starting point inside the copy.
     @native("rask_store_corresponding")
-    public func corresponding(self, link: Link<T>) -> Link<T>? { }
+    public func corresponding(self, link: Link<T>) -> Link<T>? {}
 }
 
 extend WeakHandle<T> {
     /// Check if the weak handle is still valid (element hasn't been removed).
     @native
-    public func valid(self) -> bool { }
+    public func valid(self) -> bool {}
 
     /// Attempt to convert back to a strong Handle. Returns none if the element
     /// was removed since the weak handle was created.
     @native
-    public func upgrade(self) -> Handle<T>? { }
+    public func upgrade(self) -> Handle<T>? {}
 }
 
 extend Pool<T> {
     /// Create a new empty pool.
     @native("rask_pool_new")
-    public func new() -> Pool<T> { }
+    public func new() -> Pool<T> {}
 
     /// Create a pool with pre-allocated capacity.
     @native("rask_pool_with_capacity")
-    public func with_capacity(n: usize) -> Pool<T> { }
+    public func with_capacity(n: usize) -> Pool<T> {}
 
     /// Number of live elements.
     @native("rask_pool_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the pool contains no elements.
     @native("rask_pool_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// Insert an element, returning a handle to it. Panics on allocation
     /// failure (mem.pools/PL3, PL8) — use `try_insert` to handle capacity.
     @native("rask_pool_insert_packed_sized")
-    public func insert(mutate self, value: T) -> Handle<T> { }
+    public func insert(mutate self, value: T) -> Handle<T> {}
 
     /// Get element by handle (borrows).
     @native("rask_pool_get_packed")
-    public func get(self, handle: Handle<T>) -> Option<T> { }
+    public func get(self, handle: Handle<T>) -> Option<T> {}
 
     /// Get a clone of element by handle.
     @unimplemented
-    public func get_clone(self, handle: Handle<T>) -> Option<T> { }
+    public func get_clone(self, handle: Handle<T>) -> Option<T> {}
 
     /// Read element through a closure.
     @native
-    public func read(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+    public func read(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
 
     /// Modify element through a closure.
     @native
-    public func modify(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+    public func modify(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
 
     /// True if the handle points to a live element.
     @native("rask_pool_is_valid_packed")
-    public func contains(self, handle: Handle<T>) -> bool { }
+    public func contains(self, handle: Handle<T>) -> bool {}
 
     /// Remove element by handle, returning it.
     @native("rask_pool_remove_out")
-    public func remove(mutate self, handle: Handle<T>) -> Option<T> { }
+    public func remove(mutate self, handle: Handle<T>) -> Option<T> {}
 
     /// Remove all elements.
     @native
-    public func clear(mutate self) { }
+    public func clear(mutate self) {}
 
     /// Iterate over (handle, element) pairs.
     @native
-    public func iter(self) -> Iterator<(Handle<T>, T)> { }
+    public func iter(self) -> Iterator<(Handle<T>, T)> {}
 
     /// Snapshot of handles. Returned as a Vec so callers can index, slice,
     /// or iterate without invalidating on subsequent insert/remove.
     @native("rask_pool_handles_packed")
-    public func handles(self) -> Vec<Handle<T>> { }
+    public func handles(self) -> Vec<Handle<T>> {}
 
     /// Iterate over elements only.
     @native("rask_pool_values")
-    public func values(self) -> Iterator<T> { }
+    public func values(self) -> Iterator<T> {}
 
     /// Try to insert, returning none if at capacity.
     @native("rask_pool_try_insert_packed_sized")
-    public func try_insert(mutate self, value: T) -> Handle<T>? { }
+    public func try_insert(mutate self, value: T) -> Handle<T>? {}
 
     /// Remove all elements, returning them as a Vec.
     @native("rask_pool_drain")
-    public func drain(mutate self) -> Vec<T> { }
+    public func drain(mutate self) -> Vec<T> {}
 
     /// Get (handle, element) pairs as a Vec snapshot.
     @native
-    public func entries(self) -> Vec<(Handle<T>, T)> { }
+    public func entries(self) -> Vec<(Handle<T>, T)> {}
 
     /// Get element without Option wrapping — panics on invalid handle.
     @native
-    public func get_unchecked(self, handle: Handle<T>) -> T { }
+    public func get_unchecked(self, handle: Handle<T>) -> T {}
 
     /// Get mutable element without Option wrapping — panics on invalid handle.
     @native
-    public func get_mut_unchecked(mutate self, handle: Handle<T>) -> T { }
+    public func get_mut_unchecked(mutate self, handle: Handle<T>) -> T {}
 
     /// Apply closure only if handle is valid (read-only).
     @native
-    public func with_valid(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+    public func with_valid(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
 
     /// Apply closure only if handle is valid (mutable).
     @native
-    public func with_valid_mut(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+    public func with_valid_mut(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
 
     /// Total slot capacity (allocated slots, including free).
     @native
-    public func capacity(self) -> usize { }
+    public func capacity(self) -> usize {}
 
     /// Remaining free slots before a new allocation is needed.
     @native
-    public func remaining(self) -> usize { }
+    public func remaining(self) -> usize {}
 
     /// Create a WeakHandle from a Handle.
     @native
-    public func weak(self, handle: Handle<T>) -> WeakHandle<T> { }
+    public func weak(self, handle: Handle<T>) -> WeakHandle<T> {}
 
     /// Create a snapshot: returns (read_copy, write_copy) for concurrent access.
     @native
-    public func snapshot(self) -> (Pool<T>, Pool<T>) { }
+    public func snapshot(self) -> (Pool<T>, Pool<T>) {}
 }

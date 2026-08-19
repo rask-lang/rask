@@ -136,7 +136,6 @@ impl MiriValue {
             MiriValue::F32(v) => Some(v.to_le_bytes().to_vec()),
             MiriValue::F64(v) => Some(v.to_le_bytes().to_vec()),
             MiriValue::Char(v) => Some((*v as u32).to_le_bytes().to_vec()),
-            MiriValue::String(v) => Some(v.as_bytes().to_vec()),
             MiriValue::Array(elems) => {
                 let mut bytes = Vec::new();
                 for elem in elems {
@@ -144,21 +143,19 @@ impl MiriValue {
                 }
                 Some(bytes)
             }
-            MiriValue::Tuple(fields) => {
-                let mut bytes = Vec::new();
-                for field in fields {
-                    bytes.extend(field.serialize()?);
-                }
-                Some(bytes)
-            }
-            MiriValue::Struct { fields, .. } => {
-                let mut bytes = Vec::new();
-                for field in fields {
-                    bytes.extend(field.serialize()?);
-                }
-                Some(bytes)
-            }
-            MiriValue::Enum { .. } | MiriValue::FuncPtr(_) => None,
+            // A `string` is a two-word runtime value, not its characters, and a
+            // struct or tuple has padding between its fields. Writing the
+            // characters (or the fields back to back) produced a data section
+            // that nothing downstream could read: `const S: string = comptime
+            // { … }` folded to the raw UTF-8 and then `S.to_uppercase()` was
+            // handed those bytes as if they were a string value (#824). None
+            // means "not foldable to a data section", which leaves the const to
+            // be evaluated where it's used.
+            MiriValue::String(_)
+            | MiriValue::Tuple(_)
+            | MiriValue::Struct { .. }
+            | MiriValue::Enum { .. }
+            | MiriValue::FuncPtr(_) => None,
         }
     }
 
@@ -167,7 +164,9 @@ impl MiriValue {
         match self {
             MiriValue::Array(elems) => elems.len(),
             MiriValue::Tuple(fields) => fields.len(),
-            _ => 1,
+            // Not a count of one — a scalar has no elements. Answering 1 made a
+            // scalar global look like a one-element array to the reader (#824).
+            _ => 0,
         }
     }
 
@@ -194,24 +193,34 @@ impl MiriValue {
         })
     }
 
-    /// Type prefix for codegen dispatch.
+    /// Type prefix for codegen dispatch — the Rask type name, which is what a
+    /// method call is prefixed with (`i64_to_string`, `string_to_uppercase`,
+    /// `Vec_get`).
+    ///
+    /// This used to answer with the Rust variant name, so a const folded here
+    /// came out spelled `I64` where the AST comptime interpreter spelled the
+    /// same value `i64`. Every reader of a folded const was written against the
+    /// second spelling, so a const that took this path dispatched to
+    /// `I64_to_string` — a function that does not exist — and the whole
+    /// `const A: i64 = comptime { … }` form was broken at every width (#824).
+    /// Keep this in step with `ComptimeValue::type_prefix`.
     pub fn type_prefix(&self) -> &'static str {
         match self {
-            MiriValue::Unit => "Unit",
-            MiriValue::Bool(_) => "Bool",
-            MiriValue::I8(_) => "I8",
-            MiriValue::I16(_) => "I16",
-            MiriValue::I32(_) => "I32",
-            MiriValue::I64(_) => "I64",
-            MiriValue::U8(_) => "U8",
-            MiriValue::U16(_) => "U16",
-            MiriValue::U32(_) => "U32",
-            MiriValue::U64(_) => "U64",
-            MiriValue::F32(_) => "F32",
-            MiriValue::F64(_) => "F64",
-            MiriValue::Char(_) => "Char",
-            MiriValue::String(_) => "String",
-            MiriValue::Array(_) => "Array",
+            MiriValue::Unit => "()",
+            MiriValue::Bool(_) => "bool",
+            MiriValue::I8(_) => "i8",
+            MiriValue::I16(_) => "i16",
+            MiriValue::I32(_) => "i32",
+            MiriValue::I64(_) => "i64",
+            MiriValue::U8(_) => "u8",
+            MiriValue::U16(_) => "u16",
+            MiriValue::U32(_) => "u32",
+            MiriValue::U64(_) => "u64",
+            MiriValue::F32(_) => "f32",
+            MiriValue::F64(_) => "f64",
+            MiriValue::Char(_) => "char",
+            MiriValue::String(_) => "string",
+            MiriValue::Array(_) => "Vec",
             MiriValue::Tuple(_) => "Tuple",
             MiriValue::Struct { .. } => "Struct",
             MiriValue::Enum { .. } => "Enum",

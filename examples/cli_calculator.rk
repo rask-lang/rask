@@ -6,52 +6,52 @@ import io
 
 // Token types from lexer
 enum Token {
-    Number(f64),
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
-    Caret,       // Power
-    LParen,
-    RParen,
-    Eof,
+    Number(f64)
+    Plus
+    Minus
+    Star
+    Slash
+    Percent
+    Caret       // Power
+    LParen
+    RParen
+    Eof
 }
 
 // AST nodes
 enum Expr {
-    Number(f64),
-    Binary(left: Owned<Expr>, op: BinaryOp, right: Owned<Expr>),
-    Unary(op: UnaryOp, expr: Owned<Expr>),
+    Number(f64)
+    Binary { left: Owned<Expr>, op: BinaryOp, right: Owned<Expr> }
+    Unary { op: UnaryOp, expr: Owned<Expr> }
 }
 
 enum BinaryOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Pow,
+    Add
+    Sub
+    Mul
+    Div
+    Mod
+    Pow
 }
 
 enum UnaryOp {
-    Neg,
+    Neg
 }
 
 enum CalcError {
-    UnexpectedChar(char),
-    UnexpectedToken(string),
-    DivisionByZero,
-    EmptyExpression,
+    UnexpectedChar(char)
+    UnexpectedToken(string)
+    DivisionByZero
+    EmptyExpression
 }
 
 extend CalcError {
     func message(self) -> string {
         match self {
-            UnexpectedChar(c) => return "unexpected character: '{c}'",
-            UnexpectedToken(s) => return "unexpected token: {s}",
-            DivisionByZero => return "division by zero",
-            EmptyExpression => return "empty expression",
+            UnexpectedChar(c) => return "unexpected character: '{c}'"
+            UnexpectedToken(s) => return "unexpected token: {s}"
+            DivisionByZero => return "division by zero"
+            EmptyExpression => return "empty expression"
         }
     }
 }
@@ -64,11 +64,11 @@ struct Lexer {
 
 extend Lexer {
     func new(input: string) -> Lexer {
-        return Lexer { input: input, pos: 0 }
+        return Lexer { input, pos: 0 }
     }
 
     func peek_char(self) -> char? {
-        if self.pos >= self.input.len(): return none
+        if self.pos >= self.input.len() { return none }
         return self.input.char_at(self.pos)
     }
 
@@ -81,7 +81,7 @@ extend Lexer {
     func skip_whitespace(mutate self) {
         while self.peek_char()? {
             let c = self.peek_char()!
-            if !c.is_whitespace(): break
+            if !c.is_whitespace() { break }
             self.advance()
         }
     }
@@ -93,16 +93,40 @@ extend Lexer {
 
         // Single-character tokens
         let token = match c {
-            '+' => { self.advance(); Token.Plus }
-            '-' => { self.advance(); Token.Minus }
-            '*' => { self.advance(); Token.Star }
-            '/' => { self.advance(); Token.Slash }
-            '%' => { self.advance(); Token.Percent }
-            '^' => { self.advance(); Token.Caret }
-            '(' => { self.advance(); Token.LParen }
-            ')' => { self.advance(); Token.RParen }
-            _ if c.is_digit() || c == '.' => try self.read_number(),
-            _ => return CalcError.UnexpectedChar(c),
+            '+' => {
+                self.advance()
+                Token.Plus
+            }
+            '-' => {
+                self.advance()
+                Token.Minus
+            }
+            '*' => {
+                self.advance()
+                Token.Star
+            }
+            '/' => {
+                self.advance()
+                Token.Slash
+            }
+            '%' => {
+                self.advance()
+                Token.Percent
+            }
+            '^' => {
+                self.advance()
+                Token.Caret
+            }
+            '(' => {
+                self.advance()
+                Token.LParen
+            }
+            ')' => {
+                self.advance()
+                Token.RParen
+            }
+            _ if c.is_digit() || c == '.' => try self.read_number()
+            _ => return CalcError.UnexpectedChar(c)
         }
 
         return token
@@ -141,7 +165,7 @@ extend Parser {
     func new(input: string) -> Parser or CalcError {
         mut lexer = Lexer.new(input)
         let current = try lexer.next_token()
-        return Parser { lexer: lexer, current: current }
+        return Parser { lexer, current }
     }
 
     func advance(mutate self) -> void or CalcError {
@@ -152,24 +176,23 @@ extend Parser {
         let expr = try self.parse_expression()
 
         match self.current {
-            Eof => return expr,
-            _ => return CalcError.UnexpectedToken(self.token_string()),
+            Eof => return expr
+            _ => return CalcError.UnexpectedToken(self.token_string())
         }
     }
-    
 
     func token_string(self) -> string {
         match self.current {
-            Number(n) => return "{n}",
-            Plus => return "+",
-            Minus => return "-",
-            Star => return "*",
-            Slash => return "/",
-            Percent => return "%",
-            Caret => return "^",
-            LParen => return "(",
-            RParen => return ")",
-            Eof => return "end of input",
+            Number(n) => return "{n}"
+            Plus => return "+"
+            Minus => return "-"
+            Star => return "*"
+            Slash => return "/"
+            Percent => return "%"
+            Caret => return "^"
+            LParen => return "("
+            RParen => return ")"
+            Eof => return "end of input"
         }
     }
 
@@ -179,8 +202,8 @@ extend Parser {
 
         loop {
             let op = match self.current {
-                Plus => BinaryOp.Add,
-                Minus => BinaryOp.Sub,
+                Plus => BinaryOp.Add
+                Minus => BinaryOp.Sub
                 _ => break
             }
             try self.advance()
@@ -197,9 +220,9 @@ extend Parser {
 
         loop {
             let op = match self.current {
-                Star => BinaryOp.Mul,
-                Slash => BinaryOp.Div,
-                Percent => BinaryOp.Mod,
+                Star => BinaryOp.Mul
+                Slash => BinaryOp.Div
+                Percent => BinaryOp.Mod
                 _ => break
             }
             try self.advance()
@@ -249,11 +272,11 @@ extend Parser {
                         try self.advance()
                         return expr
                     }
-                    _ => return CalcError.UnexpectedToken("expected ')'".to_string()),
+                    _ => return CalcError.UnexpectedToken("expected ')'".to_string())
                 }
             }
-            Eof => return CalcError.EmptyExpression,
-            _ => return CalcError.UnexpectedToken(self.token_string()),
+            Eof => return CalcError.EmptyExpression
+            _ => return CalcError.UnexpectedToken(self.token_string())
         }
     }
 }
@@ -261,29 +284,29 @@ extend Parser {
 // Evaluator
 func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
-        Number(n) => return n,
+        Number(n) => return n
         Unary(op, inner) => {
             let val = try evaluate(inner)
             match op {
-                Neg => return -val,
+                Neg => return -val
             }
         }
         Binary(left, op, right) => {
             let l = try evaluate(left)
             let r = try evaluate(right)
             match op {
-                Add => return l + r,
-                Sub => return l - r,
-                Mul => return l * r,
+                Add => return l + r
+                Sub => return l - r
+                Mul => return l * r
                 Div => {
-                    if r == 0.0: return CalcError.DivisionByZero
+                    if r == 0.0 { return CalcError.DivisionByZero }
                     return l / r
                 }
                 Mod => {
-                    if r == 0.0: return CalcError.DivisionByZero
+                    if r == 0.0 { return CalcError.DivisionByZero }
                     return l % r
                 }
-                Pow => return l.powf(r),
+                Pow => return l.powf(r)
             }
         }
     }
@@ -324,17 +347,15 @@ func main() -> void or Error {
         print("> ")
         let input = (try io.read_line()).trim()
 
-        if input.is_empty(): continue
+        if input.is_empty() { continue }
 
         match input {
-            "quit" | "exit" | "q" => break,
-            "help" | "h" | "?" => print_help(),
-            _ => {
-                if calc(input.to_string()) is f64 as value {
-                    println("= {value}")
-                } else as e {
-                    println("Error: {e.message()}")
-                }
+            "quit" | "exit" | "q" => break
+            "help" | "h" | "?" => print_help()
+            _ => if calc(input.to_string()) is f64 as value {
+                println("= {value}")
+            } else as e {
+                println("Error: {e.message()}")
             }
         }
     }

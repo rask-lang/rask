@@ -433,13 +433,25 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 let Some(&hole_start) = holes.last() else {
                     return Some(pos + 1);
                 };
-                // A hole that is empty so far isn't a hole — it's the `{"key":
-                // ...}` of a JSON body, and the string ended at this quote all
-                // along (#506).
+                let after = skip_nested_string(bytes, pos)?;
+                // A hole that is empty so far *and* whose literal is followed by
+                // a colon isn't a hole — it's the `{"key": …}` of a JSON body,
+                // and the string ended at this quote all along (#506).
+                //
+                // The emptiness alone used to be enough, which threw out every
+                // expression that simply begins with a literal:
+                // `"{"lit".len()}"`, `"{"a" < "b"}"`, `"{"42".parse<i64>() …}"`
+                // all ended the string at the inner quote and the rest was
+                // parsed as code (#877). What follows the literal is what tells
+                // the two apart: a colon in JSON, a `.` or an operator in an
+                // expression.
                 if bytes[hole_start..pos].iter().all(|b| b.is_ascii_whitespace()) {
-                    return None;
+                    let next = bytes[after..].iter().find(|b| !b.is_ascii_whitespace());
+                    if next == Some(&b':') {
+                        return None;
+                    }
                 }
-                pos = skip_nested_string(bytes, pos)?;
+                pos = after;
                 continue;
             }
             b'\n' if !holes.is_empty() => return None,
@@ -711,28 +723,28 @@ impl<'a> Lexer<'a> {
                     .filter(|c| *c != '_')
                     .collect();
                 let (value, suffix) = int_value(&cleaned, 10, suffix)
-                    .ok_or_else(|| LexError::invalid_number(start, end))?;
+                    .ok_or_else(|| LexError::bad_int(&cleaned, 10, start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::HexInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let (value, suffix) = int_value(&cleaned, 16, suffix)
-                    .ok_or_else(|| LexError::invalid_number(start, end))?;
+                    .ok_or_else(|| LexError::bad_int(&cleaned, 16, start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::BinInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let (value, suffix) = int_value(&cleaned, 2, suffix)
-                    .ok_or_else(|| LexError::invalid_number(start, end))?;
+                    .ok_or_else(|| LexError::bad_int(&cleaned, 2, start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::OctInt => {
                 let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let (value, suffix) = int_value(&cleaned, 8, suffix)
-                    .ok_or_else(|| LexError::invalid_number(start, end))?;
+                    .ok_or_else(|| LexError::bad_int(&cleaned, 8, start, end))?;
                 TokenKind::Int(value, suffix)
             }
             RawToken::Float => {
@@ -825,19 +837,26 @@ impl<'a> Lexer<'a> {
 
 /// The value of an integer literal, plus the suffix it ends up with.
 ///
-/// Tokens carry an `i64`, so the top half of `u64` had nowhere to go and every
-/// literal above `i64::MAX` was rejected outright — `18446744073709551615`
-/// couldn't be written at all (#517). Such a literal can only be a `u64`, so it
-/// gets that suffix and its bit pattern; everything unsigned reads it back the
-/// same way.
-fn int_value(cleaned: &str, radix: u32, suffix: Option<IntSuffix>) -> Option<(i64, Option<IntSuffix>)> {
+/// Tokens carry an `i128`, so every literal up to `i128::MAX` is its own value.
+/// Only the top band — above `i128::MAX`, where just `u128` reaches — still
+/// travels as a bit pattern, because that is the one range an `i128` can't
+/// hold (#800).
+///
+/// Where no suffix was written the magnitude picks the narrowest type that
+/// fits, and the marker records which band it landed in so the parser can
+/// still fold a leading `-` and the checker knows what to call it.
+fn int_value(cleaned: &str, radix: u32, suffix: Option<IntSuffix>) -> Option<(i128, Option<IntSuffix>)> {
     if let Ok(v) = i64::from_str_radix(cleaned, radix) {
-        return Some((v, suffix));
+        return Some((i128::from(v), suffix));
     }
-    let v = u64::from_str_radix(cleaned, radix).ok()?;
-    // An explicit suffix stays as written; without one the magnitude is the
-    // only evidence, and the parser still gets to fold a `-` into it.
-    Some((v as i64, suffix.or(Some(IntSuffix::U64ByMagnitude))))
+    if let Ok(v) = u64::from_str_radix(cleaned, radix) {
+        return Some((i128::from(v), suffix.or(Some(IntSuffix::U64ByMagnitude))));
+    }
+    if let Ok(v) = i128::from_str_radix(cleaned, radix) {
+        return Some((v, suffix.or(Some(IntSuffix::I128ByMagnitude))));
+    }
+    let v = u128::from_str_radix(cleaned, radix).ok()?;
+    Some((v as i128, suffix.or(Some(IntSuffix::U128ByMagnitude))))
 }
 
 /// Parse integer type suffix from a number literal.
@@ -946,6 +965,12 @@ pub struct LexError {
     pub span: Span,
     pub message: String,
     pub hint: Option<String>,
+    /// Error code and the two lines that frame the message. A stray `@` and a
+    /// literal too big for `u128` are both lexer errors, but "unexpected
+    /// character" only describes one of them.
+    pub code: &'static str,
+    pub label: &'static str,
+    pub why: &'static str,
 }
 
 impl std::fmt::Display for LexError {
@@ -962,6 +987,9 @@ impl LexError {
             span: Span::new(pos, pos + ch.len_utf8()),
             message: format!("unexpected character '{}'", ch),
             hint: Some("remove this character or check for typos".to_string()),
+            code: "E0001",
+            label: "unexpected character",
+            why: "the lexer expected a valid token at this position",
         }
     }
 
@@ -970,6 +998,9 @@ impl LexError {
             span: Span::new(pos, pos + 1),
             message: "invalid escape sequence".to_string(),
             hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\u{...}".to_string()),
+            code: "E0003",
+            label: "not a valid escape",
+            why: "a backslash in a string starts an escape, so every backslash has to name one",
         }
     }
 
@@ -978,6 +1009,29 @@ impl LexError {
             span: Span::new(start, end),
             message: "invalid number literal".to_string(),
             hint: Some("check for extra digits or invalid prefix (0x, 0b, 0o)".to_string()),
+            code: "E0004",
+            label: "not a valid number",
+            why: "the lexer expected a valid token at this position",
+        }
+    }
+
+    /// Digits that read fine but name a number no integer type holds get their
+    /// own message — "invalid literal" sends people hunting for a typo that
+    /// isn't there (#800).
+    fn bad_int(cleaned: &str, radix: u32, start: usize, end: usize) -> Self {
+        if cleaned.is_empty() || !cleaned.chars().all(|c| c.is_digit(radix)) {
+            return Self::invalid_number(start, end);
+        }
+        Self {
+            span: Span::new(start, end),
+            message: "integer literal is too large for any integer type".to_string(),
+            hint: Some(format!(
+                "the widest integer type is `u128`, which tops out at {}",
+                u128::MAX
+            )),
+            code: "E0004",
+            label: "no integer type holds this",
+            why: "an integer literal has to name a value some integer type can represent",
         }
     }
 }

@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Four things `json.encode`/`decode` disagreed about between the backends
+// (#847), found by encoding and decoding the same values on both.
+//
+//   json.encode_pretty(struct)   native produced compact output — the struct
+//                                encoder writes text, and the pretty variant
+//                                shared it
+//   json.decode of "é"           the interpreter read each UTF-8 byte as a
+//                                Latin-1 char, so it came back "Ã©"
+//   json.encode of a big i64     the interpreter routed it through f64, so
+//                                9007199254740993 encoded as …992
+//   a failed decode's message    two different wordings for the same failure
+//
+// Decoding a number still goes through `f64` on both backends, so an integer
+// past 2^53 doesn't survive a round trip. That's the same on either side and
+// is the open design question in #628, not a divergence.
+
+import json
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+struct Doc {
+    public name: string
+    public tags: Vec<string>
+    public point: Point
+    public empty: Vec<i64>
+    public score: f64
+    public ok: bool
+}
+
+func point() -> Point {
+    return Point { x: 1, y: 2 }
+}
+
+test "std.json — encode_pretty indents, encode doesn't" {
+    assert_eq(json.encode(point()), "{{\"x\":1,\"y\":2}}")
+    assert_eq(json.encode_pretty(point()), "{{\n  \"x\": 1,\n  \"y\": 2\n}}")
+}
+
+test "std.json — pretty nests, and leaves an empty container inline" {
+    let d = Doc {
+        name: "a,b:c",
+        tags: ["x"],
+        point: point(),
+        empty: [],
+        score: 2.5,
+        ok: true,
+    }
+    let expected = "{{\n  \"name\": \"a,b:c\",\n  \"tags\": [\n    \"x\"\n  ],\n  \"point\": {{\n    \"x\": 1,\n    \"y\": 2\n  }},\n  \"empty\": [],\n  \"score\": 2.5,\n  \"ok\": true\n}}"
+    assert_eq(json.encode_pretty(d), expected)
+}
+
+test "std.json — a Vec encodes pretty too" {
+    let v: Vec<i64> = [1, 2]
+    assert_eq(json.encode_pretty(v), "[\n  1,\n  2\n]")
+    let e: Vec<i64> = []
+    assert_eq(json.encode_pretty(e), "[]")
+}
+
+// The separators inside a string must not be indented on.
+test "std.json — punctuation inside a string is left alone" {
+    let d = Doc {
+        name: "{{a}}: [b], \"c\"",
+        tags: [],
+        point: point(),
+        empty: [],
+        score: 0.0,
+        ok: false,
+    }
+    let pretty = json.encode_pretty(d)
+    assert(pretty.contains("\"{{a}}: [b], \\\"c\\\"\""))
+}
+
+struct Text {
+    public s: string
+}
+
+test "std.json — non-ASCII survives a round trip" {
+    let t = Text { s: "é 😀 ü — ½" }
+    let enc = json.encode(t)
+    let back = json.decode<Text>(enc)
+    if back is Text as v {
+        assert_eq(v.s, "é 😀 ü — ½")
+    } else as e {
+        assert_eq("decode failed: {e}", "")
+    }
+}
+
+test "std.json — a `\\u` surrogate pair is one character" {
+    let lit = json.decode<Text>("{{\"s\": \"\\u00e9\\ud83d\\ude00\"}}")
+    if lit is Text as v {
+        assert_eq(v.s, "é😀")
+    } else as e {
+        assert_eq("decode failed: {e}", "")
+    }
+}
+
+test "std.json — an integer encodes exactly, however large" {
+    let big = Point { x: 9007199254740993, y: 0 - 9007199254740993 }
+    assert_eq(json.encode(big), "{{\"x\":9007199254740993,\"y\":-9007199254740993}}")
+
+    let biggest = Point { x: 9223372036854775807, y: 0 - 9223372036854775807 }
+    assert_eq(
+        json.encode(biggest),
+        "{{\"x\":9223372036854775807,\"y\":-9223372036854775807}}",
+    )
+}
+
+func why(s: string) -> string {
+    let r = json.decode<Point>(s)
+    if r is Point as v {
+        return "ok {v.x}"
+    } else as e {
+        return "{e}"
+    }
+}
+
+test "std.json — a failed decode says the same thing on both backends" {
+    assert_eq(why("nope"), "parse error: unexpected character 'n' at byte 0")
+    assert_eq(why("[1]"), "type error: the value should be an object, found an array")
+    assert_eq(why("{{1: 2}}"), "parse error: expected '\"', found '1' at byte 1")
+    assert_eq(why("{{\"x\": 1}}"), "missing field: field \"y\" not found in the JSON object")
+    assert_eq(
+        why("{{\"x\": \"one\", \"y\": 2}}"),
+        "type error: field x should be an integer, found a string",
+    )
+}
+
+func main() {}

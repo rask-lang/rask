@@ -1,0 +1,13 @@
+Pair: (42, hello)
+Swapped: (hello, 42)
+
+Int box: 100
+String box: wrapped
+
+Auto-wrapped: 3.14
+
+Identity int: 42
+Identity string: test
+
+Max of 10 and 20: 20
+Longer word: elephant

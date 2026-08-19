@@ -17,7 +17,7 @@ struct DbConfig {
 extend DbConfig {
     func default_for(dir: string) -> DbConfig {
         return DbConfig {
-            dir: dir,
+            dir,
             wal_path: "{dir}/wal.log",
             flush_threshold: MEMTABLE_FLUSH_THRESHOLD,
         }
@@ -38,18 +38,21 @@ struct Db {
 
 extend Db {
     func open(config: DbConfig) -> Db or DbError {
-        fs.create_dir_all(config.dir)
-            catch e => return DbError.Io("cannot create directory: {config.dir}: {e.message()}")
+        fs.create_dir_all(config.dir) catch e => {
+            return DbError.Io("cannot create directory: {config.dir}: {e.message()}")
+        }
 
-        mut wal = Wal.open(config.wal_path)
-            catch e => return DbError.Wal(e)
+        mut wal = Wal.open(config.wal_path) catch e => {
+            return DbError.Wal(e)
+        }
         ensure wal.close()
 
         // Recover memtable from WAL
         mut memtable = Memtable.new()
         mut max_seq: i64 = 0
-        let recovered = recover_wal(config.wal_path)
-            catch e => return DbError.Wal(e)
+        let recovered = recover_wal(config.wal_path) catch e => {
+            return DbError.Wal(e)
+        }
 
         for kv in recovered {
             if kv.seq > max_seq { max_seq = kv.seq }
@@ -74,12 +77,12 @@ extend Db {
         }
 
         return Db {
-            config: config,
-            memtable: memtable,
-            wal: wal,
-            levels: levels,
+            config,
+            memtable,
+            wal,
+            levels,
             cache: BlockCache.new(),
-            next_sst_id: next_sst_id,
+            next_sst_id,
             next_seq: max_seq + 1,
             lookup: DefaultLookup {},
         }
@@ -91,8 +94,9 @@ extend Db {
 
         let kv = KeyValue.new(key, value, seq)
 
-        self.wal.append(kv.clone())
-            catch e => return DbError.Wal(e)
+        self.wal.append(kv.clone()) catch e => {
+            return DbError.Wal(e)
+        }
 
         self.memtable.put(own kv)
 
@@ -123,8 +127,9 @@ extend Db {
 
                 if key < meta.min_key || key > meta.max_key { continue }
 
-                let result = self.lookup.lookup(meta, key, mutate self.cache)
-                    catch e => return DbError.Sst(e)
+                let result = self.lookup.lookup(meta, key, mutate self.cache) catch e => {
+                    return DbError.Sst(e)
+                }
 
                 if result? as found {
                     if found.deleted {
@@ -145,8 +150,9 @@ extend Db {
 
         let kv = KeyValue.tombstone(key, seq)
 
-        self.wal.append(kv.clone())
-            catch e => return DbError.Wal(e)
+        self.wal.append(kv.clone()) catch e => {
+            return DbError.Wal(e)
+        }
 
         self.memtable.put(own kv)
 
@@ -166,11 +172,11 @@ extend Db {
             for meta in level {
                 if meta.max_key < start || meta.min_key > end { continue }
 
-                let entries = read_all_sstable_entries(meta.path)
-                    catch e => return DbError.Sst(e)
+                let entries = read_all_sstable_entries(meta.path) catch e => {
+                    return DbError.Sst(e)
+                }
 
-                let in_range = entries
-                    .filter(|kv| kv.key >= start && kv.key <= end)
+                let in_range = entries.filter(|kv| kv.key >= start && kv.key <= end)
                 for kv in in_range {
                     all_entries.push(kv)
                 }
@@ -209,15 +215,17 @@ extend Db {
         self.memtable = Memtable.new()
 
         let entries = old_memtable.take_sorted()
-        let meta = write_sstable(id, 0, self.config.dir, entries)
-            catch e => return DbError.Sst(e)
+        let meta = write_sstable(id, 0, self.config.dir, entries) catch e => {
+            return DbError.Sst(e)
+        }
 
         with self.levels[0] as l0 {
             l0.push(meta)
         }
 
-        self.wal.truncate()
-            catch e => return DbError.Wal(e)
+        self.wal.truncate() catch e => {
+            return DbError.Wal(e)
+        }
 
         if self.levels[0].len() > 4 {
             try self.compact_level(0)
@@ -237,8 +245,9 @@ extend Db {
         let new_id = self.next_sst_id
         self.next_sst_id += 1
 
-        let merged = compact_sstables(a.clone(), b.clone(), new_id, level + 1, self.config.dir)
-            catch e => return DbError.Compaction(e)
+        let merged = compact_sstables(a.clone(), b.clone(), new_id, level + 1, self.config.dir) catch e => {
+            return DbError.Compaction(e)
+        }
 
         self.cache.invalidate(a.id)
         self.cache.invalidate(b.id)
@@ -268,7 +277,7 @@ extend Db {
             memtable_entries: self.memtable.entries.len().wrap<i32>(),
             memtable_bytes: self.memtable.size_bytes,
             sst_count: total_sst.wrap<i32>(),
-            level_counts: level_counts,
+            level_counts,
             cache_entries: self.cache.count().wrap<i32>(),
             cache_accesses: self.cache.access_counter,
             next_seq: self.next_seq,
@@ -294,8 +303,9 @@ extend Db {
                 SstError => {}
             }
         }
-        self.wal.close()
-            catch e => return DbError.Wal(e)
+        self.wal.close() catch e => {
+            return DbError.Wal(e)
+        }
         return ()
     }
 }

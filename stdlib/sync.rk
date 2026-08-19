@@ -6,23 +6,23 @@
 /// Access via `with shared.read() as v { }` or `with shared.write() as v { }`.
 extend Shared<T> {
     @native("rask_shared_new_ptr")
-    public func new(value: T) -> Shared<T> { }
+    public func new(value: T) -> Shared<T> {}
 
     /// Expression-scoped read lock.
     @native("rask_shared_read_ptr")
-    public func read(self) -> T { }
+    public func read(self) -> T {}
 
     /// Expression-scoped write lock.
     @native("rask_shared_write_ptr")
-    public func write(self) -> T { }
+    public func write(self) -> T {}
 
     /// Non-blocking read. Returns none if contended.
     @native("rask_shared_try_read_ptr")
-    public func try_read(self, f: func(T)) -> Option<T> { }
+    public func try_read(self, f: func(T)) -> Option<T> {}
 
     /// Non-blocking write. Returns none if contended.
     @native("rask_shared_try_write_ptr")
-    public func try_write(self, f: func(T)) -> Option<T> { }
+    public func try_write(self, f: func(T)) -> Option<T> {}
 }
 
 // --- Mutex (exclusive access) ---
@@ -31,13 +31,13 @@ extend Shared<T> {
 /// Access via `with mutex as v { }` or `mutex.lock().field`.
 extend Mutex<T> {
     @native("rask_mutex_new_ptr")
-    public func new(value: T) -> Mutex<T> { }
+    public func new(value: T) -> Mutex<T> {}
 
     /// Expression-scoped exclusive lock.
     @native("rask_mutex_lock_ptr")
-    public func lock(self) -> T { }
+    public func lock(self) -> T {}
 
     /// Non-blocking lock. Returns none if held.
     @native("rask_mutex_try_lock_ptr")
-    public func try_lock(self, f: func(T)) -> Option<T> { }
+    public func try_lock(self, f: func(T)) -> Option<T> {}
 }

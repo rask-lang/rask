@@ -167,6 +167,16 @@ pub struct ComptimeGlobalMeta {
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
 
+/// The key a comptime-folded *local* is stored under.
+///
+/// A comptime global map is shared by the whole program, and a bare binding name
+/// isn't unique in it: two functions each with a `let v = f()` collided, and one
+/// read the other's value and width (#825). The owning function's name makes it
+/// unique. `$` rather than `::` because the key becomes a data symbol name.
+pub fn comptime_local_key(fn_name: &str, binding: &str) -> String {
+    format!("{}$local${}", fn_name, binding)
+}
+
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
     format!("{}{}", CONST_SLOT_PREFIX, const_name)
@@ -263,6 +273,7 @@ impl<'a> MirContext<'a> {
             call_targets,
             type_names,
             // Straight off the checker — never optional.
+            type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             trait_coercions: &typed.trait_coercions,
             error_wraps: &typed.error_wraps,
@@ -357,6 +368,13 @@ pub struct MirContext<'a> {
     pub node_types: &'a HashMap<NodeId, Type>,
     /// TypeId → name mapping from the type checker, for resolving Named types.
     pub type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// The checker's type table.
+    ///
+    /// A layout has dropped `@resource` and substituted its field types by the
+    /// time it exists, and `std.reflect`'s `is_resource` and flatness walk are
+    /// asking about exactly those (#791). This is the declarations as the checker
+    /// recorded them — the same thing the interpreter reads off its AST maps.
+    pub type_defs: &'a rask_types::TypeTable,
     /// Comptime-evaluated global constants (name → metadata).
     /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
     pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
@@ -483,12 +501,15 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_TYPE_DEFS: std::sync::LazyLock<rask_types::TypeTable> =
+            std::sync::LazyLock::new(Default::default);
         MirContext {
             struct_layouts: &[],
             mutate_self_fns: None,
             enum_layouts: &[],
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
+            type_defs: &EMPTY_TYPE_DEFS,
             comptime_globals: &EMPTY_COMPTIME,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
@@ -545,6 +566,48 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// The type of one payload field of an enum variant, read off the checker's
+    /// declaration with the scrutinee's type arguments substituted in.
+    ///
+    /// A generic enum's shared layout gives every type parameter one word and
+    /// records a placeholder type in the slot, so the layout can't say what a
+    /// payload binding actually holds. `match m { Maybe.Just(v) => … }` on a
+    /// `Maybe<Wrap<i64>>` bound `v` as an integer, and the arm loaded the inner
+    /// struct's 8 bytes and dereferenced them as a pointer (#871).
+    ///
+    /// `None` for anything the layout already gets right: a concrete payload, a
+    /// non-generic enum, a scrutinee whose instantiation isn't settled.
+    pub fn variant_payload_mir(
+        &self,
+        scrutinee: Option<&Type>,
+        variant: &str,
+        field_index: usize,
+    ) -> Option<MirType> {
+        let (base, args) = match scrutinee? {
+            Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return None,
+        };
+        let bare = base.split('<').next().unwrap_or(&base).trim();
+        let id = self.type_defs.get_type_id(bare)?;
+        let rask_types::TypeDef::Enum { type_params, variants, .. } = self.type_defs.get(id)?
+        else {
+            return None;
+        };
+        let bare_variant = variant.rsplit('.').next().unwrap_or(variant);
+        let declared = variants
+            .iter()
+            .find(|(n, _)| n == bare_variant)?
+            .1
+            .get(field_index)?;
+        // Only a payload declared *as* one of the type parameters. Anything
+        // concrete is already spelled out in the layout.
+        let Type::UnresolvedNamed(param) = declared else { return None };
+        let pos = type_params.iter().position(|p| p == param)?;
+        let rask_types::GenericArg::Type(arg) = args.get(pos)? else { return None };
+        Some(self.type_to_mir(arg))
+    }
+
     /// `find_struct`, falling back to the name with any `<…>` stripped.
     ///
     /// A generic type's layout is stored under its base name, so a name written
@@ -568,10 +631,134 @@ impl<'a> MirContext<'a> {
         self.find_struct(base)
     }
 
+    /// The layout of one *instantiation* of a generic type, when mono emitted a
+    /// separate one.
+    ///
+    /// Generic types share a single layout with a word-sized placeholder per type
+    /// parameter, which is right until a type argument is an inline aggregate
+    /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
+    /// instance layout and falls through to the shared one. The name comes from
+    /// `rask_mono::generic_instance_name`, so both sides spell it the same way by
+    /// construction (#781).
+    pub fn generic_instance_mir_type(
+        &self,
+        base: &rask_types::TypeId,
+        args: &[rask_types::GenericArg],
+    ) -> Option<MirType> {
+        let name = self.generic_instance_layout_name(base, args)?;
+        if let Some((idx, sl)) = self.find_struct(&name) {
+            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
+        }
+        let (idx, el) = self.find_enum(&name)?;
+        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
+    }
+
+    /// `Base$Arg$Arg` for a resolved generic type, or `None` when an argument
+    /// can't be named.
+    fn generic_instance_layout_name(
+        &self,
+        base: &rask_types::TypeId,
+        args: &[rask_types::GenericArg],
+    ) -> Option<String> {
+        let base_name = self.type_names.get(base)?;
+        let bare = base_name.split('<').next().unwrap_or(base_name).trim();
+        let mut arg_tys = Vec::with_capacity(args.len());
+        for arg in args {
+            let rask_types::GenericArg::Type(t) = arg else { return None };
+            arg_tys.push((**t).clone());
+        }
+        rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+    }
+
+    /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
+    ///
+    /// The key is built the same way `rask_mono::generic_instance_name` builds it,
+    /// which for a written argument is the argument's own spelling — a name for a
+    /// user type, the primitive's name otherwise. A nested `One<One<Big>>` folds
+    /// the same way because its inner `<…>` becomes `$…` too.
+    fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
+        let args = generic_args_of_str(full)?;
+        if args.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            // A nested instantiation, spelled the same way.
+            let key = match arg.split_once('<') {
+                Some(_) => {
+                    let inner = generic_args_of_str(arg)?;
+                    let head = arg.split('<').next()?.trim();
+                    format!("{}${}", head, inner.join("$"))
+                }
+                None => arg.trim().to_string(),
+            };
+            if key.is_empty() {
+                return None;
+            }
+            parts.push(key);
+        }
+        let name = format!("{}${}", base.trim(), parts.join("$"));
+        if let Some((idx, sl)) = self.find_struct(&name) {
+            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
+        }
+        let (idx, el) = self.find_enum(&name)?;
+        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
+    }
+
+    /// The instance layout name for a checker type, in either spelling.
+    ///
+    /// An instantiated copy's types were built by rewriting type strings, so its
+    /// `One<Big>` is an `UnresolvedGeneric` carrying a plain name rather than a
+    /// `Generic` carrying an interned id. Both name the same layout (#814).
+    fn instance_layout_name_of(&self, ty: Option<&Type>) -> Option<String> {
+        match ty? {
+            Type::Generic { base, args } => self.generic_instance_layout_name(base, args),
+            Type::UnresolvedGeneric { name, args } => {
+                let bare = name.split('<').next().unwrap_or(name).trim();
+                let mut arg_tys = Vec::with_capacity(args.len());
+                for arg in args {
+                    let rask_types::GenericArg::Type(t) = arg else { return None };
+                    arg_tys.push((**t).clone());
+                }
+                rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+            }
+            _ => None,
+        }
+    }
+
+    /// The instance struct layout for a checker type, if it has one.
+    pub fn generic_instance_struct(&self, ty: Option<&Type>) -> Option<(u32, &StructLayout)> {
+        let name = self.instance_layout_name_of(ty)?;
+        self.find_struct(&name)
+    }
+
+    /// The instance enum layout for a checker type, if it has one.
+    pub fn generic_instance_enum(&self, ty: Option<&Type>) -> Option<(u32, &EnumLayout)> {
+        let name = self.instance_layout_name_of(ty)?;
+        self.find_enum(&name)
+    }
+
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
     /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
         ty.size()
+    }
+
+    /// `find_enum`, accepting a name with written type arguments.
+    ///
+    /// `Holder<i64>.Full(4)` reaches lowering as the name `Holder<i64>`; the
+    /// layouts are keyed by the bare name. `find_struct_written` has done this for
+    /// structs since the beginning, which is why the struct form worked and the
+    /// enum form didn't (#782).
+    pub fn find_enum_written(&self, name: &str) -> Option<(u32, &EnumLayout)> {
+        if let Some(found) = self.find_enum(name) {
+            return Some(found);
+        }
+        let base = name.split('<').next()?.trim();
+        if base == name {
+            return None;
+        }
+        self.find_enum(base)
     }
 
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
@@ -659,7 +846,7 @@ impl<'a> MirContext<'a> {
                     );
                 }
                 // "T or E" → Result<T, E>
-                if let Some(or_pos) = name.find(" or ") {
+                if let Some(or_pos) = find_top_level_or(name) {
                     let ok_str = name[..or_pos].trim();
                     let err_str = name[or_pos + 4..].trim();
                     return MirType::Result {
@@ -728,7 +915,14 @@ impl<'a> MirContext<'a> {
                 } else if let Some((idx, el)) = self.find_enum(name) {
                     MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                 } else if let Some(base) = name.split('<').next() {
-                    // Generic type like "Box<i64>" — try base name "Box"
+                    // "One<Big>" written out — a generic instantiation whose type
+                    // argument is an inline aggregate has a layout of its own, and
+                    // it isn't found under the base name. A monomorphized body
+                    // reaches this spelling: `first$Big(o: One<Big>)` was given the
+                    // shared 8-byte layout while its caller passed 24 bytes (#781).
+                    if let Some(instance) = self.instance_layout_from_str(base, name) {
+                        return instance;
+                    }
                     if let Some((idx, sl)) = self.find_struct(base) {
                         self.struct_or_handle(base, idx, sl)
                     } else if let Some((idx, el)) = self.find_enum(base) {
@@ -776,7 +970,10 @@ impl<'a> MirContext<'a> {
                     MirType::Ptr
                 }
             }
-            Type::Generic { base, .. } => {
+            Type::Generic { base, args } => {
+                if let Some(instance) = self.generic_instance_mir_type(base, args) {
+                    return instance;
+                }
                 if let Some(name) = self.type_names.get(base) {
                     self.resolve_type_str(name)
                 } else {
@@ -1002,6 +1199,14 @@ pub(crate) struct LocalMeta {
     /// locals and aggregate mutate params (which are already pointers used via
     /// field access, not bare loads).
     pub scalar_mutate_ptr: Option<MirType>,
+    /// The value in this local is a heap box handed over by `own` (#739).
+    ///
+    /// `Owned<T>` erases to `T` in the checker (OW5), so nothing in the type says
+    /// whether a given value is the struct or a pointer to it. Only the code that
+    /// allocated it knows, and this carries that fact to the places that have to
+    /// tell the two apart: storing into a declared `Owned` slot must not box a
+    /// second time, and `drop` frees exactly one box.
+    pub is_owned_box: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -1531,6 +1736,46 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// A folded comptime value for a binding in this function, if there is one.
+    ///
+    /// The local's own key first — that's where a comptime-folded `let` lives — and
+    /// the bare name second, which is a module-level const (#825).
+    pub(crate) fn comptime_global_for(&self, name: &str) -> Option<(String, &'a ComptimeGlobalMeta)> {
+        let local_key = comptime_local_key(&self.parent_name, name);
+        if let Some(meta) = self.ctx.comptime_globals.get(&local_key) {
+            return Some((local_key, meta));
+        }
+        self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
+    }
+
+    /// The MIR type of a folded comptime global, from the width its value
+    /// actually has.
+    ///
+    /// A comptime global carries its bytes and the name of what they are; only
+    /// this said how many bytes to read back, and it listed five widths. Anything
+    /// else fell to `i64`, so a `u128` global was read 8 bytes at a time (the value
+    /// came back mod 2^64) and a `u32` one read 8 bytes out of a 4-byte allocation
+    /// (#824).
+    pub(crate) fn comptime_global_mir_type(prefix: &str) -> Option<MirType> {
+        Some(match prefix {
+            "bool" => MirType::Bool,
+            "i8" => MirType::I8,
+            "i16" => MirType::I16,
+            "i32" => MirType::I32,
+            "i64" => MirType::I64,
+            "i128" => MirType::I128,
+            "u8" => MirType::U8,
+            "u16" => MirType::U16,
+            "u32" => MirType::U32,
+            "u64" => MirType::U64,
+            "u128" => MirType::U128,
+            "char" => MirType::Char,
+            "f32" => MirType::F32,
+            "f64" => MirType::F64,
+            _ => return None,
+        })
+    }
+
     /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.
     ///
     /// `Owned<T>` is the only box whose slot holds a pointer to a value the
@@ -1546,6 +1791,54 @@ impl<'a> MirLowerer<'a> {
             rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
             _ => None,
         }
+    }
+
+    /// Does `object.field` name a field declared `Owned<T>` whose value went to
+    /// the heap? Those hold a pointer where every other aggregate field holds the
+    /// value, so reading one is a load rather than an address (#739).
+    ///
+    /// A scalar payload is never boxed — it fits the slot already — so the field
+    /// holds the value and reads like any other.
+    pub(crate) fn owned_field_is_boxed(&self, object: &Expr, field: &str) -> bool {
+        let layout = self.struct_layout_of_expr(object);
+        if std::env::var("RASK_DEBUG_OWNED").is_ok() {
+            eprintln!("OWNEDCHK field {} layout {:?} fieldty {:?}", field,
+                layout.as_ref().map(|l| l.name.clone()),
+                layout.as_ref().and_then(|l| l.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())));
+        }
+        let Some(layout) = layout else { return false };
+        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
+        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
+        self.ctx.type_to_mir(&payload).passed_by_address()
+    }
+
+    /// Does this expression already evaluate to a heap box?
+    ///
+    /// `own e` allocates, and so does anything already holding what an `own`
+    /// produced — a local bound to one, or a field declared `Owned<T>`. Storing
+    /// such a value into a declared `Owned` slot must not allocate again; that's
+    /// how `Holder { inner: p }` ended up with a box holding a box (#739).
+    pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Unary { op: UnaryOp::Own, .. } => true,
+            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
+            ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
+            _ => false,
+        }
+    }
+
+    /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
+    /// already.
+    pub(crate) fn box_into_owned_slot(
+        &mut self,
+        value_expr: &Expr,
+        val: MirOperand,
+        val_ty: &MirType,
+    ) -> MirOperand {
+        if self.expr_yields_owned_box(value_expr) {
+            return val;
+        }
+        self.box_into_owned(val, val_ty)
     }
 
     /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
@@ -1992,6 +2285,49 @@ impl<'a> MirLowerer<'a> {
             cur_ty = layer_ty;
         }
         cur_op
+    }
+
+    /// `x == v` where `x` is a `T?` and `v` is a bare `T`: wrap the bare side so
+    /// both are optionals, which is the comparison codegen already knows.
+    ///
+    /// The checker accepts the mixed form and the interpreter answers it by
+    /// wrapping, the way every other position auto-wraps a bare value. MIR
+    /// emitted a raw compare between a 16-byte optional slot and a scalar
+    /// instead, and codegen then read the scalar as an address — so
+    /// `let a: bool? = true` then `if a == true` failed Cranelift's verifier
+    /// (`load.i8 v10 ; v10 = 1`, loading from the address 1), and the `i64?`
+    /// spelling segfaulted at runtime while the interpreter printed the answer
+    /// (#834).
+    ///
+    /// `x == none` is untouched: `none`'s type isn't the payload's, so neither
+    /// side matches.
+    pub(crate) fn align_optional_compare(
+        &mut self,
+        left: MirOperand,
+        left_ty: &MirType,
+        right: MirOperand,
+        right_ty: &MirType,
+    ) -> (MirOperand, MirOperand) {
+        let payload_of = |ty: &MirType| match ty {
+            MirType::Option(inner) => Some((**inner).clone()),
+            _ => None,
+        };
+        // An equality operand is an argument position — `a == v` is `a.eq(v)`
+        // after desugaring, and `v` is the argument.
+        let site = rask_ast::coercion::CoercionSite::Argument;
+        if let Some(inner) = payload_of(left_ty) {
+            if &inner == right_ty {
+                let wrapped = self.coerce_into_wrapper(site, right, right_ty, left_ty);
+                return (left, wrapped);
+            }
+        }
+        if let Some(inner) = payload_of(right_ty) {
+            if &inner == left_ty {
+                let wrapped = self.coerce_into_wrapper(site, left, left_ty, right_ty);
+                return (wrapped, right);
+            }
+        }
+        (left, right)
     }
 
     /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
@@ -2882,10 +3218,18 @@ impl<'a> MirLowerer<'a> {
                         Some(rask_ast::token::IntSuffix::U32) => MirType::U32,
                         Some(rask_ast::token::IntSuffix::U64)
                         | Some(rask_ast::token::IntSuffix::U64ByMagnitude) => MirType::U64,
+                        Some(rask_ast::token::IntSuffix::I128)
+                        | Some(rask_ast::token::IntSuffix::I128ByMagnitude) => MirType::I128,
+                        Some(rask_ast::token::IntSuffix::U128)
+                        | Some(rask_ast::token::IntSuffix::U128ByMagnitude) => MirType::U128,
                         _ => MirType::I64,
                     }
                 };
-                Some((MirOperand::Constant(MirConst::Int(*val)), ty))
+                let konst = match ty {
+                    MirType::I128 | MirType::U128 => MirConst::Int128(*val),
+                    _ => MirConst::Int(*val as i64),
+                };
+                Some((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, _) => {
                 let ty = if let Some(hint) = ty_hint {
@@ -3120,6 +3464,16 @@ impl<'a> MirLowerer<'a> {
         // for the payload, and `x is none` answered backwards on native.
         if name == "none" {
             return true;
+        }
+        // An optional has no *named* absent side — `none` is the only way to
+        // spell it, and that's the line above. Everything else names the
+        // payload, whatever the payload's MIR type looks like. Without this an
+        // opaque stdlib type that lowers to a bare `i64` (Duration, Instant)
+        // reached the uppercase-means-err guess at the bottom, and
+        // `d is Duration` on a `Duration?` tested the absent tag — false for a
+        // value that was right there.
+        if matches!(val_ty, MirType::Option(_)) {
+            return false;
         }
         // Exact identity match wins.
         if let Some(ok) = ok_ty {
@@ -3930,6 +4284,9 @@ impl<'a> MirLowerer<'a> {
                 | rask_ast::stmt::StmtKind::LetTuple { patterns, .. } => {
                     for n in rask_ast::stmt::tuple_pats_flat_names(patterns) { local_bound.insert(n.to_string()); }
                 }
+                rask_ast::stmt::StmtKind::LetStruct { pattern, .. } => {
+                    for n in rask_ast::stmt::pattern_binding_names(pattern) { local_bound.insert(n); }
+                }
                 _ => {}
             }
         }
@@ -3948,12 +4305,14 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
             StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),
             StmtKind::Return(None) => {}
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.walk_free_vars(target, bound, seen, free);
                 self.walk_free_vars(value, bound, seen, free);
             }
@@ -4312,6 +4671,22 @@ fn ret_category_to_mir_type_in(
         RetCategory::Void => MirType::Void,
         RetCategory::Bool => MirType::Bool,
         RetCategory::I64 => MirType::I64,
+        RetCategory::Int(w) => {
+            use rask_stdlib::mir_metadata::IntWidth;
+            match w {
+                IntWidth::I8 => MirType::I8,
+                IntWidth::I16 => MirType::I16,
+                IntWidth::I32 => MirType::I32,
+                IntWidth::I128 => MirType::I128,
+                IntWidth::U8 => MirType::U8,
+                IntWidth::U16 => MirType::U16,
+                IntWidth::U32 => MirType::U32,
+                IntWidth::U64 => MirType::U64,
+                IntWidth::U128 => MirType::U128,
+                IntWidth::Usize => MirType::usize_ty(),
+                IntWidth::Isize => MirType::isize_ty(),
+            }
+        }
         RetCategory::F64 => MirType::F64,
         RetCategory::String => MirType::String,
         RetCategory::Char => MirType::Char,
@@ -4406,6 +4781,25 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
     }
 }
 
+/// The first ` or ` that isn't inside `<…>` or `(…)`.
+///
+/// `Wrap<i64 or MyErr>` is one type, not a result. Splitting on the first ` or `
+/// anywhere made it `Wrap<i64` or `MyErr>`, so a method on it took a `self` typed
+/// as a result of two nonsense halves (#872).
+fn find_top_level_or(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' if depth == 0 && bytes[i..].starts_with(b" or ") => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn find_top_level_comma(s: &str) -> Option<usize> {
     let mut depth = 0usize;
     for (i, c) in s.char_indices() {
@@ -4457,6 +4851,38 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
         Type::Slice(_) | Type::Array { .. } => Some("Vec"),
         _ => None,
     }
+}
+
+/// The dispatch prefix for a builtin type named in source, which is the spelling
+/// a folded comptime const carries in `ComptimeGlobalMeta.type_prefix`.
+///
+/// Goes through `builtin_method_prefix` so the width collapse — narrow integers
+/// dispatch on their widest sibling — is stated in one place. A folded const used
+/// its own type name as the prefix directly, so `const B: u32 = comptime { … }`
+/// interpolated into a string emitted `u32_to_string`, which no backend has
+/// (#824).
+pub fn builtin_method_prefix_for_name(name: &str) -> Option<&'static str> {
+    let ty = match name {
+        "i8" => Type::I8,
+        "i16" => Type::I16,
+        "i32" => Type::I32,
+        "i64" => Type::I64,
+        "i128" => Type::I128,
+        "u8" => Type::U8,
+        "u16" => Type::U16,
+        "u32" => Type::U32,
+        "u64" => Type::U64,
+        "u128" => Type::U128,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
+        "bool" => Type::Bool,
+        "char" => Type::Char,
+        // A string receiver never reaches `builtin_method_prefix` — it comes out
+        // of `stdlib_type_prefix` instead — but it is spelled the same either way.
+        "string" => return Some("string"),
+        _ => return None,
+    };
+    builtin_method_prefix(&ty)
 }
 
 
@@ -4580,7 +5006,7 @@ mod tests {
         Span::new(0, 0)
     }
 
-    fn int_expr(val: i64) -> Expr {
+    fn int_expr(val: i128) -> Expr {
         Expr { id: NodeId(100), kind: ExprKind::Int(val, None), span: sp() }
     }
 
@@ -4779,7 +5205,7 @@ mod tests {
     fn assign_stmt(target: Expr, value: Expr) -> Stmt {
         Stmt {
             id: NodeId(210),
-            kind: StmtKind::Assign { target, value },
+            kind: StmtKind::Assign { target, value, op: None },
             span: sp(),
         }
     }
@@ -5427,7 +5853,9 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                            declared_default: None,
                         is_public: true,
+                        is_type_param: false,
                     }],
                 },
                 VariantLayout {
@@ -5443,7 +5871,9 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
+                            declared_default: None,
                         is_public: true,
+                        is_type_param: false,
                     }],
                 },
             ],
@@ -5462,6 +5892,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5470,6 +5901,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
@@ -5534,6 +5966,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5542,6 +5975,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
@@ -5592,8 +6026,10 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false,
+                            declared_default: None, is_public: true, is_type_param: false },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false,
+                            declared_default: None, is_public: true, is_type_param: false },
                     ],
                 },
             ],
@@ -5612,6 +6048,7 @@ mod tests {
         let empty_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
+        let empty_type_defs = rask_types::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -5620,6 +6057,7 @@ mod tests {
             enum_layouts: &enum_layouts,
             node_types: &node_types,
             type_names: &type_names,
+            type_defs: &empty_type_defs,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),

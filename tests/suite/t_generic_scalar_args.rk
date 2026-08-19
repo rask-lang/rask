@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type instantiated with a *scalar* argument (#820).
+//
+// #781 made a generic type whose argument is a big inline aggregate get its own
+// layout. Scalar arguments were the half nobody looked at, because they all fit
+// the shared layout's word-sized slot — so the size guard never trips and there's
+// no error, just a wrong value. Two things went wrong there:
+//
+//   - `Box.new("hei")` is a method on a generic type with no receiver to read the
+//     instantiation from, so it stayed on the shared layout while
+//     `Box<string>.get()` got a per-instantiation one. One wrote the field, the
+//     other read it back at a different size, and the string came out as garbage.
+//   - The shared layout substitutes `i64` for every type parameter. Right size,
+//     wrong register class: `wrap(3.14).value` loaded the double's bits into an
+//     integer register, and converting them on the way into `f64_to_string`
+//     printed 4614253070214988800.
+//
+// Both showed up in `examples/09_generics.rk`, which the examples gate runs
+// without comparing output.
+
+struct Box<T> {
+    public value: T
+}
+
+extend Box<T> {
+    func new(value: T) -> Box<T> {
+        return Box { value }
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+func wrap<T>(value: T) -> Box<T> {
+    return Box { value }
+}
+
+test "type.generics — a static method on a generic type sees its instantiation" {
+    let s = Box.new("wrapped")
+    assert s.get() == "wrapped"
+    assert s.value == "wrapped"
+
+    let n = Box.new(100)
+    assert n.get() == 100
+
+    let f = Box.new(2.5)
+    assert f.get() == 2.5
+}
+
+test "type.generics — a float type argument reads back as a float" {
+    let b = wrap(3.14)
+    assert b.value > 3.13
+    assert b.value < 3.15
+    assert "{b.value}" == "3.14"
+
+    // The integer and string cases, which never went through the float path.
+    assert wrap(7).value == 7
+    assert wrap("hei").value == "hei"
+}
+
+// Two parameters, swapped between the input and the result — a `Pair<i32, string>`
+// and a `Pair<string, i32>` used to share one layout and one set of field offsets.
+struct Pair<T, U> {
+    public first: T
+    public second: U
+}
+
+func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
+    return Pair {
+        first: pair.second,
+        second: pair.first,
+    }
+}
+
+test "type.generics — swapped instantiations don't share a layout" {
+    let int_string = Pair { first: 42, second: "hello" }
+    let string_int = swap(int_string)
+    assert string_int.first == "hello"
+    assert string_int.second == 42
+
+    // A float on one side and a string on the other: the two slots differ in
+    // register class as well as in what they hold.
+    let float_string = Pair { first: 1.5, second: "x" }
+    let swapped = swap(float_string)
+    assert swapped.first == "x"
+    assert swapped.second == 1.5
+}

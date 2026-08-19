@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A scalar `mutate` argument that is a collection element (#879).
+//
+//     func bump(mutate v: i64) -> void { v = v + 100 }
+//     mut arr: Vec<i64> = [1, 2]
+//     bump(mutate arr[0])
+//
+// The interpreter left 101 in the element; native left 1. The same call on a
+// struct field wrote back on both.
+//
+// A scalar `mutate` parameter arrives as a pointer, and the caller hands over the
+// address of the place. A field has one — base plus offset. A Vec or Map element
+// doesn't: it lives in the collection's own buffer, so it has to be *borrowed*
+// for the length of the call. That machinery already existed for aggregate
+// elements and was guarded to aggregates only, on the grounds that "a scalar
+// element is passed by value" — true on the aggregate path, not on this one.
+//
+// A plain local is a different matter and stays a copy: mem.parameters says a
+// Copy argument to a `mutate` parameter is copied in and mutations affect the
+// copy, so `bump(mutate n)` on a local leaves `n` alone. That's asserted here too
+// so the three positions can't drift apart silently.
+
+func bump(mutate v: i64) -> void {
+    v = v + 100
+    return
+}
+
+func bump32(mutate v: i32) -> void {
+    v = v + 100
+    return
+}
+
+func bumpf(mutate v: f64) -> void {
+    v = v + 0.5
+    return
+}
+
+func flip(mutate v: bool) -> void {
+    v = true
+    return
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+test "mutate element — a Vec element is written back" {
+    mut arr: Vec<i64> = [1, 2, 3]
+    bump(mutate arr[0])
+    assert_eq(arr[0], 101)
+    // Only that element.
+    assert_eq(arr[1], 2)
+    assert_eq(arr[2], 3)
+    bump(mutate arr[2])
+    assert_eq(arr.join(","), "101,2,103")
+}
+
+test "mutate element — a Map value is written back" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", 1)
+    m.insert("j", 5)
+    bump(mutate m["k"])
+    assert_eq(m.get("k") ?? -1, 101)
+    assert_eq(m.get("j") ?? -1, 5)
+}
+
+// The element's width decides the store width. A full-word store into a narrow
+// slot walks into the next element.
+test "mutate element — narrower and floating element types" {
+    mut a: Vec<i32> = [1, 2]
+    bump32(mutate a[0])
+    assert_eq(a[0], 101)
+    assert_eq(a[1], 2)
+
+    mut f: Vec<f64> = [1.0, 2.0]
+    bumpf(mutate f[1])
+    assert_eq(f[0], 1.0)
+    assert_eq(f[1], 2.5)
+
+    mut b: Vec<bool> = [false, false]
+    flip(mutate b[1])
+    assert(b[0] == false)
+    assert(b[1])
+}
+
+// A field has storage of its own and has always worked; it must keep working.
+test "mutate element — a struct field still writes back" {
+    mut p = Point { x: 1, y: 2 }
+    bump(mutate p.x)
+    assert_eq(p.x, 101)
+    assert_eq(p.y, 2)
+}
+
+// mem.parameters: a Copy argument is copied in, so a plain local is untouched.
+test "mutate element — a plain local is still a copy" {
+    mut n = 1
+    bump(mutate n)
+    assert_eq(n, 1)
+}
+
+func main() {}

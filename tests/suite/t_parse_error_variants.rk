@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `string.parse<T>()` reports *which* failure it was.
+//
+// The C entry point returned a single 0/1 status, and codegen wrote the
+// Result's Err tag and left the `ParseError` payload slot untouched. So which
+// of the three variants a program matched on was whatever was on the stack:
+// usually `Empty` whatever the real failure was, and once the stack had been
+// used, a tag no variant has — which reached `message()`'s match `unreachable`
+// and killed the process with SIGILL.
+//
+// `examples/13_string_operations.rk` died there, after printing four sections
+// correctly. The examples gate runs it without comparing backends, so the
+// interpreter's correct answers never got looked at next to native's.
+
+func classify(s: string) -> string {
+    let r = s.parse<i32>()
+    if r is i32 as n {
+        return "ok {n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+test "std.strings — a parse failure names its own variant" {
+    assert_eq(classify("42"), "ok 42")
+    // Empty.
+    assert_eq(classify(""), "err no digits found")
+    // Invalid — this came back as `no digits found` on native.
+    assert_eq(classify("abc"), "err non-numeric character")
+    assert_eq(classify("12x"), "err non-numeric character")
+    // OutOfRange: it looked like a number and didn't fit.
+    assert_eq(classify("99999999999999999999"), "err value out of range")
+}
+
+test "std.strings — whitespace is trimmed before the classification" {
+    assert_eq(classify("  7  "), "ok 7")
+    // Trimmed to nothing, so it's Empty rather than Invalid.
+    assert_eq(classify("   "), "err no digits found")
+}
+
+// Several in a row is what turned the wrong variant into a crash: the first
+// failure left a tag in the slot, and the second read a different one.
+func all_three() -> string {
+    mut out = ""
+    let cases: Vec<string> = ["", "abc", "99999999999999999999", "5"]
+    for c in cases {
+        out = "{out}{classify(c)};"
+    }
+    return out
+}
+
+test "std.strings — a run of failures each report their own" {
+    assert_eq(
+        all_three(),
+        "err no digits found;err non-numeric character;err value out of range;ok 5;",
+    )
+}
+
+// A float parse goes through the same status path.
+func classify_float(s: string) -> string {
+    let r = s.parse<f64>()
+    if r is f64 as n {
+        return "ok {n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+test "std.strings — parse<f64> reports its variant too" {
+    assert_eq(classify_float("2.5"), "ok 2.5")
+    assert_eq(classify_float(""), "err no digits found")
+    assert_eq(classify_float("zz"), "err non-numeric character")
+}
+
+func main() {}

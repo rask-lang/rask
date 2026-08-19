@@ -677,23 +677,32 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let mut vec = v.lock().unwrap();
-                if let Some(item) = vec.get_mut(index) {
-                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![result],
-                        variant_index: 0, origin: None,
-                    })
-                } else {
-                    Ok(Value::Enum {
+                // The lock is released before the closure runs: the body can
+                // reach the same Vec, and holding it across the call deadlocks.
+                let item = v.lock().unwrap().get(index).cloned();
+                let Some(item) = item else {
+                    return Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0, origin: None,
-                    })
+                        variant_index: 1, origin: None,
+                    });
+                };
+                let (result, written) =
+                    self.call_closure_keeping_arg(closure.clone(), vec![item])?;
+                // What the closure left in its parameter is the new element.
+                // This used to be dropped, so `modify` never modified (#843).
+                if let Some(new_item) = written {
+                    if let Some(slot) = v.lock().unwrap().get_mut(index) {
+                        *slot = new_item;
+                    }
                 }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![result],
+                    variant_index: 0, origin: None,
+                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
@@ -1426,13 +1435,19 @@ impl Interpreter {
                     None => {
                         // Key doesn't exist, call factory and insert
                         let new_value = self.call_closure_no_args(factory)?;
-                        m.lock().unwrap().insert(MapKey(key), new_value.clone());
+                        m.lock().unwrap().insert(MapKey(key.clone()), new_value.clone());
                         new_value
                     }
                 };
 
-                // Call modifier and return result
-                let result = self.call_value(modifier.clone(), vec![value_to_modify])?;
+                let (result, written) =
+                    self.call_closure_keeping_arg(modifier.clone(), vec![value_to_modify])?;
+                // The spec's own example for this is
+                // `|u| { u.last_seen = now(); u.visit_count += 1 }` — the whole
+                // reason the entry API exists is that the write lands (#843).
+                if let Some(new_value) = written {
+                    m.lock().unwrap().insert(MapKey(key), new_value);
+                }
                 Ok(result)
             }
             "take_all" => {
@@ -1467,10 +1482,16 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                let found = m.lock().unwrap().get(&MapKey(key.clone())).cloned();
                 match found {
                     Some(v) => {
-                        let result = self.call_value(closure.clone(), vec![v])?;
+                        let (result, written) =
+                            self.call_closure_keeping_arg(closure.clone(), vec![v])?;
+                        // Same as `Vec.modify`: keep what the closure left
+                        // behind, which is the whole point of the name (#843).
+                        if let Some(new_value) = written {
+                            m.lock().unwrap().insert(MapKey(key), new_value);
+                        }
                         Ok(option_of(Some(result)))
                     }
                     None => Ok(option_of(None)),

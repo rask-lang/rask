@@ -8,30 +8,33 @@ import cli
 import std
 
 enum CopyError {
-    SourceNotFound(string),
-    DestinationExists(string),
-    ReadError(string),
-    WriteError(string),
-    SameFile,
+    SourceNotFound(string)
+    DestinationExists(string)
+    ReadError(string)
+    WriteError(string)
+    SameFile
 }
 
 extend CopyError {
     func message(self) -> string {
         match self {
-            SourceNotFound(path) => return "source file not found: {path}",
-            DestinationExists(path) => return "destination already exists: {path} (use -f to overwrite)",
-            ReadError(msg) => return "read error: {msg}",
-            WriteError(msg) => return "write error: {msg}",
-            SameFile => return "source and destination are the same file",
+            SourceNotFound(path) => return "source file not found: {path}"
+            DestinationExists(path) => return "destination already exists: {path} (use -f to overwrite)"
+            ReadError(msg) => return "read error: {msg}"
+            WriteError(msg) => return "write error: {msg}"
+            SameFile => return "source and destination are the same file"
         }
     }
 }
 
-enum ArgError { Msg(string) }
+enum ArgError {
+    Msg(string)
+}
+
 extend ArgError {
     func message(self) -> string {
         match self {
-            ArgError.Msg(m) => return m,
+            ArgError.Msg(m) => return m
         }
     }
 }
@@ -57,13 +60,13 @@ func parse_args(take args: Vec<string>) -> CopyOptions or ArgError {
     while i < args.len() {
         let arg = args[i]
         match arg {
-            "-f" | "--force" => opts.force = true,
-            "-v" | "--verbose" => opts.verbose = true,
+            "-f" | "--force" => opts.force = true
+            "-v" | "--verbose" => opts.verbose = true
             "-h" | "--help" => {
                 print_usage()
                 std.exit(0)
             }
-            _ => positional.push(arg),
+            _ => positional.push(arg)
         }
         i = i + 1
     }
@@ -102,8 +105,9 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Check not same file (using canonical paths)
-    let src_canonical = fs.absolute_path(opts.source)
-        catch e => return CopyError.ReadError(e)
+    let src_canonical = fs.absolute_path(opts.source) catch e => {
+        return CopyError.ReadError(e)
+    }
     let dst_canonical = fs.absolute_path(opts.dest) catch _ => none
 
     if dst_canonical? as dst {
@@ -113,11 +117,14 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     // Copy the file
-    fs.copy(opts.source, opts.dest)
-        catch e => return CopyError.WriteError(e)
+    fs.copy(opts.source, opts.dest) catch e => {
+        return CopyError.WriteError(e)
+    }
 
     // fs.copy returns void — read the copied size back off disk for the report
-    let meta = fs.metadata(opts.dest) catch e => return CopyError.WriteError(e)
+    let meta = fs.metadata(opts.dest) catch e => {
+        return CopyError.WriteError(e)
+    }
     return meta.size
 }
 

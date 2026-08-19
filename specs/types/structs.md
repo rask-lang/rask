@@ -152,6 +152,30 @@ public struct Point {
 let p = Point { x: 10, y: 20 }   // OK: all fields public
 ```
 
+**Field shorthand.** When a local already has the field's name, the colon and the
+repeat come off — `x` means `x: x`. It works alongside long-form fields and with
+update syntax:
+
+<!-- test: parse -->
+```rask
+public struct Config {
+    public host: string
+    public port: i32
+    public retries: i32
+}
+
+func rebind(base: Config, host: string, port: i32) -> Config {
+    return Config { host, port, retries: 3 }
+}
+
+func move_port(base: Config, port: i32) -> Config {
+    return Config { port, ..base }
+}
+```
+
+This is the struct literal only. A call has no shorthand — `f(x)` is positional
+and `f(x: x)` is a named argument, so there's nothing for `f(x)` to be short for.
+
 **Factory functions (idiomatic for encapsulation):**
 <!-- test: parse -->
 ```rask
@@ -272,20 +296,69 @@ Types with `extern "C"` must use `@layout(C)`. See `struct.modules` for C intero
 
 Assuming `Point` with `public` fields (see Construction Patterns above):
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
-match point {
-    Point { x: 0, y } => println("on y-axis at {y}"),
-    Point { x, y: 0 } => println("on x-axis at {x}"),
-    Point { x, y } => println("at ({x}, {y})")
+struct Point {
+    public x: i32
+    public y: i32
+}
+
+func describe(point: Point) -> string {
+    match point {
+        Point { x: 0, y } => return "on y-axis at {y}"
+        Point { x, y: 0 } => return "on x-axis at {x}"
+        Point { x, y } => return "at ({x}, {y})"
+    }
 }
 ```
 
+A field pattern either tests a value or binds one. `x: 0` tests; `y` binds, and
+the same shorthand as construction applies — `y` means `y: y`. Arms are tried in
+order, so the general one goes last.
+
+The braces make this a `match`-only form: in `if point is Point { … }` the `{`
+opens the branch, so an `is` test names the type and nothing else.
+
 **Partial patterns:**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
-mut Point { x, .. } = point    // Bind visible fields, ignore rest
+struct Vertex {
+    public x: i32
+    public y: i32
+    public z: i32
+}
+
+func flat(v: Vertex) -> i32 {
+    match v {
+        Vertex { x, .. } => return x
+    }
+}
 ```
+
+`..` covers the fields the pattern doesn't name, which is also how a `private`
+field is skipped.
+
+The same pattern binds in a `let`/`mut`, without a `match` around it:
+
+<!-- test: parse -->
+```rask
+struct Point {
+    public x: i32
+    public y: i32
+}
+
+func shifted(p: Point) -> i32 {
+    mut Point { x, .. } = p    // Bind the fields named, ignore the rest
+    x = x + 1
+    let Point { x: px, y: py } = p    // Rename while binding
+    return x + px + py
+}
+```
+
+Reading fields out of a struct is a projection, so the source is borrowed, not
+moved (`mem.borrowing/F1`) — it stays usable afterwards, exactly as it would after
+`let x = p.x`. The bindings can't fail, so only names and `..` go inside; a pattern
+that tests a value belongs in a `match`.
 
 Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
 

@@ -78,6 +78,13 @@ pub struct Interpreter {
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// Nominal newtype name → what it wraps, as written.
+    ///
+    /// `type NodeId = u64` is transparent to everything except the type checker,
+    /// so nothing here needed the target until `reflect.is_flat` had to follow
+    /// it — a newtype over a primitive is flat, and answering "not declared" made
+    /// it not (#791).
+    pub(crate) nominal_targets: HashMap<String, String>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
@@ -150,6 +157,7 @@ impl Interpreter {
             struct_decls: HashMap::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
+            nominal_targets: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
@@ -175,6 +183,7 @@ impl Interpreter {
             struct_decls: HashMap::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
+            nominal_targets: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
@@ -202,6 +211,7 @@ impl Interpreter {
             struct_decls: HashMap::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
+            nominal_targets: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],

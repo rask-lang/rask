@@ -324,41 +324,129 @@ static int parse_copy(const RaskStr *s, char *buf, size_t cap) {
     return 1;
 }
 
+// Which `ParseError` a failed parse is, in stdlib/string.rk's variant order:
+// 0 Empty, 1 Invalid, 2 OutOfRange.
+//
+// The rule is the interpreter's, so the two agree: trim, then an empty
+// remainder is Empty, a remainder made only of digits and `+-.` is OutOfRange
+// (it looked like a number and didn't fit), and anything else is Invalid.
+static int64_t parse_error_tag(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0, j = len;
+    while (i < j && (d[i] == ' ' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r')) i++;
+    while (j > i && (d[j-1] == ' ' || d[j-1] == '\t' || d[j-1] == '\n' || d[j-1] == '\r')) j--;
+    if (j <= i) return 0;                  // Empty
+    for (int64_t k = i; k < j; k++) {
+        char c = d[k];
+        int numeric = (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.';
+        if (!numeric) return 1;            // Invalid
+    }
+    return 2;                              // OutOfRange
+}
+
 // Parsing with a failure signal. Writes the value through `out` and returns 0
-// on success, 1 on failure. atoll/atof can't report anything, so "0" and
-// "notanumber" were indistinguishable and every parse looked successful (#472).
+// on success, or `1 + the ParseError tag` on failure. atoll/atof can't report
+// anything, so "0" and "notanumber" were indistinguishable and every parse
+// looked successful (#472).
+//
+// The tag rides in the status because the caller has nowhere else to get it:
+// codegen wrote the Result's Err tag and left the `ParseError` payload slot
+// untouched, so which failure the program matched on was whatever was on the
+// stack — usually `Empty`, and on a stack that had been used, a tag no variant
+// has, which reached the match's `unreachable` and killed the process with
+// SIGILL. `examples/13_string_operations.rk` died there.
 //
 // Matches the interpreter: surrounding whitespace is trimmed, then the whole
 // remaining string must be a number. Leading garbage, trailing garbage, an
-// empty string and out-of-range all fail. Neither backend range-checks against
-// a narrower target width — `"70000".parse()` into a u16 succeeds on both.
+// empty string and out-of-range all fail. This is the 64-bit signed parse the
+// narrower widths build on; each of those checks its own range (#837).
 int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
     char buf[64];
-    if (!parse_copy(s, buf, sizeof buf)) return 1;
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
 
     errno = 0;
     char *end = NULL;
     long long v = strtoll(buf, &end, 10);
-    if (end == buf) return 1;              // no digits consumed
-    if (errno == ERANGE) return 1;         // outside i64
+    if (end == buf) return 1 + parse_error_tag(s);       // no digits consumed
+    if (errno == ERANGE) return 1 + parse_error_tag(s);  // outside i64
     while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
-    if (*end != '\0') return 1;            // trailing garbage
+    if (*end != '\0') return 1 + parse_error_tag(s);     // trailing garbage
 
     *out = (int64_t)v;
     return 0;
 }
 
+// The unsigned targets. `strtoll` tops out at `i64::MAX`, so
+// `"18446744073709551615".parse<u64>()` — u64::MAX exactly — came back as
+// "value out of range", and a leading `-` parsed happily and handed back a
+// huge positive number through the unsigned slot (#837).
+int64_t rask_string_parse_uint_into(const RaskStr *s, uint64_t *out) {
+    char buf[64];
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
+
+    // strtoull accepts a sign and negates; nothing negative belongs in an
+    // unsigned target, so it's rejected before the conversion sees it.
+    const char *p = buf;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '-') return 1 + parse_error_tag(s);
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(buf, &end, 10);
+    if (end == buf) return 1 + parse_error_tag(s);       // no digits consumed
+    if (errno == ERANGE) return 1 + parse_error_tag(s);   // above u64
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    if (*end != '\0') return 1 + parse_error_tag(s);    // trailing garbage
+
+    *out = (uint64_t)v;
+    return 0;
+}
+
+// Per-width parses. Every integer width shared the 64-bit parse and the
+// caller narrowed whatever came back, so `"70000".parse<u8>()` succeeded —
+// native truncating to 112, the interpreter keeping 70000. A value that
+// doesn't fit the target is out of range, and now says so (#837).
+#define PARSE_OUT_OF_RANGE 2
+
+#define RASK_PARSE_SIGNED(NAME, LO, HI)                                  \
+    int64_t NAME(const RaskStr *s, int64_t *out) {                       \
+        int64_t v = 0;                                                   \
+        int64_t status = rask_string_parse_int_into(s, &v);              \
+        if (status != 0) return status;                                  \
+        if (v < (LO) || v > (HI)) return 1 + PARSE_OUT_OF_RANGE;         \
+        *out = v;                                                        \
+        return 0;                                                        \
+    }
+
+#define RASK_PARSE_UNSIGNED(NAME, HI)                                    \
+    int64_t NAME(const RaskStr *s, uint64_t *out) {                      \
+        uint64_t v = 0;                                                  \
+        int64_t status = rask_string_parse_uint_into(s, &v);             \
+        if (status != 0) return status;                                  \
+        if (v > (HI)) return 1 + PARSE_OUT_OF_RANGE;                     \
+        *out = v;                                                        \
+        return 0;                                                        \
+    }
+
+RASK_PARSE_SIGNED(rask_string_parse_i8_into, INT8_MIN, INT8_MAX)
+RASK_PARSE_SIGNED(rask_string_parse_i16_into, INT16_MIN, INT16_MAX)
+RASK_PARSE_SIGNED(rask_string_parse_i32_into, INT32_MIN, INT32_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u8_into, UINT8_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u16_into, UINT16_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u32_into, UINT32_MAX)
+
 int64_t rask_string_parse_float_into(const RaskStr *s, double *out) {
     char buf[64];
-    if (!parse_copy(s, buf, sizeof buf)) return 1;
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
 
     errno = 0;
     char *end = NULL;
     double v = strtod(buf, &end);
-    if (end == buf) return 1;
-    if (errno == ERANGE) return 1;
+    if (end == buf) return 1 + parse_error_tag(s);
+    if (errno == ERANGE) return 1 + parse_error_tag(s);
     while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
-    if (*end != '\0') return 1;
+    if (*end != '\0') return 1 + parse_error_tag(s);
 
     *out = v;
     return 0;
@@ -445,6 +533,56 @@ static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *wi
     return ch;
 }
 
+// Unicode White_Space, the same set Rust's `char::is_whitespace` uses. The
+// runtime tested for ' ', '\t', '\n' and '\r' only, so `"\u{00A0}hi".trim()`
+// kept the non-breaking space and `split_whitespace` didn't split on it, while
+// the interpreter — which goes through Rust — did both (#840).
+static int str_is_white_space(uint32_t c) {
+    switch (c) {
+        case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D:
+        case 0x20: case 0x85: case 0xA0:
+        case 0x1680:
+        case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+        case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+        case 0x200A:
+        case 0x2028: case 0x2029: case 0x202F: case 0x205F: case 0x3000:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// The byte index one scalar back from `i`, by stepping over continuation
+// bytes. Trimming from the end has to look at whole scalars, not bytes.
+static int64_t str_prev_scalar(const char *d, int64_t i) {
+    int64_t j = i - 1;
+    while (j > 0 && ((unsigned char)d[j] & 0xC0) == 0x80) j--;
+    return j < 0 ? 0 : j;
+}
+
+// The byte range left after trimming whitespace off both ends.
+static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_end) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t start = 0;
+    while (start < len) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, start, &w);
+        if (!str_is_white_space(c)) break;
+        start += w;
+    }
+    int64_t end = len;
+    while (end > start) {
+        int64_t prev = str_prev_scalar(d, end);
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, prev, &w);
+        if (!str_is_white_space(c)) break;
+        end = prev;
+    }
+    *out_start = start;
+    *out_end = end;
+}
+
 /// Encode `cp` at `out`, returning the bytes written.
 static int64_t str_encode_scalar(char *out, uint32_t cp) {
     if (cp < 0x80) {
@@ -519,14 +657,17 @@ void rask_string_unshare(RaskStr *out, const RaskStr *s) {
 void rask_string_trim(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    const char *start = d;
-    const char *end = d + len;
-    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r'))
-        start++;
-    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r'))
-        end--;
-    str_make(out, start, (int64_t)(end - start));
+    int64_t start, end;
+    str_trim_range(s, &start, &end);
+    str_make(out, str_data(s) + start, end - start);
+}
+
+// std.strings: the byte range `trim` would keep, without building the copy.
+// The pair lands in the destination tuple's own slot, so `out` is that slot:
+// start at +0, end at +8.
+void rask_string_trim_indices(int64_t *out, const RaskStr *s) {
+    if (str_len(s) == 0) { out[0] = 0; out[1] = 0; return; }
+    str_trim_range(s, &out[0], &out[1]);
 }
 
 void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
@@ -534,9 +675,12 @@ void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     int64_t start = 0;
-    while (start < len && (d[start] == ' ' || d[start] == '\t'
-           || d[start] == '\n' || d[start] == '\r'))
-        start++;
+    while (start < len) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, start, &w);
+        if (!str_is_white_space(c)) break;
+        start += w;
+    }
     str_make(out, d + start, len - start);
 }
 
@@ -545,9 +689,13 @@ void rask_string_trim_end(RaskStr *out, const RaskStr *s) {
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     int64_t end = len;
-    while (end > 0 && (d[end - 1] == ' ' || d[end - 1] == '\t'
-           || d[end - 1] == '\n' || d[end - 1] == '\r'))
-        end--;
+    while (end > 0) {
+        int64_t prev = str_prev_scalar(d, end);
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, prev, &w);
+        if (!str_is_white_space(c)) break;
+        end = prev;
+    }
     str_make(out, d, end);
 }
 
@@ -573,13 +721,23 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
     }
 }
 
+// By Unicode scalars, which is what the stub documents. Reversing bytes tore
+// every multi-byte scalar apart: `"Wörld".reverse()` came back with the two
+// halves of `ö` swapped, so the text was no longer valid UTF-8 (#841).
 void rask_string_reverse(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     char *buf = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++)
-        buf[i] = d[len - 1 - i];
+    int64_t written = 0;
+    int64_t i = len;
+    while (i > 0) {
+        int64_t prev = str_prev_scalar(d, i);
+        int64_t w = i - prev;
+        for (int64_t k = 0; k < w; k++) buf[written + k] = d[prev + k];
+        written += w;
+        i = prev;
+    }
     str_make(out, buf, len);
     rask_realloc(buf, len, 0);
 }
@@ -741,12 +899,26 @@ RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
     const char *end = p + slen;
     const char *sepd = str_data(sep);
 
+    // An empty separator matches at every boundary — before the first
+    // character, between each pair, and after the last — so "ab" gives
+    // ["", "a", "b", ""] and "" gives ["", ""]. This branch pushed one *byte*
+    // per character and no empties, so it answered 2 pieces for "ab" where the
+    // interpreter answered 4, and cut a multi-byte character in half (#888).
     if (sep_len == 0) {
-        for (int64_t i = 0; i < slen; i++) {
+        RaskStr edge;
+        str_make_sso(&edge, p, 0);
+        rask_vec_push(v, &edge);
+        int64_t i = 0;
+        while (i < slen) {
+            int64_t w;
+            str_decode_at(p, slen, i, &w);
             RaskStr c;
-            str_make_sso(&c, p + i, 1);
+            str_make(&c, p + i, w);
             rask_vec_push(v, &c);
+            i += w;
         }
+        str_make_sso(&edge, p, 0);
+        rask_vec_push(v, &edge);
         return v;
     }
 
@@ -774,17 +946,16 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
     RaskVec *v = rask_vec_new(16);
     int64_t slen = str_len(s);
     if (slen == 0) return v;
-    const char *p = str_data(s);
-    const char *end = p + slen;
-    while (p < end) {
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
-            p++;
-        if (p >= end) break;
-        const char *start = p;
-        while (p < end && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-            p++;
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < slen) {
+        int64_t w;
+        while (i < slen && str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
+        if (i >= slen) break;
+        int64_t start = i;
+        while (i < slen && !str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
         RaskStr tok;
-        str_make(&tok, start, p - start);
+        str_make(&tok, d + start, i - start);
         rask_vec_push(v, &tok);
     }
     return v;
@@ -794,6 +965,25 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
 // is a scalar and `len()` counts bytes; this walked bytes, so `"aöb".chars()`
 // yielded four items and printed the two halves of `ö` as Latin-1 (`[a][Ã][¶][b]`).
 // Any program touching non-ASCII text got mojibake, silently.
+// std.strings: `(byte index, scalar)` per Unicode scalar. Elements are
+// 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
+// the Vec is iterated exactly like any other `Vec<(usize, char)>`.
+RaskVec *rask_string_char_indices(const RaskStr *s) {
+    RaskVec *v = rask_vec_new(16);
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < len) {
+        int64_t width;
+        int64_t pair[2];
+        pair[0] = i;
+        pair[1] = (int64_t)str_decode_at(d, len, i, &width);
+        rask_vec_push(v, pair);
+        i += width;
+    }
+    return v;
+}
+
 RaskVec *rask_string_chars(const RaskStr *s) {
     RaskVec *v = rask_vec_new(8);
     int64_t len = str_len(s);
@@ -987,6 +1177,58 @@ void rask_bool_to_string(RaskStr *out, int64_t val) {
 //
 // `buf` should be RASK_F64_BUF_SIZE bytes: a large magnitude in fixed notation
 // needs room for every digit before the decimal point.
+// Spell out a `%g` result that came back in exponent form, keeping exactly the
+// digits it chose.
+//
+// Re-rendering with `%.*f` looked like the same thing and isn't: for 1e300 the
+// shortest round-trip is one significant digit, so the decimal count comes out
+// negative, and `%.0f` prints the double's *exact* value — 1 followed by 300
+// digits of binary residue instead of 300 zeros. The interpreter prints the
+// digits that round-trip and pads (#845).
+static void str_expand_exponent(char *buf, size_t n) {
+    char *e = strchr(buf, 'e');
+    if (!e) return;
+
+    int exp10 = atoi(e + 1);
+
+    // Split the mantissa into sign, integer digits and fraction digits.
+    char digits[64];
+    size_t d = 0;
+    int negative = 0;
+    for (const char *p = buf; p < e && d + 1 < sizeof digits; p++) {
+        if (*p == '-') { negative = 1; continue; }
+        if (*p == '+' || *p == '.') continue;
+        digits[d++] = *p;
+    }
+    digits[d] = '\0';
+    const char *dot = strchr(buf, '.');
+    int int_digits = dot && dot < e ? (int)(dot - buf - negative) : (int)d;
+
+    // Where the decimal point lands once the exponent is applied.
+    int point = int_digits + exp10;
+
+    char outbuf[512];
+    size_t o = 0;
+    if (negative && o + 1 < sizeof outbuf) outbuf[o++] = '-';
+
+    if (point <= 0) {
+        // 0.000…digits
+        if (o + 2 < sizeof outbuf) { outbuf[o++] = '0'; outbuf[o++] = '.'; }
+        for (int i = 0; i < -point && o + 1 < sizeof outbuf; i++) outbuf[o++] = '0';
+        for (size_t i = 0; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+    } else if ((size_t)point >= d) {
+        // digits followed by trailing zeros, no fraction.
+        for (size_t i = 0; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+        for (size_t i = d; i < (size_t)point && o + 1 < sizeof outbuf; i++) outbuf[o++] = '0';
+    } else {
+        for (size_t i = 0; i < (size_t)point && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+        if (o + 1 < sizeof outbuf) outbuf[o++] = '.';
+        for (size_t i = (size_t)point; i < d && o + 1 < sizeof outbuf; i++) outbuf[o++] = digits[i];
+    }
+    outbuf[o] = '\0';
+    snprintf(buf, n, "%s", outbuf);
+}
+
 void rask_fmt_double(char *buf, size_t n, double val) {
     if (isnan(val)) { snprintf(buf, n, "NaN"); return; }
     if (isinf(val)) { snprintf(buf, n, val < 0 ? "-inf" : "inf"); return; }
@@ -999,14 +1241,8 @@ void rask_fmt_double(char *buf, size_t n, double val) {
     if (prec >= 17) snprintf(buf, n, "%.17g", val);
 
     // %g switches to exponent form once the magnitude passes the precision.
-    // Re-render those with the same significant digits, spelled out.
-    if (strchr(buf, 'e')) {
-        int exp10 = (int)floor(log10(fabs(val)));
-        int decimals = prec - 1 - exp10;
-        if (decimals < 0) decimals = 0;
-        if (decimals > 320) decimals = 320;
-        snprintf(buf, n, "%.*f", decimals, val);
-    }
+    // Spell those out with the digits it already chose.
+    str_expand_exponent(buf, n);
 }
 
 // Same idea for f32. Widening to double first and formatting as a double
@@ -1024,13 +1260,7 @@ void rask_fmt_float(char *buf, size_t n, float val) {
     }
     if (prec >= 9) snprintf(buf, n, "%.9g", (double)val);
 
-    if (strchr(buf, 'e')) {
-        int exp10 = (int)floorf(log10f(fabsf(val)));
-        int decimals = prec - 1 - exp10;
-        if (decimals < 0) decimals = 0;
-        if (decimals > 60) decimals = 60;
-        snprintf(buf, n, "%.*f", decimals, (double)val);
-    }
+    str_expand_exponent(buf, n);
 }
 
 void rask_f64_to_string(RaskStr *out, double val) {
@@ -1214,18 +1444,20 @@ int64_t rask_char_is_ascii(int32_t c) {
     return (c >= 0 && c <= 127) ? 1 : 0;
 }
 
+// The generated Unicode tables, same source as the case mappings. These used to
+// be guesses: `is_alphabetic` said yes to every scalar above 127, so `€`, an em
+// dash and a combining accent were all letters, and `is_numeric` knew about four
+// Latin-1 fractions and nothing else (#846).
 int64_t rask_char_is_alphabetic(int32_t c) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
-    if (c > 127) return 1;
-    return 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_ALPHABETIC);
 }
 
 int64_t rask_char_is_numeric(int32_t c) {
-    if (c >= '0' && c <= '9') return 1;
-    if (c >= 0x00B2 && c <= 0x00B3) return 1;
-    if (c == 0x00B9) return 1;
-    if (c >= 0x00BC && c <= 0x00BE) return 1;
-    return 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_NUMERIC);
+}
+
+int64_t rask_char_is_control(int32_t c) {
+    return rask_char_class((uint32_t)c, RASK_CLASS_CONTROL);
 }
 
 int64_t rask_char_is_alphanumeric(int32_t c) {
@@ -1233,16 +1465,43 @@ int64_t rask_char_is_alphanumeric(int32_t c) {
 }
 
 int64_t rask_char_is_whitespace(int32_t c) {
-    return (c == ' ' || c == '\t' || c == '\n' || c == '\r'
-         || c == 0x0B || c == 0x0C) ? 1 : 0;
+    return str_is_white_space((uint32_t)c);
+}
+
+// std.primitives' ASCII half of the char table: fast, ASCII-only, and false
+// for everything above 127 whatever its Unicode class says.
+int64_t rask_char_is_ascii_alphabetic(int32_t c) {
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_digit(int32_t c) {
+    return (c >= '0' && c <= '9') ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_hexdigit(int32_t c) {
+    return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+         || (c >= 'A' && c <= 'F')) ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii_punctuation(int32_t c) {
+    return ((c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x40)
+         || (c >= 0x5B && c <= 0x60) || (c >= 0x7B && c <= 0x7E)) ? 1 : 0;
+}
+
+int64_t rask_char_to_ascii_lowercase(int32_t c) {
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+int64_t rask_char_to_ascii_uppercase(int32_t c) {
+    return (c >= 'a' && c <= 'z') ? c - 32 : c;
 }
 
 int64_t rask_char_is_uppercase(int32_t c) {
-    return (c >= 'A' && c <= 'Z') ? 1 : 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_UPPERCASE);
 }
 
 int64_t rask_char_is_lowercase(int32_t c) {
-    return (c >= 'a' && c <= 'z') ? 1 : 0;
+    return rask_char_class((uint32_t)c, RASK_CLASS_LOWERCASE);
 }
 
 int64_t rask_char_to_int(int32_t c) {

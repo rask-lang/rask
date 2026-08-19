@@ -105,57 +105,57 @@ extend string {
 
     /// Single-character string.
     @native("rask_string_from_char")
-    public func from_char(c: char) -> string { }
+    public func from_char(c: char) -> string {}
 
     // ── Length and properties ────────────────────────────────
 
     /// Byte length. O(1).
     @native("rask_string_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// Number of Unicode scalars. O(n).
     @native("rask_string_char_count")
-    public func char_count(self) -> usize { }
+    public func char_count(self) -> usize {}
 
     /// True if the string is empty. O(1).
     @native("rask_string_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// True if all bytes are ASCII. O(n) first call, cached.
     @native("rask_string_str_is_ascii")
-    public func is_ascii(self) -> bool { }
+    public func is_ascii(self) -> bool {}
 
     // ── Character and byte access ───────────────────────────
 
     /// Byte at byte index. Returns none if out of bounds.
     @native("rask_string_byte_at")
-    public func byte_at(self, idx: usize) -> u8? { }
+    public func byte_at(self, idx: usize) -> u8? {}
 
     /// Unicode scalar at char index (not byte index). Returns none if out of bounds.
     @native("rask_string_char_at")
-    public func char_at(self, idx: usize) -> char? { }
+    public func char_at(self, idx: usize) -> char? {}
 
     // ── Searching ───────────────────────────────────────────
 
     /// Byte index of first occurrence. none if not found.
     @native("rask_string_find")
-    public func index_of(self, pat: string) -> usize? { }
+    public func index_of(self, pat: string) -> usize? {}
 
     /// Byte index of last occurrence. none if not found.
     @native("rask_string_rfind")
-    public func last_index_of(self, pat: string) -> usize? { }
+    public func last_index_of(self, pat: string) -> usize? {}
 
     /// True if the string contains the substring.
     @native("rask_string_contains")
-    public func contains(self, pat: string) -> bool { }
+    public func contains(self, pat: string) -> bool {}
 
     /// True if the string starts with the given prefix.
     @native("rask_string_starts_with")
-    public func starts_with(self, pat: string) -> bool { }
+    public func starts_with(self, pat: string) -> bool {}
 
     /// True if the string ends with the given suffix.
     @native("rask_string_ends_with")
-    public func ends_with(self, pat: string) -> bool { }
+    public func ends_with(self, pat: string) -> bool {}
 
     // ── Trimming ────────────────────────────────────────────
     // Spec: these return expression-scoped slices (zero-copy).
@@ -163,29 +163,29 @@ extend string {
 
     /// Remove leading and trailing whitespace.
     @native("rask_string_trim")
-    public func trim(self) -> string { }
+    public func trim(self) -> string {}
 
     /// Remove leading whitespace.
     @native("rask_string_trim_start")
-    public func trim_start(self) -> string { }
+    public func trim_start(self) -> string {}
 
     /// Remove trailing whitespace.
     @native("rask_string_trim_end")
-    public func trim_end(self) -> string { }
+    public func trim_end(self) -> string {}
 
     /// Byte indices of trimmed content: (start, end).
     @native
-    public func trim_indices(self) -> (usize, usize) { }
+    public func trim_indices(self) -> (usize, usize) {}
 
     // ── Case conversion ─────────────────────────────────────
 
     /// Convert to uppercase. Allocates.
     @native("rask_string_to_uppercase")
-    public func to_uppercase(self) -> string { }
+    public func to_uppercase(self) -> string {}
 
     /// Convert to lowercase. Allocates.
     @native("rask_string_to_lowercase")
-    public func to_lowercase(self) -> string { }
+    public func to_lowercase(self) -> string {}
 
     // ── Substring extraction ────────────────────────────────
 
@@ -193,52 +193,52 @@ extend string {
     /// Byte offsets, so `index_of`/`last_index_of`/`byte_at` results feed
     /// straight in. Out of range clamps; an offset inside a character panics.
     @native("rask_string_substr")
-    public func substring(self, start: usize, end: usize) -> string { }
+    public func substring(self, start: usize, end: usize) -> string {}
 
     // ── Iteration ───────────────────────────────────────────
     // Iterators borrow for expression scope only. Cannot be stored.
 
     /// Iterate over Unicode scalars.
     @native("rask_string_chars")
-    public func chars(self) -> Iterator<char> { }
+    public func chars(self) -> Iterator<char> {}
 
     /// Iterate over raw bytes.
     @native("rask_string_bytes")
-    public func bytes(self) -> Iterator<u8> { }
+    public func bytes(self) -> Iterator<u8> {}
 
     /// Iterate over (byte_index, char) pairs.
     @native
-    public func char_indices(self) -> Iterator<(usize, char)> { }
+    public func char_indices(self) -> Iterator<(usize, char)> {}
 
     /// Split by separator.
     @native("rask_string_split")
-    public func split(self, sep: string) -> Iterator<string> { }
+    public func split(self, sep: string) -> Iterator<string> {}
 
     /// Split on Unicode whitespace, skip empty.
     @native("rask_string_split_whitespace")
-    public func split_whitespace(self) -> Iterator<string> { }
+    public func split_whitespace(self) -> Iterator<string> {}
 
     /// Split into lines.
     @native("rask_string_lines")
-    public func lines(self) -> Iterator<string> { }
+    public func lines(self) -> Iterator<string> {}
 
     // ── Manipulation ────────────────────────────────────────
 
     /// Replace all occurrences. Allocates.
     @native("rask_string_replace")
-    public func replace(self, from: string, to: string) -> string { }
+    public func replace(self, from: string, to: string) -> string {}
 
     /// Replace first n occurrences. Allocates.
     @native("rask_string_replacen")
-    public func replacen(self, from: string, to: string, n: usize) -> string { }
+    public func replacen(self, from: string, to: string, n: usize) -> string {}
 
     /// Reverse by Unicode scalars. Allocates.
     @native("rask_string_reverse")
-    public func reverse(self) -> string { }
+    public func reverse(self) -> string {}
 
     /// Repeat this string n times. Allocates.
     @native("rask_string_repeat")
-    public func repeat(self, n: usize) -> string { }
+    public func repeat(self, n: usize) -> string {}
 
     // ── Join ────────────────────────────────────────────────
 
@@ -248,11 +248,11 @@ extend string {
 
     /// Parse to integer. Trims whitespace.
     @native("rask_string_parse_int_into")
-    public func parse_int(self) -> i64 or ParseError { }
+    public func parse_int(self) -> i64 or ParseError {}
 
     /// Parse to floating point. Trims whitespace.
     @native("rask_string_parse_float_into")
-    public func parse_float(self) -> f64 or ParseError { }
+    public func parse_float(self) -> f64 or ParseError {}
 
     // NOTE (#302 rename sweep): strings.md says "there is no generic
     // s.parse()", but it's a real, widely-used, well-tested feature —
@@ -263,7 +263,7 @@ extend string {
     // of guessing. See PR notes.
     /// Parse to typed value.
     @native("rask_string_parse_int_into")
-    public func parse<T>(self) -> T or ParseError { }
+    public func parse<T>(self) -> T or ParseError {}
 
     // ── Equality / Comparison ───────────────────────────────
     // == is O(1) or O(n): SSO byte comparison, heap pointer+length fast path.
@@ -271,25 +271,25 @@ extend string {
 
     /// Hash the string contents.
     @native("rask_string_hash")
-    public func hash(self) -> u64 { }
+    public func hash(self) -> u64 {}
 
     // ── C interop ───────────────────────────────────────────
 
     /// Null-terminated pointer for C APIs. Valid while string is alive.
     @native("rask_string_ptr")
-    public unsafe func as_c_str(self) -> *u8 { }
+    public unsafe func as_c_str(self) -> *u8 {}
 
     /// Raw data pointer. Use with .len() for pointer+length C APIs.
     @native("rask_string_ptr")
-    public unsafe func as_ptr(self) -> *u8 { }
+    public unsafe func as_ptr(self) -> *u8 {}
 
     /// Copy from a null-terminated C string. Caller must ensure ptr is valid.
     @native("rask_string_from")
-    public unsafe func from_c(ptr: *u8) -> string { }
+    public unsafe func from_c(ptr: *u8) -> string {}
 
     /// Build from raw pointer and byte length. No UTF-8 validation.
     @native("rask_string_from_bytes")
-    public unsafe func from_raw(ptr: *u8, len: usize) -> string { }
+    public unsafe func from_raw(ptr: *u8, len: usize) -> string {}
 }
 
 // ─── StringBuilder ─────────────────────────────────────────────
@@ -310,31 +310,31 @@ public struct StringBuilder { }
 extend StringBuilder {
     /// Create an empty builder.
     @native("rask_string_builder_new")
-    public func new() -> StringBuilder { }
+    public func new() -> StringBuilder {}
 
     /// Create a builder with pre-allocated capacity.
     @native("rask_string_builder_with_capacity")
-    public func with_capacity(n: usize) -> StringBuilder { }
+    public func with_capacity(n: usize) -> StringBuilder {}
 
     /// Add a string at the end.
     @native("rask_string_builder_append")
-    public func push(mutate self, s: string) { }
+    public func push(mutate self, s: string) {}
 
     /// Add a single character at the end.
     @native("rask_string_builder_append_char")
-    public func push_char(mutate self, c: char) { }
+    public func push_char(mutate self, c: char) {}
 
     /// Consume the builder, return the built string. Zero-copy.
     @native("rask_string_builder_build")
-    public func build(take self) -> string { }
+    public func build(take self) -> string {}
 
     /// Current byte length.
     @native("rask_string_builder_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the builder contains no bytes.
     @native("rask_string_builder_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 }
 
 // ─── StringView ─────────────────────────────────────────────────
@@ -352,29 +352,29 @@ extend string {
     /// Storable zero-copy view. On a slice, captures the slice's range;
     /// on a whole string, views all of it. Keeps the source buffer alive.
     @native("rask_string_clone")
-    public func view(self) -> StringView { }
+    public func view(self) -> StringView {}
 }
 
 extend StringView {
     /// Byte length. O(1).
     @native("rask_string_len")
-    public func len(self) -> usize { }
+    public func len(self) -> usize {}
 
     /// True if the view is empty. O(1).
     @native("rask_string_is_empty")
-    public func is_empty(self) -> bool { }
+    public func is_empty(self) -> bool {}
 
     /// Copy bytes into an independent string — releases the source buffer.
     @native("rask_string_unshare")
-    public func to_string(self) -> string { }
+    public func to_string(self) -> string {}
 
     /// Sub-view. Same as slicing then .view() — references the original buffer.
     @native("rask_string_clone")
-    public func view(self) -> StringView { }
+    public func view(self) -> StringView {}
 
     /// Hash the view contents.
     @native("rask_string_hash")
-    public func hash(self) -> u64 { }
+    public func hash(self) -> u64 {}
 }
 
 // ─── cstring ────────────────────────────────────────────────────
@@ -386,21 +386,21 @@ public struct cstring { }
 extend cstring {
     /// Raw pointer. Unsafe context only.
     @unimplemented
-    public unsafe func as_ptr(self) -> *u8 { }
+    public unsafe func as_ptr(self) -> *u8 {}
 
     /// Take ownership from a C pointer. Unsafe — caller must ensure validity.
     @unimplemented
-    public unsafe func from_ptr(ptr: *u8) -> cstring { }
+    public unsafe func from_ptr(ptr: *u8) -> cstring {}
 
     /// Convert to Rask string. Fails if not valid UTF-8.
     @native
-    public func to_string(self) -> string or Utf8Error { }
+    public func to_string(self) -> string or Utf8Error {}
 }
 
 extend string {
     /// Convert to null-terminated cstring. Fails if string contains \0.
     @unimplemented
-    public func to_cstring(self) -> cstring or NullByteError { }
+    public func to_cstring(self) -> cstring or NullByteError {}
 }
 
 // ─── Parsing and encoding errors ───────────────────────────────
@@ -415,9 +415,9 @@ public enum ParseError {
 extend ParseError {
     public func message(self) -> string {
         match self {
-            ParseError.Empty => return "no digits found",
-            ParseError.Invalid => return "non-numeric character",
-            ParseError.OutOfRange => return "value out of range",
+            ParseError.Empty => return "no digits found"
+            ParseError.Invalid => return "non-numeric character"
+            ParseError.OutOfRange => return "value out of range"
         }
     }
 }
@@ -430,7 +430,7 @@ public enum Utf8Error {
 extend Utf8Error {
     public func message(self) -> string {
         match self {
-            Utf8Error.InvalidByte(pos) => return "invalid UTF-8 byte at position {pos}",
+            Utf8Error.InvalidByte(pos) => return "invalid UTF-8 byte at position {pos}"
         }
     }
 }
@@ -443,7 +443,7 @@ public enum NullByteError {
 extend NullByteError {
     public func message(self) -> string {
         match self {
-            NullByteError.FoundAt(pos) => return "null byte found at position {pos}",
+            NullByteError.FoundAt(pos) => return "null byte found at position {pos}"
         }
     }
 }

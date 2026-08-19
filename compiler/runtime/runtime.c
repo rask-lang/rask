@@ -204,14 +204,22 @@ void rask_assert_fail_cmp_char(int64_t left, int64_t right,
     rask_panic_at(file, line, col, buf);
 }
 
-void rask_assert_fail_cmp_str(const char *left, const char *right,
+// The two string operands arrive as `RaskStr *`, not as C strings. Read as
+// `const char *` they printed the struct's first bytes — which for a short
+// string *are* the characters, because those live inline, and for anything
+// past the inline cap are a pointer. So a long string's assertion message came
+// out as four bytes of garbage while a short one looked perfect (#848).
+void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assertion failed: \"%s\" %s \"%s\"",
-             left ? left : "(null)", op ? op : "?",
-             right ? right : "(null)");
+             "assertion failed: \"%.*s\" %s \"%.*s\"",
+             left ? (int)rask_string_len(left) : 6,
+             left ? rask_string_ptr(left) : "(null)",
+             op ? op : "?",
+             right ? (int)rask_string_len(right) : 6,
+             right ? rask_string_ptr(right) : "(null)");
     rask_panic_at(file, line, col, buf);
 }
 
@@ -269,12 +277,15 @@ void rask_assert_eq_fail_f64(double got, double expected,
     assert_eq_fail_fmt(g, e, file, line, col);
 }
 
-void rask_assert_eq_fail_str(const char *got, const char *expected,
+void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      \"%s\"\n  expected: \"%s\"",
-             got ? got : "(null)", expected ? expected : "(null)");
+             "assert_eq failed\n  got:      \"%.*s\"\n  expected: \"%.*s\"",
+             got ? (int)rask_string_len(got) : 6,
+             got ? rask_string_ptr(got) : "(null)",
+             expected ? (int)rask_string_len(expected) : 6,
+             expected ? rask_string_ptr(expected) : "(null)");
     rask_panic_at(file, line, col, buf);
 }
 
@@ -449,6 +460,15 @@ int8_t rask_fs_exists(const RaskStr *path) {
 }
 
 // ─── More FS module ───────────────────────────────────────────────
+
+// Did `fopen` fail? The handle *is* the value a `File` carries, and a failed
+// open is NULL — so `fs.open` can check it and build the IoError in Rask,
+// where both backends read the same source. Before this the NULL sailed
+// through as a successful `File`, and the failure only surfaced on the first
+// read as "file handle is closed" (#858).
+int64_t rask_file_is_null(int64_t file) {
+    return file == 0 ? 1 : 0;
+}
 
 int64_t rask_fs_open(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
@@ -741,43 +761,80 @@ RaskVec *rask_file_lines(int64_t file) {
 #include <arpa/inet.h>
 #include <netdb.h>
 
-int64_t rask_net_tcp_listen(const RaskStr *addr) {
+// Split "host:port" on the last colon. Returns 0 when there is no colon or
+// either half is unusable — an address is host *and* port, and guessing a
+// missing half is how "not-an-address" came to bind 0.0.0.0:0 and report
+// success (#863).
+static int net_split_addr(const RaskStr *addr, char *host, size_t host_cap,
+                          char *port, size_t port_cap) {
     const char *a = rask_string_ptr(addr);
-
-    // Parse "host:port"
-    char host[256] = "0.0.0.0";
-    int port = 0;
     const char *colon = strrchr(a, ':');
-    if (colon) {
-        size_t hlen = (size_t)(colon - a);
-        if (hlen > 0 && hlen < sizeof(host)) {
-            memcpy(host, a, hlen);
-            host[hlen] = '\0';
-        }
-        port = atoi(colon + 1);
+    if (!colon) return 0;
+    size_t hlen = (size_t)(colon - a);
+    size_t plen = strlen(colon + 1);
+    if (hlen == 0 || hlen >= host_cap) return 0;
+    if (plen == 0 || plen >= port_cap) return 0;
+    memcpy(host, a, hlen);
+    host[hlen] = '\0';
+    memcpy(port, colon + 1, plen + 1);
+    return 1;
+}
+
+int64_t rask_net_tcp_listen(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        return -2;
     }
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    // getaddrinfo rather than inet_pton, so "localhost:0" resolves the way it
+    // does on the interpreter side — and so a name that resolves to nothing is
+    // a failure instead of a silent 0.0.0.0.
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
+        return -2;
+    }
+
+    int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (fd < 0) {
+        freeaddrinfo(result);
+        return -1;
+    }
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)port);
-    inet_pton(AF_INET, host, &sa.sin_addr);
-
-    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+    if (bind(fd, result->ai_addr, result->ai_addrlen) < 0) {
         close(fd);
+        freeaddrinfo(result);
         return -1;
     }
+    freeaddrinfo(result);
     if (listen(fd, 128) < 0) {
         close(fd);
         return -1;
     }
     return (int64_t)fd;
+}
+
+// True when a handle is a failed syscall's -1. The check can't live in the
+// adapter that turns a negative return into the error side, because that
+// adapter has no way to build an `IoError` — it's a Rask enum — and it left the
+// raw -1 in the payload, which traps when matched (#863).
+int8_t rask_net_is_invalid(int64_t handle) {
+    return handle < 0 ? 1 : 0;
+}
+
+// -2 specifically: the address parsed but named nothing that resolves.
+// `getaddrinfo` doesn't set errno, so asking `last_os_error()` about it
+// answered "Success (os error 0)" for a failure (#863).
+int8_t rask_net_is_unresolved(int64_t handle) {
+    return handle == -2 ? 1 : 0;
 }
 
 int64_t rask_net_tcp_accept(int64_t listen_fd) {
@@ -786,22 +843,10 @@ int64_t rask_net_tcp_accept(int64_t listen_fd) {
 }
 
 int64_t rask_net_tcp_connect(const RaskStr *addr) {
-    const char *a = rask_string_ptr(addr);
-
-    // Parse "host:port"
-    char host[256] = "127.0.0.1";
-    char port_str[16] = "80";
-    const char *colon = strrchr(a, ':');
-    if (colon) {
-        size_t hlen = (size_t)(colon - a);
-        if (hlen > 0 && hlen < sizeof(host)) {
-            memcpy(host, a, hlen);
-            host[hlen] = '\0';
-        }
-        size_t plen = strlen(colon + 1);
-        if (plen > 0 && plen < sizeof(port_str)) {
-            memcpy(port_str, colon + 1, plen + 1);
-        }
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        return -2;
     }
 
     // Resolve hostname via getaddrinfo (handles both IPs and DNS names)
@@ -811,7 +856,7 @@ int64_t rask_net_tcp_connect(const RaskStr *addr) {
     hints.ai_socktype = SOCK_STREAM;
 
     int err = getaddrinfo(host, port_str, &hints, &result);
-    if (err != 0) return -1;
+    if (err != 0) return -2;
 
     int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (fd < 0) {
@@ -885,6 +930,66 @@ int64_t rask_io_write_string(int64_t fd, int64_t str_ptr) {
         written += n;
     }
     return written;
+}
+
+// ─── Standard streams ─────────────────────────────────────────────
+//
+// Through stdio rather than write(2), so a handle's output interleaves with
+// `println` in the order the program wrote it — `println` is buffered, and a
+// raw fd write would jump the queue.
+//
+// The stream is named by a number the Rask handle carries: 1 = stdout,
+// 2 = stderr, 0 = stdin. `Stdout`/`Stderr`/`Stdin` used to be empty structs with
+// no native entry point for anything (#859), which left the stream id nowhere to
+// live.
+static FILE *std_stream(int64_t which) {
+    if (which == 2) return stderr;
+    if (which == 0) return stdin;
+    return stdout;
+}
+
+int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
+    const RaskStr *s = (const RaskStr *)(uintptr_t)str_ptr;
+    if (!s) return 0;
+    FILE *f = std_stream(which);
+    int64_t len = rask_string_len(s);
+    if (len <= 0) return 0;
+    size_t n = fwrite(rask_string_ptr(s), 1, (size_t)len, f);
+    return n == (size_t)len ? len : -1;
+}
+
+// The bytes are gathered first: a `Vec<u8>` is contiguous only when the runtime
+// built it, and compiled Rask code gives every element its own slot (#863).
+int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
+    const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
+    int64_t len = rask_vec_len(v);
+    if (len <= 0) return 0;
+    char *bytes = (char *)rask_alloc(len);
+    for (int64_t i = 0; i < len; i++) {
+        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
+        bytes[i] = b ? (char)*b : 0;
+    }
+    size_t n = fwrite(bytes, 1, (size_t)len, std_stream(which));
+    rask_free(bytes);
+    return n == (size_t)len ? len : -1;
+}
+
+int64_t rask_io_std_flush(int64_t which) {
+    return fflush(std_stream(which)) == 0 ? 0 : -1;
+}
+
+// Read up to `max` bytes from stdin, stopping at end of input. Returns a
+// `Vec<u8>` cast to i64.
+int64_t rask_io_std_read_bytes(int64_t max) {
+    RaskVec *v = rask_vec_new(1);
+    if (max <= 0) return (int64_t)(uintptr_t)v;
+    for (int64_t i = 0; i < max; i++) {
+        int c = fgetc(stdin);
+        if (c == EOF) break;
+        uint8_t byte = (uint8_t)c;
+        rask_vec_push(v, &byte);
+    }
+    return (int64_t)(uintptr_t)v;
 }
 
 // Close a file descriptor.
@@ -1142,20 +1247,33 @@ int64_t rask_net_read_bytes(int64_t fd) {
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
-// Vec<u8> elements are contiguous (elem_size 1), so element 0's address is the
-// start of the whole buffer — one write loop, not one syscall per byte.
+//
+// The bytes are gathered before the write because a `Vec<u8>` is only
+// contiguous when the runtime built it. Compiled Rask code gives every element
+// its own 8-byte slot, so taking element 0's address as the start of a byte
+// buffer sent every second byte as seven NULs: "hello" left as
+// "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
+// per-element read `rask_fs_write_bytes` already does, with one syscall instead
+// of one per byte.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    const char *data = (const char *)rask_vec_get(v, 0);
-    if (!data) return -1;
+    char *bytes = (char *)rask_alloc(len);
+    for (int64_t i = 0; i < len; i++) {
+        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
+        bytes[i] = b ? (char)*b : 0;
+    }
     int64_t written = 0;
     while (written < len) {
-        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
-        if (n < 0) return -1;
+        ssize_t n = write((int)fd, bytes + written, (size_t)(len - written));
+        if (n < 0) {
+            rask_free(bytes);
+            return -1;
+        }
         written += n;
     }
+    rask_free(bytes);
     return 0;
 }
 

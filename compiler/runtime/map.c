@@ -93,6 +93,27 @@ int rask_eq_bytes(const void *a, const void *b, int64_t key_size) {
     return memcmp(a, b, (size_t)key_size) == 0;
 }
 
+// `x.hash()` on an integer, a bool or a char (type.generics/HA1).
+//
+// Same FNV-1a over the value's little-endian bytes that an int-keyed Map buckets
+// with, so a value and the same value used as a Map key agree. Unseeded, for the
+// reason spelled out below `map_bucket_hash`: the seed belongs to bucket
+// placement, not to the hash of a value — `.hash()` has to be as stable as `==`.
+//
+// `width` bytes are read from `lo` and then, if 16 are asked for, from `hi`. That
+// covers every width from a 1-byte bool to a 16-byte u128 without the caller
+// having to spell an address, which for a 128-bit value in a register it can't.
+uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width) {
+    uint8_t bytes[16];
+    for (int i = 0; i < 8; i++) {
+        bytes[i] = (uint8_t)(lo >> (i * 8));
+        bytes[8 + i] = (uint8_t)(hi >> (i * 8));
+    }
+    if (width < 1) width = 1;
+    if (width > 16) width = 16;
+    return rask_hash_bytes(bytes, width);
+}
+
 // String-keyed maps: key slot holds a 16-byte RaskStr value, hash/eq use string content
 uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
     (void)key_size;

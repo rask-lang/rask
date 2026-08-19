@@ -277,6 +277,25 @@ macro_rules! impl_int_binop {
                     (b as u32) % <$ty>::BITS))),
                 BinOp::RotateRight => Ok(MiriValue::$variant(a.rotate_right(
                     (b as u32) % <$ty>::BITS))),
+                // CT2: the escape hatches fold at comptime too. Overflow is a
+                // compile error for the plain operators above; these say what
+                // to do instead, so there's nothing left to reject.
+                BinOp::WrappingAdd => Ok(MiriValue::$variant(a.wrapping_add(b))),
+                BinOp::WrappingSub => Ok(MiriValue::$variant(a.wrapping_sub(b))),
+                BinOp::WrappingMul => Ok(MiriValue::$variant(a.wrapping_mul(b))),
+                BinOp::WrappingShl => Ok(MiriValue::$variant(a.wrapping_shl(b as u32))),
+                BinOp::WrappingShr => Ok(MiriValue::$variant(a.wrapping_shr(b as u32))),
+                BinOp::SaturatingAdd => Ok(MiriValue::$variant(a.saturating_add(b))),
+                BinOp::SaturatingSub => Ok(MiriValue::$variant(a.saturating_sub(b))),
+                BinOp::SaturatingMul => Ok(MiriValue::$variant(a.saturating_mul(b))),
+                // The flag on its own. The lowering that builds `T?` and
+                // `(T, bool)` from it wants a bool, not a number.
+                BinOp::OverflowAdd => Ok(MiriValue::Bool(a.overflowing_add(b).1)),
+                BinOp::OverflowSub => Ok(MiriValue::Bool(a.overflowing_sub(b).1)),
+                BinOp::OverflowMul => Ok(MiriValue::Bool(a.overflowing_mul(b).1)),
+                BinOp::OverflowDiv => Ok(MiriValue::Bool(
+                    b == 0 || a.checked_div(b).is_none(),
+                )),
             }
         }
     };

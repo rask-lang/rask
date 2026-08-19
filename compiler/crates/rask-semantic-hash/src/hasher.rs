@@ -78,6 +78,10 @@ impl Hasher {
         self.feed_bytes(&v.to_le_bytes());
     }
 
+    fn feed_i128(&mut self, v: i128) {
+        self.feed_bytes(&v.to_le_bytes());
+    }
+
     fn feed_f64(&mut self, v: f64) {
         self.feed_bytes(&v.to_bits().to_le_bytes());
     }
@@ -409,7 +413,13 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.feed_tag(102);
+                self.feed_u32(*is_mut as u32);
+                self.hash_pattern(pattern);
+                self.hash_expr(init);
+            }
+            StmtKind::Assign { target, value, .. } => {
                 self.feed_tag(25);
                 self.hash_expr(target);
                 self.hash_expr(value);
@@ -533,7 +543,7 @@ impl Hasher {
         match &expr.kind {
             ExprKind::Int(v, suffix) => {
                 self.feed_tag(40);
-                self.feed_i64(*v);
+                self.feed_i128(*v);
                 self.feed_u8(suffix.map_or(0, |s| s as u8 + 1));
             }
             ExprKind::Float(v, suffix) => {
@@ -1084,7 +1094,7 @@ mod tests {
         Expr { id: NodeId(0), kind: ExprKind::Ident(name.into()), span: sp() }
     }
 
-    fn int(v: i64) -> Expr {
+    fn int(v: i128) -> Expr {
         Expr { id: NodeId(0), kind: ExprKind::Int(v, None), span: sp() }
     }
 

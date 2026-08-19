@@ -14,14 +14,14 @@ use rask_ast::Span;
 impl ToDiagnostic for rask_lexer::LexError {
     fn to_diagnostic(&self) -> Diagnostic {
         let mut diag = Diagnostic::error(&self.message)
-            .with_code("E0001")
-            .with_primary(self.span, "unexpected character");
+            .with_code(self.code)
+            .with_primary(self.span, self.label);
 
         if let Some(ref hint) = self.hint {
             diag = diag
                 .with_help(hint.as_str())
                 .with_fix(hint.as_str())
-                .with_why("the lexer expected a valid token at this position");
+                .with_why(self.why);
         }
 
         diag
@@ -684,6 +684,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
             }
 
+            IntFloatArithmetic { op, left, right, span } => {
+                let (int_ty, float_ty) = if matches!(left, rask_types::Type::F32 | rask_types::Type::F64) {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                Diagnostic::error(format!(
+                    "`{}` between `{}` and `{}` — one is an integer, the other a float",
+                    op, left, right
+                ))
+                    .with_code("E0371")
+                    .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
+                    .with_fix(format!(
+                        "bring the `{int_ty}` over and say what happens when it doesn't land exactly: `x.round<{float_ty}>()` is the usual one, and `x as {float_ty}` is only for the widths where it can't lose anything"
+                    ))
+                    .with_why(
+                        "int→float is never implicit — a wide integer doesn't survive the trip (past 2^53 an `i64` loses its low bits in an `f64`), so the conversion has to be written. Native took the left operand's type and dropped the other side, which is why this was a wrong answer rather than an error [type.primitives/CV1a]"
+                            .to_string(),
+                    )
+            }
+
             MixedSignednessArithmetic { op, left, right, span } => {
                 Diagnostic::error(format!(
                     "`{}` between `{}` and `{}` — one is signed, the other isn't",
@@ -959,6 +980,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("copy a field out, or add a method that returns an owned value")
                     .with_fix(format!("with … as {} {{ {}.some_field }}", name, name))
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
+            }
+
+            BareSharedWith { name, binding, span } => {
+                Diagnostic::error(format!("`with {} as {}` doesn't say which lock", name, binding))
+                    .with_code("E0839")
+                    .with_primary(*span, "a `Shared` is read by many or written by one — this could be either")
+                    .with_help("name the lock: `.read()` for concurrent readers, `.write()` for exclusive access")
+                    .with_fix(format!("with {}.read() as {} {{ … }}", name, binding))
+                    .with_why("the two locks behave differently — a read binding permits other readers and never writes back, a write binding blocks them and does — so which one you get is written rather than inferred [conc.sync/R4]")
             }
 
             MutateBorrowedSource { source_var, view_var, borrow_span, mutate_span } => {
@@ -1659,6 +1689,25 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
+            AsCastNotConvertible { src_ty, target_name, span } => {
+                Diagnostic::error(format!(
+                    "`as {}` reinterprets the bits — it doesn't convert",
+                    target_name,
+                ))
+                    .with_code("E0838")
+                    .with_primary(*span, format!("this is a `{}`", src_ty))
+                    .with_fix(format!(
+                        "to give a value a type, annotate the binding:\n                           let x: {t} = …\n\
+                         to reinterpret on purpose, say so:\n                           unsafe {{ … as {t} }}",
+                        t = target_name,
+                    ))
+                    .with_why(
+                        "`as` converts between numbers and boxes a trait object \
+                         (`as any Trait`); to any other target it is a bit \
+                         reinterpretation, which is unsafe [type.primitives/CV1–CV4, \
+                         mem.unsafe]",
+                    )
+            }
             InvalidConvert { message, span } => {
                 Diagnostic::error(message.clone())
                     .with_code("E0818")
@@ -1697,18 +1746,39 @@ impl ToDiagnostic for rask_types::TypeError {
                 )
             }
 
-            FloatMapKey { key, span } => {
-                let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
-                Diagnostic::error(format!("`{}` can't be a Map key", key))
-                    .with_code("E0829")
-                    .with_primary(*span, format!("`{}` is not Hashable", key))
-                    .with_fix(format!(
-                        "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
-                    ))
-                    .with_why(
-                        "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
-                            .to_string(),
-                    )
+            UnhashableMapKey { key, fix, span } => {
+                use rask_types::MapKeyFix;
+                let d = Diagnostic::error(format!("`{}` can't be a Map key", key))
+                    .with_code("E0834")
+                    .with_primary(*span, format!("`{}` is not Hashable", key));
+                match fix {
+                    MapKeyFix::Float => {
+                        let bits = if *key == rask_types::Type::F32 { 32 } else { 64 };
+                        d.with_fix(format!(
+                            "key on the bits — `map.insert(x.to_bits(), v)` with a `u{bits}` key — or on a rounded integer if that is what the key means"
+                        ))
+                        .with_why(
+                            "a Map key has to hash equal whenever it compares equal, and `NaN != NaN` breaks that — a NaN key can never be looked up again, and `-0.0` and `0.0` compare equal while their bits differ [type.generics/HA4]"
+                                .to_string(),
+                        )
+                    }
+                    MapKeyFix::NominalClause => d
+                        .with_fix(format!(
+                            "list it where the type is declared: `type {key} = … with (Equal, Hashable)`"
+                        ))
+                        .with_why(
+                            "a nominal newtype inherits exactly the traits its `with (…)` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
+                                .to_string(),
+                        ),
+                    MapKeyFix::ExtendBlock => d
+                        .with_fix(format!(
+                            "extend {key} with Equal {{ func eq(self, other: {key}) -> bool {{ … }} }}\n  extend {key} with Hashable {{ func hash(self) -> u64 {{ … }} }}"
+                        ))
+                        .with_why(
+                            "a Map key has to hash equal whenever it compares equal. Auto-derive covers primitives and aggregates whose every field is itself Hashable; anything else says so with a declared conformance [type.generics/HA1, G1]"
+                                .to_string(),
+                        ),
+                }
             }
 
             LinearInContainer { container, elem, span } => {
@@ -1944,6 +2014,47 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
+                let label = if *maybe {
+                    format!("`{}` is given away on some paths here and not replaced", name)
+                } else {
+                    format!("`{}` is given away here and not replaced", name)
+                };
+                let fix = if *maybe {
+                    format!("put a value back on every path — or move the `{}` out of the branch", name)
+                } else {
+                    format!("assign a replacement before returning: `{} = …`", name)
+                };
+                Diagnostic::error(format!("gave `{}` away and didn't put anything back", name))
+                    .with_code("E0836")
+                    .with_primary(*consumed_at, label)
+                    .with_secondary(*declared_at, format!("`{}` is declared `mutate`", name))
+                    .with_fix(fix)
+                    .with_why("a `mutate` parameter is exclusive access, not ownership: the caller keeps the value and reads it after the call. Taking it out and writing a replacement back is what the mode is for — leaving the slot empty hands them a hole [mem.parameters/PM2, PM6]".to_string())
+            }
+
+            ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
+                let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
+                    None => format!("this takes ownership, and `{}` isn't yours to give", name),
+                };
+                let mutate_note = if *is_mutate {
+                    " `mutate` is exclusive access — you may write through it, not give it away."
+                } else {
+                    ""
+                };
+                Diagnostic::error(format!("cannot give away `{}` — it's borrowed, not owned", name))
+                    .with_code("E0835")
+                    .with_primary(self.span, label)
+                    .with_secondary(*declared_at, format!("`{}` is declared as a {}", name, how))
+                    .with_fix(format!("take it: `take {}: …` in the signature — then the caller can see it goes", name))
+                    .with_why(format!(
+                        "the caller keeps a parameter it didn't mark `take` and goes on using it, so consuming it here would leave them holding something that's gone. For a `@resource` that's a second close of a real handle.{} [mem.parameters/PM1, mem.linear/L1]",
+                        mutate_note
+                    ))
+            }
+
             UseAfterMove { name, moved_at, reason } => {
                 use rask_ownership::MoveReason;
                 let (note, help) = match reason {
@@ -1990,6 +2101,16 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         ),
                         "read through the new name, or keep the edge in a `Link<T>?` field where the store maintains it".to_string(),
                     ),
+                    MoveReason::Owned => (
+                        format!(
+                            "`{}` is an Owned box — it was consumed there, and its \
+                             memory went with it",
+                            name
+                        ),
+                        "consume it once. If two owners are really needed, clone the \
+                         value into a second box"
+                            .to_string(),
+                    ),
                     MoveReason::Unknown => (
                         format!("`{}` was moved — assignment transfers ownership", name),
                         format!(
@@ -2012,6 +2133,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     MoveReason::Resource { type_name } => format!(
                         "`{}` is @resource — moved on one branch but not the other",
                         type_name
+                    ),
+                    MoveReason::Owned => format!(
+                        "`{}` is an Owned box — consumed on one branch but not the other, \
+                         and after the branches join the compiler has to assume it went",
+                        name
                     ),
                     _ => format!(
                         "`{}` is moved on one branch but not the other — after the branches \
@@ -2205,6 +2331,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("call `.close()` on `{}` or use `ensure` for cleanup", name))
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+
+            OwnedNotConsumed { name } => {
+                Diagnostic::error(format!(
+                    "`{}` was allocated with `own` and never dropped",
+                    name
+                ))
+                .with_code("E0837")
+                .with_primary(self.span, "the value goes out of scope here, still owned")
+                .with_help(format!(
+                    "consume it exactly once: `drop({})`, hand it to a `take` parameter, \
+                     store it in a field, or return it",
+                    name
+                ))
+                .with_fix(format!("drop({})", name))
+                .with_why(
+                    "an Owned value has one owner and must be consumed exactly once \
+                     (mem.linear/L1) — nothing else frees it",
+                )
             }
 
             ResourceNotConsumedInClosure { name, context } => {

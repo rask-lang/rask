@@ -46,7 +46,7 @@ extend Metrics {
 
         let errors = self.total_errors
         let total = self.total_requests
-        let rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+        let rate = if total == 0 { 0.0 } else { (errors as f64) / (total as f64) }
 
         return MetricsSummary {
             total_requests: total,
@@ -72,7 +72,7 @@ struct MetricsSummary {
 // no float→int conversion, no rounding surprises.
 func percentile(sorted: Vec<f64>, pct: usize) -> f64 {
     if sorted.is_empty() { return 0.0 }
-    mut idx = (sorted.len() * pct) / 100
+    mut idx = sorted.len() * pct / 100
     if idx >= sorted.len() { idx = sorted.len() - 1 }
     return sorted[idx]
 }

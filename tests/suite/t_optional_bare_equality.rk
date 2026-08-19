@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Comparing an optional against a bare value of its payload type (#834).
+//
+// The spec's equality section covers `x == y` where both are `T?`, and `x ==
+// none`. The mixed form — a `T?` on one side and a bare `T` on the other — is
+// what real code writes, and the checker accepts it, and the interpreter answers
+// it by wrapping the bare side the way every other position auto-wraps.
+//
+// Native did neither. MIR emitted a raw compare between a 16-byte optional slot
+// and a scalar, and codegen read the scalar as an address:
+//
+//     let a: bool? = true
+//     if a == true { … }     // Cranelift verifier: load.i8 v10 ; v10 = 1
+//
+//     let a: i64? = 5
+//     if a == 5 { … }        // SIGSEGV
+//
+// The `i64` spelling had a second cause underneath: nothing constrained the bare
+// literal, so it defaulted to `i32` and the comparison was between an `i64?` and
+// an `i32` — a mismatch lowering couldn't have wrapped even if it tried. An
+// Option's `eq` left its argument completely unconstrained; a bare literal there
+// is meant as the payload and takes its type now.
+//
+// Found in `projects/tiwaz`, whose load balancer writes
+// `if healthy is none || healthy == true` over a `Map<string, bool>` lookup.
+
+func main() {}
+
+test "type.optionals — an optional compares equal to its payload" {
+    let a: i64? = 5
+    assert a == 5
+    assert !(a == 6)
+    assert a != 6
+}
+
+test "type.optionals — an absent optional equals no payload" {
+    let b: i64? = none
+    assert !(b == 5)
+    assert b != 5
+    assert b is none
+}
+
+test "type.optionals — every payload type" {
+    let s: string? = "hi"
+    assert s == "hi"
+    assert s != "ho"
+
+    let f: f64? = 2.5
+    assert f == 2.5
+
+    let c: char? = 'x'
+    assert c == 'x'
+
+    let t: bool? = true
+    assert t == true
+    assert t != false
+}
+
+test "type.optionals — the bare side can be a typed local, not just a literal" {
+    let a: i64? = 5
+    let n: i64 = 5
+    assert a == n
+
+    let other: i64 = 6
+    assert a != other
+}
+
+test "type.optionals — the optional can be on the right" {
+    let a: i64? = 5
+    assert 5 == a
+    assert 6 != a
+}
+
+// The two forms the spec does define, so the new wrapping doesn't disturb them.
+test "type.optionals — optional against optional, and against none" {
+    let a: i64? = 5
+    let b: i64? = 5
+    let c: i64? = none
+    assert a == b
+    assert !(a == c)
+    assert c is none
+    assert !(a is none)
+}
+
+// The shape from tiwaz: a map lookup gives a `bool?`, and "unknown means
+// healthy" reads as `is none || == true`.
+func healthy(m: Map<string, bool>, url: string) -> bool {
+    let known = m.get(url)
+    if known is none || known == true {
+        return true
+    }
+    return false
+}
+
+test "type.optionals — a map lookup compared against a bare bool" {
+    mut m: Map<string, bool> = Map.new()
+    m.insert("up", true)
+    m.insert("down", false)
+    assert healthy(m, "up")
+    assert !healthy(m, "down")
+    // Unknown: absent, so the first half of the condition carries it.
+    assert healthy(m, "never-checked")
+}

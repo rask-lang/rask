@@ -373,10 +373,12 @@ impl DefaultDesugarer {
         match &mut stmt.kind {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => self.desugar_expr(init),
-            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
+            StmtKind::MutTuple { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => {
                 self.desugar_expr(init);
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 self.desugar_expr(target);
                 self.desugar_expr(value);
             }
@@ -639,7 +641,7 @@ mod tests {
     use rask_ast::Span;
 
     fn sp() -> Span { Span::new(0, 0) }
-    fn int_expr(v: i64) -> Expr {
+    fn int_expr(v: i128) -> Expr {
         Expr { id: NodeId(0), kind: ExprKind::Int(v, None), span: sp() }
     }
     fn str_expr(s: &str) -> Expr {

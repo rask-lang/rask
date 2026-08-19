@@ -129,11 +129,30 @@ impl TypeChecker {
     /// Infer expression type with an expected type hint for unsuffixed literals.
     /// Falls through to normal inference for non-literal or suffixed expressions.
     pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
+        // A bare number filling a `T?` slot is the payload, not the slot. An
+        // optional expectation says nothing an integer literal can take, so the
+        // literal stayed open and defaulted to `i32`: `a[1] = 5` into an
+        // `[i64?; 3]` stored four bytes into an eight-byte payload, and the
+        // upper half came back as whatever the stack held (#835).
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+            if let Some(inner) = expected.as_option() {
+                let inner = inner.clone();
+                return self.infer_expr_expecting(expr, &inner);
+            }
+        }
         match &expr.kind {
-            ExprKind::Int(value, None) if Self::is_integer_type(expected) => {
+            // An unsuffixed literal takes the slot's type, including the two
+            // magnitude bands that only rule types out. Taking the expectation
+            // is what turns `let a: i128 = <too big>` into "this literal is out
+            // of range for `i128`" instead of a type mismatch against whatever
+            // the literal would have defaulted to.
+            ExprKind::Int(value, suffix)
+                if Self::is_integer_type(expected) && Self::int_literal_is_open(suffix) =>
+            {
                 let ty = expected.clone();
                 self.node_types.insert(expr.id, ty.clone());
-                self.pending_int_literals.push((*value, false, ty.clone(), expr.span));
+                let bit_pattern = Self::int_literal_is_bit_pattern(*value, suffix);
+                self.pending_int_literals.push((*value, bit_pattern, ty.clone(), expr.span));
                 return ty;
             }
             ExprKind::Float(_, None) if Self::is_float_type(expected) => {
@@ -183,11 +202,90 @@ impl TypeChecker {
                     }
                 }
             }
+            // std.collections: `[1, 2, 3]` is a collection literal, and the slot
+            // it lands in says which collection and what element type. Typed from
+            // its own elements instead, `let xs: [i64?; 3] = [1, 2, 3]` reported
+            // "expected `i64?`, found `i64`" — the literal never learned that its
+            // elements fill optional slots, so no element could widen (#771).
+            ExprKind::Array(elements) => {
+                if let Some(want_elem) = self.collection_elem_type(expected) {
+                    for element in elements.iter() {
+                        let got = self.infer_expr_expecting(element, &want_elem);
+                        self.coerce_into(
+                            CoercionSite::CollectionElement,
+                            got,
+                            want_elem.clone(),
+                            element.span,
+                        );
+                    }
+                    // The literal's own type is the destination's shape with the
+                    // element type it was given — MIR builds the slot from this,
+                    // so a `[i64?; 3]` has to say so here. An empty literal has
+                    // nothing of its own to say and takes the shape whole.
+                    let ty = match expected {
+                        Type::Array { .. } => Type::Array {
+                            elem: Box::new(want_elem),
+                            len: elements.len(),
+                        },
+                        other => other.clone(),
+                    };
+                    self.node_types.insert(expr.id, ty.clone());
+                    return ty;
+                }
+            }
             _ => {}
         }
         let ty = self.infer_expr(expr);
         self.note_trait_coercion(expr, expected, &ty);
         ty
+    }
+
+    /// The element type a collection literal's members fill, for the shapes
+    /// `[…]` can take: a fixed array, a slice, or a `Vec`.
+    ///
+    /// `None` when the destination isn't one of those, or when its element type
+    /// is still open — an unresolved element says nothing to push into the
+    /// members, and forcing one would pin them to a variable.
+    fn collection_elem_type(&self, expected: &Type) -> Option<Type> {
+        let elem = match expected {
+            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            Type::Generic { base, args } if self.types.type_name(*base).split('<').next() == Some("Vec") => {
+                match args.first()? {
+                    GenericArg::Type(t) => (**t).clone(),
+                    _ => return None,
+                }
+            }
+            Type::UnresolvedGeneric { name, args } if name.split('<').next() == Some("Vec") => {
+                match args.first()? {
+                    GenericArg::Type(t) => (**t).clone(),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if matches!(elem, Type::Var(_) | Type::Error) {
+            return None;
+        }
+        Some(elem)
+    }
+
+    /// A generic *enum* named with its type arguments written out —
+    /// `Holder<i64>` — as the instantiated type. `None` for anything else, so an
+    /// undefined variable still reports as one and a struct or container keeps
+    /// whatever path it already took.
+    fn spelled_out_enum_name(&self, name: &str) -> Option<Type> {
+        if !name.contains('<') {
+            return None;
+        }
+        let base = name.split('<').next()?.trim();
+        let type_id = self.types.get_type_id(base)?;
+        if !matches!(self.types.get(type_id), Some(TypeDef::Enum { .. })) {
+            return None;
+        }
+        match parse_type_string(name, &self.types) {
+            Ok(ty @ Type::Generic { .. }) => Some(ty),
+            _ => None,
+        }
     }
 
     /// The `any Trait` type arguments a container was instantiated with.
@@ -255,6 +353,32 @@ impl TypeChecker {
         self.trait_coercions.insert(expr.id, trait_name.clone());
     }
 
+    /// True when the literal's own spelling doesn't pin a type, so the slot it
+    /// lands in decides. The magnitude markers count: they say what a literal
+    /// *can't* be, not what it is.
+    fn int_literal_is_open(suffix: &Option<rask_ast::token::IntSuffix>) -> bool {
+        use rask_ast::token::IntSuffix;
+        matches!(
+            suffix,
+            None
+                | Some(IntSuffix::U64ByMagnitude)
+                | Some(IntSuffix::I128ByMagnitude)
+                | Some(IntSuffix::U128ByMagnitude)
+        )
+    }
+
+    /// Whether the token carries a bit pattern rather than a number. Only one
+    /// band does: a `u128` above `i128::MAX`, which is the single value range
+    /// the `i128` a token travels in can't represent.
+    fn int_literal_is_bit_pattern(
+        value: i128,
+        suffix: &Option<rask_ast::token::IntSuffix>,
+    ) -> bool {
+        use rask_ast::token::IntSuffix;
+        matches!(suffix, Some(IntSuffix::U128ByMagnitude))
+            || (matches!(suffix, Some(IntSuffix::U128)) && value < 0)
+    }
+
     fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
@@ -274,15 +398,22 @@ impl TypeChecker {
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
-                    Some(IntSuffix::I128) => Type::I128,
                     Some(IntSuffix::Isize) => Type::isize_ty(),
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
-                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => Type::U64,
-                    Some(IntSuffix::U128) => Type::U128,
+                    Some(IntSuffix::U64) => Type::U64,
+                    Some(IntSuffix::I128) => Type::I128,
+                    // Past `i128::MAX` only `u128` is left, so the magnitude
+                    // does pin the type. Below that it just rules types *out* —
+                    // `100000000000000000000` is as good a `u128` as an `i128`,
+                    // so it stays open like any other unsuffixed literal and
+                    // `validate_pending_int_literals` catches a bad landing.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => Type::U128,
                     Some(IntSuffix::Usize) => Type::usize_ty(),
-                    None => {
+                    None
+                    | Some(IntSuffix::U64ByMagnitude)
+                    | Some(IntSuffix::I128ByMagnitude) => {
                         let var = self.ctx.fresh_literal_var(LiteralKind::Integer);
                         // The default is i32 (type.primitives/L1), but a literal
                         // too big for i32 has to land somewhere it fits, or
@@ -293,13 +424,13 @@ impl TypeChecker {
                         var
                     }
                 };
-                // Tokens carry an `i64`, so a literal above `i64::MAX` arrives
-                // as its bit pattern. That only ever shows up as a negative
-                // value under an unsigned suffix — `-1u64` parses as `neg(1)`,
-                // never as `Int(-1, u64)` — so the two cases don't collide.
-                let above_i64 = matches!(suffix, Some(IntSuffix::U64ByMagnitude))
-                    || (*value < 0 && matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128));
-                self.pending_int_literals.push((*value, above_i64, ty.clone(), expr.span));
+                // Tokens carry an `i128`, so only the very top band — above
+                // `i128::MAX`, where just `u128` reaches — still arrives as a
+                // bit pattern. That shows up as a negative value under an
+                // unsigned suffix; `-1u128` parses as `neg(1)`, never as
+                // `Int(-1, u128)`, so the two cases don't collide.
+                let bit_pattern = Self::int_literal_is_bit_pattern(*value, suffix);
+                self.pending_int_literals.push((*value, bit_pattern, ty.clone(), expr.span));
                 ty
             }
             ExprKind::Float(_, suffix) => {
@@ -326,6 +457,19 @@ impl TypeChecker {
                         span: expr.span,
                     });
                     return Type::Error;
+                }
+                // `Holder<i64>.Empty` — the parser folds written type arguments into
+                // the name, so the object of that field access is an identifier
+                // nobody declared. The resolver still points it at the enum's
+                // symbol, whose type carries no arguments, so the variant reference
+                // came out with a fresh variable for `T` and the binding was
+                // "type is still open". A fieldless variant has no payload to infer
+                // from, so the written arguments are the only place `T` can come
+                // from. Ahead of the ordinary lookups because the resolver's answer
+                // is the one that loses them — and no variable is spelled with
+                // angle brackets (#782).
+                if let Some(ty) = self.spelled_out_enum_name(name) {
+                    return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
                     ty
@@ -662,7 +806,18 @@ impl TypeChecker {
 
             ExprKind::IsPattern { expr: value, pattern } => {
                 let value_ty = self.infer_expr(value);
-                let _bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                // #256: a binding from an `is` test reaches the rest of the
+                // condition and the branch body — `m is Msg.Text(t) && t.len() > 1`.
+                // The resolver already puts the name in the enclosing scope, and
+                // the checker was throwing the *type* away, so `t` resolved to a
+                // name with nothing behind it. The program still compiled, because
+                // MIR guessed the receiver's type from the variable's tracked
+                // prefix — the last of the nine dispatch fallbacks, and this was
+                // the gap holding it up (#425).
+                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                for (name, ty) in bindings {
+                    self.define_local_bound(name, ty, super::BoundFrom::Payload);
+                }
                 Type::Bool
             }
 
@@ -1396,6 +1551,28 @@ impl TypeChecker {
                         convert: None,
                         span: expr.span,
                     });
+                } else if !matches!(target, Type::Error)
+                    && !matches!(inner_ty, Type::Var(_) | Type::Error)
+                    && inner_ty != target
+                {
+                    // A number or a trait object are the only two things `as`
+                    // converts to. To anything else it reinterprets the bits,
+                    // which is what `transmute` needs `unsafe` for.
+                    //
+                    // This branch used to not exist: a non-scalar target fell
+                    // off the end of the `if` with no check at all and the
+                    // expression was simply declared to have the target type,
+                    // so `[1, 2, 3] as Vec<i64>` lowered to a stack array whose
+                    // address was handed to `Vec_len` — and indexing it
+                    // segfaulted from ordinary safe code (#862).
+                    self.unsafe_ops.push((expr.span, super::UnsafeCategory::Transmute));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::AsCastNotConvertible {
+                            src_ty: inner_ty.clone(),
+                            target_name: ty.clone(),
+                            span: expr.span,
+                        });
+                    }
                 }
 
                 target
@@ -1593,6 +1770,27 @@ impl TypeChecker {
                         _ => None,
                     }
                     .unwrap_or_else(|| source_ty.clone());
+                    // conc.sync/R4: bare `with shared as v` names no lock, and the
+                    // two locks don't behave the same — a read binding permits
+                    // other readers and never writes back, a write binding blocks
+                    // them and does. Nothing enforced this: the interpreter got as
+                    // far as a runtime error whose message contradicted itself
+                    // ("expected Cell, Mutex, Shared … got Shared") and native
+                    // compiled it and read the wrong bytes, printing 0 for a field
+                    // that held 4 (#880).
+                    let names_a_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. }
+                            if matches!(method.as_str(), "read" | "write" | "staged")
+                    );
+                    if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
+                        self.errors.push(TypeError::BareSharedWith {
+                            name: Self::source_text_for(&binding.source)
+                                .unwrap_or_else(|| "shared".to_string()),
+                            binding: binding.name.clone(),
+                            span: binding.source.span,
+                        });
+                    }
                     // Bindings are mutable, with one exception: conc.sync/R1 —
                     // a shared read lock permits concurrent readers, so its
                     // binding is read-only and never writes back. Mutation
@@ -1990,6 +2188,17 @@ impl TypeChecker {
                 return self.ctx.fresh_var();
             }
 
+            // mem.owned/OW3: `drop(p)` consumes one `Owned` and frees its value.
+            // It takes whatever `own` produced — `Owned<T>` erases to `T` here
+            // (OW5), so there is no type to check against; the arity is.
+            if name == "drop" && args.len() != 1 {
+                self.errors.push(TypeError::ArityMismatch {
+                    expected: 1,
+                    found: args.len(),
+                    span,
+                });
+            }
+
             if self.is_builtin_function(name) {
                 // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
                 // rewrites each argument to `x.to_string()` — the same shape
@@ -2367,7 +2576,6 @@ impl TypeChecker {
                     });
                 }
                 (ArgMode::Default, true, _) => {}
-                (ArgMode::Default, _, true) => {}
                 // Correct annotations are fine
                 (ArgMode::Own, true, _) => {}
                 (ArgMode::Mutate, _, true) if !is_deleting => {}
@@ -2725,7 +2933,7 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind;
 
         // Extract step value from literal
-        let step_val: Option<i64> = match &step_arg.expr.kind {
+        let step_val: Option<i128> = match &step_arg.expr.kind {
             ExprKind::Int(v, _) => Some(*v),
             // After desugar, `-1` becomes `(1).neg()`
             ExprKind::MethodCall { object, method: neg_method, args: neg_args, .. }
@@ -2855,7 +3063,10 @@ impl TypeChecker {
             return Type::Error;
         }
 
-        if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
+        // Cloned rather than borrowed: recording a trait coercion below mutates
+        // the checker, and the borrow would outlive the whole body.
+        if let Some(sig) = self.types.builtin_modules.get_method(module, method).cloned() {
+            let mut trait_params: Vec<(Expr, Type, Type)> = Vec::new();
             // Check parameter count — skip for wildcard params (_Any accepts anything)
             let has_wildcard = sig.params.iter().any(|p| {
                 matches!(p, Type::UnresolvedNamed(n) if n == "_Any")
@@ -2871,13 +3082,25 @@ impl TypeChecker {
 
             // Check parameter types (skip _Any wildcards)
             if !has_wildcard {
-                for (param_ty, arg_ty) in sig.params.iter().zip(arg_types.iter()) {
+                for ((param_ty, arg_ty), arg) in
+                    sig.params.iter().zip(arg_types.iter()).zip(args.iter())
+                {
+                    // TR5: a concrete value flowing into an `any Trait`
+                    // parameter needs a vtable, and MIR builds it from this
+                    // note. A module function's arguments were the one call
+                    // position that never recorded it — `io.copy(buf, out)`
+                    // passed the raw struct pointer, and the first dispatch
+                    // through it jumped to address zero (#860).
+                    trait_params.push((arg.expr.clone(), param_ty.clone(), arg_ty.clone()));
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         param_ty.clone(),
                         arg_ty.clone(),
                         span,
                     ));
                 }
+            }
+            for (arg_expr, param_ty, arg_ty) in trait_params {
+                self.note_trait_coercion(&arg_expr, &param_ty, &arg_ty);
             }
 
             // If explicit type args provided (e.g., json.decode<Foo>),
@@ -3619,6 +3842,29 @@ impl TypeChecker {
 
     /// Is this expression's inferred type `Shared<...>`? (Receiver must have
     /// been inferred already — with-binding sources are.)
+    /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
+    /// for a place that already has the type in hand.
+    fn type_is_shared(ty: &Type, types: &crate::TypeTable) -> bool {
+        match ty {
+            Type::Generic { base, .. } => types.type_name(*base) == "Shared",
+            Type::UnresolvedGeneric { name, .. } => name == "Shared",
+            _ => false,
+        }
+    }
+
+    /// How to spell a `with` source back to the author. A name for a plain
+    /// binding, a field path for a field; `None` for anything longer, where the
+    /// suggestion is better off generic than wrong.
+    fn source_text_for(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::source_text_for(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     fn expr_is_shared(&mut self, e: &Expr) -> bool {
         let Some(t) = self.node_types.get(&e.id).cloned() else { return false };
         match self.ctx.apply(&t) {
@@ -3636,18 +3882,34 @@ impl TypeChecker {
     /// the low byte.
     pub(super) fn validate_pending_int_literals(&mut self) {
         let pending = std::mem::take(&mut self.pending_int_literals);
-        for (value, above_i64, ty, span) in pending {
+        for (value, bit_pattern, ty, span) in pending {
             let ty = self.ctx.apply(&ty);
             let Some((min, max)) = int_range(&ty) else { continue };
-            // Above i64::MAX the value is a bit pattern, not a number: read the
-            // magnitude back out before comparing.
-            let v = if above_i64 { i128::from(value as u64) } else { i128::from(value) };
-            let fits = v >= min && v <= max;
+            // Compare as sign plus magnitude: a `u128` above `i128::MAX` is the
+            // one literal that doesn't fit an `i128`, and it arrives as a bit
+            // pattern rather than a number.
+            let (negative, magnitude) = if bit_pattern {
+                (false, value as u128)
+            } else if value < 0 {
+                (true, value.unsigned_abs())
+            } else {
+                (false, value as u128)
+            };
+            let fits = if negative {
+                min < 0 && magnitude <= min.unsigned_abs()
+            } else {
+                magnitude <= max
+            };
             if fits {
                 continue;
             }
+            let literal = if negative {
+                format!("-{}", magnitude)
+            } else {
+                magnitude.to_string()
+            };
             self.errors.push(TypeError::IntLiteralOutOfRange {
-                literal: v.to_string(),
+                literal,
                 ty,
                 min: min.to_string(),
                 max: max.to_string(),
@@ -4254,12 +4516,14 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// a float target takes any literal, and an unresolved type has nothing to say.
 /// i128/u128 are checked as i128, which can't represent all of u128; the top of
 /// that range needs 128-bit literals to reach anyway.
-fn int_range(ty: &Type) -> Option<(i128, i128)> {
+/// The inclusive range of an integer type. The top is a `u128` because
+/// `u128::MAX` is the one bound no signed type can hold.
+fn int_range(ty: &Type) -> Option<(i128, u128)> {
     Some(match prim_of(ty)? {
-        Prim::Int { bits: 128, signed: false } => (0, i128::MAX),
-        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX),
-        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1),
-        Prim::Int { bits, signed: false } => (0, (1i128 << bits) - 1),
+        Prim::Int { bits: 128, signed: false } => (0, u128::MAX),
+        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX as u128),
+        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1u128 << (bits - 1)) - 1),
+        Prim::Int { bits, signed: false } => (0, (1u128 << bits) - 1),
         _ => return None,
     })
 }

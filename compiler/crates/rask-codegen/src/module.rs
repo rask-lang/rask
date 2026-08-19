@@ -899,6 +899,9 @@ impl CodeGenerator {
         for &msg in crate::builder::OVERFLOW_MESSAGES {
             self.register_string(msg)?;
         }
+        for &msg in crate::builder::OVERFLOW_FALLBACKS {
+            self.register_string(msg)?;
+        }
 
         // Pre-register panic message for inline pool access (release mode)
         if self.build_mode == BuildMode::Release {

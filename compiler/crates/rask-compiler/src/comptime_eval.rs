@@ -49,7 +49,15 @@ pub fn evaluate_comptime_globals(
                 for stmt in &f.body {
                     if let StmtKind::Let { name, init, .. } = &stmt.kind {
                         if is_comptime_init(init, decls) {
-                            comptime_consts.push((name.clone(), init));
+                            // Keyed by the function it lives in. A bare local name
+                            // isn't unique across a program, and this map is shared
+                            // by the whole of it: two functions each with a
+                            // `let v = f()` collided, and one silently read the
+                            // other's value (#825).
+                            comptime_consts.push((
+                                rask_mir::lower::comptime_local_key(&f.name, name),
+                                init,
+                            ));
                         }
                     }
                 }
@@ -150,9 +158,17 @@ fn try_eval_comptime_mir(
         _ => return None,
     };
 
+    // Miri's values stop at 64 bits — `MiriValue` has no `I128`/`U128` and
+    // `impl_int_binop!` isn't instantiated for them — so a 128-bit fold computed
+    // at the wrong width and handed back a truncated number. Hand those to the AST
+    // interpreter, which carries them exactly (#824).
+    let checker_ty = typed.node_types.get(&init.id).map(|ty| format!("{ty:?}"));
+    if matches!(checker_ty.as_deref(), Some("I128") | Some("U128")) {
+        return None;
+    }
+
     // Return type from the checker, mapped to a MIR type string.
-    let ret_ty_str = typed.node_types.get(&init.id)
-        .map(|ty| format!("{ty:?}"))
+    let ret_ty_str = checker_ty
         .and_then(|s| match s.as_str() {
             "I64" => Some("i64"), "I32" => Some("i32"), "I16" => Some("i16"), "I8" => Some("i8"),
             "U64" => Some("u64"), "U32" => Some("u32"), "U16" => Some("u16"), "U8" => Some("u8"),

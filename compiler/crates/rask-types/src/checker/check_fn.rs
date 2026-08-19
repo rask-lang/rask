@@ -582,7 +582,7 @@ impl TypeChecker {
 
     fn stmt_writes_self(stmt: &Stmt, conservative: bool) -> bool {
         match &stmt.kind {
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 Self::expr_targets_self(target) || Self::expr_writes_self(value, conservative)
             }
             StmtKind::Expr(e) => Self::expr_writes_self(e, conservative),

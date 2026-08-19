@@ -4,10 +4,10 @@ func main() {
     // Match expression
     let x = 2
     let name = match x {
-        1 => "one",
-        2 => "two",
-        3 => "three",
-        _ => "many",
+        1 => "one"
+        2 => "two"
+        3 => "three"
+        _ => "many"
     }
 
     print("Number ")

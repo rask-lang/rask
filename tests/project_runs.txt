@@ -1,0 +1,12 @@
+# Projects that run to completion and are diffed across backends by
+# tests/projects_gate.sh. One path per line, relative to the repo root, pointing
+# at the project's entry `.rk`. `#` comments ignored.
+#
+# Checking a project can't see a miscompile. raido was three bugs deep in things
+# only native got wrong (#793, #794, #831) while `rask check` was green on it
+# the whole time.
+#
+# A project belongs here once it runs identically on both backends and its
+# output is deterministic. A server or anything that doesn't exit can't join —
+# there's nothing to diff.
+projects/raido/src/main.rk

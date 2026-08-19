@@ -100,7 +100,9 @@ func main() {
     print("\n\n")
 
     // Comptime for conditional compilation
-    let IS_DEBUG = comptime { true }
+    let IS_DEBUG = comptime {
+        true
+    }
 
     if IS_DEBUG {
         print("Debug mode enabled\n")

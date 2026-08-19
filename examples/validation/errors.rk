@@ -18,10 +18,8 @@ import os
 enum AuthError {
     @message("authorization required")
     Missing
-
     @message("invalid credentials")
     Invalid
-
     @message("credentials expired")
     Expired
 }
@@ -32,13 +30,10 @@ enum AuthError {
 enum StoreError {
     @message("task {0} not found")
     NotFound(u64)
-
     @message("task {0} already exists")
     Duplicate(u64)
-
     @message("store is at capacity ({0} items)")
     CapacityFull(usize)
-
     @message("transaction conflict: {0}")
     TxConflict(string)
 }
@@ -55,9 +50,9 @@ enum ValidationError {
 extend ValidationError with Error {
     func message(self) -> string {
         match self {
-            Empty(field)          => return "{field} must not be empty",
-            TooLong(field, max)   => return "{field} exceeds {max} characters",
-            BadEnum(field, value) => return "{value} is not a valid {field}",
+            Empty(field) => return "{field} must not be empty"
+            TooLong(field, max) => return "{field} exceeds {max} characters"
+            BadEnum(field, value) => return "{value} is not a valid {field}"
         }
     }
 }
@@ -75,13 +70,10 @@ enum ApiError {
     Store(StoreError)
     Auth(AuthError)
     System(SysError)
-
     @message("bad request: {0}")
     BadRequest(string)
-
     @message("rate limited; retry after {0}s")
     RateLimited(u64)
-
     @message("internal error: {0}")
     Internal(string)
 }
@@ -90,26 +82,25 @@ extend ApiError {
     // HTTP status this error maps to. Keeps status policy in one place.
     func status(self) -> u16 {
         match self {
-            Validation(_)  => return 422,
-            BadRequest(_)  => return 400,
-            Auth(_)        => return 401,
-            RateLimited(_) => return 429,
-            Store(e)       => return store_status(e),
-            System(_)      => return 500,
-            Internal(_)    => return 500,
+            Validation(_) => return 422
+            BadRequest(_) => return 400
+            Auth(_) => return 401
+            RateLimited(_) => return 429
+            Store(e) => return store_status(e)
+            System(_) => return 500
+            Internal(_) => return 500
         }
     }
 }
 
 func store_status(e: StoreError) -> u16 {
     match e {
-        NotFound(_)     => return 404,
-        Duplicate(_)    => return 409,
-        TxConflict(_)   => return 409,
-        CapacityFull(_) => return 503,
+        NotFound(_) => return 404
+        Duplicate(_) => return 409
+        TxConflict(_) => return 409
+        CapacityFull(_) => return 503
     }
 }
-
 // No lifters needed. Each wrapper variant above takes exactly one payload of
 // exactly one error type, which is all `try` needs to place a propagated error
 // on its own (ER31a) — `try s.view_task(id)` in a handler becomes

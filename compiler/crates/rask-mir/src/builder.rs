@@ -98,6 +98,14 @@ impl BlockBuilder {
         id
     }
 
+    /// Give an existing local a name. Used when a binding takes over a temp
+    /// rather than copying out of it, so the dump still shows the source name.
+    pub fn name_local(&mut self, id: LocalId, name: String) {
+        if let Some(local) = self.function.locals.iter_mut().find(|l| l.id == id) {
+            local.name = Some(name);
+        }
+    }
+
     pub fn add_param(&mut self, name: String, ty: MirType) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;

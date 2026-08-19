@@ -21,21 +21,21 @@ func error_response(e: ApiError) -> Response {
 // Stable machine-readable codes, independent of the human message.
 func error_code(e: ApiError) -> string {
     match e {
-        Validation(_)  => return "validation_failed",
-        Store(inner)   => return store_code(inner),
-        Auth(_)        => return "unauthorized",
-        System(_)      => return "system_error",
-        BadRequest(_)  => return "bad_request",
-        RateLimited(_) => return "rate_limited",
-        Internal(_)    => return "internal",
+        Validation(_) => return "validation_failed"
+        Store(inner) => return store_code(inner)
+        Auth(_) => return "unauthorized"
+        System(_) => return "system_error"
+        BadRequest(_) => return "bad_request"
+        RateLimited(_) => return "rate_limited"
+        Internal(_) => return "internal"
     }
 }
 
 func store_code(e: StoreError) -> string {
     match e {
-        NotFound(_)     => return "not_found",
-        Duplicate(_)    => return "duplicate",
-        TxConflict(_)   => return "tx_conflict",
-        CapacityFull(_) => return "capacity_full",
+        NotFound(_) => return "not_found"
+        Duplicate(_) => return "duplicate"
+        TxConflict(_) => return "tx_conflict"
+        CapacityFull(_) => return "capacity_full"
     }
 }
