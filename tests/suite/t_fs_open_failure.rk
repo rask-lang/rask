@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `fs.open` on a file that isn't there is an error, not a File (#858).
+//
+// Native handed back a successful `File` wrapping the NULL that `fopen`
+// returned. A program that checked `if f is File` took the success branch, and
+// the failure only surfaced on the first read — as "file handle is closed",
+// which is a different fault at a different place:
+//
+//     let f = fs.open("/tmp/missing.txt")
+//     if f is File as v {
+//         println("opened a file that does not exist")   // native printed this
+//         v.read_text()                                  // "file handle is closed"
+//     } else as e {
+//         println("err {e}")                             // the interpreter's answer
+//     }
+//
+// The check lives in `stdlib/fs.rk` now rather than the runtime, because the
+// runtime can't build an `IoError` — it's a Rask enum. Both backends read the
+// same source for the message.
+
+import fs
+import io.File
+
+func open_result(path: string) -> string {
+    let o = fs.open(path)
+    o catch e => {
+        return "{e}"
+    }
+    mut f = try o
+    let t = f.read_text()
+    f.close()
+    if t is string as s {
+        return "read [{s.trim()}]"
+    } else as e {
+        return "read err {e}"
+    }
+}
+
+func create_result(path: string) -> string {
+    let c = fs.create(path)
+    c catch e => {
+        return "{e}"
+    }
+    mut f = try c
+    let _ = f.write_text("hello\n")
+    f.close()
+    return "created"
+}
+
+test "std.fs — opening a file that isn't there is an error" {
+    assert_eq(
+        open_result("/tmp/rask_t_fs_open_definitely_missing.txt"),
+        "not found: No such file or directory (os error 2)",
+    )
+}
+
+test "std.fs — creating under a directory that isn't there is an error" {
+    assert_eq(
+        create_result("/tmp/rask_t_fs_open_no_such_dir/f.txt"),
+        "not found: No such file or directory (os error 2)",
+    )
+}
+
+test "std.fs — the success path still works" {
+    let path = "/tmp/rask_t_fs_open_ok.txt"
+    let _ = fs.remove_file(path)
+    assert_eq(create_result(path), "created")
+    assert_eq(open_result(path), "read [hello]")
+    let _ = fs.remove_file(path)
+    assert(!fs.exists(path))
+}
+
+func main() {}

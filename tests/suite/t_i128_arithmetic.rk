@@ -17,12 +17,11 @@
 // has no lowering rule for `smul_overflow`/`umul_overflow` or for any of
 // `sdiv`/`udiv`/`srem`/`urem` at that width.
 //
-// Every value here is written at or below `u64::MAX`, and the results past that
-// boundary are checked as *relationships* rather than literals — the lexer still
-// parses a literal into 64 bits, so a number above `u64::MAX` can't be written
-// on either side of a comparison. That's the remaining half of #762, and it
-// comes last on purpose: widening the lexer first would turn today's honest
-// "doesn't compile" into a program that compiles and truncates.
+// The relationship checks below (`sum / 2 == a`, `sum > a`) are how this file
+// was written when a literal parsed into 64 bits and nothing above `u64::MAX`
+// could be spelled. Tokens carry an `i128` now (#800), so the literal checks at
+// the bottom pin the same values directly — both styles stay, because a
+// relationship and a literal fail in different ways.
 
 test "type.primitives — i128 addition past the 64-bit boundary" {
     let a: i128 = 9223372036854775807
@@ -133,4 +132,231 @@ test "type.primitives — bitwise and shifts work at 128 bits" {
     assert high ^ high == 0
 }
 
+// ---------------------------------------------------------------------------
+// Literals at the full width (#800). Everything above needed a relationship
+// because the number couldn't be written; these say it outright.
+// ---------------------------------------------------------------------------
+
+test "type.primitives — a literal at the 128-bit boundaries" {
+    let max: i128 = 170141183460469231731687303715884105727
+    let min: i128 = -170141183460469231731687303715884105728
+    assert max > 0
+    assert min < 0
+    assert max - 1 == 170141183460469231731687303715884105726
+    assert min + 1 == -170141183460469231731687303715884105727
+    assert "{max}" == "170141183460469231731687303715884105727"
+    assert "{min}" == "-170141183460469231731687303715884105728"
+}
+
+test "type.primitives — a u128 literal above i128::MAX" {
+    let max: u128 = 340282366920938463463374607431768211455
+    assert max / 2 == 170141183460469231731687303715884105727
+    assert max - 340282366920938463463374607431768211454 == 1
+    assert "{max}" == "340282366920938463463374607431768211455"
+}
+
+test "type.primitives — the results the older tests could only compare" {
+    let a: i128 = 9223372036854775807
+    assert a + a == 18446744073709551614
+    assert a * 4 == 36893488147419103228
+
+    let u: u128 = 18446744073709551615
+    assert u + u == 36893488147419103230
+
+    let one: i128 = 1
+    assert one << 100 == 1267650600228229401496703205376
+}
+
+// The magnitude says which types a literal can't be, not which one it is: the
+// same digits land in an `i128` or a `u128` depending on the slot.
+test "type.primitives — a wide literal takes the type of its slot" {
+    let signed: i128 = 100000000000000000000
+    let unsigned: u128 = 100000000000000000000
+    assert "{signed}" == "100000000000000000000"
+    assert "{unsigned}" == "100000000000000000000"
+    assert signed * 2 == 200000000000000000000
+    assert unsigned * 2 == 200000000000000000000
+}
+
+// A suffix and a radix reach the same value; `_` separators are invisible.
+test "type.primitives — suffixes, radixes and separators at 128 bits" {
+    let suffixed = 200000000000000000000i128
+    let unsigned = 300000000000000000000u128
+    assert "{suffixed}" == "200000000000000000000"
+    assert "{unsigned}" == "300000000000000000000"
+
+    let hex: u128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    assert hex == 340282366920938463463374607431768211455
+
+    let separated: i128 = 170_141_183_460_469_231_731_687_303_715_884_105_727
+    assert separated == 170141183460469231731687303715884105727
+}
+
+// An unsuffixed literal with nothing to constrain it defaults to `i32`, then
+// `i64`, then `i128` — whichever is the first that holds it.
+test "type.primitives — a wide literal with no slot defaults to i128" {
+    let inferred = 100000000000000000000
+    assert inferred / 100000000000000000 == 1000
+    assert "{inferred}" == "100000000000000000000"
+}
+
+// 128-bit Map keys (#663) needed a writable wide literal before they could be
+// exercised at all.
+test "type.primitives — a 128-bit value works as a Map key" {
+    mut m = Map<i128, string>.new()
+    m.insert(170141183460469231731687303715884105727, "max")
+    m.insert(-170141183460469231731687303715884105728, "min")
+    assert (m.get(170141183460469231731687303715884105727) ?? "?") == "max"
+    assert (m.get(-170141183460469231731687303715884105728) ?? "?") == "min"
+    assert m.len() == 2
+}
+
+// ── std.bits at 128 bits (#822) ─────────────────────────────────────
+//
+// The checker accepted every one of these on `i128`/`u128` and neither backend
+// had any: native fell past the width guard in `lower_int_bit_method` into the
+// `{Type}_{method}` dispatch chain — "Function not found: i128_count_ones", a
+// codegen error after a clean typecheck — and the interpreter had no arms.
+//
+// Cranelift legalizes all of them at 128 bits, and Rust's primitives have them,
+// so both sides are the same operation at the full width with nothing to mask.
+
+test "std.bits/B1 — bit inspection on i128" {
+    let a: i128 = 5
+    assert a.count_ones() == 2
+    assert a.count_zeros() == 126
+    assert a.leading_zeros() == 125
+    assert a.trailing_zeros() == 0
+    assert a.leading_ones() == 0
+    assert a.trailing_ones() == 1
+}
+
+test "std.bits/B1 — permutation on i128 spans the full width" {
+    let a: i128 = 5
+    // 0b101 reversed puts bits at 127 and 125, which reads negative as an i128.
+    assert a.reverse_bits() == -127605887595351923798765477786913079296
+    // The low byte moves to the top: 5 << 120.
+    assert a.swap_bytes() == 6646139978924579364519035301401722880
+    assert a.rotate_left(1) == 10
+    // The low bit wraps to bit 127.
+    assert a.rotate_right(1) == -170141183460469231731687303715884105726
+}
+
+test "std.bits/B2 — byte order on u128" {
+    let b: u128 = 255
+    assert b.count_ones() == 8
+    assert b.to_le() == 255
+    assert b.to_be() == 338953138925153547590470800371487866880
+    assert b.swap_bytes() == 338953138925153547590470800371487866880
+}
+
+test "type.overflow/AR3 — the floored modulo at 128 bits" {
+    let a: i128 = -7
+    let b: i128 = 3
+    assert a.mod(b) == 2
+    assert a.rem(b) == -1
+
+    // Unsigned is already non-negative, so `mod` and `%` coincide.
+    let u: u128 = 340282366920938463463374607431768211455
+    let d: u128 = 10
+    assert u.mod(d) == 5
+}
+
+// ── A folded comptime value keeps its width (#824) ──────────────────
+//
+// A `comptime func` returning 128 bits came back truncated. Two causes, one on
+// each side of the fold: Miri — the MIR-level evaluator that takes the fast path —
+// has no 128-bit values at all, so it computed at 64 bits; and the folded global
+// was read back at a width from a table that listed five of them and defaulted the
+// rest to `i64`, so a 16-byte value was loaded 8 bytes at a time.
+//
+// `200000000000000000000000000000000000001` used to come back as
+// `1374799102801346561`, which is that number mod 2^64. `u64::MAX` came back as
+// `u128::MAX` — the low word sign-extended into the high one.
+
+comptime func wide_sum() -> u128 {
+    let a: u128 = 200000000000000000000000000000000000000
+    return a + 1
+}
+
+comptime func at_u64_max() -> u128 {
+    let a: u128 = 18446744073709551615
+    return a
+}
+
+comptime func at_u128_max() -> u128 {
+    let a: u128 = 340282366920938463463374607431768211455
+    return a
+}
+
+comptime func at_i128_min() -> i128 {
+    let a: i128 = -170141183460469231731687303715884105728
+    return a
+}
+
+test "ctrl.comptime — a folded 128-bit value survives the fold" {
+    let sum = wide_sum()
+    assert sum == 200000000000000000000000000000000000001
+
+    // The boundary that used to sign-extend: a value that fits u64 exactly.
+    let u64max = at_u64_max()
+    assert u64max == 18446744073709551615
+
+    // Both ends of both widths.
+    assert at_u128_max() == 340282366920938463463374607431768211455
+    assert at_i128_min() == -170141183460469231731687303715884105728
+}
+
 func main() {}
+
+// ── Negation at 128 bits crashed the compiler (#832) ─────────────────
+//
+// The overflow guards build their `MIN` constant at the operand's own type, and
+// `type_min_i64` capped at `i64::MIN` and emitted it with `iconst`. Cranelift
+// has no `iconst` rule at 128 bits — a 128-bit constant is two 64-bit halves
+// concatenated — so `let a: i128 = 5` followed by `-a` produced IR the verifier
+// rejected. And the verifier's rejection is a bare `unreachable!()` with no
+// message, so the compiler panicked instead of reporting anything:
+//
+//     internal error: entered unreachable code
+//       cranelift-codegen/src/verifier/mod.rs:1634
+//
+// Four lines of Rask. It's what stopped `projects/raido` from building, whose
+// fixed-point `Number.mul` negates an `i128` intermediate.
+
+test "type.primitives — negating a 128-bit value" {
+    let a: i128 = 5
+    assert -a == -5
+
+    let big: i128 = 170141183460469231731687303715884105727
+    assert -big == -170141183460469231731687303715884105726 - 1
+
+    let neg: i128 = -42
+    assert -neg == 42
+}
+
+// The fixed-point multiply from raido: widen to 128, take the magnitude, shift
+// back, and put the sign on by negating.
+func fixed_mul(x: i64, y: i64) -> i64 {
+    let a = x as i128
+    let b = y as i128
+    let sign = if a < 0 != b < 0 {
+        -1
+    } else {
+        1
+    }
+    let result = (a.abs() * b.abs()) >> 32
+    if sign < 0 {
+        return (-result).wrap<i64>()
+    }
+    return result.wrap<i64>()
+}
+
+test "type.primitives — 128-bit intermediates in a fixed-point multiply" {
+    let two: i64 = 2 << 32
+    let three: i64 = 3 << 32
+    assert (fixed_mul(two, three) >> 32) == 6
+
+    let neg_two: i64 = -2 << 32
+    assert (fixed_mul(neg_two, three) >> 32) == -6
+}

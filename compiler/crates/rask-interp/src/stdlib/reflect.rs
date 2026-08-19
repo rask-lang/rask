@@ -21,6 +21,35 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
     fn declares_enum(&self, name: &str) -> bool {
         self.0.enums.contains_key(name)
     }
+
+    fn is_resource(&self, name: &str) -> bool {
+        // `File` is the compiler's own resource — it has no declaration to carry
+        // the annotation, and the runtime tracks it as one.
+        name == "File"
+            || self.0.struct_decls.get(name)
+                .is_some_and(|d| d.attrs.iter().any(|a| a == "resource"))
+    }
+
+    fn member_type_names(&self, name: &str) -> Option<Vec<String>> {
+        if let Some(s) = self.0.struct_decls.get(name) {
+            return Some(s.fields.iter().map(|f| f.ty.clone()).collect());
+        }
+        if let Some(e) = self.0.enums.get(name) {
+            return Some(
+                e.variants.iter()
+                    .flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))
+                    .collect(),
+            );
+        }
+        // A nominal newtype is whatever it wraps (type.aliases/T11).
+        self.0.nominal_targets.get(name).map(|t| vec![t.clone()])
+    }
+
+    fn type_params(&self, name: &str) -> Vec<String> {
+        let params = self.0.struct_decls.get(name).map(|s| &s.type_params)
+            .or_else(|| self.0.enums.get(name).map(|e| &e.type_params));
+        params.map(|p| p.iter().map(|t| t.name.clone()).collect()).unwrap_or_default()
+    }
 }
 
 impl Interpreter {

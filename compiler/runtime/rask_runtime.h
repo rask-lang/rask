@@ -287,6 +287,13 @@ int64_t rask_char_is_alphabetic(int32_t c);
 int64_t rask_char_is_numeric(int32_t c);
 int64_t rask_char_is_alphanumeric(int32_t c);
 int64_t rask_char_is_whitespace(int32_t c);
+int64_t rask_char_is_control(int32_t c);
+int64_t rask_char_is_ascii_alphabetic(int32_t c);
+int64_t rask_char_is_ascii_digit(int32_t c);
+int64_t rask_char_is_ascii_hexdigit(int32_t c);
+int64_t rask_char_is_ascii_punctuation(int32_t c);
+int64_t rask_char_to_ascii_lowercase(int32_t c);
+int64_t rask_char_to_ascii_uppercase(int32_t c);
 int64_t rask_char_is_uppercase(int32_t c);
 int64_t rask_char_is_lowercase(int32_t c);
 int64_t rask_char_to_int(int32_t c);
@@ -325,6 +332,22 @@ int rask_case_map(uint32_t cp, int to_upper, uint32_t out[3]);
 
 /// The single-scalar answer, for `char.to_uppercase()`/`to_lowercase()`.
 uint32_t rask_case_map_one(uint32_t cp, int to_upper);
+
+/// An inclusive scalar range in a character-class table.
+typedef struct {
+    uint32_t lo;
+    uint32_t hi;
+} RaskCharRange;
+
+/// What `char.is_alphabetic()` and friends answer from. Generated from Rust's
+/// own predicates, same as the case tables — `is_alphabetic` used to be "any
+/// scalar above 127", so `'\u{20AC}'` and a combining accent were letters.
+#define RASK_CLASS_ALPHABETIC 0
+#define RASK_CLASS_NUMERIC    1
+#define RASK_CLASS_LOWERCASE  2
+#define RASK_CLASS_UPPERCASE  3
+#define RASK_CLASS_CONTROL    4
+int rask_char_class(uint32_t cp, int which);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
@@ -367,6 +390,7 @@ RaskMap *rask_map_clone(const RaskMap *m);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
+uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);
@@ -431,6 +455,8 @@ double   rask_rng_f64(RaskRng *rng);
 double   rask_rng_f32(RaskRng *rng);
 int64_t  rask_rng_bool(RaskRng *rng);
 int64_t  rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi);
+void     rask_random_shuffle(RaskRng *rng, RaskVec *v);
+void    *rask_random_choice(RaskRng *rng, RaskVec *v);
 
 // Module-level convenience (thread-local PRNG)
 double   rask_random_f64(void);
@@ -474,6 +500,7 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
+int64_t     rask_file_is_null(int64_t file);
 void        rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and
@@ -502,6 +529,10 @@ RaskVec    *rask_file_lines(int64_t file);
 // ─── IO module ──────────────────────────────────────────────
 int64_t     rask_io_read_line(RaskStr *out, RaskStr *err_out);
 int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
+int64_t     rask_io_std_write_text(int64_t which, int64_t str_ptr);
+int64_t     rask_io_std_write_bytes(int64_t which, int64_t vec_ptr);
+int64_t     rask_io_std_flush(int64_t which);
+int64_t     rask_io_std_read_bytes(int64_t max);
 
 // ─── Time module ────────────────────────────────────────────
 // Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
@@ -538,6 +569,8 @@ int64_t rask_net_read_bytes(int64_t fd);
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr);
 void    rask_net_remote_addr(RaskStr *out, int64_t fd);
 void    rask_net_local_addr(RaskStr *out, int64_t fd);
+int8_t  rask_net_is_invalid(int64_t handle);
+int8_t  rask_net_is_unresolved(int64_t handle);
 
 // ─── Filesystem metadata ────────────────────────────────────
 int64_t rask_fs_metadata(int64_t path_ptr);
@@ -718,7 +751,7 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
 void rask_assert_fail_cmp_char(int64_t left, int64_t right,
                                const char *op, const char *file,
                                int32_t line, int32_t col);
-void rask_assert_fail_cmp_str(const char *left, const char *right,
+void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_f64(double left, double right,
@@ -736,7 +769,7 @@ void rask_assert_eq_fail_char(int64_t got, int64_t expected,
                               const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_f64(double got, double expected,
                              const char *file, int32_t line, int32_t col);
-void rask_assert_eq_fail_str(const char *got, const char *expected,
+void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail(const char *file, int32_t line, int32_t col);
 
@@ -1032,6 +1065,11 @@ int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
+void    rask_os_set_env(const RaskStr *name, const RaskStr *value);
+void    rask_os_remove_env(const RaskStr *name);
+RaskVec *rask_os_args(void);
+void    rask_os_platform(RaskStr *out);
+void    rask_os_arch(RaskStr *out);
 RaskVec *rask_os_env_vars(void);
 
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);

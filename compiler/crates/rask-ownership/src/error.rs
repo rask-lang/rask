@@ -22,6 +22,9 @@ pub enum MoveReason {
     Unique { type_name: String },
     /// Type is marked @resource.
     Resource { type_name: String },
+    /// The binding holds an `Owned` box — `own` allocated it and something has
+    /// already consumed it, so a second use is a second free (mem.linear/L3).
+    Owned,
     /// Unknown or generic type.
     Unknown,
 }
@@ -45,6 +48,46 @@ pub enum OwnershipErrorKind {
         /// One branch's move site.
         moved_at: Span,
         reason: MoveReason,
+    },
+
+    /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
+    /// lent out can't be given away.
+    ///
+    /// A parameter without `take` is a borrow — the caller keeps the value and
+    /// goes on using it. The body used to treat it as owned, so it could be fed
+    /// straight to a `take` parameter or a `take self` method with nothing said.
+    /// For a `@resource` that's a double-close the caller can't see; for a plain
+    /// value it's a use of something already given away.
+    #[error("cannot give away `{name}` — it's borrowed, not owned")]
+    ConsumeBorrowedParam {
+        name: String,
+        /// The parameter's declaration, to point at and to suggest `take` on.
+        declared_at: Span,
+        /// `mutate` reads differently from a plain borrow: it's exclusive access,
+        /// which is still not ownership.
+        is_mutate: bool,
+        /// What the value was being handed to, when it has a name.
+        sink: Option<String>,
+    },
+
+    /// mem.parameters/PM2 with PM6: a `mutate` parameter consumed and not
+    /// replaced.
+    ///
+    /// `mutate` is exclusive access, so taking the value out and writing a
+    /// replacement back is the point of the mode — `out.push(b.build()); b =
+    /// StringBuilder.new()`. What it isn't is a way to give the value away: PM2
+    /// promises the caller their value is still there when the call returns, and
+    /// nothing checked that anything was put back.
+    #[error("gave `{name}` away and didn't put anything back")]
+    MutateParamLeftEmpty {
+        name: String,
+        /// Where it was consumed.
+        consumed_at: Span,
+        /// The parameter's declaration.
+        declared_at: Span,
+        /// True when only *some* paths consumed it — the message differs, and so
+        /// does the fix.
+        maybe: bool,
     },
 
     /// SM2: a `@small` type grew past the 16-byte copy threshold.
@@ -109,6 +152,14 @@ pub enum OwnershipErrorKind {
     /// Resource type not consumed before scope exit.
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
+        name: String,
+    },
+
+    /// mem.linear/L1 for an `Owned<T>` local: `own` allocated and nothing
+    /// consumed it. Kept apart from `ResourceNotConsumed` because the fix is
+    /// `drop(name)`, not `.close()`.
+    #[error("`{name}` must be dropped before the end of this block")]
+    OwnedNotConsumed {
         name: String,
     },
 

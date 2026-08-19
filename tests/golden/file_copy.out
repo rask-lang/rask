@@ -1,0 +1,10 @@
+Usage: rcopy [OPTIONS] SOURCE DEST
+
+Copy SOURCE to DEST
+
+Options:
+  -f, --force     Overwrite destination if it exists
+  -v, --verbose   Show progress information
+  -h, --help      Show this help
+Copying 'tests/fixtures/grep_input.txt' to '/tmp/rask_gate_file_copy.txt'...
+Copied 132 B

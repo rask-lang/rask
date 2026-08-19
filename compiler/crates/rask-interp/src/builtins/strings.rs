@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{FloatKind, IteratorState, Value};
+use crate::value::{FloatKind, IntKind, IteratorState, Value};
 
 impl Interpreter {
     /// Handle string method calls.
@@ -64,15 +64,13 @@ impl Interpreter {
                 Ok(Value::vec(vec![Value::int(start as i64), Value::int(end as i64)]))
             }
             // FNV-1a over the bytes — the same function the native runtime
-            // and string-keyed maps use, so both backends agree.
+            // and string-keyed maps use, so both backends agree. Typed `u64`,
+            // which is what the signature says: as a plain int it rendered the
+            // top half of the range as a negative number (#813).
             "hash" => {
                 let guard = s.lock().unwrap();
-                let mut h: u64 = 0xcbf29ce484222325;
-                for b in guard.as_bytes() {
-                    h ^= *b as u64;
-                    h = h.wrapping_mul(0x100000001b3);
-                }
-                Ok(Value::int(h as i64))
+                let h = crate::builtins::fnv1a(guard.as_bytes());
+                Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug_string" => {
@@ -224,6 +222,14 @@ impl Interpreter {
                         let k = FloatKind::from_name(&target).unwrap_or(FloatKind::F64);
                         Value::Float(k.round(f), k)
                     })
+                } else if let Some(k) = IntKind::from_name(&target) {
+                    // The target's own width, both for the sign and for the
+                    // range. Everything went through `i64`: u64::MAX exactly
+                    // failed, `"-1".parse<u64>()` succeeded and printed as -1
+                    // while native printed 18446744073709551615, and
+                    // `"70000".parse<u8>()` succeeded here at 70000 while
+                    // native truncated it to 112 (#837).
+                    parse_at_width(&text, k)
                 } else {
                     text.parse::<i64>().ok().map(Value::int)
                 };
@@ -451,6 +457,29 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+}
+
+/// Parse into a specific integer width, refusing anything the width can't
+/// hold. An unsigned target parses unsigned, so it reaches `u64::MAX` and
+/// refuses a leading `-`.
+fn parse_at_width(text: &str, kind: IntKind) -> Option<Value> {
+    let bits = kind.bits().unwrap_or(64);
+    if kind.is_unsigned() {
+        let n = text.parse::<u64>().ok()?;
+        if bits < 64 && n > (u64::MAX >> (64 - bits)) {
+            return None;
+        }
+        Some(Value::Int(n as i64, kind))
+    } else {
+        let n = text.parse::<i64>().ok()?;
+        if bits < 64 {
+            let hi = (1i64 << (bits - 1)) - 1;
+            if n > hi || n < -hi - 1 {
+                return None;
+            }
+        }
+        Some(Value::Int(n, kind))
     }
 }
 

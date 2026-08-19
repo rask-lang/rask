@@ -14,10 +14,10 @@ func build_crc8_table() -> Vec<i64> {
     for i in 0..256 {
         mut crc = i
         for j in 0..8 {
-            if crc & 128 != 0 {
-                crc = ((crc * 2) & 255) ^ 7
+            if (crc & 128) != 0 {
+                crc = crc * 2 & 255 ^ 7
             } else {
-                crc = (crc * 2) & 255
+                crc = crc * 2 & 255
             }
         }
         table.push(crc)
@@ -38,14 +38,14 @@ func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
 // Read from simulated hardware register
 func read_hardware_sensor(sensor_id: i64, tick: i64) -> f64 {
     let base = match sensor_id {
-        0 => 2200,
-        1 => 10130,
-        2 => 4500,
-        _ => 0,
+        0 => 2200
+        1 => 10130
+        2 => 4500
+        _ => 0
     }
 
-    let noise = ((tick * 7 + sensor_id * 13) % 100) - 50
-    return (base + noise) as f64 / 100.0
+    let noise = (tick * 7 + sensor_id * 13) % 100 - 50
+    return ((base + noise) as f64) / 100.0
 }
 
 // ============================================================================
@@ -119,11 +119,7 @@ struct Reading {
 
 // Pushes sensor readings through a channel. The Sender is moved into the
 // closure that wraps this on Thread.spawn — main keeps the Receiver.
-func interrupt_handler(
-    tx: Sender<Reading>,
-    start_time: time.Instant,
-    sample_rate_hz: i64
-) {
+func interrupt_handler(tx: Sender<Reading>, start_time: time.Instant, sample_rate_hz: i64) {
     let period_ns = 1000000000 / sample_rate_hz
     mut sequence: i64 = 0
 
@@ -133,8 +129,8 @@ func interrupt_handler(
         for sensor_id in 0..3 {
             let value = read_hardware_sensor(sensor_id, sequence)
             let _ = tx.send(Reading {
-                sensor_id: sensor_id,
-                value: value,
+                sensor_id,
+                value,
                 timestamp_ns: now_ns,
             })
         }
@@ -163,9 +159,9 @@ struct ProcessorState {
 extend ProcessorState {
     func process_reading(self, sensor_id: i64, value: f64) {
         match sensor_id {
-            0 => self.temp_history.set(self.history_idx, value),
-            1 => self.pressure_history.set(self.history_idx, value),
-            2 => self.humidity_history.set(self.history_idx, value),
+            0 => self.temp_history.set(self.history_idx, value)
+            1 => self.pressure_history.set(self.history_idx, value)
+            2 => self.humidity_history.set(self.history_idx, value)
             _ => {}
         }
 

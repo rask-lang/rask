@@ -5,6 +5,7 @@
 // inspired hashing with seed mixing to set bits in a fixed-size array.
 
 const BLOOM_BITS: usize = 1024
+
 const BLOOM_HASH_COUNT: i32 = 3
 
 struct BloomFilter {
@@ -51,7 +52,7 @@ func bloom_hash(key: string, seed: i32) -> usize {
     mut hash: i64 = 2166136261 + (seed as i64) * 16777619
     for ch in key.chars() {
         hash = hash ^ (ch as i64)
-        hash = (hash * 16777619) % 4294967296
+        hash = hash * 16777619 % 4294967296
     }
     return hash.abs().wrap<usize>()
 }
@@ -62,7 +63,7 @@ func encode_bloom(filter: BloomFilter) -> string {
     for b in filter.bits {
         if !first { out.push(",") }
         first = false
-        out.push(if b: "1" else: "0")
+        out.push(if b { "1" } else { "0" })
     }
     return out.build()
 }
@@ -70,9 +71,7 @@ func encode_bloom(filter: BloomFilter) -> string {
 func decode_bloom(data: string) -> BloomFilter or SstError {
     let parts = data.split(",").to_vec()
     if parts.len() != BLOOM_BITS {
-        return SstError.BloomFilterCorrupt(
-            "expected {BLOOM_BITS} bits, got {parts.len()}"
-        )
+        return SstError.BloomFilterCorrupt("expected {BLOOM_BITS} bits, got {parts.len()}")
     }
     mut bit_vec = Vec.new()
     mut count = 0
@@ -81,7 +80,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
         bit_vec.push(val)
         if val { count += 1 }
     }
-    return BloomFilter { bits: bit_vec, count: count }
+    return BloomFilter { bits: bit_vec, count }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

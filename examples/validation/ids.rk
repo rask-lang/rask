@@ -7,19 +7,27 @@
 // via `extend` (T13). Construction is `TaskId(n)`, extraction `.value` (T7/T8).
 
 type TaskId = u64 with (Equal, Hashable, Comparable, Debug)
+
 type ProjectId = u64 with (Equal, Hashable, Comparable, Debug)
+
 type UserId = u64 with (Equal, Hashable, Comparable, Debug)
 
 extend TaskId {
-    func next(self) -> TaskId { return TaskId(self.value + 1) }
+    func next(self) -> TaskId {
+        return TaskId(self.value + 1)
+    }
 }
 
 extend ProjectId {
-    func next(self) -> ProjectId { return ProjectId(self.value + 1) }
+    func next(self) -> ProjectId {
+        return ProjectId(self.value + 1)
+    }
 }
 
 extend UserId {
-    func next(self) -> UserId { return UserId(self.value + 1) }
+    func next(self) -> UserId {
+        return UserId(self.value + 1)
+    }
 }
 
 // ─── Email ───────────────────────────────────────────────────────────
@@ -32,7 +40,9 @@ struct EmailAddress {
 }
 
 extend EmailAddress {
-    func canonical(self) -> string { return self.raw.to_lowercase() }
+    func canonical(self) -> string {
+        return self.raw.to_lowercase()
+    }
 }
 
 // Custom Equal (EQ2).
@@ -49,7 +59,9 @@ extend EmailAddress with Equal {
 // trait doesn't derive the four booleans from compare), and EmailAddress is
 // never sorted, so it stays non-Comparable. See FINDINGS.
 extend EmailAddress with Hashable {
-    func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
+    func hash(self) -> u64 {
+        return self.raw.to_lowercase().hash()
+    }
 }
 
 // ─── Priority ────────────────────────────────────────────────────────
@@ -66,20 +78,20 @@ enum Priority {
 extend Priority {
     func from_label(s: string) -> Priority or ValidationError {
         match s {
-            "low"    => return Priority.Low,
-            "medium" => return Priority.Medium,
-            "high"   => return Priority.High,
-            "urgent" => return Priority.Urgent,
-            _        => return ValidationError.BadEnum("priority", s),
+            "low" => return Priority.Low
+            "medium" => return Priority.Medium
+            "high" => return Priority.High
+            "urgent" => return Priority.Urgent
+            _ => return ValidationError.BadEnum("priority", s)
         }
     }
 
     func label(self) -> string {
         match self {
-            Low    => return "low",
-            Medium => return "medium",
-            High   => return "high",
-            Urgent => return "urgent",
+            Low => return "low"
+            Medium => return "medium"
+            High => return "high"
+            Urgent => return "urgent"
         }
     }
 }
@@ -98,30 +110,30 @@ enum Status {
 extend Status {
     func from_label(s: string) -> Status or ValidationError {
         match s {
-            "open"        => return Status.Open,
-            "in_progress" => return Status.InProgress,
-            "blocked"     => return Status.Blocked,
-            "done"        => return Status.Done,
-            "cancelled"   => return Status.Cancelled,
-            _             => return ValidationError.BadEnum("status", s),
+            "open" => return Status.Open
+            "in_progress" => return Status.InProgress
+            "blocked" => return Status.Blocked
+            "done" => return Status.Done
+            "cancelled" => return Status.Cancelled
+            _ => return ValidationError.BadEnum("status", s)
         }
     }
 
     func label(self) -> string {
         match self {
-            Open       => return "open",
-            InProgress => return "in_progress",
-            Blocked    => return "blocked",
-            Done       => return "done",
-            Cancelled  => return "cancelled",
+            Open => return "open"
+            InProgress => return "in_progress"
+            Blocked => return "blocked"
+            Done => return "done"
+            Cancelled => return "cancelled"
         }
     }
 
     func is_terminal(self) -> bool {
         match self {
-            Done      => return true,
-            Cancelled => return true,
-            _         => return false,
+            Done => return true
+            Cancelled => return true
+            _ => return false
         }
     }
 }

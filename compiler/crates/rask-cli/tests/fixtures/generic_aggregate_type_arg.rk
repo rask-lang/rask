@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A generic type gets one layout for every instantiation, laid out with a
-// word-sized placeholder per type parameter. An aggregate type argument is bigger
-// than that, so the store runs past its own slot and the read comes back garbage.
+// A generic type with methods, instantiated with an inline aggregate (#781, #814).
 //
-//     let b = One { only: Big { a: 1, b: 2, c: 3 } }
-//     println("{b.only.a}")                            // SIGSEGV, silently
+// `extend One<A>` used to compile to *one* `One_get` body, whose `self` had the
+// shared layout: a word-sized placeholder per type parameter. A 24-byte `Big`
+// doesn't fit that, so widening the layout meant the caller passed 24 bytes to a
+// body reading 8 — and the aggregate argument was refused outright instead.
 //
-// This is a workaround, not the fix: it turns the crash into an error that says
-// what's wrong. The fix needs per-instantiation layouts, which needs the checker
-// to record which type arguments a generic struct was instantiated with — it
-// currently discards them, so a struct literal's node type is a bare
-// `Named(TypeId)`. Tracked in #781.
+// Mono monomorphizes such a method per receiver instantiation now, the way it
+// already did a generic function, so `One<i64>.get()` and `One<Big>.get()` are two
+// bodies with two layouts.
 //
-// Scalars, `string` (stored as a pointer) and any argument at or under a word are
-// unaffected — `One<i64>`, `One<string>`, `Pair<i64, i64>` all work, and
-// `generic_struct_turbofish.rk` covers them.
+// `rask check` doesn't run MIR lowering, so this only ever showed up at run time.
 
 struct One<A> {
     public only: A
+}
+
+extend One<A> {
+    func get(self) -> A {
+        return self.only
+    }
 }
 
 struct Big {
@@ -27,7 +29,11 @@ struct Big {
 }
 
 func main() {
-    // ERROR: a 24-byte Big doesn't fit the word-sized placeholder slot.
+    // A scalar argument fits the placeholder slot.
+    let n = One { only: 5 }
+    println("{n.get()}")
+
+    // A 24-byte Big needs a layout of its own, and a body that agrees with it.
     let b = One { only: Big { a: 1, b: 2, c: 3 } }
-    println("{b.only.a}")
+    println("{b.get().a}")
 }

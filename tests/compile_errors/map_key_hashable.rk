@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Map key has to be Hashable (type.generics/HA1, HA4, #812).
+//
+// The check used to name `f32`/`f64` by hand, so the rule held for the one type
+// that motivated it and nothing else. A struct with a float field got in, and so
+// did a nominal newtype that never claimed a conformance — which matters more
+// than it sounds, since a newtype inherits nothing it doesn't list.
+//
+// Three kinds of key, three different ways out, so the message differs per kind.
+
+// No `with (…)` clause, so it inherits nothing — not even u64's Hashable.
+type Id = u64
+
+// The clause is how you ask.
+type Tag = u64 with (Equal, Hashable)
+
+struct Plain {
+    public n: i64
+}
+
+struct Floaty {
+    public f: f64
+}
+
+func main() {
+    // ERROR: a newtype inherits only what its clause lists [E0834, type.aliases/T11]
+    mut by_id: Map<Id, string> = Map.new()
+    by_id.insert(Id(1), "x")
+
+    // ERROR: a float can never hash equal whenever it compares equal [E0834, HA4]
+    mut by_float: Map<f64, string> = Map.new()
+    by_float.insert(1.0, "x")
+
+    // ERROR: auto-derive stops at the float field, and nothing declares it [E0834, HA1]
+    mut by_floaty: Map<Floaty, string> = Map.new()
+    by_floaty.insert(Floaty { f: 1.0 }, "x")
+
+    // These two are fine: `Plain`'s fields are all Hashable so it auto-derives,
+    // and `Tag` asked.
+    mut by_plain: Map<Plain, string> = Map.new()
+    by_plain.insert(Plain { n: 1 }, "x")
+    mut by_tag: Map<Tag, string> = Map.new()
+    by_tag.insert(Tag(1), "x")
+    println("{by_plain.len()} {by_tag.len()}")
+}

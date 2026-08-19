@@ -564,11 +564,19 @@ impl Parser {
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
-        if let Some(decl) = self.pending_decls.pop() {
-            return Ok(decl);
+        // FIFO. `pop()` handed them back last-first, so an `extern "C" { … }`
+        // block's five functions came out of the parser in reverse — harmless to
+        // the compiler, and `rask fmt` reprinted them in that order, reordering
+        // declarations in the source it was asked to tidy (#805).
+        if !self.pending_decls.is_empty() {
+            return Ok(self.pending_decls.remove(0));
         }
 
         let start = self.current().span.start;
+        // An `extern` block flattens into one declaration per member, each with its
+        // own span; the first keeps the `extern "C"` keywords, so its span is the
+        // declaration's start through its own end rather than the whole block's.
+        let mut extern_first_span: Option<Span> = None;
 
         let mut attrs = Vec::new();
         while self.check(&TokenKind::At) {
@@ -632,14 +640,30 @@ impl Parser {
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => {
-                let mut kinds = self.parse_extern_decls(doc)?;
-                let first = kinds.remove(0);
-                let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
-                let pending: Vec<Decl> = kinds.into_iter().map(|kind| {
+                let mut members = self.parse_extern_decls(doc)?;
+                let (first, first_span) = members.remove(0);
+                let pending: Vec<Decl> = members.into_iter().map(|(kind, span)| {
                     let id = self.next_id();
-                    Decl { id, kind, span: self.span(start, end) }
+                    Decl { id, kind, span }
                 }).collect();
                 self.pending_decls.extend(pending);
+                // In the single form the first member carries the `extern "C"`
+                // keywords with it, so its span starts where the declaration did.
+                //
+                // Not in the block form. There the members each keep the span of
+                // their own `func`, and the block's own start lives on
+                // `ExternDecl.block_start` — which is what the formatter reads to
+                // put the braces back. Stretching the first member's span over the
+                // `extern "C" {` swallowed any comment written on the first line
+                // inside the braces, so it came out attached to the second member
+                // instead (#805).
+                let from_block =
+                    matches!(&first, DeclKind::Extern(e) if e.block_start.is_some());
+                if !from_block {
+                    extern_first_span = Some(self.span(start, first_span.end));
+                } else {
+                    extern_first_span = Some(first_span);
+                }
                 first
             }
             TokenKind::Package => {
@@ -662,6 +686,9 @@ impl Parser {
             }
         };
 
+        if let Some(span) = extern_first_span {
+            return Ok(Decl { id: self.next_id(), kind, span });
+        }
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
         Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) })
     }
@@ -1592,6 +1619,7 @@ impl Parser {
                 }
             } else {
                 let _variant_doc = item_doc;
+                let variant_name_span = self.current().span;
                 let variant_name = self.expect_ident()?;
                 let mut fields = Vec::new();
 
@@ -1660,7 +1688,13 @@ impl Parser {
                     None
                 };
 
-                variants.push(Variant { name: variant_name, fields, attrs: variant_attrs, discriminant });
+                variants.push(Variant {
+                    name: variant_name,
+                    name_span: variant_name_span,
+                    fields,
+                    attrs: variant_attrs,
+                    discriminant,
+                });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1974,7 +2008,10 @@ impl Parser {
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
 
-        for i in (1..items.len()).rev() {
+        // Forward order: `pending_decls` is consumed FIFO, so pushing in reverse
+        // (which is what the LIFO drain used to need) would hand the imports back
+        // last-first.
+        for i in 1..items.len() {
             let (ref name, ref alias) = items[i];
             let mut path = base_path.clone();
             path.push(name.clone());
@@ -2111,7 +2148,19 @@ impl Parser {
 
     /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.
     /// Returns one or more extern declarations.
-    fn parse_extern_decls(&mut self, doc: Option<String>) -> Result<Vec<DeclKind>, ParseError> {
+    /// The functions of an `extern` declaration, each with the span of its own
+    /// `func` keyword through its signature.
+    ///
+    /// The block form flattens into one declaration per function, so each needs a
+    /// span of its own: given the whole block's, a comment written *inside* the
+    /// braces started after every member's span start, and nothing emitted it until
+    /// the next declaration came along — below the block, reading as a comment
+    /// about that instead (#805).
+    fn parse_extern_decls(
+        &mut self,
+        doc: Option<String>,
+    ) -> Result<Vec<(DeclKind, Span)>, ParseError> {
+        let extern_start = self.current().span.start;
         self.expect(&TokenKind::Extern)?;
         let abi = self.expect_string()?;
 
@@ -2123,8 +2172,11 @@ impl Parser {
             let mut decls = Vec::new();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
                 let func_doc = self.take_doc();
+                let member_start = self.current().span.start;
                 self.expect(&TokenKind::Func)?;
-                decls.push(self.parse_extern_func(&abi, func_doc)?);
+                let kind = self.parse_extern_func(&abi, func_doc, Some(extern_start))?;
+                let member_end = self.tokens[self.pos.saturating_sub(1)].span.end;
+                decls.push((kind, self.span(member_start, member_end)));
                 self.skip_newlines();
             }
             self.expect(&TokenKind::RBrace)?;
@@ -2132,12 +2184,18 @@ impl Parser {
         }
 
         // Single form: extern "C" func name(...)
+        let single_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
-        Ok(vec![self.parse_extern_func(&abi, doc)?])
+        let kind = self.parse_extern_func(&abi, doc, None)?;
+        let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+        Ok(vec![(kind, self.span(single_start, end))])
     }
 
     /// Parse a single extern function — signature-only (import) or with body (export).
-    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    ///
+    /// `block_start` is the offset of the `extern` keyword when this member came
+    /// from the block form, so the formatter can print the braces back (#805).
+    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>, block_start: Option<usize>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
@@ -2172,7 +2230,7 @@ impl Parser {
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc }))
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start }))
     }
 
     /// Parse a package block (struct.build/PK1-PK5).
@@ -2620,7 +2678,7 @@ impl Parser {
                 if self.match_token(&TokenKind::Eq) {
                     let value = self.parse_expr()?;
                     self.expect_terminator()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: None }
                 } else if let Some(op) = self.match_compound_assign() {
                     let rhs = self.parse_expr()?;
                     let value = Expr {
@@ -2633,7 +2691,7 @@ impl Parser {
                         span: expr.span.clone(),
                     };
                     self.expect_terminator()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: Some(op) }
                 } else {
                     self.expect_terminator()?;
                     StmtKind::Expr(expr)
@@ -2685,6 +2743,29 @@ impl Parser {
         }
     }
 
+    /// `let Point { x, y } = p` / `mut Point { x, .. } = p`, if that's what comes
+    /// next. `None` otherwise, so the ordinary name path takes over.
+    ///
+    /// A type name followed by `{` is the whole test: `mut x = Point { … }` has the
+    /// `=` first, and `mut x: Point = …` has the `:`. A lowercase name falls
+    /// through on purpose — it can't be a struct, so the error it gets is the one
+    /// about a missing `=`.
+    fn try_parse_struct_binding(&mut self, is_mut: bool) -> Result<Option<StmtKind>, ParseError> {
+        let TokenKind::Ident(name) = &self.current().kind else { return Ok(None) };
+        if !Self::is_type_name(name) || !matches!(self.peek(1), TokenKind::LBrace) {
+            return Ok(None);
+        }
+        let saved = self.allow_brace_expr;
+        self.allow_brace_expr = true;
+        let pattern = self.parse_pattern();
+        self.allow_brace_expr = saved;
+        let pattern = pattern?;
+        self.expect(&TokenKind::Eq)?;
+        let init = self.parse_expr()?;
+        self.expect_terminator()?;
+        Ok(Some(StmtKind::LetStruct { pattern, init, is_mut }))
+    }
+
     fn parse_mut_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Mut)?;
 
@@ -2699,6 +2780,10 @@ impl Parser {
             let init = self.parse_expr()?;
             self.expect_terminator()?;
             return Ok(StmtKind::MutTuple { patterns, init });
+        }
+
+        if let Some(stmt) = self.try_parse_struct_binding(true)? {
+            return Ok(stmt);
         }
 
         let name_span = self.current().span;
@@ -2764,6 +2849,10 @@ impl Parser {
             let init = self.parse_expr()?;
             self.expect_terminator()?;
             return Ok(StmtKind::LetTuple { patterns, init });
+        }
+
+        if let Some(stmt) = self.try_parse_struct_binding(false)? {
+            return Ok(stmt);
         }
 
         let name_span = self.current().span;
@@ -3215,7 +3304,19 @@ impl Parser {
             }
 
             if self.check(&TokenKind::As) {
-                let bp = 21;
+                // Tighter than every binary operator, looser than prefix and
+                // postfix (type.operators/P4). 22 is exactly that slot: it clears
+                // multiplicative's right power (22, so the cast wins inside
+                // `a * b as T`) and stays under `PREFIX_BP` (23, so `-a as T` is
+                // `(-a) as T`).
+                //
+                // `as` used to sit at 21, which is multiplicative's *left* power —
+                // so it bound looser than `* / %` and tighter than `+ -`, and
+                // `a / b as f64` and `a + b as f64` grouped differently. That's the
+                // kind of rule that only shows up as a bug: it cost
+                // `examples/sensor_processor.rk` a reading of 2200.02 °C instead
+                // of 22.02 (#817).
+                let bp = 22;
                 if bp < min_bp { break; }
                 self.advance();
                 let ty = self.parse_type_name()?;
@@ -3228,11 +3329,11 @@ impl Parser {
                 continue;
             }
 
-            // Lossy conversion suffixes (CV5/CV6/CV8/CV9) bind like `as` (bp 21).
+            // Lossy conversion suffixes (CV5/CV6/CV8/CV9) bind like `as` (bp 22).
             if (self.peek_is_word(0, "truncate")
                 || self.peek_is_word(0, "saturate")
                 || self.peek_is_word(0, "float"))
-                && 21 >= min_bp
+                && 22 >= min_bp
             {
                 match self.try_parse_convert_suffix(lhs, start)? {
                     Ok(converted) => {
@@ -3475,7 +3576,12 @@ impl Parser {
             TokenKind::Minus => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 // `-N` is one literal, not a negation of `N`. Folding the sign
                 // in here is what lets `i64::MIN` be written: the lexer sees
                 // 9223372036854775808 on its own, which only fits `u64`, so
@@ -3486,20 +3592,40 @@ impl Parser {
                             let kind = ExprKind::Int(-v, None);
                             return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
                         }
-                        // Only the lexer's "too big for i64" marker folds; an
-                        // explicitly written `u64` keeps meaning `u64`.
+                        // Only the lexer's "too big for the last type" markers
+                        // fold; an explicitly written `u64` keeps meaning `u64`.
+                        // Negating moves the literal down one band: what needed
+                        // `u64` for its magnitude needs `i64` or `i128` once
+                        // it's negative.
                         Some(IntSuffix::U64ByMagnitude) => {
-                            if v == i64::MIN {
-                                let kind = ExprKind::Int(i64::MIN, None);
+                            // `-9223372036854775808` is `i64::MIN`, the one
+                            // value that fits going down but not going up.
+                            let kind = if v == -i128::from(i64::MIN) {
+                                ExprKind::Int(i128::from(i64::MIN), None)
+                            } else {
+                                ExprKind::Int(-v, Some(IntSuffix::I128ByMagnitude))
+                            };
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        Some(IntSuffix::I128ByMagnitude) => {
+                            let kind = ExprKind::Int(-v, Some(IntSuffix::I128ByMagnitude));
+                            return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                        }
+                        // Above `i128::MAX` the token carries a bit pattern.
+                        // `i128::MIN` is exactly that bit pattern, so it's the
+                        // only one a `-` can rescue.
+                        Some(IntSuffix::U128ByMagnitude) => {
+                            if v == i128::MIN {
+                                let kind = ExprKind::Int(i128::MIN, Some(IntSuffix::I128ByMagnitude));
                                 return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
                             }
                             return Err(ParseError {
                                 span: self.span(start, end),
-                                message: format!("integer literal `-{}` is too small for `i64`", v as u64),
-                                hint: Some(format!("the smallest `i64` is {}", i64::MIN)),
+                                message: format!("integer literal `-{}` is too small for `i128`", v as u128),
+                                hint: Some(format!("the smallest `i128` is {}", i128::MIN)),
                                 why: Some(
-                                    "integer literals are `i64` unless a suffix says otherwise, and \
-                                     there is no wider signed type to hold this one"
+                                    "a negative literal has to land in a signed type, and `i128` is \
+                                     the widest one"
                                         .to_string(),
                                 ),
                             });
@@ -3515,7 +3641,12 @@ impl Parser {
             TokenKind::Bang => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 // OPT17/ER26: `!x?` is forbidden — prefix `!` with suffix `?`
                 // fights the parse. Suggest `x == none` (Option) or `x is E`
                 // (Result) instead. `!` on a plain bool is still fine.
@@ -3533,7 +3664,12 @@ impl Parser {
             TokenKind::Tilde => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Amp => {
@@ -3546,7 +3682,12 @@ impl Parser {
             TokenKind::Star => {
                 self.advance();
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
+                // A parenthesized operand hands back the inner expression, so
+                // its span stops before the `)`. Taking the last consumed token
+                // instead keeps the prefix expression's own span balanced —
+                // `-(3)` was spanning `-(3`, and the formatter, which echoes a
+                // literal's source text, printed exactly that (#805).
+                let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
 
@@ -3571,6 +3712,10 @@ impl Parser {
                             span: self.span(start, end),
                         })
                     }
+                    // `own expr` allocates. Keeping the operator in the tree is
+                    // what makes that possible: it used to be dropped here, so
+                    // `let p = own Node { … }` left `p` an ordinary stack struct
+                    // and there was nothing for `drop` to free (#739).
                     _ => {
                         let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                         let end = operand.span.end;
@@ -4012,7 +4157,7 @@ impl Parser {
             let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
-                kind: StmtKind::Assign { target: body, value },
+                kind: StmtKind::Assign { target: body, value, op: None },
                 span: span.clone(),
             };
             Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
@@ -4030,7 +4175,7 @@ impl Parser {
             let span = self.span(body.span.start, value.span.end);
             let assign_stmt = Stmt {
                 id: self.next_id(),
-                kind: StmtKind::Assign { target: body, value },
+                kind: StmtKind::Assign { target: body, value, op: Some(op) },
                 span: span.clone(),
             };
             Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
@@ -4447,7 +4592,7 @@ impl Parser {
                 let expr = self.parse_expr()?;
                 if self.match_token(&TokenKind::Eq) {
                     let value = self.parse_expr()?;
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: None }
                 } else if let Some(op) = self.match_compound_assign() {
                     let rhs = self.parse_expr()?;
                     let value = Expr {
@@ -4459,7 +4604,7 @@ impl Parser {
                         },
                         span: expr.span.clone(),
                     };
-                    StmtKind::Assign { target: expr, value }
+                    StmtKind::Assign { target: expr, value, op: Some(op) }
                 } else {
                     StmtKind::Expr(expr)
                 }
@@ -4475,7 +4620,19 @@ impl Parser {
         let start = self.current().span.start;
         self.expect(&TokenKind::Match)?;
 
-        let scrutinee = self.parse_expr()?;
+        // The `{` after a scrutinee always opens the arms, never a struct
+        // literal — same rule `if`, `while` and `for` already use for their
+        // condition. Without it a scrutinee that is a bare capitalised name read
+        // as a struct literal and the first arm was parsed as a field:
+        //
+        //     const LIMIT = 49
+        //     match LIMIT { 49 => … }
+        //     error[E0100]: Expected name, found a number
+        //
+        // `match lower { 49 => … }` and `match (LIMIT) { … }` both worked, which
+        // is why it took a `const` in a match to find it (#884). Matching on a
+        // struct literal directly still works with the parens.
+        let scrutinee = self.parse_expr_no_braces()?;
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
@@ -5131,13 +5288,36 @@ impl Parser {
                     self.advance();
                     let binding = self.expect_ident()?;
                     Ok(Pattern::TypePat { ty_name: name, binding: Some(binding) })
-                } else if self.check(&TokenKind::LBrace) && name.contains('.') && self.allow_brace_expr {
-                    // Struct variant pattern: Enum.Variant { field1, field2 }
-                    // Only for qualified names, and only when braces are allowed (not in while/if conditions)
+                } else if self.check(&TokenKind::LBrace)
+                    && self.allow_brace_expr
+                    && (name.contains('.') || Self::is_type_name(&name))
+                {
+                    // A struct pattern: `Point { x, y }`, or an enum's
+                    // struct-shaped variant, `Enum.Variant { field1, field2 }`.
+                    //
+                    // Only qualified names used to be accepted, so the plain
+                    // struct form the spec documents — `Point { x: 0, y }` in
+                    // structs.md and SYNTAX.md — didn't parse at all. Both spec
+                    // blocks are `test: skip`, which is why nothing noticed.
+                    //
+                    // Braces have to be allowed: in `if p is Point { … }` the
+                    // `{` opens the branch, and that's what `allow_brace_expr`
+                    // is for.
                     self.advance();
                     self.skip_newlines();
                     let mut fields = Vec::new();
+                    let mut rest = false;
                     while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                        // `..` ignores the fields the pattern doesn't name, which
+                        // is also how a `private` field is skipped (structs.md's
+                        // "Partial patterns").
+                        if self.match_token(&TokenKind::DotDot) {
+                            rest = true;
+                            self.skip_newlines();
+                            let _ = self.match_token(&TokenKind::Comma);
+                            self.skip_newlines();
+                            continue;
+                        }
                         let field_name = self.expect_ident()?;
                         let pattern = if self.match_token(&TokenKind::Colon) {
                             self.parse_pattern()?
@@ -5154,7 +5334,7 @@ impl Parser {
                         }
                     }
                     self.expect(&TokenKind::RBrace)?;
-                    Ok(Pattern::Struct { name, fields, rest: false })
+                    Ok(Pattern::Struct { name, fields, rest })
                 } else {
                     Ok(Pattern::Ident(name))
                 }

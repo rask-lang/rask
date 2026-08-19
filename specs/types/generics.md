@@ -18,6 +18,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
 | **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
 | **G6: Code specialization** | Each `<T>` usage generates specialized code (monomorphization) — fast calls, but increases binary size |
+| **G6a: Methods specialize with their type** | A method declared in `extend One<A>` is specialized per receiver instantiation, same as a generic function: `One<i64>.get()` and `One<Big>.get()` are two bodies. That's what lets each instantiation have a layout that fits its type argument — a struct or tuple argument *is* its bytes, so one shared body couldn't take both an 8-byte and a 24-byte `self`. A method with its own parameters specializes on the receiver's arguments and then its own |
 | **G7: Runtime polymorphism opt-in** | `any Trait` for heterogeneous collections; dispatch through function pointer table (vtable) |
 
 ## Trait Definition
@@ -295,16 +296,19 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | **HA1: Auto-derive** | Primitives, structs with all Hashable fields, enums (tag + payload hash): auto-derived |
 | **HA2: Override** | `extend Type with Hashable { ... }` overrides the auto-derived version |
 | **HA3: Hash combine** | Field-wise hash uses deterministic combine (order matches declaration order) |
+| **HA3a: What a scalar's hash is** | `x.hash()` on an integer, a `bool`, a `char` or a `string` is FNV-1a over the value's little-endian bytes at its own width — the same function an int-keyed Map buckets with, so a value and the same value used as a key agree. Unseeded: a hash is as stable as `==`. The width counts, so `5u32` and `5u64` don't hash alike |
 | **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
 | **HA5: Bits as the hatch** | `x.to_bits() -> u64` reinterprets a float's bit pattern, so a caller who wants a float-keyed Map spells out what "the same key" means. u64 at both widths. Distinct values get distinct keys, and unlike a float key a NaN can be looked up again |
 
 | Type | Hashable Status |
 |------|-----------------|
-| Integer primitives, bool, string | Auto-derived |
+| Integer primitives, bool, char, string | Auto-derived |
 | `f32`, `f64` | NOT Hashable (NaN breaks equality) |
 | Struct with all Hashable fields | Auto-derived (field-wise hash combine) |
 | Enum with all Hashable payloads | Auto-derived (tag + payload) |
+| Tuple / fixed array of Hashable elements | Auto-derived, element-wise (`type.tuples/TU11`) |
 | Handle types | Auto-derived (hash of index + generation) |
+| Nominal newtype (`type Id = u64 with (…)`) | Only when the clause lists `Hashable` — a newtype inherits nothing it doesn't name (`type.aliases/T11`) |
 
 ## Compiler-Verified Comparable
 

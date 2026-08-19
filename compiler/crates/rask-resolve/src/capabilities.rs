@@ -79,7 +79,7 @@ fn has_unsafe_in_stmt(stmt: &Stmt) -> bool {
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
             has_unsafe_in_expr(init)
         }
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             has_unsafe_in_expr(target) || has_unsafe_in_expr(value)
         }
         StmtKind::Return(Some(expr)) => has_unsafe_in_expr(expr),

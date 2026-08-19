@@ -59,8 +59,8 @@ extend Database {
 
 func handle(req: Request) -> Response {
     return match (req.method, req.path()) {
-        (Method.Get, "/health") => Response.ok("ok"),
-        (Method.Get, "/users") => list_users(),
+        (Method.Get, "/health") => Response.ok("ok")
+        (Method.Get, "/users") => list_users()
         (Method.Get, path) if path.starts_with("/users/") => {
             let id_str = path[7..].to_string()
             let id = id_str.parse<i64>() is i64 else {
@@ -68,7 +68,7 @@ func handle(req: Request) -> Response {
             }
             get_user(id)
         }
-        (Method.Post, "/users") => create_user(req.body),
+        (Method.Post, "/users") => create_user(req.body)
         (Method.Delete, path) if path.starts_with("/users/") => {
             let id_str = path[7..].to_string()
             let id = id_str.parse<i64>() is i64 else {
@@ -76,7 +76,7 @@ func handle(req: Request) -> Response {
             }
             delete_user(id)
         }
-        _ => Response.not_found(),
+        _ => Response.not_found()
     }
 }
 
@@ -100,21 +100,20 @@ func get_user(id: i64) -> Response {
         let view = UserResponse { id: u.id, name: u.name, email: u.email }
         return Response.json(json.encode(view))
     }
-    return Response.json(json.encode(ErrorResponse { error: "user not found" }))
-        .with_status(404)
+    return Response.json(json.encode(ErrorResponse { error: "user not found" })).with_status(404)
 }
 
 func create_user(body: string) -> Response {
     let req = json.decode<CreateUserRequest>(body) is CreateUserRequest else {
         return Response.bad_request(json.encode(ErrorResponse {
-            error: "invalid JSON"
+            error: "invalid JSON",
         }))
     }
 
     let user = with db.write() as d {
         let id = d.next_id
         d.next_id += 1
-        let user = User { id: id, name: req.name, email: req.email }
+        let user = User { id, name: req.name, email: req.email }
         d.users.insert(id, user.clone())
         UserResponse { id: user.id, name: user.name, email: user.email }
     }
@@ -128,8 +127,7 @@ func delete_user(id: i64) -> Response {
     if removed? {
         return Response.no_content()
     } else {
-        return Response.json(json.encode(ErrorResponse { error: "user not found" }))
-            .with_status(404)
+        return Response.json(json.encode(ErrorResponse { error: "user not found" })).with_status(404)
     }
 }
 

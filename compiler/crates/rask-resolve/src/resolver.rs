@@ -1804,7 +1804,22 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.resolve_expr(init);
+                for name in rask_ast::stmt::pattern_binding_names(pattern) {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: *is_mut },
+                        None,
+                        stmt.span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name, sym_id, stmt.span) {
+                        self.errors.push(e);
+                    }
+                }
+            }
+            StmtKind::Assign { target, value, .. } => {
                 self.resolve_expr(target);
                 self.resolve_expr(value);
             }
@@ -3115,6 +3130,7 @@ mod tests {
                 type_params: vec![],
                 variants: variants.iter().map(|v| Variant {
                     name: v.to_string(),
+                    name_span: Span::new(0, 0),
                     fields: vec![],
                     attrs: vec![],
                     discriminant: None,

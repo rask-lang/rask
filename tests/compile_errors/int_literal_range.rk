@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Where an integer literal stops (#800). A token carries an `i128` now, so the
+// question moved: it used to be "does this parse at all" and it's now "does the
+// slot hold it".
+//
+// These three parse fine and fail in the checker, which is what lets each one
+// name the range it missed. The two that can't get that far — digits past
+// `u128::MAX`, and a negative below `i128::MIN` — are in
+// `int_literal_unwritable.rk`, because a lex or parse failure stops the file
+// before any of these are reached.
+
+func main() {
+    // ERROR: literal is out of range for `i64` — it needs 128 bits [E0825]
+    let a: i64 = 18446744073709551616
+
+    // ERROR: one past `i128::MAX` — `u128` is the only type left [E0825]
+    let b: i128 = 170141183460469231731687303715884105728
+
+    // ERROR: negative, so no unsigned type can hold it [E0825]
+    let c: u128 = -170141183460469231731687303715884105728
+
+    println("{a} {b} {c}")
+}

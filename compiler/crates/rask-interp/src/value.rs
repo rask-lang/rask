@@ -233,17 +233,49 @@ fn format_f32(val: f32) -> String {
         prec += 1;
     }
 
-    // Take the decimal exponent from the same rendering rather than log10,
-    // which is off by one at exact powers of ten.
-    let rendered = format!("{:.*e}", prec - 1, d);
-    let exp10: i32 = rendered
-        .split('e')
-        .nth(1)
-        .and_then(|e| e.parse().ok())
-        .unwrap_or(0);
+    // Spell out that rendering's own digits. Re-rendering with `{:.*}` and a
+    // decimal count instead looked equivalent and isn't: a large magnitude
+    // gives a negative count, and clamping it to zero prints the double's
+    // exact value — 1e20f32 came out as 100000002004087734272 rather than
+    // 100000000000000000000 (#845).
+    expand_scientific(&format!("{:.*e}", prec - 1, d))
+}
 
-    let decimals = (prec as i32 - 1 - exp10).clamp(0, 60) as usize;
-    let out = format!("{:.*}", decimals, d);
+/// `1.2345e20` → `123450000000000000000`, `1.5e-9` → `0.0000000015`.
+fn expand_scientific(rendered: &str) -> String {
+    let (mantissa, exp) = match rendered.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().unwrap_or(0)),
+        None => return rendered.to_string(),
+    };
+    let negative = mantissa.starts_with('-');
+    let mantissa = mantissa.trim_start_matches('-');
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (mantissa, ""),
+    };
+    let digits: String = format!("{int_part}{frac_part}");
+    let point = int_part.len() as i32 + exp;
+
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    if point <= 0 {
+        out.push_str("0.");
+        for _ in 0..-point {
+            out.push('0');
+        }
+        out.push_str(&digits);
+    } else if point as usize >= digits.len() {
+        out.push_str(&digits);
+        for _ in digits.len()..point as usize {
+            out.push('0');
+        }
+    } else {
+        out.push_str(&digits[..point as usize]);
+        out.push('.');
+        out.push_str(&digits[point as usize..]);
+    }
     if out.contains('.') {
         out.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
@@ -395,7 +427,8 @@ pub enum BuiltinKind {
     AssertEq,   // assert_eq(got, expected) — pretty-print diff on failure
     Skip,       // skip("reason") — skip rest of test
     ExpectFail, // expect_fail() — invert pass/fail
-    Drop,       // drop(ptr) — consume an Owned<T>; no-op here, values are GC'd
+    Drop,       // drop(ptr) — consume an Owned<T> (mem.owned/OW3); no-op here,
+                // the interpreter's values go when the last name to them does
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).

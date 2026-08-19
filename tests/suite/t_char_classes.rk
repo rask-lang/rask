@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a `char` says about itself, at Unicode's definitions rather than a guess
+// (#846), and the ASCII half of the spec's table, which didn't exist.
+//
+// The native runtime's `is_alphabetic` was "any scalar above 127", so `€`, an
+// em dash and a combining accent were all letters. `is_numeric` knew about four
+// Latin-1 fractions and nothing else. `is_uppercase` and `is_lowercase` were
+// ASCII-only, so `'ö'.is_lowercase()` was false on native and true on the
+// interpreter.
+//
+// The tables are generated from Rust's own predicates — the same source the
+// case mappings already came from, and the same one the interpreter answers
+// from, so there's nothing left for the two backends to disagree about.
+
+test "type.primitives — Unicode letters are letters and symbols aren't" {
+    assert('a'.is_alphabetic())
+    assert('Z'.is_alphabetic())
+    assert('ö'.is_alphabetic())
+    assert('Ω'.is_alphabetic())
+    assert('あ'.is_alphabetic())
+    // Above 127 and not a letter.
+    assert(!'€'.is_alphabetic())
+    assert(!'—'.is_alphabetic())
+    assert(!'½'.is_alphabetic())
+    assert(!'\u{0301}'.is_alphabetic())
+    assert(!'7'.is_alphabetic())
+}
+
+test "type.primitives — numeric covers the Unicode number classes" {
+    assert('7'.is_numeric())
+    assert('½'.is_numeric())
+    assert('³'.is_numeric())
+    assert(!'a'.is_numeric())
+    assert(!'€'.is_numeric())
+}
+
+test "type.primitives — case is a Unicode property, not an ASCII range" {
+    assert('ö'.is_lowercase())
+    assert('Ö'.is_uppercase())
+    assert('ω'.is_lowercase())
+    assert('Ω'.is_uppercase())
+    assert(!'Ö'.is_lowercase())
+    assert(!'ö'.is_uppercase())
+    // No case at all.
+    assert(!'€'.is_lowercase())
+    assert(!'€'.is_uppercase())
+    assert(!'7'.is_lowercase())
+    assert(!'あ'.is_uppercase())
+}
+
+test "type.primitives — control characters" {
+    assert('\n'.is_control())
+    assert('\t'.is_control())
+    assert('\u{007F}'.is_control())
+    assert(!'a'.is_control())
+    assert(!' '.is_control())
+    assert(!'ö'.is_control())
+}
+
+// The ASCII half of the table: deliberately false above 127 whatever the
+// Unicode class says.
+test "type.primitives — the ASCII predicates stop at 127" {
+    assert('a'.is_ascii_alphabetic())
+    assert(!'ö'.is_ascii_alphabetic())
+
+    assert('7'.is_ascii_digit())
+    assert(!'٧'.is_ascii_digit())
+
+    assert('f'.is_ascii_hexdigit())
+    assert('F'.is_ascii_hexdigit())
+    assert('9'.is_ascii_hexdigit())
+    assert(!'g'.is_ascii_hexdigit())
+
+    assert(','.is_ascii_punctuation())
+    assert('!'.is_ascii_punctuation())
+    assert(!'a'.is_ascii_punctuation())
+    assert(!'—'.is_ascii_punctuation())
+}
+
+test "type.primitives — ASCII case conversion leaves everything else alone" {
+    assert_eq('A'.to_ascii_lowercase(), 'a')
+    assert_eq('a'.to_ascii_uppercase(), 'A')
+    assert_eq('7'.to_ascii_lowercase(), '7')
+    // The Unicode form maps it; the ASCII form doesn't.
+    assert_eq('ö'.to_ascii_uppercase(), 'ö')
+    assert_eq('ö'.to_uppercase(), 'Ö')
+}
+
+func main() {}

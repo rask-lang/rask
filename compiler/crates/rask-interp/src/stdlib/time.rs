@@ -17,6 +17,17 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
+            // The one thing SystemTime can't compute for itself. Everything
+            // else about it is arithmetic in stdlib/time.rk, which both
+            // backends run.
+            "wall_clock_nanos" => {
+                let now = std::time::SystemTime::now();
+                let nanos = match now.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => d.as_nanos() as i64,
+                    Err(e) => -(e.duration().as_nanos() as i64),
+                };
+                Ok(Value::int(nanos))
+            }
             "sleep" => {
                 let duration_nanos = args.first()
                     .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?

@@ -92,25 +92,27 @@ test "Vec.get — force-extract matches expected value" {
 // ─── try-else with method calls ────────────────────────────────
 
 enum InnerError {
-    BadInput(string),
+    BadInput(string)
 }
+
 extend InnerError {
     func message(self) -> string {
         match self {
-            InnerError.BadInput(m) => return m,
+            InnerError.BadInput(m) => return m
         }
     }
 }
 
 enum OuterError {
-    Wrapped(InnerError),
-    Other(string),
+    Wrapped(InnerError)
+    Other(string)
 }
+
 extend OuterError {
     func message(self) -> string {
         match self {
-            OuterError.Wrapped(e) => return e.message(),
-            OuterError.Other(m) => return m,
+            OuterError.Wrapped(e) => return e.message()
+            OuterError.Other(m) => return m
         }
     }
 }
@@ -129,13 +131,16 @@ extend Validator {
 }
 
 func use_validator(v: Validator, x: i32) -> i32 or OuterError {
-    let result = v.check(x) catch e => return OuterError.Wrapped(e)
+    let result = v.check(x) catch e => {
+        return OuterError.Wrapped(e)
+    }
     return result
 }
 
 func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
-    let result = v.check(x)
-        catch e => return OuterError.Wrapped(e)
+    let result = v.check(x) catch e => {
+        return OuterError.Wrapped(e)
+    }
     return result
 }
 
@@ -166,25 +171,27 @@ test "try-else multiline with method call — error transforms" {
 // ─── try-else with trait objects ────────────────────────────────
 
 enum ParseError {
-    InvalidFormat(string),
+    InvalidFormat(string)
 }
+
 extend ParseError {
     func message(self) -> string {
         match self {
-            ParseError.InvalidFormat(m) => return m,
+            ParseError.InvalidFormat(m) => return m
         }
     }
 }
 
 enum ProcessError {
-    Parse(ParseError),
-    Logic(string),
+    Parse(ParseError)
+    Logic(string)
 }
+
 extend ProcessError {
     func message(self) -> string {
         match self {
-            ProcessError.Parse(e) => return e.message(),
-            ProcessError.Logic(m) => return m,
+            ProcessError.Parse(e) => return e.message()
+            ProcessError.Logic(m) => return m
         }
     }
 }
@@ -193,7 +200,7 @@ trait Parser {
     func parse(self, input: string) -> i32 or ParseError
 }
 
-struct StrictParser {}
+struct StrictParser { }
 
 extend StrictParser with Parser {
     func parse(self, input: string) -> i32 or ParseError {
@@ -205,7 +212,9 @@ extend StrictParser with Parser {
 }
 
 func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
-    let val = p.parse(input) catch e => return ProcessError.Parse(e)
+    let val = p.parse(input) catch e => {
+        return ProcessError.Parse(e)
+    }
     return val * 2
 }
 
@@ -320,9 +329,7 @@ test "try-else — error value is correctly transformed" {
     mut v = Validator { threshold: 10 }
     let result = use_validator(v, 3)
     match result {
-        OuterError.Wrapped(InnerError.BadInput(msg)) => {
-            assert msg == "below threshold"
-        }
+        OuterError.Wrapped(InnerError.BadInput(msg)) => assert msg == "below threshold"
         _ => assert false, "expected Wrapped(BadInput)"
     }
 }
@@ -330,23 +337,27 @@ test "try-else — error value is correctly transformed" {
 // ─── Chained try-else ───────────────────────────────────────────
 
 enum ChainError {
-    Step1(string),
-    Step2(string),
+    Step1(string)
+    Step2(string)
 }
+
 extend ChainError {
     func message(self) -> string {
         match self {
-            ChainError.Step1(m) => return m,
-            ChainError.Step2(m) => return m,
+            ChainError.Step1(m) => return m
+            ChainError.Step2(m) => return m
         }
     }
 }
 
-enum StepError { Msg(string) }
+enum StepError {
+    Msg(string)
+}
+
 extend StepError {
     func message(self) -> string {
         match self {
-            StepError.Msg(m) => return m,
+            StepError.Msg(m) => return m
         }
     }
 }
@@ -362,8 +373,12 @@ func step2(x: i32) -> i32 or StepError {
 }
 
 func chained(x: i32) -> i32 or ChainError {
-    let a = step1(x) catch e => return ChainError.Step1(e.message())
-    let b = step2(a) catch e => return ChainError.Step2(e.message())
+    let a = step1(x) catch e => {
+        return ChainError.Step1(e.message())
+    }
+    let b = step2(a) catch e => {
+        return ChainError.Step2(e.message())
+    }
     return b
 }
 

@@ -103,7 +103,7 @@ extend UpdateTaskRequest with Validate {
 
 // public extend: the conformance is part of the crate's public API surface,
 // so it's declared public (never inferred — G1).
-public extend CreateUserRequest with Validate {
+extend CreateUserRequest with Validate {
     func validate(self) -> void or ValidationError {
         try check_len("name", self.name, MAX_NAME_LEN)
         if !self.email.contains("@") {

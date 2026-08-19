@@ -155,8 +155,17 @@ static REGISTRY: OnceLock<StubRegistry> = OnceLock::new();
 
 impl StubRegistry {
     /// Check if a file path points to a stdlib stub file.
+    ///
+    /// Matches a bare `stdlib/string.rk` as well as an absolute path. The LSP
+    /// always has an absolute one; `rask fmt stdlib/` does not, and requiring the
+    /// leading slash is what left the formatter parsing the stubs without the
+    /// allowances they need.
     pub fn is_stdlib_path(path: &str) -> bool {
-        STUB_SOURCES.iter().any(|(name, _)| path.ends_with(&format!("/stdlib/{}", name)))
+        let path = path.replace('\\', "/");
+        STUB_SOURCES.iter().any(|(name, _)| {
+            let tail = format!("stdlib/{}", name);
+            path == tail || path.ends_with(&format!("/{}", tail))
+        })
     }
 
     /// Get the global stub registry (lazily initialized).

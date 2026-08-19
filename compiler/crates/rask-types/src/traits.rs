@@ -157,6 +157,21 @@ impl<'a> TraitChecker<'a> {
             .then_some(id)
     }
 
+    /// The registered TypeId behind a type name, whatever kind it is.
+    ///
+    /// `user_type_id` narrows to structs and enums, which is what conformance
+    /// lookup wants. A nominal newtype has to be reachable too — its `with (…)`
+    /// clause is a conformance declaration of a different shape.
+    fn named_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
+        match ty {
+            Type::Named(id) => Some(*id),
+            Type::Generic { base, .. } => Some(*base),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
+            _ => None,
+        }
+    }
+
     /// Check if a type satisfies a trait bound.
     pub fn check_satisfies(
         &mut self,
@@ -209,6 +224,52 @@ impl<'a> TraitChecker<'a> {
                 trait_name: trait_name.to_string(),
                 span,
             });
+        }
+
+        // TU8/TU9/TU11: a tuple's value semantics are element-wise, the same way
+        // a struct's are field-wise (TU10 makes the layouts the same thing). Its
+        // elements have no names to hang an `extend` block on, so a tuple can only
+        // ever get a conformance this way — and it had none, so `Map<(i64, i64),
+        // V>` failed the moment the Map key bound became a real check (#812).
+        //
+        // A fixed array is the same argument with one element type.
+        if matches!(base_trait, "Equal" | "Hashable" | "Cloneable") {
+            let elems: Option<Vec<Type>> = match ty {
+                Type::Tuple(elems) => Some(elems.clone()),
+                Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
+                _ => None,
+            };
+            if let Some(elems) = elems {
+                if elems.iter().all(|e| {
+                    self.check_satisfies(e, base_trait, span).is_ok()
+                }) {
+                    return Ok(());
+                }
+                return Err(TraitError::NotSatisfied {
+                    ty: self.type_name(ty),
+                    trait_name: trait_name.to_string(),
+                    span,
+                });
+            }
+        }
+
+        // T11: a nominal newtype inherits exactly the traits its `with (…)`
+        // clause lists, delegating to the value it wraps. Method resolution
+        // already honoured that, so `UserId(1) == UserId(2)` worked — but this
+        // check didn't, so `implements_trait(UserId, "Hashable")` said no for a
+        // type whose declaration says yes. Nothing asked until the Map key bound
+        // became a real conformance check (#812).
+        //
+        // Not listed falls through rather than being rejected here: `Debug`
+        // applies to every type and doesn't come from the clause.
+        if let Some(TypeDef::NominalAlias { with_traits, .. }) =
+            self.named_type_id(ty).and_then(|id| self.types.get(id))
+        {
+            if with_traits.iter().any(|t| {
+                t.split('<').next().unwrap_or(t).trim() == base_trait
+            }) {
+                return Ok(());
+            }
         }
 
         // G1 nominal gate: a user struct/enum satisfies a user-declared trait
@@ -1151,10 +1212,43 @@ pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
 /// method with its own type parameters, or one returning `Self`, has no vtable
 /// slot.
 pub fn object_compatible_methods(types: &TypeTable, trait_name: &str) -> Vec<String> {
+    object_compatible_methods_seen(types, trait_name, &mut Vec::new())
+}
+
+/// `object_compatible_methods`, refusing to walk a super-trait twice — a cycle
+/// in the graph would otherwise recurse forever.
+fn object_compatible_methods_seen(
+    types: &TypeTable,
+    trait_name: &str,
+    seen: &mut Vec<String>,
+) -> Vec<String> {
     let base = trait_name.split('<').next().unwrap_or(trait_name);
+    if seen.iter().any(|s| s == base) {
+        return Vec::new();
+    }
+    seen.push(base.to_string());
     if let Some(def) = types.get_type_id(base).and_then(|id| types.get(id)) {
-        let names = def.object_compatible_method_names();
+        let mut names = def.object_compatible_method_names();
         if !names.is_empty() {
+            // A super-trait's methods are part of the sub-trait's contract, so
+            // they need vtable slots of their own. `trait Shouty: Speak` listed
+            // only `shout`, so `x.say()` on an `any Shouty` had no slot to
+            // dispatch through — MIR gave up on it while the interpreter, which
+            // looks the method up by name, ran it (#873).
+            //
+            // Declared methods first, then inherited, which is the order the
+            // checker's own merge uses. Both the vtable layout and MIR's
+            // dispatch offsets read this one list, so they agree by
+            // construction whatever the order is.
+            if let TypeDef::Trait { super_traits, .. } = def {
+                for parent in super_traits {
+                    for m in object_compatible_methods_seen(types, parent, seen) {
+                        if !names.contains(&m) {
+                            names.push(m);
+                        }
+                    }
+                }
+            }
             return names;
         }
     }

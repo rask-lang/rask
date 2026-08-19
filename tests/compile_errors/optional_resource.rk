@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `@resource` inside an optional is still linear (mem.linear/L1, #827).
+//
+// `Conn?` used to carry no obligation at all: `is_resource_type_name` looks the
+// annotation up in the type table, `"Conn?"` isn't a name in it, and the
+// annotated path never fell through to what the checker already knew about the
+// initializer. So a program that made a connection, wrapped it in an optional
+// and dropped it compiled clean and leaked at runtime with no diagnostic.
+//
+// The `? as` binding was the other half. OPT19 calls it "the payload read out of
+// the scrutinee" — for a Copy payload that's a copy, which is why writing through
+// it is rejected. A linear payload can't be copied, so the only coherent reading
+// is a move: the binding holds the resource inside the branch and the optional
+// doesn't hold it afterwards. Neither end was tracked, so `if c? as conn { }`
+// leaked too.
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 {
+        println("closed {self.id}")
+        return self.id
+    }
+}
+
+func open_conn(n: i32) -> Conn? {
+    return Conn { id: n }
+}
+
+// ERROR: resource `maybe` must be consumed before scope exit [E0805]
+func drops_an_optional_resource() {
+    mut maybe: Conn? = Conn { id: 1 }
+    println("made it")
+}
+
+// ERROR: resource `conn` must be consumed before scope exit [E0805]
+func drops_the_bound_payload() {
+    if open_conn(2)? as conn {
+        println("{conn.id}")
+    }
+}
+
+// ERROR: resource `c` must be consumed before scope exit [E0805]
+func fills_a_none_and_drops_it() {
+    mut c: Conn? = none
+    c = Conn { id: 3 }
+    println("filled")
+}
+
+// ── The versions that are fine ──────────────────────────────────────
+
+// Consuming the payload discharges the optional it came out of.
+func closes_through_the_binding() {
+    mut maybe: Conn? = Conn { id: 4 }
+    if maybe? as conn {
+        conn.close()
+    }
+}
+
+// An optional that never holds anything has nothing to consume.
+func never_holds_one() {
+    let maybe: Conn? = none
+    println("nothing to close")
+}
+
+// A `none` start that gets filled and then closed.
+func fills_and_closes() {
+    mut c: Conn? = none
+    c = Conn { id: 5 }
+    if c? as conn {
+        conn.close()
+    }
+}
+
+// Handing it back is consuming it (L2) — the caller takes the obligation.
+func hands_it_back() -> Conn? {
+    let maybe: Conn? = Conn { id: 6 }
+    return maybe
+}
+
+func main() {
+    closes_through_the_binding()
+    never_holds_one()
+    fills_and_closes()
+    if hands_it_back()? as conn {
+        conn.close()
+    }
+}

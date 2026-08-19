@@ -18,11 +18,19 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | File | What it tests |
 |------|--------------|
 | [type_errors.rk](type_errors.rk) | Implicit bool conversion, narrowing `as`, float comparison, Option no-auto-unwrap, try type mismatch, branch type mismatch, break value types |
-| [cast_rules.rk](cast_rules.rk) | `as` cast rules: narrowing (CV2), sign reinterpret (CV3), float→int (CV4), int→char (CH5), int↔bool (BL3); conversion methods used where their policy means nothing — `floor` on an integer, `wrap` to a float, `round` int→int, `clamp` on a float (CV11–CV16, E0818) |
+| [cast_rules.rk](cast_rules.rk) | `as` cast rules: narrowing (CV2), sign reinterpret (CV3), float→int (CV4), int→char (CH5), int↔bool (BL3); conversion methods used where their policy means nothing — `floor` on an integer, `wrap` to a float, `round` int→int, `clamp` on a float (CV11–CV16, E0818); `as` to a collection or a struct, which reinterprets bits rather than converting and needs `unsafe` to say so (E0838, #862) |
 | [index_types.rk](index_types.rk) | Index expression types: integer for Vec/slice/string, `K` for Map, `Handle<T>` for Pool; range slicing only on sequences (#310, V1, PL4) |
 | [not_iterable.rk](not_iterable.rk) | `for` over something with no elements — an integer, a string, a struct (E0827), and an index type check that only reaches a container arrived at through a field (#632) |
 | [implicit_widening_limits.rk](implicit_widening_limits.rk) | The int→int pairs CV1a does *not* make implicit: `u64`→`i64`, `i64`→`u64`, `u32`→`i32`, `u8`→`i8`, and plain narrowing (CV1a, CV2) |
+| [int_float_arithmetic.rk](int_float_arithmetic.rk) | `+ - * /` between an integer and a float variable (CV1a, E0371, #816) — native used to drop the float operand and answer with an integer. An unsuffixed literal still takes the float slot |
 | [mixed_signedness_arithmetic.rk](mixed_signedness_arithmetic.rk) | `+ - * / %` and `& \| ^ << >>` between a signed and an unsigned integer (ORD4, E0371) — comparison is the exception and stays legal (#778) |
+| [int_literal_range.rk](int_literal_range.rk) | An integer literal past the slot it lands in: needs 128 bits in an `i64`, one past `i128::MAX`, negative in a `u128` (E0825, #800) |
+| [int_literal_unwritable.rk](int_literal_unwritable.rk) | The two ends no type holds — digits past `u128::MAX` (lexer) and a negative below `i128::MIN` (parser sign fold) (#800) |
+| [untyped_bindings.rk](untyped_bindings.rk) | Bindings that carried no type at all, so a wrong annotation unified happily: a struct-variant pattern's fields, an `is` binding, a tuple `for` binding (E0308, #809) |
+| [newline_continuation.rk](newline_continuation.rk) | A line starting with `+` — excluded from newline continuation (P3) and not a statement either (#304) |
+| [bare_shared_with.rk](bare_shared_with.rk) | Bare `with shared as v` — the lock has to be named `.read()` or `.write()` (conc.sync/R4, E0839, #880). Nothing enforced it: the interpreter hit a self-contradictory runtime error and native read the wrong bytes |
+| [map_key_hashable.rk](map_key_hashable.rk) | A Map key that isn't Hashable (E0834, HA1/HA4, #812) — a nominal newtype with no `with (…)` clause, a float, a struct with a float field; each gets the way out that fits it |
+| [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0340/E0308, #812) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
@@ -55,6 +63,9 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
 | [mutate_marker_required.rk](mutate_marker_required.rk) | An argument to a `mutate` parameter with no `mutate` marker (PM4/PM5, E0373) — a Copy argument and a field path are no exception; a method receiver is exempt; the marker on a non-`mutate` parameter is E0328 (#530) |
 | [mutate_through_binding.rk](mutate_through_binding.rk) | Writing through a name a test or a pattern introduced (E0372, #788) — `if x? as v`, a `mutate` argument, a plain `for` element, a match-arm payload, `while x? as v`. `for mutate` and write-back through the original stay legal |
+| [mutate_param_left_empty.rk](mutate_param_left_empty.rk) | A `mutate` parameter consumed and not replaced (PM2, E0836, #815) — outright and on one path only; consume-and-replace stays legal, and `take` is how a function says it keeps the value |
+| [owned_not_consumed.rk](owned_not_consumed.rk) | An `own` value that nothing consumes, one consumed twice, one handed to a `take` parameter and then dropped, and one consumed on only one branch (mem.linear/L1, L3, E0837, E0800, #819) |
+| [consume_borrowed_param.rk](consume_borrowed_param.rk) | Giving away a parameter the caller only lent (PM1/L1, E0835, #804) — a `take self` method, a `take` parameter, `own` at the call site, and storing it into a field, which used to be reported as a borrow conflict about a mutation that wasn't happening (#818); `take` on the declaration is the way to say it |
 | [with_guard_escapes.rk](with_guard_escapes.rk) | A `with` guard's bare identifier returned as the block's own value (#559, E0829) — struct payload rejected, field read/method call/scalar payload still compile |
 | [small_size_fence.rk](small_size_fence.rk) | `@small` types over the 16-byte copy threshold (SM2, E0374) — a three-`i64` struct and a two-`string` one; plus the generic half, where `Pair<i64>` fits and `Pair<string>` doesn't (SM3, E0375) (#587) |
 | [ensure_cancellation.rk](ensure_cancellation.rk) | `ensure` cancellation must be statically definite (C3/C4): resource consumed on some merging paths but not all — if-without-else, single match arm, nested block (E0821) |
@@ -84,6 +95,8 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
 | [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
+| [optional_resource.rk](optional_resource.rk) | A `@resource` inside an optional is still linear — the binding, the `? as` payload, and a `none` that gets filled (E0805, mem.linear/L1, #827) |
+| [resource_field_debts.rk](resource_field_debts.rk) | A holder owes each resource field separately — closing one leaves the others, reported by field path (E0805, mem.linear/L1, #828) |
 | [context_missing.rk](context_missing.rk) | Missing pool context clause |
 | [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
 | [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |

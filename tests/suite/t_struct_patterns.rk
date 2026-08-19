@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Destructuring a struct in a `match` (#307).
+//
+// `structs.md` and `SYNTAX.md` both document this and neither backend had it. The
+// parser only accepted the qualified `Enum.Variant { … }` form, so a plain
+// `Point { x: 0, y }` didn't parse — and both spec blocks were marked
+// `test: skip`, which is why `rask test-specs` never noticed. They're real tests
+// now.
+//
+// A field pattern either tests a value or binds one, and a bound field takes the
+// same shorthand as construction: `y` means `y: y`.
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+struct Vertex {
+    public x: i64
+    public y: i64
+    public z: i64
+}
+
+struct Named {
+    public label: string
+    public p: Point
+}
+
+func describe(p: Point) -> string {
+    match p {
+        Point { x: 0, y: 0 } => return "origin"
+        Point { x: 0, y } => return "y-axis {y}"
+        Point { x, y: 0 } => return "x-axis {x}"
+        // A guard runs after the field tests pass.
+        Point { x, y } if x == y => return "diagonal {x}"
+        Point { x, y } => return "at {x},{y}"
+    }
+}
+
+func flat(v: Vertex) -> i64 {
+    match v {
+        Vertex { x, .. } => return x
+    }
+}
+
+func label_of(n: Named) -> string {
+    match n {
+        Named { label, p } => return "{label}@{p.x},{p.y}"
+    }
+}
+
+// An arm that binds the whole value still works alongside field patterns.
+func fallback(p: Point) -> i64 {
+    match p {
+        Point { x: 9, y: _ } => return 99
+        whole => return whole.x + whole.y
+    }
+}
+
+test "type.structs — a field pattern tests or binds" {
+    assert describe(Point { x: 0, y: 0 }) == "origin"
+    assert describe(Point { x: 0, y: 4 }) == "y-axis 4"
+    assert describe(Point { x: 7, y: 0 }) == "x-axis 7"
+    assert describe(Point { x: 1, y: 2 }) == "at 1,2"
+}
+
+test "type.structs — a guard runs after the fields agree" {
+    assert describe(Point { x: 3, y: 3 }) == "diagonal 3"
+}
+
+test "type.structs — `..` covers the fields the pattern doesn't name" {
+    assert flat(Vertex { x: 5, y: 6, z: 7 }) == 5
+}
+
+// The bound field can be any type, including another struct — the body reads it
+// as the struct it is.
+test "type.structs — a bound field keeps its type" {
+    assert label_of(Named { label: "a", p: Point { x: 1, y: 2 } }) == "a@1,2"
+}
+
+test "type.structs — a whole-value arm still binds the struct" {
+    assert fallback(Point { x: 9, y: 1 }) == 99
+    assert fallback(Point { x: 2, y: 3 }) == 5
+}
+
+// The construction side of the same shorthand, which the parser has always
+// accepted and no spec named until now.
+func rebuild(x: i64, y: i64) -> Point {
+    return Point { x, y }
+}
+
+test "type.structs — field shorthand in construction" {
+    let p = rebuild(4, 5)
+    assert p.x == 4
+    assert p.y == 5
+
+    // Alongside a long-form field and update syntax.
+    let z: i64 = 9
+    let v = Vertex { x: 1, y: 2, z }
+    assert v.z == 9
+    let moved = Vertex { z: 0, ..v }
+    assert moved.x == 1
+    assert moved.z == 0
+}
+
+// A destructuring `let`/`mut` — the same pattern without a `match` around it
+// (#811). Reading fields is a projection, so the source is borrowed, not moved,
+// and it stays usable afterwards.
+
+struct Labelled {
+    public label: string
+    public n: i64
+}
+
+test "type.structs — destructuring let binds the fields it names" {
+    let p = Point { x: 1, y: 2 }
+    let Point { x, y } = p
+    assert x == 1
+    assert y == 2
+
+    // The source survives — this is a field read, not a move.
+    assert p.x == 1
+}
+
+test "type.structs — `..` skips the rest, and `mut` bindings rebind" {
+    let v = Vertex { x: 1, y: 2, z: 3 }
+    let Vertex { z, .. } = v
+    assert z == 3
+
+    mut Vertex { x, .. } = v
+    x = x + 10
+    assert x == 11
+    assert v.x == 1
+}
+
+test "type.structs — renaming while binding, and a string field" {
+    let p = Point { x: 7, y: 8 }
+    let Point { x: first, y: second } = p
+    assert first == 7
+    assert second == 8
+
+    let l = Labelled { label: "hi", n: 3 }
+    let Labelled { label, n } = l
+    assert label == "hi"
+    assert n == 3
+}
+
+test "type.structs — destructuring a value that isn't a name" {
+    let Point { x, y } = rebuild(2, 3)
+    assert x == 2
+    assert y == 3
+}
+
+func main() {}

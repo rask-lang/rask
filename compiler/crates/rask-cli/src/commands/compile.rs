@@ -84,7 +84,12 @@ pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<S
                 // Object-compatible methods only (TR1–TR3): the vtable holds
                 // slots for exactly these, and MIR dispatch offsets index the
                 // same list, so both sides agree.
-                Some((name.clone(), def.object_compatible_method_names()))
+                // Through the shared helper, not the TypeDef's own list: a
+                // super-trait's methods belong in the sub-trait's vtable too.
+                Some((
+                    name.clone(),
+                    rask_types::object_compatible_methods(&typed.types, name),
+                ))
             } else {
                 None
             }

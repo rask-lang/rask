@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Taking a `mutate` parameter's value out and putting one back (#815).
+//
+// `mutate` is exclusive access, so consuming the value is allowed — that's the
+// difference from a plain borrow, which can't be given away at all (#804). What
+// the mode promises is that the value is still there when the call returns, so the
+// replacement is required. `tests/compile_errors/mutate_param_left_empty.rk` pins
+// the half that's refused.
+
+func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
+    if !b.is_empty() {
+        out.push(b.build())
+        b = StringBuilder.new()
+    }
+}
+
+// Replaced on every path, including the one that doesn't consume.
+func rotate(mutate b: StringBuilder, marker: string) -> string {
+    let taken = b.build()
+    b = StringBuilder.new()
+    b.push(marker)
+    return taken
+}
+
+test "mem.parameters/PM2 — consume and replace, across a call" {
+    mut out: Vec<string> = Vec.new()
+    mut b = StringBuilder.new()
+
+    b.push("one")
+    flush_into(mutate out, mutate b)
+    b.push("two")
+    flush_into(mutate out, mutate b)
+    // Empty now, so nothing is appended and nothing is consumed.
+    flush_into(mutate out, mutate b)
+
+    assert out.len() == 2
+    assert out[0] == "one"
+    assert out[1] == "two"
+    // The caller's builder is still usable — that's what `mutate` promised.
+    b.push("three")
+    assert b.build() == "three"
+}
+
+test "mem.parameters/PM2 — the replacement is visible to the caller" {
+    mut b = StringBuilder.new()
+    b.push("first")
+    assert rotate(mutate b, "second") == "first"
+    assert b.build() == "second"
+}
+
+func main() {}

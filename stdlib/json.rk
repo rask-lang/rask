@@ -26,9 +26,9 @@ enum JsonError {
 extend JsonError {
     public func message(self) -> string {
         match self {
-            JsonError.ParseError(msg) => return "parse error: {msg}",
-            JsonError.TypeError(msg) => return "type error: {msg}",
-            JsonError.MissingField(field) => return "missing field: {field}",
+            JsonError.ParseError(msg) => return "parse error: {msg}"
+            JsonError.TypeError(msg) => return "type error: {msg}"
+            JsonError.MissingField(field) => return "missing field: {field}"
         }
     }
 }
@@ -39,35 +39,30 @@ extend JsonValue {
     public func is_null(self) -> bool {
         return self is Null
     }
-
     public func as_bool(self) -> bool? {
         if self is Bool(b) {
             return b
         }
         return none
     }
-
     public func as_number(self) -> f64? {
         if self is Number(n) {
             return n
         }
         return none
     }
-
     public func as_string(self) -> string? {
         if self is String(s) {
             return s
         }
         return none
     }
-
     public func as_array(self) -> Vec<JsonValue>? {
         if self is Array(a) {
             return a
         }
         return none
     }
-
     public func as_object(self) -> Map<string, JsonValue>? {
         if self is Object(m) {
             return m
@@ -108,7 +103,7 @@ struct JsonParser {
 extend JsonParser {
     func new(input: string) -> JsonParser {
         return JsonParser {
-            input: input,
+            input,
             pos: 0,
             len: input.len(),
         }
@@ -323,7 +318,7 @@ extend JsonParser {
             if digit < 0 {
                 return JsonError.ParseError("invalid hex digit in unicode escape")
             }
-            cp = cp * 16 + (digit.wrap<u32>())
+            cp = cp * 16 + digit.wrap<u32>()
             i = i + 1
         }
         if char.from_u32(cp)? as c {
@@ -428,20 +423,20 @@ extend JsonParser {
 
 func hex_digit(b: u8) -> i32 {
     if b >= 48 && b <= 57 {
-        return b as i32 - 48
+        return (b as i32) - 48
     }
     if b >= 65 && b <= 70 {
-        return b as i32 - 55
+        return (b as i32) - 55
     }
     if b >= 97 && b <= 102 {
-        return b as i32 - 87
+        return (b as i32) - 87
     }
     return -1
 }
 
 // ─── Public API: parsing ─────────────────────────────────────────
 
-struct json {  }
+struct json { }
 
 extend json {
     /// Encode a value as a JSON string.
@@ -504,12 +499,10 @@ func stringify_value(value: JsonValue) -> string {
 func write_value(value: JsonValue, mutate out: StringBuilder) {
     match value {
         JsonValue.Null => out.push("null")
-        JsonValue.Bool(b) => {
-            if b {
-                out.push("true")
-            } else {
-                out.push("false")
-            }
+        JsonValue.Bool(b) => if b {
+            out.push("true")
+        } else {
+            out.push("false")
         }
         JsonValue.Number(n) => out.push(format_number(n))
         JsonValue.String(s) => write_escaped(s, mutate out)

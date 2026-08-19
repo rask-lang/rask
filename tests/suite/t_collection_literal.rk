@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What `[a, b, c]` is, and what its elements become (#771, #783).
+//
+// std.collections says an array literal *is* a Vec value; a fixed array is what
+// you get when the slot says so. Both halves were broken. The literal was always
+// typed from its own elements, so `let xs: Vec<i64> = [1, 2, 3]` was a type error
+// — and where it did type-check, native built a stack array and `len()` read a
+// length nobody wrote.
+//
+// The elements are the other half: a bare `T` filling a `T?` slot has to acquire
+// the tag, the same way a struct field's value does. `[1, none, 3]` was rejected
+// outright, and once accepted native stored the bare 1 where the tag belongs.
+
+struct Pt {
+    public x: i64
+    public y: i64
+}
+
+struct Bag {
+    public items: Vec<i64>
+    public flags: Vec<bool?>
+}
+
+func total(xs: Vec<i64>) -> i64 {
+    mut s = 0
+    for x in xs {
+        s = s + x
+    }
+    return s
+}
+
+func three() -> Vec<i64> {
+    return [1, 2, 3]
+}
+
+test "std.collections — an annotated literal is a Vec" {
+    let xs: Vec<i64> = [1, 2, 3]
+    assert xs.len() == 3
+    assert xs[0] == 1
+    assert xs[2] == 3
+    assert total(xs) == 6
+}
+
+test "std.collections — the destination decides which collection" {
+    // Annotated as a fixed array, the same literal stays one.
+    let a: [i64; 3] = [1, 2, 3]
+    assert a[0] + a[1] + a[2] == 6
+
+    // Unannotated it keeps whatever it had before — a fixed array — so nothing
+    // that already compiled changes shape.
+    let b = [4, 5, 6]
+    assert b[1] == 5
+}
+
+test "std.collections — every position that knows its type" {
+    assert total([1, 2, 3]) == 6
+    assert total(three()) == 6
+
+    let bag = Bag { items: [4, 5], flags: [true, none] }
+    assert total(bag.items) == 9
+    assert bag.flags.len() == 2
+
+    mut m: Vec<i64> = []
+    assert m.len() == 0
+    m = [7, 8]
+    assert total(m) == 15
+}
+
+test "type.optionals — a bare element widens into a `T?` slot" {
+    let xs: Vec<i64?> = [1, none, 3]
+    assert xs.len() == 3
+    assert (xs[0] ?? 0 - 1) == 1
+    assert xs[1] == none
+    assert (xs[2] ?? 0 - 1) == 3
+}
+
+// The fixed-array form of the same thing. A `T?` element occupies its slot —
+// tag beside payload — so the store and the read have to agree on that width;
+// they didn't, and reading `a[1]` gave back `a[0]`'s value.
+test "type.optionals — a fixed array of optionals holds a `none`" {
+    let a: [i32?; 3] = [1, none, 3]
+    assert (a[0] ?? 0 - 1) == 1
+    assert a[1] == none
+    assert (a[2] ?? 0 - 1) == 3
+
+    let s: [string?; 2] = ["hi", none]
+    assert (s[0] ?? "?") == "hi"
+    assert s[1] == none
+}
+
+// Writing an element back is the other half of the store/read pair. A wrapper
+// element's operand is its address, so the store has to copy the bytes; storing
+// the pointer put a stack address where the element belongs.
+test "type.optionals — an element of an optional array can be written" {
+    mut a: [i64?; 3] = [1, none, 3]
+    a[1] = 5
+    a[2] = none
+    assert (a[0] ?? 0 - 1) == 1
+    assert (a[1] ?? 0 - 1) == 5
+    assert a[2] == none
+
+    mut v: Vec<i64?> = [1, none]
+    v.push(9)
+    v[0] = none
+    assert v.len() == 3
+    assert v[0] == none
+    assert (v[2] ?? 0 - 1) == 9
+}
+
+test "std.collections — wide and aggregate elements" {
+    let names: Vec<string> = ["ada", "bo"]
+    assert names.len() == 2
+    assert names[0] == "ada"
+
+    let ps: Vec<Pt> = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }]
+    assert ps.len() == 2
+    assert ps[1].x == 3
+
+    mut pa: [Pt; 2] = [Pt { x: 5, y: 6 }, Pt { x: 7, y: 8 }]
+    assert pa[1].y == 8
+    pa[1] = Pt { x: 9, y: 10 }
+    assert pa[0].x == 5
+    assert pa[1].y == 10
+
+    mut ts: [(i64, i64); 2] = [(1, 2), (3, 4)]
+    ts[0] = (9, 9)
+    assert ts[0].1 == 9
+    assert ts[1].0 == 3
+}
+
+test "std.collections — a literal of literals nests" {
+    let nested: Vec<Vec<i64>> = [[1, 2], [3, 4]]
+    assert nested.len() == 2
+    assert nested[0].len() == 2
+    assert nested[1][1] == 4
+}
+
+func main() {}

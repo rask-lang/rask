@@ -19,7 +19,7 @@ struct Box<T> {
 // Methods on generic types
 extend Box<T> {
     func new(value: T) -> Box<T> {
-        return Box { value: value }
+        return Box { value }
     }
 
     func get(self) -> T {
@@ -28,7 +28,7 @@ extend Box<T> {
 }
 
 // Generic function that swaps a pair
-func swap (pair: Pair<T, U>) -> Pair<U, T> {
+func swap(pair: Pair<T, U>) -> Pair<U, T> {
     return Pair {
         first: pair.second,
         second: pair.first,
@@ -37,7 +37,7 @@ func swap (pair: Pair<T, U>) -> Pair<U, T> {
 
 // Generic function that finds the larger of two values
 // Note: In real Rask, would need Comparable trait constraint
-func max_value (a: T, b: T, compare: |T, T| -> bool) -> T {
+func max_value(a: T, b: T, compare: func(T, T) -> bool) -> T {
     if compare(a, b) {
         return a
     }
@@ -46,7 +46,7 @@ func max_value (a: T, b: T, compare: |T, T| -> bool) -> T {
 
 // Generic function with type inference
 func wrap<T>(value: T) -> Box<T> {
-    return Box { value: value }
+    return Box { value }
 }
 
 // Generic function that works with any type
@@ -100,7 +100,9 @@ func main() {
     print("\n\n")
 
     // Generic max with custom comparator
-    let greater = |a: i32, b: i32| -> bool { return a > b }
+    let greater = |a: i32, b: i32| -> bool {
+        return a > b
+    }
     let max_num = max_value(10, 20, greater)
     print("Max of 10 and 20: ")
     print(max_num)

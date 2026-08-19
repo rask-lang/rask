@@ -20,14 +20,58 @@ fn make_result_ok(value: Value) -> Value {
     }
 }
 
-/// Build a Result.Err(message).
+/// Build a `Result.Err(IoError.Other(message))`.
+///
+/// The payload used to be a bare string. Every `net` function declares
+/// `T or IoError`, so `e.message()` on the error side failed with "no method
+/// `message` on type `string`" — while native, which builds a real `IoError`,
+/// was fine (#863). The outer tag was wrong too: `Err` is variant 1, not 0.
 fn make_result_err(msg: &str) -> Value {
     Value::Enum {
         name: "Result".to_string(),
         variant: "Err".to_string(),
-        fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-        variant_index: 0, origin: None,
+        fields: vec![Value::Enum {
+            name: "IoError".to_string(),
+            variant: "Other".to_string(),
+            fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
+            // NotFound(0) PermissionDenied(1) AlreadyExists(2) BrokenPipe(3)
+            // ConnectionReset(4) TimedOut(5) UnexpectedEof(6) Other(7)
+            variant_index: 7,
+            origin: None,
+        }],
+        variant_index: 1, origin: None,
     }
+}
+
+/// The same address rules `net.check_addr` applies in stdlib/net.rk, so both
+/// backends reject the same strings with the same message.
+///
+/// The interpreter can't run the Rask body: it ends in
+/// `IoError.last_os_error()`, which calls into the C runtime. So the rules live
+/// in two places and this is the copy — keep it in step with the Rask one
+/// (#863).
+fn check_addr(addr: &str) -> Option<&'static str> {
+    let Some(at) = addr.rfind(':') else {
+        return Some("invalid socket address");
+    };
+    if at == 0 {
+        return Some("invalid socket address");
+    }
+    if addr[at + 1..].parse::<u16>().is_err() {
+        return Some("invalid port value");
+    }
+    None
+}
+
+/// An `io::Error` with no OS error code never became a socket address at all —
+/// that's a resolution failure, which native reports as -2 rather than through
+/// errno. Anything with an errno is a real syscall failure and keeps Rust's
+/// wording, which matches `IoError.last_os_error()`.
+fn net_error(addr: &str, e: &std::io::Error) -> String {
+    if e.raw_os_error().is_none() {
+        return format!("could not resolve {}", addr);
+    }
+    e.to_string()
 }
 
 impl Interpreter {
@@ -40,6 +84,9 @@ impl Interpreter {
         match method {
             "tcp_listen" => {
                 let addr = self.expect_string(&args, 0)?;
+                if let Some(why) = check_addr(&addr) {
+                    return Ok(make_result_err(why));
+                }
                 match std::net::TcpListener::bind(&addr) {
                     Ok(listener) => {
                         let arc = Arc::new(Mutex::new(Some(listener)));
@@ -48,11 +95,14 @@ impl Interpreter {
                             .register_file(ptr, self.env.scope_depth());
                         Ok(make_result_ok(Value::TcpListener(arc)))
                     }
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
                 }
             }
             "tcp_connect" => {
                 let addr = self.expect_string(&args, 0)?;
+                if let Some(why) = check_addr(&addr) {
+                    return Ok(make_result_err(why));
+                }
                 match std::net::TcpStream::connect(&addr) {
                     Ok(stream) => {
                         let arc = Arc::new(Mutex::new(Some(stream)));
@@ -61,7 +111,7 @@ impl Interpreter {
                             .register_file(ptr, self.env.scope_depth());
                         Ok(make_result_ok(Value::TcpConnection(arc)))
                     }
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {

@@ -148,6 +148,7 @@ enum Shape {                                 // tagged union; exhaustive match r
 }
 
 type UserId = u64                            // NOMINAL — a distinct type, not an alias
+type TaskId = u64 with (Equal, Hashable)     // …and it inherits no traits; opt in with `with`
 type alias Bytes = Vec<u8>                   // transparent alias
 ```
 
@@ -215,7 +216,7 @@ duck trait Sketchy { func poke(self) }       // opt-in shape-matching — protot
                                              // harden by deleting `duck` + accepting generated declarations
 ```
 
-- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
+- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `with (…)` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
 - Method-name collision between two conformances: mark the second `scoped extend`; call it as `Trait.method(value, args)` (MN3–MN5).
 - Generics monomorphize (`func max<T: Comparable>(a: T, b: T) -> T`). Public functions declare bounds; private functions may omit types and bounds entirely — inferred from the body, still fully static (`type.gradual`). Error unions infer too: `-> Config or _`.
 - Operators are authored sugar on concrete types: `a + b` calls `a.add(b)` — write the method, get the operator. Arithmetic operators require Copy types (no allocating `+`); `+=` has no such limit. Generic operator use goes through nominal bounds (OP1). There is no `From`/`Into` — `try` widens error unions structurally, and there's one string type.

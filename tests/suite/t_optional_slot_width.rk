@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A bare number written into a `T?` slot has to be stored at `T`'s width (#835).
+//
+// `a[1] = 5` on an `[i64?; 3]` typed the `5` from nothing at all: the slot said
+// `i64?`, an integer literal can't take that, so it stayed open and defaulted to
+// `i32`. Codegen then emitted a 4-byte store into the 8-byte payload, and the
+// read came back with the old upper half still in place:
+//
+//     mut a: [i64?; 3] = [1, none, 3]
+//     a[1] = 5
+//     a[1] ?? 0 - 1        // -4294967291, i.e. 0xFFFFFFFF_00000005
+//
+// It only shows up when the stack under the array isn't already zero, which is
+// why `dirty()` runs first here — the same bug read as "works fine" in a small
+// program and killed `t_collection_literal.rk` the moment an unrelated change
+// shifted the frame.
+
+struct Slots {
+    public n: i64?
+    public f: f64?
+}
+
+func takes(n: i64?) -> i64 {
+    return n ?? 0 - 1
+}
+
+// Leave -1 patterns on the stack, so a half-written payload reads back wrong
+// rather than accidentally right.
+func dirty() -> i64 {
+    mut acc = 0 - 1
+    let pad: [i64; 8] = [0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1]
+    for i in 0..8 {
+        acc = acc + pad[i]
+    }
+    return acc
+}
+
+test "type.optionals — an array element takes the payload's width" {
+    let _ = dirty()
+    mut a: [i64?; 3] = [1, none, 3]
+    a[1] = 5
+    assert (a[1] ?? 0 - 1) == 5
+    a[0] = 4294967296
+    assert (a[0] ?? 0 - 1) == 4294967296
+}
+
+test "type.optionals — a Vec element takes the payload's width" {
+    let _ = dirty()
+    mut v: Vec<i64?> = [1, none]
+    v[1] = 6
+    assert (v[1] ?? 0 - 1) == 6
+    v.push(4294967297)
+    assert (v[2] ?? 0 - 1) == 4294967297
+}
+
+test "type.optionals — a struct field takes the payload's width" {
+    let _ = dirty()
+    mut s = Slots { n: none, f: none }
+    s.n = 7
+    s.f = 2.5
+    assert (s.n ?? 0 - 1) == 7
+    assert (s.f ?? 0.0) == 2.5
+    s.n = 4294967298
+    assert (s.n ?? 0 - 1) == 4294967298
+}
+
+test "type.optionals — an argument takes the payload's width" {
+    let _ = dirty()
+    assert takes(8) == 8
+    assert takes(4294967299) == 4294967299
+}
+
+func main() {}

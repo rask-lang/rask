@@ -84,6 +84,19 @@ impl TypeChecker {
         matches!(method, "neg" | "abs" | "bit_not")
     }
 
+    /// The shifts. `x << n` keeps `x`'s type and takes `n` at its own, which is
+    /// why they're not homogeneous — but the *result* half still holds, and
+    /// that's what lets an annotation settle a literal receiver.
+    ///
+    /// Without it `let a: i64 = 2 << 40` left `2` unconstrained: nothing tied it
+    /// to the argument (correctly) and nothing tied it to the result either, so
+    /// it defaulted to `i32` before the annotation was consulted and the program
+    /// panicked at runtime with "shift amount exceeds i32 bit width" for an
+    /// expression whose only written type is `i64` (#833).
+    fn is_shift(method: &str) -> bool {
+        matches!(method, "shl" | "shr")
+    }
+
     /// A concrete number. Deliberately excludes nominal types with operator
     /// impls: `5 + meters` should still be rejected, not quietly given the
     /// newtype's type.
@@ -625,6 +638,45 @@ impl TypeChecker {
                         ty, method, args, ret, span, call_node,
                     });
                     return Ok(progress);
+                }
+                // A shift's result has the receiver's type, whatever the shift
+                // amount is. Same shape as the unary case above: tie the two
+                // together so the call site settles both, and hand the dispatch
+                // record to the post-defaulting retry.
+                if self.ctx.literal_vars.contains_key(id) && Self::is_shift(&method) {
+                    let progress = self.unify(&ret, &ty, span)?;
+                    // A shift amount written as a bare literal has no type of
+                    // its own to defend, and ORD4 puts the shifts with
+                    // arithmetic — a `u64` receiver and an `i32` amount is a
+                    // mixed-signedness error. Defaulting the literal to `i32`
+                    // made `let u: u64 = 1 << 63` that error, for a line with no
+                    // `i32` in it. A *typed* amount is left alone: `u64 << u8`
+                    // is legal and this must not narrow it.
+                    if let [arg] = args.as_slice() {
+                        if matches!(self.ctx.apply(arg),
+                            Type::Var(arg_id) if self.ctx.literal_vars.contains_key(&arg_id))
+                        {
+                            self.unify(arg, &ty, span)?;
+                        }
+                    }
+                    self.deferred_methods.push(TypeConstraint::HasMethod {
+                        ty, method, args, ret, span, call_node,
+                    });
+                    return Ok(progress);
+                }
+                // The mirror of the optional's own `eq` rule: `5 == a` with an
+                // optional on the right leaves the literal free, and it
+                // defaults to `i32` against an `i64?`. The bare side is meant
+                // as the payload wherever it's written (#834).
+                if self.ctx.literal_vars.contains_key(id)
+                    && Self::is_homogeneous_comparison(&method)
+                {
+                    if let [arg] = args.as_slice() {
+                        if let Some(inner) = self.ctx.apply(arg).as_option().cloned() {
+                            self.unify(&ty, &inner, span)?;
+                            return self.unify(&ret, &Type::Bool, span);
+                        }
+                    }
                 }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
@@ -1246,6 +1298,7 @@ impl TypeChecker {
                     self.unify(&ret, &self.ordering_type(), span)
                 }
                 "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
+                "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
             },
             // Raw pointers. The eager path in check_expr catches these when the
@@ -1654,6 +1707,7 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::Char, span)?;
                 self.unify(ret, &self.ordering_type(), span)
             }
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
             // CH3: runtime construction returns `char?` — `none` on invalid scalar.
             "from_u32" if args.len() == 1 => {
                 self.unify(&args[0], &Type::U32, span)?;
@@ -2752,7 +2806,22 @@ impl TypeChecker {
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.sort_by_key(key_fn) -> ()
+            //
+            // The key type comes from the closure. Leaving it free was harmless
+            // while the body was native — nothing read it — and fatal once
+            // `sort_by_key` was written in Rask over `sort_by`: the body compares
+            // two keys, and an unresolved key type reached MIR as `compare` on a
+            // receiver with no type at all (#887).
             "sort_by_key" if args.len() == 1 => {
+                let key = self.ctx.fresh_var();
+                let _ = self.unify(
+                    &args[0],
+                    &Type::Fn {
+                        params: vec![inner_type.clone()],
+                        ret: Box::new(key),
+                    },
+                    span,
+                );
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove_adjacent_duplicates() -> ()
@@ -2954,6 +3023,19 @@ impl TypeChecker {
         }
     }
 
+    /// Check one argument against the type the receiver's type arguments say it
+    /// must be, and *report* a mismatch.
+    ///
+    /// The Map methods used to write `let _ = self.unify(&args[0], &key_type, …)`,
+    /// so a wrong key was unified and the failure dropped. On a `Map<TaskId, string>`
+    /// that let `m.insert(1, "a")` through — a raw `i32` into a nominal slot, which
+    /// T9 exists to forbid — and on a struct key it let anything through (#812).
+    fn check_arg_against(&mut self, arg: &Type, expected: &Type, span: Span) {
+        if let Err(e) = self.unify(arg, expected, span) {
+            self.errors.push(e);
+        }
+    }
+
     /// Resolve instance methods on Map<K, V>.
     pub(super) fn resolve_map_method(
         &mut self,
@@ -2976,21 +3058,21 @@ impl TypeChecker {
 
         match method {
             "insert" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &key_type, span);
-                let _ = self.unify(&args[1], &val_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
+                self.check_arg_against(&args[1], &val_type, span);
                 self.unify(ret, &Type::I64, span)
             }
             "contains_key" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::Bool, span)
             }
             "get" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 let opt_ty = Type::option(val_type);
                 self.unify(ret, &opt_ty, span)
             }
             "remove" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &key_type, span);
+                self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::I64, span)
             }
             "len" if args.is_empty() => {
@@ -3357,7 +3439,22 @@ impl TypeChecker {
         match method {
             // `x == none` desugars to `x.eq(none)`. Equality on a zero-field
             // type is ordinary; `tool.lint/I5` steers it toward `x is none`.
-            "eq" | "ne" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
+            //
+            // A bare *literal* on the other side is meant as the payload, and
+            // nothing else constrains it — `let a: i64? = 5` then `a == 5` left
+            // the `5` free, so it defaulted to `i32` and the comparison was
+            // between an `i64?` and an `i32`. Lowering then had a mismatch it
+            // couldn't wrap, and codegen read the scalar as an address (#834).
+            // Only a literal: a typed argument keeps its own type, and `none`
+            // has its own.
+            "eq" | "ne" if args.len() == 1 => {
+                if let Type::Var(id) = self.ctx.apply(&args[0]) {
+                    if self.ctx.literal_vars.contains_key(&id) {
+                        let _ = self.unify(&args[0], inner, span);
+                    }
+                }
+                self.unify(ret, &Type::Bool, span)
+            }
             _ => Err(Self::wrapper_method_cut(self_ty, method, span)),
         }
     }
@@ -3447,6 +3544,37 @@ impl TypeChecker {
         })
     }
 
+    /// CV1a: int→float is never implicit, so an integer and a float can't meet
+    /// under an arithmetic operator either. `i64 + f64` type-checked and native
+    /// answered with an integer — the float operand was dropped, silently, while
+    /// the interpreter refused the same program at runtime (#816).
+    ///
+    /// Both sides have to be settled primitives. An unsuffixed literal is still a
+    /// variable here, which is what lets `x + 1` on an `f64` take the slot's type
+    /// and become `x + 1.0`.
+    fn reject_int_float_mix(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let arg = self.ctx.apply(arg);
+        let recv_int = Self::integer_is_signed(recv).is_some();
+        let arg_int = Self::integer_is_signed(&arg).is_some();
+        let recv_float = matches!(recv, Type::F32 | Type::F64);
+        let arg_float = matches!(arg, Type::F32 | Type::F64);
+        if (recv_int && arg_float) || (recv_float && arg_int) {
+            return Err(TypeError::IntFloatArithmetic {
+                op: Self::operator_spelling(method),
+                left: recv.clone(),
+                right: arg,
+                span,
+            });
+        }
+        Ok(())
+    }
+
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
@@ -3470,6 +3598,12 @@ impl TypeChecker {
             "bit_xor" => "^",
             "shl" => "<<",
             "shr" => ">>",
+            "eq" => "==",
+            "ne" => "!=",
+            "lt" => "<",
+            "le" => "<=",
+            "gt" => ">",
+            "ge" => ">=",
             _ => "this operator",
         }
     }
@@ -3494,7 +3628,10 @@ impl TypeChecker {
             "add" | "sub" | "mul" | "div" | "rem" | "mod"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
                 if args.len() == 1 => {
-                if let Err(mixed) = self.reject_mixed_signedness(method, ty, &args[0], span) {
+                if let Err(mixed) = self
+                    .reject_mixed_signedness(method, ty, &args[0], span)
+                    .and_then(|()| self.reject_int_float_mix(method, ty, &args[0], span))
+                {
                     // Pin the result to the receiver on the way out. The
                     // operands are the complaint; leaving `ret` open turns one
                     // error into two, the second being "couldn't work out the
@@ -3530,11 +3667,44 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
+            // type.integer-overflow OV5/SH2 — the ways out of the checked
+            // default. Same two operands and the same answer type as the
+            // operator each one shadows; only what happens on overflow differs.
+            // The shift forms take an amount of the receiver's own type, the
+            // way `shl` does.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul"
+            | "saturating_add" | "saturating_sub" | "saturating_mul"
+            | "wrapping_shl" | "wrapping_shr"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
+            // The same table's fallible forms. `checked_*` hands back `T?` —
+            // `none` when the answer doesn't exist — and `overflowing_*` hands
+            // back both the wrapped answer and whether it wrapped.
+            "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::option(ty.clone()), span)
+            }
+            "overflowing_add" | "overflowing_sub" | "overflowing_mul"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                let pair = Type::Tuple(vec![ty.clone(), Type::Bool]);
+                self.unify(ret, &pair, span)
+            }
             // std.bits B2/B3 — byte order. Same width in, same width out;
             // bits.rk documents these as methods on the integer types and
             // uses them (`hton_u16` is `x.to_be()`), but nothing registered
             // them, so the stdlib's own definitions didn't resolve.
             "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
+            // HA1: every integer width is Hashable, and `Hashable` is
+            // `hash(self) -> u64`. The trait table said so and this didn't, so the
+            // conformance held while the call was rejected (#813).
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
             _ => Err(TypeError::NoSuchMethod {
                 ty: ty.clone(),
                 method: method.to_string(),
@@ -3574,6 +3744,12 @@ impl TypeChecker {
         match entry.sig {
             FloatSig::Unary => self.unify(ret, ty, span),
             FloatSig::BinaryFloat => {
+                // The other side of #816: `f64 + i64` was accepted too, and the
+                // discarded unify is why nothing said so.
+                if let Err(mixed) = self.reject_int_float_mix(method, ty, &args[0], span) {
+                    let _ = self.unify(ret, ty, span);
+                    return Err(mixed);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }

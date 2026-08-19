@@ -11,7 +11,7 @@ use crate::{
     MirType,
 };
 use rask_ast::{
-    expr::{Expr, ExprKind, UnaryOp},
+    expr::{Expr, ExprKind, Pattern, UnaryOp},
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
@@ -295,7 +295,7 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Let { name, ty, init, .. } => {
                 // If this const was evaluated at compile time, emit a global reference
-                if let Some(meta) = self.ctx.comptime_globals.get(name) {
+                if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
                         // Array: store pointer for later Vec wrapping
                         let mir_ty = if let Some(ty_str) = ty.as_deref() {
@@ -307,26 +307,25 @@ impl<'a> MirLowerer<'a> {
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                             dst: local_id,
-                            name: name.clone(),
+                            name: key.clone(),
                         }));
                     } else {
                         // Scalar: load the data pointer, then deref to get the value
-                        let mir_ty = match meta.type_prefix.as_str() {
-                            "bool" => MirType::Bool,
-                            "i32" => MirType::I32,
-                            "i64" => MirType::I64,
-                            "f32" => MirType::F32,
-                            "f64" => MirType::F64,
-                            _ => if let Some(ty_str) = ty.as_deref() {
-                                self.ctx.resolve_type_str(ty_str)
-                            } else {
-                                MirType::I64
-                            },
-                        };
+                        //
+                        // The folded value's own width decides this, not the
+                        // binding's annotation — an unannotated `let v = f()` on a
+                        // comptime `u128` used to default to `i64` and the deref
+                        // read 8 of the 16 bytes, so the answer came back mod 2^64
+                        // (#824).
+                        let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
+                            .unwrap_or_else(|| match ty.as_deref() {
+                                Some(ty_str) => self.ctx.resolve_type_str(ty_str),
+                                None => MirType::I64,
+                            });
                         let ptr_local = self.builder.alloc_temp(MirType::Ptr);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                             dst: ptr_local,
-                            name: name.clone(),
+                            name: key.clone(),
                         }));
                         let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -335,7 +334,13 @@ impl<'a> MirLowerer<'a> {
                         }));
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                     }
-                    self.meta_mut(name).type_prefix = Some(meta.type_prefix.clone());
+                    // The tracked prefix is what later method calls on this
+                    // binding dispatch through, and a scalar's dispatch prefix
+                    // isn't its type name — narrow widths ride the 64-bit symbols.
+                    let prefix = super::builtin_method_prefix_for_name(&meta.type_prefix)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| meta.type_prefix.clone());
+                    self.meta_mut(name).type_prefix = Some(prefix);
                     return Ok(());
                 }
                 self.lower_binding(name, ty.as_deref(), init)
@@ -378,7 +383,7 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
 
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 // mem.owned/OW3: `*p = v` writes through a borrow of a
                 // transparent `Owned`, so it names the same place as `p = v`.
                 // Left as a Deref target it matched no arm below and the store
@@ -715,6 +720,11 @@ impl<'a> MirLowerer<'a> {
                     let (init_op, init_ty) = self.lower_expr(init)?;
                     self.destructure_tuple_pattern(patterns, &init_op, &init_ty)
                 }
+            }
+
+            // Struct destructuring binding: `let Point { x, .. } = p`.
+            StmtKind::LetStruct { pattern, init, .. } => {
+                self.lower_struct_destructure(pattern, init)
             }
 
             // While-let pattern loop
@@ -1121,7 +1131,36 @@ impl<'a> MirLowerer<'a> {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
+        // Ask before lowering: `own` is gone from the operand by then, and the
+        // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
+        // point where "the value in this local is a heap box" is knowable (#739).
+        let init_may_be_box = self.expr_yields_owned_box(init);
         let (init_op, inferred_ty) = self.lower_expr(init)?;
+
+        // `let p = own Big { … }` takes over the box rather than copying out of
+        // it. A struct-typed destination copies its bytes on assignment, which is
+        // right for every other aggregate and wrong here: it left `p` naming a
+        // stack copy and orphaned the heap value, so `drop(p)` had a stack address
+        // to free and a field storing `p` held an address that dangled at scope
+        // exit (#739). The binding aliases the pointer instead.
+        //
+        // The pointer is the test, not the `own`: a scalar `Owned` was never boxed
+        // — it fits the slot — so `let ptr: Owned<i32> = own 42` is an ordinary
+        // binding holding 42, and marking it a box would have `drop` free the
+        // address 42.
+        if init_may_be_box {
+            if let MirOperand::Local(src) = init_op {
+                if matches!(self.builder.local_type(src), Some(MirType::Ptr)) {
+                    let var_ty = ty
+                        .map(|s| self.ctx.resolve_type_str(s))
+                        .unwrap_or(inferred_ty);
+                    self.builder.name_local(src, name.to_string());
+                    self.locals.insert(name.to_string(), (src, var_ty));
+                    self.meta_mut(name).is_owned_box = true;
+                    return Ok(());
+                }
+            }
+        }
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
@@ -1137,7 +1176,6 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
-
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.
@@ -1487,6 +1525,54 @@ impl<'a> MirLowerer<'a> {
             if let TuplePat::Nested(inner) = pat {
                 self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty)?;
             }
+        }
+        Ok(())
+    }
+
+    /// `let Point { x, y } = p` — read each named field into its binding.
+    ///
+    /// One read per field the pattern names, which is what the source says: the
+    /// alternative, binding the whole struct and projecting later, would make the
+    /// bindings views into `p` rather than values of their own. Nested patterns
+    /// don't reach here — a destructuring *binding* can't fail, so the parser only
+    /// accepts names and `..` inside one.
+    fn lower_struct_destructure(
+        &mut self,
+        pattern: &Pattern,
+        init: &Expr,
+    ) -> Result<(), LoweringError> {
+        let Pattern::Struct { fields, .. } = pattern else {
+            return Err(LoweringError::InvalidConstruct(
+                "destructuring binding needs a struct pattern".into(),
+            ));
+        };
+        let (src_op, src_ty) = self.lower_expr(init)?;
+        for (field_name, field_pat) in fields {
+            let Pattern::Ident(binding) = field_pat else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "field `{}` in a destructuring binding must bind a name",
+                    field_name
+                )));
+            };
+            let Some((field_idx, field_layout)) = self.struct_field(&src_ty, field_name) else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "no field `{}` to bind",
+                    field_name
+                )));
+            };
+            let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+            let (offset, size) = (field_layout.offset, field_layout.size);
+            let local = self.builder.alloc_local(binding.clone(), field_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: src_op.clone(),
+                    field_index: field_idx as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(&field_ty, size),
+                },
+            }));
+            self.locals.insert(binding.clone(), (local, field_ty));
         }
         Ok(())
     }
@@ -1933,6 +2019,7 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
+        self.note_closure_binding(single_name, iter_expr);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
         } else if is_pool {
@@ -2051,6 +2138,47 @@ impl<'a> MirLowerer<'a> {
         self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
+    }
+
+    /// A `for` over a collection of functions binds a closure value, so record
+    /// it the way `let`/`mut` already do.
+    ///
+    /// Without this the call site had no reason to emit a `ClosureCall`: it
+    /// lowered `f(5)` as a call to a *function named `f`*, found no signature
+    /// for it, and gave up on the return type — "couldn't work out a type here"
+    /// out of MIR lowering, while `let g = fs[0]` two lines away was fine
+    /// (#869). The interpreter has no such split and ran both.
+    fn note_closure_binding(&mut self, name: &str, source: &Expr) {
+        let Some(source_ty) = self.ctx.lookup_raw_type(source.id) else { return };
+        let Some(elem) = self.checker_elem_of(source_ty) else { return };
+        if let rask_types::Type::Fn { ret, .. } = elem {
+            self.closure_locals.insert(name.to_string());
+            let ret_mir = self.ctx.type_to_mir(&ret);
+            self.func_sigs.insert(
+                name.to_string(),
+                super::FuncSig {
+                    ret_ty: ret_mir,
+                    scalar_mutate_params: Vec::new(),
+                    aggregate_mutate_params: Vec::new(),
+                    ret_vec_elem: None,
+                    param_ty_strs: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// The checker's element type of a `Vec`/`Iterator` source, as a checker
+    /// type rather than a MIR one — a function type has no MIR shape beyond
+    /// "pointer", so this has to look before the conversion.
+    fn checker_elem_of(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
+        let (name, args) = self.generic_head(ty)?;
+        if !matches!(name.as_str(), "Vec" | "Iterator") {
+            return None;
+        }
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some((**inner).clone()),
+            _ => None,
+        }
     }
 
     /// Pool entries iteration: `for (h, val) in pool.entries()`
@@ -2732,6 +2860,13 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&final_ty, for_binding, binding_name);
+        // Adapters can change the element type, so ask about the chain's own
+        // source only when nothing was applied. Otherwise `for f in fs.iter()`
+        // over a Vec of functions still binds a callable, but
+        // `for n in fs.map(|f| f(1))` binds an i64.
+        if chain.adapters.is_empty() {
+            self.note_closure_binding(binding_name, chain.source);
+        }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: elem_slot,
             rvalue: MirRValue::Use(final_op),

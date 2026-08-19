@@ -8,6 +8,30 @@
 # Every line below carries a measured symptom and an issue. If you find one
 # without an issue, that means nobody has looked; file before you assume.
 #
+# Re-measured 2026-08-18 (seventh pass). Changes this round:
+#   - 09_generics is ENROLLED. The shared layout for a generic type substitutes
+#     `i64` for every parameter — right size, wrong register class — so
+#     `wrap(3.14).value` loaded the double's bits into an integer register and
+#     printed 4614253070214988800. `FieldLayout` carries `is_type_param` now and
+#     the field read keeps the MIR local's type. The other line that differed
+#     (`String box:` garbage) was a static method on a generic type staying on
+#     the shared layout while its `.get()` got a per-instantiation one. #820
+#   - 13_string_operations is ENROLLED. The line about `ParseError` having no
+#     definition is stale — it's declared in `stdlib/string.rk` with three
+#     variants. What was actually wrong: the runtime reported every parse
+#     failure with one status, and codegen wrote the Result's Err tag and left
+#     the `ParseError` payload untouched, so the variant came off the stack.
+#     Usually `Empty`; once the frame had been used, a tag no variant has, which
+#     hit the match's `unreachable` and killed the process with SIGILL. #831
+#   - simple_grep and file_copy are ENROLLED. Their line said "both exit 1",
+#     which was never a bug: both are CLI programs that print usage and exit 1
+#     when run with no arguments. The gate has taken a `.args` file since
+#     package_manager joined, so they just needed one. Both are on the
+#     validation list in CLAUDE.md, so gating them is worth more than most.
+#     file_copy's copy goes to /tmp with `-f`, which makes it idempotent across
+#     backends and across runs; simple_grep's patterns both match, because a
+#     grep that finds nothing exits 1 and the gate reads that as a failure.
+#
 # Re-measured 2026-08-16 (sixth pass). Changes this round:
 #   - 18_resource_types is ENROLLED. The one line that differed was the error
 #     text for reading a file opened write-only: a string-out-param call
@@ -60,16 +84,6 @@
 # enrolments were programs whose recorded diagnosis was simply wrong.
 
 # --- native fails to run (interp OK) — native codegen rot ---
-09_generics.rk           # both exit 0, stdout DIVERGES on one line: interp prints
-                         # "Auto-wrapped: 3.14", native "Auto-wrapped: 4614253070214988800"
-                         # — the f64's bit pattern, so a generic slot is holding the
-                         # float and reading it back as an integer. #272 family.
-13_string_operations.rk  # Compiles and runs on both backends now (#656 — the fuser didn't
-                         # recognise `s.split_whitespace()` as a source). One line still
-                         # differs: `print("{e}")` on the ParseError from a failed
-                         # `parse<i32>()` gives "invalid integer" on interp and the raw
-                         # number 1114129 on native. ParseError has no definition
-                         # anywhere in the stdlib — it's a name in a signature. #320.
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # Native runs to completion now (#696 — the raw pointer method
@@ -77,8 +91,6 @@
                          # at all, so `strlen` is an undefined function before any pointer
                          # work is reached. Nothing to diff between backends until the
                          # interpreter can call into libc.
-file_copy.rk             # both exit 1
-simple_grep.rk           # both exit 1
 
 # --- has its own harness, not a stdout golden ---
 http_api_server.rk       # Compiles and serves on the interpreter; tests/http_api_harness.sh

@@ -22,6 +22,56 @@ let z = 3; let w = 4  // Multiple on one line
 
 **Rationale:** Python devs expect newlines to matter. Rust devs won't care — semicolons are just noise most of the time.
 
+**Continuation.** A newline ends a statement unless the *next* line starts with
+something that can only continue one. That's the whole rule — no line-continuation
+character, and no looking at whether the previous line "seems finished".
+
+A line continues the one before it when it starts with:
+
+| Starts with | Example |
+|---|---|
+| `.` `?.` | a method chain |
+| `?` | a presence test |
+| `[` | an index |
+| `&&` `\|\|` | boolean |
+| `==` `!=` `<=` `>=` | comparison |
+| `&` `\|` `^` `<<` `>>` | bitwise |
+| `/` `%` | division, remainder |
+| `??` `catch` | absence, failure |
+| `..` `..=` | a range |
+| `else` | the other branch of an `if` |
+
+```rask
+let total = items
+    .filter(|i| i.active)
+    .count()
+
+let ok = ready
+    && connected
+    && !paused
+```
+
+**Deliberately excluded:** `+`, `-`, `*`, `<`, `>`. Each is ambiguous at the start
+of a line, so a line beginning with one of them is a new statement:
+
+- `-` is also prefix negation. `-x` on its own line is a negation, not a
+  subtraction from the line above.
+- `*` is also a dereference.
+- `<` and `>` also open and close generic arguments.
+- `+` has no prefix meaning, so a line starting with one is a parse error rather
+  than a separate statement — the one case where the exclusion says so out loud.
+
+```rask
+let b = a
+- a            // a negation, discarded — `b` is `a`, not `a - a`
+```
+
+The exclusion list is load-bearing: it's what makes the rule decidable by looking
+at one token. Extending continuation to any of the five needs the ambiguity solved
+first, not worked around. JavaScript's automatic semicolon insertion is the
+cautionary case — it guesses from the previous line and never recovered from the
+corners that produces.
+
 ### 2. Colon for Inline, Braces for Multi-line
 
 Single-expression blocks use `:`. Multi-statement blocks use `{ }`.
@@ -325,7 +375,15 @@ let user = User {
 
 // Update syntax
 let updated = User { email: "new@example.com", ..user }
+
+// Field shorthand — a local with the field's name needs no colon
+let email = "new@example.com"
+let renamed = User { email, ..user }
 ```
+
+The shorthand is the struct literal only. A call has no equivalent: `f(x)` is
+positional and `f(x: x)` is a named argument, so there's nothing for `f(x)` to be
+short for.
 
 **Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` trait or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
 
@@ -717,13 +775,22 @@ match response {
     HttpError as e => handle_error(e),
 }
 
-// Destructuring
+// Destructuring — `x: 0` tests a value, `y` binds one (same shorthand)
 match point {
     Point { x: 0, y } => println("on y-axis at {y}"),
     Point { x, y: 0 } => println("on x-axis at {x}"),
     Point { x, y } => println("at ({x}, {y})"),
 }
+
+// `..` covers the fields the pattern doesn't name
+match vertex {
+    Vertex { x, .. } => println("x is {x}"),
+}
 ```
+
+Arms are tried in order, so the general one goes last. Braces make this a `match`
+form: in `if point is Point { … }` the `{` opens the branch, so an `is` test names
+the type and nothing else.
 
 ### Pattern Matching in Conditions: `is`
 

@@ -14,6 +14,16 @@ pub struct Printer<'a> {
     source: &'a str,
     comments: CommentList,
     config: &'a FormatConfig,
+    /// End of the declaration being printed. The pending-comment cursor is
+    /// global and flushed opportunistically, and the block-end drain accepted any
+    /// comment indented at least as deep as the block — which is every comment in
+    /// every *later* declaration too. One function's body swallowed the comments
+    /// out of the next one (#805).
+    decl_end: usize,
+    /// End of the innermost statement or expression being printed. Same problem
+    /// one level down: a comment written in the *next* `if` was drained into the
+    /// previous one's body, because both are indented the same.
+    block_end: usize,
 }
 
 impl<'a> Printer<'a> {
@@ -24,6 +34,8 @@ impl<'a> Printer<'a> {
             source,
             comments,
             config,
+            decl_end: source.len(),
+            block_end: source.len(),
         }
     }
 
@@ -108,30 +120,85 @@ impl<'a> Printer<'a> {
 
     /// Try to emit a trailing comment on the same line as the code.
     /// Returns true if a trailing comment was emitted.
+    ///
+    /// The test is on the comment's own line, not on the span it came after: a
+    /// statement's span runs to the newline that terminates it, and that newline
+    /// is *past* the trailing comment, so comparing against the span end said
+    /// "not on this line" every time. Every trailing comment in the tree was
+    /// getting moved onto a line of its own, which changes what it annotates —
+    /// `let a = 4  // one` documents `a`, and above the next line it reads as
+    /// documenting that instead (#801).
     fn try_emit_trailing_comment(&mut self, span_end: usize) -> bool {
-        if let Some(c) = self.comments.peek_next() {
-            // Find actual content end (skip trailing whitespace in span)
-            let bytes = self.source.as_bytes();
+        let Some(c) = self.comments.peek_next() else { return false };
+        let (cstart, cend) = (c.span.start, c.span.end);
+        if cstart >= self.source.len() {
+            return false;
+        }
+        let bytes = self.source.as_bytes();
+
+        // A comment with nothing but whitespace before it on its line is a
+        // standalone comment and keeps its own line.
+        let mut line_start = cstart;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        let before = &self.source[line_start..cstart];
+        if before.trim().is_empty() {
+            return false;
+        }
+
+        if cstart >= span_end {
+            // The span stopped before the comment, so "same line" is the gap.
             let mut content_end = span_end;
             while content_end > 0 && bytes[content_end - 1].is_ascii_whitespace() {
                 content_end -= 1;
             }
-            // Check if comment is on the same line (no newline between content and comment)
-            if c.span.start > content_end && c.span.start < self.source.len() {
-                let gap = &self.source[content_end..c.span.start];
-                if !gap.contains('\n') {
-                    let Some(c) = self.comments.advance() else { return false; };
-                    // Preserve original spacing or use standard 2-space gap
-                    let spaces = gap.len().max(2);
-                    for _ in 0..spaces {
-                        self.output.push(' ');
-                    }
-                    self.output.push_str(&c.text);
-                    return true;
+            if self.source[content_end..cstart].contains('\n') {
+                return false;
+            }
+        } else if cend < span_end && !self.only_whitespace_and_comments(cend, span_end) {
+            // The span swallowed the comment. Nothing but whitespace and further
+            // comments may follow it inside the span — real code after it means
+            // the comment is partway through a multi-line statement and stays
+            // where it is. Further *comments* are fine: a statement's span runs
+            // past any standalone comments that follow it, so requiring bare
+            // whitespace here made the trailing comment move on the second pass
+            // whenever another comment came after it.
+            return false;
+        }
+
+        let Some(c) = self.comments.advance() else { return false };
+        // Preserve the original spacing, with a two-space minimum.
+        let spaces = (before.len() - before.trim_end().len()).max(2);
+        for _ in 0..spaces {
+            self.output.push(' ');
+        }
+        self.output.push_str(&c.text);
+        true
+    }
+
+    /// Whether `source[from..to]` holds nothing but whitespace and comments.
+    fn only_whitespace_and_comments(&self, from: usize, to: usize) -> bool {
+        let bytes = self.source.as_bytes();
+        let mut i = from;
+        while i < to {
+            if bytes[i].is_ascii_whitespace() {
+                i += 1;
+            } else if bytes[i] == b'/' && i + 1 < to && bytes[i + 1] == b'/' {
+                while i < to && bytes[i] != b'\n' {
+                    i += 1;
                 }
+            } else if bytes[i] == b'/' && i + 1 < to && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < to && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(to);
+            } else {
+                return false;
             }
         }
-        false
+        true
     }
 
     /// Get the indentation level (in spaces) of a source position by scanning back to line start.
@@ -148,6 +215,75 @@ impl<'a> Printer<'a> {
         spaces
     }
 
+    /// Emit every pending comment that starts before `pos` and stands on a line of
+    /// its own, each at the current indent.
+    ///
+    /// A struct field and an enum variant aren't statements, so nothing was
+    /// flushing the comments written among them. They stayed pending until the
+    /// *next declaration* emitted them — below the closing brace, where a comment
+    /// about a variant reads as a comment about whatever comes next. `stdlib/os.rk`
+    /// lost four doc comments out of `Metadata` that way (#805).
+    fn emit_standalone_comments_before(&mut self, pos: usize) {
+        loop {
+            let Some(c) = self.comments.peek_next() else { break };
+            if c.span.start >= pos {
+                break;
+            }
+            if !self.comment_is_standalone(c.span.start) {
+                break;
+            }
+            let start = c.span.start;
+            let Some(c) = self.comments.advance() else { break };
+            if self.has_blank_line_before(start) {
+                self.emit_blank_line();
+            }
+            self.emit_indent();
+            self.output.push_str(&c.text);
+            self.emit_newline();
+        }
+    }
+
+    /// Emit the next pending comment inline when it's a trailing comment starting
+    /// before `limit`.
+    ///
+    /// `try_emit_trailing_comment` tests "same line as this span", which a member
+    /// with no span of its own can't answer. Source order does: members are printed
+    /// in order, so the first trailing comment still pending inside the
+    /// declaration belongs to the member just printed.
+    fn try_emit_trailing_comment_before(&mut self, limit: usize) -> bool {
+        let Some(c) = self.comments.peek_next() else { return false };
+        let start = c.span.start;
+        if start >= limit || start >= self.source.len() {
+            return false;
+        }
+        if self.comment_is_standalone(start) {
+            return false;
+        }
+        let before = self.line_prefix_before(start);
+        let spaces = (before.len() - before.trim_end().len()).max(2);
+        let Some(c) = self.comments.advance() else { return false };
+        for _ in 0..spaces {
+            self.output.push(' ');
+        }
+        self.output.push_str(&c.text);
+        true
+    }
+
+    /// The text between the start of a comment's line and the comment itself.
+    fn line_prefix_before(&self, pos: usize) -> &str {
+        let bytes = self.source.as_bytes();
+        let mut line_start = pos;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        &self.source[line_start..pos]
+    }
+
+    /// A comment with nothing but whitespace before it on its line.
+    fn comment_is_standalone(&self, pos: usize) -> bool {
+        self.line_prefix_before(pos).trim().is_empty()
+    }
+
     /// Consume trailing comments that belong to the current block (at current indent or deeper).
     fn consume_trailing_block_comments(&mut self) {
         let min_indent = self.indent * self.config.indent_width;
@@ -156,6 +292,11 @@ impl<'a> Printer<'a> {
                 Some(c) => c,
                 None => break,
             };
+            // Never past the node being printed: a comment beyond it belongs to a
+            // later statement or declaration, whatever its indent.
+            if c.span.start >= self.decl_end.min(self.block_end) {
+                break;
+            }
             let comment_indent = self.source_indent_at(c.span.start);
             if comment_indent < min_indent {
                 break;
@@ -182,14 +323,23 @@ impl<'a> Printer<'a> {
     /// Convert parser-normalized types back to Rask syntax.
     /// E.g., `Result<i32, string>` → `i32 or string`.
     fn format_type(&self, ty: &str) -> String {
+        // The parser normalizes `void` to `()` (type.primitives/P6), which isn't
+        // a type anyone can write — printing it back gave "`()` is not a type"
+        // on the formatter's own output (#805).
+        if ty == "()" {
+            return "void".to_string();
+        }
         if let Some(inner) = ty.strip_prefix("Result<") {
             if let Some(inner) = inner.strip_suffix('>') {
-                // Find the top-level comma (not inside nested angle brackets)
+                // The top-level comma is the one separating value from error.
+                // Only angle brackets were counted, so a tuple value type split
+                // at its own comma: `(string, string) or E` came back out as
+                // `(string or string), E`, which doesn't parse (#805).
                 let mut depth = 0;
                 for (i, ch) in inner.char_indices() {
                     match ch {
-                        '<' => depth += 1,
-                        '>' => depth -= 1,
+                        '<' | '(' | '[' => depth += 1,
+                        '>' | ')' | ']' => depth -= 1,
                         ',' if depth == 0 => {
                             let ok_ty = inner[..i].trim();
                             let err_ty = inner[i + 1..].trim();
@@ -204,9 +354,11 @@ impl<'a> Printer<'a> {
                 }
             }
         }
-        // Convert func(T, U) -> R back to |T, U| -> R
+        // A closure type has two spellings and the parser stores the `func(…)`
+        // one, so that's what comes back out. Rewriting it to `|T| -> R` was
+        // wrong for the zero-parameter case — `||` is the or-operator token, so
+        // `|| -> Big` doesn't lex — and it's the minority spelling anyway.
         if let Some(rest) = ty.strip_prefix("func(") {
-            // Find matching closing paren
             let mut depth = 1;
             for (i, ch) in rest.char_indices() {
                 match ch {
@@ -214,25 +366,65 @@ impl<'a> Printer<'a> {
                     ')' => {
                         depth -= 1;
                         if depth == 0 {
-                            let params = &rest[..i];
+                            let params = self.format_type_list(&rest[..i]);
                             let after = rest[i + 1..].trim();
-                            if let Some(ret) = after.strip_prefix("->") {
-                                let ret_ty = ret.trim();
-                                return format!(
-                                    "|{}| -> {}",
-                                    params,
-                                    self.format_type(ret_ty)
-                                );
-                            } else {
-                                return format!("|{}|", params);
-                            }
+                            return match after.strip_prefix("->").map(str::trim) {
+                                // An omitted return type is stored as `()` too,
+                                // so writing it back adds an arrow the source
+                                // never had.
+                                None | Some("()") => format!("func({})", params),
+                                Some(ret_ty) => {
+                                    format!("func({}) -> {}", params, self.format_type(ret_ty))
+                                }
+                            };
                         }
                     }
                     _ => {}
                 }
             }
         }
+        // A generic argument is a type too. `Receiver<void>` came back out as
+        // `Receiver<()>`, which doesn't parse — the surface-spelling fix only
+        // looked at the whole string (#805).
+        if let Some(open) = ty.find('<') {
+            if let Some(inner) = ty.strip_suffix('>') {
+                let base = &ty[..open];
+                let args = self.format_type_list(&inner[open + 1..]);
+                return format!("{}<{}>", base, args);
+            }
+        }
         ty.to_string()
+    }
+
+    /// A comma-separated type list, split at the top level only.
+    fn format_type_list(&self, list: &str) -> String {
+        if list.trim().is_empty() {
+            return String::new();
+        }
+        let mut parts = Vec::new();
+        let mut depth = 0;
+        let mut start = 0;
+        for (i, ch) in list.char_indices() {
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(self.format_type(list[start..i].trim()));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(self.format_type(list[start..].trim()));
+        parts.join(", ")
+    }
+
+    /// The offset of the `extern` keyword when this declaration came from a block.
+    fn extern_block_start(decl: &Decl) -> Option<usize> {
+        match &decl.kind {
+            DeclKind::Extern(e) => e.block_start,
+            _ => None,
+        }
     }
 
     // --- File ---
@@ -241,11 +433,31 @@ impl<'a> Printer<'a> {
         let mut is_first = true;
         let mut prev_was_import = false;
 
-        for decl in decls {
+        // `extern "C" { … }` flattens into one declaration per member, so the
+        // block has to be put back together here. Members carry the offset of
+        // their own `extern` keyword, which groups them without merging two
+        // blocks that were written apart (#805).
+        let mut i = 0;
+        while i < decls.len() {
+            let decl = &decls[i];
+            let block = Self::extern_block_start(decl);
+            let mut run = 1;
+            if block.is_some() {
+                while i + run < decls.len() && Self::extern_block_start(&decls[i + run]) == block {
+                    run += 1;
+                }
+            }
+            let members = &decls[i..i + run];
+            i += run;
+
             let is_import = matches!(decl.kind, DeclKind::Import(_));
 
-            // Emit comments before this decl (with blank lines from source)
-            let comments = self.emit_comments_before(decl.span.start, !is_first);
+            // Emit comments before this decl (with blank lines from source).
+            // For a block, the bound is the `extern` keyword — a comment written
+            // inside the braces belongs to the member it precedes, not above the
+            // block.
+            let decl_start = block.unwrap_or(decl.span.start);
+            let comments = self.emit_comments_before(decl_start, !is_first);
 
             // Blank line between previous decl/comment and this decl
             if !is_first && comments.is_empty() {
@@ -255,13 +467,19 @@ impl<'a> Printer<'a> {
             }
 
             // Blank line between last comment and decl (if source had one)
-            if !comments.is_empty() && self.has_blank_line_before(decl.span.start) {
+            if !comments.is_empty() && self.has_blank_line_before(decl_start) {
                 self.emit_blank_line();
             } else if !is_first && comments.is_empty() {
                 // Already handled above
             }
 
-            self.format_decl(decl);
+            if block.is_some() {
+                self.format_extern_block(members);
+            } else {
+                self.decl_end = decl.span.end;
+                self.format_decl(decl);
+                self.decl_end = self.source.len();
+            }
             if !self.output.ends_with('\n') {
                 self.emit_newline();
             }
@@ -269,6 +487,47 @@ impl<'a> Printer<'a> {
             is_first = false;
             prev_was_import = is_import;
         }
+    }
+
+    /// Print the members of one `extern "C" { … }` back inside its braces.
+    ///
+    /// Each member keeps its own span, so a comment written beside one lands
+    /// beside it rather than below the block — which is what the flattened form
+    /// could not express.
+    fn format_extern_block(&mut self, members: &[Decl]) {
+        let abi = match &members[0].kind {
+            DeclKind::Extern(e) => e.abi.clone(),
+            _ => return,
+        };
+        self.emit_indent();
+        self.emit("extern \"");
+        self.emit(&abi);
+        self.emit("\" {");
+        self.emit_newline();
+        self.indent += 1;
+        let mut first = true;
+        for m in members {
+            let DeclKind::Extern(e) = &m.kind else { continue };
+            let comments = self.emit_comments_before(m.span.start, !first);
+            if !first && comments.is_empty() && self.has_blank_line_before(m.span.start) {
+                self.emit_blank_line();
+            }
+            self.decl_end = m.span.end;
+            self.format_extern_member(e);
+            self.decl_end = self.source.len();
+            self.emit_newline();
+            first = false;
+        }
+        // A comment on the last line inside the braces belongs in here, not after.
+        let close = self.source[members[members.len() - 1].span.end..]
+            .find('}')
+            .map(|off| members[members.len() - 1].span.end + off)
+            .unwrap_or(self.source.len());
+        self.emit_comments_before(close, false);
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
+        self.emit_newline();
     }
 
     // --- Declarations ---
@@ -315,6 +574,19 @@ impl<'a> Printer<'a> {
     }
 
     fn format_fn_decl(&mut self, f: &FnDecl, is_method: bool, is_trait_decl: bool) {
+        // A method inside an `extend` block is not a statement or an expression, so
+        // without this its body's comment drain was bounded only by the whole
+        // `extend` — and pulled the comments out of every method after it.
+        // `stdlib/json.rk` collected seven of them into `JsonParser.new` (#805).
+        let outer_block_end = self.block_end;
+        if f.span.end > 0 {
+            self.block_end = f.span.end;
+        }
+        self.format_fn_decl_inner(f, is_method, is_trait_decl);
+        self.block_end = outer_block_end;
+    }
+
+    fn format_fn_decl_inner(&mut self, f: &FnDecl, is_method: bool, is_trait_decl: bool) {
         if !is_method {
             self.emit_indent();
         }
@@ -366,9 +638,40 @@ impl<'a> Printer<'a> {
             self.emit(&ty);
         }
 
+        // `using players: Pool<Player>` declares what the body reaches for
+        // without naming it at the call site. The printer dropped the clause, so
+        // the body then read a name nothing had declared (#805).
+        for (i, clause) in f.context_clauses.iter().enumerate() {
+            self.emit(if i == 0 { " using " } else { ", " });
+            if clause.is_frozen {
+                self.emit("frozen ");
+            }
+            if let Some(ref name) = clause.name {
+                self.emit(name);
+                self.emit(": ");
+            }
+            let ty = self.format_type(&clause.ty);
+            self.emit(&ty);
+        }
+
         if f.body.is_empty() && is_trait_decl {
             // Trait method declaration with no body — no braces
+        } else if f.body.is_empty() && self.comments_within(f.span) {
+            // A body that holds nothing but a comment. `{}` would drop the comment
+            // out of the braces entirely — it escaped to column 0 below the
+            // enclosing `extend` (#805).
+            self.emit(" {");
+            self.emit_newline();
+            self.indent += 1;
+            self.consume_trailing_block_comments();
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
         } else if f.body.is_empty() {
+            // `{}` for a function body: that's what hand-written Rask uses (137
+            // sites, 103 of them `func main() {}`), against `{ }` which appears
+            // 378 times and only ever in `stdlib/`'s signature stubs. An empty
+            // *type* body goes the other way, 47 to 4, and gets `{ }`.
             self.emit(" {}");
         } else {
             self.emit(" {");
@@ -457,7 +760,9 @@ impl<'a> Printer<'a> {
         let source_is_multiline = self.source_text(span).contains('\n');
         let has_methods = !s.methods.is_empty();
 
-        if !source_is_multiline && !has_methods && s.fields.len() <= 4 && self.struct_fields_fit_one_line(&s.fields) {
+        if !source_is_multiline && !has_methods && s.fields.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && !has_methods && s.fields.len() <= 4 && self.struct_fields_fit_one_line(&s.fields) {
             // Inline style: struct Vec3 { x: f64, y: f64, z: f64 }
             self.emit(" { ");
             for (i, field) in s.fields.iter().enumerate() {
@@ -490,7 +795,18 @@ impl<'a> Printer<'a> {
             self.emit_newline();
 
             self.indent += 1;
-            for field in &s.fields {
+            for (i, field) in s.fields.iter().enumerate() {
+                // A trailing comment belongs to this field only if it comes before
+                // the next one. Bounding by the declaration's end instead attached
+                // the first pending comment to the first field, whatever line it
+                // was really on — `Node { value, next // about next }` moved the
+                // comment up onto `value`.
+                let next_member = s
+                    .fields
+                    .get(i + 1)
+                    .map(|f| f.name_span.start)
+                    .unwrap_or(span.end);
+                self.emit_standalone_comments_before(field.name_span.start);
                 for attr in &field.attrs {
                     self.emit_indent();
                     self.emit("@");
@@ -511,6 +827,7 @@ impl<'a> Printer<'a> {
                     self.emit(" = ");
                     self.format_expr(default);
                 }
+                self.try_emit_trailing_comment_before(next_member);
                 self.emit_newline();
             }
             if !s.methods.is_empty() {
@@ -554,7 +871,9 @@ impl<'a> Printer<'a> {
 
         let source_is_multiline = self.source_text(span).contains('\n');
 
-        if !source_is_multiline && u.fields.len() <= 4 && self.struct_fields_fit_one_line(&u.fields) {
+        if !source_is_multiline && u.fields.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && u.fields.len() <= 4 && self.struct_fields_fit_one_line(&u.fields) {
             self.emit(" { ");
             for (i, field) in u.fields.iter().enumerate() {
                 if i > 0 {
@@ -598,6 +917,15 @@ impl<'a> Printer<'a> {
     fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {
         self.emit_indent();
 
+        // Enums were the one declaration whose attributes weren't printed, so
+        // `@message` disappeared and the derived `message()` went with it — the
+        // formatted file then failed to check on a call the source made (#805).
+        for attr in &e.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
+
         if e.is_pub {
             self.emit("public ");
         }
@@ -620,7 +948,9 @@ impl<'a> Printer<'a> {
         let all_fieldless = e.variants.iter().all(|v| v.fields.is_empty());
         let has_methods = !e.methods.is_empty();
 
-        if !source_is_multiline && !has_methods && all_fieldless && self.enum_variants_fit_one_line(&e.variants) {
+        if !source_is_multiline && !has_methods && e.variants.is_empty() {
+            self.emit(" { }");
+        } else if !source_is_multiline && !has_methods && all_fieldless && self.enum_variants_fit_one_line(&e.variants) {
             // Inline style: enum Dir { N, S, E, W }
             self.emit(" { ");
             for (i, variant) in e.variants.iter().enumerate() {
@@ -636,8 +966,21 @@ impl<'a> Printer<'a> {
             self.emit_newline();
 
             self.indent += 1;
-            for variant in &e.variants {
+            for (i, variant) in e.variants.iter().enumerate() {
+                let next_member = e
+                    .variants
+                    .get(i + 1)
+                    .map(|v| v.name_span.start)
+                    .unwrap_or(span.end);
+                self.emit_standalone_comments_before(variant.name_span.start);
                 self.emit_indent();
+                // A per-variant `@message("…")` is what the derived message
+                // actually reads.
+                for attr in &variant.attrs {
+                    self.emit(&format!("@{attr}"));
+                    self.emit_newline();
+                    self.emit_indent();
+                }
                 self.emit(&variant.name);
                 if !variant.fields.is_empty() {
                     let is_tuple = variant.fields.first().map_or(false, |f| {
@@ -668,6 +1011,7 @@ impl<'a> Printer<'a> {
                         self.emit(" }");
                     }
                 }
+                self.try_emit_trailing_comment_before(next_member);
                 self.emit_newline();
             }
             if !e.methods.is_empty() {
@@ -697,28 +1041,66 @@ impl<'a> Printer<'a> {
 
     fn format_trait_decl(&mut self, t: &TraitDecl) {
         self.emit_indent();
+
+        // Attributes, `unsafe`, `duck` and super-traits were all dropped. Losing
+        // `duck` is the one that changes the program: a duck trait matches by
+        // shape and a plain one has to be declared, so the conformance the
+        // source relied on stopped existing (#805).
+        for attr in &t.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
+
         if t.is_pub {
             self.emit("public ");
         }
+        if t.is_unsafe {
+            self.emit("unsafe ");
+        }
+        if t.is_duck {
+            self.emit("duck ");
+        }
         self.emit("trait ");
         self.emit(&t.name);
+        for (i, sup) in t.super_traits.iter().enumerate() {
+            self.emit(if i == 0 { ": " } else { ", " });
+            self.emit(sup);
+        }
         self.emit(" {");
         self.emit_newline();
 
         self.indent += 1;
-        let mut first = true;
-        for method in &t.methods {
-            if !first {
-                self.emit_blank_line();
-            }
-            self.emit_indent();
-            self.format_fn_decl(method, true, true);
-            self.emit_newline();
-            first = false;
-        }
+        self.format_block_members(&t.methods, true);
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");
+    }
+
+    /// The members of an `extend` or `trait` body.
+    ///
+    /// Comments between them belong where they were written. Nothing consumed
+    /// them here, so a `///` on a method stayed unclaimed until the body's first
+    /// statement picked it up — and the doc comment ended up *inside* the method
+    /// it documented. Blank lines follow the source too, instead of one being
+    /// inserted between every pair of members (#805).
+    fn format_block_members(&mut self, methods: &[FnDecl], is_trait_decl: bool) {
+        let mut is_first = true;
+        for method in methods {
+            let comments = self.emit_comments_before(method.span.start, !is_first);
+            let blank_in_source = self.has_blank_line_before(method.span.start);
+            if comments.is_empty() {
+                if !is_first && blank_in_source {
+                    self.emit_blank_line();
+                }
+            } else if blank_in_source {
+                self.emit_blank_line();
+            }
+            self.emit_indent();
+            self.format_fn_decl(method, true, is_trait_decl);
+            self.emit_newline();
+            is_first = false;
+        }
     }
 
     fn format_impl_decl(&mut self, imp: &ImplDecl) {
@@ -743,16 +1125,7 @@ impl<'a> Printer<'a> {
         self.emit_newline();
 
         self.indent += 1;
-        let mut first = true;
-        for method in &imp.methods {
-            if !first {
-                self.emit_blank_line();
-            }
-            self.emit_indent();
-            self.format_fn_decl(method, true, false);
-            self.emit_newline();
-            first = false;
-        }
+        self.format_block_members(&imp.methods, false);
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");
@@ -811,7 +1184,11 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
         self.emit(" = ");
-        self.emit(&t.target);
+        // The target is a type like any other, and printing it raw left the
+        // parser's internal spellings in the output — `-> ()` where the source
+        // said nothing at all (#805).
+        let target = self.format_type(&t.target);
+        self.emit(&target);
         if !t.with_traits.is_empty() {
             self.emit(" with (");
             for (i, trait_name) in t.with_traits.iter().enumerate() {
@@ -845,7 +1222,7 @@ impl<'a> Printer<'a> {
             self.emit("comptime ");
         }
         self.emit("test \"");
-        self.emit(&t.name);
+        self.emit(&escape_string_literal(&t.name));
         self.emit("\" {");
         self.emit_newline();
 
@@ -859,7 +1236,7 @@ impl<'a> Printer<'a> {
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
         self.emit("benchmark \"");
-        self.emit(&b.name);
+        self.emit(&escape_string_literal(&b.name));
         self.emit("\" {");
         self.emit_newline();
 
@@ -1111,7 +1488,19 @@ impl<'a> Printer<'a> {
         self.emit_indent();
         self.emit("extern \"");
         self.emit(&e.abi);
-        self.emit("\" func ");
+        self.emit("\" ");
+        self.format_extern_signature(e);
+    }
+
+    /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the
+    /// block already said it.
+    fn format_extern_member(&mut self, e: &ExternDecl) {
+        self.emit_indent();
+        self.format_extern_signature(e);
+    }
+
+    fn format_extern_signature(&mut self, e: &ExternDecl) {
+        self.emit("func ");
         self.emit(&e.name);
         self.emit("(");
         for (i, param) in e.params.iter().enumerate() {
@@ -1164,6 +1553,13 @@ impl<'a> Printer<'a> {
     }
 
     fn format_stmt(&mut self, stmt: &Stmt) {
+        let outer = self.block_end;
+        self.block_end = stmt.span.end;
+        self.format_stmt_inner(stmt);
+        self.block_end = outer;
+    }
+
+    fn format_stmt_inner(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
                 self.format_expr(expr);
@@ -1202,10 +1598,28 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::Assign { target, value } => {
-                self.format_expr(target);
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                self.emit(if *is_mut { "mut " } else { "let " });
+                self.format_pattern(pattern);
                 self.emit(" = ");
-                self.format_expr(value);
+                self.format_expr(init);
+            }
+            StmtKind::Assign { target, value, op } => {
+                self.format_expr(target);
+                // A compound assignment is stored expanded — `i += 1` as
+                // `i = i + 1` — so writing `value` out rewrote every `+=` in the
+                // tree. `op` says which form was written; the right-hand side is
+                // then the expansion's own right operand (#805).
+                match (op, &value.kind) {
+                    (Some(op), ExprKind::Binary { right, .. }) => {
+                        self.emit(&format!(" {}= ", binop_str(op)));
+                        self.format_expr(right);
+                    }
+                    _ => {
+                        self.emit(" = ");
+                        self.format_expr(value);
+                    }
+                }
             }
             StmtKind::Return(None) => {
                 self.emit("return");
@@ -1238,7 +1652,7 @@ impl<'a> Printer<'a> {
                     self.emit(": ");
                 }
                 self.emit("while ");
-                self.format_expr(cond);
+                self.format_condition(cond);
                 self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;
@@ -1414,7 +1828,40 @@ impl<'a> Printer<'a> {
     }
 
     fn format_expr(&mut self, expr: &Expr) {
+        let outer = self.block_end;
+        if expr.span.end > 0 {
+            self.block_end = expr.span.end;
+        }
+        // A method chain or a struct literal written across lines, with a comment
+        // beside one of them, is left exactly as written. Reflowing it deletes the
+        // line the comment annotated, and the comment then lands wherever the
+        // cursor happens to flush — `.filter(|n| n % 2 == 0)  // Keep evens` came
+        // out as a bare `// Keep evens` above the whole chain (#805). Keeping the
+        // comment attached is worth more than normalizing the layout.
+        if matches!(expr.kind, ExprKind::MethodCall { .. } | ExprKind::StructLit { .. })
+            && self.comments_within(expr.span)
+            && self.source_text(expr.span).contains('\n')
+        {
+            self.emit_verbatim_consuming_comments(expr.span);
+            self.block_end = outer;
+            return;
+        }
         self.format_expr_inner(expr, None);
+        self.block_end = outer;
+    }
+
+    /// Emit the source for this node unchanged, dropping the comments inside it
+    /// from the pending list so they aren't emitted a second time.
+    fn emit_verbatim_consuming_comments(&mut self, span: Span) {
+        while self
+            .comments
+            .peek_next()
+            .is_some_and(|c| c.span.start >= span.start && c.span.start < span.end)
+        {
+            self.comments.advance();
+        }
+        let text = self.source_text(span).to_string();
+        self.emit(&text);
     }
 
     fn format_expr_inner(&mut self, expr: &Expr, parent_prec: Option<u8>) {
@@ -1442,11 +1889,11 @@ impl<'a> Printer<'a> {
                     self.emit("(");
                 }
 
-                self.format_expr_inner(left, Some(prec));
+                self.format_binary_operand(left, prec, op, false);
                 self.emit(" ");
                 self.emit(binop_str(op));
                 self.emit(" ");
-                self.format_expr_inner(right, Some(prec));
+                self.format_binary_operand(right, prec, op, true);
 
                 if need_parens {
                     self.emit(")");
@@ -1454,7 +1901,11 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
-                let needs_parens = matches!(operand.kind, ExprKind::IsPattern { .. });
+                // A prefix operator binds tighter than every binary one, so a
+                // binary operand keeps its parentheses. Only `is` was handled,
+                // and `!(a < b)` came back out as `!a < b` — "expected `bool`,
+                // found `i64`" on the formatter's own output (#805).
+                let needs_parens = !Self::binds_tighter_than_prefix(&operand.kind);
                 if needs_parens { self.emit("("); }
                 self.format_expr(operand);
                 if needs_parens { self.emit(")"); }
@@ -1471,7 +1922,7 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::MethodCall { object, method, type_args, args } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".");
                 self.emit(method);
                 if let Some(ref targs) = type_args {
@@ -1489,23 +1940,23 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::Field { object, field } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".");
                 self.emit(field);
             }
             ExprKind::OptionalField { object, field } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit("?.");
                 self.emit(field);
             }
             ExprKind::DynamicField { object, field_expr } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit(".(");
                 self.format_expr(field_expr);
                 self.emit(")");
             }
             ExprKind::Index { object, index } => {
-                self.format_expr(object);
+                self.format_postfix_receiver(object);
                 self.emit("[");
                 self.format_expr(index);
                 self.emit("]");
@@ -1534,6 +1985,14 @@ impl<'a> Printer<'a> {
                 self.format_branch(then_branch);
                 if let Some(ref else_br) = else_branch {
                     self.emit(" else");
+                    // ER22: the `as e` names the value the handler is about to
+                    // handle. `If` right above passes it through and this arm
+                    // didn't, so `} else as e {` came back out as `} else {` and
+                    // the body then referred to a name nothing declared (#805).
+                    if let Some(name) = else_binding {
+                        self.emit(" as ");
+                        self.emit(name);
+                    }
                     self.format_branch(else_br);
                 }
             }
@@ -1555,7 +2014,7 @@ impl<'a> Printer<'a> {
                 if !source_is_multiline && all_arms_simple && arms.len() <= 4 {
                     // Inline style: match x { 1 => "one", 2 => "two" }
                     self.emit("match ");
-                    self.format_expr(scrutinee);
+                    self.format_match_scrutinee(scrutinee);
                     self.emit(" { ");
                     for (i, arm) in arms.iter().enumerate() {
                         if i > 0 {
@@ -1582,11 +2041,19 @@ impl<'a> Printer<'a> {
                 } else {
                     // Multi-line style: no commas
                     self.emit("match ");
-                    self.format_expr(scrutinee);
+                    self.format_match_scrutinee(scrutinee);
                     self.emit(" {");
                     self.emit_newline();
                     self.indent += 1;
                     for arm in arms {
+                        // An arm isn't a statement, so nothing was flushing the
+                        // comments written among the arms — they stayed pending and
+                        // came out below the closing brace, where a comment about
+                        // one arm reads as a comment about the whole match (#805).
+                        // An arm has no span of its own; its body's start is inside
+                        // it and after anything written above it, which is all this
+                        // test needs.
+                        self.emit_standalone_comments_before(arm.body.span.start);
                         self.emit_indent();
                         self.format_pattern(&arm.pattern);
                         if let Some(ref guard) = arm.guard {
@@ -1595,6 +2062,7 @@ impl<'a> Printer<'a> {
                         }
                         self.emit(" => ");
                         self.format_match_arm_body(&arm.body);
+                        self.try_emit_trailing_comment(arm.body.span.end);
                         self.emit_newline();
                     }
                     self.indent -= 1;
@@ -1617,12 +2085,19 @@ impl<'a> Printer<'a> {
                 self.emit(" => ");
                 self.format_expr(&clause.body);
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
-                self.format_expr(inner);
+            ExprKind::IsPresent { expr: inner, binding } => {
+                self.format_postfix_receiver(inner);
                 self.emit("?");
+                // OPT19: `x?` is a plain bool and narrows nothing, so the `as v`
+                // is the only way into the payload. Dropping it left the branch
+                // body reading a name that no longer existed (#805).
+                if let Some(name) = binding {
+                    self.emit(" as ");
+                    self.emit(name);
+                }
             }
             ExprKind::Unwrap { expr: inner, message } => {
-                self.format_expr(inner);
+                self.format_postfix_receiver(inner);
                 self.emit("!");
                 if let Some(msg) = message {
                     self.emit(" ");
@@ -1665,9 +2140,7 @@ impl<'a> Printer<'a> {
                         if i > 0 {
                             self.emit(", ");
                         }
-                        self.emit(&field.name);
-                        self.emit(": ");
-                        self.format_expr(&field.value);
+                        self.format_field_init(field);
                     }
                     self.emit(" }");
                 } else {
@@ -1676,9 +2149,7 @@ impl<'a> Printer<'a> {
                     self.indent += 1;
                     for field in fields {
                         self.emit_indent();
-                        self.emit(&field.name);
-                        self.emit(": ");
-                        self.format_expr(&field.value);
+                        self.format_field_init(field);
                         self.emit(",");
                         self.emit_newline();
                     }
@@ -1768,6 +2239,16 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         self.emit(", ");
                     }
+                    // The mode. Dropping it changed what the closure was
+                    // allowed to do: `|mutate x: i64| { x = x + 100 }` came back
+                    // as `|x: i64| { … }`, which is a write to a read-only
+                    // parameter — a file that compiled before `rask fmt` and not
+                    // after (#805's family, found via #843).
+                    if param.is_take {
+                        self.emit("take ");
+                    } else if param.is_mutate {
+                        self.emit("mutate ");
+                    }
                     self.emit(&param.name);
                     if let Some(ref ty) = param.ty {
                         self.emit(": ");
@@ -1783,12 +2264,14 @@ impl<'a> Printer<'a> {
                 self.format_expr(body);
             }
             ExprKind::Cast { expr: inner, ty } => {
-                self.format_expr(inner);
+                self.format_cast_operand(inner);
                 self.emit(" as ");
                 self.emit(ty);
             }
             ExprKind::Convert { expr: inner, target, kind } => {
-                self.format_expr(inner);
+                // `.wrap<T>()` is postfix, so its receiver needs the same
+                // parentheses a `.method()` receiver does.
+                self.format_postfix_receiver(inner);
                 self.emit(&format!(".{}<{}>()", kind.surface(), target));
             }
             ExprKind::Spawn { body } => {
@@ -1824,13 +2307,23 @@ impl<'a> Printer<'a> {
                 self.emit("}");
             }
             ExprKind::Unsafe { body } => {
-                self.emit("unsafe {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
+                // `unsafe expr` and `unsafe { expr }` parse to the same node, and
+                // the printer only knew the braced form — so `unsafe
+                // path.as_c_str()` grew braces, and inside a condition the result
+                // read as `if unsafe { … } { … }`, two braces for one `if`. The
+                // source says which was written (#805).
+                if self.wrote_braces(expr.span) {
+                    self.emit("unsafe {");
+                    self.emit_newline();
+                    self.indent += 1;
+                    self.format_stmts(body);
+                    self.indent -= 1;
+                    self.emit_indent();
+                    self.emit("}");
+                } else {
+                    self.emit("unsafe ");
+                    self.format_unbraced_body(body);
+                }
             }
             ExprKind::Comptime { body } => {
                 self.emit("comptime {");
@@ -1892,6 +2385,65 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Whether the source for this node opened with a `{` — the braced form of
+    /// `unsafe`/`comptime`, which parse to the same node as the braceless one.
+    fn wrote_braces(&self, span: Span) -> bool {
+        let text = self.source_text(span).trim_start();
+        // The keyword comes first; look at what follows it.
+        let after = text
+            .strip_prefix("unsafe")
+            .or_else(|| text.strip_prefix("comptime"))
+            .unwrap_or(text);
+        after.trim_start().starts_with('{')
+    }
+
+    /// The single expression a braceless `unsafe`/`comptime` wraps.
+    fn format_unbraced_body(&mut self, body: &[Stmt]) {
+        match body {
+            [stmt] => self.format_stmt(stmt),
+            // More than one statement can't have come from the braceless form;
+            // print the block so nothing is lost.
+            _ => {
+                self.emit("{");
+                self.emit_newline();
+                self.indent += 1;
+                self.format_stmts(body);
+                self.indent -= 1;
+                self.emit_indent();
+                self.emit("}");
+            }
+        }
+    }
+
+    /// A condition sits directly in front of a `{`, so a struct literal at its
+    /// tail makes the brace ambiguous — `if c == Shape.Circle { r: 4 } {` reads
+    /// as an `if` whose body starts at `{ r: 4 }`. Wrapping the condition is what
+    /// the source has to do, and the printer has to keep doing it (#805).
+    fn format_condition(&mut self, cond: &Expr) {
+        if Self::ends_in_struct_literal(cond) {
+            self.emit("(");
+            self.format_expr(cond);
+            self.emit(")");
+        } else {
+            self.format_expr(cond);
+        }
+    }
+
+    /// Whether the last thing a condition prints is a `}` that a following `{`
+    /// could attach to.
+    fn ends_in_struct_literal(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::StructLit { .. } => true,
+            ExprKind::Binary { right, .. } => Self::ends_in_struct_literal(right),
+            ExprKind::Unary { operand, .. } => Self::ends_in_struct_literal(operand),
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
+                Self::ends_in_struct_literal(inner)
+            }
+            ExprKind::NullCoalesce { default, .. } => Self::ends_in_struct_literal(default),
+            _ => false,
+        }
+    }
+
     fn format_if_expr(
         &mut self,
         cond: &Expr,
@@ -1900,7 +2452,7 @@ impl<'a> Printer<'a> {
         else_binding: Option<&str>,
     ) {
         self.emit("if ");
-        self.format_expr(cond);
+        self.format_condition(cond);
 
         if !matches!(then_branch.kind, ExprKind::Block(_)) {
             self.emit(": ");
@@ -1934,10 +2486,132 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// One operand of a binary operator. Precedence alone isn't enough. The
+    /// operators are left-associative, so the *right* operand needs parentheses
+    /// at equal precedence too — `a - (b - c)` is not `a - b - c`. And Rask
+    /// forbids chained comparison, so a comparison inside a comparison keeps its
+    /// parentheses whichever side it lands on, even though it binds tighter.
+    fn format_binary_operand(&mut self, operand: &Expr, prec: u8, op: &BinOp, is_right: bool) {
+        if is_comparison(op) {
+            if let ExprKind::Binary { op: inner, .. } = &operand.kind {
+                if is_comparison(inner) {
+                    self.emit("(");
+                    self.format_expr(operand);
+                    self.emit(")");
+                    return;
+                }
+            }
+        }
+        if Self::binary_operand_needs_parens(&operand.kind) {
+            self.emit("(");
+            self.format_expr(operand);
+            self.emit(")");
+            return;
+        }
+        let min = if is_right { prec + 1 } else { prec };
+        self.format_expr_inner(operand, Some(min));
+    }
+
+    /// Forms that bind looser than any binary operator and aren't in the
+    /// precedence table, so the numeric comparison can't speak for them.
+    /// `(x catch _ => 0) == 0` came out as `x catch _ => 0 == 0`, which parses as
+    /// `x catch _ => (0 == 0)` — a bool where a number belonged (#805).
+    fn binary_operand_needs_parens(kind: &ExprKind) -> bool {
+        // A `Cast` is *not* exempt, though since #817 that's for readability
+        // rather than for correctness. `as` now binds tighter than every binary
+        // operator (type.operators/P4), so the parens can't change the grouping —
+        // but they make the grouping visible, and this is the one place in an
+        // expression where getting it wrong is expensive. It cost
+        // `sensor_processor` a factor of a hundred back when `as` sat between
+        // `+ -` and `* / %`: `(base + noise) as f64 / 100.0` came out as
+        // `base + noise as f64 / 100.0`, which was `base + ((noise as f64) /
+        // 100.0)` and reported 2200.02 °C where the answer is 22.02 (#805).
+        !matches!(
+            kind,
+            ExprKind::Binary { .. }
+                | ExprKind::Unary { .. }
+                | ExprKind::Convert { .. }
+        ) && !Self::binds_tighter_than_postfix(kind)
+    }
+
+    /// Whether an expression can sit under a prefix operator unparenthesized:
+    /// the postfix and primary forms, plus another prefix. `x?` is excluded even
+    /// though it's postfix — `!x?` is forbidden outright (OPT17).
+    fn binds_tighter_than_prefix(kind: &ExprKind) -> bool {
+        Self::binds_tighter_than_postfix(kind) || matches!(kind, ExprKind::Unary { .. })
+    }
+
+    /// `as` binds tighter than every binary operator and looser than prefix and
+    /// postfix (type.operators/P4), so anything but a postfix or primary operand
+    /// keeps its parentheses — a unary operand included, which is why `-a as f64`
+    /// prints as `(-a) as f64`.
+    ///
+    /// They were dropped once, and `(base + noise) as f64 / 100.0` came out as
+    /// `base + noise as f64 / 100.0` — which was `base + ((noise as f64) / 100.0)`,
+    /// a different number. `sensor_processor` reported 2200.02 °C instead of
+    /// 22.02 (#805).
+    fn format_cast_operand(&mut self, inner: &Expr) {
+        if Self::binds_tighter_than_postfix(&inner.kind) {
+            self.format_expr(inner);
+            return;
+        }
+        self.emit("(");
+        self.format_expr(inner);
+        self.emit(")");
+    }
+
+    /// A postfix `.`, `[`, `!` or `?` binds tighter than almost everything, so a
+    /// receiver that binds looser needs its parentheses back. The printer dropped
+    /// them, and `(time.Instant.now() - start).as_nanos()` came out as
+    /// `time.Instant.now() - start.as_nanos()` — a different call on a different
+    /// receiver (#805).
+    fn format_postfix_receiver(&mut self, object: &Expr) {
+        if Self::binds_tighter_than_postfix(&object.kind) {
+            self.format_expr(object);
+            return;
+        }
+        self.emit("(");
+        self.format_expr(object);
+        self.emit(")");
+    }
+
+    /// Primary and postfix forms, which can carry a `.` directly. Anything else
+    /// — an operator, a cast, a block, a prefix form — gets parenthesized. `x?`
+    /// is in the second group even though it's postfix: `x?.y` lexes as `?.`.
+    fn binds_tighter_than_postfix(kind: &ExprKind) -> bool {
+        matches!(
+            kind,
+            ExprKind::Int(..)
+                | ExprKind::Float(..)
+                | ExprKind::String(_)
+                | ExprKind::StringInterp(_)
+                | ExprKind::Char(_)
+                | ExprKind::Bool(_)
+                | ExprKind::Null
+                | ExprKind::None
+                | ExprKind::Ident(_)
+                | ExprKind::Call { .. }
+                | ExprKind::MethodCall { .. }
+                | ExprKind::Field { .. }
+                | ExprKind::DynamicField { .. }
+                | ExprKind::OptionalField { .. }
+                | ExprKind::Index { .. }
+                | ExprKind::StructLit { .. }
+                | ExprKind::Array(_)
+                | ExprKind::ArrayRepeat { .. }
+                | ExprKind::Tuple(_)
+                | ExprKind::Unwrap { .. }
+        )
+    }
+
     fn format_branch(&mut self, expr: &Expr) {
         if let ExprKind::Block(ref stmts) = expr.kind {
             if stmts.is_empty() {
                 self.emit(" {}");
+            } else if self.fits_one_line(expr.span, stmts) {
+                self.emit(" { ");
+                self.format_stmt_inline(&stmts[0]);
+                self.emit(" }");
             } else {
                 self.emit(" {");
                 self.emit_newline();
@@ -1951,6 +2625,42 @@ impl<'a> Printer<'a> {
             self.emit(" ");
             self.format_expr(expr);
         }
+    }
+
+    /// A one-statement block the source kept on one line stays on one line.
+    /// Expanding them all is what made `fmt --check` red across the tree, and
+    /// `if c { return 1 }` reads better as written than as three lines (#805).
+    ///
+    /// A comment anywhere in the block forces the expansion — a trailing comment
+    /// has nowhere to go on a line that continues with `}`.
+    fn fits_one_line(&self, span: Span, stmts: &[Stmt]) -> bool {
+        stmts.len() == 1
+            && !self.source_text(span).contains('\n')
+            && !self.comments_within(span)
+    }
+
+    /// Whether any unconsumed comment starts inside `span`.
+    fn comments_within(&self, span: Span) -> bool {
+        self.comments
+            .peek_next()
+            .is_some_and(|c| c.span.start >= span.start && c.span.start < span.end)
+    }
+
+    /// One field of a struct literal.
+    ///
+    /// `Point { x, y }` is shorthand for `x: x, y: y` and the printer expanded
+    /// it — the punning the parser has always accepted came back out long-form
+    /// (#307). Both spellings mean the same thing, so the short one wins.
+    fn format_field_init(&mut self, field: &FieldInit) {
+        if let ExprKind::Ident(name) = &field.value.kind {
+            if *name == field.name {
+                self.emit(&field.name);
+                return;
+            }
+        }
+        self.emit(&field.name);
+        self.emit(": ");
+        self.format_expr(&field.value);
     }
 
     fn fields_fit_one_line(&self, fields: &[FieldInit]) -> bool {
@@ -1976,6 +2686,37 @@ impl<'a> Printer<'a> {
     }
 
     // --- Patterns ---
+
+    /// A match scrutinee, parenthesised when it starts with a struct literal.
+    ///
+    /// The `{` after a scrutinee opens the arms, so a leading struct literal has
+    /// to say where it ends. Re-emitting `match (Point { x: 0 }).x` without the
+    /// parens produced `match Point { x: 0 }.x`, which doesn't parse — the
+    /// round-trip gate caught it the same day the parser rule landed (#884).
+    fn format_match_scrutinee(&mut self, scrutinee: &Expr) {
+        if Self::starts_with_struct_literal(scrutinee) {
+            self.emit("(");
+            self.format_expr(scrutinee);
+            self.emit(")");
+        } else {
+            self.format_expr(scrutinee);
+        }
+    }
+
+    /// Is a struct literal the leftmost thing in this expression? Only the
+    /// leftmost matters: anything further right is already inside brackets or
+    /// behind an operator by the time the arms' `{` could be confused with it.
+    fn starts_with_struct_literal(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::StructLit { .. } => true,
+            ExprKind::Field { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::MethodCall { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::Index { object, .. } => Self::starts_with_struct_literal(object),
+            ExprKind::Binary { left, .. } => Self::starts_with_struct_literal(left),
+            ExprKind::Cast { expr, .. } => Self::starts_with_struct_literal(expr),
+            _ => false,
+        }
+    }
 
     fn format_pattern(&mut self, pattern: &Pattern) {
         match pattern {
@@ -2052,6 +2793,15 @@ impl<'a> Printer<'a> {
 
 // --- Operator helpers ---
 
+/// Comparison and equality are non-associative in Rask — `a < b < c` is
+/// rejected — so nesting one inside another always needs parentheses.
+fn is_comparison(op: &BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+    )
+}
+
 fn precedence(op: &BinOp) -> u8 {
     match op {
         BinOp::Or => 1,
@@ -2099,4 +2849,29 @@ fn unaryop_str(op: &UnaryOp) -> &'static str {
         UnaryOp::Deref => "*",
         UnaryOp::Own => "own ",
     }
+}
+
+/// Put a string back into source form.
+///
+/// A string *expression* is reprinted from its own span, so its escapes come
+/// through untouched. A test or benchmark name is only a `String` on the
+/// declaration — the lexer has already unescaped it — so printing it raw wrote
+/// the characters themselves. A name containing `\u` came back out as a lone
+/// `\u`, which isn't a valid escape, and the formatted file no longer parsed
+/// (#850).
+fn escape_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

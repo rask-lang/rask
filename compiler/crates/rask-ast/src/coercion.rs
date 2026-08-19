@@ -46,17 +46,21 @@ pub enum CoercionSite {
     /// The value handed back by a `catch` arm, when the expression it recovers
     /// keeps a wrapper shape (`let x: T? = f() catch _ => none`).
     CatchArm,
+    /// `[a, b, c]` where the collection's element type is a wrapper — the slot
+    /// the literal fills says what its members are.
+    CollectionElement,
 }
 
 impl CoercionSite {
     /// Every position, so a pass can assert it covers the whole set.
-    pub const ALL: [CoercionSite; 6] = [
+    pub const ALL: [CoercionSite; 7] = [
         CoercionSite::Return,
         CoercionSite::AnnotatedBinding,
         CoercionSite::Argument,
         CoercionSite::Assignment,
         CoercionSite::StructField,
         CoercionSite::CatchArm,
+        CoercionSite::CollectionElement,
     ];
 
     /// Can a value typed as the error side land on the error branch here?
@@ -76,7 +80,8 @@ impl CoercionSite {
             CoercionSite::AnnotatedBinding
             | CoercionSite::Argument
             | CoercionSite::Assignment
-            | CoercionSite::StructField => false,
+            | CoercionSite::StructField
+            | CoercionSite::CollectionElement => false,
         }
     }
 
@@ -89,6 +94,7 @@ impl CoercionSite {
             CoercionSite::Assignment => "an assignment",
             CoercionSite::StructField => "a struct field",
             CoercionSite::CatchArm => "a catch arm",
+            CoercionSite::CollectionElement => "a collection element",
         }
     }
 }

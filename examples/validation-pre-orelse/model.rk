@@ -6,6 +6,7 @@
 // canonical-patterns "Graph-shaped data is Pool-shaped".
 
 const MAX_TITLE_LEN: usize = 200
+
 const MAX_NAME_LEN: usize = 80
 
 // ─── Validate ────────────────────────────────────────────────────────

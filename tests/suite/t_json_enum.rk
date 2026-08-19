@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An enum field in JSON (#854).
+//
+// Native wrote the address of the enum's slot as a number:
+//
+//     json.encode(WithEnum { c: Colour.Green, n: 1 })
+//     // {"c":140725361377888,"n":1}
+//
+// Valid JSON with a stack address in it, and nothing said so. A program that
+// logged or persisted an enum field shipped that. The interpreter refused
+// outright, which was better but also not right.
+//
+// `std.encoding/E22` says a unit variant serializes as its own name, and that's
+// what both backends do now. The payload forms (E23 external tagging with a
+// value, E24 internal tagging) aren't written yet, and both backends say so
+// instead of inventing something — per *value*, since an enum can hold a unit
+// variant and a payload variant and the unit one has an answer.
+
+import json
+
+enum Status {
+    Pending
+    Active
+    Done
+}
+
+struct Task {
+    public name: string
+    public status: Status
+}
+
+test "std.encoding — a unit variant is its own name" {
+    assert_eq(
+        json.encode(Task { name: "a", status: Status.Pending }),
+        "{{\"name\":\"a\",\"status\":\"Pending\"}}",
+    )
+    assert_eq(
+        json.encode(Task { name: "b", status: Status.Active }),
+        "{{\"name\":\"b\",\"status\":\"Active\"}}",
+    )
+    assert_eq(
+        json.encode(Task { name: "c", status: Status.Done }),
+        "{{\"name\":\"c\",\"status\":\"Done\"}}",
+    )
+}
+
+test "std.encoding — pretty printing an enum field" {
+    assert_eq(
+        json.encode_pretty(Task { name: "a", status: Status.Done }),
+        "{{\n  \"name\": \"a\",\n  \"status\": \"Done\"\n}}",
+    )
+}
+
+// An enum that also has payload variants: the unit ones still work, because
+// the check is on the value in hand rather than on the type.
+enum Shape {
+    Circle { radius: f64 }
+    Point
+}
+
+struct Holder {
+    public s: Shape
+}
+
+test "std.encoding — a unit variant works even with payload siblings" {
+    assert_eq(json.encode(Holder { s: Shape.Point }), "{{\"s\":\"Point\"}}")
+}
+
+func main() {}

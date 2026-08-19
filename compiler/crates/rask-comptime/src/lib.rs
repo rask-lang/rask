@@ -164,8 +164,10 @@ fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => eliminate_in_expr(e, cfg_values),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::Assign { target, value } => {
+        StmtKind::MutTuple { init, .. }
+        | StmtKind::LetTuple { init, .. }
+        | StmtKind::LetStruct { init, .. } => eliminate_in_expr(init, cfg_values),
+        StmtKind::Assign { target, value, .. } => {
             eliminate_in_expr(target, cfg_values);
             eliminate_in_expr(value, cfg_values);
         }
@@ -344,10 +346,12 @@ pub enum ComptimeValue {
     I16(i16),
     I32(i32),
     I64(i64),
+    I128(i128),
     U8(u8),
     U16(u16),
     U32(u32),
     U64(u64),
+    U128(u128),
     F32(f32),
     F64(f64),
     Char(char),
@@ -380,10 +384,12 @@ impl PartialEq for ComptimeValue {
             (ComptimeValue::I16(a), ComptimeValue::I16(b)) => a == b,
             (ComptimeValue::I32(a), ComptimeValue::I32(b)) => a == b,
             (ComptimeValue::I64(a), ComptimeValue::I64(b)) => a == b,
+            (ComptimeValue::I128(a), ComptimeValue::I128(b)) => a == b,
             (ComptimeValue::U8(a), ComptimeValue::U8(b)) => a == b,
             (ComptimeValue::U16(a), ComptimeValue::U16(b)) => a == b,
             (ComptimeValue::U32(a), ComptimeValue::U32(b)) => a == b,
             (ComptimeValue::U64(a), ComptimeValue::U64(b)) => a == b,
+            (ComptimeValue::U128(a), ComptimeValue::U128(b)) => a == b,
             (ComptimeValue::F32(a), ComptimeValue::F32(b)) => a == b,
             (ComptimeValue::F64(a), ComptimeValue::F64(b)) => a == b,
             (ComptimeValue::Char(a), ComptimeValue::Char(b)) => a == b,
@@ -415,10 +421,12 @@ impl ComptimeValue {
             ComptimeValue::I16(_) => "i16",
             ComptimeValue::I32(_) => "i32",
             ComptimeValue::I64(_) => "i64",
+            ComptimeValue::I128(_) => "i128",
             ComptimeValue::U8(_) => "u8",
             ComptimeValue::U16(_) => "u16",
             ComptimeValue::U32(_) => "u32",
             ComptimeValue::U64(_) => "u64",
+            ComptimeValue::U128(_) => "u128",
             ComptimeValue::F32(_) => "f32",
             ComptimeValue::F64(_) => "f64",
             ComptimeValue::Char(_) => "char",
@@ -431,10 +439,17 @@ impl ComptimeValue {
         }
     }
 
-    /// Type prefix for method dispatch when embedded as a comptime global.
+    /// Type prefix for method dispatch when embedded as a comptime global — the
+    /// Rask type name, which is what a method call is prefixed with
+    /// (`i64_to_string`, `string_to_uppercase`, `Vec_get`).
+    ///
+    /// `type_name` spells a string `String`, for error messages; the dispatch
+    /// prefix is `string`. Keep this in step with `MiriValue::type_prefix`,
+    /// which writes the same field (#824).
     pub fn type_prefix(&self) -> &'static str {
         match self {
             ComptimeValue::Array(_) => "Vec",
+            ComptimeValue::String(_) => "string",
             _ => self.type_name(),
         }
     }
@@ -486,21 +501,25 @@ impl ComptimeValue {
             ComptimeValue::U16(v) => Some(*v as i64),
             ComptimeValue::U32(v) => Some(*v as i64),
             ComptimeValue::U64(v) => Some(*v as i64), // May overflow
+            ComptimeValue::I128(v) => Some(*v as i64),  // May overflow
+            ComptimeValue::U128(v) => Some(*v as i64),  // May overflow
             _ => None,
         }
     }
 
-    /// The logical value (as i128) and width kind of an integer variant.
-    fn as_int(&self) -> Option<(i128, CtInt)> {
+    /// The logical value and width kind of an integer variant.
+    fn as_int(&self) -> Option<(CtNum, CtInt)> {
         Some(match self {
-            ComptimeValue::I8(v) => (*v as i128, CtInt::I8),
-            ComptimeValue::I16(v) => (*v as i128, CtInt::I16),
-            ComptimeValue::I32(v) => (*v as i128, CtInt::I32),
-            ComptimeValue::I64(v) => (*v as i128, CtInt::I64),
-            ComptimeValue::U8(v) => (*v as i128, CtInt::U8),
-            ComptimeValue::U16(v) => (*v as i128, CtInt::U16),
-            ComptimeValue::U32(v) => (*v as i128, CtInt::U32),
-            ComptimeValue::U64(v) => (*v as i128, CtInt::U64),
+            ComptimeValue::I8(v) => (CtNum::Signed(*v as i128), CtInt::I8),
+            ComptimeValue::I16(v) => (CtNum::Signed(*v as i128), CtInt::I16),
+            ComptimeValue::I32(v) => (CtNum::Signed(*v as i128), CtInt::I32),
+            ComptimeValue::I64(v) => (CtNum::Signed(*v as i128), CtInt::I64),
+            ComptimeValue::U8(v) => (CtNum::Signed(*v as i128), CtInt::U8),
+            ComptimeValue::U16(v) => (CtNum::Signed(*v as i128), CtInt::U16),
+            ComptimeValue::U32(v) => (CtNum::Signed(*v as i128), CtInt::U32),
+            ComptimeValue::U64(v) => (CtNum::Signed(*v as i128), CtInt::U64),
+            ComptimeValue::I128(v) => (CtNum::Signed(*v), CtInt::I128),
+            ComptimeValue::U128(v) => (CtNum::Big(*v), CtInt::U128),
             _ => return None,
         })
     }
@@ -541,6 +560,8 @@ impl ComptimeValue {
             ComptimeValue::U16(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::U32(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::U64(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::I128(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::U128(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::F32(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::F64(v) => v.to_le_bytes().to_vec(),
             ComptimeValue::Char(c) => (*c as u32).to_le_bytes().to_vec(),
@@ -791,30 +812,133 @@ impl ControlFlow {
 /// Integer width of a comptime value, for width-aware overflow checks (CT1).
 /// I64 doubles as the unsuffixed-literal default.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CtInt { I8, I16, I32, I64, U8, U16, U32, U64 }
+enum CtInt { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
 
+/// A comptime integer operand.
+///
+/// An `i128` carries every width exactly except the top half of `u128`. That half
+/// used to have nowhere to go: `as_int` refused it, so a fold involving a large
+/// `u128` silently didn't happen and the const was computed at run time instead —
+/// no diagnostic, just no constant folding (#802). Two variants rather than one
+/// wider carrier, because a signed 256-bit type would only exist to hold values no
+/// Rask type has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CtNum {
+    Signed(i128),
+    Big(u128),
+}
+
+impl CtNum {
+    /// `None` when the value is a `u128` past `i128::MAX` — the caller is on the
+    /// signed path and has to report a range error rather than truncate.
+    fn to_i128(self) -> Option<i128> {
+        match self {
+            CtNum::Signed(v) => Some(v),
+            CtNum::Big(v) => i128::try_from(v).ok(),
+        }
+    }
+
+    /// `None` for a negative value: nothing negative is a `u128`.
+    fn to_u128(self) -> Option<u128> {
+        match self {
+            CtNum::Signed(v) => u128::try_from(v).ok(),
+            CtNum::Big(v) => Some(v),
+        }
+    }
+
+    /// Ordering across the two carriers. A negative is below every `Big`, and a
+    /// non-negative signed value compares as the unsigned number it is.
+    fn cmp(self, other: CtNum) -> std::cmp::Ordering {
+        match (self.to_u128(), other.to_u128()) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            // Only a negative fails the conversion, and a negative is smaller.
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, None) => {
+                let a = if let CtNum::Signed(v) = self { v } else { 0 };
+                let b = if let CtNum::Signed(v) = other { v } else { 0 };
+                a.cmp(&b)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CtNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CtNum::Signed(v) => write!(f, "{}", v),
+            CtNum::Big(v) => write!(f, "{}", v),
+        }
+    }
+}
+
 impl CtInt {
-    fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64) }
+    fn signed(self) -> bool { matches!(self, CtInt::I8 | CtInt::I16 | CtInt::I32 | CtInt::I64 | CtInt::I128) }
     fn bits(self) -> u32 {
         match self {
             CtInt::I8 | CtInt::U8 => 8,
             CtInt::I16 | CtInt::U16 => 16,
             CtInt::I32 | CtInt::U32 => 32,
             CtInt::I64 | CtInt::U64 => 64,
+            CtInt::I128 | CtInt::U128 => 128,
         }
+    }
+    /// The kind a type annotation names, or `None` if it isn't an integer width.
+    fn from_name(name: &str) -> Option<CtInt> {
+        Some(match name.trim() {
+            "i8" => CtInt::I8, "i16" => CtInt::I16, "i32" => CtInt::I32,
+            "i64" => CtInt::I64, "i128" => CtInt::I128,
+            "u8" => CtInt::U8, "u16" => CtInt::U16, "u32" => CtInt::U32,
+            "u64" => CtInt::U64, "u128" => CtInt::U128,
+            // P2: pointer-sized, decided in one place.
+            "isize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
+            "usize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
+            _ => return None,
+        })
     }
     fn name(self) -> &'static str {
         match self {
             CtInt::I8 => "i8", CtInt::I16 => "i16", CtInt::I32 => "i32", CtInt::I64 => "i64",
+            CtInt::I128 => "i128",
             CtInt::U8 => "u8", CtInt::U16 => "u16", CtInt::U32 => "u32", CtInt::U64 => "u64",
+            CtInt::U128 => "u128",
         }
     }
-    fn min(self) -> i128 { if self.signed() { -(1i128 << (self.bits() - 1)) } else { 0 } }
+    fn min(self) -> i128 {
+        match self {
+            CtInt::I128 => i128::MIN,
+            _ if self.signed() => -(1i128 << (self.bits() - 1)),
+            _ => 0,
+        }
+    }
+    /// The type's own maximum. `u128`'s doesn't fit an `i128`, so it answers on
+    /// the unsigned path instead — see `max_u128` (#802).
     fn max(self) -> i128 {
-        if self.signed() { (1i128 << (self.bits() - 1)) - 1 } else { (1i128 << self.bits()) - 1 }
+        match self {
+            CtInt::I128 | CtInt::U128 => i128::MAX,
+            _ if self.signed() => (1i128 << (self.bits() - 1)) - 1,
+            _ => (1i128 << self.bits()) - 1,
+        }
+    }
+    /// The maximum as an unsigned number, for the widths that reach past
+    /// `i128::MAX`. Only meaningful for unsigned kinds.
+    fn max_u128(self) -> u128 {
+        match self {
+            CtInt::U128 => u128::MAX,
+            _ => self.max() as u128,
+        }
+    }
+    /// The range, spelled for a diagnostic. `u128` can't say its own top end in
+    /// an `i128`, so the two paths print it differently.
+    fn range_text(self) -> String {
+        if self == CtInt::U128 {
+            format!("[0, {}]", u128::MAX)
+        } else {
+            format!("[{}, {}]", self.min(), self.max())
+        }
     }
     /// Pick the more specific kind. I64 is the untyped default and yields.
     fn unify(self, other: CtInt) -> CtInt {
@@ -829,10 +953,20 @@ impl CtInt {
             CtInt::I16 => ComptimeValue::I16(v as i16),
             CtInt::I32 => ComptimeValue::I32(v as i32),
             CtInt::I64 => ComptimeValue::I64(v as i64),
+            CtInt::I128 => ComptimeValue::I128(v),
             CtInt::U8 => ComptimeValue::U8(v as u8),
             CtInt::U16 => ComptimeValue::U16(v as u16),
             CtInt::U32 => ComptimeValue::U32(v as u32),
             CtInt::U64 => ComptimeValue::U64(v as u64),
+            CtInt::U128 => ComptimeValue::U128(v as u128),
+        }
+    }
+    /// Build from an unsigned value. The signed `make` can't carry the top half of
+    /// a `u128`, and casting through `i128` there would flip the sign bit.
+    fn make_u128(self, v: u128) -> ComptimeValue {
+        match self {
+            CtInt::U128 => ComptimeValue::U128(v),
+            _ => self.make(v as i128),
         }
     }
     fn wrap(self, v: i128) -> i128 {
@@ -844,19 +978,88 @@ impl CtInt {
     }
 }
 
-fn ct_overflow(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeError {
-    let sym = match op {
+fn ct_op_symbol(op: CtOp) -> &'static str {
+    match op {
         CtOp::Add => "+", CtOp::Sub => "-", CtOp::Mul => "*",
         CtOp::Div => "/", CtOp::Rem => "%", CtOp::Shl => "<<", CtOp::Shr => ">>",
         CtOp::BitAnd => "&", CtOp::BitOr => "|", CtOp::BitXor => "^",
-    };
+    }
+}
+
+fn ct_overflow_of(kind: CtInt, op: CtOp, a: impl std::fmt::Display, b: impl std::fmt::Display) -> ComptimeError {
     ComptimeError::IntegerOverflow(format!(
-        "{} {} {} exceeds {} range [{}, {}]", a, sym, b, kind.name(), kind.min(), kind.max()
+        "{} {} {} exceeds {} range {}", a, ct_op_symbol(op), b, kind.name(), kind.range_text()
     ))
 }
 
+fn ct_overflow(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeError {
+    ct_overflow_of(kind, op, a, b)
+}
+
 /// Width-aware checked comptime integer arithmetic (CT1).
-pub(crate) fn ct_checked_binop(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeResult<ComptimeValue> {
+///
+/// Splits on whether the result width is `u128`: that one is computed in a `u128`,
+/// because half its range has no `i128` to be computed in. Every other width fits
+/// the signed carrier exactly (#802).
+pub(crate) fn ct_checked_binop(kind: CtInt, op: CtOp, a: CtNum, b: CtNum) -> ComptimeResult<ComptimeValue> {
+    if kind == CtInt::U128 {
+        return ct_checked_binop_u128(op, a, b);
+    }
+    let range = |v: CtNum| ComptimeError::IntegerOverflow(format!(
+        "{} is outside {} range {}", v, kind.name(), kind.range_text()
+    ));
+    let a = a.to_i128().ok_or_else(|| range(a))?;
+    let b = b.to_i128().ok_or_else(|| range(b))?;
+    ct_checked_binop_i128(kind, op, a, b)
+}
+
+/// The `u128` half. Checked `u128` arithmetic throughout, so the top of the range
+/// is reachable and an underflow past zero is an overflow error rather than a
+/// wrapped answer.
+fn ct_checked_binop_u128(op: CtOp, a: CtNum, b: CtNum) -> ComptimeResult<ComptimeValue> {
+    let kind = CtInt::U128;
+    let range = |v: CtNum| ComptimeError::IntegerOverflow(format!(
+        "{} is outside u128 range {}", v, kind.range_text()
+    ));
+    let au = a.to_u128().ok_or_else(|| range(a))?;
+    // A shift amount is a count, not a `u128` value, so it comes off the operand
+    // as written rather than through the unsigned conversion.
+    if matches!(op, CtOp::Shl | CtOp::Shr) {
+        let amount = match b {
+            CtNum::Signed(v) if (0..128).contains(&v) => v as u32,
+            CtNum::Big(v) if v < 128 => v as u32,
+            _ => return Err(ComptimeError::IntegerOverflow(format!(
+                "shift amount {} exceeds u128 bit width (128)", b
+            ))),
+        };
+        let shifted = match op {
+            CtOp::Shl => au << amount,
+            _ => au >> amount,
+        };
+        return Ok(ComptimeValue::U128(shifted));
+    }
+    let bu = b.to_u128().ok_or_else(|| range(b))?;
+    match op {
+        CtOp::BitAnd => return Ok(ComptimeValue::U128(au & bu)),
+        CtOp::BitOr => return Ok(ComptimeValue::U128(au | bu)),
+        CtOp::BitXor => return Ok(ComptimeValue::U128(au ^ bu)),
+        CtOp::Div | CtOp::Rem if bu == 0 => return Err(ComptimeError::DivisionByZero),
+        _ => {}
+    }
+    let result = match op {
+        CtOp::Add => au.checked_add(bu),
+        CtOp::Sub => au.checked_sub(bu),
+        CtOp::Mul => au.checked_mul(bu),
+        CtOp::Div => Some(au / bu),
+        CtOp::Rem => Some(au % bu),
+        _ => unreachable!(),
+    };
+    result
+        .map(ComptimeValue::U128)
+        .ok_or_else(|| ct_overflow_of(kind, op, au, bu))
+}
+
+fn ct_checked_binop_i128(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeResult<ComptimeValue> {
     match op {
         CtOp::BitAnd => return Ok(kind.make(a & b)),
         CtOp::BitOr => return Ok(kind.make(a | b)),
@@ -956,23 +1159,32 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::I8) => ComptimeValue::I8(*v as i8),
                     Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
                     Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
-                    Some(IntSuffix::I64) => ComptimeValue::I64(*v),
+                    Some(IntSuffix::I64) => ComptimeValue::I64(*v as i64),
                     Some(IntSuffix::Isize) => if rask_ast::primitives::pointer_bits() == 32 {
                         ComptimeValue::I32(*v as i32)
                     } else {
-                        ComptimeValue::I64(*v)
+                        ComptimeValue::I64(*v as i64)
                     },
                     Some(IntSuffix::U8) => ComptimeValue::U8(*v as u8),
                     Some(IntSuffix::U16) => ComptimeValue::U16(*v as u16),
                     Some(IntSuffix::U32) => ComptimeValue::U32(*v as u32),
-                    Some(IntSuffix::U64) => ComptimeValue::U64(*v as u64),
+                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => {
+                        ComptimeValue::U64(*v as u64)
+                    }
                     Some(IntSuffix::Usize) => if rask_ast::primitives::pointer_bits() == 32 {
                         ComptimeValue::U32(*v as u32)
                     } else {
                         ComptimeValue::U64(*v as u64)
                     },
-                    // I128/U128 aren't distinct comptime variants; keep i64.
-                    _ => ComptimeValue::I64(*v),
+                    Some(IntSuffix::I128) | Some(IntSuffix::I128ByMagnitude) => {
+                        ComptimeValue::I128(*v)
+                    }
+                    // Above `i128::MAX` the token carries a bit pattern, so
+                    // read it back as the unsigned value it stands for.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => {
+                        ComptimeValue::U128(*v as u128)
+                    }
+                    None => ComptimeValue::I64(*v as i64),
                 }
             }
             ExprKind::Float(v, _) => ComptimeValue::F64(*v),
@@ -1072,12 +1284,31 @@ impl ComptimeInterpreter {
             }
 
             // If expression
+            // `else_binding` is dropped here. Unlike the `IfLet` form below, the
+            // scrutinee isn't in hand — the condition is a presence or `is` test
+            // wrapping it — and binding the wrong thing is worse than binding
+            // nothing. Filed rather than guessed (#808).
             ExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
-                ..
+                else_binding,
             } => {
+                // OPT19/ER22: `if x? as v { … } else as e { … }` evaluates the
+                // scrutinee *once* and binds its payload — `v` in the then branch,
+                // `e` in the else. Comptime dropped `else_binding` on the floor, so
+                // a body reading `e` failed with "undefined variable" (#808).
+                //
+                // Same rule as the interpreter's arm, including its restraint: the
+                // else binds only when there's a payload to bind. An Option's
+                // absence carries nothing, and inventing a `Unit` for it would put
+                // a wrong value where a missing one at least reports itself.
+                if let Some(flow) =
+                    self.eval_presence_if(cond, then_branch, else_branch.as_deref(), else_binding)?
+                {
+                    return Ok(flow);
+                }
+
                 let cond_val = self.eval_expr(cond)?;
                 let cond_bool = cond_val.as_bool().ok_or_else(|| ComptimeError::TypeMismatch {
                     expected: "bool".to_string(),
@@ -1201,7 +1432,23 @@ impl ComptimeInterpreter {
                     self.env.pop_scope();
                     return result;
                 } else if let Some(else_br) = else_branch {
-                    return self.eval_expr_cf(else_br);
+                    // ER22: `else as e` binds the branch the test ruled out.
+                    // Comptime ignored the binding, so a body that used it failed
+                    // with "undefined variable" — the same field the formatter
+                    // was dropping (#805), one pass over. Same payload rule as
+                    // the interpreter's.
+                    self.env.push_scope();
+                    if let Some(name) = else_binding {
+                        let payload = match &value {
+                            ComptimeValue::Enum { data: Some(inner), .. } => (**inner).clone(),
+                            ComptimeValue::Enum { data: None, .. } => ComptimeValue::Unit,
+                            other => other.clone(),
+                        };
+                        self.env.define(name.clone(), payload);
+                    }
+                    let result = self.eval_expr_cf(else_br);
+                    self.env.pop_scope();
+                    return result;
                 } else {
                     ComptimeValue::Unit
                 }
@@ -1293,12 +1540,110 @@ impl ComptimeInterpreter {
         Ok(ControlFlow::Normal(last_value))
     }
 
+    /// Retype an integer value to a declared width, refusing rather than
+    /// truncating if it doesn't fit (CT1).
+    ///
+    /// A non-integer value passes through: an annotation this doesn't recognise
+    /// isn't an integer width, and nothing else here needs re-widening.
+    fn coerce_int_width(value: ComptimeValue, kind: CtInt) -> ComptimeResult<ComptimeValue> {
+        let Some((num, _)) = value.as_int() else { return Ok(value) };
+        if kind == CtInt::U128 {
+            return num
+                .to_u128()
+                .map(ComptimeValue::U128)
+                .ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                    "{} is outside u128 range {}", num, kind.range_text()
+                )));
+        }
+        let n = num.to_i128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+            "{} is outside {} range {}", num, kind.name(), kind.range_text()
+        )))?;
+        if n < kind.min() || n > kind.max() {
+            return Err(ComptimeError::IntegerOverflow(format!(
+                "{} is outside {} range {}", n, kind.name(), kind.range_text()
+            )));
+        }
+        Ok(kind.make(n))
+    }
+
+    /// `if x? { … }`, `if x? as v { … }`, `if x? as v { … } else as e { … }`.
+    ///
+    /// `Ok(None)` when the condition isn't a presence test with a name to bind, so
+    /// the caller falls through to evaluating it as an ordinary bool. Otherwise the
+    /// scrutinee is evaluated once — not the condition, which would evaluate it a
+    /// second time — and the branch runs with its payload bound.
+    fn eval_presence_if(
+        &mut self,
+        cond: &Expr,
+        then_branch: &Expr,
+        else_branch: Option<&Expr>,
+        else_binding: &Option<String>,
+    ) -> ComptimeResult<Option<ControlFlow>> {
+        let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
+            return Ok(None);
+        };
+        // A bare `if x?` narrows `x` itself; `as v` names the payload instead.
+        let then_name = match (binding, &inner.kind) {
+            (Some(v), _) => Some(v.clone()),
+            (None, ExprKind::Ident(n)) => Some(n.clone()),
+            _ => None,
+        };
+        let else_name = else_binding.clone().or_else(|| then_name.clone());
+        if then_name.is_none() && else_name.is_none() {
+            return Ok(None);
+        }
+
+        let value = self.eval_expr(inner)?;
+        let (variant, payload) = match &value {
+            ComptimeValue::Enum { variant, data, .. } => {
+                (variant.clone(), data.as_ref().map(|d| (**d).clone()))
+            }
+            // Not a wrapper at all — the condition isn't the shape this handles.
+            _ => return Ok(None),
+        };
+
+        if matches!(variant.as_str(), "Some" | "Ok") {
+            self.env.push_scope();
+            if let Some(name) = then_name {
+                self.env.define(name, payload.unwrap_or(ComptimeValue::Unit));
+            }
+            let result = self.eval_expr_cf(then_branch);
+            self.env.pop_scope();
+            return result.map(Some);
+        }
+
+        let Some(else_br) = else_branch else {
+            return Ok(Some(ControlFlow::Normal(ComptimeValue::Unit)));
+        };
+        // A Result's error branch carries E; an Option's absence carries nothing,
+        // and there is no name to give nothing.
+        match (else_name, payload) {
+            (Some(name), Some(p)) => {
+                self.env.push_scope();
+                self.env.define(name, p);
+                let result = self.eval_expr_cf(else_br);
+                self.env.pop_scope();
+                result.map(Some)
+            }
+            _ => self.eval_expr_cf(else_br).map(Some),
+        }
+    }
+
     fn eval_stmt(&mut self, stmt: &Stmt) -> ComptimeResult<ControlFlow> {
         match &stmt.kind {
             StmtKind::Expr(e) => self.eval_expr_cf(e),
 
-            StmtKind::Mut { name, init, .. } | StmtKind::Let { name, init, .. } => {
+            StmtKind::Mut { name, ty, init, .. } | StmtKind::Let { name, ty, init, .. } => {
                 let value = self.eval_expr(init)?;
+                // The annotation decides the width. Without this the value kept
+                // whatever width its literal evaluated to, so `let a: u128 = <fits
+                // in u64>` bound a `u64` — and a fold of it came out `u64`-wide,
+                // which printed the same digits and compared unequal against a
+                // `u128` (#826).
+                let value = match ty.as_deref().and_then(CtInt::from_name) {
+                    Some(kind) => Self::coerce_int_width(value, kind)?,
+                    None => value,
+                };
                 self.env.define(name.clone(), value);
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
@@ -1325,7 +1670,37 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::Assign { target, value } => {
+            // `let Point { x, .. } = p` — bind the fields the pattern names.
+            StmtKind::LetStruct { pattern, init, .. } => {
+                let value = self.eval_expr(init)?;
+                let Pattern::Struct { fields: pat_fields, .. } = pattern else {
+                    return Err(ComptimeError::NotSupported(
+                        "destructuring binding on a non-struct pattern".to_string(),
+                    ));
+                };
+                let ComptimeValue::Struct { fields, .. } = value else {
+                    return Err(ComptimeError::TypeMismatch {
+                        expected: "struct".to_string(),
+                        found: value.type_name().to_string(),
+                    });
+                };
+                for (field_name, pat) in pat_fields {
+                    let Some(val) = fields.get(field_name) else {
+                        return Err(ComptimeError::NotSupported(format!(
+                            "no field `{}` to bind", field_name
+                        )));
+                    };
+                    let Pattern::Ident(binding) = pat else {
+                        return Err(ComptimeError::NotSupported(
+                            "only a name can bind a field at comptime".to_string(),
+                        ));
+                    };
+                    self.env.define(binding.clone(), val.clone());
+                }
+                Ok(ControlFlow::Normal(ComptimeValue::Unit))
+            }
+
+            StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_expr(value)?;
                 if let ExprKind::Ident(name) = &target.kind {
                     if !self.env.assign(name, val) {
@@ -1603,7 +1978,8 @@ impl ComptimeInterpreter {
             UnaryOp::Deref => {
                 Err(ComptimeError::NotSupported("pointer dereference at comptime".to_string()))
             }
-            // No heap at comptime — `own` is transparent, same as OW5 at runtime.
+            // No heap at comptime — `own` is transparent, same as OW5 at runtime,
+            // so the operand's value *is* the answer.
             UnaryOp::Own => Ok(val),
         }
     }
@@ -1697,8 +2073,15 @@ impl ComptimeInterpreter {
         self.env.push_call()?; // CT29: stack depth check
         self.env.push_scope();
 
-        // Bind parameters
+        // Bind parameters at their declared widths, same rule as a `let`
+        // annotation (#826): the value keeps whatever width the argument
+        // expression evaluated to otherwise, which is a different type from the
+        // one the signature promises.
         for (param, value) in func.params.iter().zip(args) {
+            let value = match CtInt::from_name(&param.ty) {
+                Some(kind) => Self::coerce_int_width(value, kind)?,
+                None => value,
+            };
             self.env.define(param.name.clone(), value);
         }
 
@@ -1707,7 +2090,16 @@ impl ComptimeInterpreter {
         self.env.pop_scope();
         self.env.pop_call();
 
-        Ok(result?.value())
+        let value = result?.value();
+        // The declared return type decides the width too. Without it
+        // `comptime func big() -> i32 { return 2147483647 }` handed back an
+        // `i64`, so `big() + 1` was i64 arithmetic — no overflow — and the
+        // out-of-range 2147483648 went into an `i32` const with no diagnostic,
+        // where CT1 says comptime overflow is a compile error (#325).
+        match func.ret_ty.as_deref().and_then(CtInt::from_name) {
+            Some(kind) => Self::coerce_int_width(value, kind),
+            None => Ok(value),
+        }
     }
 
     fn call_closure(
@@ -1956,13 +2348,15 @@ impl ComptimeInterpreter {
             "rem" => self.ct_arith(obj, args, CtOp::Rem, |a, b| a % b, "%"),
             "neg" => match obj.as_int() {
                 Some((v, kind)) => {
-                    let r = -v;
-                    if r < kind.min() || r > kind.max() {
-                        Err(ComptimeError::IntegerOverflow(format!(
-                            "negating {} exceeds {} range [{}, {}]", v, kind.name(), kind.min(), kind.max()
-                        )))
-                    } else {
-                        Ok(kind.make(r))
+                    // Nothing unsigned has a negation but zero, and the `u128`
+                    // half of the range has no signed carrier to negate in — so
+                    // the check is on the value, not on a computed result (#802).
+                    let out_of_range = ComptimeError::IntegerOverflow(format!(
+                        "negating {} exceeds {} range {}", v, kind.name(), kind.range_text()
+                    ));
+                    match v.to_i128().map(|n| -n) {
+                        Some(r) if r >= kind.min() && r <= kind.max() => Ok(kind.make(r)),
+                        _ => Err(out_of_range),
                     }
                 }
                 None => match obj {
@@ -1985,7 +2379,18 @@ impl ComptimeInterpreter {
             "shl" => self.ct_int_only(obj, args, CtOp::Shl),
             "shr" => self.ct_int_only(obj, args, CtOp::Shr),
             "bit_not" => match obj.as_int() {
-                Some((v, kind)) => Ok(kind.make(kind.wrap(!v))),
+                Some((v, kind)) if kind == CtInt::U128 => {
+                    let u = v.to_u128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                        "{} is outside u128 range {}", v, kind.range_text()
+                    )))?;
+                    Ok(ComptimeValue::U128(!u))
+                }
+                Some((v, kind)) => {
+                    let n = v.to_i128().ok_or_else(|| ComptimeError::IntegerOverflow(format!(
+                        "{} is outside {} range {}", v, kind.name(), kind.range_text()
+                    )))?;
+                    Ok(kind.make(kind.wrap(!n)))
+                }
                 None => Err(ComptimeError::TypeMismatch {
                     expected: "integer".to_string(),
                     found: obj.type_name().to_string(),
@@ -2092,8 +2497,21 @@ impl ComptimeInterpreter {
             (ComptimeValue::Char(a), ComptimeValue::Char(b)) => Ok(ComptimeValue::Bool(a == b)),
             (ComptimeValue::String(a), ComptimeValue::String(b)) => Ok(ComptimeValue::Bool(a == b)),
             (obj, arg) => {
-                if let (Some(a), Some(b)) = (obj.as_i64(), arg.as_i64()) {
-                    Ok(ComptimeValue::Bool(int_op(a, b)))
+                // Wide integers first: `as_i64` can't see past `i64::MAX`, so two
+                // large `u128` values fell through to the float path and then to a
+                // type error (#802). The comparison itself is exact — an ordering
+                // needs no arithmetic and no carrier wide enough to hold both.
+                if let (Some((a, _)), Some((b, _))) = (obj.as_int(), arg.as_int()) {
+                    let ord = a.cmp(b);
+                    // The caller's predicate is written on i64s; reuse it by
+                    // feeding it the ordering as -1/0/1, which every comparison
+                    // operator reads the same way.
+                    let (l, r) = match ord {
+                        std::cmp::Ordering::Less => (-1i64, 0i64),
+                        std::cmp::Ordering::Equal => (0, 0),
+                        std::cmp::Ordering::Greater => (1, 0),
+                    };
+                    Ok(ComptimeValue::Bool(int_op(l, r)))
                 } else if let (Some(a), Some(b)) = (obj.as_f64(), arg.as_f64()) {
                     Ok(ComptimeValue::Bool(float_op(a, b)))
                 } else {

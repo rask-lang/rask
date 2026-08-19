@@ -52,6 +52,7 @@ let (x, y) = point
 | **TU8: Cloneable** | Tuples are Cloneable when all elements are Cloneable |
 | **TU9: Equality** | `==` and `!=` work when all elements support equality |
 | **TU10: Layout** | Struct layout rules apply: elements in order, padded for alignment (see `comp.mem-layout`) |
+| **TU11: Hashable** | Tuples are Hashable when all elements are Hashable, hashing element by element — so a tuple keys a `Map`. Same rule structs get from `type.generics/HA1`, which TU10 makes the same thing |
 
 ## Edge Cases
 

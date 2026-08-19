@@ -26,7 +26,9 @@ trait Middleware {
 struct RequestLogger { }
 
 extend RequestLogger with Middleware {
-    func name(self) -> string { return "logger" }
+    func name(self) -> string {
+        return "logger"
+    }
 
     func before(self, req: Request) -> MwOutcome {
         if config.read().request_log {
@@ -44,13 +46,19 @@ struct AuthGuard {
 }
 
 extend AuthGuard with Middleware {
-    func name(self) -> string { return "auth" }
+    func name(self) -> string {
+        return "auth"
+    }
 
     func before(self, req: Request) -> MwOutcome {
         if req.method is Method.Get { return MwOutcome.Continue }
 
-        let header = req.headers.get("Authorization") ?? return deny(AuthError.Missing)
-        let token = bearer(header) ?? return deny(AuthError.Invalid)
+        let header = req.headers.get("Authorization") ?? {
+            return deny(AuthError.Missing)
+        }
+        let token = bearer(header) ?? {
+            return deny(AuthError.Invalid)
+        }
         if token != self.required_token { return deny(AuthError.Invalid) }
         return MwOutcome.Continue
     }
@@ -80,7 +88,9 @@ extend RateLimiter {
 }
 
 extend RateLimiter with Middleware {
-    func name(self) -> string { return "rate_limiter" }
+    func name(self) -> string {
+        return "rate_limiter"
+    }
 
     func before(self, req: Request) -> MwOutcome {
         let key = client_key(req)
@@ -106,11 +116,7 @@ func client_key(req: Request) -> string {
 // a vtable dispatch (TR12).
 
 func build_chain() -> Vec<any Middleware> {
-    return Vec.from([
-        RequestLogger {} as any Middleware,
-        AuthGuard { required_token: auth_token() } as any Middleware,
-        RateLimiter.new() as any Middleware,
-    ])
+    return Vec.from([RequestLogger {} as any Middleware, AuthGuard { required_token: auth_token() } as any Middleware, RateLimiter.new() as any Middleware])
 }
 
 // Built once at startup, shared read-only across request tasks.
@@ -119,8 +125,8 @@ const middleware_chain = build_chain()
 func run_chain(chain: Vec<any Middleware>, req: Request) -> MwOutcome {
     for mw in chain {
         match mw.before(req) {
-            MwOutcome.Continue    => continue,
-            MwOutcome.Short(resp) => return MwOutcome.Short(resp),
+            MwOutcome.Continue => continue
+            MwOutcome.Short(resp) => return MwOutcome.Short(resp)
         }
     }
     return MwOutcome.Continue
@@ -132,12 +138,12 @@ func auth_token() -> string {
 
 func method_label(m: Method) -> string {
     match m {
-        Get     => return "GET",
-        Head    => return "HEAD",
-        Post    => return "POST",
-        Put     => return "PUT",
-        Delete  => return "DELETE",
-        Patch   => return "PATCH",
-        Options => return "OPTIONS",
+        Get => return "GET"
+        Head => return "HEAD"
+        Post => return "POST"
+        Put => return "PUT"
+        Delete => return "DELETE"
+        Patch => return "PATCH"
+        Options => return "OPTIONS"
     }
 }

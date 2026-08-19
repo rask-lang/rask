@@ -16,6 +16,13 @@ pub enum RetCategory {
     Void,
     Bool,
     I64,
+    /// An integer at a width other than 64-bit-signed, spelled as its Rask name.
+    ///
+    /// Every integer return used to collapse to `I64`. Mostly invisible, because
+    /// most of them are lengths and counts — but a value that spans its range
+    /// renders as the signed reading of its bits: `string.hash()` is `u64` and
+    /// FNV-1a fills the range, so half of its answers printed negative (#823).
+    Int(IntWidth),
     F64,
     String,
     /// A `char` — 4 bytes, not 8. Folding it into I64 gave `char?` an 8-byte
@@ -33,6 +40,15 @@ pub enum RetCategory {
     Named(std::string::String),
     /// Tuple of types (e.g., `(Request, Responder)`).
     Tuple(Vec<RetCategory>),
+}
+
+/// An integer width other than the `I64` default, by its Rask name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntWidth {
+    I8, I16, I32, I128,
+    U8, U16, U32, U64, U128,
+    /// `usize`/`isize` — pointer-sized, decided by `rask_ast::primitives`.
+    Usize, Isize,
 }
 
 /// Metadata for a single stdlib method, derived from stubs.
@@ -54,11 +70,6 @@ struct MetadataCache {
     method_metas: Vec<StdlibMethodMeta>,
     /// qualified_name → index into method_metas
     by_name: HashMap<std::string::String, usize>,
-    /// Method name → the single stdlib type prefix that defines it, when it is
-    /// unambiguous (exactly one type has a method of that name). Absent when the
-    /// name is shared across types or defined by none. Only type prefixes count
-    /// (uppercase names + "string"); modules (fs, io, ...) are excluded.
-    unique_method_prefix: HashMap<std::string::String, std::string::String>,
 }
 
 static CACHE: OnceLock<MetadataCache> = OnceLock::new();
@@ -69,9 +80,6 @@ fn build_cache() -> MetadataCache {
     let mut type_names = HashSet::new();
     let mut module_names = HashSet::new();
     let mut method_metas = Vec::new();
-    // method name → set of type prefixes defining it (type prefixes only).
-    let mut method_to_types: HashMap<std::string::String, HashSet<std::string::String>> =
-        HashMap::new();
 
     for type_name in reg.type_names() {
         // Module-like types start lowercase (fs, cli, io, etc.)
@@ -93,25 +101,8 @@ fn build_cache() -> MetadataCache {
                 ret_category: ret_cat,
                 ret_type_prefix: ret_prefix,
             });
-            if is_type {
-                method_to_types
-                    .entry(method.name.clone())
-                    .or_default()
-                    .insert(type_name.to_string());
-            }
         }
     }
-
-    let unique_method_prefix = method_to_types
-        .into_iter()
-        .filter_map(|(method, tys)| {
-            if tys.len() == 1 {
-                Some((method, tys.into_iter().next().unwrap()))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // Top-level functions (println, print, etc. are builtins — skip them)
     for func in reg.functions() {
@@ -135,7 +126,6 @@ fn build_cache() -> MetadataCache {
         module_names,
         method_metas,
         by_name,
-        unique_method_prefix,
     }
 }
 
@@ -184,13 +174,6 @@ pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
 }
 
-/// The single stdlib type prefix that defines `method`, when unambiguous
-/// (exactly one type has it). Used to resolve a method call whose receiver
-/// type the checker left unresolved, without a hand-maintained name table.
-pub fn unique_method_prefix(method: &str) -> Option<&'static str> {
-    cache().unique_method_prefix.get(method).map(|s| s.as_str())
-}
-
 // ── Return type string parsing ──────────────────────────────────
 
 /// Parse a return type string from a stub into a RetCategory.
@@ -201,7 +184,7 @@ pub fn unique_method_prefix(method: &str) -> Option<&'static str> {
 ///   "()" → Void
 ///   "bool" → Bool
 ///   "string" → String
-///   "usize" / "i64" / "u64" → I64
+///   "i64" → I64, "usize" / "u64" / "u8" / … → Int(width)
 ///   "f64" / "f32" → F64
 ///   "Result<File, IoError>" → Result { ok: Named("File"), err: Named("IoError") }
 ///   "Result<(), IoError>" → Result { ok: Void, err: Named("IoError") }
@@ -259,8 +242,18 @@ fn parse_simple_type(s: &str) -> RetCategory {
         "bool" => RetCategory::Bool,
         "char" => RetCategory::Char,
         "string" => RetCategory::String,
-        "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "i128" | "u128"
-        | "isize" | "usize" => RetCategory::I64,
+        "i64" => RetCategory::I64,
+        "i8" => RetCategory::Int(IntWidth::I8),
+        "i16" => RetCategory::Int(IntWidth::I16),
+        "i32" => RetCategory::Int(IntWidth::I32),
+        "i128" => RetCategory::Int(IntWidth::I128),
+        "u8" => RetCategory::Int(IntWidth::U8),
+        "u16" => RetCategory::Int(IntWidth::U16),
+        "u32" => RetCategory::Int(IntWidth::U32),
+        "u64" => RetCategory::Int(IntWidth::U64),
+        "u128" => RetCategory::Int(IntWidth::U128),
+        "usize" => RetCategory::Int(IntWidth::Usize),
+        "isize" => RetCategory::Int(IntWidth::Isize),
         "f32" | "f64" => RetCategory::F64,
         _ if s.starts_with('*') => RetCategory::Ptr,
         _ if s.starts_with('(') && s.ends_with(')') => {
@@ -292,7 +285,8 @@ fn parse_simple_type(s: &str) -> RetCategory {
 /// Extract the type prefix from a return category.
 fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
     match cat {
-        RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::F64 => None,
+        RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::Int(_)
+        | RetCategory::F64 => None,
         RetCategory::String => Some("string".to_string()),
         // Keep the "char" prefix it had as a Named type, so `char` methods
         // still resolve on the result of a char-returning stdlib call.
@@ -386,8 +380,15 @@ mod tests {
         assert_eq!(parse_ret_ty("bool"), RetCategory::Bool);
         assert_eq!(parse_ret_ty("string"), RetCategory::String);
         assert_eq!(parse_ret_ty("i64"), RetCategory::I64);
-        assert_eq!(parse_ret_ty("usize"), RetCategory::I64);
         assert_eq!(parse_ret_ty("f64"), RetCategory::F64);
+        // Every other width carries itself. They all used to collapse to `I64`,
+        // so a `u64` that filled its range rendered as the signed reading of its
+        // bits (#823).
+        assert_eq!(parse_ret_ty("usize"), RetCategory::Int(IntWidth::Usize));
+        assert_eq!(parse_ret_ty("u64"), RetCategory::Int(IntWidth::U64));
+        assert_eq!(parse_ret_ty("u8"), RetCategory::Int(IntWidth::U8));
+        assert_eq!(parse_ret_ty("i32"), RetCategory::Int(IntWidth::I32));
+        assert_eq!(parse_ret_ty("u128"), RetCategory::Int(IntWidth::U128));
     }
 
     #[test]
@@ -428,7 +429,7 @@ mod tests {
         );
         assert_eq!(
             parse_ret_ty("Option<usize>"),
-            RetCategory::Option(Box::new(RetCategory::I64))
+            RetCategory::Option(Box::new(RetCategory::Int(IntWidth::Usize)))
         );
     }
 

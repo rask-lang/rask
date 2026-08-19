@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What can key a Map (type.generics/HA1, type.tuples/TU11, #812).
+//
+// The key bound used to be a hand-written "is it f32 or f64" test, so it caught
+// the type that motivated it and nothing else. Making it a real `Hashable` check
+// turned up two types the trait checker had no answer for: a nominal newtype (its
+// `with (…)` clause was recorded but never consulted) and a tuple (element-wise
+// value semantics, but no way to spell an `extend` block for one).
+//
+// The rejections live in `tests/compile_errors/map_key_hashable.rk`. This is the
+// other half — every shape that *is* a key, working on both backends.
+
+type Tag = u64 with (Equal, Hashable)
+
+struct Pair {
+    public a: i64
+    public b: i64
+}
+
+enum Color {
+    Red
+    Blue
+}
+
+test "type.aliases/T11 — a newtype that lists Hashable can key a Map" {
+    mut m: Map<Tag, string> = Map.new()
+    m.insert(Tag(1), "one")
+    m.insert(Tag(2), "two")
+    assert (m.get(Tag(1)) ?? "?") == "one"
+    assert (m.get(Tag(2)) ?? "?") == "two"
+    assert m.get(Tag(3)) == none
+}
+
+test "type.generics/HA1 — a struct whose fields all hash is auto-derived" {
+    mut m: Map<Pair, string> = Map.new()
+    m.insert(Pair { a: 1, b: 2 }, "one-two")
+    assert (m.get(Pair { a: 1, b: 2 }) ?? "?") == "one-two"
+    // A different second field is a different key.
+    assert m.get(Pair { a: 1, b: 3 }) == none
+}
+
+test "type.generics/HA1 — an enum keys on tag and payload" {
+    mut m: Map<Color, string> = Map.new()
+    m.insert(Color.Red, "red")
+    assert (m.get(Color.Red) ?? "?") == "red"
+    assert m.get(Color.Blue) == none
+}
+
+// A tuple key was the one that diverged: native hashed the bytes and found it,
+// the interpreter had no equality arm for a tuple and missed every read.
+test "type.tuples/TU11 — a tuple of Hashable elements keys a Map" {
+    mut m: Map<(i64, i64), string> = Map.new()
+    m.insert((1, 2), "one-two")
+    m.insert((2, 1), "two-one")
+    assert (m.get((1, 2)) ?? "?") == "one-two"
+    assert (m.get((2, 1)) ?? "?") == "two-one"
+    assert m.get((3, 3)) == none
+
+    // Enough entries to force a rehash, so the answer can't be a coincidence of
+    // a small table.
+    mut wide: Map<(i64, string), i64> = Map.new()
+    mut i = 0
+    while i < 20 {
+        wide.insert((i, "k{i}"), i * 10)
+        i = i + 1
+    }
+    assert wide.len() == 20
+    i = 0
+    while i < 20 {
+        assert (wide.get((i, "k{i}")) ?? 0 - 1) == i * 10
+        i = i + 1
+    }
+}
+
+test "type.generics/HA1 — the primitives key a Map" {
+    mut c: Map<char, string> = Map.new()
+    c.insert('x', "ex")
+    assert (c.get('x') ?? "?") == "ex"
+
+    mut b: Map<bool, string> = Map.new()
+    b.insert(true, "yes")
+    assert (b.get(true) ?? "?") == "yes"
+    assert b.get(false) == none
+
+    mut w: Map<i128, string> = Map.new()
+    w.insert(1, "wide")
+    assert (w.get(1) ?? "?") == "wide"
+}
+
+func main() {}

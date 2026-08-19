@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two returns out of nested `with` scopes, where one of them skips the inner
+// scope (#836).
+//
+// A `return` inside a `with` carries a cleanup chain — the releases to run on
+// the way out, innermost first. Returning from inside the inner `with` gives
+// `[inner, outer]`; returning from the loop body between them gives `[outer]`.
+// Codegen made one Cranelift block per cleanup MIR block for the whole
+// function, so the outer release appeared in both chains and got lowered twice
+// into the same block: statements and a `return` appended after the `return`
+// the first chain had already put there.
+//
+//     error: codegen 'BackendPool_next_healthy': Cranelift error:
+//       "a terminator instruction was encountered before the end of block27"
+//
+// `projects/tiwaz` couldn't build because of it — its load balancer walks
+// backends under the index lock and reads health under a second one.
+
+struct Pool2 {
+    public index: Mutex<usize>
+    public flag: Mutex<usize>
+}
+
+extend Pool2 {
+    // The `return 0` exits under one release; the `return 2` under two.
+    public func pick(self, limit: usize) -> i64 {
+        with self.index.lock() as idx {
+            mut checked = 0
+            loop {
+                if checked >= limit {
+                    return 0
+                }
+                checked = checked + 1
+                with self.flag.lock() as f {
+                    if f == 1 {
+                        return 2
+                    }
+                }
+            }
+        }
+    }
+
+    // Three deep, with an exit at every level.
+    public func deep(self, level: usize) -> i64 {
+        with self.index.lock() as idx {
+            if level == 0 {
+                return 10
+            }
+            with self.flag.lock() as f {
+                if level == 1 {
+                    return 11
+                }
+                with self.index.lock() as idx2 {
+                    return 12
+                }
+            }
+        }
+    }
+}
+
+func fresh() -> Pool2 {
+    return Pool2 { index: Mutex<usize>.new(0), flag: Mutex<usize>.new(0) }
+}
+
+test "mem.boxes — a return past an inner `with` releases only the scopes it left" {
+    let p = fresh()
+    // flag is 0, so the loop runs until `checked >= limit` and takes the
+    // one-release exit.
+    assert p.pick(3) == 0
+}
+
+test "mem.boxes — the inner scope's return releases both" {
+    mut p = fresh()
+    with p.flag.lock() as f {
+        f = 1
+    }
+    assert p.pick(3) == 2
+}
+
+test "mem.boxes — an exit at every nesting level" {
+    let p = fresh()
+    assert p.deep(0) == 10
+    assert p.deep(1) == 11
+}
+
+func main() {}
