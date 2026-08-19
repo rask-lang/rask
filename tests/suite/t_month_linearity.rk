@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: linearity — consume exactly once.
+//
+// The rule (mem.linear L1–L6) is shared by `@resource`, `Owned<T>` and
+// `Pool<Linear>`: a linear value has to be consumed on every path out of its
+// scope, and exactly once. That makes a forgotten close a compile error instead
+// of a leak, and a double close impossible.
+//
+// A test can't assert on a compile error, so what this file pins is the *positive*
+// side: every shape where consuming exactly once is legal and does the right
+// thing. `tests/compile_errors/` is where the rejections belong.
+//
+// Covers: consumption on the straight path, on every arm of a branch, in a loop,
+// through a helper that takes ownership, discharged by `ensure`, a linear value
+// inside a struct field, a linear value returned rather than consumed, and
+// consumption after an early return.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    func open(id: i32) -> Conn {
+        return Conn { id }
+    }
+
+    func id_of(self) -> i32 {
+        return self.id
+    }
+
+    func close(take self) -> i32 {
+        return self.id
+    }
+}
+
+struct Session {
+    label: string
+    conn: Conn
+}
+
+extend Session {
+    func start(label: string, id: i32) -> Session {
+        return Session { label, conn: Conn.open(id) }
+    }
+
+    // Consuming the struct consumes the linear field with it.
+    func finish(take self) -> i32 {
+        return self.conn.close()
+    }
+}
+
+func consume_it(take c: Conn) -> i32 {
+    return c.close()
+}
+
+// L1: every path out consumes it exactly once.
+func both_arms(id: i32, early: bool) -> i32 {
+    mut c = Conn.open(id)
+    if early {
+        return c.close()
+    }
+    return c.close() + 1000
+}
+
+// Handing it on rather than closing it here is also consuming it.
+func hand_off(id: i32) -> i32 {
+    mut c = Conn.open(id)
+    return consume_it(c)
+}
+
+// Returning it is neither consuming nor dropping — the caller inherits the debt.
+func make_conn(id: i32) -> Conn {
+    return Conn.open(id)
+}
+
+// EN3: `ensure` counts as the consumption guarantee.
+func ensured(id: i32) -> i32 {
+    mut c = Conn.open(id)
+    ensure c.close()
+    return id * 2
+}
+
+func three_early_returns(n: i32) -> i32 {
+    mut c = Conn.open(n)
+    if n == 1 {
+        return c.close() + 10
+    }
+    if n == 2 {
+        return c.close() + 20
+    }
+    return c.close() + 30
+}
+
+test "mem.linear — L1: consumed once on the straight path" {
+    mut c = Conn.open(7)
+    assert c.close() == 7
+}
+
+test "mem.linear — read before consuming doesn't count as consuming" {
+    mut c = Conn.open(5)
+    assert c.id_of() == 5
+    assert c.id_of() == 5
+    assert c.close() == 5
+}
+
+test "mem.linear — L1: consumed on every arm of a branch" {
+    assert both_arms(3, true) == 3
+    assert both_arms(3, false) == 1003
+}
+
+test "mem.linear — L1: consumed on each of three exits" {
+    assert three_early_returns(1) == 11
+    assert three_early_returns(2) == 22
+    assert three_early_returns(3) == 33
+}
+
+test "mem.linear — handing it to a take parameter is consuming it" {
+    assert hand_off(9) == 9
+    mut c = Conn.open(11)
+    assert consume_it(c) == 11
+}
+
+test "mem.linear — returning it passes the debt to the caller" {
+    mut c = make_conn(4)
+    assert c.id_of() == 4
+    assert c.close() == 4
+}
+
+test "mem.linear — EN3: ensure discharges the obligation" {
+    assert ensured(6) == 12
+    assert ensured(0) == 0
+}
+
+test "mem.linear — one per iteration in a loop" {
+    mut total = 0
+    for i in 1..4 {
+        mut c = Conn.open(i)
+        total = total + c.close()
+    }
+    assert total == 6
+}
+
+test "mem.linear — several linear values in one scope, each closed once" {
+    mut a = Conn.open(1)
+    mut b = Conn.open(2)
+    mut c = Conn.open(3)
+    assert a.close() + b.close() + c.close() == 6
+}
+
+test "mem.linear — a linear value inside a struct field" {
+    let s = Session.start("db", 42)
+    assert s.label == "db"
+    assert s.conn.id_of() == 42
+    assert s.finish() == 42
+}
+
+test "mem.linear — consuming the holder consumes the field" {
+    mut total = 0
+    for i in 1..3 {
+        let s = Session.start("loop", i)
+        total = total + s.finish()
+    }
+    assert total == 3
+}
+
+test "mem.linear — a linear value built inside a branch and closed there" {
+    mut total = 0
+    if true {
+        mut c = Conn.open(8)
+        total = c.close()
+    }
+    assert total == 8
+}
+
+func main() {}

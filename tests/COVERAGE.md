@@ -88,6 +88,8 @@ surface stays gated instead of hiding behind a known-fail line.
 | comptime | `t_month_comptime.rk` | 11/11 | 11/11 | |
 | JSON encode and decode | `t_month_json.rk` | 13/13 | 13/13 | |
 | fs, path, os, time, random | `t_month_stdlib_modules.rk` | 18/18 | 18/18 | |
+| linearity — consume exactly once | `t_month_linearity.rk` | 12/12 | 12/12 | |
+| file handles, buffered io | `t_month_io.rk` | 12/12 | 12/12 | |
 | 128-bit integers | `t_month_i128.rk` | 12/12 | 12/12 | |
 | **probe** — parameter modes | `t_month_param_modes.rk` | 6/10 | 6/10 | #899 |
 | **probe** — test-block parameter scope | `t_month_borrow_name_shadow.rk` | BUILD-FAIL | BUILD-FAIL | #926 |
@@ -128,6 +130,11 @@ this sweep found.
 **The build system and multi-package projects.** `tests/projects_gate.sh` and
 `tests/examples_gate.sh` are the right harnesses for this — a suite file can't
 have a second package.
+
+**Linearity's rejections.** `t_month_linearity.rk` pins the positive side — every
+shape where consuming exactly once is legal — because a test can't assert on a
+compile error. The rejections (forgot to close, closed twice, consumed on one arm
+only) belong in `tests/compile_errors/`.
 
 **Panics and unwinding.** A test that panics fails, so a suite file can't assert
 on a panic's behaviour without failing. `specs/control/panics.md` describes
