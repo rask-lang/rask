@@ -287,6 +287,21 @@ impl<'a> MirLowerer<'a> {
                 continue;
             }
 
+            // std.encoding/E22: a unit variant serializes as its own name.
+            // Without this an enum field fell through to the integer encoder
+            // and wrote the address of its slot as a number — valid JSON with a
+            // stack address in it, and no warning (#854).
+            let enum_layout = match &field.ty {
+                Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                    self.ctx.find_enum(name).map(|(_, l)| l.clone())
+                }
+                _ => None,
+            };
+            if let Some(layout) = enum_layout {
+                self.emit_json_enum_field(buf, &key, field_val, &layout);
+                continue;
+            }
+
             let helper = match &field.ty {
                 Type::String => "json_buf_add_string",
                 Type::Bool => "json_buf_add_bool",
@@ -316,6 +331,82 @@ impl<'a> MirLowerer<'a> {
         }));
 
         Ok((MirOperand::Local(result), MirType::String))
+    }
+
+    /// Write an enum field as its variant name (std.encoding/E22).
+    ///
+    /// A chain of tag comparisons rather than a jump table: an enum small
+    /// enough to be a struct field has a handful of variants, and this keeps
+    /// the emitted MIR to shapes every backend already handles. A variant that
+    /// carries a payload panics with what's missing — E23/E24 aren't written
+    /// yet, and the alternative was the address of the slot as a number.
+    fn emit_json_enum_field(
+        &mut self,
+        buf: crate::LocalId,
+        key: &str,
+        field_val: crate::LocalId,
+        layout: &rask_mono::EnumLayout,
+    ) {
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(field_val) },
+        }));
+
+        let done = self.builder.create_block();
+        for variant in &layout.variants {
+            let hit = self.builder.create_block();
+            let miss = self.builder.create_block();
+            let eq = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: eq,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(tag),
+                    right: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                },
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(eq),
+                then_block: hit,
+                else_block: miss,
+            }));
+
+            self.builder.switch_to_block(hit);
+            if variant.fields.is_empty() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("json_buf_add_string".to_string()),
+                    args: vec![
+                        MirOperand::Local(buf),
+                        MirOperand::Constant(MirConst::String(key.to_string())),
+                        MirOperand::Constant(MirConst::String(variant.name.clone())),
+                    ],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+            } else {
+                // E23/E24 aren't written yet. The check is per *value*, not per
+                // type: an enum can have both unit and payload variants, and
+                // the unit ones have an answer. The interpreter refuses the
+                // same way, at the same moment.
+                let msg = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(msg),
+                    func: FunctionRef::internal("panic".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::String(format!(
+                        "json.encode can't write `{}.{}` yet: a variant with a payload needs the tagged forms (std.encoding/E23, E24), and only unit variants are implemented",
+                        layout.name, variant.name,
+                    )))],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            }
+
+            self.builder.switch_to_block(miss);
+        }
+        // No variant matched, which a well-formed value can't do. Fall through
+        // rather than writing something invented.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+        self.builder.switch_to_block(done);
     }
 
     /// Add a `T?` field to a json buffer: the payload when present, `null` when

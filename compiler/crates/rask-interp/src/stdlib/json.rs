@@ -697,6 +697,20 @@ fn value_to_json(
                 vec.iter().map(|v| value_to_json(v, struct_decls)).collect();
             Ok(make_json_array(items?))
         }
+        // A struct-shaped enum variant (`Shape.Circle { radius: f64 }`) is a
+        // plain struct value here — the interpreter doesn't keep the enum
+        // identity on it — so it used to encode as `{"radius":1}`, dropping the
+        // variant name, while native panicked with what's missing. Anything
+        // that isn't a declared struct isn't one (#854).
+        Value::Struct(ref s) if !struct_decls.contains_key(&s.lock().unwrap().name) => {
+            let name = s.lock().unwrap().name.clone();
+            Err(RuntimeError::TypeError(format!(
+                "json.encode can't write `{}` yet: a variant with a payload needs \
+                 the tagged forms (std.encoding/E23, E24), and only unit variants \
+                 are implemented",
+                name
+            )))
+        }
         Value::Struct(ref s) => {
             let guard = s.lock().unwrap();
             // The declaration carries @rename/@skip; the value only knows field
@@ -748,6 +762,18 @@ fn value_to_json(
                 variant_index: *variant_index, origin: None,
             })
         }
+        // std.encoding/E22: a unit variant serializes as its own name. Native
+        // used to write the address of the enum's slot as a number here and say
+        // nothing; this side refused outright. Both were wrong (#854).
+        Value::Enum { variant, fields, .. } if fields.is_empty() => {
+            Ok(make_json_string(variant))
+        }
+        Value::Enum { name, .. } => Err(RuntimeError::TypeError(format!(
+            "json.encode can't write `{}` yet: a variant with a payload needs \
+             the tagged forms (std.encoding/E23, E24), and only unit variants \
+             are implemented",
+            name
+        ))),
         _ => Err(RuntimeError::TypeError(format!(
             "cannot convert {} to JSON",
             value.type_name()
