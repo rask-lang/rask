@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `position` and `reduce` on a Vec, natively (#842).
+//
+// Both reached codegen as calls to `Vec_position` / `Vec_reduce`, which don't
+// exist — the interpreter answered them and native didn't compile at all. They
+// are the same fused loop every other terminal uses: `position` keeps a count
+// of yielded elements, `reduce` is `fold` seeded with the first one.
+//
+// `reduce` answers `T?` because an empty source has no seed, which is the whole
+// reason it isn't just `fold`.
+
+test "std.collections — position finds the index of the first match" {
+    let s: Vec<i64> = [5, 3, 9, 1]
+    assert_eq(s.position(|x| { return x == 9 }) ?? 99, 2)
+    assert_eq(s.position(|x| { return x == 5 }) ?? 99, 0)
+    assert_eq(s.position(|x| { return x == 1 }) ?? 99, 3)
+    // No match is `none`.
+    assert_eq(s.position(|x| { return x == 77 }) ?? 99, 99)
+}
+
+test "std.collections — position on an empty Vec is none" {
+    let e: Vec<i64> = []
+    assert_eq(e.position(|x| { return x == 1 }) ?? 99, 99)
+}
+
+test "std.collections — position works on a non-scalar element" {
+    let strs: Vec<string> = ["a", "bb", "c"]
+    assert_eq(strs.position(|x| { return x.len() == 2 }) ?? 99, 1)
+    assert_eq(strs.position(|x| { return x == "c" }) ?? 99, 2)
+}
+
+test "std.collections — reduce folds from the first element" {
+    let s: Vec<i64> = [5, 3, 9, 1]
+    assert_eq(s.reduce(|a, b| { return a + b }) ?? 0 - 1, 18)
+    assert_eq(
+        s.reduce(|a, b| {
+            if a > b {
+                return a
+            } else {
+                return b
+            }
+        }) ?? 0 - 1,
+        9,
+    )
+}
+
+test "std.collections — reduce has no answer for an empty Vec" {
+    let e: Vec<i64> = []
+    assert(e.reduce(|a, b| { return a + b }) is none)
+}
+
+test "std.collections — reduce on one element is that element" {
+    let one: Vec<i64> = [7]
+    assert_eq(one.reduce(|a, b| { return a + b }) ?? 0 - 1, 7)
+}
+
+func main() {}
