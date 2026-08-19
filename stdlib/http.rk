@@ -665,7 +665,12 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
 // Write HTTP/1.1 response to a TCP connection.
 // Shadows the dispatch entry for TcpConnection_write_http_response.
 func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or HttpError {
-    let resp = resp_ptr as Response
+    // The dispatch entry hands the response over as a raw pointer, so reading
+    // it back as a `Response` is a reinterpretation, not a conversion. Same
+    // shim as `read_http_request` above, in the other direction.
+    let resp = unsafe {
+        resp_ptr as Response
+    }
     let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
     return 0

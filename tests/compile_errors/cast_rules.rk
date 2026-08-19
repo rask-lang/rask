@@ -72,3 +72,25 @@ func clamp_a_float() {
     let f: f64 = 1.5
     let x = f.clamp<i32>()
 }
+
+// --- `as` to a collection: a reinterpretation, not a conversion ---
+// This used to be accepted with no check at all. The literal lowered to a
+// stack array and the cast handed its address to `Vec_len`, so indexing the
+// result segfaulted from ordinary safe code (#862).
+// ERROR: `as Vec<i64>` reinterprets the bits — it doesn't convert [E0838]
+func literal_as_vec() {
+    let v = [1, 2, 3] as Vec<i64>
+    println("{v[0]}")
+}
+
+// --- `as` to a struct: same reinterpretation, and `unsafe` is how you say so ---
+// ERROR: `as Point` reinterprets the bits — it doesn't convert [E0838]
+func pointer_as_struct() {
+    let raw: i64 = 0
+    let p = raw as Point
+}
+
+struct Point {
+    x: i64
+    y: i64
+}

@@ -724,6 +724,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `as` to a target that is neither a number nor a trait object. There is
+    /// no third meaning for `as`, and accepting one silently let
+    /// `[1, 2, 3] as Vec<i64>` through as a pointer reinterpretation (#862).
+    #[error("`as` doesn't convert to `{target_name}`")]
+    AsCastNotConvertible {
+        src_ty: Type,
+        /// Original target spelling, for the message and the suggested fix.
+        target_name: String,
+        span: Span,
+    },
+
     /// type.primitives CV5–CV10: a conversion form applied to the wrong
     /// source/target kind (e.g. `floor` on an integer).
     #[error("invalid conversion: {message}")]
@@ -902,6 +913,10 @@ impl TypeError {
             InvalidCast { src_ty, dst_ty, .. } => {
                 *src_ty = f(src_ty);
                 *dst_ty = f(dst_ty);
+            }
+
+            AsCastNotConvertible { src_ty, .. } => {
+                *src_ty = f(src_ty);
             }
 
             Mismatch { expected, found, .. } => {

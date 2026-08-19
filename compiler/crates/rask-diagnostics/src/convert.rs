@@ -1660,6 +1660,25 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
+            AsCastNotConvertible { src_ty, target_name, span } => {
+                Diagnostic::error(format!(
+                    "`as {}` reinterprets the bits — it doesn't convert",
+                    target_name,
+                ))
+                    .with_code("E0838")
+                    .with_primary(*span, format!("this is a `{}`", src_ty))
+                    .with_fix(format!(
+                        "to give a value a type, annotate the binding:\n                           let x: {t} = …\n\
+                         to reinterpret on purpose, say so:\n                           unsafe {{ … as {t} }}",
+                        t = target_name,
+                    ))
+                    .with_why(
+                        "`as` converts between numbers and boxes a trait object \
+                         (`as any Trait`); to any other target it is a bit \
+                         reinterpretation, which is unsafe [type.primitives/CV1–CV4, \
+                         mem.unsafe]",
+                    )
+            }
             InvalidConvert { message, span } => {
                 Diagnostic::error(message.clone())
                     .with_code("E0818")

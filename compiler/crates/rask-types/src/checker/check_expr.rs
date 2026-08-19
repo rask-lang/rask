@@ -1551,6 +1551,28 @@ impl TypeChecker {
                         convert: None,
                         span: expr.span,
                     });
+                } else if !matches!(target, Type::Error)
+                    && !matches!(inner_ty, Type::Var(_) | Type::Error)
+                    && inner_ty != target
+                {
+                    // A number or a trait object are the only two things `as`
+                    // converts to. To anything else it reinterprets the bits,
+                    // which is what `transmute` needs `unsafe` for.
+                    //
+                    // This branch used to not exist: a non-scalar target fell
+                    // off the end of the `if` with no check at all and the
+                    // expression was simply declared to have the target type,
+                    // so `[1, 2, 3] as Vec<i64>` lowered to a stack array whose
+                    // address was handed to `Vec_len` — and indexing it
+                    // segfaulted from ordinary safe code (#862).
+                    self.unsafe_ops.push((expr.span, super::UnsafeCategory::Transmute));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::AsCastNotConvertible {
+                            src_ty: inner_ty.clone(),
+                            target_name: ty.clone(),
+                            span: expr.span,
+                        });
+                    }
                 }
 
                 target

@@ -64,10 +64,12 @@ fit.
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and boxes a trait object (`as any Trait`). To anything else it reinterprets bits, so it needs `unsafe` |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
 let x: i8 = big_val as i8           // CV2: ERROR, narrowing
+let v = [1, 2, 3] as Vec<i64>       // CV4a: ERROR — `let v: Vec<i64> = [1, 2, 3]`
 ```
 
 ### CV1: which int→float casts are lossless
