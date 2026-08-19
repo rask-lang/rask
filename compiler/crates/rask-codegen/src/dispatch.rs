@@ -885,6 +885,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Random_f32", "rask_rng_f32", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Random_bool", "rask_rng_bool", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_range", "rask_rng_range", &[types::I64, types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Random_shuffle", "rask_random_shuffle", &[types::I64, types::I64], None, true),
+        // `choice` hands back a pointer to the element, or NULL for an empty
+        // Vec — the same shape `Vec_get` uses, so DerefOption builds the `T?`.
+        StdlibEntry {
+            mir_name: "Random_choice", c_name: "rask_random_choice",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
 
         // ── Random module convenience functions ───────────────────
         StdlibEntry::simple("random_f64", "rask_random_f64", &[], Some(types::F64), false),

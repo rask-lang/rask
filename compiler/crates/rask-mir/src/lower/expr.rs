@@ -4833,6 +4833,18 @@ impl<'a> MirLowerer<'a> {
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3765"));
             Some(MirType::Option(Box::new(elem)))
+        } else if qualified_name == "Random_choice" {
+            // `choice(v)` answers `T?`, and the payload type sizes the slot the
+            // DerefOption adapter copies into. From the stub metadata it came
+            // back as a bare `T` → i64, so a `Vec<string>` handed back the
+            // first eight bytes of the string as a number (#857). The element
+            // type is the *argument's*, not the receiver's — the receiver is
+            // the generator.
+            let elem = args
+                .first()
+                .and_then(|a| self.collection_elem_of_expr(&a.expr))
+                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:random_choice"));
+            Some(MirType::Option(Box::new(vec_slot_type(elem))))
         } else if qualified_name == "Map_get" {
             // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies

@@ -455,6 +455,8 @@ double   rask_rng_f64(RaskRng *rng);
 double   rask_rng_f32(RaskRng *rng);
 int64_t  rask_rng_bool(RaskRng *rng);
 int64_t  rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi);
+void     rask_random_shuffle(RaskRng *rng, RaskVec *v);
+void    *rask_random_choice(RaskRng *rng, RaskVec *v);
 
 // Module-level convenience (thread-local PRNG)
 double   rask_random_f64(void);
