@@ -1222,7 +1222,7 @@ impl<'a> Printer<'a> {
             self.emit("comptime ");
         }
         self.emit("test \"");
-        self.emit(&t.name);
+        self.emit(&escape_string_literal(&t.name));
         self.emit("\" {");
         self.emit_newline();
 
@@ -1236,7 +1236,7 @@ impl<'a> Printer<'a> {
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
         self.emit("benchmark \"");
-        self.emit(&b.name);
+        self.emit(&escape_string_literal(&b.name));
         self.emit("\" {");
         self.emit_newline();
 
@@ -2808,4 +2808,29 @@ fn unaryop_str(op: &UnaryOp) -> &'static str {
         UnaryOp::Deref => "*",
         UnaryOp::Own => "own ",
     }
+}
+
+/// Put a string back into source form.
+///
+/// A string *expression* is reprinted from its own span, so its escapes come
+/// through untouched. A test or benchmark name is only a `String` on the
+/// declaration — the lexer has already unescaped it — so printing it raw wrote
+/// the characters themselves. A name containing `\u` came back out as a lone
+/// `\u`, which isn't a valid escape, and the formatted file no longer parsed
+/// (#850).
+fn escape_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

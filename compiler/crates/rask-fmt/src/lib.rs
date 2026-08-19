@@ -578,6 +578,30 @@ func main() {
     }
 
     #[test]
+    fn test_name_keeps_its_escapes() {
+        // The name is a `String` on the declaration, already unescaped by the
+        // lexer, so printing it raw wrote the characters themselves — and a
+        // name containing `\u` came back out as a lone `\u`, which isn't a
+        // valid escape. The formatted file then didn't parse (#850).
+        let input = "test \"a \\\\u and \\\" and \\\\ and \\t\" {\n    assert true\n}\n";
+        let output = format_source(input);
+        assert!(
+            output.contains(r#"test "a \\u and \" and \\ and \t""#),
+            "escapes should survive: {}",
+            output
+        );
+        let twice = format_source(&output);
+        assert_eq!(output, twice, "should be idempotent");
+    }
+
+    #[test]
+    fn benchmark_name_keeps_its_escapes() {
+        let input = "benchmark \"q \\\" b\" {\n    let x = 1\n}\n";
+        let output = format_source(input);
+        assert!(output.contains(r#"benchmark "q \" b""#), "escapes should survive: {}", output);
+    }
+
+    #[test]
     fn handles_multiline_function() {
         let input = r#"
 func process(items: Vec<i32>) -> i32 {
