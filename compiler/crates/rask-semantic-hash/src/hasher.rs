@@ -893,6 +893,7 @@ impl Hasher {
                 ArgMode::Default => 0,
                 ArgMode::Own => 1,
                 ArgMode::Mutate => 2,
+                ArgMode::Deleting => 3,
             });
             self.hash_expr(&arg.expr);
         }
