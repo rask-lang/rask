@@ -112,6 +112,14 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// H1: a resource-typed value produced by an expression statement is
+    /// never bound to anything, so it's dropped unconsumed the instant it's
+    /// produced (e.g. `spawn(|| { ... })` with no `let`).
+    #[error("value of resource type `{type_name}` is dropped without being consumed")]
+    ResourceDiscardedAsStatement {
+        type_name: String,
+    },
+
     /// Resource captured by closure/spawn not consumed on all code paths.
     #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
     ResourceNotConsumedInClosure {

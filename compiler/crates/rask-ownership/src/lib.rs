@@ -635,6 +635,17 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
+                // H1/L1: a resource-typed value with nothing to bind it to is
+                // dropped the instant it's produced — e.g. `spawn(f)` used as
+                // a bare statement, with the TaskHandle never joined/detached.
+                if self.expr_is_resource_type(expr) {
+                    let type_name = self.receiver_type_name(expr)
+                        .unwrap_or_else(|| "?".to_string());
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ResourceDiscardedAsStatement { type_name },
+                        span: expr.span,
+                    });
+                }
             }
             StmtKind::Assign { target, value } => {
                 self.check_expr(value);
@@ -2688,6 +2699,7 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
+                Type::Generic { base, .. } => Some(*base),
                 _ => None,
             };
             if let Some(id) = type_id {

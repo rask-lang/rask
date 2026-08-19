@@ -351,6 +351,9 @@ impl Default for ErrorCodeRegistry {
                 "E0831" => ("`using` context on the entry point", Type,
                     "A `using` clause is a hidden parameter (mem.context/CC11): callers pass the context in, and the compiler finds it by searching the caller's scope. The entry point has no caller — the process starts there — so that parameter is never written and holds whatever the stack happened to contain. Own the context instead: build it as a local in the entry point and call the functions that declare `using`; they resolve it out of your scope automatically.",
                     "func main() using players: Pool<Player> {   // error: nothing can supply this\n    spawn_wave(10)\n}\n\n// fix: own the pool in main, leave the clause on the callee\nfunc main() {\n    mut players: Pool<Player> = Pool.new()\n    spawn_wave(10)   // resolves `players` from main's scope\n}\n\nfunc spawn_wave(n: i64) using players: Pool<Player> { }"),
+                "E0834" => ("resource discarded as a statement", Ownership,
+                    "A resource-typed value (marked @resource, like `TaskHandle` — conc.async/H1) came back from a call used as a bare statement, with nothing to bind it to. The value is produced and dropped in the same instant, before anything could consume it — the same leak `E0805` catches for a named binding that falls out of scope unconsumed, just with no name to point at.",
+                    "using Multitasking {\n    spawn(|| { work() })   // error: TaskHandle dropped without join()/detach()\n}\n// fix: let h = spawn(|| { work() })\n//      h.detach()"),
             },
         }
     }

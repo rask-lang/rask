@@ -1782,6 +1782,43 @@ fn error_linear_consumed_if_without_else() {
         "resource consumed in an if-without-else should be E0805 (L1): {}", output);
 }
 
+// ─── TaskHandle must be consumed (issue #797, conc.async/H1) ──
+//
+// `TaskHandle<T>` is `@resource` (stdlib/async.rk): `spawn(...)` must be
+// joined, detached, or cancelled — never silently dropped.
+
+#[test]
+fn error_task_handle_bound_but_never_consumed() {
+    let output = check_output(
+        "func leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+    );
+    assert!(output.contains("E0805"),
+        "a TaskHandle bound but never joined/detached should be E0805 (H1): {}", output);
+}
+
+#[test]
+fn error_task_handle_dropped_as_bare_statement() {
+    // The exact form specs/concurrency/async.md's H1 example rejects: nothing
+    // even binds the handle, so it's dropped the instant it's produced.
+    let output = check_output(
+        "func main() {\n    using Multitasking {\n        spawn(|| { return 1 })\n    }\n}"
+    );
+    assert!(output.contains("E0834"),
+        "an unbound spawn() used as a statement should be E0834 (H1): {}", output);
+}
+
+#[test]
+fn ok_task_handle_joined_or_detached_or_cancelled() {
+    for method in ["let _ = h.join()", "h.detach()", "let _ = h.cancel()"] {
+        let output = check_output(&format!(
+            "func main() {{\n    using Multitasking {{\n        let h = spawn(|| {{ return 1 }})\n        {}\n    }}\n}}",
+            method
+        ));
+        assert!(output.contains("Typecheck OK"),
+            "consuming the handle via `{}` should type-check clean: {}", method, output);
+    }
+}
+
 #[test]
 fn error_move_in_loop_body() {
     let output = check_output(

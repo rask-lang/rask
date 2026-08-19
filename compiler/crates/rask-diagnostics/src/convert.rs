@@ -2047,10 +2047,22 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0805")
                 .with_primary(self.span, "resource goes out of scope here")
                 .with_help(format!(
-                    "call `.close()` on `{}` or use `ensure` for cleanup",
+                    "call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup",
                     name
                 ))
-                .with_fix(format!("call `.close()` on `{}` or use `ensure` for cleanup", name))
+                .with_fix(format!("call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup", name))
+                .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+
+            ResourceDiscardedAsStatement { type_name } => {
+                Diagnostic::error(format!(
+                    "value of resource type `{}` is dropped without being consumed",
+                    type_name
+                ))
+                .with_code("E0834")
+                .with_primary(self.span, "produced here and immediately dropped")
+                .with_help("bind it to a name and call a consuming method on it, e.g. `let h = ...; h.join()`")
+                .with_fix("bind the value to a name so it can be consumed")
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
@@ -2065,7 +2077,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "consume `{}` on every code path, or use `ensure` inside the {} body",
                     name, context
                 ))
-                .with_fix(format!("add `ensure {{ {}.close() }}` at the top of the {} body", name, context))
+                .with_fix(format!("consume `{}` (e.g. `ensure {{ {}.close() }}`) at the top of the {} body", name, name, context))
                 .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
             }
 
