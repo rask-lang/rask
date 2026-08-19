@@ -999,9 +999,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("io_close_fd", "rask_io_close_fd", &[types::I64], None, false),
 
         // ── Net module ──────────────────────────────────────────────
-        StdlibEntry::neg_err("net_tcp_listen", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("net_tcp_connect", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
-        StdlibEntry::neg_err("TcpListener_accept", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        // Plain handle returns, not `neg_err`. The adapter that turns a negative
+        // return into the error side has no way to build an `IoError` — it's a
+        // Rask enum — so it left the raw -1 as the payload, and matching -1 as an
+        // enum tag traps. `stdlib/net.rk` checks `is_invalid()` and builds the
+        // error itself (#863), the same way `fs.open` does (#858).
+        StdlibEntry::simple("net_listen_handle", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("net_connect_handle", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_accept_handle", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {

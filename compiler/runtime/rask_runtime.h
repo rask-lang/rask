@@ -565,6 +565,8 @@ int64_t rask_net_read_bytes(int64_t fd);
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr);
 void    rask_net_remote_addr(RaskStr *out, int64_t fd);
 void    rask_net_local_addr(RaskStr *out, int64_t fd);
+int8_t  rask_net_is_invalid(int64_t handle);
+int8_t  rask_net_is_unresolved(int64_t handle);
 
 // ─── Filesystem metadata ────────────────────────────────────
 int64_t rask_fs_metadata(int64_t path_ptr);

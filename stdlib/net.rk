@@ -5,18 +5,110 @@ struct net { }
 
 extend net {
     /// Listen for TCP connections on the given address.
-    @native("rask_net_tcp_listen")
-    public func tcp_listen(addr: string) -> TcpListener or IoError {}
+    public func tcp_listen(addr: string) -> TcpListener or IoError {
+        try net.check_addr(addr)
+        let l = net.listen_handle(addr)
+        if l.is_unresolved() {
+            return IoError.Other("could not resolve {addr}")
+        }
+        if l.is_invalid() {
+            return IoError.last_os_error()
+        }
+        return l
+    }
 
     /// Connect to a remote TCP address. Returns a connection or error.
+    public func tcp_connect(addr: string) -> TcpConnection or IoError {
+        try net.check_addr(addr)
+        let c = net.connect_handle(addr)
+        if c.is_unresolved() {
+            return IoError.Other("could not resolve {addr}")
+        }
+        if c.is_invalid() {
+            return IoError.last_os_error()
+        }
+        return c
+    }
+
+    /// An address is a host *and* a port.
+    ///
+    /// Checked here rather than in the runtime, so both backends reject the same
+    /// strings with the same message. The C side used to fill in whichever half
+    /// was missing: `tcp_listen("not-an-address")` found no colon, defaulted to
+    /// 0.0.0.0 port 0, bound it, and reported success (#863).
+    func check_addr(addr: string) -> void or IoError {
+        let cut = addr.last_index_of(":")
+        if cut is none {
+            return IoError.Other("invalid socket address")
+        }
+        let at = cut!.wrap<i64>()
+        if at == 0 {
+            return IoError.Other("invalid socket address")
+        }
+        let start = at + 1
+        let port = addr.substring(start.wrap<usize>(), addr.len())
+        // `parse<i64>` and an explicit range, not `parse<u16>`: parsing into a
+        // narrow width doesn't range-check on either backend, and native stored
+        // the low 16 bits — `tcp_listen("127.0.0.1:99999")` bound port 34463 and
+        // reported success (#864).
+        let n = port.parse<i64>()
+        n catch e => {
+            return IoError.Other("invalid port value")
+        }
+        let value = try n
+        if value < 0 || value > 65535 {
+            return IoError.Other("invalid port value")
+        }
+        return
+    }
+
+    /// The raw `bind`/`listen` pair. -1 means the syscall failed and errno says
+    /// why; -2 means the address named nothing that resolves.
+    @native("rask_net_tcp_listen")
+    func listen_handle(addr: string) -> TcpListener {}
+
+    /// The raw `connect`. Same -1/-2 convention as `listen_handle`.
     @native("rask_net_tcp_connect")
-    public func tcp_connect(addr: string) -> TcpConnection or IoError {}
+    func connect_handle(addr: string) -> TcpConnection {}
 }
+
+/// A listening TCP socket.
+///
+/// Declared here rather than only in the type registry: without a struct
+/// declaration, `self.accept_handle()` inside `extend TcpListener` mangled to
+/// `Self_accept_handle` and codegen couldn't find it.
+public struct TcpListener { }
 
 extend TcpListener {
     /// Accept an incoming TCP connection.
+    public func accept(self) -> TcpConnection or IoError {
+        let c = self.accept_handle()
+        if c.is_invalid() {
+            return IoError.last_os_error()
+        }
+        return c
+    }
+
+    /// The raw `accept`, -1 on failure.
     @native("rask_net_tcp_accept")
-    public func accept(self) -> TcpConnection or IoError {}
+    func accept_handle(self) -> TcpConnection {}
+
+    /// True when the handle is a failed syscall's -1.
+    ///
+    /// The check lives in Rask because only Rask can build an `IoError` — the
+    /// runtime reports failure as -1, and the adapter that turned a negative
+    /// return into the error side put that -1 in the payload. Reading -1 as an
+    /// `IoError` tag is an out-of-range match, which traps: SIGILL on the first
+    /// refused connection (#863). Same shape as `File.is_null` (#858).
+    @native("rask_net_is_invalid")
+    func is_invalid(self) -> bool {}
+
+    /// True when the runtime's -2 came back: the address parsed but named
+    /// nothing that resolves. Kept apart from `is_invalid` because
+    /// `getaddrinfo` doesn't set errno — asking `last_os_error()` about it
+    /// answered "Success (os error 0)" for a failure.
+    @native("rask_net_is_unresolved")
+    func is_unresolved(self) -> bool {}
 
     /// Get the local address the listener is bound to.
     @native("rask_net_local_addr")
@@ -44,12 +136,33 @@ extend TcpConnection {
     public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
 
     /// Read all available data, decoding as UTF-8 text.
-    @native
-    public func read_text(self) -> string or IoError {}
+    ///
+    /// Written in Rask over `read_bytes`: which byte sequences are legal, and
+    /// what a bad one reports, is exactly the kind of answer the two backends
+    /// must not decide separately. Before this there was no native entry point
+    /// at all — `conn.read_text()` failed in codegen with "Function not found:
+    /// TcpConnection_read_text" while the interpreter ran it (#863).
+    public func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes)
+        text catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return try text
+    }
 
-    /// Write text to the connection.
-    @native
-    public func write_text(self, data: string) -> void or IoError {}
+    /// Write text to the connection — its UTF-8 bytes, nothing added.
+    public func write_text(self, data: string) -> void or IoError {
+        mut bytes: Vec<u8> = Vec.new()
+        let len = data.len().wrap<i64>()
+        mut i: i64 = 0
+        while i < len {
+            bytes.push(data.byte_at(i.wrap<usize>()) ?? 0)
+            i = i + 1
+        }
+        try self.write_bytes(bytes)
+        return
+    }
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
@@ -70,4 +183,13 @@ extend TcpConnection {
     /// Clone the connection handle.
     @native("rask_net_clone")
     public func clone(self) -> TcpConnection {}
+
+    /// True when the handle is a failed syscall's -1. See `TcpListener.is_invalid`.
+    @native("rask_net_is_invalid")
+    func is_invalid(self) -> bool {}
+
+    /// True when the address named nothing that resolves. See
+    /// `TcpListener.is_unresolved`.
+    @native("rask_net_is_unresolved")
+    func is_unresolved(self) -> bool {}
 }
