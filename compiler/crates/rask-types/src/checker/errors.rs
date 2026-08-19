@@ -298,6 +298,13 @@ pub enum TypeError {
         type_name: String,
         span: Span,
     },
+    /// conc.sync/R4: bare `with shared as v` — the lock has to be named.
+    #[error("`with {name} as {binding}` doesn't say which lock")]
+    BareSharedWith {
+        name: String,
+        binding: String,
+        span: Span,
+    },
     #[error("cannot mutate `{source_var}` while viewed by `{view_var}`")]
     MutateBorrowedSource {
         source_var: String,
@@ -981,6 +988,7 @@ impl TypeError {
             | StringSliceStored { .. }
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
+            | BareSharedWith { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }

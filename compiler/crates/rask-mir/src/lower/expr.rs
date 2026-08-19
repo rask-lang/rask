@@ -630,6 +630,26 @@ impl<'a> MirLowerer<'a> {
     /// `None` when this isn't a Vec element, or the element type isn't known;
     /// the caller then lowers it the ordinary way.
     fn lower_elem_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
+        self.lower_elem_for_mutate_inner(place, true)
+    }
+
+    /// The same borrow for a *scalar* element. The aggregate rule doesn't apply
+    /// here: a scalar `mutate` parameter is itself a pointer, so the borrowed
+    /// address is exactly what the callee wants.
+    ///
+    /// Without it a scalar element fell through to the spill-a-copy path, and
+    /// `bump(mutate arr[0])` left the element alone natively while the
+    /// interpreter wrote it back — the same call on a struct field wrote back on
+    /// both (#879).
+    fn lower_elem_for_mutate_scalar(&mut self, place: &Expr) -> Option<TypedOperand> {
+        self.lower_elem_for_mutate_inner(place, false)
+    }
+
+    fn lower_elem_for_mutate_inner(
+        &mut self,
+        place: &Expr,
+        require_aggregate: bool,
+    ) -> Option<TypedOperand> {
         let ExprKind::Index { object, index } = &place.kind else {
             return None;
         };
@@ -645,9 +665,10 @@ impl<'a> MirLowerer<'a> {
             .lookup_raw_type(place.id)
             .map(|t| self.ctx.type_to_mir(t))
             .or_else(|| self.collection_elem_of_expr(object))?;
-        // Only aggregates. A scalar element is passed by value, and handing over
-        // its address here would have the callee read the pointer as the value.
-        if !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
+        // On the aggregate path, only aggregates: a scalar element is passed by
+        // value there, and handing over its address would have the callee read
+        // the pointer as the value.
+        if require_aggregate && !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
             return None;
         }
         let (coll_op, _) = self.lower_expr(object).ok()?;
@@ -723,6 +744,11 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(id), MirType::Ptr));
                 }
             }
+        }
+        // A Vec or Map element has no base+offset place to point at — it lives in
+        // the collection's own buffer — so borrow it for the length of the call.
+        if let Some(borrowed) = self.lower_elem_for_mutate_scalar(arg) {
+            return Ok(borrowed);
         }
         // Field/index projection: pass the address of the place so the callee's
         // store lands in the caller's storage.

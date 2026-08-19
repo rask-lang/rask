@@ -973,6 +973,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
             }
 
+            BareSharedWith { name, binding, span } => {
+                Diagnostic::error(format!("`with {} as {}` doesn't say which lock", name, binding))
+                    .with_code("E0839")
+                    .with_primary(*span, "a `Shared` is read by many or written by one — this could be either")
+                    .with_help("name the lock: `.read()` for concurrent readers, `.write()` for exclusive access")
+                    .with_fix(format!("with {}.read() as {} {{ … }}", name, binding))
+                    .with_why("the two locks behave differently — a read binding permits other readers and never writes back, a write binding blocks them and does — so which one you get is written rather than inferred [conc.sync/R4]")
+            }
+
             MutateBorrowedSource { source_var, view_var, borrow_span, mutate_span } => {
                 Diagnostic::error(format!("cannot mutate `{}` while viewed by `{}`", source_var, view_var))
                     .with_code("E0323")

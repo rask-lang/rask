@@ -1761,6 +1761,26 @@ fn error_conditional_conformance_unmet() {
     assert!(compile_error("conditional_conformance_unmet.rk"), "should reject Ring<Blob> when the CC condition `T: Show` isn't met (CC1)");
 }
 
+/// conc.sync/R4: bare `with shared as v` names no lock. Nothing enforced it —
+/// the interpreter reached a runtime error whose message contradicted itself and
+/// native compiled it and read the wrong bytes (#880). Checks the code as well as
+/// the failure, since "some error" would also be satisfied by an unrelated one.
+#[test]
+fn error_bare_shared_with() {
+    let (failed, out) = compile_error_output("bare_shared_with.rk");
+    assert!(failed, "should reject `with shared as v` — the lock has to be named (R4)");
+    assert!(
+        out.contains("E0839"),
+        "should be the named-lock error, not something else: {}",
+        out,
+    );
+    assert!(
+        out.contains(".read()"),
+        "should show the fix as code: {}",
+        out,
+    );
+}
+
 #[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");

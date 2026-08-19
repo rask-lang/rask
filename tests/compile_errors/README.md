@@ -28,6 +28,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [int_literal_unwritable.rk](int_literal_unwritable.rk) | The two ends no type holds — digits past `u128::MAX` (lexer) and a negative below `i128::MIN` (parser sign fold) (#800) |
 | [untyped_bindings.rk](untyped_bindings.rk) | Bindings that carried no type at all, so a wrong annotation unified happily: a struct-variant pattern's fields, an `is` binding, a tuple `for` binding (E0308, #809) |
 | [newline_continuation.rk](newline_continuation.rk) | A line starting with `+` — excluded from newline continuation (P3) and not a statement either (#304) |
+| [bare_shared_with.rk](bare_shared_with.rk) | Bare `with shared as v` — the lock has to be named `.read()` or `.write()` (conc.sync/R4, E0839, #880). Nothing enforced it: the interpreter hit a self-contradictory runtime error and native read the wrong bytes |
 | [map_key_hashable.rk](map_key_hashable.rk) | A Map key that isn't Hashable (E0834, HA1/HA4, #812) — a nominal newtype with no `with (…)` clause, a float, a struct with a float field; each gets the way out that fits it |
 | [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0340/E0308, #812) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |

@@ -1770,6 +1770,27 @@ impl TypeChecker {
                         _ => None,
                     }
                     .unwrap_or_else(|| source_ty.clone());
+                    // conc.sync/R4: bare `with shared as v` names no lock, and the
+                    // two locks don't behave the same — a read binding permits
+                    // other readers and never writes back, a write binding blocks
+                    // them and does. Nothing enforced this: the interpreter got as
+                    // far as a runtime error whose message contradicted itself
+                    // ("expected Cell, Mutex, Shared … got Shared") and native
+                    // compiled it and read the wrong bytes, printing 0 for a field
+                    // that held 4 (#880).
+                    let names_a_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. }
+                            if matches!(method.as_str(), "read" | "write" | "staged")
+                    );
+                    if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
+                        self.errors.push(TypeError::BareSharedWith {
+                            name: Self::source_text_for(&binding.source)
+                                .unwrap_or_else(|| "shared".to_string()),
+                            binding: binding.name.clone(),
+                            span: binding.source.span,
+                        });
+                    }
                     // Bindings are mutable, with one exception: conc.sync/R1 —
                     // a shared read lock permits concurrent readers, so its
                     // binding is read-only and never writes back. Mutation
@@ -3796,6 +3817,29 @@ impl TypeChecker {
 
     /// Is this expression's inferred type `Shared<...>`? (Receiver must have
     /// been inferred already — with-binding sources are.)
+    /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
+    /// for a place that already has the type in hand.
+    fn type_is_shared(ty: &Type, types: &crate::TypeTable) -> bool {
+        match ty {
+            Type::Generic { base, .. } => types.type_name(*base) == "Shared",
+            Type::UnresolvedGeneric { name, .. } => name == "Shared",
+            _ => false,
+        }
+    }
+
+    /// How to spell a `with` source back to the author. A name for a plain
+    /// binding, a field path for a field; `None` for anything longer, where the
+    /// suggestion is better off generic than wrong.
+    fn source_text_for(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::source_text_for(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     fn expr_is_shared(&mut self, e: &Expr) -> bool {
         let Some(t) = self.node_types.get(&e.id).cloned() else { return false };
         match self.ctx.apply(&t) {
