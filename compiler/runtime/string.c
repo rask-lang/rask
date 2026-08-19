@@ -359,8 +359,8 @@ static int64_t parse_error_tag(const RaskStr *s) {
 //
 // Matches the interpreter: surrounding whitespace is trimmed, then the whole
 // remaining string must be a number. Leading garbage, trailing garbage, an
-// empty string and out-of-range all fail. Neither backend range-checks against
-// a narrower target width — `"70000".parse()` into a u16 succeeds on both.
+// empty string and out-of-range all fail. This is the 64-bit signed parse the
+// narrower widths build on; each of those checks its own range (#837).
 int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
     char buf[64];
     if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
@@ -376,6 +376,65 @@ int64_t rask_string_parse_int_into(const RaskStr *s, int64_t *out) {
     *out = (int64_t)v;
     return 0;
 }
+
+// The unsigned targets. `strtoll` tops out at `i64::MAX`, so
+// `"18446744073709551615".parse<u64>()` — u64::MAX exactly — came back as
+// "value out of range", and a leading `-` parsed happily and handed back a
+// huge positive number through the unsigned slot (#837).
+int64_t rask_string_parse_uint_into(const RaskStr *s, uint64_t *out) {
+    char buf[64];
+    if (!parse_copy(s, buf, sizeof buf)) return 1 + parse_error_tag(s);
+
+    // strtoull accepts a sign and negates; nothing negative belongs in an
+    // unsigned target, so it's rejected before the conversion sees it.
+    const char *p = buf;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '-') return 1 + parse_error_tag(s);
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(buf, &end, 10);
+    if (end == buf) return 1 + parse_error_tag(s);       // no digits consumed
+    if (errno == ERANGE) return 1 + parse_error_tag(s);   // above u64
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    if (*end != '\0') return 1 + parse_error_tag(s);    // trailing garbage
+
+    *out = (uint64_t)v;
+    return 0;
+}
+
+// Per-width parses. Every integer width shared the 64-bit parse and the
+// caller narrowed whatever came back, so `"70000".parse<u8>()` succeeded —
+// native truncating to 112, the interpreter keeping 70000. A value that
+// doesn't fit the target is out of range, and now says so (#837).
+#define PARSE_OUT_OF_RANGE 2
+
+#define RASK_PARSE_SIGNED(NAME, LO, HI)                                  \
+    int64_t NAME(const RaskStr *s, int64_t *out) {                       \
+        int64_t v = 0;                                                   \
+        int64_t status = rask_string_parse_int_into(s, &v);              \
+        if (status != 0) return status;                                  \
+        if (v < (LO) || v > (HI)) return 1 + PARSE_OUT_OF_RANGE;         \
+        *out = v;                                                        \
+        return 0;                                                        \
+    }
+
+#define RASK_PARSE_UNSIGNED(NAME, HI)                                    \
+    int64_t NAME(const RaskStr *s, uint64_t *out) {                      \
+        uint64_t v = 0;                                                  \
+        int64_t status = rask_string_parse_uint_into(s, &v);             \
+        if (status != 0) return status;                                  \
+        if (v > (HI)) return 1 + PARSE_OUT_OF_RANGE;                     \
+        *out = v;                                                        \
+        return 0;                                                        \
+    }
+
+RASK_PARSE_SIGNED(rask_string_parse_i8_into, INT8_MIN, INT8_MAX)
+RASK_PARSE_SIGNED(rask_string_parse_i16_into, INT16_MIN, INT16_MAX)
+RASK_PARSE_SIGNED(rask_string_parse_i32_into, INT32_MIN, INT32_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u8_into, UINT8_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u16_into, UINT16_MAX)
+RASK_PARSE_UNSIGNED(rask_string_parse_u32_into, UINT32_MAX)
 
 int64_t rask_string_parse_float_into(const RaskStr *s, double *out) {
     char buf[64];

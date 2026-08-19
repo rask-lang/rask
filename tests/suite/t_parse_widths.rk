@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `parse<T>()` answers at T's width, not at i64's (#837).
+//
+// Every integer width shared one 64-bit signed parse and the caller narrowed
+// whatever came back. Three things fell out of that:
+//
+//   "18446744073709551615".parse<u64>()   // u64::MAX exactly — "out of range"
+//   "-1".parse<u64>()                     // succeeded; native printed
+//                                         // 18446744073709551615, the
+//                                         // interpreter printed -1
+//   "70000".parse<u8>()                   // succeeded; native gave 112,
+//                                         // the interpreter gave 70000
+//
+// A value the target can't hold is out of range, whichever width it is, and
+// nothing negative belongs in an unsigned target.
+
+func u8_of(s: string) -> string {
+    let r = s.parse<u8>()
+    if r is u8 as n {
+        return "{n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+func u64_of(s: string) -> string {
+    let r = s.parse<u64>()
+    if r is u64 as n {
+        return "{n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+func i8_of(s: string) -> string {
+    let r = s.parse<i8>()
+    if r is i8 as n {
+        return "{n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+func i32_of(s: string) -> string {
+    let r = s.parse<i32>()
+    if r is i32 as n {
+        return "{n}"
+    } else as e {
+        return "err {e}"
+    }
+}
+
+test "std.strings — an unsigned target reaches its own maximum" {
+    assert_eq(u64_of("9223372036854775808"), "9223372036854775808")
+    assert_eq(u64_of("18446744073709551615"), "18446744073709551615")
+    // One past u64::MAX.
+    assert_eq(u64_of("18446744073709551616"), "err value out of range")
+}
+
+test "std.strings — nothing negative parses into an unsigned target" {
+    assert_eq(u64_of("-1"), "err value out of range")
+    assert_eq(u8_of("-1"), "err value out of range")
+}
+
+test "std.strings — a value the width can't hold is out of range" {
+    assert_eq(u8_of("255"), "255")
+    assert_eq(u8_of("256"), "err value out of range")
+    assert_eq(u8_of("70000"), "err value out of range")
+
+    assert_eq(i8_of("127"), "127")
+    assert_eq(i8_of("-128"), "-128")
+    assert_eq(i8_of("128"), "err value out of range")
+    assert_eq(i8_of("-129"), "err value out of range")
+
+    assert_eq(i32_of("2147483647"), "2147483647")
+    assert_eq(i32_of("2147483648"), "err value out of range")
+}
+
+test "std.strings — the other failures still name themselves" {
+    assert_eq(u8_of(""), "err no digits found")
+    assert_eq(u8_of("abc"), "err non-numeric character")
+    assert_eq(u8_of("  7  "), "7")
+}
+
+func main() {}

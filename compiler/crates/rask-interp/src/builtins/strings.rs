@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{FloatKind, IteratorState, Value};
+use crate::value::{FloatKind, IntKind, IteratorState, Value};
 
 impl Interpreter {
     /// Handle string method calls.
@@ -222,6 +222,14 @@ impl Interpreter {
                         let k = FloatKind::from_name(&target).unwrap_or(FloatKind::F64);
                         Value::Float(k.round(f), k)
                     })
+                } else if let Some(k) = IntKind::from_name(&target) {
+                    // The target's own width, both for the sign and for the
+                    // range. Everything went through `i64`: u64::MAX exactly
+                    // failed, `"-1".parse<u64>()` succeeded and printed as -1
+                    // while native printed 18446744073709551615, and
+                    // `"70000".parse<u8>()` succeeded here at 70000 while
+                    // native truncated it to 112 (#837).
+                    parse_at_width(&text, k)
                 } else {
                     text.parse::<i64>().ok().map(Value::int)
                 };
@@ -449,6 +457,29 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+}
+
+/// Parse into a specific integer width, refusing anything the width can't
+/// hold. An unsigned target parses unsigned, so it reaches `u64::MAX` and
+/// refuses a leading `-`.
+fn parse_at_width(text: &str, kind: IntKind) -> Option<Value> {
+    let bits = kind.bits().unwrap_or(64);
+    if kind.is_unsigned() {
+        let n = text.parse::<u64>().ok()?;
+        if bits < 64 && n > (u64::MAX >> (64 - bits)) {
+            return None;
+        }
+        Some(Value::Int(n as i64, kind))
+    } else {
+        let n = text.parse::<i64>().ok()?;
+        if bits < 64 {
+            let hi = (1i64 << (bits - 1)) - 1;
+            if n > hi || n < -hi - 1 {
+                return None;
+            }
+        }
+        Some(Value::Int(n, kind))
     }
 }
 

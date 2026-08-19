@@ -448,6 +448,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // These use the *_into runtime entry points: the value comes back
         // through an out-param and the return value is a 0/1 status, so an
         // unparseable string becomes Err instead of Ok(0) (#472).
+        //
+        // Every width has its own entry point. Sharing the 64-bit signed parse
+        // meant u64::MAX exactly was "value out of range", a leading `-` came
+        // back as a huge positive number, and `"70000".parse<u8>()` succeeded —
+        // native truncating to 112, the interpreter keeping 70000 (#837).
         StdlibEntry {
             mir_name: "string_parse", c_name: "rask_string_parse_int_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -464,17 +469,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i8", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i8", c_name: "rask_string_parse_i8_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i16", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i16", c_name: "rask_string_parse_i16_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i32", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i32", c_name: "rask_string_parse_i32_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
@@ -489,27 +494,27 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u8", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u8", c_name: "rask_string_parse_u8_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u16", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u16", c_name: "rask_string_parse_u16_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u32", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u32", c_name: "rask_string_parse_u32_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u64", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u64", c_name: "rask_string_parse_uint_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_usize", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_usize", c_name: "rask_string_parse_uint_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
