@@ -6,7 +6,7 @@
 
 # Parameter Modes
 
-Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **take** (ownership transfer). Mutation is marked at both ends: `mutate` in the signature *and* on the argument at the call site.
+Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **deleting** (mutate, and may delete from a `Store` the caller has links into), **take** (ownership transfer). Anything that changes what the caller may assume is marked at both ends: the word in the signature *and* on the argument at the call site.
 
 ## Modes
 
@@ -14,12 +14,42 @@ Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borro
 |------|------|-----------|-----------|--------------|
 | **PM1: Borrow** | Borrow | `param: T` | `f(x)` | Value still valid |
 | **PM2: Mutate** | Mutate | `mutate param: T` | `f(mutate x)` — marker required (PM4) | Value still valid |
+| **PM2b: Deleting** | Mutate + delete | `deleting param: T` | `f(deleting x)` — marker required (PM4) | Value still valid; links into it are not |
 | **PM3: Take** | Take | `take param: T` | `f(x)` or `f(own x)` — marker optional | Value invalid |
 
 | Rule | Description |
 |------|-------------|
 | **PM4: Call-site mutate marker** | An argument passed to a `mutate` parameter is written `mutate arg` at the call site. Omitting it is a compile error with the one-token fix. Method receivers are exempt: `player.take_damage(10)` needs no marker — the receiver is understood to be the thing operated on |
-| **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate`, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
+| **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate` or `deleting`, and it is *that* word at the call site. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
+| **PM6: `deleting` implies `mutate`** | Deleting a node mutates the store it lives in, so `deleting` grants everything `mutate` does. Writing both parses and is redundant; `deleting param: T` alone is the idiom. The two are a lattice — `param` → `mutate param` → `deleting param` — not independent axes |
+| **PM7: What `deleting` is for** | A callee may delete a link the caller handed over as a `take` parameter with no annotation: the name is consumed at the call site, so the caller watches it die. `deleting` covers the case the caller cannot see — the callee picking its own victims, by iterating the store, by `clear`, or by handing a link it derived to something that consumes it. At such a call every link the caller holds into that store is revoked, because which nodes died is not knowable from outside |
+
+### Deleting Mode
+
+`deleting` exists because `Store<T>` hands out `Link<T>`, and a link is a pointer to a node rather than a ticket to look one up. A delete the caller can see is safe without ceremony; a delete it cannot see is a use after free. The mode is what makes the second case visible.
+
+<!-- test: skip -->
+```rask
+// Deletes exactly what it was handed — no annotation. The `take` already tells
+// the caller which node died.
+func remove(mutate list: List, take n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    list.nodes.delete(n)
+}
+
+// Picks its own nodes, so it says so — and the call revokes the caller's links.
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids { delete_subtree(deleting scene, c) }
+    scene.nodes.delete(n)
+}
+```
+
+The word is contextual, not reserved: it is a mode only when a parameter name or another mode word follows it, so `func d(deleting: i32)` and a field named `deleting` keep working.
+
+Omitting it where it is needed is a compile error in the callee (E0329), naming the parameter to declare. Writing `mutate` where the signature says `deleting` is an error at the call site (E0330), with the one-token fix — two different contracts should not print the same.
+
+**Status:** the mode is accepted and implemented; `Store<T>`/`Link<T>` themselves are still an exploration (`analysis.fourth-option`) with no normative spec and no native lowering.
 
 ### Borrow Mode (Default)
 
