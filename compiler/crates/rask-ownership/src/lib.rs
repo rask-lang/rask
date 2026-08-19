@@ -104,6 +104,13 @@ pub struct OwnershipChecker<'a> {
     coarse_resources: HashMap<String, String>,
     /// Parameters declared `deleting`: the caller was told this call may delete
     /// nodes it never named, so an unnamed delete through them is allowed.
+    /// Parameters that are plain borrows — no `take`, no `mutate`. The caller
+    /// keeps ownership, so this body may read and pass them on, but may not give
+    /// them away (mem.linear/L1, #804).
+    borrow_params: HashSet<String>,
+    /// `mutate` parameters: consumable, but whatever is taken out has to be put
+    /// back before the function returns (#804).
+    mutate_params: HashSet<String>,
     deleting_params: HashSet<String>,
     /// Which store a link local came out of, by root name. A link's *type* can't
     /// say — two `Store<Node>` parameters give links of the same type — so the
@@ -161,6 +168,8 @@ impl<'a> OwnershipChecker<'a> {
             active_for_mutates: Vec::new(),
             resource_fields: HashMap::new(),
             coarse_resources: HashMap::new(),
+            borrow_params: HashSet::new(),
+            mutate_params: HashSet::new(),
             deleting_params: HashSet::new(),
             link_store_root: HashMap::new(),
             take_link_params: HashSet::new(),
@@ -414,6 +423,8 @@ impl<'a> OwnershipChecker<'a> {
         self.identified_links.clear();
         self.resource_fields.clear();
         self.coarse_resources.clear();
+        self.borrow_params.clear();
+        self.mutate_params.clear();
         self.deleting_params.clear();
         self.link_store_root.clear();
         self.take_link_params.clear();
@@ -442,6 +453,18 @@ impl<'a> OwnershipChecker<'a> {
             }
             if param.is_deleting {
                 self.deleting_params.insert(param.name.clone());
+            }
+            if !param.is_take && !param.is_mutate && param.name != "self" {
+                self.borrow_params.insert(param.name.clone());
+            }
+            // A `mutate` parameter is an exclusive borrow, so it *may* be consumed
+            // — but only if something is put back before returning, or the caller
+            // is left holding a moved-out value it can't see. Consume-and-replace
+            // is the legitimate pattern (`out.push(b.build())` then
+            // `b = StringBuilder.new()`), so this is tracked at exit rather than
+            // banned at the consume.
+            if param.is_mutate && param.name != "self" {
+                self.mutate_params.insert(param.name.clone());
             }
         }
 
@@ -488,7 +511,9 @@ impl<'a> OwnershipChecker<'a> {
         self.check_block(&fn_decl.body);
 
         // Check for unconsumed resources at function exit
-        self.check_resource_consumption(fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
+        let exit = fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0));
+        self.check_resource_consumption(exit);
+        self.check_mutate_params_replaced(exit);
     }
 
     /// A body with no parameters: reset, walk, then the scope-exit check.
@@ -1259,6 +1284,11 @@ impl<'a> OwnershipChecker<'a> {
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
                     match &object.kind {
+                        ExprKind::Ident(name) if self.borrow_params.contains(name) => {
+                            // #804 again, through the receiver: `func handle(c: Conn)
+                            // { c.close() }` consumes a resource the caller keeps.
+                            self.report_borrowed_consume(name, expr.span);
+                        }
                         ExprKind::Ident(name) => {
                             self.bindings
                                 .insert(name.clone(), BindingState::Moved { at: expr.span });
@@ -3376,10 +3406,62 @@ impl<'a> OwnershipChecker<'a> {
                 .get(name)
                 .map(|t| self.is_copy(t))
                 .unwrap_or(false);
-            if !is_copy {
-                self.bindings.insert(name.clone(), BindingState::Moved { at: arg_expr.span });
+            if is_copy {
+                return;
             }
+            // #804: a plain parameter is borrowed — the caller still owns it, so
+            // giving it away here consumes something twice. Reported and left
+            // owned, so the rest of the body doesn't also report use-after-move.
+            if self.borrow_params.contains(name) {
+                self.report_borrowed_consume(name, arg_expr.span);
+                return;
+            }
+            self.bindings.insert(name.clone(), BindingState::Moved { at: arg_expr.span });
         }
+    }
+
+    /// A `mutate` parameter that was consumed and never reassigned leaves the
+    /// caller holding a value that was moved out from under it.
+    fn check_mutate_params_replaced(&mut self, span: Span) {
+        let mut names: Vec<String> = self.mutate_params.iter().cloned().collect();
+        names.sort();
+        for name in names {
+            let gone = matches!(
+                self.bindings.get(&name),
+                Some(BindingState::Moved { .. }) | Some(BindingState::MaybeMoved { .. })
+            );
+            if !gone {
+                continue;
+            }
+            let at = match self.bindings.get(&name) {
+                Some(BindingState::Moved { at }) | Some(BindingState::MaybeMoved { at }) => *at,
+                _ => span,
+            };
+            let ty = self.param_type_strings.get(&name).cloned().unwrap_or_default();
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::MutateParamNotReplaced {
+                    name: name.clone(),
+                    ty,
+                    consumed_at: at,
+                },
+                span,
+            });
+        }
+    }
+
+    fn report_borrowed_consume(&mut self, name: &str, span: Span) {
+        let ty = self
+            .param_type_strings
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::ConsumedBorrowedParam {
+                name: name.to_string(),
+                ty,
+            },
+            span,
+        });
     }
     /// Name of the type a receiver expression evaluates to. Handles resolved
     /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/

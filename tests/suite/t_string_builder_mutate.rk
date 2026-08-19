@@ -14,7 +14,11 @@ func fill(mutate b: StringBuilder) {
     b.push_char(' ')
 }
 
-func drain(mutate b: StringBuilder) -> string {
+// `take`, not `mutate`: this consumes the builder and hands back its bytes, so
+// the caller gives it up at the call rather than keeping an emptied one. Written
+// `mutate` it was consuming a borrow — the caller's binding moved out from under
+// it, which nothing caught until #804.
+func drain(take b: StringBuilder) -> string {
     return b.build()
 }
 
@@ -36,7 +40,7 @@ test "a builder mutated through a parameter keeps its bytes" {
 test "build() through a mutate parameter returns the real string" {
     mut b = StringBuilder.new()
     b.push("abc")
-    assert drain(mutate b) == "abc"
+    assert drain(b) == "abc"
 }
 
 test "flush-and-reset across a call boundary" {

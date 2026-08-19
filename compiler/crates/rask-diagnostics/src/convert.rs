@@ -2102,6 +2102,50 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
             }
 
+            MutateParamNotReplaced { name, ty, consumed_at } => {
+                let ctor = if ty.is_empty() {
+                    "a new one".to_string()
+                } else {
+                    format!("`{}.new(…)`", ty)
+                };
+                Diagnostic::error(format!(
+                    "`{}` was consumed and never put back",
+                    name
+                ))
+                .with_code("E0807")
+                .with_primary(self.span, format!("`{}` is still empty when this returns", name))
+                .with_help(format!(
+                    "assign {} to `{}` before returning, or declare it `take {}` and return the replacement",
+                    ctor, name, name
+                ))
+                .with_fix(format!("{} = {}", name, ctor))
+                .with_note(format!(
+                    "consumed at line {}",
+                    consumed_at.start
+                ))
+                .with_why("`mutate` lends the value and takes it back — the caller keeps using the same binding afterwards. Consuming it is allowed, because consume-and-replace is a real pattern, but the slot has to hold something again by the time control leaves [mem.parameters/PM3]")
+            }
+
+            ConsumedBorrowedParam { name, ty } => {
+                let decl = if ty.is_empty() {
+                    format!("take {}", name)
+                } else {
+                    format!("take {}: {}", name, ty)
+                };
+                Diagnostic::error(format!(
+                    "`{}` is borrowed from the caller — it can't be given away here",
+                    name
+                ))
+                .with_code("E0806")
+                .with_primary(self.span, format!("`{}` is consumed here", name))
+                .with_help(format!(
+                    "declare it `{}` if this function should own it, or read what you need instead of passing it on",
+                    decl
+                ))
+                .with_fix(decl)
+                .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
+            }
+
             UndeclaredDelete { param, operation } => {
                 Diagnostic::error(format!(
                     "this can delete nodes the caller never named — declare `deleting {}`",

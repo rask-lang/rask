@@ -114,6 +114,24 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
+    /// is left holding a value that moved out from under it.
+    #[error("`{name}` was consumed and not replaced before returning")]
+    MutateParamNotReplaced {
+        name: String,
+        ty: String,
+        consumed_at: Span,
+    },
+
+    /// #804: a plain (borrowed) parameter was consumed — passed to a `take`
+    /// parameter, or had a `take self` method called on it. The caller still owns
+    /// it, so this is a second consumption of one value.
+    #[error("`{name}` is borrowed from the caller and can't be given away")]
+    ConsumedBorrowedParam {
+        name: String,
+        ty: String,
+    },
+
     /// analysis.fourth-option: an unnamed delete through a parameter that didn't
     /// declare `deleting`. The caller was never told its links could die here.
     #[error("`{operation}` through `{param}` deletes nodes the caller never named")]

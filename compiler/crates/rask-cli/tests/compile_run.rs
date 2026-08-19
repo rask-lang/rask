@@ -1839,6 +1839,42 @@ fn error_resource_field_partially_consumed() {
     );
 }
 
+// #804: mem.linear/L1 across a call boundary. A parameter without `take` is a
+// borrow, so consuming it consumes one value twice — and for a `@resource` that
+// ran the cleanup twice, caught only by the interpreter's runtime flag while
+// native had none. `mutate` is the exception, and only half of one: consuming an
+// exclusive borrow is fine if something is put back.
+#[test]
+fn error_consumed_borrow_param() {
+    let (failed, out) = compile_error_output("consumed_borrow_param.rk");
+    assert!(failed, "consuming a borrowed parameter must be rejected: {}", out);
+    // The resource case and the plain-value case are the same bug; a resource is
+    // just where it hurts.
+    assert!(
+        out.contains("`c` is borrowed from the caller"),
+        "the @resource double-close must be caught: {}",
+        out
+    );
+    assert_eq!(
+        out.matches("error[E0806]").count(),
+        3,
+        "plain, and a call-site `own` doesn't buy the permission either: {}",
+        out
+    );
+    // `mutate` consumes legally but owes a replacement, which is a different error.
+    assert_eq!(
+        out.matches("error[E0807]").count(),
+        1,
+        "a consumed `mutate` parameter with nothing put back: {}",
+        out
+    );
+    assert!(
+        out.contains("take b: Bag") && out.contains("take c: Conn"),
+        "the fix names the declaration to change: {}",
+        out
+    );
+}
+
 #[test]
 fn error_resource_unconsumed_in_test_body() {
     let (failed, out) = compile_error_output("resource_unconsumed_in_test_body.rk");

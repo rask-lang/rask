@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L1 across a call boundary (#804).
+//
+// A parameter without `take` is a borrow: the caller keeps the value and goes on
+// using it. Consuming it inside consumes one value twice, and for a `@resource`
+// that means the cleanup runs twice. That compiled until now, caught only by the
+// interpreter's runtime flag — and native has no flag.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+struct Bag {
+    items: Vec<i32>
+}
+
+func eat(take b: Bag) -> usize {
+    return b.items.len()
+}
+
+// The resource case: `c` is borrowed, `close` consumes it.
+func handle(c: Conn) -> i32 {
+    return c.close()            // ERROR: E0806
+}
+
+// The plain-value case, same bug without a resource in sight.
+func relay(b: Bag) -> usize {
+    return eat(b)               // ERROR: E0806
+}
+
+// A call-site `own` doesn't buy the permission either — the caller still owns it.
+func relay_own(b: Bag) -> usize {
+    return eat(own b)           // ERROR: E0806
+}
+
+// `mutate` is an exclusive borrow, so consuming IS allowed — but something has to
+// be put back, or the caller keeps a binding that moved out from under it.
+func drain(mutate b: Bag) -> usize {
+    return eat(b)               // ERROR: E0807 — nothing replaces `b`
+}
+
+func main() {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    let c = Conn { id: 1 }
+    println("{handle(c)}")
+    let _ = c.close()
+    mut bag = Bag { items: v }
+    println("{relay(bag)} {relay_own(bag)} {drain(mutate bag)}")
+}
