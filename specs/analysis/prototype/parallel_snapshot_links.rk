@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// How a graph crosses a task boundary without read-only links.
+//
+// A link is a mutable reference to a node — there is no read-only link — so
+// mem.ownership/T2 forbids one from crossing to another task. That looked like it
+// made graphs task-local, which would have been the model's biggest loss: no
+// simulate-here-render-there, the shape validation program 4 is named after.
+//
+// The store answers it. `snapshot()` deep-copies the graph and re-points every
+// edge inside the copy at the copy, so the reader owns everything it can reach
+// and shares nothing. The store crosses; no link does. It is the delete-time
+// fixup's walk with a different rewrite.
+//
+// The handle version of this is `pool.snapshot()` plus `using frozen Pool<T>`.
+// Same shape, and links reach it without a read-only type.
+
+struct Node { id: i32, peer: Link<Node>? }
+
+func walk(s: Store<Node>) -> i32 {
+    mut t = 0
+    for n in s.nodes() {
+        t += n.id
+        if n.peer? as p { t += p.id }      // following edges inside the copy
+    }
+    return t
+}
+
+func main() {
+    mut world: Store<Node> = Store.new()
+    let a = world.insert(Node { id: 1, peer: none })
+    let b = world.insert(Node { id: 2, peer: none })
+    a.peer = b
+
+    using Multitasking {
+        // Render thread gets its own graph. No link crosses the boundary.
+        let frame = world.snapshot()
+        let h: TaskHandle<i32> = spawn(own || {
+            return walk(frame)
+        })
+
+        // Simulation keeps mutating the live world at the same time.
+        mut i = 0
+        while i < 1000 {
+            a.id += 1
+            b.id += 1
+            i += 1
+        }
+
+        if h.join()? as rendered {
+            println("rendered frame total = {rendered}   (frozen at 1+2+2 = 5)")
+        }
+    }
+    println("live world now = {a.id} + {b.id}")
+}

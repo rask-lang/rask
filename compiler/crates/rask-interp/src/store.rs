@@ -15,6 +15,7 @@
 //! `world.player` and `entity.target` are both a struct field holding a link, so
 //! root edges need no separate machinery.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -371,4 +372,163 @@ pub fn delete_node(
     }
 
     Some(Value::Struct(Arc::clone(node)))
+}
+
+/// Deep-copy a store, rewriting every edge inside the copy to point at the copy.
+///
+/// This is the delete-time fixup's machinery pointed at a different job. Delete
+/// walks the edges into one node and nulls them; a snapshot walks the edges out of
+/// every node and re-points them. Both work because the store knows its own graph.
+///
+/// Edges *out* of the snapshot are left alone: a link held in a caller's field
+/// still names the original node, which is what the caller asked for. Use
+/// `corresponding` to translate one across.
+///
+/// Root edges into the original are untouched for the same reason — nothing about
+/// the original changes.
+pub fn snapshot_store(store: &Arc<Mutex<StoreData>>) -> Value {
+    let (old_id, nodes) = {
+        let guard = store.lock().unwrap();
+        (guard.store_id, guard.live_nodes())
+    };
+
+    // Copy the nodes first, so every target exists before any edge is rewritten.
+    let mut map: HashMap<usize, Arc<Mutex<StructData>>> = HashMap::new();
+    let mut copies: Vec<Arc<Mutex<StructData>>> = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let cloned = node.lock().unwrap().clone();
+        let copy = Arc::new(Mutex::new(cloned));
+        map.insert(node_key(node), Arc::clone(&copy));
+        copies.push(copy);
+    }
+
+    let new_store = Arc::new(Mutex::new(StoreData::with_type_param(
+        store.lock().unwrap().type_param.clone(),
+    )));
+    crate::value::register_store(&new_store);
+    let new_id = new_store.lock().unwrap().store_id;
+
+    for copy in &copies {
+        new_store.lock().unwrap().insert(Arc::clone(copy));
+    }
+
+    // Now the edges. A link is rewritten only if it names a node of *this* store;
+    // a cross-store edge points somewhere this snapshot has no copy of, and
+    // rewriting it would invent one.
+    for copy in &copies {
+        let fields: Vec<(String, Value)> = {
+            let guard = copy.lock().unwrap();
+            guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        for (name, value) in fields {
+            if let Some(rewritten) = rewrite_links(&value, old_id, new_id, &map, 0) {
+                copy.lock().unwrap().fields.insert(name.clone(), rewritten);
+            }
+        }
+        crate::store::register_nested(&Value::Struct(Arc::clone(copy)), 0);
+    }
+
+    {
+        let mut guard = new_store.lock().unwrap();
+        guard.origin_id = Some(old_id);
+        guard.origin = map;
+    }
+    Value::Store(new_store)
+}
+
+/// Rebuild `value` with links into `old_id` re-pointed at their copies. Returns
+/// `None` when nothing inside it changed, so untouched fields aren't rewritten.
+fn rewrite_links(
+    value: &Value,
+    old_id: u32,
+    new_id: u32,
+    map: &HashMap<usize, Arc<Mutex<StructData>>>,
+    depth: usize,
+) -> Option<Value> {
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    match value {
+        Value::Link { store_id, node } if *store_id == old_id => map
+            .get(&node_key(node))
+            .map(|copy| Value::Link { store_id: new_id, node: Arc::clone(copy) }),
+        Value::Vec(items) => {
+            let current: Vec<Value> = items.lock().unwrap().iter().cloned().collect();
+            let mut changed = false;
+            let next: Vec<Value> = current
+                .iter()
+                .map(|v| match rewrite_links(v, old_id, new_id, map, depth + 1) {
+                    Some(nv) => {
+                        changed = true;
+                        nv
+                    }
+                    None => v.clone(),
+                })
+                .collect();
+            changed.then(|| Value::vec(next))
+        }
+        // An edge field is `Link<T>?`, so the common case arrives wrapped in an
+        // Option rather than bare. Enum payloads generally: rewrite each field.
+        Value::Enum { name, variant, fields, variant_index, origin } => {
+            let mut changed = false;
+            let next: Vec<Value> = fields
+                .iter()
+                .map(|f| match rewrite_links(f, old_id, new_id, map, depth + 1) {
+                    Some(nv) => {
+                        changed = true;
+                        nv
+                    }
+                    None => f.clone(),
+                })
+                .collect();
+            changed.then(|| Value::Enum {
+                name: name.clone(),
+                variant: variant.clone(),
+                fields: next,
+                variant_index: *variant_index,
+                origin: origin.clone(),
+            })
+        }
+        // A struct value inside a node field. `StructData::clone` copies the field
+        // map but not the values behind it, so this both rewrites the links and
+        // gives the copy its own struct at this level.
+        Value::Struct(inner) => {
+            let fields: Vec<(String, Value)> = {
+                let guard = inner.lock().unwrap();
+                guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
+            let mut changed = false;
+            let mut next = inner.lock().unwrap().clone();
+            for (name, v) in fields {
+                if let Some(nv) = rewrite_links(&v, old_id, new_id, map, depth + 1) {
+                    changed = true;
+                    next.fields.insert(name, nv);
+                }
+            }
+            changed.then(|| Value::Struct(Arc::new(Mutex::new(next))))
+        }
+        Value::Map(entries) => {
+            let current: Vec<(MapKey, Value)> = entries
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let mut changed = false;
+            let mut next = indexmap::IndexMap::new();
+            for (k, v) in current {
+                match rewrite_links(&v, old_id, new_id, map, depth + 1) {
+                    Some(nv) => {
+                        changed = true;
+                        next.insert(k, nv);
+                    }
+                    None => {
+                        next.insert(k, v);
+                    }
+                }
+            }
+            changed.then(|| Value::Map(Arc::new(Mutex::new(next))))
+        }
+        _ => None,
+    }
 }

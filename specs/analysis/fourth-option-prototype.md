@@ -1039,11 +1039,62 @@ precisely what cross-task read-sharing needs. So dropping it is cheap only if
 read-parallel graph access is not wanted; if it is, the model needs something
 reachability-shaped, and that is the thing the language declines to add.
 
-**What can be recovered without it:** a `Store.snapshot()` returning
-`(copy, original)`, with the copy moved into the task and links derived inside, so
-none cross. That restores read-parallelism and loses stable cross-task identity — a
-handle survives the round trip because it is a name, an address into a different
-allocation does not. Same root cause as the #626 trade.
+### `Store.snapshot()` answers it, and it is built
+
+The store crosses; no link does. `snapshot()` deep-copies the graph and re-points
+every edge inside the copy at the copy, so a reader owns everything it can reach
+and shares nothing. Implemented and running:
+
+```rask
+using Multitasking {
+    let frame = world.snapshot()            // the reader gets its own graph
+    let h: TaskHandle<i32> = spawn(own || { return walk(frame) })
+
+    mut i = 0                               // and the simulation keeps going
+    while i < 1000 { a.id += 1  b.id += 1  i += 1 }
+
+    if h.join()? as rendered { println("frame total = {rendered}") }
+}
+```
+
+```
+rendered frame total = 5   (frozen at 1+2+2 = 5)
+live world now = 1001 + 1002
+```
+
+`prototype/parallel_snapshot_links.rk`, and asserted in
+`tests/suite/p13_store_snapshot.rk`.
+
+**It is the delete-time fixup pointed at a different job.** Delete finds the edges
+*into* one node and nulls them; snapshot finds the edges *out of* every node and
+re-points them. Both work for the same reason — the store knows its own graph — and
+both cost one walk. So the backlink machinery bought two features, not one.
+
+Edges *out of* the snapshot are deliberately left alone: a link in a caller's field
+still names the original node, which is what the caller has. One call translates a
+root across:
+
+```rask
+if copy.corresponding(a)? as ca { … }       // this copy's version of a's node
+```
+
+One lookup at the boundary, then unlimited free access inside — the same shape as
+"one none-test per edge follow, then free". And it has to be optional, because a
+link is an address and there may be no copy of that node here.
+
+**So the read-only question is not load-bearing after all.** It looked like the
+whole read-parallel case turned on it. It doesn't: nothing needs to be read-only,
+because the reader isn't sharing anything to begin with. `mut Link<T>` stays
+withdrawn and the concurrency story is intact.
+
+**What it costs, honestly.** O(nodes + edges) per snapshot, eagerly — `Pool`'s is
+copy-on-write and pays O(n) at the first mutation instead, so a store snapshot is
+the more expensive of the two until someone builds the same trick. And a link still
+has no stable identity across the boundary: `corresponding` translates one you hold
+*now*, but a link sent back from the other task means nothing here. If you need to
+name a node across tasks, put an id on it. That is the same root cause as the #626
+trade — a handle is a name, a link is an address — and it is narrower than it
+looked, since a snapshot needs one translation rather than a shared vocabulary.
 
 **`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
 an assignment that reads as touching `a` also modifies `b`. In the real design
@@ -1234,20 +1285,21 @@ class — which is the answer to "complexity is conserved". The rest are genuine
 new surface.
 
 So the decision is not "does the model work" — it does. With `mut Link<T>`
-withdrawn it comes down to two questions, and only the first is a language change:
+withdrawn and the cross-task case answered by `snapshot`, one question is left,
+and it is the only language change on the list:
 
 1. **Is `deleting` an acceptable parameter mode?** Without it the model is unsound:
    cascade delete is a use after free, demonstrated. Measured cost is three of
    seventeen corpus functions and one call site. Against it, the handle model
    spends context clauses, `frozen`, `WeakHandle`, generation coalescing and the
    W2a–d exceptions — so the signature-surface arithmetic favours it.
-2. **Is a task-local graph acceptable?** This is what "no read-only links" comes
-   to. Every link is a mutable reference, so T2/T3 keep all of them inside one
-   task — no shared reading, not just no shared mutation. The mitigations are a
-   lint for intent and a `Store.snapshot()` for read-parallelism, and the latter
-   costs stable cross-task node identity. If that is acceptable, links are
-   decided. If it is not, the model needs reachability-propagating read-only,
-   which is `&`/`&mut` by another name, and handles stay.
+2. ~~Is a task-local graph acceptable?~~ **Answered by `Store.snapshot()`, which
+   is built.** The store crosses and no link does, so read-parallel access works
+   without a read-only type: `spawn(own || { walk(frame) })` while the original
+   keeps mutating. Costs an eager O(nodes + edges) copy and one `corresponding`
+   call to translate a root. What remains is a lint for read-only *intent*, which
+   is information rather than enforcement — principle 5's job, not the type
+   system's.
 
 ## Running it
 

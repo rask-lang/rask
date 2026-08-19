@@ -491,6 +491,11 @@ pub struct StoreData {
     pub incoming: HashMap<usize, IndexMap<BacklinkKey, Backlink>>,
     /// Slot index per node, so `delete` doesn't scan `slots` to find one.
     pub slot_of: HashMap<usize, u32>,
+    /// For a snapshot: the store it was copied from, and the node it copied each
+    /// of its own nodes from. `corresponding` uses these to translate a link the
+    /// caller still holds into the equivalent node over here.
+    pub origin_id: Option<u32>,
+    pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
 }
 
 impl StoreData {
@@ -503,6 +508,8 @@ impl StoreData {
             type_param: None,
             incoming: HashMap::new(),
             slot_of: HashMap::new(),
+            origin_id: None,
+            origin: HashMap::new(),
         }
     }
 

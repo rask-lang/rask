@@ -93,6 +93,24 @@ extend Store<T> {
     /// Remove every node.
     @native("rask_store_clear")
     public func clear(mutate self) -> void { }
+
+    /// An independent copy of the whole graph, with every edge inside it
+    /// re-pointed at the copy. Nothing is shared with the original, so the copy
+    /// can be moved to another task and read there while this one keeps
+    /// mutating — which is how a graph crosses a task boundary, since a link
+    /// never can (mem.ownership/T2).
+    ///
+    /// O(nodes + edges). The same walk `delete` does, rewriting instead of
+    /// nulling.
+    @native("rask_store_snapshot")
+    public func snapshot(self) -> Store<T> { }
+
+    /// This snapshot's copy of the node `link` names, or `none` if that node
+    /// isn't in here. A link is an address, so it can't name anything in a
+    /// different allocation — this is the one translation at the boundary that
+    /// buys you a starting point inside the copy.
+    @native("rask_store_corresponding")
+    public func corresponding(self, link: Link<T>) -> Link<T>? { }
 }
 
 extend WeakHandle<T> {

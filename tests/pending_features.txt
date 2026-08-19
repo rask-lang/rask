@@ -17,3 +17,4 @@ p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
 p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)
 p11_store_link.rk          # analysis.fourth-option Store<T>/Link<T> — no native lowering (interp green)
 p12_store_link_churn.rk    # analysis.fourth-option edge lists/indexes under churn — same native gap
+p13_store_snapshot.rk      # analysis.fourth-option Store.snapshot — same native gap

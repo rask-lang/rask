@@ -783,6 +783,27 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(links))
             }
+            // A reader gets its own graph rather than a pointer into someone
+            // else's. No link crosses the boundary, so T2 is not in question.
+            "snapshot" => Ok(crate::store::snapshot_store(s)),
+            // Translate a link the caller still holds into this snapshot's copy
+            // of the same node. One lookup at the boundary, not per access.
+            "corresponding" => {
+                let Some(node) = args.first().and_then(link_node) else {
+                    return Err(RuntimeError::TypeError(
+                        "store.corresponding() expects a Link".to_string(),
+                    ));
+                };
+                let store = s.lock().unwrap();
+                let found = store
+                    .origin
+                    .get(&crate::value::node_key(&node))
+                    .map(|copy| Value::Link {
+                        store_id: store.store_id,
+                        node: Arc::clone(copy),
+                    });
+                Ok(option_value(found))
+            }
             // Every node dies, so every edge pointing into this store must be
             // nulled. Truncating the slots would leave root edges and
             // cross-store edges pointing at freed nodes — the one thing the
@@ -799,7 +820,7 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             _ => Err(RuntimeError::TypeError(format!(
-                "no method `{}` on Store; structural ops are insert, delete, len, is_empty, contains, nodes, clear",
+                "no method `{}` on Store; structural ops are insert, delete, len, is_empty, contains, nodes, clear, snapshot, corresponding",
                 method
             ))),
         }
