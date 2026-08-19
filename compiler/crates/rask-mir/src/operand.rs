@@ -162,6 +162,14 @@ pub enum BinOp {
     SaturatingAdd,
     SaturatingSub,
     SaturatingMul,
+    /// Answer the overflow flag itself rather than a number, so `checked_*` and
+    /// `overflowing_*` can build their `T?` and `(T, bool)` from it. `Div`'s
+    /// flag covers both ways integer division fails: a zero divisor, and the
+    /// one signed pair whose quotient doesn't exist (MIN / -1).
+    OverflowAdd,
+    OverflowSub,
+    OverflowMul,
+    OverflowDiv,
 }
 
 #[derive(Debug, Clone, Copy)]

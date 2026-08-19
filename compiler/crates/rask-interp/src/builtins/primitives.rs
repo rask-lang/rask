@@ -41,6 +41,29 @@ macro_rules! overflow_hatch {
     }};
 }
 
+/// The fallible half of OV5: the wrapped answer plus whether it wrapped.
+/// `checked_*` turns the flag into `none`, `overflowing_*` hands it back.
+///
+/// A zero divisor and the one signed pair with no quotient (MIN / -1) both come
+/// out of `checked_div` as "overflowed", which is what makes `checked_div(0)`
+/// answer `none` instead of dividing.
+macro_rules! fallible_hatch {
+    ($method:expr, $a:expr, $b:expr, $ty:ty) => {{
+        let a = $a as $ty;
+        let b = $b as $ty;
+        let (out, overflowed): ($ty, bool) = match $method {
+            "checked_add" | "overflowing_add" => a.overflowing_add(b),
+            "checked_sub" | "overflowing_sub" => a.overflowing_sub(b),
+            "checked_mul" | "overflowing_mul" => a.overflowing_mul(b),
+            _ => match a.checked_div(b) {
+                Some(q) => (q, false),
+                None => (0, true),
+            },
+        };
+        (out as i64, overflowed)
+    }};
+}
+
 /// Put a width-masked result back into an i64, sign-extending when the
 /// receiver's type is signed so `-1i8` stays -1 rather than becoming 255.
 fn sign_extend(v: i64, width: u32, signed: bool) -> i64 {
@@ -241,6 +264,45 @@ impl Interpreter {
                     _ => unreachable!(),
                 };
                 Ok(Value::Int(sign_extend(out, width, kind.signed()), kind))
+            }
+            // OV5's fallible forms. Same width discipline: the pair or the
+            // optional carries an answer computed at the receiver's own width,
+            // not at the i64 slot's.
+            "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+            | "overflowing_add" | "overflowing_sub" | "overflowing_mul" => {
+                let b = self.expect_int(args, 0)?;
+                let width = kind.bits().unwrap_or(64);
+                let signed = kind.signed();
+                let (out, overflowed) = match (width, signed) {
+                    (8, true) => fallible_hatch!(method, a, b, i8),
+                    (8, false) => fallible_hatch!(method, a, b, u8),
+                    (16, true) => fallible_hatch!(method, a, b, i16),
+                    (16, false) => fallible_hatch!(method, a, b, u16),
+                    (32, true) => fallible_hatch!(method, a, b, i32),
+                    (32, false) => fallible_hatch!(method, a, b, u32),
+                    (_, false) => fallible_hatch!(method, a, b, u64),
+                    _ => fallible_hatch!(method, a, b, i64),
+                };
+                let value = Value::Int(sign_extend(out, width, signed), kind);
+                if method.starts_with("overflowing_") {
+                    return Ok(Value::vec(vec![value, Value::Bool(overflowed)]));
+                }
+                if overflowed {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1,
+                        origin: None,
+                    });
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![value],
+                    variant_index: 0,
+                    origin: None,
+                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i64".to_string(),

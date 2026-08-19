@@ -288,6 +288,14 @@ macro_rules! impl_int_binop {
                 BinOp::SaturatingAdd => Ok(MiriValue::$variant(a.saturating_add(b))),
                 BinOp::SaturatingSub => Ok(MiriValue::$variant(a.saturating_sub(b))),
                 BinOp::SaturatingMul => Ok(MiriValue::$variant(a.saturating_mul(b))),
+                // The flag on its own. The lowering that builds `T?` and
+                // `(T, bool)` from it wants a bool, not a number.
+                BinOp::OverflowAdd => Ok(MiriValue::Bool(a.overflowing_add(b).1)),
+                BinOp::OverflowSub => Ok(MiriValue::Bool(a.overflowing_sub(b).1)),
+                BinOp::OverflowMul => Ok(MiriValue::Bool(a.overflowing_mul(b).1)),
+                BinOp::OverflowDiv => Ok(MiriValue::Bool(
+                    b == 0 || a.checked_div(b).is_none(),
+                )),
             }
         }
     };

@@ -3665,6 +3665,22 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
+            // The same table's fallible forms. `checked_*` hands back `T?` —
+            // `none` when the answer doesn't exist — and `overflowing_*` hands
+            // back both the wrapped answer and whether it wrapped.
+            "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, &Type::option(ty.clone()), span)
+            }
+            "overflowing_add" | "overflowing_sub" | "overflowing_mul"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                let _ = self.unify(&args[0], ty, span);
+                let pair = Type::Tuple(vec![ty.clone(), Type::Bool]);
+                self.unify(ret, &pair, span)
+            }
             // std.bits B2/B3 — byte order. Same width in, same width out;
             // bits.rk documents these as methods on the integer types and
             // uses them (`hton_u16` is `x.to_be()`), but nothing registered

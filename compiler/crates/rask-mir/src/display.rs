@@ -107,6 +107,10 @@ impl fmt::Display for BinOp {
             BinOp::SaturatingAdd => "saturating_add",
             BinOp::SaturatingSub => "saturating_sub",
             BinOp::SaturatingMul => "saturating_mul",
+            BinOp::OverflowAdd => "overflow_add?",
+            BinOp::OverflowSub => "overflow_sub?",
+            BinOp::OverflowMul => "overflow_mul?",
+            BinOp::OverflowDiv => "overflow_div?",
             BinOp::RotateLeft => "rotl",
             BinOp::RotateRight => "rotr",
         };

@@ -6097,6 +6097,136 @@ impl<'a> MirLowerer<'a> {
     /// `count_zeros` is `count_ones` of the complement, so those three compose
     /// from a BitNot rather than carrying MIR ops of their own. Every result
     /// keeps the receiver's type, matching what the checker unified.
+    /// OV5's fallible forms: `checked_add`/`sub`/`mul`/`div` answering `T?`, and
+    /// `overflowing_add`/`sub`/`mul` answering `(T, bool)`.
+    ///
+    /// These can't be a `BinOp` the way the wrapping and saturating forms are —
+    /// a `BinOp` produces one scalar and these produce an aggregate. So the
+    /// pieces come from two ops that do fit: `Wrapping*` for the number and
+    /// `Overflow*` for the flag, assembled into the slot the checker typed the
+    /// call as.
+    ///
+    /// `checked_div` is the odd one out. There's no "wrapping div" to compute
+    /// unconditionally — dividing by zero traps — so the division happens only
+    /// in the branch where the flag already said it's safe, and the guards
+    /// codegen puts around `Div` are provably dead there.
+    fn lower_fallible_arith(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        use crate::operand::BinOp;
+
+        let (flag_op, value_op, wraps) = match method {
+            "checked_add" => (BinOp::OverflowAdd, BinOp::WrappingAdd, false),
+            "checked_sub" => (BinOp::OverflowSub, BinOp::WrappingSub, false),
+            "checked_mul" => (BinOp::OverflowMul, BinOp::WrappingMul, false),
+            "checked_div" => (BinOp::OverflowDiv, BinOp::Div, false),
+            "overflowing_add" => (BinOp::OverflowAdd, BinOp::WrappingAdd, true),
+            "overflowing_sub" => (BinOp::OverflowSub, BinOp::WrappingSub, true),
+            "overflowing_mul" => (BinOp::OverflowMul, BinOp::WrappingMul, true),
+            _ => return Ok(None),
+        };
+        if args.len() != 1 {
+            return Ok(None);
+        }
+        let (rhs, _) = self.lower_expr(&args[0].expr)?;
+
+        let flag = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: flag,
+            rvalue: MirRValue::BinaryOp {
+                op: flag_op,
+                left: obj_op.clone(),
+                right: rhs.clone(),
+            },
+        }));
+
+        // `overflowing_*` reports the wrap instead of refusing it, so both
+        // halves are always computed and there's no branch.
+        if wraps {
+            let wrapped = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: wrapped,
+                rvalue: MirRValue::BinaryOp {
+                    op: value_op,
+                    left: obj_op.clone(),
+                    right: rhs,
+                },
+            }));
+            let pair_ty = MirType::Tuple(vec![obj_ty.clone(), MirType::Bool]);
+            let pair = self.builder.alloc_temp(pair_ty.clone());
+            let value_size = obj_ty.size();
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: pair,
+                offset: 0,
+                value: MirOperand::Local(wrapped),
+                store_size: Some(value_size),
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: pair,
+                offset: value_size,
+                value: MirOperand::Local(flag),
+                store_size: Some(MirType::Bool.size()),
+            }));
+            return Ok(Some((MirOperand::Local(pair), pair_ty)));
+        }
+
+        // `T?`: tag 0 with the answer at +8, or tag 1 and nothing.
+        let opt_ty = MirType::Option(Box::new(obj_ty.clone()));
+        let result = self.builder.alloc_temp(opt_ty.clone());
+        let none_block = self.builder.create_block();
+        let some_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(flag),
+            then_block: none_block,
+            else_block: some_block,
+        }));
+
+        self.builder.switch_to_block(some_block);
+        let value = self.builder.alloc_temp(obj_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::BinaryOp {
+                op: value_op,
+                left: obj_op.clone(),
+                right: rhs,
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 8,
+            value: MirOperand::Local(value),
+            store_size: Some(obj_ty.size()),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok(Some((MirOperand::Local(result), opt_ty)))
+    }
+
     fn lower_int_bit_method(
         &mut self,
         method: &str,
@@ -6105,6 +6235,12 @@ impl<'a> MirLowerer<'a> {
         obj_ty: &MirType,
     ) -> Result<Option<super::TypedOperand>, LoweringError> {
         use crate::operand::UnaryOp as MirUnaryOp;
+
+        // `checked_*` and `overflowing_*` answer with an aggregate, so they're
+        // built rather than emitted as one op.
+        if let Some(result) = self.lower_fallible_arith(method, args, obj_op, obj_ty)? {
+            return Ok(Some(result));
+        }
 
         // Rotations take an amount; the rest are nullary. The overflow escape
         // hatches (OV5/SH2) ride along — same shape, one operand in, the

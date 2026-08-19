@@ -2849,6 +2849,15 @@ impl<'a> FunctionBuilder<'a> {
         let is_comparison = matches!(op,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
         );
+        // Ops that answer a bool from operands of their own width. The
+        // destination type can't set the operand width for these: an
+        // `OverflowAdd` writing into a Bool slot would truncate both operands to
+        // one byte, and `(2147483647 as i32).checked_add(1)` then asked whether
+        // -1 + 0 overflows an i8 — no — so the overflow went unnoticed.
+        let answers_bool = is_comparison || matches!(op,
+            BinOp::OverflowAdd | BinOp::OverflowSub
+            | BinOp::OverflowMul | BinOp::OverflowDiv
+        );
 
         // Enums, structs, tuples and unions are held in stack slots and passed
         // around by pointer. A plain `icmp` on the two operands would compare
@@ -2896,7 +2905,7 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
-        let operand_ty = if is_comparison { None } else { expected_ty };
+        let operand_ty = if answers_bool { None } else { expected_ty };
         let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
         let lhs_ty = builder.func.dfg.value_type(lhs_val);
         let rhs_val = Self::lower_operand_typed(builder, right, Some(lhs_ty), ctx)?;
@@ -2986,7 +2995,7 @@ impl<'a> FunctionBuilder<'a> {
             .or_else(|| Self::operand_mir_type(right, ctx.locals))
             .map(|t| t.is_unsigned())
             .unwrap_or_else(|| {
-                if is_comparison { false } else { dst_mir_ty.is_some_and(|t| t.is_unsigned()) }
+                if answers_bool { false } else { dst_mir_ty.is_some_and(|t| t.is_unsigned()) }
             });
 
         // Reconcile operand types
@@ -3178,6 +3187,48 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 BinOp::SaturatingAdd | BinOp::SaturatingSub | BinOp::SaturatingMul => {
                     Self::emit_saturating(builder, *op, lhs_val, rhs_val, int_ty, is_unsigned)
+                }
+                // The flag on its own, for the lowering that builds a `T?` or a
+                // `(T, bool)` around it.
+                BinOp::OverflowAdd => {
+                    let (_, of) = if is_unsigned {
+                        builder.ins().uadd_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().sadd_overflow(lhs_val, rhs_val)
+                    };
+                    of
+                }
+                BinOp::OverflowSub => {
+                    let (_, of) = if is_unsigned {
+                        builder.ins().usub_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().ssub_overflow(lhs_val, rhs_val)
+                    };
+                    of
+                }
+                BinOp::OverflowMul => {
+                    let (_, of) = if is_unsigned {
+                        builder.ins().umul_overflow(lhs_val, rhs_val)
+                    } else {
+                        builder.ins().smul_overflow(lhs_val, rhs_val)
+                    };
+                    of
+                }
+                // Division fails two ways: a zero divisor, and the one signed
+                // pair whose quotient isn't representable.
+                BinOp::OverflowDiv => {
+                    let zero = Self::iconst_at(builder, int_ty, 0);
+                    let by_zero = builder.ins().icmp(IntCC::Equal, rhs_val, zero);
+                    if is_unsigned {
+                        by_zero
+                    } else {
+                        let min = Self::emit_type_min(builder, int_ty);
+                        let neg_one = Self::iconst_at(builder, int_ty, -1);
+                        let lhs_is_min = builder.ins().icmp(IntCC::Equal, lhs_val, min);
+                        let rhs_is_neg_one = builder.ins().icmp(IntCC::Equal, rhs_val, neg_one);
+                        let no_quotient = builder.ins().band(lhs_is_min, rhs_is_neg_one);
+                        builder.ins().bor(by_zero, no_quotient)
+                    }
                 }
                 BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
                 BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
