@@ -1033,6 +1033,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        StdlibEntry::simple("os_set_env", "rask_os_set_env", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("os_remove_env", "rask_os_remove_env", &[types::I64], None, false),
+        StdlibEntry::simple("os_args", "rask_os_args", &[], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "os_platform", c_name: "rask_os_platform",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_arch", c_name: "rask_os_arch",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
 
         // ── StringBuilder ───────────────────────────────────────────
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),

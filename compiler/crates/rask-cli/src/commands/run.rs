@@ -103,6 +103,8 @@ fn decls_with_rask_stdlib(decls: &[rask_ast::decl::Decl]) -> Vec<rask_ast::decl:
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
+    // `program_args` already starts with the script path — main.rs puts it
+    // there — so this is argv as std.os/A1 describes it.
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
@@ -328,7 +330,9 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
-    let mut interp = rask_interp::Interpreter::new();
+    // Same as `cmd_run`: the program name is argv[0], so a test that reads
+    // `os.args()` sees what it would see natively (std.os/A1).
+    let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
@@ -832,7 +836,7 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
 fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
-    let mut interp = rask_interp::Interpreter::new();
+    let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
     interp.set_node_types(result.typed.node_types.clone());
     interp.set_error_wraps(result.typed.error_wraps.clone());
     interp.set_try_chain_placement(result.typed.try_chain_placement.clone());

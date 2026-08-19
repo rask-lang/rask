@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The `os` module's environment and platform calls, natively (#855).
+//
+// Five of them had no native entry point at all — `os.set_env(…)` reached
+// codegen as "Function not found: os_set_env" while the interpreter ran it
+// fine. `env`, `env_or`, `env_vars` and `pid` were there; `set_env`,
+// `remove_env`, `args`, `platform` and `arch` weren't.
+//
+// The subprocess half (`os.Command`) is still interpreter-only — that's a
+// bigger piece and has its own issue.
+
+import os
+
+test "std.os — setting, reading and removing a variable" {
+    os.set_env("RASK_TEST_ENV_A", "one")
+    assert_eq(os.env("RASK_TEST_ENV_A") ?? "-", "one")
+    assert_eq(os.env_or("RASK_TEST_ENV_A", "fallback"), "one")
+
+    // Setting again replaces.
+    os.set_env("RASK_TEST_ENV_A", "two")
+    assert_eq(os.env("RASK_TEST_ENV_A") ?? "-", "two")
+
+    os.remove_env("RASK_TEST_ENV_A")
+    assert(os.env("RASK_TEST_ENV_A") is none)
+    assert_eq(os.env_or("RASK_TEST_ENV_A", "fallback"), "fallback")
+}
+
+test "std.os — an empty value is set, not unset" {
+    os.set_env("RASK_TEST_ENV_EMPTY", "")
+    assert_eq(os.env("RASK_TEST_ENV_EMPTY") ?? "-", "")
+    assert(!(os.env("RASK_TEST_ENV_EMPTY") is none))
+    os.remove_env("RASK_TEST_ENV_EMPTY")
+}
+
+test "std.os — a name that was never set" {
+    assert(os.env("RASK_TEST_ENV_NEVER_SET_XYZ") is none)
+    assert_eq(os.env_or("RASK_TEST_ENV_NEVER_SET_XYZ", "fb"), "fb")
+    // Removing one that isn't there is a no-op, not a failure.
+    os.remove_env("RASK_TEST_ENV_NEVER_SET_XYZ")
+    assert(os.env("RASK_TEST_ENV_NEVER_SET_XYZ") is none)
+}
+
+test "std.os — env_vars sees what set_env wrote" {
+    os.set_env("RASK_TEST_ENV_LISTED", "here")
+    mut found = 0
+    for pair in os.env_vars() {
+        if pair.0 == "RASK_TEST_ENV_LISTED" {
+            found = found + 1
+            assert_eq(pair.1, "here")
+        }
+    }
+    assert_eq(found, 1)
+    os.remove_env("RASK_TEST_ENV_LISTED")
+}
+
+// The values depend on the machine, so this checks the shape rather than the
+// answer — the point is that both backends have one at all.
+test "std.os — platform, arch, args and pid" {
+    assert(os.platform().len() > 0)
+    assert(!(os.platform() == "unknown"))
+    assert(os.arch().len() > 0)
+    assert(!(os.arch() == "unknown"))
+    assert(os.args().len() >= 1)
+    assert(os.pid() > 0)
+}
+
+func main() {}
