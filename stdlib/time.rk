@@ -7,6 +7,12 @@ extend time {
     /// Sleep for the given duration.
     @native("rask_sleep_ns")
     public func sleep(duration: Duration) -> void or SysError {}
+
+    /// Nanoseconds since the UNIX epoch, straight off the OS wall clock.
+    /// The one thing `SystemTime` can't compute for itself; everything else
+    /// about it is arithmetic on this number.
+    @native("rask_time_wall_clock_nanos")
+    func wall_clock_nanos() -> i64 {}
 }
 
 /// A span of time.
@@ -81,44 +87,99 @@ extend Instant {
 
 /// A point in wall-clock time, relative to the UNIX epoch.
 /// Subject to NTP adjustments — can go backward. Serializable, unlike Instant.
-public struct SystemTime { }
+///
+/// Nanoseconds since the epoch, which runs out in 2262. `unix_nanos` widens to
+/// `i128` on the way out because the spec asks for it, not because the range is
+/// there.
+public struct SystemTime {
+    nanos: i64
+}
 
 extend SystemTime {
     /// Capture the current wall-clock time.
-    @native
-    public func now() -> SystemTime {}
+    public func now() -> SystemTime {
+        return SystemTime { nanos: time.wall_clock_nanos() }
+    }
 
     /// The UNIX epoch: 1970-01-01 00:00:00 UTC.
-    @unimplemented
-    public func unix_epoch() -> SystemTime {}
+    public func unix_epoch() -> SystemTime {
+        return SystemTime { nanos: 0 }
+    }
 
     /// Reconstruct from a stored seconds-since-epoch timestamp.
-    @unimplemented
-    public func from_unix_seconds(seconds: i64) -> SystemTime {}
+    public func from_unix_seconds(seconds: i64) -> SystemTime {
+        return SystemTime { nanos: seconds * 1000000000 }
+    }
 
     /// Reconstruct from a stored millis-since-epoch timestamp.
-    @unimplemented
-    public func from_unix_millis(millis: i64) -> SystemTime {}
+    public func from_unix_millis(millis: i64) -> SystemTime {
+        return SystemTime { nanos: millis * 1000000 }
+    }
 
     /// Whole seconds since the UNIX epoch (negative before 1970).
-    @unimplemented
-    public func unix_seconds(self) -> i64 {}
+    public func unix_seconds(self) -> i64 {
+        return self.nanos / 1000000000
+    }
 
     /// Whole milliseconds since the UNIX epoch.
-    @unimplemented
-    public func unix_millis(self) -> i64 {}
+    public func unix_millis(self) -> i64 {
+        return self.nanos / 1000000
+    }
 
     /// Nanoseconds since the UNIX epoch.
-    @unimplemented
-    public func unix_nanos(self) -> i128 {}
+    public func unix_nanos(self) -> i128 {
+        return self.nanos as i128
+    }
 
     /// Duration since an earlier point. Fails if the clock went backward.
-    @native
-    public func duration_since(self, earlier: SystemTime) -> Duration or TimeError {}
+    public func duration_since(self, earlier: SystemTime) -> Duration or TimeError {
+        if self.nanos < earlier.nanos {
+            return TimeError.Backwards
+        }
+        return Duration.nanos(self.nanos - earlier.nanos)
+    }
 
     /// Duration since this time was captured. Fails if the clock went backward.
-    @native
-    public func elapsed(self) -> Duration or TimeError {}
+    public func elapsed(self) -> Duration or TimeError {
+        return SystemTime.now().duration_since(self)
+    }
+
+    /// A7: shift forward by a duration.
+    public func add(self, span: Duration) -> SystemTime {
+        return SystemTime { nanos: self.nanos + span.as_nanos().wrap<i64>() }
+    }
+
+    /// A7/A8: `time - duration` shifts back, `time - time` is the span between.
+    /// The unchecked form — it wraps when `other` is later. `duration_since`
+    /// is the one that reports the clock going backward.
+    public func sub(self, span: Duration) -> SystemTime {
+        return SystemTime { nanos: self.nanos - span.as_nanos().wrap<i64>() }
+    }
+
+    /// A6: two wall-clock points name the same moment.
+    public func eq(self, other: SystemTime) -> bool {
+        return self.nanos == other.nanos
+    }
+
+    /// A6: earlier than.
+    public func lt(self, other: SystemTime) -> bool {
+        return self.nanos < other.nanos
+    }
+
+    /// A6: earlier than or the same moment.
+    public func le(self, other: SystemTime) -> bool {
+        return self.nanos <= other.nanos
+    }
+
+    /// A6: later than.
+    public func gt(self, other: SystemTime) -> bool {
+        return self.nanos > other.nanos
+    }
+
+    /// A6: later than or the same moment.
+    public func ge(self, other: SystemTime) -> bool {
+        return self.nanos >= other.nanos
+    }
 }
 
 /// A wall-clock read failed because the clock went backward (NTP adjustment).

@@ -963,6 +963,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),
+        StdlibEntry::simple("time_wall_clock_nanos", "rask_time_wall_clock_nanos", &[], Some(types::I64), false),
         StdlibEntry::simple("Instant_elapsed", "rask_time_Instant_elapsed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_nanos", "rask_time_Duration_from_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_millis", "rask_time_Duration_from_millis", &[types::I64], Some(types::I64), false),
