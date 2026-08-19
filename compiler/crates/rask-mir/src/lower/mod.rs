@@ -4160,7 +4160,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::Neg => MirUnaryOp::Neg,
         UnaryOp::Not => MirUnaryOp::Not,
         UnaryOp::BitNot => MirUnaryOp::BitNot,
-        UnaryOp::Ref | UnaryOp::Deref => unreachable!(),
+        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Own => unreachable!(),
     }
 }
 

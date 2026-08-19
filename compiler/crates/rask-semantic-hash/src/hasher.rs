@@ -1048,6 +1048,7 @@ fn unaryop_tag(op: UnaryOp) -> u8 {
         UnaryOp::BitNot => 2,
         UnaryOp::Ref => 3,
         UnaryOp::Deref => 4,
+        UnaryOp::Own => 5,
     }
 }
 

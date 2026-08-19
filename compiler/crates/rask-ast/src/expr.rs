@@ -424,6 +424,8 @@ pub enum UnaryOp {
     Ref,
     /// Dereference (*)
     Deref,
+    /// Heap-allocate (own) — mem.owned
+    Own,
 }
 
 /// A select arm for channel multiplexing.

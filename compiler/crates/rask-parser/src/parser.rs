@@ -3609,7 +3609,15 @@ impl Parser {
                             span: self.span(start, end),
                         })
                     }
-                    _ => self.parse_expr_bp(Self::PREFIX_BP),
+                    _ => {
+                        let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
+                        let end = operand.span.end;
+                        Ok(Expr {
+                            id: self.next_id(),
+                            kind: ExprKind::Unary { op: UnaryOp::Own, operand: Box::new(operand) },
+                            span: self.span(start, end),
+                        })
+                    }
                 }
             }
 

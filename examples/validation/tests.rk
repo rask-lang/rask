@@ -72,3 +72,27 @@ test "percentile handles the empty and single-sample cases" {
     mut one = Vec.from([42.0])
     assert_eq(percentile(one, 95), 42.0)
 }
+
+func regression_740_still_blocked_after_dep_delete(mutate store: Store) -> bool or StoreError {
+    let project = ProjectId(1)
+    let backend = try store.create_task("backend", project, Priority.Medium)
+    let frontend = try store.create_task("frontend", project, Priority.Medium)
+    try store.add_dependency(frontend, backend)
+
+    let before = try store.view_task(frontend)
+    if !before.blocked { return false }
+
+    try store.delete_task(backend)
+
+    let after = try store.view_task(frontend)
+    return after.blocked
+}
+
+test "deleting a dependency doesn't strand the dependent task (#740)" {
+    mut store = Store.new()
+    let result = regression_740_still_blocked_after_dep_delete(mutate store)
+    assert result is bool
+    if result is bool as still_blocked {
+        assert !still_blocked
+    }
+}

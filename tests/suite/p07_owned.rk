@@ -1,4 +1,3 @@
-// PENDING mem.owned — `own` operator + linear Owned<T> (heap-alloc, consume-once, drop). Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Spec: specs/memory/owned.md — `own expr` heap-allocates Owned<T>; `*ptr`
 // borrows the inner value without consuming; drop(ptr) consumes exactly once

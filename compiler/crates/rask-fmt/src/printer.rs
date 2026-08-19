@@ -2098,5 +2098,6 @@ fn unaryop_str(op: &UnaryOp) -> &'static str {
         UnaryOp::BitNot => "~",
         UnaryOp::Ref => "&",
         UnaryOp::Deref => "*",
+        UnaryOp::Own => "own ",
     }
 }

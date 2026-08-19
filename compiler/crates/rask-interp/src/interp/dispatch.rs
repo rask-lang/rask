@@ -241,6 +241,10 @@ impl Interpreter {
             BuiltinKind::ExpectFail => {
                 Err(RuntimeError::TestExpectFail)
             }
+            // mem.owned: consumes the Owned<T>. Interpreter values aren't
+            // stack-allocated the way native's are, so there's no heap block
+            // to release here — native's `drop` is the one that actually frees.
+            BuiltinKind::Drop => Ok(Value::Unit),
         }
     }
 
