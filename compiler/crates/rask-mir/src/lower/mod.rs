@@ -566,6 +566,48 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// The type of one payload field of an enum variant, read off the checker's
+    /// declaration with the scrutinee's type arguments substituted in.
+    ///
+    /// A generic enum's shared layout gives every type parameter one word and
+    /// records a placeholder type in the slot, so the layout can't say what a
+    /// payload binding actually holds. `match m { Maybe.Just(v) => … }` on a
+    /// `Maybe<Wrap<i64>>` bound `v` as an integer, and the arm loaded the inner
+    /// struct's 8 bytes and dereferenced them as a pointer (#871).
+    ///
+    /// `None` for anything the layout already gets right: a concrete payload, a
+    /// non-generic enum, a scrutinee whose instantiation isn't settled.
+    pub fn variant_payload_mir(
+        &self,
+        scrutinee: Option<&Type>,
+        variant: &str,
+        field_index: usize,
+    ) -> Option<MirType> {
+        let (base, args) = match scrutinee? {
+            Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return None,
+        };
+        let bare = base.split('<').next().unwrap_or(&base).trim();
+        let id = self.type_defs.get_type_id(bare)?;
+        let rask_types::TypeDef::Enum { type_params, variants, .. } = self.type_defs.get(id)?
+        else {
+            return None;
+        };
+        let bare_variant = variant.rsplit('.').next().unwrap_or(variant);
+        let declared = variants
+            .iter()
+            .find(|(n, _)| n == bare_variant)?
+            .1
+            .get(field_index)?;
+        // Only a payload declared *as* one of the type parameters. Anything
+        // concrete is already spelled out in the layout.
+        let Type::UnresolvedNamed(param) = declared else { return None };
+        let pos = type_params.iter().position(|p| p == param)?;
+        let rask_types::GenericArg::Type(arg) = args.get(pos)? else { return None };
+        Some(self.type_to_mir(arg))
+    }
+
     /// `find_struct`, falling back to the name with any `<…>` stripped.
     ///
     /// A generic type's layout is stored under its base name, so a name written

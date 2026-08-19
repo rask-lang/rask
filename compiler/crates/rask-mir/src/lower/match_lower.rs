@@ -548,12 +548,23 @@ impl<'a> MirLowerer<'a> {
                         _ => scrutinee_op.clone(),
                     };
                     // (mir type, absolute byte offset within the enum, field size)
+                    //
+                    // The layout's own field type is a placeholder when the enum
+                    // is generic and this payload was declared as one of its
+                    // parameters, so the checker's instantiation decides instead
+                    // where it can (#871).
+                    let scrutinee_raw = self.ctx.lookup_raw_type(scrutinee.id).cloned();
                     let variant_fields: Option<Vec<(MirType, u32, u32)>> =
                         enum_layout_id.and_then(|idx| {
                             self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
                                 layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
-                                    v.fields.iter().map(|f| {
-                                        (self.ctx.type_to_mir(&f.ty), v.payload_offset + f.offset, f.size)
+                                    v.fields.iter().enumerate().map(|(fi, f)| {
+                                        let ty = self.ctx
+                                            .variant_payload_mir(
+                                                scrutinee_raw.as_ref(), variant_name, fi,
+                                            )
+                                            .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty));
+                                        (ty, v.payload_offset + f.offset, f.size)
                                     }).collect()
                                 })
                             })

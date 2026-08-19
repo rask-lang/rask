@@ -1826,10 +1826,33 @@ impl<'a> MirLowerer<'a> {
                 // answer — and taking the address here handed back the address of
                 // the slot instead of what it points to, so `h.inner.v` read the
                 // pointer's own bits as the first field (#739).
+                //
+                // A field's *size* is enough to tell the two apart everywhere
+                // except one place: a generic type's shared layout gives every
+                // type parameter one word, so a field declared `T` reports 8
+                // bytes and an integer type no matter what T is. Fill it with a
+                // struct that happens to fit — `Wrap<Wrap<i64>>` — and the write
+                // copied the 8 bytes in while the read loaded them as a pointer
+                // and dereferenced it. The type at the read site is the one that
+                // knows (#871).
+                //
+                // Struct, enum and tuple only. A `Handle<T>?` field is 8 bytes
+                // because it's a niche — the handle *is* the value, `none` is the
+                // all-ones sentinel — so its word is the answer, not its address.
                 let access = if self.owned_field_is_boxed(object, field) {
                     FieldAccess::Sized(8)
                 } else {
-                    field_size.map_or(FieldAccess::Word, FieldAccess::Sized)
+                    field_size.map_or(FieldAccess::Word, |size| {
+                        let lives_inline = matches!(
+                            result_ty,
+                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                        );
+                        if size <= 8 && lives_inline {
+                            FieldAccess::InPlace(size)
+                        } else {
+                            FieldAccess::Sized(size)
+                        }
+                    })
                 };
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

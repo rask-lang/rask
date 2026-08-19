@@ -503,6 +503,9 @@ fn variant_payload(fields: &[Value]) -> Value {
 }
 
 fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
+    fn base_of(ty_name: &str) -> &str {
+        ty_name.split('<').next().unwrap_or(ty_name).trim()
+    }
     match value {
         Value::Bool(_) => ty_name == "bool",
         Value::Char(_) => ty_name == "char",
@@ -514,10 +517,15 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
                 || rask_ast::primitives::INT_ALIASES.contains(&ty_name)
         }
         Value::Float(_, _) => rask_ast::primitives::is_float(ty_name),
-        Value::Enum { name, .. } => name == ty_name,
+        // A user type compares on its base name. The value carries `Wrap`; the
+        // test can be written `Wrap<i64>`, and nothing at runtime records which
+        // instantiation this one is — same reason `Vec` below only checks `Vec`.
+        // `m.get("k") is Wrap<i64> as w` on a `Map<string, Wrap<i64>>` answered
+        // false here while native took the branch (#871).
+        Value::Enum { name, .. } => name == base_of(ty_name),
         Value::Struct(s) => {
             let guard = s.lock().unwrap();
-            guard.name == ty_name
+            guard.name == base_of(ty_name)
         }
         // Generic containers: compare the base name only (`Vec<i32>` ->
         // `Vec`) — the interpreter doesn't track element types at runtime,

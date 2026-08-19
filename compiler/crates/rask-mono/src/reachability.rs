@@ -56,8 +56,22 @@ pub fn mangle_name(base: &str, type_args: &[Type]) -> String {
     if type_args.is_empty() {
         return base.to_string();
     }
-    let args_str: Vec<String> = type_args.iter().map(|t| format!("{}", t)).collect();
+    let args_str: Vec<String> = type_args.iter().map(symbol_spelling).collect();
     format!("{}${}", base, args_str.join("_"))
+}
+
+/// One type argument as it appears inside a symbol name.
+///
+/// A written instantiation flattens: `Wrap<i64>` becomes `Wrap$i64`,
+/// `Pair<i64, Big>` becomes `Pair$i64$Big`. A `<` in a symbol name is what
+/// `strip_written_type_args` cuts off, so `get$Wrap<i64>` would come back out of
+/// it as `get$Wrap` — a name for a different instantiation (#871).
+fn symbol_spelling(ty: &Type) -> String {
+    let spelled = format!("{}", ty);
+    if !spelled.contains('<') {
+        return spelled;
+    }
+    spelled.replace(", ", "$").replace('<', "$").replace('>', "")
 }
 
 /// Drives monomorphization: reachability first, instantiation on demand.
@@ -805,11 +819,27 @@ impl<'a> Monomorphizer<'a> {
     /// instantiated copy has an id the checker never saw, so its arguments come
     /// from what `carry_node_records` substituted.
     fn type_args_at(&self, id: NodeId) -> Vec<Type> {
-        self.call_type_args
+        let args = self
+            .call_type_args
             .get(&id)
             .or_else(|| self.instantiated_call_type_args.get(&id))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // An argument that is itself an instantiation has to be spelled by name.
+        // Left as a `Generic` it displays as `<type#84><i32>`, so
+        // `unwrap_or(j, fallback)` on a `Maybe<Wrap<i64>>` mangled to a symbol
+        // carrying a type id and substituted a string nothing could resolve —
+        // the copy took its `Wrap<i64>` parameter as a bare pointer and its
+        // match arm loaded the payload word instead of pointing at it (#871).
+        let Some(typed) = self.typed else { return args };
+        args.into_iter()
+            .map(|arg| match &arg {
+                Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                    Self::nameable_type(&arg, &typed.types).unwrap_or(arg)
+                }
+                _ => arg,
+            })
+            .collect()
     }
 
     /// The type arguments the receiver's own type was instantiated with.
@@ -870,6 +900,19 @@ impl<'a> Monomorphizer<'a> {
                 Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
                 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
                 | Type::F32 | Type::F64 | Type::Char | Type::String => out.push(t.as_ref().clone()),
+                // A nested instantiation — `Wrap<Wrap<i32>>`. It has to say
+                // *which* inner type: `get` on `Wrap<Wrap<i32>>` hands back a
+                // `Wrap<i32>` and on `Wrap<i32>` an `i32`, so one shared body
+                // can't serve both. Bailing out here left both on the same body,
+                // and the fallback then bound the method's parameter to the
+                // *inner* argument — `Wrap<Wrap<i64>>.get()` compiled as if it
+                // returned an i64 (#871).
+                Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                    match Self::nameable_type(t.as_ref(), &typed.types) {
+                        Some(named) => out.push(named),
+                        None => return Vec::new(),
+                    }
+                }
                 _ => return Vec::new(),
             }
         }
@@ -877,6 +920,54 @@ impl<'a> Monomorphizer<'a> {
             return Vec::new();
         }
         out
+    }
+
+    /// The same type, spelled so both a symbol name and a layout lookup can be
+    /// built from it: every interned id replaced by the name it stands for.
+    ///
+    /// A `Type::Named` prints as `<type#7>` and a `Type::Generic` as
+    /// `<type#84><i32>`, neither of which names anything downstream. `None` when
+    /// some part of the type has no name at all — an inference variable, a type
+    /// parameter still standing for itself.
+    fn nameable_type(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
+        let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
+        match ty {
+            Type::Named(id) => {
+                let name = bare(&types.type_name(*id));
+                (!name.is_empty()).then(|| Type::UnresolvedNamed(name))
+            }
+            Type::UnresolvedNamed(name) => {
+                let name = bare(name);
+                (!name.is_empty()).then(|| Type::UnresolvedNamed(name))
+            }
+            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64 | Type::Char | Type::String => Some(ty.clone()),
+            Type::Generic { base, args } => {
+                Self::nameable_generic(&bare(&types.type_name(*base)), args, types)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                Self::nameable_generic(&bare(name), args, types)
+            }
+            _ => None,
+        }
+    }
+
+    fn nameable_generic(
+        head: &str,
+        args: &[rask_types::GenericArg],
+        types: &rask_types::TypeTable,
+    ) -> Option<Type> {
+        if head.is_empty() || args.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(args.len());
+        for arg in args {
+            let rask_types::GenericArg::Type(inner) = arg else { return None };
+            let named = Self::nameable_type(inner, types)?;
+            out.push(rask_types::GenericArg::Type(Box::new(named)));
+        }
+        Some(Type::UnresolvedGeneric { name: head.to_string(), args: out })
     }
 
     /// The name of the type the checker gave a node, if it has one.
