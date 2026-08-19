@@ -533,6 +533,56 @@ static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *wi
     return ch;
 }
 
+// Unicode White_Space, the same set Rust's `char::is_whitespace` uses. The
+// runtime tested for ' ', '\t', '\n' and '\r' only, so `"\u{00A0}hi".trim()`
+// kept the non-breaking space and `split_whitespace` didn't split on it, while
+// the interpreter — which goes through Rust — did both (#840).
+static int str_is_white_space(uint32_t c) {
+    switch (c) {
+        case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D:
+        case 0x20: case 0x85: case 0xA0:
+        case 0x1680:
+        case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+        case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+        case 0x200A:
+        case 0x2028: case 0x2029: case 0x202F: case 0x205F: case 0x3000:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// The byte index one scalar back from `i`, by stepping over continuation
+// bytes. Trimming from the end has to look at whole scalars, not bytes.
+static int64_t str_prev_scalar(const char *d, int64_t i) {
+    int64_t j = i - 1;
+    while (j > 0 && ((unsigned char)d[j] & 0xC0) == 0x80) j--;
+    return j < 0 ? 0 : j;
+}
+
+// The byte range left after trimming whitespace off both ends.
+static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_end) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t start = 0;
+    while (start < len) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, start, &w);
+        if (!str_is_white_space(c)) break;
+        start += w;
+    }
+    int64_t end = len;
+    while (end > start) {
+        int64_t prev = str_prev_scalar(d, end);
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, prev, &w);
+        if (!str_is_white_space(c)) break;
+        end = prev;
+    }
+    *out_start = start;
+    *out_end = end;
+}
+
 /// Encode `cp` at `out`, returning the bytes written.
 static int64_t str_encode_scalar(char *out, uint32_t cp) {
     if (cp < 0x80) {
@@ -607,14 +657,17 @@ void rask_string_unshare(RaskStr *out, const RaskStr *s) {
 void rask_string_trim(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    const char *start = d;
-    const char *end = d + len;
-    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r'))
-        start++;
-    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r'))
-        end--;
-    str_make(out, start, (int64_t)(end - start));
+    int64_t start, end;
+    str_trim_range(s, &start, &end);
+    str_make(out, str_data(s) + start, end - start);
+}
+
+// std.strings: the byte range `trim` would keep, without building the copy.
+// The pair lands in the destination tuple's own slot, so `out` is that slot:
+// start at +0, end at +8.
+void rask_string_trim_indices(int64_t *out, const RaskStr *s) {
+    if (str_len(s) == 0) { out[0] = 0; out[1] = 0; return; }
+    str_trim_range(s, &out[0], &out[1]);
 }
 
 void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
@@ -622,9 +675,12 @@ void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     int64_t start = 0;
-    while (start < len && (d[start] == ' ' || d[start] == '\t'
-           || d[start] == '\n' || d[start] == '\r'))
-        start++;
+    while (start < len) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, start, &w);
+        if (!str_is_white_space(c)) break;
+        start += w;
+    }
     str_make(out, d + start, len - start);
 }
 
@@ -633,9 +689,13 @@ void rask_string_trim_end(RaskStr *out, const RaskStr *s) {
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     int64_t end = len;
-    while (end > 0 && (d[end - 1] == ' ' || d[end - 1] == '\t'
-           || d[end - 1] == '\n' || d[end - 1] == '\r'))
-        end--;
+    while (end > 0) {
+        int64_t prev = str_prev_scalar(d, end);
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, prev, &w);
+        if (!str_is_white_space(c)) break;
+        end = prev;
+    }
     str_make(out, d, end);
 }
 
@@ -661,13 +721,23 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
     }
 }
 
+// By Unicode scalars, which is what the stub documents. Reversing bytes tore
+// every multi-byte scalar apart: `"Wörld".reverse()` came back with the two
+// halves of `ö` swapped, so the text was no longer valid UTF-8 (#841).
 void rask_string_reverse(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     if (len == 0) { rask_string_new(out); return; }
     const char *d = str_data(s);
     char *buf = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++)
-        buf[i] = d[len - 1 - i];
+    int64_t written = 0;
+    int64_t i = len;
+    while (i > 0) {
+        int64_t prev = str_prev_scalar(d, i);
+        int64_t w = i - prev;
+        for (int64_t k = 0; k < w; k++) buf[written + k] = d[prev + k];
+        written += w;
+        i = prev;
+    }
     str_make(out, buf, len);
     rask_realloc(buf, len, 0);
 }
@@ -862,17 +932,16 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
     RaskVec *v = rask_vec_new(16);
     int64_t slen = str_len(s);
     if (slen == 0) return v;
-    const char *p = str_data(s);
-    const char *end = p + slen;
-    while (p < end) {
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
-            p++;
-        if (p >= end) break;
-        const char *start = p;
-        while (p < end && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-            p++;
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < slen) {
+        int64_t w;
+        while (i < slen && str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
+        if (i >= slen) break;
+        int64_t start = i;
+        while (i < slen && !str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
         RaskStr tok;
-        str_make(&tok, start, p - start);
+        str_make(&tok, d + start, i - start);
         rask_vec_push(v, &tok);
     }
     return v;
@@ -882,6 +951,25 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
 // is a scalar and `len()` counts bytes; this walked bytes, so `"aöb".chars()`
 // yielded four items and printed the two halves of `ö` as Latin-1 (`[a][Ã][¶][b]`).
 // Any program touching non-ASCII text got mojibake, silently.
+// std.strings: `(byte index, scalar)` per Unicode scalar. Elements are
+// 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
+// the Vec is iterated exactly like any other `Vec<(usize, char)>`.
+RaskVec *rask_string_char_indices(const RaskStr *s) {
+    RaskVec *v = rask_vec_new(16);
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < len) {
+        int64_t width;
+        int64_t pair[2];
+        pair[0] = i;
+        pair[1] = (int64_t)str_decode_at(d, len, i, &width);
+        rask_vec_push(v, pair);
+        i += width;
+    }
+    return v;
+}
+
 RaskVec *rask_string_chars(const RaskStr *s) {
     RaskVec *v = rask_vec_new(8);
     int64_t len = str_len(s);
@@ -1321,8 +1409,7 @@ int64_t rask_char_is_alphanumeric(int32_t c) {
 }
 
 int64_t rask_char_is_whitespace(int32_t c) {
-    return (c == ' ' || c == '\t' || c == '\n' || c == '\r'
-         || c == 0x0B || c == 0x0C) ? 1 : 0;
+    return str_is_white_space((uint32_t)c);
 }
 
 int64_t rask_char_is_uppercase(int32_t c) {

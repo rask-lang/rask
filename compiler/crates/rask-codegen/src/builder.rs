@@ -6408,6 +6408,21 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::StringOutParam(ss)
             }
 
+            // Same shape as StringOutParam — 16 bytes into the destination's
+            // own slot — but the bytes are a `(usize, usize)` pair rather than
+            // a RaskStr.
+            ArgAdapt::PairOutParam => {
+                let ss = dst
+                    .and_then(|id| ctx.stack_slot_map.get(id))
+                    .map(|(ss, _)| *ss)
+                    .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 16, 0,
+                    )));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.insert(0, addr);
+                CallAdapt::StringOutParam(ss)
+            }
+
             ArgAdapt::StringResultOutParam => {
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,

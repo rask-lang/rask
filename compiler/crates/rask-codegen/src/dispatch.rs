@@ -40,6 +40,9 @@ pub enum ArgAdapt {
     WrapArg1And2,
     /// Inject 16-byte string out-param as first arg
     StringOutParam,
+    /// Two i64s written into the destination's own 16-byte slot — a
+    /// `(usize, usize)` tuple, start at +0 and end at +8 (string_trim_indices).
+    PairOutParam,
     /// Same, but the call also returns a 0/1 status that becomes the
     /// `string or E` tag. The string goes to a scratch slot rather than to
     /// dst, because dst is the Result and the string is only its payload.
@@ -437,6 +440,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `s[i]` — indexing panics on an out-of-range index, so it needs its own
         // entry point rather than `char_at`'s none-on-miss (#353).
         StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry {
+            mir_name: "string_trim_indices", c_name: "rask_string_trim_indices",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::PairOutParam, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_contains", "rask_string_contains", &[types::I64, types::I64], Some(types::I64), false),
@@ -623,6 +631,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_split", "rask_string_split", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_split_whitespace", "rask_string_split_whitespace", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_chars", "rask_string_chars", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_char_indices", "rask_string_char_indices", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_bytes", "rask_string_bytes", &[types::I64], Some(types::I64), false),
 
         // ── Conversion to string (out-param) ──────────────────

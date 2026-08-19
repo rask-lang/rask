@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A method on a `let` primitive isn't a mutation just because some other type
+// spells a mutating method the same way (#839).
+//
+//     let s = "abc"
+//     s.reverse()    // error[E0322]: cannot mutate `s` — declared `let`
+//
+// `string.reverse` takes `self` by value and returns a new string. The check
+// that decides "does this method mutate its receiver" looked the receiver up in
+// the stdlib stubs by type id — and a primitive isn't a `Type::Named`, so it has
+// no id. It fell through to the last resort: the union of every method name that
+// is `mutate self` on *any* stdlib type. `Vec.reverse` is in that union.
+//
+// The fallback is there for a receiver whose type isn't known yet. A `let s =
+// "abc"` is not that.
+
+struct Counter {
+    public n: i64
+}
+
+extend Counter {
+    public func bump(mutate self) {
+        self.n = self.n + 1
+    }
+    public func read(self) -> i64 {
+        return self.n
+    }
+}
+
+test "mem.ownership — a `let` string can call its non-mutating methods" {
+    let s = "abc"
+    assert_eq(s.reverse(), "cba")
+    assert_eq(s.repeat(2), "abcabc")
+    assert_eq(s.replace("a", "z"), "zbc")
+    assert_eq(s.to_uppercase(), "ABC")
+}
+
+test "mem.ownership — the same for the other primitives" {
+    let n: i64 = 0 - 5
+    assert_eq(n.abs(), 5)
+    let c = 'x'
+    assert_eq(c.to_uppercase(), 'X')
+    let f: f64 = 2.4
+    assert_eq(f.round(), 2.0)
+    let b = true
+    assert(!(b == false))
+}
+
+// The check still has to fire where it should.
+test "mem.ownership — a real `mutate self` on a `mut` binding still works" {
+    mut c = Counter { n: 0 }
+    c.bump()
+    c.bump()
+    assert_eq(c.read(), 2)
+
+    mut v: Vec<i64> = [3, 1, 2]
+    v.reverse()
+    assert_eq(v[0], 2)
+}
+
+func main() {}

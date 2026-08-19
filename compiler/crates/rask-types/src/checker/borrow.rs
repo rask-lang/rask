@@ -498,6 +498,22 @@ impl TypeChecker {
             return false;
         }
 
+        // A primitive receiver is `Type::String` / `Type::I64` / … rather than
+        // a `Named`, so the stub lookup above never ran for one and it fell
+        // through to the name union below. `Vec.reverse` is `mutate self`, so
+        // `let s = "abc"` then `s.reverse()` — which takes `self` by value and
+        // returns a new string — was rejected as mutating a `let` (#839).
+        if let Some(name) = super::type_defs::receiver_name(&resolved, &self.types) {
+            if let Some(stub) = rask_stdlib::lookup_method(&name, method_name) {
+                return stub.mutate_self;
+            }
+            // A primitive with no such stub has no mutating methods at all;
+            // only a still-open receiver falls through to the name union.
+            if !matches!(resolved, Type::Var(_)) {
+                return false;
+            }
+        }
+
         // Receiver type unresolved: fall back to the set of method names that
         // are `mutate self` across all stdlib stubs. `add`/`mul`/`eq` aren't
         // in the set, so desugared arithmetic/comparison don't false-positive.

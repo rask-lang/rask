@@ -103,6 +103,19 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
+    // `(A, B, ...)` — a tuple. Without this `char_indices() -> Iterator<(usize,
+    // char)>` came back with two arguments, `(usize` and `char)`, because the
+    // comma inside the parens read as the generic's own separator. `t.0` then
+    // reported "no field `0` on type `(usize`" and a `for (i, c)` over it had
+    // no type MIR could lower (#841).
+    if s.starts_with('(') && s.ends_with(')') && s.len() > 2 {
+        let inner = &s[1..s.len() - 1];
+        let parts = split_top_level(inner);
+        if parts.len() > 1 {
+            return Type::Tuple(parts.iter().map(|p| parse_stub_type(p)).collect());
+        }
+    }
+
     // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
     // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
     // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.
@@ -110,24 +123,11 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         if s.ends_with('>') {
             let name = s[..open].trim();
             let inner = &s[open + 1..s.len() - 1];
-            let mut args = Vec::new();
-            let mut start = 0usize;
-            let mut depth: i32 = 0;
-            let bytes = inner.as_bytes();
-            for (i, b) in bytes.iter().enumerate() {
-                match b {
-                    b'<' => depth += 1,
-                    b'>' => depth -= 1,
-                    b',' if depth == 0 => {
-                        args.push(parse_stub_type(inner[start..i].trim()));
-                        start = i + 1;
-                    }
-                    _ => {}
-                }
-            }
-            if !inner.is_empty() {
-                args.push(parse_stub_type(inner[start..].trim()));
-            }
+            let args: Vec<Type> = if inner.is_empty() {
+                Vec::new()
+            } else {
+                split_top_level(inner).iter().map(|p| parse_stub_type(p)).collect()
+            };
             return Type::UnresolvedGeneric {
                 name: name.to_string(),
                 args: args.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
@@ -163,13 +163,34 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
     }
 }
 
-/// Split `T or E` into `("T", "E")`, respecting nested angle brackets.
+/// Split on top-level commas, respecting both `<…>` and `(…)`. A tuple inside
+/// a generic argument list is the reason the parens count.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+/// Split `T or E` into `("T", "E")`, respecting nesting.
 fn split_or_type(s: &str) -> Option<(&str, &str)> {
     let mut depth: i32 = 0;
     for (i, b) in s.bytes().enumerate() {
         match b {
-            b'<' => depth += 1,
-            b'>' => depth -= 1,
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
             b' ' if depth == 0 && s[i..].starts_with(" or ") => {
                 return Some((s[..i].trim(), s[i + 4..].trim()));
             }
@@ -179,13 +200,13 @@ fn split_or_type(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Split `A, B` at the first top-level comma, respecting nested angle brackets.
+/// Split `A, B` at the first top-level comma, respecting nesting.
 fn split_comma(s: &str) -> Option<(&str, &str)> {
     let mut depth: i32 = 0;
     for (i, b) in s.bytes().enumerate() {
         match b {
-            b'<' => depth += 1,
-            b'>' => depth -= 1,
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
             b',' if depth == 0 => {
                 return Some((s[..i].trim(), s[i + 1..].trim()));
             }
