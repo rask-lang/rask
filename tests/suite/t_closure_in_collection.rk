@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Calling a closure that came out of a collection (#867).
+//
+// `for f in fs { f(5) }` over a `Vec<func(i64) -> i64>` didn't compile:
+//
+//     error: MIR lowering 'main': couldn't work out a type here, so there's
+//     nothing safe to compile … Gave up in: lower/expr:1156
+//
+// while `let g = fs[0]` two lines away was fine, and the interpreter ran both.
+//
+// A `let`/`mut` binding registers itself as holding a closure when the checker
+// types its initializer as a function, which is what makes the call site emit an
+// indirect call instead of looking for a function by that name. A `for` binding
+// didn't, so `f(5)` lowered as a call to a *function named `f`*, found no
+// signature for it, and gave up on the return type.
+//
+// Calling a *closure parameter* that holds a function is the same gap one level
+// down — `fs.map(|f| { return f(3) })` still fails natively and runs on the
+// interpreter. That one's #868; it wants the same registration where closure
+// parameters are bound.
+
+func twice(x: i64) -> i64 {
+    return x * 2
+}
+
+func thrice(x: i64) -> i64 {
+    return x * 3
+}
+
+test "closures in a Vec — indexed out and called" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(|x| {
+        return x * 2
+    })
+    assert_eq(fs.len(), 1)
+    let g = fs[0]
+    assert_eq(g(5), 10)
+}
+
+test "closures in a Vec — iterated and called" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(|x| {
+        return x * 2
+    })
+    fs.push(|x| {
+        return x * 3
+    })
+    mut out: Vec<i64> = Vec.new()
+    for f in fs {
+        out.push(f(5))
+    }
+    assert_eq(out.join(","), "10,15")
+}
+
+// Named functions go in the same slot as closures, and come back out callable.
+test "closures in a Vec — named functions too" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(twice)
+    fs.push(thrice)
+    mut total = 0
+    for f in fs {
+        total = total + f(10)
+    }
+    assert_eq(total, 50)
+}
+
+// The element type has to survive `.iter()`, which is a different lowering path
+// from a bare `for` over the collection.
+test "closures in a Vec — through iter()" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(|x| {
+        return x + 1
+    })
+    fs.push(|x| {
+        return x + 2
+    })
+    mut out: Vec<i64> = Vec.new()
+    for f in fs.iter() {
+        out.push(f(0))
+    }
+    assert_eq(out.join(","), "1,2")
+}
+
+test "closures in a Vec — an empty Vec iterates zero times" {
+    let fs: Vec<func(i64) -> i64> = Vec.new()
+    mut calls = 0
+    for f in fs {
+        calls = calls + f(1)
+    }
+    assert_eq(calls, 0)
+}
+
+func main() {}
