@@ -1926,8 +1926,8 @@ fn error_task_handle_dropped_as_bare_statement() {
     let output = check_output(
         "func main() {\n    using Multitasking {\n        spawn(|| { return 1 })\n    }\n}"
     );
-    assert!(output.contains("E0834"),
-        "an unbound spawn() used as a statement should be E0834 (H1): {}", output);
+    assert!(output.contains("E0840"),
+        "an unbound spawn() used as a statement should be E0840 (H1): {}", output);
 }
 
 #[test]

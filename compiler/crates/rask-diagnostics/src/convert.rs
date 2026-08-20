@@ -2185,7 +2185,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "value of resource type `{}` is dropped without being consumed",
                     type_name
                 ))
-                .with_code("E0834")
+                .with_code("E0840")
                 .with_primary(self.span, "produced here and immediately dropped")
                 .with_help("bind it to a name and call a consuming method on it, e.g. `let h = ...; h.join()`")
                 .with_fix("bind the value to a name so it can be consumed")
