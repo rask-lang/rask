@@ -92,6 +92,7 @@ pub enum UnsafeCategory {
     UnsafeFuncCall,
     Transmute,
     UnionFieldAccess,
+    UncheckedArith,
 }
 
 pub struct TypeChecker {

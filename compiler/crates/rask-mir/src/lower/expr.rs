@@ -6015,12 +6015,22 @@ impl<'a> MirLowerer<'a> {
         // multiply instead of calling `Wrapping_mul$u32` (#838). A generic
         // instantiation's key always starts with the unmangled prefix plus
         // `$`, so match on that instead of requiring an exact hit.
+        // The fallback scan below is a linear pass over every registered
+        // function, so it only runs for a generic receiver — the one case an
+        // exact-match lookup can't ever find. A non-generic receiver's exact
+        // key either exists or the method just isn't an overload, and the
+        // first `contains_key` already answers both (#937 review).
+        let receiver_is_generic = matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(rask_types::Type::Generic { .. } | rask_types::Type::UnresolvedGeneric { .. })
+        );
         let has_operator_overload = aggregate_receiver
             && self.mir_type_name(obj_ty)
                 .map(|ty_name| format!("{}_{}", ty_name, method))
                 .is_some_and(|qualified| {
                     self.func_sigs.contains_key(&qualified)
-                        || self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified)))
+                        || (receiver_is_generic
+                            && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
                 });
         let skip_binop = skip_binop || has_operator_overload;
 

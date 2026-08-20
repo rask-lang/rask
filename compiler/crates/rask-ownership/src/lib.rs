@@ -2382,19 +2382,43 @@ impl<'a> OwnershipChecker<'a> {
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached
             Type::String => MoveReason::Unknown,
-            Type::Generic { base, .. } => {
-                // Check if the base type is a heap-owning collection
-                let base_name = if let Some(def) = self.program.types.get(*base) {
-                    match def {
-                        rask_types::TypeDef::Struct { name, .. }
-                        | rask_types::TypeDef::Enum { name, .. } => Some(name.as_str()),
-                        _ => None,
+            Type::Generic { base, args } => {
+                let base_name = self.program.types.type_name(*base);
+                // The compiler-native generics have no fields to blame — same
+                // gap `is_copy` has to work around for the same reason.
+                if Self::is_native_opaque_generic(&base_name) {
+                    if matches!(base_name.as_str(), "Vec" | "Map" | "Pool") {
+                        MoveReason::OwnsHeapMemory { type_name }
+                    } else {
+                        MoveReason::Unknown
                     }
-                } else {
-                    None
-                };
-                if matches!(base_name, Some("Vec" | "Map" | "Pool")) {
-                    MoveReason::OwnsHeapMemory { type_name }
+                } else if let Some(def) = self.program.types.get(*base) {
+                    match def {
+                        rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
+                            if *is_unique {
+                                return MoveReason::Unique { type_name };
+                            }
+                            let subst = Self::generic_field_subst(type_params, args);
+                            let all_fields_copy = fields.iter()
+                                .all(|(_, t)| self.is_copy(&Self::substitute_generic_field(t, &subst)));
+                            if all_fields_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            let all_copy = variants.iter().all(|(_, data)| data.iter()
+                                .all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))));
+                            if all_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        _ => MoveReason::Unknown,
+                    }
                 } else {
                     MoveReason::Unknown
                 }

@@ -3687,6 +3687,14 @@ impl TypeChecker {
             "unchecked_add" | "unchecked_sub" | "unchecked_mul"
                 if args.len() == 1
                     && !matches!(ty, Type::I128 | Type::U128) => {
+                // Recorded whether or not it's actually inside `unsafe` — an
+                // out-of-context call still gets flagged below, but `rask
+                // unsafe`'s report is about auditing the unsafe surface a
+                // file already has, and this op belongs on it either way
+                // (every other unsafe op here — transmute, raw pointer
+                // deref, extern calls, union access — records unconditionally
+                // too).
+                self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
                 if !self.in_unsafe {
                     self.errors.push(TypeError::UnsafeRequired {
                         operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
