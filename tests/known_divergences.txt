@@ -39,9 +39,10 @@ t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acq
 t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, pointer methods missing — #935 (interp)
 
 # --- shared / both-backend bugs ---
-# (none right now — t_parse_float was the last one, fixed in #610: a float
-#  payload sits in a Result slot as an f64, and the parse adapter was writing
-#  it at the declared width, so an f32 target read four bytes of eight.)
+# (t_parse_float was the previous one, fixed in #610: a float payload sits in a
+#  Result slot as an f64, and the parse adapter was writing it at the declared
+#  width, so an f32 target read four bytes of eight.)
+t_week_optional_chain_flatten.rk # `?.` onto a `T?` field types as `T??`, so `?? "x"` won't compile — #938 (both, type checker)
 
 # --- new regression witnesses (this session) ---
 

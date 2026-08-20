@@ -51,7 +51,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT7: Type shorthand** | `T?` | sugar for `T or none` |
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
-| **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
+| **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits. The result is one layer: a field whose own type is `T?` comes through as `T?`, not `T??` — both absences mean the same thing to the caller, so there's nothing to keep apart |
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
@@ -180,6 +180,12 @@ if slots.first()? as slot {          // outer: the vec was not empty
 ```
 
 Collapsing the layers would throw the distinction away — an empty vec and an empty first slot would both read as `none`. That's Kotlin's nested-nullable bug, and it's exactly the information a caller of `first()` needs.
+
+`?.` is the other case, and it does flatten (OPT10). `account.profile?.nickname`
+is a `string?`, not a `string??` — "no profile" and "a profile with no nickname"
+are the same answer to whoever asked for a nickname, so there's no distinction to
+lose. Nesting is about layers that answer *different* questions; a chain's layers
+answer the same one.
 
 | Rule | Description |
 |------|-------------|

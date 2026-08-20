@@ -71,6 +71,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — named-payload enum variants | `t_week_enum_named_payloads.rk` | 2/7 | 3/7 | #910 #911 |
 | **probe** — `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 2/5 | 5/5 | #909 |
 | **probe** — `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 0/2 | #917 |
+| **probe** — `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | BUILD-FAIL | BUILD-FAIL | #938 #939 |
 | **probe** — inferred signatures | `t_week_gradual_generics.rk` | BUILD-FAIL | BUILD-FAIL | #904 #905 |
 | **probe** — implicit-param generic structs | `t_week_generic_struct_naming.rk` | BUILD-FAIL | BUILD-FAIL | #913 |
 | **probe** — type param vs stdlib name | `t_week_generic_param_shadowing.rk` | BUILD-FAIL | BUILD-FAIL | #915 |
@@ -162,15 +163,19 @@ probe files already: `p09_simd.rk`, `p10_binary.rk`, `p08_sequence.rk`.
 
 ---
 
-## Two spec questions raised, not answered
+## Spec questions
 
-**Nested optionals through `?.`.** What `a.inner?.v` gives when `inner` is present
-and `v` is `none` — `Some(none)` (layers stay distinct, per the nesting section) or
-`none` (the chain short-circuits, per how `user?.name ?? "guest"` reads). OPT10's
-"when present" refers to the receiver, which *is* present. The interpreter
-short-circuits. Not asserted either way; raised on #917.
+**Nested optionals through `?.` — answered.** `a.inner?.v` where `v: string?` is a
+`string?`, not a `string??`: the chain unwraps, and both absences mean the same
+thing to the caller, so there's nothing to keep apart. The nesting rules still
+apply to a `T??` that comes from a generic — `Vec<Config?>.first()`, where the two
+absences are different facts — and OPT10 now says a chain isn't that shape.
 
-**`mutate` on a Copy type.** `mem.parameters` says two different things — PM2's
+Both runtimes already flatten. The type checker doesn't, so `chain ?? "default"`
+and every other position that names the type won't compile: #938, probed by
+`t_week_optional_chain_flatten.rk`.
+
+**`mutate` on a Copy type — still open.** `mem.parameters` says two different things — PM2's
 prose promises the caller sees the write, the edge-case table says a Copy type's
 mutations affect the copy. The implementation does neither cleanly: primitives
 drop the write, aggregates keep it at any size. Raised on #899, where
