@@ -70,7 +70,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | imports | `t_week_imports.rk` | 13/13 | 13/13 | |
 | **probe** — named-payload enum variants | `t_week_enum_named_payloads.rk` | 2/7 | 3/7 | #910 #911 |
 | **probe** — `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 2/5 | 5/5 | #909 |
-| **probe** — `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/10 | 0/2, crashes | #938 #917 |
+| **probe** — `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 0/2 | #917 |
 | **probe** — inferred signatures | `t_week_gradual_generics.rk` | BUILD-FAIL | BUILD-FAIL | #904 #905 |
 | **probe** — implicit-param generic structs | `t_week_generic_struct_naming.rk` | BUILD-FAIL | BUILD-FAIL | #913 |
 | **probe** — type param vs stdlib name | `t_week_generic_param_shadowing.rk` | BUILD-FAIL | BUILD-FAIL | #915 |
@@ -162,18 +162,15 @@ probe files already: `p09_simd.rk`, `p10_binary.rk`, `p08_sequence.rk`.
 
 ---
 
-## Spec questions
+## Two spec questions raised, not answered
 
-**Nested optionals through `?.` — answered.** What `a.inner?.v` gives when `inner`
-is present and `v` is `none`: the field isn't unwrapped, so it's a present outer
-layer carrying an absent inner one. `?.` short-circuits on the *receiver's*
-absence, not the field's. That follows from the two rules already in
-`type.optionals` — nested layers stay distinct, and the `?`-family operators see
-only the outer layer. Both backends collapse them instead, so this went from an
-open question to a confirmed both-backend bug: #938, asserted in
-`t_week_optional_field_chains.rk`.
+**Nested optionals through `?.`.** What `a.inner?.v` gives when `inner` is present
+and `v` is `none` — `Some(none)` (layers stay distinct, per the nesting section) or
+`none` (the chain short-circuits, per how `user?.name ?? "guest"` reads). OPT10's
+"when present" refers to the receiver, which *is* present. The interpreter
+short-circuits. Not asserted either way; raised on #917.
 
-**`mutate` on a Copy type — still open.** `mem.parameters` says two different things — PM2's
+**`mutate` on a Copy type.** `mem.parameters` says two different things — PM2's
 prose promises the caller sees the write, the edge-case table says a Copy type's
 mutations affect the copy. The implementation does neither cleanly: primitives
 drop the write, aggregates keep it at any size. Raised on #899, where
