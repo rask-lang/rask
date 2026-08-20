@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: `T or E` — the failure branch, `try`, and `catch`.
+//
+// There's no Ok/Err to construct: a bare `T` returned from a function with an
+// `or E` clause auto-wraps into the success branch, and returning an `E` value
+// takes the other one. Then:
+//
+//   `try r`             propagate the failure to the caller unchanged
+//   `r catch e => v`    a value instead, computed from the error
+//   `r catch _ => v`    a value instead, error dropped — visibly
+//   `r catch e => return f(e)`  an exit written where it happens
+//   `if r is E as e`    test for a particular error and bind it
+//
+// `??` is absence-only and does not apply here; `catch` is the failure word.
+
+enum MathError {
+    DivByZero
+    Negative
+}
+
+extend MathError with Error {
+    func message(self) -> string {
+        return match self {
+            DivByZero => "divide by zero",
+            Negative => "negative input",
+        }
+    }
+}
+
+enum ParseFail {
+    Empty
+    BadDigit
+}
+
+extend ParseFail with Error {
+    func message(self) -> string {
+        return match self {
+            Empty => "empty input",
+            BadDigit => "not a digit",
+        }
+    }
+}
+
+func divide(a: i32, b: i32) -> i32 or MathError {
+    if b == 0: return MathError.DivByZero
+    return a / b
+}
+
+func sqrt_int(n: i32) -> i32 or MathError {
+    if n < 0: return MathError.Negative
+    mut i = 0
+    while i * i <= n {
+        i = i + 1
+    }
+    return i - 1
+}
+
+// try chains: either failure reaches the caller unchanged.
+func divide_then_root(a: i32, b: i32) -> i32 or MathError {
+    let q = try divide(a, b)
+    return try sqrt_int(q)
+}
+
+func digits(s: string) -> i32 or ParseFail {
+    if s.is_empty(): return ParseFail.Empty
+    mut total = 0
+    for c in s.chars() {
+        if !c.is_digit(): return ParseFail.BadDigit
+        total = total + 1
+    }
+    return total
+}
+
+func code_for(e: MathError) -> i32 {
+    return match e {
+        DivByZero => -100,
+        Negative => -200,
+    }
+}
+
+func or_zero(a: i32, b: i32) -> i32 {
+    return divide(a, b) catch _ => 0
+}
+
+func labelled(a: i32, b: i32) -> string {
+    let q = divide(a, b) catch e => return "failed"
+    return "got {q}"
+}
+
+func void_result(n: i32) -> void or MathError {
+    if n < 0: return MathError.Negative
+    return
+}
+
+test "type.errors — a bare value auto-wraps into the success branch" {
+    assert divide(10, 2)! == 5
+    assert divide(9, 3)! == 3
+    assert sqrt_int(16)! == 4
+    assert sqrt_int(0)! == 0
+}
+
+test "type.errors — returning an error value takes the other branch" {
+    let r = divide(1, 0)
+    assert r is MathError
+    let r2 = sqrt_int(-1)
+    assert r2 is MathError
+}
+
+test "type.errors — is E as e binds the error" {
+    let r = divide(1, 0)
+    mut which = ""
+    if r is MathError as e {
+        which = e.message()
+    }
+    assert which == "divide by zero"
+    let r2 = sqrt_int(-1)
+    mut which2 = ""
+    if r2 is MathError as e {
+        which2 = e.message()
+    }
+    assert which2 == "negative input"
+}
+
+test "type.errors — catch supplies a value computed from the error" {
+    assert (divide(10, 2) catch _ => -1) == 5
+    assert (divide(1, 0) catch _ => -1) == -1
+    assert or_zero(10, 2) == 5
+    assert or_zero(1, 0) == 0
+}
+
+test "type.errors — catch can compute from the error itself" {
+    // The fallback is built from the error, so the two failures differ.
+    assert (divide(1, 0) catch e => code_for(e)) == -100
+    assert (sqrt_int(-1) catch e => code_for(e)) == -200
+    // A success never reaches the fallback.
+    assert (divide(10, 5) catch e => code_for(e)) == 2
+}
+
+test "type.errors — an error's message method" {
+    assert code_for(MathError.DivByZero) == -100
+    assert MathError.DivByZero.message() == "divide by zero"
+    assert MathError.Negative.message() == "negative input"
+    assert ParseFail.Empty.message() == "empty input"
+}
+
+test "type.errors — catch with a written-out exit" {
+    assert labelled(10, 2) == "got 5"
+    assert labelled(1, 0) == "failed"
+}
+
+test "type.errors — try propagates a failure unchanged" {
+    assert divide_then_root(32, 2)! == 4
+    // The divide fails first.
+    assert divide_then_root(1, 0) is MathError
+    // The divide succeeds, the root fails.
+    assert divide_then_root(-8, 2) is MathError
+}
+
+test "type.errors — try passes a success straight through" {
+    assert divide_then_root(100, 4)! == 5
+    assert divide_then_root(4, 1)! == 2
+}
+
+test "type.errors — two different error types on two functions" {
+    assert digits("123")! == 3
+    assert digits("") is ParseFail
+    assert digits("12a") is ParseFail
+    assert (digits("") catch _ => -1) == -1
+}
+
+test "type.errors — a void result" {
+    let ok = void_result(1)
+    assert !(ok is MathError)
+    let bad = void_result(-1)
+    assert bad is MathError
+}
+
+test "type.errors — a result in a loop, failures counted" {
+    let pairs: Vec<i32> = [4, 0, 9, 0, 16]
+    mut ok_count = 0
+    mut fail_count = 0
+    for d in pairs {
+        let r = divide(100, d)
+        if r is MathError {
+            fail_count = fail_count + 1
+        } else {
+            ok_count = ok_count + 1
+        }
+    }
+    assert ok_count == 3
+    assert fail_count == 2
+}
+
+test "type.errors — catch feeding straight into arithmetic" {
+    let total = (divide(10, 2) catch _ => 0) + (divide(1, 0) catch _ => 0)
+    assert total == 5
+}
+
+func main() {}

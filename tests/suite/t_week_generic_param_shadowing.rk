@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A declared type parameter vs a real type of the same name — #915.
+//
+// The explicit `<>` list exists to win exactly this conflict. SYNTAX.md, under
+// "Explicit declaration (disambiguation)":
+//
+//     // When a name conflicts with a real type, force it generic with <>
+//     func make_item<Item>(x: Item) -> Item { return x }
+//
+// It doesn't. A parameter named after a stdlib type resolves to the stdlib type,
+// and the parameter list is ignored. `Output` is the one that bites — the obvious
+// word for a mapping function's result, and a real struct (`os.Output`, a
+// subprocess's result). SYNTAX.md's own generics example uses it:
+//
+//     func map<Item, Output>(list: Vec<Item>, f: |Item| -> Output) -> Vec<Output>
+//
+// so the spec's illustration can't be compiled as written.
+//
+// Rename the parameter and everything works — explicit lists, closure
+// parameters, and differing in/out types are all fine as long as the name is
+// free. `t_week_generics.rk` covers those with non-colliding names.
+
+// The colliding name.
+func convert<Input, Output>(x: Input, f: func(Input) -> Output) -> Output {
+    return f(x)
+}
+
+// SYNTAX.md's map, as written there.
+func map_all<Item, Output>(list: Vec<Item>, f: func(Item) -> Output) -> Vec<Output> {
+    mut out: Vec<Output> = Vec.new()
+    for it in list {
+        out.push(f(it))
+    }
+    return out
+}
+
+// A parameter named after a stdlib type in a plain signature, no closure.
+func passthrough<Output>(x: Output) -> Output {
+    return x
+}
+
+test "type.generics — a declared parameter shadows a stdlib type of that name" {
+    let s: string = convert(3, |x| "n{x}")
+    assert s == "n3"
+    let n: i32 = convert(21, |x| x * 2)
+    assert n == 42
+}
+
+test "type.generics — the spec's own map<Item, Output> compiles and runs" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = map_all(ints, |x| "n{x}")
+    assert labels.len() == 3
+    assert labels[0] == "n1"
+    assert labels.join(",") == "n1,n2,n3"
+}
+
+test "type.generics — Output as a parameter with no closure involved" {
+    assert passthrough(7) == 7
+    assert passthrough("s") == "s"
+}
+
+test "type.generics — a non-colliding name is the control" {
+    let ints: Vec<i32> = [1, 2]
+    let doubled: Vec<i32> = map_all(ints, |x| x * 2)
+    assert doubled[0] == 2
+    assert doubled[1] == 4
+}
+
+func main() {}

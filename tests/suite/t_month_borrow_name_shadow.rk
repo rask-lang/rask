@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A test block inheriting the previous function's parameter scope — #926.
+//
+// A `test` block is analysed with the parameter list of the **most recently
+// declared preceding `func`**. If that function has a *borrowed* parameter whose
+// name matches a local in the test, moving the local is rejected:
+//
+//     error[E0322]/E0835: cannot give away `l` — it's borrowed, not owned
+//         = fix: take it: `take l: …` in the signature
+//
+// pointing at a parameter in a function the reader isn't looking at, which is
+// never called.
+//
+// It's positional, not a global name lookup — the ordering below is load-bearing,
+// so `peek` sits immediately before the tests. Insert any parameterless function
+// between them and the bug vanishes; move `peek` after the tests and it vanishes;
+// swap `peek` and `eat` so the `take` one is last and it vanishes. The type is
+// irrelevant — a borrowed `n: i64` next to a `Big` local still triggers it. And the
+// same body inside `func main()` is always fine, which is the tell: a test block's
+// synthetic function inherits whatever scope the last real function left behind.
+//
+// Short parameter names are normal and so is reusing them as locals, so one
+// borrowed `l`, `s`, `v`, `n` or `item` in the wrong position poisons that name.
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func eat(take l: Big) -> i64 {
+    return l.a
+}
+
+func eat_n(take n: Big) -> i64 {
+    return n.b
+}
+
+// The control: the same move inside a plain function is fine, always.
+func move_in_a_plain_function() -> i64 {
+    let l = Big { a: 5, b: 0, c: 0 }
+    return eat(l)
+}
+
+// These two are declared last on purpose. Both parameters are borrowed and
+// neither function is ever called — being the previous declaration is the whole
+// trigger. `count` is last, so it is `count`'s `n` that leaks and `peek`'s `l`
+// that does not; the four tests below spell that difference out.
+func peek(l: Big) -> i64 {
+    return l.a
+}
+
+func count(n: i64) -> i64 {
+    return n
+}
+
+// `peek` is second-to-last, so its `l` doesn't leak — this passes today, and it's
+// what makes the rule positional rather than a global name lookup.
+test "mem.ownership — a local named after a NON-adjacent borrowed parameter" {
+    let l = Big { a: 1, b: 2, c: 3 }
+    assert eat(l) == 1
+}
+
+// `count(n: i64)` is the last declaration, so `n` leaks — and its type is an i64
+// against a Big local, which is why the check clearly isn't comparing types.
+test "mem.ownership — a local named after the adjacent borrowed parameter" {
+    let n = Big { a: 0, b: 9, c: 0 }
+    assert eat_n(n) == 9
+}
+
+test "mem.ownership — a differently named local moves fine" {
+    let mine = Big { a: 4, b: 0, c: 0 }
+    assert eat(mine) == 4
+}
+
+test "mem.ownership — the same move inside a plain function is the control" {
+    assert move_in_a_plain_function() == 5
+}
+
+func main() {}

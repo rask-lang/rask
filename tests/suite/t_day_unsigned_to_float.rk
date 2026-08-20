@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Casting an unsigned integer to a float — #907.
+//
+// `as` on an unsigned source uses Cranelift's *signed* int-to-float conversion
+// natively, so any value with the top bit of its width set comes out negative:
+// `u8 255 as f64` is -1, `u16 40000` is -25536, `u32 4000000000` is
+// -294967296. Values below the sign bit are correct, which is why every small
+// test number in the suite passes and this went unnoticed.
+//
+// `convert_value` picks `fcvt_from_sint` unconditionally for int→float even
+// though the source's MIR type is a parameter of the same function, and the
+// int→int branch just above it already uses that to choose uextend vs sextend.
+// `lower_convert` — the path `.to<T>()` and `.round<T>()` take — checks
+// signedness properly, which is why the explicit forms are right.
+//
+// Signed sources and integer-to-integer casts are green and live in
+// `t_day_casts.rk`.
+
+test "type.primitives — u8 above the sign bit converts to f64" {
+    let a: u8 = 200
+    assert (a as f64) == 200.0
+    let b: u8 = 255
+    assert (b as f64) == 255.0
+}
+
+test "type.primitives — u8 below the sign bit converts to f64" {
+    let a: u8 = 100
+    assert (a as f64) == 100.0
+}
+
+test "type.primitives — u16 above the sign bit converts to f64" {
+    let a: u16 = 40000
+    assert (a as f64) == 40000.0
+    let b: u16 = 65535
+    assert (b as f64) == 65535.0
+}
+
+test "type.primitives — u32 above the sign bit converts to f64" {
+    let a: u32 = 4000000000
+    assert (a as f64) == 4000000000.0
+}
+
+test "type.primitives — u8 converts to f32 as well" {
+    let a: u8 = 200
+    assert (a as f32) == 200.0
+}
+
+// The explicit form takes the other code path and already gets it right, which
+// is the contrast that names the fix.
+test "type.primitives — the explicit conversion is correct either way" {
+    let a: u8 = 200
+    assert a.to<f64>()! == 200.0
+    let b: u16 = 40000
+    assert b.to<f64>()! == 40000.0
+}
+
+func main() {}

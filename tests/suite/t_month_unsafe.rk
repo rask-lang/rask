@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: unsafe blocks and raw pointers — #935.
+//
+// Native implements the raw-pointer surface mem.unsafe specifies. The interpreter
+// treats a raw pointer as a plain i64, so `*p` silently yields **0** and the
+// pointer methods don't exist ("method not found on `i64`", which is the
+// diagnosis).
+//
+// The two failure modes split badly. `p.read()` at least errors immediately. `*p`
+// returns 0 — a plausible byte value — so a program doing FFI or hand-rolled
+// buffer work runs to completion on `--interp` and produces wrong answers instead
+// of stopping. And since the interpreter is normally the reference, anyone checking
+// unsafe code against a native result would conclude native was wrong.
+//
+// Interpreter-lag direction, the third this sweep found after #909 and #934.
+//
+// `&x` to take a raw pointer to a local isn't available on either backend — `let
+// p: *i32 = &x` is "remove the '&' - Rask currently uses owned values" — so
+// `as_ptr()` is the only way to get a pointer, which is what this file uses.
+//
+// The C-interop half of the area (compile_rust, cbindgen, linking a real object
+// file) still needs a build-system harness and stays a recorded hole in
+// COVERAGE.md.
+
+// UF1: inside an unsafe func, no nested unsafe block is needed.
+unsafe func first_byte(s: string) -> u8 {
+    return *s.as_ptr()
+}
+
+test "mem.unsafe — dereferencing a raw pointer" {
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        assert *p == 97
+    }
+}
+
+test "mem.unsafe — read() copies the value out" {
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        assert p.read() == 97
+    }
+}
+
+test "mem.unsafe — offset() walks the bytes" {
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        assert *p.offset(1) == 98
+        assert *p.offset(2) == 99
+    }
+}
+
+test "mem.unsafe — U3: an unsafe block is an expression" {
+    let s = "hello"
+    let n = unsafe { *s.as_ptr() }
+    assert n == 104
+}
+
+test "mem.unsafe — UF1: an unsafe func body needs no nested block" {
+    let b = unsafe { first_byte("xyz") }
+    assert b == 120
+}
+
+test "mem.unsafe — U2: unsafe does not propagate" {
+    // Calling a safe function from inside unsafe stays safe, and the safe result
+    // is the same either side of the boundary.
+    let s = "abcd"
+    let outside = s.len()
+    let inside = unsafe { s.len() }
+    assert outside == 4
+    assert inside == 4
+}
+
+func main() {}

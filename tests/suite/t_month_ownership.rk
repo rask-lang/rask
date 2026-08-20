@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: ownership, moves, and the 16-byte copy threshold.
+//
+// A value at or under 16 bytes copies on assignment; above it, assignment moves
+// and you write `.clone()` when you want an independent copy. That's the
+// transparency principle — the cost is visible in the source — and the threshold
+// is deliberate, not a limitation.
+//
+// Covers: a small struct copying (both halves independent afterwards), a large
+// struct needing `.clone()`, sizes either side of the boundary, moving into a
+// function via `take`, a collection's elements, and that a `let` binding can
+// still be moved (transfer of ownership isn't mutation).
+
+// 8 bytes — copies.
+struct Small {
+    a: i32
+    b: i32
+}
+
+// 16 bytes exactly — the boundary, still copies.
+struct Boundary {
+    a: i64
+    b: i64
+}
+
+// 24 bytes — over the threshold, moves.
+struct Large {
+    a: i64
+    b: i64
+    c: i64
+}
+
+// A string is 16 bytes but owns a heap buffer.
+struct Named {
+    name: string
+}
+
+func consume_small(take s: Small) -> i32 {
+    return s.a + s.b
+}
+
+func consume_large(take l: Large) -> i64 {
+    return l.a + l.b + l.c
+}
+
+// Deliberately not named `l`: inside a `test` block, a local can't be moved if
+// any function in the file has a *borrowed* parameter of that name (#926), and
+// the tests below move locals called `l`.
+func read_large(borrowed: Large) -> i64 {
+    return borrowed.a
+}
+
+test "mem.ownership — a small struct copies on assignment" {
+    let a = Small { a: 1, b: 2 }
+    mut b = a
+    b.a = 99
+    assert b.a == 99
+    // The source is untouched — this is a copy, not a move.
+    assert a.a == 1
+    assert a.b == 2
+}
+
+test "mem.ownership — 16 bytes exactly still copies" {
+    let a = Boundary { a: 1, b: 2 }
+    mut b = a
+    b.a = 99
+    assert b.a == 99
+    assert a.a == 1
+}
+
+test "mem.ownership — over the threshold, clone gives an independent value" {
+    let a = Large { a: 1, b: 2, c: 3 }
+    mut b = a.clone()
+    b.a = 99
+    assert b.a == 99
+    assert a.a == 1
+    assert a.b == 2
+}
+
+test "mem.ownership — a clone of a struct holding a string is independent" {
+    let a = Named { name: "original" }
+    mut b = a.clone()
+    b.name = "changed"
+    assert b.name == "changed"
+    assert a.name == "original"
+}
+
+test "mem.ownership — take moves the value into the callee" {
+    let s = Small { a: 3, b: 4 }
+    assert consume_small(s) == 7
+    let l = Large { a: 1, b: 2, c: 3 }
+    assert consume_large(l) == 6
+}
+
+test "mem.ownership — a borrow leaves the value usable" {
+    let l = Large { a: 7, b: 0, c: 0 }
+    assert read_large(l) == 7
+    // Still there: a borrow took nothing.
+    assert read_large(l) == 7
+    assert l.a == 7
+}
+
+test "mem.ownership — a let binding can be moved, just not mutated" {
+    let l = Large { a: 5, b: 0, c: 0 }
+    // Moving out of a `let` is fine — transfer of ownership is not mutation.
+    assert consume_large(l) == 5
+}
+
+test "mem.ownership — a copy inside a collection is independent" {
+    mut v: Vec<Small> = Vec.new()
+    let s = Small { a: 1, b: 1 }
+    v.push(s)
+    v.push(s)
+    v[0].a = 99
+    assert v[0].a == 99
+    assert v[1].a == 1
+    // The original is still intact too.
+    assert s.a == 1
+}
+
+test "mem.ownership — cloning a Vec gives an independent collection" {
+    mut a: Vec<i32> = [1, 2, 3]
+    mut b = a.clone()
+    b.push(4)
+    assert b.len() == 4
+    assert a.len() == 3
+    b[0] = 99
+    assert b[0] == 99
+    assert a[0] == 1
+}
+
+test "mem.ownership — cloning a large struct inside a collection" {
+    let base = Large { a: 1, b: 2, c: 3 }
+    mut v: Vec<Large> = Vec.new()
+    v.push(base.clone())
+    v.push(base.clone())
+    v[0].a = 99
+    assert v[0].a == 99
+    assert v[1].a == 1
+    assert base.a == 1
+}
+
+test "mem.ownership — a string field survives a copy of its holder" {
+    let a = Named { name: "shared text" }
+    let b = a.clone()
+    assert a.name == "shared text"
+    assert b.name == "shared text"
+    assert a.name == b.name
+}
+
+test "mem.ownership — reassigning a mut binding drops the old value" {
+    mut l = Large { a: 1, b: 0, c: 0 }
+    assert l.a == 1
+    l = Large { a: 2, b: 0, c: 0 }
+    assert l.a == 2
+    l = Large { a: 3, b: 0, c: 0 }
+    assert l.a == 3
+}
+
+func main() {}

@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A method returning the receiver's own type parameter — #916.
+//
+// `extend Wrapper { func get(self) -> T }` on a `struct Wrapper<T>` isn't
+// monomorphized natively: at the `Wrapper<f64>` instantiation the method's MIR
+// return type is `ptr` and its locals are `i64`, so the float is read into an
+// integer and returned as a word. The printed value is the IEEE-754 bit pattern.
+// A `Wrapper<string>` segfaults — a RaskStr is 16 bytes and the return slot is
+// one.
+//
+// Word-sized integral instantiations (i32, i64, bool) are correct, which is what
+// `t_week_generics.rk` uses. Two things localise it: reading the field directly
+// works at every type, and a *free* generic function with the same return type
+// works at f64 too. It's the method specifically.
+//
+// A container plus an accessor returning what it contains is about as ordinary
+// as generic code gets, and it's silently wrong exactly where silence hurts — a
+// float coming back as a plausible-looking large integer.
+
+struct Wrapper<T> {
+    value: T
+}
+
+extend Wrapper {
+    func get(self) -> T {
+        return self.value
+    }
+
+    // A method mentioning a type parameter of its *own* — the #887 shape, where
+    // nothing at the call site resolves `R` and the result is laid out at the
+    // wrong width. On native this kills the test binary rather than returning
+    // something wrong.
+    func map_to<R>(self, f: func(T) -> R) -> Wrapper<R> {
+        return Wrapper { value: f(self.value) }
+    }
+}
+
+// The free-function form, which works — the control.
+func get_free<T>(w: Wrapper<T>) -> T {
+    return w.value
+}
+
+test "type.generics — a generic method returns an f64 as an f64" {
+    let c: Wrapper<f64> = Wrapper { value: 0.5 }
+    assert c.get() == 0.5
+}
+
+test "type.generics — a generic method returns an f32 as an f32" {
+    let c: Wrapper<f32> = Wrapper { value: 0.5 }
+    assert c.get() == 0.5
+}
+
+test "type.generics — a generic method returns a string as a string" {
+    let c: Wrapper<string> = Wrapper { value: "s" }
+    assert c.get() == "s"
+}
+
+test "type.generics — the integral instantiations are the case that works" {
+    let a: Wrapper<i32> = Wrapper { value: 7 }
+    assert a.get() == 7
+    let b: Wrapper<i64> = Wrapper { value: 9 }
+    assert b.get() == 9
+    let c: Wrapper<bool> = Wrapper { value: true }
+    assert c.get()
+}
+
+test "type.generics — a free function with the same return works at f64" {
+    let c: Wrapper<f64> = Wrapper { value: 0.5 }
+    assert get_free(c) == 0.5
+}
+
+test "type.generics — reading the field directly works at every type" {
+    let a: Wrapper<f64> = Wrapper { value: 0.5 }
+    assert a.value == 0.5
+    let b: Wrapper<string> = Wrapper { value: "s" }
+    assert b.value == "s"
+}
+
+test "type.generics — a method returning its own type parameter's container" {
+    let a: Wrapper<i32> = Wrapper { value: 3 }
+    let b: Wrapper<i32> = a.map_to(|x| x * 2)
+    assert b.value == 6
+    let c: Wrapper<string> = a.map_to(|x| "v{x}")
+    assert c.value == "v3"
+}
+
+func main() {}

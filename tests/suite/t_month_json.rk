@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: JSON encoding and decoding.
+//
+// Encode and Decode are auto-derived from the struct — there's no trait to
+// implement and no annotations needed for the ordinary case. Field annotations
+// (`@rename`, `@no_serialize`, `@default`) adjust the wire form.
+//
+// Every JSON literal here has its braces doubled — `{{` is a literal `{` by
+// std.fmt/F4, since a lone `{` in any string starts an interpolation.
+//
+// Decodes use `!` rather than `try`: a `try` inside a `test` block emits a
+// propagation edge the synthetic test function's void signature can't take, and
+// native fails the Cranelift verifier (#932). `t_month_try_in_test.rk` carries it.
+//
+// Covers: encoding each primitive field type, a nested struct, a collection field,
+// an optional field, round-tripping, decoding well-formed input, decoding input
+// that's missing a field or has the wrong type, and the field annotations.
+
+import std.json
+
+struct Simple {
+    n: i64
+    label: string
+    ready: bool
+}
+
+struct Nested {
+    id: i64
+    inner: Simple
+}
+
+struct WithList {
+    name: string
+    scores: Vec<i64>
+}
+
+struct WithOptional {
+    name: string
+    nickname: string?
+}
+
+struct Renamed {
+    @rename("user_id")
+    id: i64
+    name: string
+}
+
+struct Skipped {
+    name: string
+    @no_serialize
+    secret: string
+}
+
+struct Defaulted {
+    name: string
+    @default(7)
+    retries: i64
+}
+
+test "std.encoding — encoding a struct of primitives" {
+    let s = Simple { n: 42, label: "hi", ready: true }
+    let text = json.encode(s)
+    assert text.contains("42")
+    assert text.contains("hi")
+    assert text.contains("true")
+    assert text.starts_with("{{")
+    assert text.ends_with("}}")
+}
+
+test "std.encoding — a round trip preserves every field" {
+    let s = Simple { n: -7, label: "round", ready: false }
+    let text = json.encode(s)
+    let back: Simple = json.decode<Simple>(text)!
+    assert back.n == -7
+    assert back.label == "round"
+    assert !back.ready
+}
+
+test "std.encoding — decoding well-formed input" {
+    let text = "{{\"n\": 5, \"label\": \"five\", \"ready\": true}}"
+    let s: Simple = json.decode<Simple>(text)!
+    assert s.n == 5
+    assert s.label == "five"
+    assert s.ready
+}
+
+test "std.encoding — a nested struct round trips" {
+    let n = Nested { id: 1, inner: Simple { n: 2, label: "in", ready: true } }
+    let text = json.encode(n)
+    let back: Nested = json.decode<Nested>(text)!
+    assert back.id == 1
+    assert back.inner.n == 2
+    assert back.inner.label == "in"
+    assert back.inner.ready
+}
+
+test "std.encoding — a collection field round trips" {
+    let scores: Vec<i64> = [1, 2, 3]
+    let w = WithList { name: "list", scores: scores }
+    let text = json.encode(w)
+    assert text.contains("[")
+    let back: WithList = json.decode<WithList>(text)!
+    assert back.name == "list"
+    assert back.scores.len() == 3
+    assert back.scores[2] == 3
+}
+
+test "std.encoding — an empty collection field round trips" {
+    mut empty: Vec<i64> = Vec.new()
+    let w = WithList { name: "none", scores: empty }
+    let text = json.encode(w)
+    let back: WithList = json.decode<WithList>(text)!
+    assert back.scores.is_empty()
+}
+
+test "std.encoding — an optional field, present and absent" {
+    let a = WithOptional { name: "ada", nickname: "a" }
+    let back_a: WithOptional = json.decode<WithOptional>(json.encode(a))!
+    assert back_a.name == "ada"
+    assert back_a.nickname! == "a"
+    let b = WithOptional { name: "bo", nickname: none }
+    let back_b: WithOptional = json.decode<WithOptional>(json.encode(b))!
+    assert back_b.name == "bo"
+    assert back_b.nickname is none
+}
+
+test "std.encoding — decoding fails on malformed input" {
+    let r = json.decode<Simple>("not json at all")
+    assert r is JsonError
+    let r2 = json.decode<Simple>("{{\"n\": ")
+    assert r2 is JsonError
+}
+
+test "std.encoding — decoding fails when a required field is missing" {
+    let r = json.decode<Simple>("{{\"n\": 1}}")
+    assert r is JsonError
+}
+
+test "std.encoding — decoding fails on a wrong field type" {
+    let r = json.decode<Simple>("{{\"n\": \"text\", \"label\": \"a\", \"ready\": true}}")
+    assert r is JsonError
+}
+
+test "std.encoding — @rename changes the wire name" {
+    let r = Renamed { id: 5, name: "ada" }
+    let text = json.encode(r)
+    assert text.contains("user_id")
+    assert !text.contains("\"id\"")
+    let back: Renamed = json.decode<Renamed>(text)!
+    assert back.id == 5
+    assert back.name == "ada"
+}
+
+test "std.encoding — @no_serialize keeps a field off the wire" {
+    let s = Skipped { name: "public", secret: "hidden" }
+    let text = json.encode(s)
+    assert text.contains("public")
+    assert !text.contains("hidden")
+}
+
+test "std.encoding — @default fills in a missing field on decode" {
+    let d: Defaulted = json.decode<Defaulted>("{{\"name\": \"ada\"}}")!
+    assert d.name == "ada"
+    assert d.retries == 7
+    let e: Defaulted = json.decode<Defaulted>("{{\"name\": \"bo\", \"retries\": 2}}")!
+    assert e.retries == 2
+}
+
+func main() {}

@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An i128 handed to a 64-bit instruction — #933.
+//
+// i128 works as a local, a parameter and a return value. Put one in a Vec or a
+// struct and native won't build: the value is correctly typed i128 and the access
+// is emitted as `load.i64`, which Cranelift's verifier rejects before anything
+// runs.
+//
+//     v17 = load.i64 v16
+//     arg 0 (v16) with type i128 failed to satisfy type set …
+//
+// #762 mapped MirType::I128/U128 to Cranelift's own I128 at 16 bytes, so the
+// arithmetic holds up — it's the layout/access side that never got the same
+// treatment, and whatever computes the load type for an aggregate member has an
+// i64 default the i128 case doesn't override.
+//
+// Fourth member of the "size is known, access path doesn't consult it" family
+// alongside #902, #924 and #895 — except louder, because the verifier catches this
+// one instead of letting it corrupt memory.
+//
+// A 128-bit accumulator inside a struct is the ordinary reason to want the type: a
+// ledger balance, a hash, a fixed-point value with a lot of fractional bits.
+// Raido's 32.32 fixed-point is exactly this shape.
+//
+// A third site with the same cause and no aggregate in sight: a `to<T>()`
+// narrowing *out* of 128 bits emits `sextend` — a *widening* instruction — against
+// the 128-bit source. Whether the value fits doesn't matter; it's the instruction
+// selection, not the range check. All four conversions below are right on the
+// interpreter, including the out-of-range one.
+//
+// The surface that works is in `t_month_i128.rk`.
+
+struct Ledger {
+    id: i64
+    balance: i128
+}
+
+struct Wrapper {
+    inner: Ledger
+}
+
+func sum_wide(v: Vec<i128>) -> i128 {
+    mut total: i128 = 0
+    for x in v {
+        total = total + x
+    }
+    return total
+}
+
+test "type.primitives — an i128 Vec element reads back" {
+    let v: Vec<i128> = [18446744073709551616, 1]
+    assert v.len() == 2
+    assert v[0] == 18446744073709551616
+    assert v[1] == 1
+}
+
+test "type.primitives — summing an i128 Vec" {
+    let v: Vec<i128> = [18446744073709551616, 18446744073709551616, 1]
+    assert sum_wide(v) == 36893488147419103233
+}
+
+test "type.primitives — an i128 struct field reads back" {
+    let l = Ledger { id: 1, balance: 18446744073709551617 }
+    assert l.id == 1
+    assert l.balance == 18446744073709551617
+}
+
+test "type.primitives — an i128 struct field can be written" {
+    mut l = Ledger { id: 2, balance: 0 }
+    l.balance = 36893488147419103232
+    assert l.balance == 36893488147419103232
+    assert l.id == 2
+}
+
+test "type.primitives — an i128 field one level down" {
+    let w = Wrapper { inner: Ledger { id: 3, balance: 18446744073709551616 } }
+    assert w.inner.balance == 18446744073709551616
+    assert w.inner.id == 3
+}
+
+test "type.primitives — an i128 as a Map value" {
+    mut m: Map<string, i128> = Map.new()
+    m.insert("big", 18446744073709551617)
+    assert m.get("big")! == 18446744073709551617
+}
+
+test "type.primitives — to<i64> out of an i128 that fits" {
+    let fits: i128 = 100
+    assert fits.to<i64>()! == 100
+}
+
+test "type.primitives — to<i64> out of an i128 that doesn't fit" {
+    let big: i128 = 18446744073709551617
+    assert (big.to<i64>() catch _ => 0) == 0
+}
+
+test "type.primitives — to<i32> out of an i128" {
+    let fits: i128 = 100
+    assert fits.to<i32>()! == 100
+}
+
+test "type.primitives — to<u64> out of a u128" {
+    let u: u128 = 100
+    assert u.to<u64>()! == 100
+}
+
+func main() {}

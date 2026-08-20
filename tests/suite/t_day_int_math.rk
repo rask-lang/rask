@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: integer arithmetic at each width, and the signed/unsigned rules.
+//
+// Covers the four operators plus remainder at i8/i16/i32/i64 and the unsigned
+// widths, negative-number division and remainder (Rask truncates toward zero,
+// so `-10 / 3` is `-3` and `-10 % 3` is `-1`), precedence, and unary minus.
+// Overflow is deliberately not here — it panics, and `t_overflow_hatches.rk`
+// owns the checked/wrapping/saturating forms.
+
+test "the four operators on i32" {
+    assert 2 + 3 == 5
+    assert 9 - 4 == 5
+    assert 6 * 7 == 42
+    assert 84 / 2 == 42
+}
+
+test "integer division truncates toward zero" {
+    assert 7 / 2 == 3
+    assert -7 / 2 == -3
+    assert 7 / -2 == -3
+    assert -7 / -2 == 3
+}
+
+test "remainder takes the sign of the left operand" {
+    assert 7 % 3 == 1
+    assert -7 % 3 == -1
+    assert 7 % -3 == 1
+    assert -7 % -3 == -1
+}
+
+test "unary minus" {
+    let n = 5
+    assert -n == -5
+    assert -(-n) == 5
+    assert 0 - n == -5
+}
+
+test "each signed width holds its extremes" {
+    let a: i8 = 127
+    let b: i8 = -128
+    assert a == 127
+    assert b == -128
+    let c: i16 = 32767
+    assert c == 32767
+    let d: i32 = 2147483647
+    assert d == 2147483647
+    let e: i64 = 9223372036854775807
+    assert e == 9223372036854775807
+}
+
+test "each unsigned width holds its maximum" {
+    let a: u8 = 255
+    assert a == 255
+    let b: u16 = 65535
+    assert b == 65535
+    let c: u32 = 4294967295
+    assert c == 4294967295
+    let d: u64 = 18446744073709551615
+    assert d == 18446744073709551615
+}
+
+test "unsigned arithmetic stays unsigned" {
+    let a: u32 = 300
+    let b: u32 = 100
+    assert a - b == 200
+    assert a + b == 400
+    assert a / b == 3
+    assert a % b == 0
+}
+
+test "arithmetic at i64 width" {
+    let big: i64 = 4000000000
+    assert big + big == 8000000000
+    assert big * 2 == 8000000000
+    assert big / 2 == 2000000000
+}
+
+test "precedence and grouping" {
+    assert 1 + 2 * 3 == 7
+    assert (1 + 2) * 3 == 9
+    assert 10 - 2 * 3 == 4
+    assert 10 / 2 + 3 == 8
+    assert 2 * 3 % 4 == 2
+    assert 20 / 5 / 2 == 2
+}
+
+test "literal bases all mean the same number" {
+    assert 0xFF == 255
+    assert 0b1010 == 10
+    assert 0o777 == 511
+    assert 1_000_000 == 1000000
+}
+
+test "chained arithmetic on a mut accumulator" {
+    mut acc: i64 = 1
+    for _ in 0..10 {
+        acc = acc * 2
+    }
+    assert acc == 1024
+}
+
+func main() {}

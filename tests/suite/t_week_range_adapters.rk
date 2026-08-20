@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Terminals and adapters on a range — #920.
+//
+// A range is only usable as the subject of a `for` loop. It has no methods of its
+// own beyond `.rev()` and `.step()`, and even those only work inside a `for` head
+// because what they return has no terminal either. Not `to_vec`, `sum`, `count`,
+// `map`, `filter`, `take`, `skip`, and not `iter()`.
+//
+// ranges.md gives Range an `iter(self) -> Sequence<T>` and points at
+// type.sequence for "adapters, terminals", so these arrive through the sequence
+// protocol — the unbuilt feature `p08_sequence.rk` drives. That file covers the
+// protocol itself (a user-written Sequence<T> and the for-loop desugar) and says
+// nothing about ranges, which is why this one exists: `(1..n).sum()` is the first
+// thing anyone tries after a `for`.
+//
+// Worth deciding alongside: a range's length is known without iterating, so
+// `count()` is arithmetic and `sum()` is a closed form. Routing them through a
+// yield closure would pessimise the two most obvious calls.
+//
+// Unbuilt rather than broken, so this is registered in pending_features.txt.
+//
+// The range coverage that works — both bounds forms, step, rev, computed bounds —
+// is in `t_week_ranges.rk`.
+
+test "ctrl.ranges — to_vec lands a range in a Vec" {
+    let v: Vec<i32> = (0..4).to_vec()
+    assert v.len() == 4
+    assert v[0] == 0
+    assert v[3] == 3
+}
+
+test "ctrl.ranges — sum over a range" {
+    let a: i32 = (1..5).sum()
+    assert a == 10
+    let b: i32 = (1..=5).sum()
+    assert b == 15
+}
+
+test "ctrl.ranges — count over a range" {
+    let a: usize = (0..7).count()
+    assert a == 7
+    let b: usize = (0..=7).count()
+    assert b == 8
+}
+
+test "ctrl.ranges — map and filter off a range" {
+    let doubled: Vec<i32> = (1..4).map(|x| x * 2).to_vec()
+    assert doubled.len() == 3
+    assert doubled[2] == 6
+    let evens: Vec<i32> = (0..10).filter(|x| x % 2 == 0).to_vec()
+    assert evens.len() == 5
+    assert evens[4] == 8
+}
+
+test "ctrl.ranges — take and skip off a range" {
+    let first3: Vec<i32> = (0..100).take(3).to_vec()
+    assert first3.len() == 3
+    assert first3[2] == 2
+    let after3: Vec<i32> = (0..6).skip(3).to_vec()
+    assert after3.len() == 3
+    assert after3[0] == 3
+}
+
+test "ctrl.ranges — iter on a range" {
+    let v: Vec<i32> = (0..3).iter().to_vec()
+    assert v.len() == 3
+}
+
+test "ctrl.ranges — a terminal after rev or step" {
+    let backwards: Vec<i32> = (0..4).rev().to_vec()
+    assert backwards.len() == 4
+    assert backwards[0] == 3
+    let strided: Vec<i32> = (0..10).step(2).to_vec()
+    assert strided.len() == 5
+    assert strided[4] == 8
+}
+
+test "ctrl.ranges — a chain of adapters off a range" {
+    let out: Vec<i32> = (0..20).filter(|x| x % 3 == 0).map(|x| x * x).take(3).to_vec()
+    assert out.len() == 3
+    assert out[0] == 0
+    assert out[1] == 9
+    assert out[2] == 36
+}
+
+func main() {}

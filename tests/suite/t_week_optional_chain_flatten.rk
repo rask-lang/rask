@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `?.` onto a field that's itself optional should flatten — #938.
+//
+// `a.inner?.v` where `inner: OptField?` and `v: string?` is a `string?`. The
+// chain unwraps: on a present receiver you get the field's own optional
+// straight through, and on an absent one you get `none`. Both absences are the
+// same answer to the caller — "no nickname to show" — so there's nothing to
+// keep apart, and one layer is what comes out.
+//
+// The runtime already does this, on both backends. The *type checker* says
+// `string??`, so every position that names the type refuses the expression.
+// That's why this whole file fails to compile rather than failing a test.
+//
+// The flagship case is the first one, and it's the phrasing the spec itself
+// uses for `??`:
+//
+//     account.profile?.nickname ?? "guest"
+//     error[E0308]: expected `string?`, found `string`
+//
+// On a two-layer type `??` wants its right side at the *inner* optional type
+// (OPT30), so a plain string is refused. Nothing you can write on the right
+// side of that `??` is both correct and accepted.
+//
+// The neighbour file `t_week_optional_field_chains.rk` holds the shapes that do
+// compile today — `!` and `is none`, which the checker accepts on its
+// two-layer type and the runtime evaluates on the one-layer value. Those pass,
+// and one of them (#917) is wrong natively for a different reason.
+
+struct Profile {
+    nickname: string?
+}
+
+struct Account {
+    profile: Profile?
+}
+
+func greet(name: string?) -> string {
+    return name ?? "guest"
+}
+
+func nickname_of(a: Account) -> string? {
+    return a.profile?.nickname
+}
+
+test "type.optionals — the chain takes a plain default through ??" {
+    let a = Account { profile: Profile { nickname: none } }
+    assert (a.profile?.nickname ?? "guest") == "guest"
+    let b = Account { profile: Profile { nickname: "ada" } }
+    assert (b.profile?.nickname ?? "guest") == "ada"
+}
+
+test "type.optionals — an absent receiver reaches the same default" {
+    let a = Account { profile: none }
+    assert (a.profile?.nickname ?? "guest") == "guest"
+}
+
+test "type.optionals — the chain names its own type" {
+    let a = Account { profile: Profile { nickname: "ada" } }
+    let name: string? = a.profile?.nickname
+    assert name! == "ada"
+}
+
+test "type.optionals — the chain passes to a T? parameter" {
+    let a = Account { profile: Profile { nickname: "ada" } }
+    assert greet(a.profile?.nickname) == "ada"
+    let b = Account { profile: Profile { nickname: none } }
+    assert greet(b.profile?.nickname) == "guest"
+}
+
+test "type.optionals — the chain returns from a T? function" {
+    let a = Account { profile: Profile { nickname: "ada" } }
+    assert nickname_of(a)! == "ada"
+    let b = Account { profile: none }
+    assert nickname_of(b) is none
+}
+
+func main() {}

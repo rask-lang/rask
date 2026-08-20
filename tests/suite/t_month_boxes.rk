@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: the box family — Cell, Shared, Mutex, Owned, Atomic.
+//
+// The family is closed: these are compiler types and you can't build an
+// equivalent. Each one answers a different question, and the source shows which:
+//
+//   Cell     interior mutability for a Copy value, no locking
+//   Mutex    exclusive access, `with m.lock() as v`
+//   Shared   many readers or one writer, `with s.read()` / `with s.write()`
+//   Owned    a single owner of a heap value, spelled `own expr`
+//
+// Two holes here, both deliberate:
+//
+//   Atomic is the family's adjacent member and has no operations at all — the
+//   type names resolve and nothing is behind them (#927). `t_month_atomics.rk`
+//   drives it. `Mutex.new(0)` plus `with m.lock()` is the working answer today.
+//
+//   Pool and Handle are excluded from this sweep by standing request.
+//   `t_pool_capacity.rk`, `t_pool_iter_handles.rk` and `t_pool_remove.rk` carry
+//   them.
+
+import memory.Cell
+import memory.Owned
+import sync.Mutex
+import sync.Shared
+
+struct Counter {
+    n: i64
+}
+
+struct Config {
+    retries: i32
+    verbose: bool
+}
+
+test "mem.cell — a Cell holds a Copy value and hands it back" {
+    mut c = Cell.new(7)
+    assert c.get() == 7
+    c.set(8)
+    assert c.get() == 8
+}
+
+test "mem.cell — a Cell of a small struct" {
+    mut c = Cell.new(Config { retries: 3, verbose: false })
+    assert c.get().retries == 3
+    c.set(Config { retries: 5, verbose: true })
+    assert c.get().retries == 5
+    assert c.get().verbose
+}
+
+test "mem.cell — replace returns the old value in one step" {
+    mut c = Cell.new(1)
+    assert c.replace(2) == 1
+    assert c.replace(3) == 2
+    assert c.get() == 3
+}
+
+test "mem.cell — into_inner consumes the cell" {
+    let c = Cell.new(99)
+    assert c.into_inner() == 99
+}
+
+test "conc.sync — a Mutex serialises access through with" {
+    mut m = Mutex.new(0)
+    for _ in 0..5 {
+        with m.lock() as v {
+            v = v + 2
+        }
+    }
+    with m.lock() as v {
+        assert v == 10
+    }
+}
+
+test "conc.sync — a Mutex guarding a struct field" {
+    mut m = Mutex.new(Counter { n: 0 })
+    with m.lock() as c {
+        c.n = 41
+    }
+    with m.lock() as c {
+        c.n = c.n + 1
+    }
+    with m.lock() as c {
+        assert c.n == 42
+    }
+}
+
+test "conc.sync — a Mutex guarding a collection" {
+    mut m = Mutex.new(Vec.new())
+    with m.lock() as v {
+        v.push(1)
+        v.push(2)
+    }
+    with m.lock() as v {
+        assert v.len() == 2
+        assert v[1] == 2
+    }
+}
+
+test "conc.sync — Shared read sees what Shared write put there" {
+    mut s = Shared.new(0)
+    with s.write() as v {
+        v = 5
+    }
+    with s.read() as v {
+        assert v == 5
+    }
+}
+
+test "conc.sync — several Shared writes in sequence" {
+    mut s = Shared.new(Counter { n: 0 })
+    with s.write() as c {
+        c.n = 10
+    }
+    with s.write() as c {
+        c.n = c.n * 2
+    }
+    with s.read() as c {
+        assert c.n == 20
+    }
+}
+
+test "conc.sync — two Shared reads in a row" {
+    mut s = Shared.new(7)
+    with s.read() as a {
+        assert a == 7
+    }
+    with s.read() as b {
+        assert b == 7
+    }
+}
+
+// `own expr` heap-allocates and gives back an `Owned<T>`; `*ptr` reads through it.
+test "mem.owned — own heap-allocates and derefs back" {
+    let p: Owned<i64> = own 42
+    assert *p == 42
+}
+
+test "mem.owned — an Owned struct payload" {
+    let p: Owned<Counter> = own Counter { n: 5 }
+    assert (*p).n == 5
+}
+
+test "mem.owned — an Owned field on a struct" {
+    let c: Owned<Counter> = own Counter { n: 7 }
+    assert (*c).n == 7
+}
+
+func main() {}

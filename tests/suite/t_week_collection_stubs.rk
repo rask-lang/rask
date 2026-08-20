@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Declared Vec and Map methods that neither backend implements — #912.
+//
+// Calling every method in `stdlib/collections.rk` on both backends turns up
+// eleven that check-fail with "the signature exists so the API can be
+// referenced, but neither backend implements ...". Three clusters:
+//
+//   capacity control — reserve, try_reserve, shrink_to_fit, shrink_to,
+//     allocated, Map.is_bounded. Thin accessors over state RaskVec/RaskMap
+//     already keep: capacity(), is_bounded() on Vec, is_full() and remaining()
+//     all work today.
+//
+//   get_clone, on both Vec and Map. `get` works; this is the copying variant,
+//     which is the one that matters past the 16-byte threshold.
+//
+//   remove_where / take_where — predicate-driven bulk removal, the two with
+//     real logic and the two a reader reaches for first. Filtering in place is
+//     a week-one operation and without them it's a manual index loop.
+//
+// Map.try_insert is also blocked behind #903: Map.insert doesn't return the
+// displaced value at all on native, so try_insert's `Option<V> or GrowError<V>`
+// has nothing to build from.
+//
+// These are unbuilt, not broken, so this file is registered in
+// pending_features.txt rather than known_divergences.txt.
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+test "std.collections — remove_where drops matching elements and counts them" {
+    mut v: Vec<i32> = [1, 2, 3, 4, 5]
+    let dropped: usize = v.remove_where(|x| x % 2 == 0)
+    assert dropped == 2
+    assert v.len() == 3
+    assert v[0] == 1
+    assert v[1] == 3
+    assert v[2] == 5
+}
+
+test "std.collections — take_where moves matching elements out" {
+    mut v: Vec<i32> = [1, 2, 3, 4]
+    let taken: Vec<i32> = v.take_where(|x| x > 2)
+    assert taken.len() == 2
+    assert taken[0] == 3
+    assert v.len() == 2
+    assert v[0] == 1
+}
+
+test "std.collections — Vec.get_clone hands back an independent copy" {
+    let v: Vec<Big> = [Big { a: 1, b: 2, c: 3 }]
+    let got: Big? = v.get_clone(0)
+    assert got!.a == 1
+    assert v.get_clone(9) is none
+}
+
+test "std.collections — reserve and allocated" {
+    mut v: Vec<i32> = Vec.new()
+    v.reserve(16)
+    assert v.allocated() >= 16
+    v.push(1)
+    assert v.len() == 1
+}
+
+test "std.collections — try_reserve reports failure instead of panicking" {
+    mut v: Vec<i32> = Vec.new()
+    let r = v.try_reserve(8)
+    assert !(r is ReserveError)
+    v.push(1)
+    assert v.len() == 1
+}
+
+test "std.collections — shrink_to_fit and shrink_to release capacity" {
+    mut v: Vec<i32> = Vec.new()
+    v.reserve(64)
+    v.push(1)
+    v.shrink_to_fit()
+    assert v.len() == 1
+    mut w: Vec<i32> = Vec.new()
+    w.reserve(64)
+    w.shrink_to(8)
+    assert w.is_empty()
+}
+
+test "std.collections — Map.get_clone hands back an independent copy" {
+    mut m: Map<string, Big> = Map.new()
+    m.insert("k", Big { a: 1, b: 2, c: 3 })
+    let got: Big? = m.get_clone("k")
+    assert got!.a == 1
+    assert m.get_clone("zzz") is none
+}
+
+test "std.collections — Map.try_insert reports a growth failure" {
+    mut m: Map<string, i32> = Map.new()
+    let r = m.try_insert("a", 1)
+    assert !(r is GrowError)
+    assert m.get("a")! == 1
+}
+
+test "std.collections — Map.is_bounded" {
+    mut m: Map<string, i32> = Map.new()
+    assert !m.is_bounded()
+}
+
+func main() {}

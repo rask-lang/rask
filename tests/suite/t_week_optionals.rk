@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: `T?` — the absent value and everything that reads it.
+//
+// `T?` is sugar for `T or none`, so there's no Some/None to construct: a bare
+// value wraps itself and `none` is the literal. Then:
+//
+//   `x ?? v`      a value instead, when absent
+//   `x ?? return` an exit written where it happens
+//   `x!`          assert it's there (panics if not)
+//   `if x?`       branch on presence
+//   `if x? as v`  branch and bind
+//   `x?.field`    project, absent if any step is
+//   `try x`       propagate the absence to the caller
+//
+// The `?` family is absence-only — nothing with a `?` applies to a result.
+
+struct Profile {
+    // Not optional: `?.` onto an *optional* field loses the value on native
+    // (#917), which `t_week_optional_field_chains.rk` carries.
+    nickname: string
+}
+
+struct User {
+    name: string
+    profile: Profile?
+}
+
+func find_even(v: Vec<i32>) -> i32? {
+    for x in v {
+        if x % 2 == 0: return x
+    }
+    return none
+}
+
+func first_char(s: string) -> char? {
+    return s.char_at(0)
+}
+
+func doubled(x: i32?) -> i32? {
+    let v = try x
+    return v * 2
+}
+
+func or_zero(x: i32?) -> i32 {
+    return x ?? 0
+}
+
+func early_out(x: i32?) -> string {
+    let v = x ?? return "absent"
+    return "got {v}"
+}
+
+test "type.optionals — a bare value wraps itself, none is the absent one" {
+    let a: i32? = 42
+    let b: i32? = none
+    assert a! == 42
+    assert b is none
+    assert !(a is none)
+}
+
+test "type.optionals — ?? supplies a value when absent" {
+    let a: i32? = 42
+    let b: i32? = none
+    assert (a ?? 0) == 42
+    assert (b ?? 0) == 0
+    assert (b ?? -1) == -1
+}
+
+test "type.optionals — ?? on a string optional" {
+    let a: string? = "here"
+    let b: string? = none
+    assert (a ?? "fallback") == "here"
+    assert (b ?? "fallback") == "fallback"
+}
+
+test "type.optionals — ! asserts presence" {
+    let a: i32? = 7
+    assert a! == 7
+    assert a! + 1 == 8
+}
+
+test "type.optionals — if x? branches on presence" {
+    let a: i32? = 1
+    let b: i32? = none
+    mut hits = 0
+    if a? {
+        hits = hits + 1
+    }
+    if b? {
+        hits = hits + 10
+    }
+    assert hits == 1
+}
+
+test "type.optionals — if x? as v branches and binds" {
+    let a: i32? = 5
+    mut got = 0
+    if a? as v {
+        got = v
+    } else {
+        got = -1
+    }
+    assert got == 5
+    let b: i32? = none
+    mut got2 = 0
+    if b? as v {
+        got2 = v
+    } else {
+        got2 = -1
+    }
+    assert got2 == -1
+}
+
+test "type.optionals — a function returning an absent value" {
+    let has: Vec<i32> = [1, 3, 4, 5]
+    assert find_even(has)! == 4
+    let hasnt: Vec<i32> = [1, 3, 5]
+    assert find_even(hasnt) is none
+    assert (find_even(hasnt) ?? -1) == -1
+}
+
+test "type.optionals — stdlib methods hand back absent values" {
+    assert first_char("abc")! == 'a'
+    assert first_char("") is none
+    let v: Vec<i32> = [1, 2]
+    assert v.get(0)! == 1
+    assert v.get(9) is none
+    assert v.first()! == 1
+}
+
+test "type.optionals — try propagates the absence" {
+    assert doubled(21)! == 42
+    assert doubled(none) is none
+}
+
+test "type.optionals — ?? return exits where it is written" {
+    assert early_out(3) == "got 3"
+    assert early_out(none) == "absent"
+}
+
+test "type.optionals — ?. projects through a chain" {
+    let u = User { name: "ada", profile: Profile { nickname: "a" } }
+    assert u.profile?.nickname! == "a"
+    assert !(u.profile?.nickname is none)
+    // Absent at the first step short-circuits the whole chain.
+    let bare = User { name: "bo", profile: none }
+    assert bare.profile?.nickname is none
+    assert (bare.profile?.nickname ?? "fallback") == "fallback"
+}
+
+// Built by pushing. The same Vec written as a literal loses the tag on its
+// present elements in the interpreter (#909) — that probe is in
+// `t_week_optional_vec_literal.rk`.
+test "type.optionals — an optional in a Vec" {
+    mut v: Vec<i32?> = Vec.new()
+    v.push(1)
+    v.push(none)
+    v.push(3)
+    assert v.len() == 3
+    assert v[0]! == 1
+    assert v[1] is none
+    assert v[2]! == 3
+}
+
+test "type.optionals — ?? in an expression, and chained" {
+    let a: i32? = none
+    let b: i32? = 5
+    assert ((a ?? 0) + (b ?? 0)) == 5
+    assert or_zero(none) == 0
+    assert or_zero(9) == 9
+}
+
+test "type.optionals — while x? as v loops until absent" {
+    mut v: Vec<i32> = [1, 2, 3]
+    mut total = 0
+    while v.pop()? as x {
+        total = total + x
+    }
+    assert total == 6
+    assert v.is_empty()
+}
+
+func main() {}

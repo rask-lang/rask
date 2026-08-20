@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: printing and string interpolation.
+//
+// The very first thing anyone writes. Covers `println` with a plain literal,
+// with a hole, with several holes, with an expression inside the hole, with
+// escaped braces, and with each primitive type in a hole. `print` without the
+// newline is here too, since a "no trailing newline" bug only shows when you
+// compare the two backends' output byte for byte.
+
+func fmt_int(n: i32) -> string {
+    return "{n}"
+}
+
+test "interpolate a single binding" {
+    let n = 42
+    assert "{n}" == "42"
+    let s = "world"
+    assert "hello {s}" == "hello world"
+}
+
+test "several holes in one string" {
+    let a = 1
+    let b = 2
+    let c = 3
+    assert "{a}-{b}-{c}" == "1-2-3"
+}
+
+test "expression inside a hole" {
+    let a = 3
+    let b = 4
+    assert "{a + b}" == "7"
+    assert "{a * b}" == "12"
+}
+
+test "hole at the start and at the end" {
+    let x = 9
+    assert "{x} trailing" == "9 trailing"
+    assert "leading {x}" == "leading 9"
+    assert "{x}" == "9"
+}
+
+test "each primitive in a hole" {
+    let i: i32 = -7
+    let u: u32 = 7
+    let f: f64 = 1.5
+    let b = true
+    let c = 'z'
+    let s = "str"
+    assert "{i}" == "-7"
+    assert "{u}" == "7"
+    assert "{f}" == "1.5"
+    assert "{b}" == "true"
+    assert "{c}" == "z"
+    assert "{s}" == "str"
+}
+
+test "escape sequences" {
+    let nl = "a\nb"
+    assert nl.len() == 3
+    let tab = "a\tb"
+    assert tab.len() == 3
+    let q = "say \"hi\""
+    assert q.contains("\"hi\"")
+    let bs = "a\\b"
+    assert bs.len() == 3
+}
+
+test "escaped braces are literal" {
+    // `"{}"` on the right would be an empty hole, so compare against a string
+    // built one character at a time instead.
+    mut b = StringBuilder.new()
+    b.push_char('{')
+    b.push_char('}')
+    assert "{{}}" == b.build()
+    let n = 5
+    assert "{{{n}}}" == "{{5}}"
+    assert "{{{n}}}".len() == 3
+}
+
+test "interpolation through a function" {
+    assert fmt_int(0) == "0"
+    assert fmt_int(-1) == "-1"
+    assert fmt_int(1000) == "1000"
+}
+
+test "println and print both reach stdout" {
+    println("day-one println")
+    print("day-one print")
+    println("")
+}
+
+test "method call inside a hole" {
+    let s = "Rask"
+    assert "{s.to_uppercase()}" == "RASK"
+    assert "len={s.len()}" == "len=4"
+}
+
+func main() {}

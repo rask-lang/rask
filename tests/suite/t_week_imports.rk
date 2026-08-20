@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: imports.
+//
+// All four forms — a whole module, one item, one item aliased, and a wildcard —
+// and that an imported name is usable in every position: a binding's type, a
+// function signature, a struct field, a static call.
+//
+// Cross-*file* imports (`import mypkg.mymodule.Thing` between two files you
+// wrote) can't live in this suite: the differential harness compiles each file on
+// its own, and a user module needs a package around it. The projects gate covers
+// that — `tests/projects_gate.sh` builds multi-file packages including
+// cross-package symbol export. So this file covers the stdlib side, which is the
+// import anyone actually writes on day one.
+
+import time
+import time.Duration
+import time.*
+import math
+import random.Random
+import fs
+
+func describe(d: Duration) -> string {
+    return "{d.as_millis()}ms"
+}
+
+func make_span(ms: i64) -> Duration {
+    return Duration.from_millis(ms)
+}
+
+test "std.structure — a whole-module import, used through its name" {
+    let d = time.Duration.seconds(2)
+    assert d.as_millis() == 2000
+}
+
+test "std.structure — a single-item import needs no module prefix" {
+    let d = Duration.from_millis(1500)
+    assert d.as_millis() == 1500
+    assert d.as_seconds() == 1
+}
+
+// The aliased form (`import time.Instant as Moment`) is left out: an alias binds
+// the name but carries none of the type's methods (#923). It lives in
+// `t_week_import_alias.rk`.
+test "std.structure — a whole-module import reaches a second type" {
+    let a = time.Instant.now()
+    assert a.elapsed().as_millis() >= 0
+}
+
+// `math` is a struct of statics rather than a module of free functions, so its
+// members are always `math.sin(x)` — a glob over it brings in nothing to call
+// bare. `time` is the module shape a wildcard is for.
+test "std.structure — a wildcard import brings type names in unqualified" {
+    let d = Duration.millis(1000)
+    assert d.as_millis() == 1000
+    let a = Instant.now()
+    assert a.elapsed().as_millis() >= 0
+    let s = SystemTime.now()
+    assert s.unix_seconds() > 0
+}
+
+test "std.structure — a struct-of-statics module is called through its name" {
+    assert math.hypot(3.0, 4.0) == 5.0
+    assert math.to_degrees(0.0) == 0.0
+    assert math.exp(0.0) == 1.0
+    assert math.log2(8.0) == 3.0
+}
+
+test "std.structure — an imported type in a binding annotation" {
+    let d: Duration = Duration.seconds(1)
+    assert d.as_millis() == 1000
+}
+
+test "std.structure — an imported type in a function signature" {
+    assert describe(Duration.from_millis(250)) == "250ms"
+    assert make_span(50).as_millis() == 50
+}
+
+// An imported type as a struct field is left out: `Duration` and `Instant` lay
+// out at size 0 inside a struct on native (#924), which
+// `t_week_opaque_struct_fields.rk` carries.
+test "std.structure — an imported type as a function return" {
+    let d = make_span(30)
+    assert d.as_millis() == 30
+    assert describe(d) == "30ms"
+}
+
+test "std.structure — an imported type inside a collection" {
+    mut spans: Vec<Duration> = Vec.new()
+    spans.push(Duration.from_millis(10))
+    spans.push(Duration.from_millis(20))
+    assert spans.len() == 2
+    mut total = 0
+    for s in spans {
+        total = total + s.as_millis()
+    }
+    assert total == 30
+}
+
+test "std.structure — an imported type through a Map value" {
+    mut m: Map<string, Duration> = Map.new()
+    m.insert("short", Duration.from_millis(5))
+    assert m.get("short")!.as_millis() == 5
+    assert m.get("zzz") is none
+}
+
+test "std.structure — a static on an imported type" {
+    mut r = Random.from_seed(42)
+    let a = r.i64()
+    mut s = Random.from_seed(42)
+    let b = s.i64()
+    // The same seed gives the same sequence.
+    assert a == b
+}
+
+test "std.structure — a whole-module import used for a namespaced call" {
+    let cwd = fs.exists(".")
+    assert cwd
+    assert !fs.exists("definitely-not-a-real-path-9f3a")
+}
+
+test "std.structure — several imported modules in one expression" {
+    let ms = Duration.from_millis(math.hypot(0.0, 40.0).to<i64>()!).as_millis()
+    assert ms == 40
+}
+
+func main() {}
