@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: compile-time execution.
+//
+// `comptime { … }` evaluates at compile time and the result is baked into the
+// binary. A `const` can be a comptime block, so tables and derived constants cost
+// nothing at run time. `comptime for` walks a compile-time sequence and unrolls
+// it, which is how the reflection-driven code in encoding works.
+//
+// Covers: comptime arithmetic, a comptime block feeding a const, a comptime call
+// to a module function, a comptime-built collection frozen into a const,
+// comptime string work, comptime in an expression position, and `comptime for`
+// over a struct's fields.
+//
+// CT49 field access is here only in its `comptime for` form. The other documented
+// spelling — `p.("x")`, a bare string literal — reaches native MIR unresolved
+// (#930), and `t_month_comptime_field_literal.rk` carries it.
+
+import std.reflect
+
+const DOUBLED = comptime { 21 * 2 }
+const FACTORIAL_5 = comptime { factorial(5) }
+const GREETING = comptime { build_greeting("rask") }
+const TABLE_SUM = comptime { sum_to(10) }
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func factorial(n: i64) -> i64 {
+    if n <= 1: return 1
+    return n * factorial(n - 1)
+}
+
+func sum_to(n: i64) -> i64 {
+    mut acc = 0
+    mut i = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    return acc
+}
+
+func build_greeting(who: string) -> string {
+    return "hello {who}"
+}
+
+test "ctrl.comptime — arithmetic in a comptime block" {
+    let a = comptime { 2 + 3 }
+    assert a == 5
+    let b = comptime { 6 * 7 }
+    assert b == 42
+    let c = comptime { 100 / 4 - 5 }
+    assert c == 20
+}
+
+test "ctrl.comptime — a const from a comptime block" {
+    assert DOUBLED == 42
+    assert DOUBLED + 1 == 43
+}
+
+test "ctrl.comptime — a comptime call to a recursive function" {
+    assert FACTORIAL_5 == 120
+    assert comptime { factorial(6) } == 720
+}
+
+test "ctrl.comptime — a comptime call to a loop-based function" {
+    assert TABLE_SUM == 55
+    assert comptime { sum_to(4) } == 10
+}
+
+test "ctrl.comptime — comptime string work" {
+    assert GREETING == "hello rask"
+    assert comptime { build_greeting("you") } == "hello you"
+}
+
+test "ctrl.comptime — a comptime block in an expression position" {
+    let total = comptime { 10 } + comptime { 32 }
+    assert total == 42
+    assert comptime { 5 } * 2 == 10
+}
+
+test "ctrl.comptime — a comptime bool feeding a condition" {
+    let flag = comptime { 10 > 5 }
+    assert flag
+    if comptime { 1 == 1 } {
+        assert true
+    } else {
+        assert false
+    }
+}
+
+test "ctrl.comptime — nested comptime evaluation" {
+    let n = comptime { factorial(comptime { 2 + 2 }) }
+    assert n == 24
+}
+
+test "ctrl.comptime — comptime for over a struct's fields" {
+    let p = Point { x: 3, y: 4 }
+    mut total = 0
+    comptime for f in reflect.fields<Point>() {
+        total = total + p.(f.name)
+    }
+    assert total == 7
+}
+
+// The Vec is annotated: `f.name` carries no type on the native path, so an
+// inferred `Vec.new()` stores a raw word and the string reads back corrupted
+// (#931). `t_month_reflect_field_strings.rk` carries that probe.
+test "ctrl.comptime — comptime for counts the fields it walked" {
+    mut names: Vec<string> = Vec.new()
+    comptime for f in reflect.fields<Point>() {
+        names.push(f.name)
+    }
+    assert names.len() == 2
+    assert names[0] == "x"
+    assert names[1] == "y"
+}
+
+// Bound first: a `comptime { … }` in a `for` head would have its `{` read as the
+// loop body, the same ambiguity a braced match scrutinee has.
+test "ctrl.comptime — a comptime value used as a loop bound" {
+    let n = comptime { 3 }
+    mut count = 0
+    for _ in 0..n {
+        count = count + 1
+    }
+    assert count == 3
+}
+
+func main() {}

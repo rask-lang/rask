@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: traits, and `any Trait` for runtime dispatch.
+//
+// Conformance is declared with `extend Type with Trait` — nothing matches a
+// trait by accident. Covers a one-method trait on two types, static dispatch
+// through a `T: Trait` bound, `any Trait` in a binding, a parameter, a return,
+// and a Vec, default methods, a trait with several methods, and one type
+// conforming to two traits from a single extend block.
+
+trait Shape {
+    func area(self) -> f64
+}
+
+trait Named {
+    func name(self) -> string
+}
+
+trait Describable {
+    func label(self) -> string
+
+    // A default method — a conformer gets it without writing it.
+    func shout(self) -> string {
+        return "{self.label()}!"
+    }
+}
+
+struct Circle {
+    r: f64
+}
+
+struct Square {
+    side: f64
+}
+
+struct Tag {
+    text: string
+}
+
+extend Circle with Shape {
+    func area(self) -> f64 {
+        return 3.0 * self.r * self.r
+    }
+}
+
+extend Square with Shape {
+    func area(self) -> f64 {
+        return self.side * self.side
+    }
+}
+
+// Two traits from one extend block.
+extend Tag with Named, Describable {
+    func name(self) -> string {
+        return self.text
+    }
+
+    func label(self) -> string {
+        return "tag:{self.text}"
+    }
+}
+
+// Static dispatch: the bound is checked at compile time, no boxing.
+func area_of<T>(s: T) -> f64 where T: Shape {
+    return s.area()
+}
+
+func double_area<T>(s: T) -> f64 where T: Shape {
+    return area_of(s) * 2.0
+}
+
+// Runtime dispatch through a trait object.
+func area_of_any(s: any Shape) -> f64 {
+    return s.area()
+}
+
+func biggest(shapes: Vec<any Shape>) -> f64 {
+    mut best = 0.0
+    for s in shapes {
+        if s.area() > best: best = s.area()
+    }
+    return best
+}
+
+func as_any_shape(c: Circle) -> any Shape {
+    return c as any Shape
+}
+
+test "type.traits — a trait method on two conforming types" {
+    let c = Circle { r: 2.0 }
+    assert c.area() == 12.0
+    let s = Square { side: 3.0 }
+    assert s.area() == 9.0
+}
+
+test "type.traits — static dispatch through a bound" {
+    assert area_of(Circle { r: 1.0 }) == 3.0
+    assert area_of(Square { side: 4.0 }) == 16.0
+}
+
+test "type.traits — a bound function calling another bound function" {
+    assert double_area(Square { side: 2.0 }) == 8.0
+    assert double_area(Circle { r: 1.0 }) == 6.0
+}
+
+test "type.traits — any Trait as a parameter" {
+    assert area_of_any(Circle { r: 2.0 } as any Shape) == 12.0
+    assert area_of_any(Square { side: 5.0 } as any Shape) == 25.0
+}
+
+test "type.traits — any Trait in a binding" {
+    let s: any Shape = Circle { r: 3.0 } as any Shape
+    assert s.area() == 27.0
+}
+
+test "type.traits — any Trait as a return type" {
+    let s = as_any_shape(Circle { r: 1.0 })
+    assert s.area() == 3.0
+}
+
+test "type.traits — a Vec of trait objects dispatches per element" {
+    let shapes: Vec<any Shape> = [
+        Circle { r: 1.0 } as any Shape,
+        Square { side: 4.0 } as any Shape,
+        Circle { r: 2.0 } as any Shape,
+    ]
+    assert shapes.len() == 3
+    mut total = 0.0
+    for s in shapes {
+        total = total + s.area()
+    }
+    assert total == 31.0
+    assert biggest(shapes) == 16.0
+}
+
+test "type.traits — a default method comes along with the conformance" {
+    let t = Tag { text: "x" }
+    assert t.label() == "tag:x"
+    assert t.shout() == "tag:x!"
+}
+
+test "type.traits — one extend block, two conformances" {
+    let t = Tag { text: "hello" }
+    assert t.name() == "hello"
+    assert t.label() == "tag:hello"
+}
+
+test "type.traits — a trait object of the second trait" {
+    let n: any Named = Tag { text: "abc" } as any Named
+    assert n.name() == "abc"
+}
+
+test "type.traits — dispatch inside a loop over mixed concrete types" {
+    mut areas = Vec.new()
+    let shapes: Vec<any Shape> = [
+        Square { side: 1.0 } as any Shape,
+        Square { side: 2.0 } as any Shape,
+    ]
+    for s in shapes {
+        areas.push(s.area())
+    }
+    assert areas.len() == 2
+    assert areas[0] == 1.0
+    assert areas[1] == 4.0
+}
+
+func main() {}

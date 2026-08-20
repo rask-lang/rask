@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writing to a fixed array, and asking it to grow — #902 and #901.
+//
+// #902: `a[1] = 99` on a `[i32; 3]` also zeroes `a[2]` on native. ArrayStore
+// uses the element size to work out the *address* and then stores at whatever
+// width the value happens to be, so a 4-byte element gets an 8-byte store and
+// the spill lands in the next element. The narrower the element the more it
+// takes out: `[i16; 4]` loses two, `[f32; 3]` comes back scrambled.
+//
+// #901: a fixed array has a fixed length, so `push` and `pop` are not
+// operations it has — this should be a compile error naming the fix (annotate
+// the slot `Vec<T>`, or go through `Vec.from`). Instead it type-checks, interp
+// quietly grows the array, and native reads the raw element bytes as a Vec
+// header and segfaults.
+//
+// The fixed-array surface that does work on both backends is in
+// `t_day_arrays.rk`.
+
+test "std.collections — an i32 element write leaves its neighbours alone" {
+    mut a: [i32; 3] = [1, 2, 3]
+    a[1] = 99
+    assert a[0] == 1
+    assert a[1] == 99
+    assert a[2] == 3
+}
+
+test "std.collections — an i16 element write leaves its neighbours alone" {
+    mut a: [i16; 4] = [1, 2, 3, 4]
+    a[1] = 99
+    assert a[0] == 1
+    assert a[1] == 99
+    assert a[2] == 3
+    assert a[3] == 4
+}
+
+test "std.collections — a u8 element write leaves its neighbours alone" {
+    mut a: [u8; 4] = [1, 2, 3, 4]
+    a[1] = 99
+    assert a[0] == 1
+    assert a[1] == 99
+    assert a[2] == 3
+    assert a[3] == 4
+}
+
+test "std.collections — an f32 element write leaves its neighbours alone" {
+    mut a: [f32; 3] = [1.0, 2.0, 3.0]
+    a[1] = 9.0
+    assert a[0] == 1.0
+    assert a[1] == 9.0
+    assert a[2] == 3.0
+}
+
+test "std.collections — writing every element of an i32 array" {
+    mut a: [i32; 4] = [0, 0, 0, 0]
+    a[0] = 10
+    a[1] = 20
+    a[2] = 30
+    a[3] = 40
+    assert a[0] == 10
+    assert a[1] == 20
+    assert a[2] == 30
+    assert a[3] == 40
+}
+
+test "std.collections — pop is not an operation on a fixed array" {
+    mut a: [i32; 3] = [1, 2, 3]
+    assert a.len() == 3
+    // Reaching this line at all is the bug: a fixed array has no `pop`.
+    assert a.pop() == none
+}
+
+test "std.collections — push is not an operation on a fixed array" {
+    mut a: [i32; 3] = [1, 2, 3]
+    a.push(4)
+    // However this resolves, the array cannot be longer than its type says.
+    assert a.len() == 3
+}
+
+func main() {}

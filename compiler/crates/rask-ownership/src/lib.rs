@@ -616,6 +616,7 @@ impl<'a> OwnershipChecker<'a> {
     fn check_block(&mut self, stmts: &[Stmt]) {
         let block_id = self.current_block;
         self.current_block += 1;
+        let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
 
         for stmt in stmts {
             self.check_stmt(stmt);
@@ -627,6 +628,12 @@ impl<'a> OwnershipChecker<'a> {
 
         // Release persistent borrows at block end
         self.release_persistent_borrows(block_id);
+
+        // Resources this block introduced go out of scope here.
+        self.check_block_resources(
+            &resources_on_entry,
+            stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
+        );
 
         // SL2: Check if any scope-limited closures would escape this block.
         // A closure escapes if its borrow_block is inside the block being exited
@@ -4456,8 +4463,50 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn check_resource_consumption(&mut self, span: Span) {
-        let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
+        let names: Vec<String> = {
+            let mut v: Vec<String> = self.resource_bindings.iter().cloned().collect();
+            v.sort();
+            v
+        };
+        self.check_resource_names(names, span);
+    }
+
+    /// The obligations a block introduced, judged where that block ends.
+    ///
+    /// A resource declared inside a block goes out of scope at the closing brace,
+    /// so that's where "was it consumed" has an answer. Deferring it to the
+    /// function's exit worked for a plain nested block — the binding state
+    /// survives — but not for a branch: the merge drops branch-local names, so at
+    /// the function's exit `c` was absent from `bindings` entirely, "absent" isn't
+    /// `Moved`, and a resource opened *and* closed inside an `if` was reported as
+    /// leaked.
+    ///
+    /// Which names belong to this block comes from a snapshot taken on entry, not
+    /// from `binding_decl_blocks`. Block ids are depth-like rather than unique —
+    /// a nested block is numbered with the depth its enclosing block was at — so
+    /// a binding declared in the enclosing block matches the nested block's id,
+    /// and an id comparison judged it early, while it was still `Moved` inside the
+    /// branch. That silently *dropped* a real maybe-consumed leak.
+    fn check_block_resources(&mut self, entered_with: &HashSet<String>, span: Span) {
+        let mut names: Vec<String> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !entered_with.contains(*n))
+            .cloned()
+            .collect();
+        if names.is_empty() {
+            return;
+        }
         names.sort();
+        self.check_resource_names(names.clone(), span);
+        // Judged, so the function-exit pass must not judge them again — by then
+        // the state they were judged on is gone.
+        for name in names {
+            self.resource_bindings.remove(&name);
+        }
+    }
+
+    fn check_resource_names(&mut self, names: Vec<String>, span: Span) {
         for name in names {
             if self.ensure_registered.contains(&name) {
                 // C3/C4: ensure commits consumption. At scope exit the receiver

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: declaring and calling functions.
+//
+// Explicit `return`, void returns with the arrow elided, several parameters,
+// recursion, default arguments, named arguments (order-fixed), early return,
+// and the fact that a private function can leave its types off and have them
+// inferred. Parameter *modes* are a month-one topic and live in
+// `t_month_param_modes.rk`.
+
+const GREETING = "hi"
+
+func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+func no_return_value(n: i32) {
+    let _ = n + 1
+}
+
+func factorial(n: i64) -> i64 {
+    if n <= 1: return 1
+    return n * factorial(n - 1)
+}
+
+func fib(n: i32) -> i32 {
+    if n < 2: return n
+    return fib(n - 1) + fib(n - 2)
+}
+
+func connect(host: string, port: i32 = 8080, secure: bool = false) -> string {
+    let scheme = if secure: "https" else: "http"
+    return "{scheme}://{host}:{port}"
+}
+
+func first_negative(v: Vec<i32>) -> i32 {
+    for x in v {
+        if x < 0: return x
+    }
+    return 0
+}
+
+// Private, no annotations — the compiler infers from the body.
+func double(x) {
+    return x * 2
+}
+
+func shout(name: string) -> string {
+    return "{GREETING} {name}"
+}
+
+func swap_pair(a: i32, b: i32) -> (i32, i32) {
+    return (b, a)
+}
+
+test "a function with a return value" {
+    assert add(2, 3) == 5
+    assert add(-1, 1) == 0
+    assert add(0, 0) == 0
+}
+
+test "a void function returns nothing and the arrow is elided" {
+    no_return_value(1)
+    no_return_value(99)
+    assert true
+}
+
+test "recursion" {
+    assert factorial(0) == 1
+    assert factorial(1) == 1
+    assert factorial(5) == 120
+    assert factorial(10) == 3628800
+}
+
+test "two-branch recursion" {
+    assert fib(0) == 0
+    assert fib(1) == 1
+    assert fib(10) == 55
+}
+
+test "default arguments fill in from the right" {
+    assert connect("x") == "http://x:8080"
+    assert connect("x", 443) == "http://x:443"
+    assert connect("x", 443, true) == "https://x:443"
+}
+
+test "a named argument can skip an optional one" {
+    assert connect("x", secure: true) == "https://x:8080"
+    assert connect(host: "y", port: 90) == "http://y:90"
+}
+
+test "named arguments must follow declaration order" {
+    assert connect(host: "z", port: 1, secure: true) == "https://z:1"
+}
+
+test "early return leaves the loop and the function" {
+    let v: Vec<i32> = [1, 2, -3, 4, -5]
+    assert first_negative(v) == -3
+    let none_negative: Vec<i32> = [1, 2, 3]
+    assert first_negative(none_negative) == 0
+}
+
+// The float side of this is #904: the inferred signature is supposed to come out
+// `<T: Numeric>(x: T) -> T` and instead the body's literal pins it to i32.
+// `t_week_gradual_generics.rk` carries that probe.
+test "an inferred private function" {
+    assert double(21) == 42
+    assert double(-1) == -2
+    assert double(0) == 0
+}
+
+test "a function returning a tuple" {
+    let (a, b) = swap_pair(1, 2)
+    assert a == 2
+    assert b == 1
+}
+
+// Annotated on purpose: an *inferred* string parameter interpolates as a
+// pointer on native (#905). `t_week_gradual_generics.rk` carries that probe.
+test "a function reading a module const" {
+    assert shout("you") == "hi you"
+}
+
+test "calls nest" {
+    assert add(add(1, 2), add(3, 4)) == 10
+    assert factorial(add(2, 1)) == 6
+}
+
+func main() {}

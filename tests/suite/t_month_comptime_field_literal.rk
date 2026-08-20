@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CT49 field access by a string literal — #930.
+//
+// SYNTAX.md gives the feature two spellings:
+//
+//     value.(field.name)     // inside comptime for over reflect.fields<T>()
+//     value.("x")            // string literal
+//
+// and ctrl.comptime/CT49 marks it "✅ Full: resolves to direct field access at
+// compile time". Only the first one works. The literal form reaches native MIR
+// unresolved:
+//
+//     error: MIR lowering 'main': dynamic field access (value.(expr)) must be
+//            resolved at comptime before MIR lowering
+//
+// A bare string literal is about as comptime-known as an expression gets, so the
+// rewrite that handles `f.name` in an unrolled loop isn't reaching the standalone
+// case. Same shape as #775, where native "lowered exactly one reflect thing —
+// `reflect.fields()` as the iterable of a `comptime for`".
+//
+// It's also the spelling a reader tries first: it needs no `reflect` import and no
+// loop. And it fails at MIR rather than at check time, so it survives `rask check`
+// and breaks at `rask build`.
+//
+// The `comptime for` form is green on both backends and lives in
+// `t_month_comptime.rk`.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+struct Mixed {
+    count: i64
+    label: string
+    ready: bool
+}
+
+test "ctrl.comptime — CT49: field access by a string literal" {
+    let p = Point { x: 8, y: 9 }
+    assert p.("x") == 8
+    assert p.("y") == 9
+}
+
+test "ctrl.comptime — CT49: a literal reaching each field type" {
+    let m = Mixed { count: 7, label: "hi", ready: true }
+    assert m.("count") == 7
+    assert m.("label") == "hi"
+    assert m.("ready")
+}
+
+test "ctrl.comptime — CT49: a literal access in an expression" {
+    let p = Point { x: 3, y: 4 }
+    assert p.("x") + p.("y") == 7
+    assert p.("x") * 2 == 6
+}
+
+test "ctrl.comptime — CT49: a literal access through a const name" {
+    let p = Point { x: 5, y: 6 }
+    let which = comptime { "y" }
+    assert p.(which) == 6
+}
+
+func main() {}

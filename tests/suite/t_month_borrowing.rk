@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: borrowing, and `with` for scoped access.
+//
+// A borrow is the default parameter mode and lasts for the block it's taken in.
+// Fields borrow disjointly: two different fields of the same value can be
+// borrowed mutably at once. `with` opens a scope for a growable source, so the
+// reference can't outlive it.
+//
+// Covers: read-only borrows of a value that stays usable, disjoint field
+// borrows, a borrow inside a loop, borrowing a collection to read it, Cell's
+// direct get/set, and `with` on a Mutex.
+//
+// Cell is not a `with` box — `get()` copies the value out and `set(v)` replaces
+// it. `with` is for the locking boxes: Mutex and Shared. The full box family is
+// in `t_month_boxes.rk`.
+
+import memory.Cell
+import sync.Mutex
+
+struct Health {
+    hp: i32
+}
+
+struct Inventory {
+    slots: i32
+}
+
+struct Player {
+    health: Health
+    inventory: Inventory
+    name: string
+}
+
+func heal(mutate h: Health) {
+    h.hp = h.hp + 10
+}
+
+func add_slot(mutate inv: Inventory) {
+    inv.slots = inv.slots + 1
+}
+
+func read_hp(h: Health) -> i32 {
+    return h.hp
+}
+
+func name_len(p: Player) -> usize {
+    return p.name.len()
+}
+
+func sum_all(v: Vec<i32>) -> i32 {
+    mut total = 0
+    for x in v {
+        total = total + x
+    }
+    return total
+}
+
+test "mem.borrowing — a read-only borrow leaves the value usable" {
+    let h = Health { hp: 50 }
+    assert read_hp(h) == 50
+    assert read_hp(h) == 50
+    assert h.hp == 50
+}
+
+test "mem.borrowing — two borrows of the same value in one expression" {
+    let h = Health { hp: 20 }
+    assert read_hp(h) + read_hp(h) == 40
+}
+
+test "mem.borrowing — a mutable borrow of one field" {
+    mut p = Player { health: Health { hp: 10 }, inventory: Inventory { slots: 1 }, name: "ada" }
+    heal(mutate p.health)
+    assert p.health.hp == 20
+    assert p.inventory.slots == 1
+    assert p.name == "ada"
+}
+
+// F1: passing `mutate value.field` borrows only that field, so two disjoint
+// fields can be borrowed mutably in the same scope.
+test "mem.borrowing — two disjoint fields borrow independently" {
+    mut p = Player { health: Health { hp: 10 }, inventory: Inventory { slots: 1 }, name: "ada" }
+    heal(mutate p.health)
+    add_slot(mutate p.inventory)
+    assert p.health.hp == 20
+    assert p.inventory.slots == 2
+}
+
+test "mem.borrowing — a mutable field borrow in a loop" {
+    mut p = Player { health: Health { hp: 0 }, inventory: Inventory { slots: 0 }, name: "ada" }
+    for _ in 0..3 {
+        heal(mutate p.health)
+    }
+    assert p.health.hp == 30
+}
+
+test "mem.borrowing — borrowing a whole struct that holds a string" {
+    let p = Player { health: Health { hp: 1 }, inventory: Inventory { slots: 1 }, name: "grace" }
+    assert name_len(p) == 5
+    assert name_len(p) == 5
+    assert p.name == "grace"
+}
+
+test "mem.borrowing — borrowing a collection to read it" {
+    let v: Vec<i32> = [1, 2, 3]
+    assert sum_all(v) == 6
+    assert sum_all(v) == 6
+    assert v.len() == 3
+}
+
+// Cell's own accessors are direct: `get()` copies the value out, `set(v)`
+// replaces it. `with` is for the locking boxes.
+test "mem.cell — get and set" {
+    mut c = Cell.new(5)
+    assert c.get() == 5
+    c.set(42)
+    assert c.get() == 42
+}
+
+test "mem.cell — replace hands back the old value" {
+    mut c = Cell.new(1)
+    let old = c.replace(9)
+    assert old == 1
+    assert c.get() == 9
+}
+
+test "conc.sync — with on a Mutex takes the lock for the block" {
+    mut m = Mutex.new(0)
+    with m.lock() as v {
+        v = v + 7
+    }
+    with m.lock() as v {
+        assert v == 7
+    }
+}
+
+test "conc.sync — several with blocks accumulate" {
+    mut m = Mutex.new(0)
+    with m.lock() as v { v += 5 }
+    with m.lock() as v { v += 3 }
+    with m.lock() as v { assert v == 8 }
+}
+
+test "conc.sync — a with block that mutates several times" {
+    mut m = Mutex.new(0)
+    with m.lock() as v {
+        v = v + 1
+        v = v + 2
+        v = v + 3
+    }
+    with m.lock() as v {
+        assert v == 6
+    }
+}
+
+test "conc.sync — a Mutex guarding a struct" {
+    mut m = Mutex.new(Health { hp: 10 })
+    with m.lock() as h {
+        h.hp = h.hp + 5
+    }
+    with m.lock() as h {
+        assert h.hp == 15
+    }
+}
+
+func main() {}

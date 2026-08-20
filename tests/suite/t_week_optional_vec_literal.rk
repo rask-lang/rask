@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A bare element in a `Vec<T?>` literal — #909.
+//
+// `[1, none, 3]` filling a `Vec<i32?>` has to give its present elements the
+// optional tag, the way a bare value filling a `T?` struct field does. In the
+// interpreter it doesn't: `v[0]` comes back as a bare integer, so `!` on it is
+// a type error — "! operator requires Option or Result, got i64". Native is
+// right here, which is the unusual direction.
+//
+// `??` and `is none` both tolerate an untagged value and read it as present, so
+// the element only looks wrong to `!`. That's why the existing
+// `t_collection_literal.rk` covers this exact literal and passes — it reaches
+// the elements with `??` throughout.
+//
+// Building the same Vec with `push` works on both backends and is covered in
+// `t_week_optionals.rk`.
+
+test "type.optionals — a literal's present element carries its tag" {
+    let v: Vec<i32?> = [1, none, 3]
+    assert v.len() == 3
+    assert v[0]! == 1
+    assert v[2]! == 3
+}
+
+test "type.optionals — the absent element is absent either way" {
+    let v: Vec<i32?> = [1, none, 3]
+    assert v[1] is none
+    assert (v[1] ?? -1) == -1
+}
+
+test "type.optionals — ?? reads the same literal fine" {
+    let v: Vec<i32?> = [1, none, 3]
+    assert (v[0] ?? -1) == 1
+    assert (v[2] ?? -1) == 3
+}
+
+test "type.optionals — a string element in a literal carries its tag" {
+    let v: Vec<string?> = ["hi", none]
+    assert v[0]! == "hi"
+    assert v[1] is none
+}
+
+test "type.optionals — a fixed array of optionals carries its tags" {
+    let a: [i32?; 3] = [1, none, 3]
+    assert a[0]! == 1
+    assert a[1] is none
+    assert a[2]! == 3
+}
+
+func main() {}

@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: the stdlib modules a real program reaches for — fs, path, os, time,
+// random, io.
+//
+// Everything here is deterministic and leaves no trace: file work goes through a
+// unique temp path and cleans up after itself, `os` reads only what's stable
+// (argv, an env var it set itself), `time` compares durations rather than clock
+// readings, and `random` is seeded so both backends produce the same sequence.
+//
+// `net` is covered by `t_net_loopback.rk`, and `http` by the http harness — both
+// need a listener, which doesn't belong in a file the differential harness runs
+// hundreds of times.
+
+import fs
+import path.Path
+import os
+import time.Duration
+import time.Instant
+import random.Random
+
+func temp_path(tag: string) -> string {
+    return "/tmp/rask-sweep-{tag}.txt"
+}
+
+test "std.fs — write then read a file back" {
+    let p = temp_path("write-read")
+    let _ = fs.write_text(p, "hello file")
+    assert fs.exists(p)
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "hello file"
+    let _ = fs.remove_file(p)
+    assert !fs.exists(p)
+}
+
+test "std.fs — reading a path that isn't there fails" {
+    let missing = temp_path("definitely-absent-9f3a")
+    assert !fs.exists(missing)
+    let got = fs.read_text(missing) catch _ => "FAILED"
+    assert got == "FAILED"
+}
+
+test "std.fs — overwriting replaces the contents" {
+    let p = temp_path("overwrite")
+    let _ = fs.write_text(p, "first")
+    let _ = fs.write_text(p, "second")
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "second"
+    let _ = fs.remove_file(p)
+}
+
+test "std.fs — an empty file reads back empty" {
+    let p = temp_path("empty")
+    let _ = fs.write_text(p, "")
+    assert fs.exists(p)
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == ""
+    let _ = fs.remove_file(p)
+}
+
+test "std.fs — a multi-line file keeps its lines" {
+    let p = temp_path("lines")
+    let _ = fs.write_text(p, "a\nb\nc")
+    let got = fs.read_text(p) catch _ => ""
+    let lines = got.lines().to_vec()
+    assert lines.len() == 3
+    assert lines[0] == "a"
+    assert lines[2] == "c"
+    let _ = fs.remove_file(p)
+}
+
+// `Path` is a type with methods, not a module of free functions: build one with
+// `Path.from(s)`, then ask it things. `div` is the join.
+test "std.path — the pieces of a path" {
+    let p = Path.from("/tmp/file.txt")
+    assert p.file_name()! == "file.txt"
+    assert p.extension()! == "txt"
+    assert p.stem()! == "file"
+    assert p.has_extension()
+    assert p.parent()!.as_string() == "/tmp"
+}
+
+test "std.path — a path with no extension" {
+    let p = Path.from("/tmp/plain")
+    assert p.file_name()! == "plain"
+    assert !p.has_extension()
+    assert p.extension() is none
+}
+
+test "std.path — absolute and relative" {
+    assert Path.from("/tmp/x").is_absolute()
+    assert !Path.from("/tmp/x").is_relative()
+    assert Path.from("relative/x").is_relative()
+    assert !Path.from("relative/x").is_absolute()
+}
+
+test "std.path — div joins a component on" {
+    let joined = Path.from("/tmp").div("file.txt")
+    let text = joined.as_string()
+    assert text.contains("tmp")
+    assert text.contains("file.txt")
+}
+
+test "std.path — components splits a path up" {
+    let parts = Path.from("/a/b/c").components()
+    assert parts.len() >= 3
+    assert parts[parts.len() - 1] == "c"
+}
+
+test "std.os — an env var this test set itself" {
+    os.set_env("RASK_SWEEP_MARKER", "present")
+    assert os.env("RASK_SWEEP_MARKER")! == "present"
+    assert os.env("RASK_SWEEP_DEFINITELY_UNSET_9f3a") is none
+    assert (os.env("RASK_SWEEP_DEFINITELY_UNSET_9f3a") ?? "fallback") == "fallback"
+}
+
+test "std.os — args always has at least the program name" {
+    let a = os.args()
+    assert a.len() >= 1
+    assert !a[0].is_empty()
+}
+
+test "std.time — durations compare and convert" {
+    let a = Duration.millis(1500)
+    assert a.as_millis() == 1500
+    assert a.as_seconds() == 1
+    let b = Duration.seconds(2)
+    assert b.as_millis() == 2000
+    assert b.as_millis() > a.as_millis()
+    let zero = Duration.millis(0)
+    assert zero.as_millis() == 0
+}
+
+test "std.time — an Instant's elapsed time never goes backwards" {
+    let start = Instant.now()
+    mut acc = 0
+    for i in 0..1000 {
+        acc = acc + i
+    }
+    assert acc == 499500
+    assert start.elapsed().as_nanos() >= 0
+}
+
+test "std.random — the same seed gives the same sequence" {
+    mut a = Random.from_seed(11)
+    mut b = Random.from_seed(11)
+    assert a.i64() == b.i64()
+    assert a.i64() == b.i64()
+    assert a.i64() == b.i64()
+}
+
+test "std.random — different seeds diverge" {
+    mut a = Random.from_seed(1)
+    mut b = Random.from_seed(2)
+    mut same = 0
+    for _ in 0..5 {
+        if a.i64() == b.i64(): same = same + 1
+    }
+    // Five identical draws from two different seeds would be a broken generator.
+    assert same < 5
+}
+
+test "std.random — range stays inside its bounds" {
+    mut r = Random.from_seed(7)
+    for _ in 0..20 {
+        let v = r.range(10, 20)
+        assert v >= 10
+        assert v < 20
+    }
+}
+
+test "std.random — bool draws both values over enough tries" {
+    mut r = Random.from_seed(3)
+    mut trues = 0
+    mut falses = 0
+    for _ in 0..50 {
+        if r.bool() {
+            trues = trues + 1
+        } else {
+            falses = falses + 1
+        }
+    }
+    assert trues + falses == 50
+    assert trues > 0
+    assert falses > 0
+}
+
+func main() {}

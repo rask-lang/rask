@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `import X as Y` — #923.
+//
+// An aliased import binds the name and carries none of the type's methods.
+// `Span.from_millis(1500)` is "no method `from_millis` found for type `Span`"
+// while `Duration.from_millis(1500)` through a plain import is fine, and
+// annotating doesn't help — instance methods are missing too, so `Span` is a name
+// the checker accepts in a type position with no extend blocks attached.
+//
+// Aliasing is one of the four documented import forms and the answer the language
+// gives for a name collision between two modules, so it's the form you reach for
+// exactly when the plain one is unavailable.
+//
+// The other three forms work and are covered in `t_week_imports.rk`. Notably a
+// *wildcard* import keeps its methods, so whatever the wildcard path does with
+// type identity is the thing the alias path is missing.
+
+import time.Duration as Span
+import time.Instant as Moment
+
+func describe(s: Span) -> string {
+    return "{s.as_millis()}ms"
+}
+
+test "std.structure — a static through an aliased type" {
+    let d = Span.from_millis(1500)
+    assert d.as_millis() == 1500
+}
+
+test "std.structure — an instance method through an aliased type" {
+    let d = Span.from_millis(2000)
+    assert d.as_seconds() == 2
+}
+
+test "std.structure — an aliased type in an annotation" {
+    let d: Span = Span.from_millis(500)
+    assert d.as_millis() == 500
+}
+
+test "std.structure — an aliased type in a function signature" {
+    assert describe(Span.from_millis(250)) == "250ms"
+}
+
+test "std.structure — a second aliased type" {
+    let a = Moment.now()
+    assert a.elapsed().as_millis() >= 0
+}
+
+func main() {}

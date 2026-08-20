@@ -34,14 +34,40 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
-# (none right now)
+t_week_optional_field_chains.rk # `?.` onto an optional-typed field loses the value — #917 (native)
+t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acquires the optional tag — #909 (interp)
+t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, pointer methods missing — #935 (interp)
 
 # --- shared / both-backend bugs ---
-# (none right now — t_parse_float was the last one, fixed in #610: a float
-#  payload sits in a Result slot as an f64, and the parse adapter was writing
-#  it at the declared width, so an f32 target read four bytes of eight.)
+# (t_parse_float was the previous one, fixed in #610: a float payload sits in a
+#  Result slot as an f64, and the parse adapter was writing it at the declared
+#  width, so an f32 target read four bytes of eight.)
+t_week_optional_chain_flatten.rk # `?.` onto a `T?` field types as `T??`, so `?? "x"` won't compile — #938 (both, type checker)
 
 # --- new regression witnesses (this session) ---
+
+# Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
+# out so the working surface stays gated; only the bug lives here.
+t_day_array_writes.rk         # [T; N] element store width — #902 (native), plus push/pop on a fixed array — #901 (both)
+t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
+t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
+t_week_generic_struct_naming.rk # a struct with implicit single-letter params can't be named at an instantiation — #913 (both)
+t_week_generic_param_shadowing.rk # a declared type parameter loses to a stdlib type of that name — #915 (both)
+t_week_generic_method_return.rk # a method returning the receiver's type parameter isn't monomorphized — #916 (native)
+t_week_enum_named_payloads.rk # `Variant { field }` pattern never matches — #910 (interp); matched by arm position, not tag — #911 (native)
+t_month_i128_aggregates.rk    # an i128 as a Vec element or struct field fails the Cranelift verifier — #933 (native)
+t_month_u128_widening.rk      # `u64 as u128` sign-extends — #934 (interp)
+t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)
+t_month_reflect_field_strings.rk # a comptime FieldInfo.name has no resolved type — #931 (native)
+t_month_comptime_field_literal.rk # CT49 `p.("x")` reaches native MIR unresolved — #930 (native)
+t_month_ensure_block_scope.rk # a nested block's ensure deferred to function exit — #929 (native)
+t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both)
+t_week_opaque_struct_fields.rk # Duration/Instant lay out at size 0 as a struct field — #924 (native)
+t_week_import_alias.rk        # `import X as Y` carries the name but not the methods — #923 (both)
+t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
+t_day_unsigned_to_float.rk    # `unsigned as f64` uses fcvt_from_sint — #907 (native)
+t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906; SIGSEGV, the last two tests never run (native)
+t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both); inferred string param reaches MIR as void — #905 (native)
 
 # --- E0361: binding whose type inference left open (#620) ---
 # Empty. All 19 files that lit up when E0361 went on by default now compile.
