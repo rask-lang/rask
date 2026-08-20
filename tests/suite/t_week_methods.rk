@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: methods via `extend`.
+//
+// Data and behaviour are separate: a struct or enum declares its fields, and
+// `extend` adds the methods. Covers a read-only `self`, `mutate self`,
+// `take self`, statics with no `self` at all, methods that call each other,
+// chaining, methods on an enum, several `extend` blocks for one type, and
+// methods on a nominal type.
+
+struct Counter {
+    n: i32
+}
+
+struct Rect {
+    w: f64
+    h: f64
+}
+
+enum Light {
+    Red
+    Yellow
+    Green
+}
+
+type Celsius = f64 with (Equal)
+
+extend Counter {
+    // Static — no self.
+    func new() -> Counter {
+        return Counter { n: 0 }
+    }
+
+    func starting_at(n: i32) -> Counter {
+        return Counter { n }
+    }
+
+    func value(self) -> i32 {
+        return self.n
+    }
+
+    func bump(mutate self) {
+        self.n = self.n + 1
+    }
+
+    func add(mutate self, k: i32) {
+        self.n = self.n + k
+    }
+
+    func into_value(take self) -> i32 {
+        return self.n
+    }
+
+    func is_even(self) -> bool {
+        return self.value() % 2 == 0
+    }
+}
+
+extend Rect {
+    func area(self) -> f64 {
+        return self.w * self.h
+    }
+
+    func perimeter(self) -> f64 {
+        return 2.0 * (self.w + self.h)
+    }
+
+    func scaled(self, k: f64) -> Rect {
+        return Rect { w: self.w * k, h: self.h * k }
+    }
+
+    func square(side: f64) -> Rect {
+        return Rect { w: side, h: side }
+    }
+}
+
+// A second extend block for the same type.
+extend Rect {
+    func is_square(self) -> bool {
+        return self.w == self.h
+    }
+}
+
+extend Light {
+    func next(self) -> Light {
+        return match self {
+            Red => Light.Green,
+            Green => Light.Yellow,
+            Yellow => Light.Red,
+        }
+    }
+
+    func is_stop(self) -> bool {
+        return self is Red
+    }
+}
+
+extend Celsius {
+    func is_freezing(self) -> bool {
+        return self.value <= 0.0
+    }
+}
+
+test "a static builds the value" {
+    let c = Counter.new()
+    assert c.value() == 0
+    let d = Counter.starting_at(5)
+    assert d.value() == 5
+}
+
+test "a read-only method reads a field" {
+    let c = Counter.starting_at(7)
+    assert c.value() == 7
+    assert !c.is_even()
+    let d = Counter.starting_at(8)
+    assert d.is_even()
+}
+
+test "mutate self changes the receiver" {
+    mut c = Counter.new()
+    c.bump()
+    assert c.value() == 1
+    c.bump()
+    assert c.value() == 2
+    c.add(10)
+    assert c.value() == 12
+}
+
+test "the receiver needs no mutate marker at the call site" {
+    mut c = Counter.starting_at(1)
+    c.bump()
+    assert c.value() == 2
+}
+
+test "take self consumes the receiver" {
+    let c = Counter.starting_at(42)
+    assert c.into_value() == 42
+}
+
+test "a method calling another method on self" {
+    let a = Counter.starting_at(4)
+    assert a.is_even()
+    let b = Counter.starting_at(5)
+    assert !b.is_even()
+}
+
+test "methods returning a new value chain" {
+    let r = Rect { w: 2.0, h: 3.0 }
+    assert r.area() == 6.0
+    assert r.perimeter() == 10.0
+    assert r.scaled(2.0).area() == 24.0
+    assert r.scaled(2.0).scaled(0.5).area() == 6.0
+}
+
+test "a static on a struct with fields" {
+    let s = Rect.square(3.0)
+    assert s.area() == 9.0
+    assert s.is_square()
+}
+
+test "a second extend block adds to the same type" {
+    let r = Rect { w: 2.0, h: 2.0 }
+    assert r.is_square()
+    assert r.area() == 4.0
+    let o = Rect { w: 2.0, h: 3.0 }
+    assert !o.is_square()
+}
+
+test "methods on an enum" {
+    assert Light.Red.next() == Light.Green
+    assert Light.Green.next() == Light.Yellow
+    assert Light.Yellow.next() == Light.Red
+    assert Light.Red.is_stop()
+    assert !Light.Green.is_stop()
+}
+
+test "cycling an enum through its own method" {
+    mut l = Light.Red
+    l = l.next()
+    l = l.next()
+    l = l.next()
+    assert l == Light.Red
+}
+
+test "methods on a nominal type" {
+    let c = Celsius(-5.0)
+    assert c.is_freezing()
+    let w = Celsius(20.0)
+    assert !w.is_freezing()
+    assert w.value == 20.0
+}
+
+test "methods on values inside a Vec" {
+    let rects: Vec<Rect> = [Rect { w: 1.0, h: 1.0 }, Rect { w: 2.0, h: 3.0 }]
+    mut total = 0.0
+    for r in rects {
+        total = total + r.area()
+    }
+    assert total == 7.0
+}
+
+func main() {}

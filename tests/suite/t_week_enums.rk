@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Week one: enums and match.
+//
+// Payload-free variants and positional payloads, one and several at a time.
+// Match as a statement and as an expression, `_` as the catch-all, guards with
+// `if`, arm order (first match wins, so the general one goes last), binding a
+// payload, multi-statement arms, and `is` for testing one variant without
+// handling the rest.
+//
+// The *named*-payload form (`Completed { at: i64 }`) is broken on both backends
+// — #910 on interp, #911 on native — so it lives in
+// `t_week_enum_named_payloads.rk` rather than here.
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(f64)
+    Rect(f64, f64)
+}
+
+enum Status {
+    Pending
+    Active
+    Completed(i64)
+    Failed(string)
+}
+
+enum Event {
+    Click(i32, i32)
+    Resize(i32, i32)
+    Quit
+}
+
+extend Shape {
+    func area(self) -> f64 {
+        return match self {
+            Circle(r) => 3.0 * r * r,
+            Rect(w, h) => w * h,
+        }
+    }
+}
+
+func name_of(c: Color) -> string {
+    return match c {
+        Red => "red",
+        Green => "green",
+        Blue => "blue",
+    }
+}
+
+func describe(s: Status) -> string {
+    return match s {
+        Pending => "waiting",
+        Active => "running",
+        Completed(at) => "done at {at}",
+        Failed(reason) => "failed: {reason}",
+    }
+}
+
+func render(e: Event) -> string {
+    return match e {
+        Click(x, y) => "click{x}{y}",
+        Resize(w, h) => "resize{w}x{h}",
+        Quit => "quit",
+    }
+}
+
+func size_class(n: i32) -> string {
+    return match n {
+        0 => "zero",
+        x if x < 0 => "negative",
+        x if x < 10 => "small",
+        _ => "large",
+    }
+}
+
+test "payload-free variants" {
+    assert name_of(Color.Red) == "red"
+    assert name_of(Color.Green) == "green"
+    assert name_of(Color.Blue) == "blue"
+}
+
+test "variants compare by identity" {
+    let a = Color.Red
+    let b = Color.Red
+    let c = Color.Blue
+    assert a == b
+    assert a != c
+}
+
+test "positional payloads bind in order" {
+    let c = Shape.Circle(2.0)
+    assert c.area() == 12.0
+    let r = Shape.Rect(3.0, 4.0)
+    assert r.area() == 12.0
+}
+
+test "payloads of different types on one enum" {
+    assert describe(Status.Completed(99)) == "done at 99"
+    assert describe(Status.Failed("timeout")) == "failed: timeout"
+    assert describe(Status.Pending) == "waiting"
+    assert describe(Status.Active) == "running"
+}
+
+test "one enum can mix payload arities including none" {
+    assert render(Event.Click(1, 2)) == "click12"
+    assert render(Event.Resize(10, 20)) == "resize10x20"
+    assert render(Event.Quit) == "quit"
+}
+
+test "matching a mixed enum in a loop" {
+    let events: Vec<Event> = [Event.Click(1, 2), Event.Quit]
+    mut parts = Vec.new()
+    for e in events {
+        parts.push(render(e))
+    }
+    assert parts.join("-") == "click12-quit"
+}
+
+test "match as an expression with a catch-all" {
+    let s = Status.Active
+    let short = match s {
+        Active => "A",
+        _ => "?",
+    }
+    assert short == "A"
+    let other = match Status.Pending {
+        Active => "A",
+        _ => "?",
+    }
+    assert other == "?"
+}
+
+test "guards, and first match wins" {
+    assert size_class(0) == "zero"
+    assert size_class(-5) == "negative"
+    assert size_class(3) == "small"
+    assert size_class(100) == "large"
+}
+
+test "a guard that fails falls through to the next arm" {
+    let n = 5
+    let r = match n {
+        x if x > 10 => "big",
+        x if x > 3 => "medium",
+        _ => "small",
+    }
+    assert r == "medium"
+}
+
+test "a multi-statement arm" {
+    mut log = ""
+    mut count = 0
+    let s = Status.Failed("disk")
+    match s {
+        Failed(reason) => {
+            log = reason
+            count = count + 1
+        }
+        _ => {
+            count = 99
+        }
+    }
+    assert log == "disk"
+    assert count == 1
+}
+
+test "is tests one variant without handling the rest" {
+    let s = Shape.Circle(1.0)
+    assert s is Circle
+    assert !(s is Rect)
+    mut r = 0.0
+    if s is Circle(radius) {
+        r = radius
+    }
+    assert r == 1.0
+}
+
+test "match on a match result" {
+    let c = Color.Green
+    let n = match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+    let word = match n {
+        2 => "two",
+        _ => "other",
+    }
+    assert word == "two"
+}
+
+test "enums in a Vec, matched in a loop" {
+    let shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Circle(2.0)]
+    mut circles = 0
+    mut total = 0.0
+    for s in shapes {
+        if s is Circle: circles = circles + 1
+        total = total + s.area()
+    }
+    assert circles == 2
+    assert total == 21.0
+}
+
+func main() {}

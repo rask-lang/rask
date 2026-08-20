@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The named-payload enum form — #910 (interp) and #911 (native).
+//
+// `enum Status { Completed { at: i64 } }` is one of the three payload shapes
+// SYNTAX.md gives enums, for when a variant's fields have distinct roles. Both
+// backends get it wrong, in unrelated ways:
+//
+//   interp (#910): a `Variant { field }` pattern never matches, at any position.
+//     `Pattern::Struct` only accepts `Value::Struct`, and an enum variant is a
+//     `Value::Enum`, so it falls through to the next arm that does match — a
+//     payload-free arm, a `_`, or "no arm matches" if there is neither.
+//
+//   native (#911): a named-payload arm is matched by its *position among the
+//     arms* rather than by the variant's tag. Write the arms in declaration
+//     order and it works, which is why nothing caught this — that's how anyone
+//     writes a match. Put the interesting variant first, or add a `_` and
+//     handle one case, and the arm silently doesn't match. In one shape it
+//     segfaults.
+//
+// The positional-payload form is fine on both and is covered in
+// `t_week_enums.rk`.
+
+enum Status {
+    Pending
+    Active
+    Completed { at: i64 }
+    Failed { reason: string }
+}
+
+// One named-payload variant, at each position in its enum.
+enum First {
+    N { v: i64 }
+    Other
+}
+
+enum Second {
+    Other
+    N { v: i64 }
+}
+
+enum Third {
+    Other
+    Another
+    N { v: i64 }
+}
+
+func describe(s: Status) -> string {
+    return match s {
+        Pending => "waiting",
+        Active => "running",
+        Completed { at } => "done at {at}",
+        Failed { reason } => "failed: {reason}",
+    }
+}
+
+func first_val(x: First) -> i64 {
+    return match x {
+        N { v } => v,
+        _ => -1,
+    }
+}
+
+func second_val(x: Second) -> i64 {
+    return match x {
+        N { v } => v,
+        _ => -1,
+    }
+}
+
+func third_val(x: Third) -> i64 {
+    return match x {
+        N { v } => v,
+        _ => -1,
+    }
+}
+
+// All arms present, named one written before its declaration position.
+func third_out_of_order(x: Third) -> i64 {
+    return match x {
+        N { v } => v,
+        Other => -10,
+        Another => -20,
+    }
+}
+
+// All arms present, in declaration order — the case that works on native today.
+func third_in_order(x: Third) -> i64 {
+    return match x {
+        Other => -10,
+        Another => -20,
+        N { v } => v,
+    }
+}
+
+test "type.enums — a named payload binds by name" {
+    assert describe(Status.Completed { at: 99 }) == "done at 99"
+    assert describe(Status.Failed { reason: "timeout" }) == "failed: timeout"
+}
+
+test "type.enums — the payload-free variants of the same enum still match" {
+    assert describe(Status.Pending) == "waiting"
+    assert describe(Status.Active) == "running"
+}
+
+test "type.enums — a named-payload variant matches wherever it sits" {
+    assert first_val(First.N { v: 5 }) == 5
+    assert second_val(Second.N { v: 5 }) == 5
+    assert third_val(Third.N { v: 5 }) == 5
+}
+
+test "type.enums — arm order does not decide which variant matches" {
+    assert third_out_of_order(Third.N { v: 5 }) == 5
+    assert third_in_order(Third.N { v: 5 }) == 5
+}
+
+// The out-of-order match doesn't only lose its own arm: `Other` reaches its arm
+// and returns a pointer-shaped value instead of -10, so the whole arm-to-value
+// mapping is shifted. That's what the segfault in the two-variant shape is.
+test "type.enums — the other variants are unaffected by arm order" {
+    assert third_out_of_order(Third.Other) == -10
+    assert third_out_of_order(Third.Another) == -20
+    assert third_in_order(Third.Other) == -10
+}
+
+test "type.enums — a named payload binds in a multi-statement arm" {
+    let s = Status.Failed { reason: "disk" }
+    mut log = ""
+    mut count = 0
+    match s {
+        Failed { reason } => {
+            log = reason
+            count = count + 1
+        }
+        _ => {
+            count = 99
+        }
+    }
+    assert log == "disk"
+    assert count == 1
+}
+
+test "type.enums — is tests a named-payload variant" {
+    let s = Status.Completed { at: 7 }
+    assert s is Completed
+    assert !(s is Pending)
+}
+
+func main() {}

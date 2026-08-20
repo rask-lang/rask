@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: converting between numeric types.
+//
+// Rask splits this in two, and knowing which is which is the day-one lesson:
+//
+//   `as` is for conversions that cannot lose anything — widening an integer,
+//   int→int where the value fits, f32→f64.
+//
+//   Anything lossy has to say what happens when it doesn't fit. Float→int names
+//   a rounding (`.round<i32>()`, `.floor`, `.ceil`, `.to` for exact-only), and
+//   int→float names one too, because past 2^53 an i64 doesn't survive an f64.
+//   Those return a result, hence the `!`.
+//
+// So `x as f64` on an i32 is fine (32 bits fit in a double exactly) and
+// `n as i32` on an i64 is not.
+
+test "widening an integer with as" {
+    let a: i8 = 100
+    assert (a as i16) == 100
+    assert (a as i32) == 100
+    assert (a as i64) == 100
+    let b: u8 = 250
+    assert (b as u16) == 250
+    assert (b as u32) == 250
+    assert (b as u64) == 250
+}
+
+test "unsigned to a wider signed type" {
+    let a: u8 = 255
+    assert (a as i16) == 255
+    assert (a as i32) == 255
+    let b: u32 = 4000000000
+    assert (b as i64) == 4000000000
+}
+
+// Signed sources only here: an unsigned source with its top bit set takes the
+// signed conversion on native (#907), which `t_day_unsigned_to_float.rk` carries.
+test "int to float where nothing can be lost" {
+    let a: i32 = 3
+    assert (a as f64) == 3.0
+    let b: i16 = -7
+    assert (b as f64) == -7.0
+    let c: u8 = 100
+    assert (c as f64) == 100.0
+    let d: i64 = -1000
+    assert (d as f64) == -1000.0
+}
+
+test "f32 widens to f64" {
+    let a: f32 = 0.5
+    assert (a as f64) == 0.5
+    let b: f32 = 2.25
+    assert (b as f64) == 2.25
+}
+
+test "float to int names its rounding" {
+    assert 3.9.floor<i32>()! == 3
+    assert 3.1.ceil<i32>()! == 4
+    assert 3.5.round<i32>()! == 4
+    assert 3.4.round<i32>()! == 3
+    assert 4.0.to<i32>()! == 4
+}
+
+test "float to int rounding on negatives" {
+    assert (-3.9).floor<i32>()! == -4
+    assert (-3.9).ceil<i32>()! == -3
+    assert (-3.5).round<i32>()! == -4
+    assert (-3.4).round<i32>()! == -3
+}
+
+// `to<T>()` is exact-only and returns `T or ConvertError` — a failure, not an
+// absence — so `catch` is what handles it, never `??`.
+test "to is exact-only and fails on a fraction" {
+    let exact: f64 = 8.0
+    assert exact.to<i32>()! == 8
+    let inexact: f64 = 8.5
+    assert (inexact.to<i32>() catch _ => -1) == -1
+}
+
+test "narrowing an integer fails when the value does not fit" {
+    let big: i64 = 300
+    assert (big.to<u8>() catch _ => 0) == 0
+    let fits: i64 = 200
+    assert fits.to<u8>()! == 200
+    let neg: i64 = -1
+    assert (neg.to<u8>() catch _ => 0) == 0
+}
+
+test "casts inside arithmetic" {
+    let n: i32 = 3
+    let f: f64 = 0.5
+    assert (n as f64) * f == 1.5
+    assert (n as f64) + f == 3.5
+    let m: i16 = 10
+    assert (m as i64) * 1000000 == 10000000
+}
+
+test "casting a loop counter" {
+    mut total: f64 = 0.0
+    for i in 1..4 {
+        total = total + (i as f64)
+    }
+    assert total == 6.0
+}
+
+test "round-tripping through a wider type" {
+    let a: i8 = -100
+    let wide = a as i64
+    assert wide == -100
+    assert wide.to<i8>()! == -100
+}
+
+func main() {}

@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: float arithmetic, and what happens when an int meets a float.
+//
+// The mixed-type rules are the part people get wrong on day one: `2 * 1.5` is
+// fine because the literal `2` can be a float, but an `i32` *binding* has to be
+// cast before it can meet an `f64`. Both directions are here, plus f32 vs f64,
+// division that doesn't come out even, and the float-specific methods.
+
+test "the four operators on f64" {
+    assert 1.5 + 2.5 == 4.0
+    assert 5.0 - 1.5 == 3.5
+    assert 2.0 * 3.5 == 7.0
+    assert 7.0 / 2.0 == 3.5
+}
+
+test "float division does not truncate" {
+    assert 1.0 / 4.0 == 0.25
+    assert 3.0 / 2.0 == 1.5
+    assert 10.0 / 8.0 == 1.25
+}
+
+test "an unsuffixed literal takes the float side" {
+    let x: f64 = 1.5
+    assert x * 2 == 3.0
+    assert x + 1 == 2.5
+    assert 2 * x == 3.0
+    assert 3 / x == 2.0
+}
+
+test "an int binding needs an explicit cast" {
+    let n: i32 = 3
+    let f: f64 = 1.5
+    assert (n as f64) * f == 4.5
+    assert f + (n as f64) == 4.5
+}
+
+// `as` refuses float-to-int: it loses the fraction and can overflow, so the
+// spec makes you name the rounding you want (type.primitives/CV4).
+test "float to int needs a named rounding" {
+    assert 3.9.floor<i32>()! == 3
+    assert 3.9.ceil<i32>()! == 4
+    assert 3.9.round<i32>()! == 4
+    assert 3.4.round<i32>()! == 3
+    assert (-3.9).floor<i32>()! == -4
+    assert (-3.9).ceil<i32>()! == -3
+    assert 100.0.to<i64>()! == 100
+}
+
+test "f32 and f64 keep their own widths" {
+    let a: f32 = 0.5
+    let b: f32 = 0.25
+    assert a + b == 0.75
+    assert a * b == 0.125
+    let c: f64 = 0.5
+    assert c + 0.25 == 0.75
+}
+
+test "negative floats" {
+    assert -1.5 + 1.5 == 0.0
+    assert -2.0 * -3.0 == 6.0
+    assert -7.0 / 2.0 == -3.5
+}
+
+test "float comparison" {
+    assert 1.5 < 2.0
+    assert 2.0 > 1.5
+    assert 1.5 <= 1.5
+    assert 1.5 >= 1.5
+    assert 1.5 == 1.5
+    assert 1.5 != 1.6
+}
+
+test "float methods" {
+    let a: f64 = 2.25
+    assert a.sqrt() == 1.5
+    let b: f64 = -3.5
+    assert b.abs() == 3.5
+    let c: f64 = 3.2
+    assert c.floor() == 3.0
+    assert c.ceil() == 4.0
+    let d: f64 = 3.5
+    assert d.round() == 4.0
+}
+
+test "float remainder" {
+    assert 7.5 % 2.0 == 1.5
+    assert 7.0 % 2.0 == 1.0
+}
+
+test "accumulating floats in a loop" {
+    mut sum: f64 = 0.0
+    for _ in 0..4 {
+        sum = sum + 0.25
+    }
+    assert sum == 1.0
+}
+
+func main() {}

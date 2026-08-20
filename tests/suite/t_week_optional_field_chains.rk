@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `?.` landing on a field whose own type is optional — #917.
+//
+// `a.inner?.v` where `inner: OptInt?` and `v: i64?` loses the value on native:
+// the string payload comes back reported-present with the wrong contents, and the
+// integer payload segfaults in eight lines. The interpreter is right.
+//
+// Both backends agree on the *type* — `i64??`, two layers, since
+// type.optionals says the layers don't collapse — so this is not a layering
+// disagreement. Only the native value is wrong.
+//
+// Two neighbours work on both backends and are here as controls: the same chain
+// onto a *non*-optional field, and the spelled-out version that unwraps the outer
+// optional first instead of using `?.`. Bare equality against an optional is also
+// fine (#834, fixed), including on a `T??` built from a literal — so the
+// comparison machinery isn't what's broken, it's what `?.` puts in the slot.
+//
+// One case is deliberately NOT asserted here: what a chain gives when the *inner*
+// field is `none` while the outer is present. Read one way it is `Some(none)` and
+// one `!` yields `none`; read the other the chain short-circuits and the whole
+// thing is `none`, so `!` panics. The interpreter does the second. OPT10 says
+// `x?.field` is `none` "when absent" without saying which absence it means, so
+// rather than lock in a guess it's flagged on #917 as an open layering question.
+
+struct OptField {
+    v: string?
+}
+
+struct PlainField {
+    v: string
+}
+
+struct HasOpt {
+    inner: OptField?
+}
+
+struct HasPlain {
+    inner: PlainField?
+}
+
+struct OptInt {
+    v: i64?
+}
+
+struct HasOptInt {
+    inner: OptInt?
+}
+
+test "type.optionals — a chain onto an optional string field keeps the value" {
+    let a = HasOpt { inner: OptField { v: "abc" } }
+    assert !(a.inner?.v is none)
+    assert a.inner?.v! == "abc"
+}
+
+test "type.optionals — the same chain read through ??" {
+    let a = HasOpt { inner: OptField { v: "abc" } }
+    assert (a.inner?.v! ?? "X") == "abc"
+}
+
+test "type.optionals — a chain onto an optional integer field keeps the value" {
+    let a = HasOptInt { inner: OptInt { v: 7 } }
+    let outer = a.inner?.v
+    let inner: i64? = outer!
+    assert (inner ?? -1) == 7
+}
+
+test "type.optionals — an absent outer value short-circuits" {
+    let a = HasOpt { inner: none }
+    assert a.inner?.v is none
+}
+
+// Controls: both of these work on both backends today.
+test "type.optionals — a chain onto a plain field is the control" {
+    let b = HasPlain { inner: PlainField { v: "abc" } }
+    assert !(b.inner?.v is none)
+    assert b.inner?.v! == "abc"
+}
+
+test "type.optionals — unwrapping the outer optional first is the other control" {
+    let a = HasOpt { inner: OptField { v: "abc" } }
+    let outer = a.inner!
+    assert outer.v! == "abc"
+}
+
+func main() {}

@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `ensure` in a nested block — #929.
+//
+// ctrl.ensure/EN1 is "Executes when enclosing block exits, **not function**", and
+// the spec's Nested Scopes example puts the answer in a comment on the closing
+// brace: `}  // file.close() runs here (EN1)`.
+//
+// Native defers it to function exit instead. A bare block gives 0,2,1 where interp
+// gives 0,1,2; an `if` body gives 0,7,5 where interp gives 0,5,7.
+//
+// A *loop* body is correct on native — EN7 looks to have been implemented
+// deliberately — so the machinery exists and only the general block path is
+// missing it. That case is covered in `t_month_resource_ensure.rk`.
+//
+// It's not only an ordering curiosity: the spec's example exists to bound a
+// resource's lifetime below the function's, so on native a file written to close
+// early stays open for the whole function, and a lock stays held across code
+// written to run without it. EN3 makes `ensure` a linear consumption guarantee, so
+// the point where that's discharged moves too.
+
+struct Log {
+    order: Vec<i32>
+}
+
+func bare_block(mutate log: Log) {
+    {
+        ensure log.order.push(1)
+        log.order.push(0)
+    }
+    log.order.push(2)
+}
+
+func if_body(mutate log: Log, flag: bool) {
+    if flag {
+        ensure log.order.push(5)
+        log.order.push(0)
+    }
+    log.order.push(7)
+}
+
+func else_body(mutate log: Log, flag: bool) {
+    if flag {
+        log.order.push(100)
+    } else {
+        ensure log.order.push(5)
+        log.order.push(0)
+    }
+    log.order.push(7)
+}
+
+func two_nested_blocks(mutate log: Log) {
+    {
+        ensure log.order.push(1)
+        {
+            ensure log.order.push(2)
+            log.order.push(0)
+        }
+        log.order.push(3)
+    }
+    log.order.push(4)
+}
+
+test "ctrl.ensure — EN1: a bare block's ensure runs at that block's exit" {
+    mut log = Log { order: Vec.new() }
+    bare_block(mutate log)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 2
+}
+
+test "ctrl.ensure — EN1: an if body's ensure runs at the if's exit" {
+    mut log = Log { order: Vec.new() }
+    if_body(mutate log, true)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 5
+    assert log.order[2] == 7
+}
+
+test "ctrl.ensure — EN1: an else body's ensure runs at the else's exit" {
+    mut log = Log { order: Vec.new() }
+    else_body(mutate log, false)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 5
+    assert log.order[2] == 7
+}
+
+test "ctrl.ensure — EN1: nested blocks unwind innermost first" {
+    mut log = Log { order: Vec.new() }
+    two_nested_blocks(mutate log)
+    assert log.order.len() == 5
+    assert log.order[0] == 0
+    assert log.order[1] == 2
+    assert log.order[2] == 3
+    assert log.order[3] == 1
+    assert log.order[4] == 4
+}
+
+test "ctrl.ensure — a skipped branch schedules nothing" {
+    mut log = Log { order: Vec.new() }
+    if_body(mutate log, false)
+    assert log.order.len() == 1
+    assert log.order[0] == 7
+}
+
+func main() {}

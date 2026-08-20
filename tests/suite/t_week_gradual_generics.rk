@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The signatures gradual constraints is supposed to infer — #904.
+//
+// type.gradual-constraints has a worked-example table: leave the types off a
+// private function and the compiler reads the body to decide the signature.
+// IN3 says operators and trait methods produce a *generic* signature; IN2 only
+// falls back to a concrete type when there is no trait-method usage at all.
+//
+// `func double(x) { x * 2 }` is the table's own first row, inferred as
+// `<T: Numeric>(x: T) -> T`. It isn't: `*` desugars to `.mul()`, so IN3 should
+// win, but the body's literal `2` defaults to i32 and pins the parameter with
+// it. Calling it with an f64 is a type error even when that's the only call in
+// the program. Writing the same signature out by hand works at both types, so
+// the per-instantiation literal already works — it's the inference that doesn't
+// reach it.
+
+// The table's rows, verbatim.
+func double(x) {
+    return x * 2
+}
+
+func get_port() {
+    return 8080
+}
+
+func greet(name) {
+    return "Hi, {name}"
+}
+
+func count(items) {
+    return items.len()
+}
+
+// The signature the table says `double` gets, written out.
+func double_explicit<T>(x: T) -> T where T: Numeric {
+    return x * 2
+}
+
+test "type.gradual-constraints — an explicit Numeric bound takes both types" {
+    assert double_explicit(21) == 42
+    let f: f64 = 1.5
+    assert double_explicit(f) == 3.0
+}
+
+test "type.gradual-constraints — IN2: a bare literal body infers concrete" {
+    assert get_port() == 8080
+}
+
+test "type.gradual-constraints — interpolation constrains the parameter to string" {
+    assert greet("you") == "Hi, you"
+}
+
+test "type.gradual-constraints — a method that doesn't constrain T stays generic" {
+    let ints: Vec<i32> = [1, 2, 3]
+    assert count(ints) == 3
+    let strs: Vec<string> = ["a", "b"]
+    assert count(strs) == 2
+}
+
+test "type.gradual-constraints — IN3: an operator body infers a Numeric generic" {
+    assert double(21) == 42
+    let f: f64 = 1.5
+    assert double(f) == 3.0
+}
+
+func main() {}

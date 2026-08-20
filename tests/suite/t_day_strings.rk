@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: the string methods you reach for in the first hour.
+//
+// Length, case, trimming, searching, slicing, splitting, joining, replacing,
+// concatenation, and comparison. `len` is bytes and `char_count` is characters,
+// which is the one thing here that surprises people, so both are pinned.
+
+test "length and emptiness" {
+    assert "".is_empty()
+    assert !"a".is_empty()
+    assert "".len() == 0
+    assert "hello".len() == 5
+    assert "hello".char_count() == 5
+}
+
+test "len is bytes, char_count is characters" {
+    let s = "héllo"
+    assert s.len() == 6
+    assert s.char_count() == 5
+    assert !s.is_ascii()
+    assert "hello".is_ascii()
+}
+
+test "case conversion" {
+    assert "hello".to_uppercase() == "HELLO"
+    assert "HELLO".to_lowercase() == "hello"
+    assert "MiXeD".to_lowercase() == "mixed"
+    assert "MiXeD".to_uppercase() == "MIXED"
+    assert "".to_uppercase() == ""
+}
+
+test "trimming" {
+    assert "  hi  ".trim() == "hi"
+    assert "  hi  ".trim_start() == "hi  "
+    assert "  hi  ".trim_end() == "  hi"
+    assert "hi".trim() == "hi"
+    assert "   ".trim() == ""
+    assert "\t hi \n".trim() == "hi"
+}
+
+test "searching" {
+    let s = "hello world"
+    assert s.contains("world")
+    assert !s.contains("moon")
+    assert s.starts_with("hello")
+    assert !s.starts_with("world")
+    assert s.ends_with("world")
+    assert !s.ends_with("hello")
+}
+
+test "index_of returns an absent value when the pattern is missing" {
+    let s = "hello world"
+    assert s.index_of("o")! == 4
+    assert s.last_index_of("o")! == 7
+    assert s.index_of("zzz") is none
+    assert (s.index_of("zzz") ?? 99) == 99
+}
+
+test "substring slices by byte index" {
+    let s = "hello world"
+    assert s.substring(0, 5) == "hello"
+    assert s.substring(6, 11) == "world"
+    assert s.substring(0, 0) == ""
+    assert s.substring(0, s.len()) == s
+}
+
+test "char_at and byte_at" {
+    let s = "abc"
+    assert s.char_at(0)! == 'a'
+    assert s.char_at(2)! == 'c'
+    assert s.char_at(3) is none
+    assert s.byte_at(0)! == 97
+}
+
+test "splitting and joining" {
+    let parts = "a,b,c".split(",").to_vec()
+    assert parts.len() == 3
+    assert parts[0] == "a"
+    assert parts[2] == "c"
+    assert parts.join("-") == "a-b-c"
+    let words = "one two  three".split_whitespace().to_vec()
+    assert words.len() == 3
+    assert words[1] == "two"
+}
+
+test "lines" {
+    let ls = "a\nb\nc".lines().to_vec()
+    assert ls.len() == 3
+    assert ls[0] == "a"
+    assert ls[2] == "c"
+}
+
+test "replace, repeat, reverse" {
+    assert "aXbXc".replace("X", "-") == "a-b-c"
+    assert "aaa".replace("a", "bb") == "bbbbbb"
+    assert "no match".replace("z", "y") == "no match"
+    assert "ab".repeat(3) == "ababab"
+    assert "ab".repeat(0) == ""
+    assert "abc".reverse() == "cba"
+}
+
+// `+` on strings is refused on purpose: concatenation allocates, and Rask wants
+// the allocation visible in the text. Interpolation is how you join two pieces;
+// StringBuilder is how you join many. (E0335 also suggests `string.concat`,
+// which does not exist — #900.)
+test "concatenation goes through interpolation" {
+    let a = "foo"
+    let b = "bar"
+    assert "{a}{b}" == "foobar"
+    assert "{a}" == "foo"
+    assert "{a}-{b}" == "foo-bar"
+    mut sb = StringBuilder.new()
+    sb.push(a)
+    sb.push(b)
+    assert sb.build() == "foobar"
+}
+
+test "string comparison" {
+    let a = "foo"
+    let b = "bar"
+    assert a != b
+    assert !(a < b)
+    assert b < a
+    assert "abc" < "abd"
+    assert "abc" <= "abc"
+}
+
+func main() {}

@@ -14,3 +14,8 @@
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented
 p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
 p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)
+
+# --- declared-but-unbuilt stdlib surface ---
+t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912
+t_month_atomics.rk         # mem.atomics — Atomic<T> has no operations on any spelling, #927
+t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920

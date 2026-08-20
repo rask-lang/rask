@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: the fixed-size array `[T; N]`, and what it is *not*.
+//
+// `mut v = [1, 2, 3]` with no annotation is a fixed array, not a Vec —
+// std.collections/C4 says the slot picks the shape and a bare literal keeps the
+// fixed one. That trips people up because the value looks like a Vec and
+// answers `len()` and `[]` like one.
+//
+// This file is the part that works on both backends. Element *writes* at
+// sub-word widths (#902) and the Vec growth methods a fixed array should not
+// have at all (#901) live in `t_day_array_writes.rk`.
+
+struct Pt {
+    x: i32
+    y: i32
+}
+
+test "an unannotated literal is a fixed array that reads like a Vec" {
+    let a = [1, 2, 3]
+    assert a.len() == 3
+    assert a[0] == 1
+    assert a[2] == 3
+}
+
+test "an explicit fixed array" {
+    let a: [i32; 3] = [10, 20, 30]
+    assert a.len() == 3
+    assert a[1] == 20
+}
+
+// An 8-byte element is the one width the native store gets right (#902), so it
+// is the write that belongs in the green file.
+test "an i64 element can be written in place" {
+    mut a: [i64; 3] = [1, 2, 3]
+    a[1] = 99
+    assert a[0] == 1
+    assert a[1] == 99
+    assert a[2] == 3
+}
+
+test "iterating a fixed array" {
+    let a: [i32; 4] = [1, 2, 3, 4]
+    mut total = 0
+    for x in a {
+        total = total + x
+    }
+    assert total == 10
+}
+
+test "a fixed array of structs" {
+    mut a: [Pt; 2] = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }]
+    assert a[0].x == 1
+    assert a[1].y == 4
+    a[1] = Pt { x: 9, y: 9 }
+    assert a[1].x == 9
+    assert a[0].x == 1
+}
+
+test "a fixed array of strings" {
+    let a: [string; 3] = ["a", "b", "c"]
+    assert a.len() == 3
+    assert a[0] == "a"
+    assert a[2] == "c"
+}
+
+test "the same literal annotated as a Vec grows fine" {
+    mut v: Vec<i32> = [1, 2, 3]
+    v.push(4)
+    assert v.len() == 4
+    assert v.pop()! == 4
+    assert v.len() == 3
+}
+
+func main() {}
