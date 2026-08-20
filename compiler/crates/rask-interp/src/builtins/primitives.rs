@@ -28,9 +28,14 @@ macro_rules! overflow_hatch {
         let a = $a as $ty;
         let b = $b as $ty;
         let out: $ty = match $method {
-            "wrapping_add" => a.wrapping_add(b),
-            "wrapping_sub" => a.wrapping_sub(b),
-            "wrapping_mul" => a.wrapping_mul(b),
+            // UN1/UN2: `.unchecked_*()` is undefined behavior on overflow, but
+            // this interpreter has no UB to reach for — wrapping is the
+            // defined answer whenever the overflow the caller promised not to
+            // hit doesn't actually happen, so it's what a correct (non-UB)
+            // caller sees either way.
+            "wrapping_add" | "unchecked_add" => a.wrapping_add(b),
+            "wrapping_sub" | "unchecked_sub" => a.wrapping_sub(b),
+            "wrapping_mul" | "unchecked_mul" => a.wrapping_mul(b),
             "saturating_add" => a.saturating_add(b),
             "saturating_sub" => a.saturating_sub(b),
             "saturating_mul" => a.saturating_mul(b),
@@ -202,7 +207,8 @@ impl Interpreter {
             // OV5/SH2 — the ways out of the checked default.
             "wrapping_add" | "wrapping_sub" | "wrapping_mul"
             | "saturating_add" | "saturating_sub" | "saturating_mul"
-            | "wrapping_shl" | "wrapping_shr" => {
+            | "wrapping_shl" | "wrapping_shr"
+            | "unchecked_add" | "unchecked_sub" | "unchecked_mul" => {
                 let b = self.expect_int(args, 0)?;
                 let width = kind.bits().unwrap_or(64);
                 let signed = kind.signed();
