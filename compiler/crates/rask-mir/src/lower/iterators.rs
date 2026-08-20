@@ -1975,6 +1975,12 @@ impl<'a> MirLowerer<'a> {
             setup.inc_block, setup.idx,
         )?;
 
+        // The Vec the closure hands back is not freed, so one allocation per
+        // element leaks (#943). It can't simply be freed here: the closure
+        // doesn't have to have allocated it — `|k| lookup()` can hand back a
+        // Vec that outlives the call, and freeing that is a use-after-free
+        // rather than a leak fix. Doing better needs to know whether the result
+        // is owned, which this lowering has no way to ask today.
         let (sub_op, _) = self.inline_closure_body(closure, elem_op, elem_ty)?;
         let sub_vec = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2060,33 +2066,68 @@ impl<'a> MirLowerer<'a> {
     fn closure_return_exprs(closure: &Expr) -> Vec<&Expr> {
         let ExprKind::Closure { body, .. } = &closure.kind else { return Vec::new() };
         let mut out = Vec::new();
-        Self::collect_return_exprs(body, &mut out);
+        Self::collect_returns(body, &mut out);
+        Self::collect_tail_values(body, &mut out);
         out
     }
 
-    fn collect_return_exprs<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
+    /// Every explicit `return e`, however deeply nested in branches.
+    fn collect_returns<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
         match &expr.kind {
             ExprKind::Block(stmts) => {
                 for s in stmts {
                     match &s.kind {
                         rask_ast::stmt::StmtKind::Return(Some(e)) => out.push(e),
-                        rask_ast::stmt::StmtKind::Expr(e) => Self::collect_return_exprs(e, out),
+                        rask_ast::stmt::StmtKind::Expr(e) => Self::collect_returns(e, out),
                         _ => {}
                     }
                 }
             }
             ExprKind::If { then_branch, else_branch, .. } => {
-                Self::collect_return_exprs(then_branch, out);
+                Self::collect_returns(then_branch, out);
                 if let Some(e) = else_branch {
-                    Self::collect_return_exprs(e, out);
+                    Self::collect_returns(e, out);
                 }
             }
             ExprKind::Match { arms, .. } => {
                 for arm in arms {
-                    Self::collect_return_exprs(&arm.body, out);
+                    Self::collect_returns(&arm.body, out);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The expression(s) a body evaluates *to* without saying `return`.
+    ///
+    /// A closure body doesn't have to be a block: `|x| pair_of(x)` is stored as
+    /// the bare call, and `|x| { …; r }` ends in a trailing expression. Looking
+    /// only inside `Block`/`If`/`Match` for `return` found neither, so
+    /// `flat_map`'s element type had nothing to resolve from and lowering gave
+    /// up on a form the interpreter runs fine.
+    ///
+    /// Only the *last* statement of a block is a value — an earlier expression
+    /// statement is evaluated and discarded, so offering it as a candidate
+    /// would let an unrelated Vec answer for the element type.
+    fn collect_tail_values<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
+        match &expr.kind {
+            ExprKind::Block(stmts) => {
+                if let Some(rask_ast::stmt::StmtKind::Expr(e)) = stmts.last().map(|s| &s.kind) {
+                    Self::collect_tail_values(e, out);
+                }
+            }
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::collect_tail_values(then_branch, out);
+                if let Some(e) = else_branch {
+                    Self::collect_tail_values(e, out);
+                }
+            }
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    Self::collect_tail_values(&arm.body, out);
+                }
+            }
+            _ => out.push(expr),
         }
     }
 
@@ -2226,20 +2267,26 @@ impl<'a> MirLowerer<'a> {
             vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty)))],
         );
 
-        // Selection sort over [0, n), keeping `vec` and `keys` in lockstep.
+        // Insertion sort over [1, n), keeping `vec` and `keys` in lockstep.
+        //
+        // Stable, which is what `sort_by_key` has to be: the interpreter sorts
+        // with Rust's stable sort, so anything else here makes the two backends
+        // disagree on tied keys. A selection sort doesn't qualify — lifting the
+        // minimum out of the tail reorders the equal elements it jumps over.
+        // Insertion sort only ever swaps a pair the comparison calls *strictly*
+        // less, so equal keys never cross.
+        //
+        // O(n²) in the worst case, where `sort`/`sort_by` hand off to the
+        // runtime's qsort/merge sort. Those take the comparison as a C function
+        // pointer or a closure, and this comparison is neither — it's emitted
+        // MIR, which is what lets an arbitrary key type (a struct, an enum, a
+        // tuple) be compared field-by-field by codegen at all. Reusing the
+        // runtime's sort means giving it a callable comparator over keys; #942
+        // has the plan.
         let i = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: i,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-        let n_minus_1 = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: n_minus_1,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Sub,
-                left: MirOperand::Local(n),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
         }));
 
         let i_check = self.builder.create_block();
@@ -2255,7 +2302,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::BinaryOp {
                 op: crate::operand::BinOp::Lt,
                 left: MirOperand::Local(i),
-                right: MirOperand::Local(n_minus_1),
+                right: MirOperand::Local(n),
             },
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
@@ -2264,127 +2311,80 @@ impl<'a> MirLowerer<'a> {
             else_block: i_done,
         }));
 
-        self.builder.switch_to_block(i_body);
-        let min_idx = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: min_idx,
-            rvalue: MirRValue::Use(MirOperand::Local(i)),
-        }));
-        let min_key = self.builder.alloc_temp(key_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(min_key),
-            func: FunctionRef::internal("Vec_get".to_string()),
-            args: vec![MirOperand::Local(keys), MirOperand::Local(i)],
-        }));
-
+        // Walk element `i` down past every predecessor with a bigger key.
         let j = self.builder.alloc_temp(MirType::I64);
-        let i_plus_1 = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: i_plus_1,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: MirOperand::Local(i),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
+        self.builder.switch_to_block(i_body);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: j,
-            rvalue: MirRValue::Use(MirOperand::Local(i_plus_1)),
+            rvalue: MirRValue::Use(MirOperand::Local(i)),
         }));
 
         let j_check = self.builder.create_block();
         let j_body = self.builder.create_block();
-        let j_inc = self.builder.create_block();
-        let j_done = self.builder.create_block();
+        let j_shift = self.builder.create_block();
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_check }));
 
         self.builder.switch_to_block(j_check);
-        let j_cond = self.builder.alloc_temp(MirType::Bool);
+        let j_positive = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j_cond,
+            dst: j_positive,
             rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Lt,
+                op: crate::operand::BinOp::Gt,
                 left: MirOperand::Local(j),
-                right: MirOperand::Local(n),
+                right: MirOperand::Constant(MirConst::Int(0)),
             },
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(j_cond),
+            cond: MirOperand::Local(j_positive),
             then_block: j_body,
-            else_block: j_done,
+            else_block: i_inc,
         }));
 
         self.builder.switch_to_block(j_body);
+        let j_prev = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: j_prev,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Sub,
+                left: MirOperand::Local(j),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
         let key_j = self.builder.alloc_temp(key_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(key_j),
             func: FunctionRef::internal("Vec_get".to_string()),
             args: vec![MirOperand::Local(keys), MirOperand::Local(j)],
         }));
-        let less = self.emit_key_less(&key_ty, key_j, min_key);
-        let take_block = self.builder.create_block();
+        let key_prev = self.builder.alloc_temp(key_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(key_prev),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(keys), MirOperand::Local(j_prev)],
+        }));
+        let less = self.emit_key_less(&key_ty, key_j, key_prev);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(less),
-            then_block: take_block,
-            else_block: j_inc,
-        }));
-
-        self.builder.switch_to_block(take_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: min_idx,
-            rvalue: MirRValue::Use(MirOperand::Local(j)),
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: min_key,
-            rvalue: MirRValue::Use(MirOperand::Local(key_j)),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_inc }));
-
-        self.builder.switch_to_block(j_inc);
-        let j_next = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j_next,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: MirOperand::Local(j),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j,
-            rvalue: MirRValue::Use(MirOperand::Local(j_next)),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_check }));
-
-        self.builder.switch_to_block(j_done);
-        let differs = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: differs,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Ne,
-                left: MirOperand::Local(min_idx),
-                right: MirOperand::Local(i),
-            },
-        }));
-        let swap_block = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(differs),
-            then_block: swap_block,
+            then_block: j_shift,
             else_block: i_inc,
         }));
 
-        self.builder.switch_to_block(swap_block);
+        self.builder.switch_to_block(j_shift);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_swap".to_string()),
-            args: vec![MirOperand::Local(vec_local), MirOperand::Local(i), MirOperand::Local(min_idx)],
+            args: vec![MirOperand::Local(vec_local), MirOperand::Local(j), MirOperand::Local(j_prev)],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_swap".to_string()),
-            args: vec![MirOperand::Local(keys), MirOperand::Local(i), MirOperand::Local(min_idx)],
+            args: vec![MirOperand::Local(keys), MirOperand::Local(j), MirOperand::Local(j_prev)],
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: i_inc }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: j,
+            rvalue: MirRValue::Use(MirOperand::Local(j_prev)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_check }));
 
         self.builder.switch_to_block(i_inc);
         let i_next = self.builder.alloc_temp(MirType::I64);
