@@ -7,6 +7,11 @@ file runs on both backends through `tests/differential.sh`.
 Counts below are `tests passed / total`, per backend. A **BUILD-FAIL** means the
 file doesn't compile on that backend at all — which for a probe file is the point.
 
+A count marked **crashes** is worse than it looks: the test binary segfaults
+part-way through, so the denominator is the tests that got to report, not the
+tests in the file. `t_day_const_array.rk` is the one — 3 of its 5 tests report a
+failure and the other 2 never run.
+
 Two kinds of file:
 
 - **Area files** are green on both backends. They're the regression gate: if one
@@ -42,7 +47,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | numeric conversions and casts | `t_day_casts.rk` | 11/11 | 11/11 | |
 | **probe** — `[T; N]` writes and growth | `t_day_array_writes.rk` | 5/7 | 1/6 | #902 #901 |
 | **probe** — `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 5/5 | 0/3 | #903 |
-| **probe** — `[T; const]` length | `t_day_const_array.rk` | 5/5 | 0/3 | #906 |
+| **probe** — `[T; const]` length, then SIGSEGV | `t_day_const_array.rk` | 5/5 | 0/3, crashes | #906 #902 |
 | **probe** — `unsigned as f64` | `t_day_unsigned_to_float.rk` | 6/6 | 1/6 | #907 |
 
 ## Week one

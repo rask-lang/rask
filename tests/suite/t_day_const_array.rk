@@ -1,14 +1,36 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// An array whose size is a named const — #906.
+// An array whose size is a named const — #906, and it segfaults natively.
 //
 // `const W = 4` then `[i32; W]` is the ordinary way to write a fixed array whose
 // size has a name. Native loses the length: resolving the declared type doesn't
 // evaluate `W`, so the MIR type comes out `[i32; 0]`, `len()` folds to the
 // constant 0, and `for x in a` — which reads its bound off the same type — runs
-// zero times. The elements are all present; indexing reads them fine.
+// zero times.
 //
-// The silent `for` is the dangerous half. Nothing crashes and no wrong number
-// gets printed; the loop just does nothing.
+// The lost length is not the worst of it. Natively this file *crashes*: the
+// binary takes a SIGSEGV and the tests after the crash never run at all. Two
+// bugs stack up to get there.
+//
+// An `[i32; N]` literal writes every element with an 8-byte store (#902, the
+// second half of it — codegen drops the element size for the store even though
+// it used it for the address). Normally each element's 4-byte spill is painted
+// over by the next store and the last element's spill lands in frame padding,
+// so it reads back fine. But #906 gives the const-sized *binding* a length of 0,
+// so a test block holding nothing else gets a frame of exactly the 16-byte
+// literal — and the last element's spill lands on the saved frame pointer
+// instead. The test returns with a garbage rbp and the harness segfaults on its
+// next local:
+//
+//   __test_0:  sub $0x10,%rsp          <- 16 bytes, the array and nothing else
+//              movq $0x4,0xc(%rdx)     <- writes bytes 12..19, four past the end
+//              pop %rbp                <- low half of the saved rbp is now zero
+//
+// Which of these tests is fatal depends on frame layout, so it's the *simplest*
+// one that dies — "indexing" allocates nothing besides the array. The others
+// have a string or a loop counter next to it and the spill lands in padding.
+//
+// So the counts read low for two different reasons: the tests that report fail
+// on the length, and the ones after the crash never ran.
 //
 // A literal size works on both backends and is covered in `t_day_arrays.rk`.
 
@@ -34,7 +56,9 @@ test "std.collections — iterating a const-sized array visits every element" {
     assert total == 10
 }
 
-test "std.collections — the elements themselves are there either way" {
+// The fatal one. Natively this never reports a result — the binary is already
+// gone by the time the harness would print it.
+test "std.collections — indexing a const-sized array (SIGSEGV natively)" {
     let a: [i32; W] = [1, 2, 3, 4]
     assert a[0] == 1
     assert a[3] == 4

@@ -66,7 +66,7 @@ t_week_opaque_struct_fields.rk # Duration/Instant lay out at size 0 as a struct 
 t_week_import_alias.rk        # `import X as Y` carries the name but not the methods — #923 (both)
 t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
 t_day_unsigned_to_float.rk    # `unsigned as f64` uses fcvt_from_sint — #907 (native)
-t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906 (native)
+t_day_const_array.rk          # [T; const] resolves to [T; 0] — #906; SIGSEGV, the last two tests never run (native)
 t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both); inferred string param reaches MIR as void — #905 (native)
 
 # --- E0361: binding whose type inference left open (#620) ---
