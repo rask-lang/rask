@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `?.` landing on a field whose own type is optional — #917.
+// `?.` landing on a field whose own type is optional — #917 and #938.
 //
 // `a.inner?.v` where `inner: OptInt?` and `v: i64?` loses the value on native:
 // the string payload comes back reported-present with the wrong contents, and the
-// integer payload segfaults in eight lines. The interpreter is right.
+// integer payload segfaults in eight lines. The interpreter keeps the value.
 //
 // Both backends agree on the *type* — `i64??`, two layers, since
-// type.optionals says the layers don't collapse — so this is not a layering
-// disagreement. Only the native value is wrong.
+// type.optionals says the layers don't collapse. Neither backend builds a value
+// with two layers though, which is the separate bug below (#938).
 //
 // Two neighbours work on both backends and are here as controls: the same chain
 // onto a *non*-optional field, and the spelled-out version that unwraps the outer
@@ -15,12 +15,22 @@
 // fine (#834, fixed), including on a `T??` built from a literal — so the
 // comparison machinery isn't what's broken, it's what `?.` puts in the slot.
 //
-// One case is deliberately NOT asserted here: what a chain gives when the *inner*
-// field is `none` while the outer is present. Read one way it is `Some(none)` and
-// one `!` yields `none`; read the other the chain short-circuits and the whole
-// thing is `none`, so `!` panics. The interpreter does the second. OPT10 says
-// `x?.field` is `none` "when absent" without saying which absence it means, so
-// rather than lock in a guess it's flagged on #917 as an open layering question.
+// The layering question this file used to leave open is now settled — #938. What
+// `a.inner?.v` gives when `inner` is present and `v` is `none`: the field isn't
+// unwrapped, so it's a present outer layer carrying an absent inner one. `?.`
+// short-circuits on the *receiver's* absence, not the field's. The field's own
+// absence is a value, and it gets carried.
+//
+// That follows from two rules the spec already states: nested layers stay
+// distinct, and the `?`-family operators see the outer layer only. So
+// `a.inner?.v is none` is *false* when `inner` was there, one `!` peels to the
+// inner `none` instead of panicking, and reaching a present payload takes two.
+//
+// Both backends collapse the layers instead — the type says `string??` and the
+// value has one layer. The last four tests here assert the settled answer and
+// fail on both. They also show why the present-value cases above pass on the
+// interpreter today: with only one layer built, a single `!` lands on the
+// payload, so it's right by accident.
 
 struct OptField {
     v: string?
@@ -80,6 +90,33 @@ test "type.optionals — unwrapping the outer optional first is the other contro
     let a = HasOpt { inner: OptField { v: "abc" } }
     let outer = a.inner!
     assert outer.v! == "abc"
+}
+
+// The settled layering answer (#938). All four fail on both backends today.
+test "type.optionals — a present receiver with an absent field is still present" {
+    let a = HasOpt { inner: OptField { v: none } }
+    assert !(a.inner?.v is none)
+}
+
+test "type.optionals — the inner absence survives one !" {
+    let a = HasOpt { inner: OptField { v: none } }
+    let peeled: string? = a.inner?.v!
+    assert peeled is none
+}
+
+test "type.optionals — the two absences stay distinguishable" {
+    let outer_gone = HasOpt { inner: none }
+    let inner_gone = HasOpt { inner: OptField { v: none } }
+    assert outer_gone.inner?.v is none
+    assert !(inner_gone.inner?.v is none)
+}
+
+// The type is `string??`, so two are needed. One is enough today, which is the
+// whole bug seen from the other side.
+test "type.optionals — reaching the payload takes two !" {
+    let a = HasOpt { inner: OptField { v: "abc" } }
+    let raw: string = a.inner?.v!!
+    assert raw == "abc"
 }
 
 func main() {}

@@ -51,7 +51,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT7: Type shorthand** | `T?` | sugar for `T or none` |
 | **OPT8: Absent literal** | `none` | absent value; type widens at use |
 | **OPT9: Boolean present** | `x?` | `true` when present, `false` when absent; `bool` expression |
-| **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits |
+| **OPT10: Optional chain** | `x?.field` | accesses `field` when `x` is present, else `none`; short-circuits. It's `x`'s absence that short-circuits, never the field's — a field whose own type is `T?` is carried through as a value, giving `T??` (OPT28, OPT30) |
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
@@ -197,6 +197,26 @@ let inner_absent: Config?? = empty_slot      // slot was empty       [OPT29]
 
 let present: Config?? = load_config()        // widens through both layers
 ```
+
+`?.` produces the same shape whenever the field it lands on is itself optional —
+worth spelling out, because "the chain short-circuits" invites the wrong reading:
+
+<!-- test: skip -->
+```rask
+struct Profile { nickname: string? }         // a user may not have picked one
+struct Account { profile: Profile? }         // an account may have no profile
+
+let chain = account.profile?.nickname        // string??
+
+// Absent for two different reasons, and they stay apart:
+//   outer none -> no profile at all
+//   Some(none) -> a profile with no nickname chosen
+```
+
+`?.` short-circuits on `account.profile` being absent. It does not look inside
+`nickname` — that field's absence is a value like any other, so it's carried into
+the inner layer. Reaching the string takes two unwraps, and `chain is none`
+answers only "was there a profile?" [OPT10, OPT30]
 
 **Spelling.** Write `T??` for two layers — two optional markers, only ever in type position. Nothing else in the language spells two question marks together.
 
