@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// TD2: a trait method with a body is inherited by conformers (#874).
+//
+// The parser accepted a default body and nothing after that used it:
+//
+//     error[E0333]: `Plain` is missing methods `Greet` requires
+//     error[E0313]: no method `hello` found for type `Plain`
+//
+// What hid it is that *overriding* the default works fine, so the feature looks
+// present until you rely on it.
+//
+// The copy is injected into the `extend` block as an ordinary method during
+// desugar, which is why nothing downstream had to change: the checker sees the
+// method really is there, and mono, MIR and the interpreter each get a body with
+// `Self` already bound to the concrete type. That last part is the reason it's a
+// copy per conformer rather than one shared function — `self.name()` inside the
+// default has to resolve against the type that inherited it.
+
+trait Greet {
+    func name(self) -> string
+
+    func hello(self) -> string {
+        return "hello {self.name()}"
+    }
+}
+
+struct Plain {
+    who: string
+}
+
+extend Plain with Greet {
+    func name(self) -> string {
+        return self.who
+    }
+}
+
+struct Rude {
+    who: string
+}
+
+extend Rude with Greet {
+    func name(self) -> string {
+        return self.who
+    }
+
+    // An override wins over the default.
+    func hello(self) -> string {
+        return "oi {self.who}"
+    }
+}
+
+test "trait default — the conformer inherits the body" {
+    assert_eq(Plain { who: "bo" }.hello(), "hello bo")
+}
+
+test "trait default — an override wins" {
+    assert_eq(Rude { who: "bo" }.hello(), "oi bo")
+}
+
+// Two conformers of the same trait get their own copy, each resolving
+// `self.name()` against its own type. Sharing one body — or one set of NodeIds —
+// would make the second overwrite the first.
+test "trait default — two conformers keep their own answers" {
+    assert_eq(Plain { who: "a" }.hello(), "hello a")
+    assert_eq(Rude { who: "a" }.hello(), "oi a")
+}
+
+test "trait default — through a trait object" {
+    let p = Plain { who: "x" } as any Greet
+    assert_eq(p.hello(), "hello x")
+    let r = Rude { who: "y" } as any Greet
+    assert_eq(r.hello(), "oi y")
+}
+
+// A default calling another default, and one taking a parameter.
+trait Base {
+    func id(self) -> i64
+
+    func doubled(self) -> i64 {
+        return self.id() * 2
+    }
+
+    func quadrupled(self) -> i64 {
+        return self.doubled() * 2
+    }
+
+    func scaled(self, by: i64) -> i64 {
+        return self.id() * by
+    }
+}
+
+// A default declared one level up is part of what the sub-trait promises.
+trait Sub: Base {
+    func tag(self) -> string {
+        return "sub{self.id()}"
+    }
+}
+
+struct Alpha {
+    n: i64
+}
+
+extend Alpha with Sub {
+    func id(self) -> i64 {
+        return self.n
+    }
+}
+
+struct Counter {
+    n: i64
+}
+
+extend Counter with Base {
+    func id(self) -> i64 {
+        return self.n
+    }
+
+    func doubled(self) -> i64 {
+        return self.n * 3
+    }
+}
+
+struct Wrap<T> {
+    value: T
+}
+
+extend Wrap<T> with Base {
+    func id(self) -> i64 {
+        return 5
+    }
+}
+
+test "trait default — one default calls another" {
+    let a = Alpha { n: 4 }
+    assert_eq(a.doubled(), 8)
+    assert_eq(a.quadrupled(), 16)
+}
+
+test "trait default — a default takes parameters" {
+    assert_eq(Alpha { n: 4 }.scaled(10), 40)
+}
+
+test "trait default — inherited through a super-trait" {
+    let a = Alpha { n: 3 }
+    assert_eq(a.doubled(), 6)
+    assert_eq(a.tag(), "sub3")
+}
+
+// The chained default calls the *override*, not the body it was written next to.
+test "trait default — a chained default sees the override" {
+    let c = Counter { n: 2 }
+    assert_eq(c.doubled(), 6)
+    assert_eq(c.quadrupled(), 12)
+}
+
+test "trait default — on a generic type" {
+    let w: Wrap<string> = Wrap { value: "x" }
+    assert_eq(w.doubled(), 10)
+    assert_eq(w.quadrupled(), 20)
+    let n: Wrap<i64> = Wrap { value: 1 }
+    assert_eq(n.scaled(3), 15)
+}
+
+func main() {}

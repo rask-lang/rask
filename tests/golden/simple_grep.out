@@ -1,0 +1,9 @@
+Searching for 'alpha' in tests/fixtures/grep_input.txt...
+1: alpha the first line
+5: alpha again near the end
+
+Found 2 matching lines
+Searching for 'delta' in tests/fixtures/grep_input.txt...
+6: delta closes it out
+
+Found 1 matching lines

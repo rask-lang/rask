@@ -31,11 +31,14 @@ extend MarkdownError {
     }
 }
 
-enum IoMsg { Msg(string) }
+enum IoMsg {
+    Msg(string)
+}
+
 extend IoMsg {
     func message(self) -> string {
         match self {
-            IoMsg.Msg(m) => return m,
+            IoMsg.Msg(m) => return m
         }
     }
 }
@@ -131,7 +134,9 @@ func is_hr_line(line: string) -> bool {
     if trimmed.len() < 3 {
         return false
     }
-    let first = trimmed.char_at(0) ?? return false
+    let first = trimmed.char_at(0) ?? {
+        return false
+    }
     if first != '-' && first != '*' && first != '_' {
         return false
     }
@@ -148,7 +153,9 @@ func is_hr_line(line: string) -> bool {
 }
 
 func ordered_list_start(line: string) -> i32? {
-    let dot_pos = line.index_of(".") ?? return none
+    let dot_pos = line.index_of(".") ?? {
+        return none
+    }
     if dot_pos == 0 {
         return none
     }
@@ -187,7 +194,7 @@ struct Scanner {
 
 extend Scanner {
     func new(input: string) -> Scanner {
-        return Scanner { input: input, pos: 0 }
+        return Scanner { input, pos: 0 }
     }
 
     func is_done(self) -> bool {
@@ -210,7 +217,9 @@ extend Scanner {
     }
 
     func advance(self) -> char? {
-        let c = self.peek() ?? return none
+        let c = self.peek() ?? {
+            return none
+        }
         self.pos = self.pos + c.len_utf8()
         return c
     }
@@ -238,7 +247,9 @@ extend Scanner {
                 self.pos = self.pos + target.len()
                 return result
             }
-            let c = self.peek() ?? break
+            let c = self.peek() ?? {
+                break
+            }
             self.pos = self.pos + c.len_utf8()
         }
         return none
@@ -282,7 +293,9 @@ func parse_references(input: string) -> Map<string, string> {
             continue
         }
 
-        let close = trimmed.index_of("]:") ?? continue
+        let close = trimmed.index_of("]:") ?? {
+            continue
+        }
         let id = trimmed[1..close].to_string().to_lowercase()
         if id.is_empty() {
             continue
@@ -304,7 +317,9 @@ func is_reference_def(line: string) -> bool {
     if !trimmed.starts_with("[") {
         return false
     }
-    let close = trimmed.index_of("]:") ?? return false
+    let close = trimmed.index_of("]:") ?? {
+        return false
+    }
     return true
 }
 
@@ -429,7 +444,9 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
             result.push(Inline.LineBreak)
             continue
         }
-        let ch = scanner.advance() ?? break
+        let ch = scanner.advance() ?? {
+            break
+        }
         text_buf.push_char(ch)
     }
 
@@ -591,7 +608,9 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                 }
 
                 if ordered_list_start(it)? {
-                    let dot_pos = it.index_of(".") ?? continue
+                    let dot_pos = it.index_of(".") ?? {
+                        continue
+                    }
                     let item_text = it[dot_pos + 2..].to_string()
                     let item_inlines = try parse_inline(item_text)
                     items.push(ListItem {
@@ -795,7 +814,9 @@ extend Block with Renderable {
 
 func render_markdown(input: string) -> string or RenderError {
     let refs = parse_references(input)
-    let blocks = parse_blocks(input) catch e => return RenderError.Parse(e)
+    let blocks = parse_blocks(input) catch e => {
+        return RenderError.Parse(e)
+    }
 
     mut out = StringBuilder.new()
     render_children(blocks, mutate out, refs)

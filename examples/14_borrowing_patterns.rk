@@ -91,11 +91,7 @@ func main() {
     print("\n\n")
 
     // Iterating with borrows
-    let users = Vec.from([
-        User { name: "Charlie", age: 40 },
-        User { name: "Diana", age: 28 },
-        User { name: "Eve", age: 32 },
-    ])
+    let users = Vec.from([User { name: "Charlie", age: 40 }, User { name: "Diana", age: 28 }, User { name: "Eve", age: 32 }])
 
     print("All users:\n")
     for user in users.iter() {
@@ -150,13 +146,12 @@ func main() {
     // Pattern: inline access in expression, use immediately
     let data = Vec.from([5, 2, 8, 1, 9])
 
-    let max_of = data.iter()
-        .fold(0, |acc, x| {
-            if x > acc {
-                return x
-            }
-            return acc
-        })
+    let max_of = data.iter().fold(0, |acc, x| {
+        if x > acc {
+            return x
+        }
+        return acc
+    })
 
     print("Max value: ")
     print(max_of)

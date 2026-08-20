@@ -15,10 +15,10 @@ enum WalError {
 extend WalError {
     func message(self) -> string {
         match self {
-            CorruptEntry(seq, msg) => return "WAL entry {seq} corrupt: {msg}",
-            WriteFailure(msg) => return "WAL write failed: {msg}",
-            SyncFailure(msg) => return "WAL sync failed: {msg}",
-            RecoveryFailure(msg) => return "WAL recovery failed: {msg}",
+            CorruptEntry(seq, msg) => return "WAL entry {seq} corrupt: {msg}"
+            WriteFailure(msg) => return "WAL write failed: {msg}"
+            SyncFailure(msg) => return "WAL sync failed: {msg}"
+            RecoveryFailure(msg) => return "WAL recovery failed: {msg}"
         }
     }
 }
@@ -34,11 +34,11 @@ enum SstError {
 extend SstError {
     func message(self) -> string {
         match self {
-            BlockCorrupt(id, msg) => return "SSTable block {id} corrupt: {msg}",
-            IndexCorrupt(msg) => return "SSTable index corrupt: {msg}",
-            BloomFilterCorrupt(msg) => return "bloom filter corrupt: {msg}",
-            ReadFailure(msg) => return "SSTable read failed: {msg}",
-            WriteFailure(msg) => return "SSTable write failed: {msg}",
+            BlockCorrupt(id, msg) => return "SSTable block {id} corrupt: {msg}"
+            IndexCorrupt(msg) => return "SSTable index corrupt: {msg}"
+            BloomFilterCorrupt(msg) => return "bloom filter corrupt: {msg}"
+            ReadFailure(msg) => return "SSTable read failed: {msg}"
+            WriteFailure(msg) => return "SSTable write failed: {msg}"
         }
     }
 }
@@ -52,9 +52,9 @@ enum CompactionError {
 extend CompactionError {
     func message(self) -> string {
         match self {
-            MergeConflict(msg) => return "merge conflict: {msg}",
-            OutputFailure(msg) => return "compaction output failed: {msg}",
-            LevelFull(level) => return "level {level} is full",
+            MergeConflict(msg) => return "merge conflict: {msg}"
+            OutputFailure(msg) => return "compaction output failed: {msg}"
+            LevelFull(level) => return "level {level} is full"
         }
     }
 }
@@ -67,8 +67,8 @@ enum CacheError {
 extend CacheError {
     func message(self) -> string {
         match self {
-            Eviction(msg) => return "cache eviction failed: {msg}",
-            CapacityExceeded(used, cap) => return "cache full: {used}/{cap} bytes",
+            Eviction(msg) => return "cache eviction failed: {msg}"
+            CapacityExceeded(used, cap) => return "cache full: {used}/{cap} bytes"
         }
     }
 }
@@ -85,12 +85,12 @@ enum DbError {
 extend DbError {
     func message(self) -> string {
         match self {
-            Wal(e) => return e.message(),
-            Sst(e) => return e.message(),
-            Compaction(e) => return e.message(),
-            Cache(e) => return e.message(),
-            Io(msg) => return "I/O error: {msg}",
-            KeyNotFound(key) => return "key not found: {key}",
+            Wal(e) => return e.message()
+            Sst(e) => return e.message()
+            Compaction(e) => return e.message()
+            Cache(e) => return e.message()
+            Io(msg) => return "I/O error: {msg}"
+            KeyNotFound(key) => return "key not found: {key}"
         }
     }
 }

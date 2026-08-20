@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Concurrency with threads and channels
 
-import thread.{Thread, ThreadPool}
+import thread.Thread
+import thread.ThreadPool
 
 func worker(id: i32, iterations: i32) {
     println("Worker {id} starting")
@@ -32,9 +33,15 @@ func main() -> void {
     // Spawn multiple threads
     print("=== Multiple Threads ===\n\n")
 
-    let h1 = Thread.spawn(|| { worker(1, 10) })
-    let h2 = Thread.spawn(|| { worker(2, 20) })
-    let h3 = Thread.spawn(|| { worker(3, 15) })
+    let h1 = Thread.spawn(|| {
+        worker(1, 10)
+    })
+    let h2 = Thread.spawn(|| {
+        worker(2, 20)
+    })
+    let h3 = Thread.spawn(|| {
+        worker(3, 15)
+    })
 
     // Wait for all threads
     let _ = h1.join()

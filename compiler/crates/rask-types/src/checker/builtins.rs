@@ -58,6 +58,38 @@ impl BuiltinModules {
 pub(super) fn parse_stub_type(s: &str) -> Type {
     let s = s.trim();
 
+    // `func(A, B) -> R` — a function type. Without this it came back as a *name*
+    // that prints exactly like the real type, so nothing tied the parameter to
+    // the argument: `spawn(f: func() -> T) -> TaskHandle<T>` left `T` an
+    // inference variable, the join's payload fell back to i64, and a task
+    // returning a struct segfaulted while one returning an i64 worked (#882).
+    // Same shape as the `T?`, `*T`, `any Trait` and tuple cases below.
+    //
+    // First, before the `or` split and the generic handling: `func() -> i64 or
+    // MyErr` would split at the ` or ` and `func() -> Vec<i64>` ends in `>`, so
+    // both would be read as something else entirely.
+    if let Some(rest) = s.strip_prefix("func") {
+        let rest = rest.trim_start();
+        if let Some(close) = closing_paren(rest) {
+            let params_str = rest[1..close].trim();
+            let tail = rest[close + 1..].trim();
+            let ret = match tail.strip_prefix("->") {
+                Some(r) if !r.trim().is_empty() => Some(parse_stub_type(r.trim())),
+                // `func(T)` with no arrow answers nothing.
+                None if tail.is_empty() => Some(Type::Unit),
+                _ => None,
+            };
+            if let Some(ret) = ret {
+                let params: Vec<Type> = if params_str.is_empty() {
+                    Vec::new()
+                } else {
+                    split_top_level(params_str).iter().map(|p| parse_stub_type(p)).collect()
+                };
+                return Type::Fn { params, ret: Box::new(ret) };
+            }
+        }
+    }
+
     // Handle "X or Y" result types (raw form, just in case)
     if let Some((ok_str, err_str)) = split_or_type(s) {
         return Type::Result {
@@ -103,6 +135,32 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
+    // `any Trait` — a trait object. Without this it came back as the *name*
+    // "any Reader", which prints exactly like the real type, so a module
+    // function's `any Trait` parameter looked perfectly fine and nothing
+    // recorded the TR5 coercion its argument needed. `io.copy(buf, out)` handed
+    // over a raw struct pointer, and the first dispatch through it jumped to
+    // address zero (#860). Same shape as the `*T` case above (#696).
+    if let Some(trait_name) = s.strip_prefix("any ") {
+        let trait_name = trait_name.trim();
+        if !trait_name.is_empty() {
+            return Type::TraitObject { trait_name: trait_name.to_string() };
+        }
+    }
+
+    // `(A, B, ...)` — a tuple. Without this `char_indices() -> Iterator<(usize,
+    // char)>` came back with two arguments, `(usize` and `char)`, because the
+    // comma inside the parens read as the generic's own separator. `t.0` then
+    // reported "no field `0` on type `(usize`" and a `for (i, c)` over it had
+    // no type MIR could lower (#841).
+    if s.starts_with('(') && s.ends_with(')') && s.len() > 2 {
+        let inner = &s[1..s.len() - 1];
+        let parts = split_top_level(inner);
+        if parts.len() > 1 {
+            return Type::Tuple(parts.iter().map(|p| parse_stub_type(p)).collect());
+        }
+    }
+
     // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
     // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
     // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.
@@ -110,24 +168,11 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         if s.ends_with('>') {
             let name = s[..open].trim();
             let inner = &s[open + 1..s.len() - 1];
-            let mut args = Vec::new();
-            let mut start = 0usize;
-            let mut depth: i32 = 0;
-            let bytes = inner.as_bytes();
-            for (i, b) in bytes.iter().enumerate() {
-                match b {
-                    b'<' => depth += 1,
-                    b'>' => depth -= 1,
-                    b',' if depth == 0 => {
-                        args.push(parse_stub_type(inner[start..i].trim()));
-                        start = i + 1;
-                    }
-                    _ => {}
-                }
-            }
-            if !inner.is_empty() {
-                args.push(parse_stub_type(inner[start..].trim()));
-            }
+            let args: Vec<Type> = if inner.is_empty() {
+                Vec::new()
+            } else {
+                split_top_level(inner).iter().map(|p| parse_stub_type(p)).collect()
+            };
             return Type::UnresolvedGeneric {
                 name: name.to_string(),
                 args: args.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
@@ -163,13 +208,56 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
     }
 }
 
-/// Split `T or E` into `("T", "E")`, respecting nested angle brackets.
+/// The `)` matching a leading `(`, or `None` when `s` doesn't start with one or
+/// the parens don't balance.
+fn closing_paren(s: &str) -> Option<usize> {
+    if !s.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on top-level commas, respecting both `<…>` and `(…)`. A tuple inside
+/// a generic argument list is the reason the parens count.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+/// Split `T or E` into `("T", "E")`, respecting nesting.
 fn split_or_type(s: &str) -> Option<(&str, &str)> {
     let mut depth: i32 = 0;
     for (i, b) in s.bytes().enumerate() {
         match b {
-            b'<' => depth += 1,
-            b'>' => depth -= 1,
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
             b' ' if depth == 0 && s[i..].starts_with(" or ") => {
                 return Some((s[..i].trim(), s[i + 4..].trim()));
             }
@@ -179,13 +267,13 @@ fn split_or_type(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Split `A, B` at the first top-level comma, respecting nested angle brackets.
+/// Split `A, B` at the first top-level comma, respecting nesting.
 fn split_comma(s: &str) -> Option<(&str, &str)> {
     let mut depth: i32 = 0;
     for (i, b) in s.bytes().enumerate() {
         match b {
-            b'<' => depth += 1,
-            b'>' => depth -= 1,
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth -= 1,
             b',' if depth == 0 => {
                 return Some((s[..i].trim(), s[i + 1..].trim()));
             }
@@ -231,6 +319,75 @@ mod tests {
             ok: Box::new(Type::String),
             err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
         });
+    }
+
+    /// A `func(...)` parameter has to come back as a real function type. As a
+    /// *name* it prints exactly like one, so nothing ties the argument to it —
+    /// the shape that left `spawn(f: func() -> T) -> TaskHandle<T>` with an
+    /// unresolved T (#882). Same family as `T?` (#696), `any Trait` (#860) and
+    /// tuples (#841), each of which was found the same way.
+    #[test]
+    fn a_function_parameter_parses_as_a_function_type() {
+        assert_eq!(
+            parse_stub_type("func() -> T"),
+            Type::Fn {
+                params: Vec::new(),
+                ret: Box::new(Type::UnresolvedNamed("_Any".to_string())),
+            },
+        );
+        assert_eq!(
+            parse_stub_type("func(i64, string) -> bool"),
+            Type::Fn {
+                params: vec![Type::I64, Type::String],
+                ret: Box::new(Type::Bool),
+            },
+        );
+        // No arrow: answers nothing.
+        assert_eq!(
+            parse_stub_type("func(i64)"),
+            Type::Fn { params: vec![Type::I64], ret: Box::new(Type::Unit) },
+        );
+    }
+
+    /// The two spellings that would be read as something else if the function
+    /// case ran later: a `T or E` return splits at the ` or `, and a generic
+    /// return ends in `>`.
+    #[test]
+    fn a_function_type_wins_over_the_or_and_generic_shapes() {
+        assert_eq!(
+            parse_stub_type("func() -> i64 or IoError"),
+            Type::Fn {
+                params: Vec::new(),
+                ret: Box::new(Type::Result {
+                    ok: Box::new(Type::I64),
+                    err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
+                }),
+            },
+        );
+        let vec_of_i64 = Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: vec![crate::types::GenericArg::Type(Box::new(Type::I64))],
+        };
+        assert_eq!(
+            parse_stub_type("func(Vec<i64>) -> Vec<i64>"),
+            Type::Fn {
+                params: vec![vec_of_i64.clone()],
+                ret: Box::new(vec_of_i64),
+            },
+        );
+    }
+
+    /// Anything that only looks like one stays a name.
+    #[test]
+    fn a_name_that_starts_with_func_is_still_a_name() {
+        assert_eq!(
+            parse_stub_type("Functor"),
+            Type::UnresolvedNamed("Functor".to_string()),
+        );
+        assert_eq!(
+            parse_stub_type("func"),
+            Type::UnresolvedNamed("func".to_string()),
+        );
     }
 
     #[test]

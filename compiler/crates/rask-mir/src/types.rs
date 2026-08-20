@@ -188,7 +188,21 @@ impl MirType {
     /// (#783). Widening this without those is how that turns from "doesn't
     /// compile" into "compiles and prints an address".
     pub fn stored_inline_in_array(&self) -> bool {
-        matches!(self, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+        match self {
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) => true,
+            // A `T?` element occupies its slot the way a struct does — tag beside
+            // payload, 16 bytes for a scalar `T`. Left out, the store wrote one
+            // word where the tag belongs and the read loaded one word back, so
+            // `[i32?; 3]` couldn't hold a `none` at all (#783).
+            //
+            // The one exception is the niche: a `Handle<T>?` is a single word
+            // where the handle *is* the value and `none` is the all-ones
+            // sentinel, so it keeps the word store. `string` is a pointer to its
+            // 16 bytes and keeps it too, which is why this isn't just
+            // "everything passed by address".
+            MirType::Option(inner) => **inner != MirType::Handle,
+            _ => false,
+        }
     }
 
     /// True for F32 and F64.

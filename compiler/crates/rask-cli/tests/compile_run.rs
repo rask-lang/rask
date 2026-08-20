@@ -1232,6 +1232,109 @@ fn error_mixed_signedness_arithmetic() {
     );
 }
 
+// #812: `resolve_named` resolved a generic type's *base* and left its arguments
+// alone, so `Map<TaskId, string>` held `UnresolvedNamed("TaskId")` for a type
+// declared in the same file. An unresolved name is treated as "fits anything" —
+// which is right for an open type parameter and wrong for a declared type — so the
+// key position accepted anything at all. Only the form that writes the arguments
+// on the constructor was affected; annotating the binding took a path that
+// resolved them.
+#[test]
+fn error_generic_arg_keeps_its_identity() {
+    let (failed, out) = compile_error_output("generic_arg_identity.rk");
+    assert!(failed, "a wrong key or value type must not compile: {}", out);
+    // The nominal case gets T9's message, the struct case the ordinary mismatch.
+    assert!(
+        out.contains("expected `TaskId`"),
+        "should name the nominal key type: {}", out,
+    );
+    assert!(
+        out.contains("expected `Key`"),
+        "should name the struct key and value type: {}", out,
+    );
+}
+
+// #304: newline continuation is decided by the first token of the next line, and
+// `+` `-` `*` `<` `>` are excluded because each has a second meaning there. `+` has
+// no prefix reading at all, so a line starting with one isn't a continuation *or* a
+// statement — the parse error is the good outcome, and it's the one excluded
+// operator that gets to say so.
+#[test]
+fn error_newline_continuation_excludes_plus() {
+    let (failed, out) = compile_error_output("newline_continuation.rk");
+    assert!(failed, "a line starting with `+` must not compile: {}", out);
+    assert!(
+        out.contains("found '+'"),
+        "the error should point at the `+`: {}", out,
+    );
+}
+
+// #809 (found via #425): three bindings carried a fresh unconstrained type
+// variable rather than the type they hold, so a wrong annotation on any of them
+// unified happily and type-checked. The programs still ran correctly, which is
+// why nothing noticed — what gave it away was MIR having no receiver type to
+// dispatch a method call on.
+#[test]
+fn error_untyped_bindings() {
+    let (failed, out) = compile_error_output("untyped_bindings.rk");
+    assert!(failed, "a wrong annotation on these bindings must not compile: {}", out);
+    for (binding, ty) in [
+        ("`kind`", "`Inner`"),
+        ("`code`", "`i64`"),
+        ("`t`", "`string`"),
+        ("`name`", "`string`"),
+    ] {
+        let _ = binding;
+        assert!(
+            out.contains(&format!("found {}", ty)),
+            "should name what {} actually holds ({}): {}", binding, ty, out,
+        );
+    }
+}
+
+// #800: a token carries an `i128`, so the question moved from "does this parse"
+// to "does the slot hold it". Each band has to name its own range — landing all
+// three on one generic "invalid literal" is what sent people hunting for a typo
+// that wasn't there.
+#[test]
+fn error_int_literal_out_of_range() {
+    let (failed, out) = compile_error_output("int_literal_range.rk");
+    assert!(failed, "a literal past its slot must not compile: {}", out);
+    for ty in ["`i64`", "`i128`", "`u128`"] {
+        assert!(
+            out.contains(&format!("out of range for {}", ty)),
+            "should name {} as the range that was missed: {}", ty, out,
+        );
+    }
+    // The `u128` case is negative, so the message has to keep the sign rather
+    // than print the magnitude it would wrap to.
+    assert!(
+        out.contains("`-170141183460469231731687303715884105728` doesn't fit in `u128`"),
+        "a negative literal keeps its sign in the message: {}", out,
+    );
+}
+
+// The two ends nothing can hold: digits past `u128::MAX` stop in the lexer, and
+// a negative below `i128::MIN` stops in the parser's sign fold.
+#[test]
+fn error_int_literal_unwritable() {
+    let (failed, out) = compile_error_output("int_literal_unwritable.rk");
+    assert!(failed, "an unwritable literal must not compile: {}", out);
+    assert!(
+        out.contains("too large for any integer type"),
+        "past u128::MAX names no type at all: {}", out,
+    );
+    assert!(
+        out.contains("too small for `i128`"),
+        "below i128::MIN names the widest signed type: {}", out,
+    );
+    // "unexpected character" is the wrong frame for digits that read fine.
+    assert!(
+        !out.contains("unexpected character"),
+        "the digits aren't the problem: {}", out,
+    );
+}
+
 // The other half of ORD4: comparison across signedness stays legal and answers
 // by value. Enforcing the arithmetic half must not touch it.
 #[test]
@@ -1658,6 +1761,26 @@ fn error_conditional_conformance_unmet() {
     assert!(compile_error("conditional_conformance_unmet.rk"), "should reject Ring<Blob> when the CC condition `T: Show` isn't met (CC1)");
 }
 
+/// conc.sync/R4: bare `with shared as v` names no lock. Nothing enforced it —
+/// the interpreter reached a runtime error whose message contradicted itself and
+/// native compiled it and read the wrong bytes (#880). Checks the code as well as
+/// the failure, since "some error" would also be satisfied by an unrelated one.
+#[test]
+fn error_bare_shared_with() {
+    let (failed, out) = compile_error_output("bare_shared_with.rk");
+    assert!(failed, "should reject `with shared as v` — the lock has to be named (R4)");
+    assert!(
+        out.contains("E0839"),
+        "should be the named-lock error, not something else: {}",
+        out,
+    );
+    assert!(
+        out.contains(".read()"),
+        "should show the fix as code: {}",
+        out,
+    );
+}
+
 #[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
@@ -1910,6 +2033,96 @@ fn fmt_normalizes_spacing() {
 
     assert!(formatted.contains("func main()"), "should normalize func spacing: {}", formatted);
     assert!(formatted.contains("let x = 42"), "should add spaces: {}", formatted);
+}
+
+// #801: a file the parser rejects used to come back out unchanged with exit 0,
+// so `fmt --check` reported it as formatted. That made `--check` useless as a
+// gate — the one case you most want it to speak up about was the one it passed.
+#[test]
+fn fmt_check_fails_on_a_file_that_does_not_parse() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmtbroken_{}_{}.rk", std::process::id(), id));
+    std::fs::write(&tmp, "func main( {\n  let x =\n}\n").unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("--check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let _ = std::fs::remove_file(&tmp);
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.status.success(), "a syntax error must fail --check: {}", combined);
+    assert!(
+        !combined.contains('\u{2713}'),
+        "and must not report the file as formatted: {}", combined,
+    );
+    assert!(
+        combined.contains("error["),
+        "it should say what's wrong, the way `rask check` does: {}", combined,
+    );
+}
+
+// Writing mode matters more than preview: it used to rewrite the file with its
+// own echoed copy, harmless only because the copy was byte-identical.
+#[test]
+fn fmt_write_leaves_an_unparseable_file_alone() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmtbrokenw_{}_{}.rk", std::process::id(), id));
+    let original = "func main( {\n  let x =\n}\n";
+    std::fs::write(&tmp, original).unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("-w")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let after = std::fs::read_to_string(&tmp).unwrap();
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(!out.status.success(), "writing mode fails too");
+    assert_eq!(after, original, "the file is left exactly as it was");
+}
+
+// A trailing comment is part of ordinary annotated code, and the formatter used
+// to move every one of them onto a line of its own — which would have made
+// `--check` fail across the whole tree once it started working (#801).
+#[test]
+fn fmt_check_passes_code_with_trailing_comments() {
+    let rask = rask_binary();
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir()
+        .join(format!("rask_fmttrailing_{}_{}.rk", std::process::id(), id));
+    std::fs::write(
+        &tmp,
+        "func main() {\n    let a = 4  // one\n    let b = 5  // another\n    println(\"{a} {b}\")\n}\n",
+    )
+    .unwrap();
+
+    let out = Command::new(&rask)
+        .arg("fmt")
+        .arg("--check")
+        .arg(&tmp)
+        .output()
+        .expect("failed to run rask fmt");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(out.status.success(), "trailing comments are already formatted: {}", combined);
 }
 
 // ─── rask lint integration ──────────────────────────────────
@@ -2583,6 +2796,56 @@ fn overflow_narrow_literal_panics() {
     // codegen used to default to signed 32-bit arithmetic and wrap silently
     // instead of checking at the declared u8 width (#328).
     assert_panics_both("overflow_narrow_literal.rk", "overflow");
+}
+
+// The message names the type that overflowed and the range it holds, on both
+// backends. Native used to print "integer overflow in addition" and nothing
+// else, where the interpreter printed "integer overflow: 2147483647 + 1 exceeds
+// i32 range [-2147483648, 2147483647]" for the same event — so a user who hit
+// one natively had no way to tell which of the expression's widths ran out.
+//
+// The operand values stay interpreter-only: native's message is a static string
+// picked at codegen, and the values aren't known until it runs. The type and its
+// range are, and those are what the reader needs.
+fn assert_names_type_and_range(fixture: &str, ty: &str, range: &str) {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, _) = run_capture(mode, fixture);
+        let combined = format!("{}{}", stdout, stderr);
+        assert!(
+            combined.contains(ty),
+            "{} on {}: message should name `{}`, got:\n{}", fixture, mode, ty, combined,
+        );
+        assert!(
+            combined.contains(range),
+            "{} on {}: message should carry the range `{}`, got:\n{}",
+            fixture, mode, range, combined,
+        );
+    }
+}
+
+#[test]
+fn overflow_messages_name_the_type_and_its_range() {
+    let i32_range = "[-2147483648, 2147483647]";
+    assert_names_type_and_range("overflow_add.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_mul.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_neg.rk", "i32", i32_range);
+    assert_names_type_and_range("overflow_div_min.rk", "i32", i32_range);
+    // A narrower width, so a message hard-coded at i32 wouldn't pass.
+    assert_names_type_and_range("overflow_sub.rk", "u8", "[0, 255]");
+    assert_names_type_and_range("overflow_narrow_literal.rk", "u8", "[0, 255]");
+}
+
+#[test]
+fn a_shift_past_the_width_names_the_width() {
+    // SH1's message is the bit width rather than a range.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, _) = run_capture(mode, "overflow_shift.rk");
+        let combined = format!("{}{}", stdout, stderr);
+        assert!(
+            combined.contains("i32 bit width (32)"),
+            "{}: shift message should name the width, got:\n{}", mode, combined,
+        );
+    }
 }
 
 #[test]
@@ -4146,6 +4409,28 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
     }
 }
 
+// type.generics/HA1: the Map key bound is a real `Hashable` check, not a
+// hand-written float test. Each rejected kind gets the way out that fits it —
+// there is no `extend` block you can write for a tuple, and no field to fix on a
+// newtype (#812).
+#[test]
+fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
+    let (failed, out) = compile_error_output("map_key_hashable.rk");
+    assert!(failed, "an unhashable Map key must be rejected: {}", out);
+    assert_eq!(out.matches("E0834").count(), 3, "three bad keys, no more: {}", out);
+    // The newtype is told about its clause, the float about its bits, the struct
+    // about a declared conformance.
+    assert!(out.contains("`Id` is not Hashable"), "{}", out);
+    assert!(out.contains("with (Equal, Hashable)"), "{}", out);
+    assert!(out.contains("`f64` is not Hashable"), "{}", out);
+    assert!(out.contains("`map.insert(x.to_bits(), v)`"), "{}", out);
+    assert!(out.contains("`Floaty` is not Hashable"), "{}", out);
+    assert!(out.contains("extend Floaty with Hashable"), "{}", out);
+    // The two good keys stay good.
+    assert!(!out.contains("`Plain`"), "an all-Hashable struct is a key: {}", out);
+    assert!(!out.contains("`Tag`"), "a newtype that lists Hashable is a key: {}", out);
+}
+
 // type.generics/HA4: floats aren't Hashable, so `to_bits()` is how a float
 // becomes a Map key — the caller decides what "the same key" means rather than
 // inheriting `NaN != NaN`. `Map<f64, V>` itself is rejected
@@ -4563,29 +4848,194 @@ a up A lo a
     }
 }
 
-// A generic type is laid out once for every instantiation, with a word-sized
-// placeholder per type parameter, so an aggregate type argument doesn't fit its
-// slot: `One { only: Big { … } }` with a 24-byte Big stored past the slot and read
-// back garbage — SIGSEGV, silently (#781).
-//
-// A workaround, not the fix: the crash is now an error that says what's wrong. The
-// fix needs per-instantiation layouts, which needs the checker to record the type
-// arguments a generic struct was instantiated with — it discards them today, so a
-// struct literal's node type is a bare `Named(TypeId)`.
-//
-// `rask check` doesn't run MIR lowering, so this is caught at compile/run.
+// A method on a generic type gets one body per receiver instantiation, so an
+// aggregate type argument reads back whole through it — `extend One<A>` used to be
+// a single body that couldn't serve both an 8-byte and a 24-byte `self`, and the
+// aggregate was refused (#781, #814).
 #[test]
-fn error_generic_struct_with_an_aggregate_type_arg() {
-    let (stdout, stderr, code) = run_capture("--native", "generic_aggregate_type_arg.rk");
-    let out = format!("{}{}", stdout, stderr);
-    assert_ne!(code, 0, "should be rejected, not run: {}", out);
+fn generic_struct_with_an_aggregate_type_arg_and_methods() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "generic_aggregate_type_arg.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert_eq!(stdout, "5\n1\n", "{}", mode);
+    }
+}
+
+// type.primitives/CV1a: int→float is never implicit, and nothing enforced it for
+// arithmetic. `i64 + f64` type-checked; native took the left operand's type and
+// dropped the float, so `5 + 0.5` answered `5`, while the interpreter refused the
+// same program at runtime (#816).
+#[test]
+fn error_int_float_arithmetic() {
+    let (failed, out) = compile_error_output("int_float_arithmetic.rk");
+    assert!(failed, "mixing an integer and a float must be rejected: {}", out);
+    assert_eq!(out.matches("E0371").count(), 4, "one per operator: {}", out);
     assert!(
-        out.contains("doesn't fit") && out.contains("#781"),
-        "should name the limitation and the issue: {}", out,
+        out.contains("one is an integer, the other a float"),
+        "should say which is which: {}", out,
     );
     assert!(
-        out.contains("`only`"),
-        "should name the field whose sizes disagree: {}", out,
+        out.contains("x.round<f64>()"),
+        "should suggest the conversion: {}", out,
+    );
+}
+
+// mem.parameters/PM2: a `mutate` parameter is still there when the call returns,
+// so one that was consumed has to have been replaced. Consuming it *is* allowed —
+// that's the difference from a plain borrow — and nothing checked that anything
+// went back, so `drain(mutate b)` handed the caller a hole (#815).
+#[test]
+fn error_mutate_param_left_empty() {
+    let (failed, out) = compile_error_output("mutate_param_left_empty.rk");
+    assert!(failed, "a consumed `mutate` parameter must be replaced: {}", out);
+    assert_eq!(out.matches("E0836").count(), 2, "two sites, no more: {}", out);
+    assert!(
+        out.contains("didn't put anything back"),
+        "should say what's missing: {}", out,
+    );
+    assert!(
+        out.contains("on some paths"),
+        "the one-path case reads differently: {}", out,
+    );
+    assert!(
+        out.contains("is declared `mutate`"),
+        "should point at the declaration: {}", out,
+    );
+    // Consume-and-replace is the legitimate pattern and must not be flagged.
+    assert!(!out.contains("`flush_into`"), "replace is fine: {}", out);
+    assert!(!out.contains("`consume`"), "and so is `take`: {}", out);
+}
+
+// mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
+// can't be given away. This made "consumed exactly once" false in the shipped
+// compiler — the interpreter caught the double-consume with a runtime flag, and
+// native, which has no flag, closed a live `@resource` twice (#804).
+//
+// A `mutate` parameter is deliberately still allowed to be consumed: exclusive
+// access means taking the value out and writing a replacement back is the point.
+#[test]
+fn error_consume_borrowed_param() {
+    let (failed, out) = compile_error_output("consume_borrowed_param.rk");
+    assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
+    assert_eq!(out.matches("E0835").count(), 4, "four sites, no more: {}", out);
+    assert!(
+        out.contains("borrowed, not owned"),
+        "should say the parameter isn't owned: {}", out,
+    );
+    assert!(
+        out.contains("`close` takes ownership") && out.contains("`eat` takes ownership"),
+        "should name what the value was handed to: {}", out,
+    );
+    assert!(
+        out.contains("is declared as a borrowed parameter"),
+        "should point at the declaration: {}", out,
+    );
+    assert!(
+        out.contains("take c: "),
+        "should suggest `take` on the declaration: {}", out,
+    );
+    // `take` on the declaration is the fix, so that function must not be flagged.
+    assert!(!out.contains("`proper`"), "a take parameter is fine: {}", out);
+    // #818: storing a borrowed parameter into a field is the same give-away, and
+    // used to be reported as a borrow conflict about a mutation that wasn't there.
+    assert!(
+        out.contains("cannot give away `next`") && !out.contains("E0802"),
+        "storing into a field is a give-away, not a borrow conflict: {}", out,
+    );
+}
+
+// mem.linear/L1 and L3 for an `Owned` local. `own` allocates and there is exactly
+// one owner who consumes it exactly once; nothing checked that, which stopped
+// mattering only because `drop` didn't exist. It does now (#739), so leaking a box
+// left the allocation unfreed and dropping one twice compiled and then aborted the
+// process with a double free (#819).
+//
+// `Owned<T>` erases to `T` in the checker so OW5's transparency works, so there's
+// no type to look at — the `own` in the source is the signal, and the box is linear
+// however small its payload.
+#[test]
+fn error_owned_not_consumed() {
+    let (failed, out) = compile_error_output("owned_not_consumed.rk");
+    assert!(failed, "an unconsumed `own` value must be rejected: {}", out);
+    assert_eq!(out.matches("E0837").count(), 2, "two leaks: {}", out);
+    assert_eq!(out.matches("E0800").count(), 2, "two second-consumes: {}", out);
+    assert!(
+        out.contains("allocated with `own` and never dropped"),
+        "should say what wasn't done: {}", out,
+    );
+    assert!(
+        out.contains("fix: drop(p)"),
+        "should suggest drop, not .close(): {}", out,
+    );
+    assert!(
+        out.contains("is an Owned box — it was consumed there"),
+        "the second consume should blame the box, not the copy threshold: {}", out,
+    );
+    assert!(
+        !out.contains("copy threshold"),
+        "an Owned box is linear whatever its payload's size: {}", out,
+    );
+}
+
+// #827: a `@resource` inside an optional carried no obligation at all.
+// `is_resource_type_name` looks the annotation up in the type table and `"Conn?"`
+// isn't a name in it, and the annotated path never fell through to what the
+// checker already knew about the initializer — so `mut c: Conn? = Conn { … }`
+// compiled clean and leaked.
+//
+// The `? as` binding was the other half. OPT19 calls it "the payload read out of
+// the scrutinee", which for a linear payload can only mean moved — so the binding
+// holds the resource inside the branch and the optional doesn't hold it after.
+// Both ends are tracked now, which is what makes the *closing* version compile:
+// consuming the binding is what discharges the optional.
+#[test]
+fn error_optional_resource_not_consumed() {
+    let (failed, out) = compile_error_output("optional_resource.rk");
+    assert!(failed, "an unconsumed optional resource must be rejected: {}", out);
+    assert_eq!(out.matches("E0805").count(), 3, "exactly three leaks: {}", out);
+    assert!(
+        out.contains("resource `maybe` must be consumed"),
+        "the optional binding itself: {}", out,
+    );
+    assert!(
+        out.contains("resource `conn` must be consumed"),
+        "the `? as` payload binding: {}", out,
+    );
+    assert!(
+        out.contains("resource `c` must be consumed"),
+        "a `none` binding that gets filled: {}", out,
+    );
+}
+
+// #828: the obligation used to live on the binding alone, which can only be
+// all-or-nothing. A holder owes each resource field separately now, so
+// `p.a.close()` pays one debt and the other is still reported — by field path,
+// which is also a better message than one naming a binding with no `close()`.
+//
+// The `is_copy` half is the same family: a `@resource` is never Copy, and
+// `Conn { id: i64 }` is eight bytes of Copy field so it read as Copy. A Copy
+// argument isn't consumed, so passing a connection to a `take` parameter
+// consumed nothing and the caller was told it leaked what it had handed away.
+#[test]
+fn error_resource_field_debts() {
+    let (failed, out) = compile_error_output("resource_field_debts.rk");
+    assert!(failed, "an unpaid resource field must be rejected: {}", out);
+    assert_eq!(out.matches("E0805").count(), 3, "exactly three unpaid fields: {}", out);
+    assert!(
+        out.contains("resource `p.b` must be consumed"),
+        "one of two fields closed leaves the other: {}", out,
+    );
+    assert!(
+        out.contains("resource `w.conn` must be consumed"),
+        "a single resource field is named by path: {}", out,
+    );
+    assert!(
+        out.contains("resource `o.inner.conn` must be consumed"),
+        "a nested path is named in full: {}", out,
+    );
+    assert!(
+        !out.contains("resource `p` must"),
+        "the holder isn't the thing that leaked: {}", out,
     );
 }
 

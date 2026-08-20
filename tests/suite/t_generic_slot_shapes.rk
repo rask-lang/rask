@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An optional or a result as a generic type argument (#872).
+//
+// A generic type's shared layout gives every type parameter one word. Anything
+// wider gets an instance layout of its own — that machinery existed, but it only
+// recognised structs, enums, tuples, arrays and strings as "wider than a word".
+// An optional is 16 bytes and a result 24, and neither was on the list, so
+// `Wrap { value: opt(3) }` didn't compile at all:
+//
+//     error: field `value` holds 16 bytes but its slot is 8 — this
+//     instantiation is using the shared layout of a generic type …
+//
+// Three more things had to give before it worked:
+//
+//   - The error side of `i64 or MyErr` sized itself as one word, because the
+//     type id buried inside the result never reached the rename that turns ids
+//     into names, and the sizing code can't resolve an id. The layout came out
+//     32 bytes where MIR wanted 40.
+//   - A method on such an instantiation had `self` spelled `Wrap<i64 or MyErr>`,
+//     and the type-string reader split on the first ` or ` anywhere — so `self`
+//     came out as a result of `Wrap<i64` and `MyErr>`.
+//   - `where T: Sized2` on a method of `extend Wrap<T>` put `T` in the
+//     *method's* parameter list too: a `where` clause adds an entry for any name
+//     it doesn't already find there, and the parser can't see the enclosing
+//     header. `T` then got bound twice, the second time to an unsolved inference
+//     variable, and the copy came out as `Wrap_wrapped_width$Wide__` with `_`
+//     written over the real argument.
+
+struct Wrap<T> {
+    value: T
+}
+
+extend Wrap<T> {
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+struct MyErr {
+    detail: string
+}
+
+extend MyErr {
+    func message(self) -> string {
+        return self.detail
+    }
+}
+
+func opt(x: i64) -> i64? {
+    if x < 0 {
+        return none
+    }
+    return x
+}
+
+func res(x: i64) -> i64 or MyErr {
+    if x < 0 {
+        return MyErr { detail: "negative" }
+    }
+    return x
+}
+
+trait Sized2 {
+    func width(self) -> i64
+}
+
+struct Wide {
+    w: i64
+}
+
+extend Wide with Sized2 {
+    func width(self) -> i64 {
+        return self.w
+    }
+}
+
+extend Wrap<T> {
+    // The bound names the *type's* parameter, not one of the method's.
+    func wrapped_width(self) -> i64 where T: Sized2 {
+        return self.value.width()
+    }
+}
+
+test "generic slot — an optional argument survives the field" {
+    let a = Wrap { value: opt(3) }
+    assert_eq(a.value ?? -1, 3)
+    let n = Wrap { value: opt(-1) }
+    assert n.value is none
+    // Zero is a value, not an absence — the tag has to be read, not the payload.
+    let z = Wrap { value: opt(0) }
+    assert_eq(z.value ?? -1, 0)
+}
+
+test "generic slot — an optional argument survives a method" {
+    let a = Wrap { value: opt(7) }
+    assert_eq(a.get() ?? -1, 7)
+    let n = Wrap { value: opt(-4) }
+    assert n.get() is none
+}
+
+test "generic slot — a result argument survives the field" {
+    let ok = Wrap { value: res(4) }
+    assert_eq(ok.value catch _ => -1, 4)
+    let bad = Wrap { value: res(-2) }
+    assert_eq(bad.value catch e => -1, -1)
+}
+
+test "generic slot — a result argument survives a method" {
+    let ok = Wrap { value: res(5) }
+    assert_eq(ok.get() catch _ => -1, 5)
+    let bad = Wrap { value: res(-9) }
+    let got = bad.get()
+    if got is MyErr as e {
+        assert_eq(e.message(), "negative")
+    } else {
+        assert false
+    }
+}
+
+// The error side is a struct with a string in it, so it's wider than the word
+// the sizing code assumed for a bare type id.
+test "generic slot — the error side keeps its own size" {
+    let bad = Wrap { value: res(-1) }
+    let got = bad.get()
+    if got is MyErr as e {
+        assert_eq(e.detail, "negative")
+    } else {
+        assert false
+    }
+}
+
+test "generic slot — a bound naming the type's own parameter" {
+    let w = Wrap { value: Wide { w: 11 } }
+    assert_eq(w.wrapped_width(), 11)
+    let other = Wrap { value: Wide { w: 2 } }
+    assert_eq(other.wrapped_width(), 2)
+}
+
+// Optional and result instantiations of the same type have to stay apart —
+// they're different sizes, so sharing a layout or a method body would read one
+// through the other's shape.
+test "generic slot — optional and result instantiations don't share" {
+    let o = Wrap { value: opt(1) }
+    let r = Wrap { value: res(2) }
+    let plain = Wrap { value: 3 }
+    assert_eq(o.get() ?? -1, 1)
+    assert_eq(r.get() catch _ => -1, 2)
+    assert_eq(plain.get(), 3)
+}
+
+func main() {}

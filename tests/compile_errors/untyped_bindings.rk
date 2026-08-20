@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Three bindings the checker gave no type at all (#809, found via #425).
+//
+// Each of these annotations is wrong and each one used to be accepted, because
+// the binding it names carried a fresh unconstrained type variable rather than
+// the type it actually holds. Unifying a variable with anything succeeds, so
+// there was nothing to disagree with.
+//
+// The runtime half is `tests/suite/t_binding_types.rk`: the same three shapes,
+// working, so this file pins the check and that one pins the behaviour.
+
+enum Msg {
+    Text(string)
+    Num(i64)
+}
+
+enum Inner {
+    A
+}
+
+enum Outer {
+    Named { code: i64, kind: Inner }
+}
+
+// A struct-shaped enum variant names its fields, and the name — `Outer.Named` —
+// isn't a type, so the struct lookup missed it and both fields got fresh
+// variables.
+func variant_fields(o: Outer) -> i64 {
+    match o {
+        Outer.Named { code, kind } => {
+            // ERROR: `kind` is an `Inner`, not an `i64` [E0308]
+            let wrong: i64 = kind
+            // ERROR: `code` is an `i64`, not a `string` [E0308]
+            let also_wrong: string = code
+            return wrong
+        }
+    }
+}
+
+// An `is` binding reaches the rest of the condition and the branch body. The
+// bindings were computed and discarded.
+func is_binding(m: Msg) -> i64 {
+    if m is Msg.Text(t) {
+        // ERROR: `t` is a `string`, not an `i64` [E0308]
+        let wrong: i64 = t
+        return wrong
+    }
+    return 0
+}
+
+// Each name in a tuple `for` binding takes its position in the element tuple.
+// They used to get fresh variables instead.
+func tuple_for(rows: Vec<(string, i64)>) -> i64 {
+    mut n = 0
+    for (name, count) in rows {
+        // ERROR: `name` is a `string`, not an `i64` [E0308]
+        let wrong: i64 = name
+        n = n + wrong + count
+    }
+    return n
+}
+
+func main() {
+    println("{variant_fields(Outer.Named { code: 1, kind: Inner.A })}")
+    println("{is_binding(Msg.Text(\"x\"))}")
+    println("{tuple_for(Vec.new())}")
+}

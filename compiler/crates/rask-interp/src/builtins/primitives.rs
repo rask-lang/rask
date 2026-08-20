@@ -14,6 +14,56 @@ fn mask_to_width(v: i64, width: u32) -> u64 {
     if width >= 64 { v as u64 } else { (v as u64) & ((1u64 << width) - 1) }
 }
 
+/// type.integer-overflow OV5/SH2 — one escape hatch, computed at the
+/// receiver's own width and signedness.
+///
+/// Every machine integer lives in an i64 slot here, so the width has to come
+/// back before the arithmetic: `(200 as u8).wrapping_add(100)` is 44, and it
+/// only is if the add happens in 8 bits. Rust's own methods carry the exact
+/// semantics — including `wrapping_shl` masking the amount to the width — so
+/// the receiver is cast down, the operation runs at that type, and the answer
+/// goes back into the slot.
+macro_rules! overflow_hatch {
+    ($method:expr, $a:expr, $b:expr, $ty:ty) => {{
+        let a = $a as $ty;
+        let b = $b as $ty;
+        let out: $ty = match $method {
+            "wrapping_add" => a.wrapping_add(b),
+            "wrapping_sub" => a.wrapping_sub(b),
+            "wrapping_mul" => a.wrapping_mul(b),
+            "saturating_add" => a.saturating_add(b),
+            "saturating_sub" => a.saturating_sub(b),
+            "saturating_mul" => a.saturating_mul(b),
+            "wrapping_shl" => a.wrapping_shl(b as u32),
+            _ => a.wrapping_shr(b as u32),
+        };
+        out as i64
+    }};
+}
+
+/// The fallible half of OV5: the wrapped answer plus whether it wrapped.
+/// `checked_*` turns the flag into `none`, `overflowing_*` hands it back.
+///
+/// A zero divisor and the one signed pair with no quotient (MIN / -1) both come
+/// out of `checked_div` as "overflowed", which is what makes `checked_div(0)`
+/// answer `none` instead of dividing.
+macro_rules! fallible_hatch {
+    ($method:expr, $a:expr, $b:expr, $ty:ty) => {{
+        let a = $a as $ty;
+        let b = $b as $ty;
+        let (out, overflowed): ($ty, bool) = match $method {
+            "checked_add" | "overflowing_add" => a.overflowing_add(b),
+            "checked_sub" | "overflowing_sub" => a.overflowing_sub(b),
+            "checked_mul" | "overflowing_mul" => a.overflowing_mul(b),
+            _ => match a.checked_div(b) {
+                Some(q) => (q, false),
+                None => (0, true),
+            },
+        };
+        (out as i64, overflowed)
+    }};
+}
+
 /// Put a width-masked result back into an i64, sign-extending when the
 /// receiver's type is signed so `-1i8` stays -1 rather than becoming 255.
 fn sign_extend(v: i64, width: u32, signed: bool) -> i64 {
@@ -51,6 +101,19 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         use crate::interp::overflow::{checked_binop, checked_neg, ArithOp};
+        // `1 + x` on an `f64`: the receiver is the unsuffixed literal, so the
+        // integer path runs with a float argument. The literal should have taken
+        // the slot's type — native computes 1.5 — and the value carries no slot
+        // type, so this is where it takes it. Mixing a float with an integer
+        // *variable* is a compile error, so the other operand being a float means
+        // the receiver is that literal (#816).
+        if let Some(Value::Float(_, kb)) = args.first() {
+            let is_operator = ArithOp::from_method(method).is_some()
+                || matches!(method, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "compare");
+            if is_operator {
+                return self.call_float_method(a as f64, *kb, method, args);
+            }
+        }
         let arg_kind = |args: &[Value]| match args.first() {
             Some(Value::Int(_, k)) => kind.unify(*k),
             _ => kind,
@@ -62,6 +125,17 @@ impl Interpreter {
                 Some(Value::Int(_, k)) if *k != crate::value::IntKind::Untyped => *k,
                 _ => fallback,
             }
+        }
+        // HA1: FNV-1a over the value's little-endian bytes at its own width, which
+        // is what native's `rask_int_hash` computes and what an int-keyed Map
+        // buckets with. The width is part of the answer, so a value that never got
+        // a slot type takes `i32`, the unsuffixed-literal default (L1) and the
+        // width native gives it.
+        if method == "hash" && args.is_empty() {
+            let width = (kind.bits().unwrap_or(32) / 8) as usize;
+            let bytes = (a as u64).to_le_bytes();
+            let h = crate::builtins::fnv1a(&bytes[..width]);
+            return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
         }
         if let Some(op) = ArithOp::from_method(method) {
             let b = self.expect_int(args, 0)?;
@@ -125,6 +199,25 @@ impl Interpreter {
                     )))
             }
             "pow" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.wrapping_pow(b as u32), kind)) }
+            // OV5/SH2 — the ways out of the checked default.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul"
+            | "saturating_add" | "saturating_sub" | "saturating_mul"
+            | "wrapping_shl" | "wrapping_shr" => {
+                let b = self.expect_int(args, 0)?;
+                let width = kind.bits().unwrap_or(64);
+                let signed = kind.signed();
+                let out = match (width, signed) {
+                    (8, true) => overflow_hatch!(method, a, b, i8),
+                    (8, false) => overflow_hatch!(method, a, b, u8),
+                    (16, true) => overflow_hatch!(method, a, b, i16),
+                    (16, false) => overflow_hatch!(method, a, b, u16),
+                    (32, true) => overflow_hatch!(method, a, b, i32),
+                    (32, false) => overflow_hatch!(method, a, b, u32),
+                    (_, false) => overflow_hatch!(method, a, b, u64),
+                    _ => overflow_hatch!(method, a, b, i64),
+                };
+                Ok(Value::Int(sign_extend(out, width, signed), kind))
+            }
             // An unsigned receiver holds its bit pattern in the i64 slot, so
             // the top half of u64 prints negative without the width (#517).
             "to_string" | "debug_string" => {
@@ -172,6 +265,45 @@ impl Interpreter {
                 };
                 Ok(Value::Int(sign_extend(out, width, kind.signed()), kind))
             }
+            // OV5's fallible forms. Same width discipline: the pair or the
+            // optional carries an answer computed at the receiver's own width,
+            // not at the i64 slot's.
+            "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+            | "overflowing_add" | "overflowing_sub" | "overflowing_mul" => {
+                let b = self.expect_int(args, 0)?;
+                let width = kind.bits().unwrap_or(64);
+                let signed = kind.signed();
+                let (out, overflowed) = match (width, signed) {
+                    (8, true) => fallible_hatch!(method, a, b, i8),
+                    (8, false) => fallible_hatch!(method, a, b, u8),
+                    (16, true) => fallible_hatch!(method, a, b, i16),
+                    (16, false) => fallible_hatch!(method, a, b, u16),
+                    (32, true) => fallible_hatch!(method, a, b, i32),
+                    (32, false) => fallible_hatch!(method, a, b, u32),
+                    (_, false) => fallible_hatch!(method, a, b, u64),
+                    _ => fallible_hatch!(method, a, b, i64),
+                };
+                let value = Value::Int(sign_extend(out, width, signed), kind);
+                if method.starts_with("overflowing_") {
+                    return Ok(Value::vec(vec![value, Value::Bool(overflowed)]));
+                }
+                if overflowed {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1,
+                        origin: None,
+                    });
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![value],
+                    variant_index: 0,
+                    origin: None,
+                })
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i64".to_string(),
                 method: method.to_string(),
@@ -187,7 +319,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let overflow = |op: &str, b: i128| RuntimeError::IntegerOverflow(format!(
-            "integer overflow: {} {} {} exceeds i128 range", a, op, b
+            "integer overflow: {} {} {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a, op, b
         ));
         match method {
             "add" => { let b = self.expect_int128(args, 0)?; a.checked_add(b).map(Value::Int128).ok_or_else(|| overflow("+", b)) }
@@ -204,7 +336,7 @@ impl Interpreter {
                 a.checked_rem(b).map(Value::Int128).ok_or_else(|| overflow("%", b))
             }
             "neg" => a.checked_neg().map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a))),
             "eq" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a == b)) }
             "lt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a < b)) }
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
@@ -215,21 +347,66 @@ impl Interpreter {
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
             "shl" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shl(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds i128 bit width (128)", b)))
             }
             "shr" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shr(b as u32).map(Value::Int128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds i128 bit width (128)", b)))
             }
             "bit_not" => Ok(Value::Int128(!a)),
             "abs" => a.checked_abs().map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range", a))),
-            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range", a, b))) }
+                RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a))),
+            "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            // HA1, over all 16 little-endian bytes.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&(a as u128).to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
+            // AR3: the floored answer, always non-negative.
+            "mod" => {
+                let b = self.expect_int128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                a.checked_rem_euclid(b)
+                    .map(Value::Int128)
+                    .ok_or_else(|| RuntimeError::IntegerOverflow(format!(
+                        "integer overflow: {}.mod({}) exceeds range", a, b
+                    )))
+            }
+            // std.bits B1–B3 at 128 bits (#822). Rust's primitives have every
+            // one of these; the 64-bit path above needs masking because it
+            // carries narrower widths in a u64, and at the full width there is
+            // nothing to mask.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
+                let u = a as u128;
+                let out = match method {
+                    "count_ones" => return Ok(Value::int(u.count_ones() as i64)),
+                    "count_zeros" => return Ok(Value::int(u.count_zeros() as i64)),
+                    "leading_zeros" => return Ok(Value::int(u.leading_zeros() as i64)),
+                    "leading_ones" => return Ok(Value::int(u.leading_ones() as i64)),
+                    "trailing_zeros" => return Ok(Value::int(u.trailing_zeros() as i64)),
+                    "trailing_ones" => return Ok(Value::int(u.trailing_ones() as i64)),
+                    "reverse_bits" => u.reverse_bits(),
+                    // Little-endian hosts: to_be swaps, to_le is the identity.
+                    "swap_bytes" | "to_be" => u.swap_bytes(),
+                    "to_le" => u,
+                    "rotate_left" | "rotate_right" => {
+                        let n = (self.expect_shift_amount(args, 0)? as u32) % 128;
+                        if method == "rotate_left" { u.rotate_left(n) } else { u.rotate_right(n) }
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::Int128(out as i128))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i128".to_string(),
                 method: method.to_string(),
@@ -245,7 +422,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let overflow = |op: &str, b: u128| RuntimeError::IntegerOverflow(format!(
-            "integer overflow: {} {} {} exceeds u128 range", a, op, b
+            "integer overflow: {} {} {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, op, b
         ));
         match method {
             "add" => { let b = self.expect_uint128(args, 0)?; a.checked_add(b).map(Value::Uint128).ok_or_else(|| overflow("+", b)) }
@@ -271,19 +448,60 @@ impl Interpreter {
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
             "shl" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shl(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds u128 bit width (128)", b)))
             }
             "shr" => {
-                let b = self.expect_int(args, 0)?;
+                let b = self.expect_shift_amount(args, 0)?;
                 a.checked_shr(b as u32).map(Value::Uint128).ok_or_else(|| RuntimeError::IntegerOverflow(
                     format!("shift amount {} exceeds u128 bit width (128)", b)))
             }
             "bit_not" => Ok(Value::Uint128(!a)),
-            "pow" => { let b = self.expect_int(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
-                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range", a, b))) }
+            "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
+                RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            // HA1, over all 16 little-endian bytes.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&a.to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
+            // AR3: unsigned is already non-negative, so `mod` and `%` coincide.
+            "mod" => {
+                let b = self.expect_uint128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Uint128(a % b))
+            }
+            // std.bits B1–B3 at 128 bits (#822). Rust's primitives have every
+            // one of these; the 64-bit path above needs masking because it
+            // carries narrower widths in a u64, and at the full width there is
+            // nothing to mask.
+            "count_ones" | "count_zeros"
+            | "leading_zeros" | "trailing_zeros"
+            | "leading_ones" | "trailing_ones"
+            | "reverse_bits" | "swap_bytes"
+            | "rotate_left" | "rotate_right"
+            | "to_be" | "to_le" => {
+                let u = a as u128;
+                let out = match method {
+                    "count_ones" => return Ok(Value::int(u.count_ones() as i64)),
+                    "count_zeros" => return Ok(Value::int(u.count_zeros() as i64)),
+                    "leading_zeros" => return Ok(Value::int(u.leading_zeros() as i64)),
+                    "leading_ones" => return Ok(Value::int(u.leading_ones() as i64)),
+                    "trailing_zeros" => return Ok(Value::int(u.trailing_zeros() as i64)),
+                    "trailing_ones" => return Ok(Value::int(u.trailing_ones() as i64)),
+                    "reverse_bits" => u.reverse_bits(),
+                    // Little-endian hosts: to_be swaps, to_le is the identity.
+                    "swap_bytes" | "to_be" => u.swap_bytes(),
+                    "to_le" => u,
+                    "rotate_left" | "rotate_right" => {
+                        let n = (self.expect_shift_amount(args, 0)? as u32) % 128;
+                        if method == "rotate_left" { u.rotate_left(n) } else { u.rotate_right(n) }
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::Uint128(out))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "u128".to_string(),
                 method: method.to_string(),
@@ -385,6 +603,10 @@ impl Interpreter {
             "ge" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a >= b)) }
             "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&[a as u8]) as i64,
+                crate::value::IntKind::U64,
+            )),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "bool".to_string(),
                 method: method.to_string(),
@@ -408,6 +630,13 @@ impl Interpreter {
             "is_digit" => Ok(Value::Bool(c.is_ascii_digit())),
             "is_uppercase" => Ok(Value::Bool(c.is_uppercase())),
             "is_lowercase" => Ok(Value::Bool(c.is_lowercase())),
+            "is_control" => Ok(Value::Bool(c.is_control())),
+            "is_ascii_alphabetic" => Ok(Value::Bool(c.is_ascii_alphabetic())),
+            "is_ascii_digit" => Ok(Value::Bool(c.is_ascii_digit())),
+            "is_ascii_hexdigit" => Ok(Value::Bool(c.is_ascii_hexdigit())),
+            "is_ascii_punctuation" => Ok(Value::Bool(c.is_ascii_punctuation())),
+            "to_ascii_lowercase" => Ok(Value::Char(c.to_ascii_lowercase())),
+            "to_ascii_uppercase" => Ok(Value::Char(c.to_ascii_uppercase())),
             "to_uppercase" => Ok(Value::Char(c.to_uppercase().next().unwrap_or(c))),
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
             "len_utf8" => Ok(Value::int(c.len_utf8() as i64)),
@@ -420,6 +649,11 @@ impl Interpreter {
             "gt" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c > other)) }
             "ge" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c >= other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
+            // A char is its 4-byte Unicode scalar, same as native.
+            "hash" => Ok(Value::Int(
+                crate::builtins::fnv1a(&(c as u32).to_le_bytes()) as i64,
+                crate::value::IntKind::U64,
+            )),
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
             "to_int" => Ok(Value::int(c as i64)),
             _ => Err(RuntimeError::NoSuchMethod {

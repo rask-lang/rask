@@ -33,11 +33,18 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L3: Suffixed** | Type suffix | `42u8`, `3.14f32` | As specified |
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
-| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64` |
+| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64`, then `i128` |
 | **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
+| **L8: Literal ceiling** | Digits past `u128::MAX` | `340282366920938463463374607431768211456` | Compile error |
 
-L6 only moves the *default*. Context still wins: `const x: i64 = 5` is an `i64`.
-A literal above `i64::MAX` can only be a `u64`, so that's where it lands.
+L6 only moves the *default*. Context still wins, all the way up: `const x: i64 = 5`
+is an `i64`, and `const x: u128 = 100000000000000000000` is a `u128` even though the
+same digits on their own would default to `i128`. Magnitude only rules types *out*.
+
+L8 is where digits stop. `u128` is the widest integer type, so a literal above
+`u128::MAX` names a value nothing can hold and gets said so plainly, rather than
+reading as a typo. Going the other way, a negative literal has to land in a signed
+type, so `i128::MIN` is the floor.
 
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
@@ -57,10 +64,12 @@ fit.
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
+| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and boxes a trait object (`as any Trait`). To anything else it reinterprets bits, so it needs `unsafe` |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
 let x: i8 = big_val as i8           // CV2: ERROR, narrowing
+let v = [1, 2, 3] as Vec<i64>       // CV4a: ERROR — `let v: Vec<i64> = [1, 2, 3]`
 ```
 
 ### CV1: which int→float casts are lossless
@@ -341,7 +350,8 @@ mut port: u16 = header.port   // Native u16
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Integer literal out of range | L1/L3 | Compile error |
+| Integer literal out of range | L1/L3/L7 | Compile error |
+| Integer literal past `u128::MAX` | L8 | Compile error |
 | Unsuffixed literal ambiguous | L1/L4 | Defaults to `i32` or `f64` |
 | `n as char` | CH5 | Compile error — use `char.from_u32(n)` |
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
@@ -353,6 +363,7 @@ mut port: u16 = header.port   // Native u16
 | `x.round<T>()` int→int | CV14 | Compile error — nothing to round; use `to`/`wrap`/`clamp` |
 | `f64` → `f32` overflowing the range | CV14 | `.round<f32>()` gives ±infinity (IEEE), no failure |
 | `let x: f64 = my_i32` | CV1a | Compile error — int→float is never implicit; write `my_i32 as f64` |
+| `my_f64 + my_i64` | CV1a | Compile error (E0371) — same rule under an operator, either way round. An unsuffixed literal is not affected: it takes the slot's type, so `my_f64 + 1` is `my_f64 + 1.0` |
 | Narrowing via `as` | CV2 | Compile error |
 | `i64 as f32`, `i64 as f64` | CV1 | Compile error — inexact past 2^24 / 2^53. Use `.round<f32>()` |
 | `true as i32` or `1 as bool` | BL3 | Compile error |

@@ -72,7 +72,25 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::Assign { target, value } => {
+            // `let Point { x, .. } = p` — the same match a `match` arm does, then
+            // the bindings it produced go into the current scope.
+            StmtKind::LetStruct { pattern, init, .. } => {
+                let value = self.eval_owned(init)?;
+                let Some(bindings) = self.match_pattern(pattern, &value) else {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(
+                            "destructuring binding didn't match the value".to_string(),
+                        ),
+                        stmt.span,
+                    ));
+                };
+                for (name, val) in bindings {
+                    self.env.define(name, val);
+                }
+                Ok(Value::Unit)
+            }
+
+            StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_owned(value)?;
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;

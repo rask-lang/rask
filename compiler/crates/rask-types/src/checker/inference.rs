@@ -153,7 +153,7 @@ pub struct InferenceContext {
     pub(super) literal_vars: HashMap<TypeVarId, LiteralKind>,
     /// What each unsuffixed integer literal said, so the default can widen when
     /// i32 is too narrow to hold it.
-    pub(super) literal_int_values: HashMap<TypeVarId, i64>,
+    pub(super) literal_int_values: HashMap<TypeVarId, i128>,
 }
 
 impl InferenceContext {
@@ -198,7 +198,7 @@ impl InferenceContext {
 
     /// Remember what an unsuffixed integer literal actually said, so defaulting
     /// can tell `3` from `3000000000`.
-    pub fn record_literal_int(&mut self, id: TypeVarId, value: i64) {
+    pub fn record_literal_int(&mut self, id: TypeVarId, value: i128) {
         self.literal_int_values.insert(id, value);
     }
 
@@ -223,10 +223,15 @@ impl InferenceContext {
             let default = match kind {
                 // i32 is the default (type.primitives/L1), but only where the
                 // value fits — `const big = 3000000000` used to keep the low 32
-                // bits and print -1294967296.
+                // bits and print -1294967296. Past that the narrowest type that
+                // holds it wins, which is how `18446744073709551615` on its own
+                // comes out a `u64` rather than an `i128`.
                 LiteralKind::Integer => match self.literal_int_values.get(&var_id) {
-                    Some(&v) if i32::try_from(v).is_err() => Type::I64,
-                    _ => Type::I32,
+                    Some(&v) if i32::try_from(v).is_ok() => Type::I32,
+                    Some(&v) if i64::try_from(v).is_ok() => Type::I64,
+                    Some(&v) if u64::try_from(v).is_ok() => Type::U64,
+                    Some(_) => Type::I128,
+                    None => Type::I32,
                 },
                 LiteralKind::Float => Type::F64,
             };
@@ -236,8 +241,15 @@ impl InferenceContext {
             let Type::Var(tail) = self.apply(&Type::Var(var_id)) else { continue };
             // Two literals can land on the same variable — a wide one and a
             // narrow one. Take the wider, so nothing gets truncated.
+            let rank = |t: &Type| match t {
+                Type::I32 => 0,
+                Type::I64 => 1,
+                Type::U64 => 2,
+                Type::I128 => 3,
+                _ => 0,
+            };
             match defaults.get(&tail) {
-                Some(Type::I64) => {}
+                Some(existing) if rank(existing) >= rank(&default) => {}
                 _ => { defaults.insert(tail, default); }
             }
         }

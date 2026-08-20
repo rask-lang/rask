@@ -35,11 +35,28 @@ pub struct FieldLayout {
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
     /// for either.
     pub has_declared_default: bool,
+    /// The declared default's literal text, when it is one (`port: i32 = 8080`
+    /// → `"8080"`). Same shape as the `@default(…)` argument in `attrs`, so the
+    /// decoder can treat the two the same: a field the input leaves out takes
+    /// its declared default (`type.structs/FD6`). `None` for a default that
+    /// isn't a plain literal, which stays construction-only.
+    pub declared_default: Option<String>,
     /// V5 visibility. Carried because `reflect.fields<T>()` reports it: without
     /// it the native side had nothing to read and answered `true` for every
     /// field, so a `private` one looked public there and not on the
     /// interpreter (std.encoding/E13).
     pub is_public: bool,
+    /// The field was declared with one of the type's parameters — `value: T` —
+    /// so `ty` here is whatever got substituted in, not what the source said.
+    ///
+    /// The *shared* layout for a generic type substitutes `i64` for every
+    /// parameter, which is the right size for anything that fits a word. It is
+    /// not the right register class: `Box<f64>` reading its field through the
+    /// shared layout loaded the double's bits into an integer register, and the
+    /// conversion on the way out printed `wrap(3.14).value` as
+    /// 4614253070214988800 (#820). Codegen has the field's real MIR type at the
+    /// read; this says when to prefer it.
+    pub is_type_param: bool,
 }
 
 /// Enum memory layout
@@ -372,26 +389,52 @@ fn build_subst<'a>(
 /// Parse a field type string and apply generic substitution.
 /// If the parsed type is an unresolved name that matches a type parameter,
 /// replace it with the concrete type from type_args.
+///
+/// The flag says the field was declared with one of the type's parameters, so the
+/// returned type is a substitution rather than what the source wrote — see
+/// `FieldLayout::is_type_param`.
 fn resolve_field_type(
     field_ty_str: &str,
     subst: &std::collections::HashMap<&str, &Type>,
-) -> Type {
+) -> (Type, bool) {
     let parsed = parse_field_type(field_ty_str);
     match &parsed {
         Type::UnresolvedNamed(name) => {
             if let Some(concrete) = subst.get(name.as_str()) {
-                (*concrete).clone()
+                ((*concrete).clone(), true)
             } else {
-                parsed
+                (parsed, false)
             }
         }
-        _ => parsed,
+        _ => (parsed, false),
     }
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
 fn has_c_layout(attrs: &[String]) -> bool {
     attrs.iter().any(|a| a == "layout(C)")
+}
+
+/// A declared default's literal text, for the decoder.
+///
+/// `type.structs/FD1` limits a declared default to a compile-time constant, and
+/// the decoder needs it in the same shape `@default(…)` already arrives in:
+/// verbatim source text. Anything that isn't a plain literal answers `None` and
+/// stays construction-only rather than being guessed at.
+fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
+    use rask_ast::expr::{ExprKind, UnaryOp};
+    match &e.kind {
+        ExprKind::Int(n, _) => Some(n.to_string()),
+        ExprKind::Float(f, _) => Some(f.to_string()),
+        ExprKind::Bool(b) => Some(b.to_string()),
+        ExprKind::String(s) => Some(format!("{:?}", s)),
+        ExprKind::Char(c) => Some(format!("'{}'", c)),
+        // `-1` is a negation over a literal by the time it gets here.
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
+            literal_text(operand).map(|t| format!("-{t}"))
+        }
+        _ => None,
+    }
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
@@ -407,9 +450,9 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, bool)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool)> = struct_decl.fields.iter()
         .map(|field| {
-            let field_ty = resolve_field_type(&field.ty, &subst);
+            let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
             let (field_size, field_align) = type_size_align(&field_ty, cache);
             (
                 field.name.clone(),
@@ -418,7 +461,9 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
                 field_align,
                 field.attrs.clone(),
                 field.default.is_some(),
+                field.default.as_ref().and_then(literal_text),
                 field.visibility.is_pub(),
+                from_param,
             )
         })
         .collect();
@@ -434,7 +479,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align, attrs, has_declared_default, is_public) in resolved {
+    for (name, ty, size, align, attrs, has_declared_default, declared_default, is_public, is_type_param) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -447,7 +492,9 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
             align,
             attrs,
             has_declared_default,
+            declared_default,
             is_public,
+            is_type_param,
         });
 
         offset += size;
@@ -493,7 +540,9 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             align: field_align,
             attrs: field.attrs.clone(),
             has_declared_default: field.default.is_some(),
+            declared_default: field.default.as_ref().and_then(literal_text),
             is_public: field.visibility.is_pub(),
+            is_type_param: false,
         });
     }
 
@@ -594,7 +643,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
         if !variant.fields.is_empty() {
             let mut field_offset = 0u32;
             for field in &variant.fields {
-                let field_ty = resolve_field_type(&field.ty, &subst);
+                let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
                 let (size, align) = type_size_align(&field_ty, cache);
 
                 payload_align = payload_align.max(align);
@@ -608,8 +657,10 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
                     align,
                     attrs: Vec::new(),
                     has_declared_default: field.default.is_some(),
+                    declared_default: field.default.as_ref().and_then(literal_text),
                     // A variant's payload has no visibility of its own.
                     is_public: true,
+                    is_type_param: from_param,
                 });
 
                 field_offset += size;
@@ -701,6 +752,7 @@ mod tests {
                     .into_iter()
                     .map(|(vname, field_tys)| Variant {
                         name: vname.to_string(),
+                        name_span: dummy_span(),
                         fields: field_tys
                             .into_iter()
                             .enumerate()

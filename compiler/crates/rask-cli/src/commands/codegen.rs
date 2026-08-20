@@ -255,7 +255,12 @@ pub fn cmd_mir(path: &str, format: Format) {
         .filter_map(|def| {
             if let rask_types::TypeDef::Trait { name, .. } = def {
                 // Object-compatible methods only (TR1–TR3) — match vtable layout.
-                Some((name.clone(), def.object_compatible_method_names()))
+                // Through the shared helper, not the TypeDef's own list: a
+                // super-trait's methods belong in the sub-trait's vtable too.
+                Some((
+                    name.clone(),
+                    rask_types::object_compatible_methods(&typed.types, name),
+                ))
             } else {
                 None
             }

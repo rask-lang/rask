@@ -11,6 +11,166 @@
 // fail to link ("Function not found"). So a passing native run here IS the
 // compile-time-evaluation witness.
 
+// ── `if x? as v` inside comptime (#808) ─────────────────────────────
+//
+// The comptime evaluator dropped the presence binding: it evaluated the
+// condition as a plain bool and never defined `v`, so a body that read the
+// payload failed with "undefined variable". The interpreter and native both bind
+// it; comptime is the one that didn't.
+
+comptime func find_name(want: string) -> string? {
+    let names = ["ada", "bo", "cy"]
+    for n in names {
+        if n == want { return n }
+    }
+    return none
+}
+
+const HIT: string = comptime {
+    mut out = "unset"
+    if find_name("bo")? as hit {
+        out = "found {hit}"
+    } else {
+        out = "missing"
+    }
+    out
+}
+
+const MISS: string = comptime {
+    mut out = "unset"
+    if find_name("zz")? as hit {
+        out = "found {hit}"
+    } else {
+        out = "missing"
+    }
+    out
+}
+
+const SHADOWED: string = comptime {
+    mut out = "unset"
+    let maybe = find_name("cy")
+    // `as` can reuse the scrutinee's own name — ordinary shadowing, which is how
+    // the no-rename convenience is recovered per-site (OPT19's rationale).
+    if maybe? as maybe {
+        out = "shadowed {maybe}"
+    }
+    out
+}
+
+test "type.optionals/OPT19 — comptime binds the presence payload" {
+    assert HIT == "found bo"
+    assert MISS == "missing"
+    assert SHADOWED == "shadowed cy"
+}
+
+// ── 128-bit arithmetic at comptime (#802) ───────────────────────────
+//
+// Every comptime integer operation ran through one `i128` carrier, so the top
+// half of `u128` had nowhere to be computed. `as_int` refused those values, the
+// comparison path fell back to `as_i64` — which can't see past `i64::MAX` — and
+// what came out was a silently wrong answer: `huge > big` on two values above
+// `i128::MAX` answered false.
+//
+// The `u128` width is computed in a `u128` now. Only small values cross back out
+// of these functions, so the folded return is observable without depending on how
+// a 128-bit constant travels into MIR (which is its own gap — #824).
+
+comptime func wide_compare() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let big: u128 = 200000000000000000000000000000000000000
+    if huge > big { return 1 }
+    return 0
+}
+
+comptime func wide_add() -> i64 {
+    let big: u128 = 200000000000000000000000000000000000000
+    let one: u128 = 1
+    let total = big + one
+    if total > big { return 7 }
+    return 0
+}
+
+comptime func wide_sub() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let big: u128 = 200000000000000000000000000000000000000
+    let diff = huge - big
+    if diff == 140282366920938463463374607431768211455 { return 3 }
+    return 0
+}
+
+comptime func wide_mask() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let low: u128 = 255
+    if huge & low == low { return 9 }
+    return 0
+}
+
+comptime func wide_div() -> i64 {
+    let huge: u128 = 340282366920938463463374607431768211455
+    let two: u128 = 2
+    if huge / two == 170141183460469231731687303715884105727 { return 5 }
+    return 0
+}
+
+test "ctrl.comptime/CT1 — arithmetic reaches the top of u128" {
+    assert comptime wide_compare() == 1
+    assert comptime wide_add() == 7
+    assert comptime wide_sub() == 3
+    assert comptime wide_mask() == 9
+    assert comptime wide_div() == 5
+}
+
+// ── A folded local belongs to its function (#825) ───────────────────
+//
+// A comptime-foldable `let` in a function body became a global keyed by the bare
+// binding name, in a map shared by the whole program. Two functions each with a
+// `let v = f()` collided, and one silently read the other's value: `first()`
+// returned 9. The interpreter, which has no such map, said 7.
+
+comptime func seven() -> i64 { return 7 }
+comptime func nine() -> i64 { return 9 }
+
+func first_v() -> i64 {
+    let v = seven()
+    return v
+}
+
+func second_v() -> i64 {
+    let v = nine()
+    return v
+}
+
+test "ctrl.comptime — same-named folded locals in two functions stay apart" {
+    assert first_v() == 7
+    assert second_v() == 9
+}
+
+// ── The declared width decides the value's (#826) ───────────────────
+//
+// A comptime `let` ignored its annotation, so the value kept whatever width its
+// literal evaluated to. `let a: u128 = <fits in u64>` bound a `u64`, and a fold of
+// it came out `u64`-wide — printing the same digits and comparing unequal against
+// a `u128`.
+
+comptime func at_u64_max() -> u128 {
+    let a: u128 = 18446744073709551615
+    return a
+}
+
+comptime func narrow_slot() -> i64 {
+    let a: i8 = 100
+    // Still an i8 after the annotation, so this would overflow if it were one.
+    let widened: i64 = 100
+    return widened + 27
+}
+
+test "ctrl.comptime/CT1 — a comptime binding takes its declared width" {
+    // The value that fits u64 exactly: the boundary the old behaviour lost.
+    let boundary = at_u64_max()
+    assert boundary == 18446744073709551615
+    assert narrow_slot() == 127
+}
+
 func main() {}
 
 // CT5 + CT10: comptime block, value is the last expression
@@ -144,4 +304,95 @@ func array_len() -> u64 {
 
 test "types.arrays — typed array-repeat resolves .len()" {
     assert array_len() == 5
+}
+
+// ── A folded const is used like any other value of its type (#824) ───
+//
+// A method call whose receiver is a comptime-folded const took its own lowering
+// path, which built the receiver by hand and dispatched `{prefix}_{method}`.
+// Three things went wrong there and the const form was broken at every width:
+// every global got wrapped in a Vec, so `to_string` was handed a Vec instead of
+// the number; the prefix was spelled with the MIR evaluator's Rust names, so the
+// call went to `I64_to_string`, which doesn't exist; and arithmetic never got
+// that far, so `N + 1` emitted a call to `i64_add`. Now the receiver goes through
+// ordinary expression lowering and the rest follows.
+
+const CT_I64: i64 = comptime { 100 + 1 }
+const CT_U32: u32 = comptime { 7 * 6 }
+const CT_I16: i16 = comptime { 0 - 300 }
+const CT_U64: u64 = comptime { 18446744073709551615 }
+const CT_BOOL: bool = comptime { 3 > 2 }
+const CT_CHAR: char = comptime { 'z' }
+
+test "ctrl.comptime — a folded const interpolates at its own width" {
+    assert "{CT_I64}" == "101"
+    assert "{CT_U32}" == "42"
+    assert "{CT_I16}" == "-300"
+    // Above i64::MAX: the unsigned reading is the right one.
+    assert "{CT_U64}" == "18446744073709551615"
+    assert "{CT_BOOL}" == "true"
+    assert "{CT_CHAR}" == "z"
+}
+
+test "ctrl.comptime — a folded const does arithmetic" {
+    assert CT_I64 + 1 == 102
+    assert CT_U32 * 2 == 84
+    assert CT_I16 - 1 == -301
+    assert CT_I64 > 100
+}
+
+test "ctrl.comptime — a method call on a folded const" {
+    let neg: i32 = 0 - 5
+    assert CT_I16.abs() == 300
+    assert neg.abs() == 5
+    assert CT_I64.to_string() == "101"
+}
+
+test "ctrl.comptime — a folded const bound to a local keeps its width" {
+    let n = CT_U64
+    assert "{n}" == "18446744073709551615"
+    let w = CT_U32
+    assert w + 1 == 43
+}
+
+// A `string` can't be written into a data section as its characters — the
+// runtime value is two words, not the bytes — so this const isn't folded to a
+// global at all; it's evaluated where it's used. It used to fold to the raw
+// UTF-8 and then `to_uppercase` was handed those bytes.
+comptime func greeting() -> string {
+    return "hei"
+}
+
+const CT_STR: string = comptime { greeting() }
+
+test "ctrl.comptime — a folded string const is still a string" {
+    assert CT_STR == "hei"
+    assert CT_STR.to_uppercase() == "HEI"
+    assert CT_STR.len() == 3
+}
+
+// ── ctrl.comptime/CT1: a fold overflows at the declared width (#325) ──
+//
+// `comptime func big() -> i32` handed back an `i64`, because nothing applied the
+// declared return type to the value. So `big() + 1` was i64 arithmetic — no
+// overflow — and 2147483648 went into an `i32` const with no diagnostic, where
+// CT1 says a comptime overflow is a compile error. Parameters had the same gap.
+//
+// The rejecting side is in `compiler/crates/rask-compiler/tests/pipeline.rs`;
+// this is the side that has to keep folding.
+
+comptime func widest_i32() -> i32 {
+    return 2147483647
+}
+
+comptime func narrow(n: i8) -> i64 {
+    return n + 0
+}
+
+const EDGE: i32 = comptime { widest_i32() }
+const FROM_NARROW: i64 = comptime { narrow(100) }
+
+test "ctrl.comptime/CT1 — a fold at the declared width still reaches its edge" {
+    assert EDGE == 2147483647
+    assert FROM_NARROW == 100
 }

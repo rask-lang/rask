@@ -140,7 +140,7 @@ impl TypeChecker {
                 self.check_sync_access_in_binding(init);
                 self.clear_expression_borrows();
             }
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 // Reject mutation of read-only bindings (const) and read-only
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
@@ -315,9 +315,20 @@ impl TypeChecker {
                 match binding {
                     ForBinding::Single(name) => define(self, name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
-                        let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
-                        for (name, var) in names.iter().zip(vars) {
-                            define(self, name.clone(), var);
+                        // Each name takes its position in the element tuple.
+                        // They used to get fresh unconstrained variables, so
+                        // `for (k, v) in m { k.len() }` left `k` with no type at
+                        // all — and the program compiled only because MIR guessed
+                        // the receiver from the variable's tracked prefix, the
+                        // last of the nine dispatch fallbacks (#425).
+                        let elems: Vec<Type> = match self.ctx.apply(&elem_ty) {
+                            Type::Tuple(elems) if elems.len() == names.len() => elems,
+                            // Still open, or not a tuple: fresh variables, which
+                            // is what every case got before.
+                            _ => names.iter().map(|_| self.ctx.fresh_var()).collect(),
+                        };
+                        for (name, ty) in names.iter().zip(elems) {
+                            define(self, name.clone(), ty);
                         }
                     }
                 }
@@ -378,6 +389,19 @@ impl TypeChecker {
                 let is_const = matches!(&stmt.kind, StmtKind::LetTuple { .. });
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
+            }
+            // `let Point { x, .. } = p` — the pattern types its own bindings, the
+            // same way a match arm's does.
+            StmtKind::LetStruct { pattern, init, is_mut } => {
+                let init_ty = self.infer_expr(init);
+                let bindings = self.check_pattern(pattern, &init_ty, stmt.span);
+                for (name, ty) in bindings {
+                    if *is_mut {
+                        self.define_local(name, ty);
+                    } else {
+                        self.define_local_const(name, ty);
+                    }
+                }
             }
             StmtKind::WhileLet { pattern, expr, body, .. } => {
                 let value_ty = self.infer_expr(expr);

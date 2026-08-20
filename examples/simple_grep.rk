@@ -7,18 +7,23 @@ import fs
 import cli
 import std
 
-enum GrepError { Msg(string) }
+enum GrepError {
+    Msg(string)
+}
+
 extend GrepError {
     func message(self) -> string {
         match self {
-            GrepError.Msg(m) => return m,
+            GrepError.Msg(m) => return m
         }
     }
 }
 
 func grep_file(pattern: string, path: string) -> i32 or GrepError {
     // The guard: handle the failure where it happens, then read flat.
-    let lines = fs.read_lines(path) catch e => return GrepError.Msg(e.message())
+    let lines = fs.read_lines(path) catch e => {
+        return GrepError.Msg(e.message())
+    }
 
     mut match_count = 0
     mut line_num = 0

@@ -226,7 +226,7 @@ impl<'a> MirLowerer<'a> {
             // on a `Vec<i64>` sent it to the string one and printed nothing.
             "join" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object)
-                    .filter(|c| !c.adapters.is_empty())
+                    .filter(|c| !c.adapters.is_empty() || self.source_is_a_sequence(c.source))
                 {
                     let (vec_op, _) = self.lower_iter_collect(&chain)?;
                     let (sep_op, _) = self.lower_expr(&args[0].expr)?;
@@ -275,6 +275,17 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
+            // `v.enumerate()` on its own is `v.iter().enumerate().to_vec()`.
+            // Same argument as `map`/`filter` above, and the adapter already
+            // existed — only the standalone spelling was missing, so it reached
+            // codegen as `Vec_enumerate`, which nothing emits (#886).
+            "enumerate" if args.is_empty() => {
+                if let Some(mut chain) = self.try_parse_iter_chain(object) {
+                    chain.adapters.push(super::IterAdapter::Enumerate);
+                    let result = self.lower_iter_collect(&chain)?;
+                    return Ok(Some(result));
+                }
+            }
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
@@ -311,9 +322,470 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
+            // Same loop as `find`, keeping the count of yielded elements
+            // instead of the element. Without it `v.position(p)` reached
+            // codegen as a call to `Vec_position`, which doesn't exist (#842).
+            "position" if args.len() == 1 => {
+                if let Some(chain) = self.try_parse_iter_chain(object) {
+                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
+                        let result = self.lower_iter_position(&chain, &args[0].expr)?;
+                        return Ok(Some(result));
+                    }
+                }
+            }
+            // `v.read(i, f)` and `v.modify(i, f)`. Not an iterator chain — an
+            // index and one call — but this is where a collection method with a
+            // closure gets its chance, and both reached codegen as "Function not
+            // found: Vec_read" while the interpreter ran them (#842).
+            "read" | "modify" if args.len() == 2 => {
+                // Only for a Vec. A Map is a pointer too, and taking this path
+                // for `m.modify(key, f)` ran `Vec_len`/`Vec_get` over a Map — no
+                // crash, just `none` for a key that was there. The checker's
+                // recorded receiver is the one thing that tells them apart.
+                let on_vec = Self::prefix_is(&self.ctx.recorded_prefix(_full_expr.id), "Vec");
+                if on_vec && matches!(&args[1].expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(result) =
+                        self.lower_vec_element_closure(method, object, args)?
+                    {
+                        return Ok(Some(result));
+                    }
+                }
+                let on_map = Self::prefix_is(&self.ctx.recorded_prefix(_full_expr.id), "Map");
+                if on_map && matches!(&args[1].expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(result) =
+                        self.lower_map_value_closure(method, object, args)?
+                    {
+                        return Ok(Some(result));
+                    }
+                }
+            }
+            // The entry API: insert the default when the key is missing, then
+            // modify whatever is there. Answers `R`, not `R?` — after the
+            // insert there is always a value.
+            "modify_with_default" if args.len() == 3 => {
+                let on_map = Self::prefix_is(&self.ctx.recorded_prefix(_full_expr.id), "Map");
+                let both_closures = matches!(&args[1].expr.kind, ExprKind::Closure { .. })
+                    && matches!(&args[2].expr.kind, ExprKind::Closure { .. });
+                if on_map && both_closures {
+                    if let Some(result) = self.lower_map_entry_modify(object, args)? {
+                        return Ok(Some(result));
+                    }
+                }
+            }
+            // `reduce` is `fold` with the first element as the seed, so it has
+            // no value for an empty source and answers `T?`.
+            "reduce" if args.len() == 1 => {
+                if let Some(chain) = self.try_parse_iter_chain(object) {
+                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
+                        let result = self.lower_iter_reduce(&chain, &args[0].expr)?;
+                        return Ok(Some(result));
+                    }
+                }
+            }
             _ => {}
         }
         Ok(None)
+    }
+
+    /// The base name of a recorded receiver prefix, which can carry its generic
+    /// arguments — `Vec<i64>` is still a Vec.
+    /// Is this chain source already a sequence — an `Iterator<T>` — rather than a
+    /// collection?
+    ///
+    /// It decides who answers `join` on a chain with no adapters. A `Vec` answers
+    /// it itself and picks the right runtime by element type, so
+    /// `numbers.join(", ")` on a `Vec<i64>` has to keep going there. A sequence
+    /// has nothing to answer with: `s.split(", ").join("|")` reached codegen as a
+    /// call to `Iterator_join`, which nothing emits, while
+    /// `s.split(", ").to_vec().join("|")` two characters longer worked (#878).
+    ///
+    /// Asked positively, off the checker's own type. Asking the other way round —
+    /// "is this *not* a Vec" — answers yes whenever the prefix simply wasn't
+    /// recorded, which sent `Vec<i64>.join` down the materializing path and
+    /// printed nothing.
+    fn source_is_a_sequence(&self, source: &Expr) -> bool {
+        let name = match self.ctx.lookup_raw_type(source.id) {
+            Some(rask_types::Type::UnresolvedGeneric { name, .. }) => name.clone(),
+            Some(rask_types::Type::Generic { base, .. }) => {
+                match self.ctx.type_names.get(base) {
+                    Some(n) => n.clone(),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        name.split('<').next().unwrap_or(&name).trim() == "Iterator"
+    }
+
+    fn prefix_is(prefix: &Option<String>, want: &str) -> bool {
+        prefix
+            .as_deref()
+            .is_some_and(|p| p.split('<').next().unwrap_or(p).trim() == want)
+    }
+
+    /// `m.modify_with_default(k, || default, f)`: insert the default when `k`
+    /// is missing, then hand the value to `f` and keep what it leaves.
+    ///
+    /// Answers `R` rather than `R?` — after the insert there is always a value,
+    /// which is the whole point of the entry API (one lookup, no absent case for
+    /// the caller to handle).
+    fn lower_map_entry_modify(
+        &mut self,
+        object: &Expr,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let value_ty = self
+            .collection_elem_of_expr(object)
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:map_entry_modify"));
+
+        let map = self.builder.alloc_temp(obj_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: map,
+            rvalue: MirRValue::Use(obj_op),
+        }));
+        let (key_op, key_ty) = self.lower_expr(&args[0].expr)?;
+        let key = self.builder.alloc_temp(key_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: key,
+            rvalue: MirRValue::Use(key_op),
+        }));
+
+        let present = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(present),
+            func: FunctionRef::internal("Map_contains_key".to_string()),
+            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
+        }));
+
+        let insert_block = self.builder.create_block();
+        let have_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(present),
+            then_block: have_block,
+            else_block: insert_block,
+        }));
+
+        // Missing: run the factory and put its value in, so the modify path
+        // below has something to read either way.
+        self.builder.switch_to_block(insert_block);
+        let (default_op, _) = self.inline_closure_no_arg(&args[1].expr)?;
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Map_insert".to_string()),
+            args: vec![MirOperand::Local(map), MirOperand::Local(key), default_op],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: have_block,
+        }));
+
+        self.builder.switch_to_block(have_block);
+        let value = self.builder.alloc_temp(value_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
+        }));
+        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
+            &args[2].expr,
+            MirOperand::Local(value),
+            value_ty,
+        )?;
+        if let Some(param) = param_local {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Map_insert".to_string()),
+                args: vec![
+                    MirOperand::Local(map),
+                    MirOperand::Local(key),
+                    MirOperand::Local(param),
+                ],
+            }));
+        }
+        Ok(Some((body_op, body_ty)))
+    }
+
+    /// Inline a closure that takes nothing — `|| default`. The same machinery as
+    /// `inline_closure_keeping_param` without a parameter to bind.
+    fn inline_closure_no_arg(
+        &mut self,
+        closure: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let ExprKind::Closure { body, .. } = &closure.kind else {
+            return Err(LoweringError::InvalidConstruct("expected closure".to_string()));
+        };
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        let cont_block = self.builder.create_block();
+        let saved_return_target = self.inline_return_target.take();
+        let saved_return_taken = self.inline_return_taken.take();
+        self.inline_return_target = Some((result_local, cont_block));
+
+        let (body_op, body_ty) = self.lower_expr(body)?;
+
+        let returned_ty = self.inline_return_taken.take();
+        self.inline_return_target = saved_return_target;
+        self.inline_return_taken = saved_return_taken;
+        if returned_ty.is_none() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(body_op),
+            }));
+        }
+        let body_ty = returned_ty.unwrap_or(body_ty);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: cont_block,
+        }));
+        self.builder.switch_to_block(cont_block);
+        self.builder.set_local_type(result_local, body_ty.clone());
+        Ok((MirOperand::Local(result_local), body_ty))
+    }
+
+    /// `read(k, f)` and `modify(k, f)` on a Map: hand the value at `k` to the
+    /// closure, answer `R?`, and for `modify` put back whatever the closure left
+    /// in its parameter.
+    ///
+    /// `Map_contains_key` decides the branch rather than `Map_get`, so the
+    /// present path can use `Map_get_unwrap` and get the value itself instead of
+    /// an optional to unwrap.
+    fn lower_map_value_closure(
+        &mut self,
+        method: &str,
+        object: &Expr,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        let value_ty = self
+            .collection_elem_of_expr(object)
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:map_value_closure"));
+
+        let map = self.builder.alloc_temp(obj_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: map,
+            rvalue: MirRValue::Use(obj_op),
+        }));
+        let (key_op, key_ty) = self.lower_expr(&args[0].expr)?;
+        let key = self.builder.alloc_temp(key_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: key,
+            rvalue: MirRValue::Use(key_op),
+        }));
+
+        let present = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(present),
+            func: FunctionRef::internal("Map_contains_key".to_string()),
+            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
+        }));
+
+        let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
+        let present_block = self.builder.create_block();
+        let absent_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(present),
+            then_block: present_block,
+            else_block: absent_block,
+        }));
+
+        self.builder.switch_to_block(present_block);
+        let value = self.builder.alloc_temp(value_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
+        }));
+        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
+            &args[1].expr,
+            MirOperand::Local(value),
+            value_ty,
+        )?;
+        if method == "modify" {
+            if let Some(param) = param_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Map_insert".to_string()),
+                    args: vec![
+                        MirOperand::Local(map),
+                        MirOperand::Local(key),
+                        MirOperand::Local(param),
+                    ],
+                }));
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 8,
+            value: body_op,
+            store_size: Some(body_ty.size().max(1)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(absent_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(merge_block);
+        let result_ty = MirType::Option(Box::new(body_ty));
+        self.builder.set_local_type(result, result_ty.clone());
+        Ok(Some((MirOperand::Local(result), result_ty)))
+    }
+
+    /// `read(i, f)` and `modify(i, f)` on a Vec: hand element `i` to the
+    /// closure, answer `R?`, and for `modify` keep whatever the closure left in
+    /// its parameter.
+    ///
+    /// Out of range is `none` and touches nothing — the bounds check is here
+    /// rather than in the runtime because the answer is a `T?`, and the runtime
+    /// can't build one.
+    ///
+    /// The result slot is allocated before its payload type is known and
+    /// retyped once the body has been lowered, the same way
+    /// `inline_closure_keeping_param` handles its own result local: `R` is
+    /// whatever the closure returns, and there's no way to know that without
+    /// lowering it.
+    fn lower_vec_element_closure(
+        &mut self,
+        method: &str,
+        object: &Expr,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let (obj_op, obj_ty) = self.lower_expr(object)?;
+        if !matches!(obj_ty, MirType::Ptr) {
+            return Ok(None);
+        }
+        let elem_ty = self
+            .collection_elem_of_expr(object)
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:element_closure"));
+
+        let collection = self.builder.alloc_temp(obj_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: collection,
+            rvalue: MirRValue::Use(obj_op),
+        }));
+
+        let (index_op, _) = self.lower_expr(&args[0].expr)?;
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(index_op),
+        }));
+
+        let len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![MirOperand::Local(collection)],
+        }));
+
+        let non_negative = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: non_negative,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Ge,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        let below_len = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: below_len,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len),
+            },
+        }));
+        let in_range = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: in_range,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::And,
+                left: MirOperand::Local(non_negative),
+                right: MirOperand::Local(below_len),
+            },
+        }));
+
+        let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
+        let present_block = self.builder.create_block();
+        let absent_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(in_range),
+            then_block: present_block,
+            else_block: absent_block,
+        }));
+
+        self.builder.switch_to_block(present_block);
+        let elem = self.builder.alloc_temp(elem_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(elem),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
+        }));
+        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
+            &args[1].expr,
+            MirOperand::Local(elem),
+            elem_ty,
+        )?;
+        if method == "modify" {
+            if let Some(param) = param_local {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("Vec_set".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(idx),
+                        MirOperand::Local(param),
+                    ],
+                }));
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 8,
+            value: body_op,
+            store_size: Some(body_ty.size().max(1)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(absent_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        self.builder.switch_to_block(merge_block);
+        let result_ty = MirType::Option(Box::new(body_ty));
+        self.builder.set_local_type(result, result_ty.clone());
+        Ok(Some((MirOperand::Local(result), result_ty)))
     }
 
     /// Inline a closure body: substitute the closure parameter with a value
@@ -326,6 +798,23 @@ impl<'a> MirLowerer<'a> {
         arg_op: MirOperand,
         arg_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {
+        let (result, _) = self.inline_closure_keeping_param(closure, arg_op, arg_ty)?;
+        Ok(result)
+    }
+
+    /// The same, handing back the local the closure's parameter was bound to.
+    ///
+    /// `modify` needs it: the closure is given mutable access to the element and
+    /// whatever it leaves there is the new element. Inlining is what makes that
+    /// cheap — the parameter *is* a local, so a body that assigns to it has
+    /// already written the value, and the write-back is one store of this local
+    /// into the slot.
+    pub(super) fn inline_closure_keeping_param(
+        &mut self,
+        closure: &Expr,
+        arg_op: MirOperand,
+        arg_ty: MirType,
+    ) -> Result<(TypedOperand, Option<LocalId>), LoweringError> {
         if let ExprKind::Closure { params, body, .. } = &closure.kind {
             if let Some(param) = params.first() {
                 let param_name = &param.name;
@@ -386,7 +875,10 @@ impl<'a> MirLowerer<'a> {
                 if let Some(prev) = saved {
                     self.locals.insert(param_name.clone(), prev);
                 }
-                return Ok((MirOperand::Local(result_local), body_ty));
+                return Ok((
+                    (MirOperand::Local(result_local), body_ty),
+                    Some(param_local),
+                ));
             }
         }
         Err(LoweringError::InvalidConstruct("expected closure".to_string()))
@@ -572,6 +1064,17 @@ impl<'a> MirLowerer<'a> {
         let mut current_op = elem_op;
         let mut current_ty = elem_ty;
 
+        // When the source holds functions, an adapter's closure parameter holds
+        // one too, and calling it needs the same registration a `for` binding
+        // gets (#869). Without it `fs.map(|f| { return f(3) })` lowered `f(3)` as
+        // a call to a function named `f`, found no signature for it, and gave up
+        // on the return type (#870).
+        //
+        // Registered across the whole chain rather than per adapter: a closure
+        // parameter's name is scoped to its own closure anyway, and the names
+        // come back out at the end.
+        let callable_params = self.register_callable_adapter_params(chain);
+
         for adapter in &chain.adapters {
             match adapter {
                 super::IterAdapter::Filter { closure } => {
@@ -613,7 +1116,69 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        for name in &callable_params {
+            self.closure_locals.remove(name);
+            self.func_sigs.remove(name);
+        }
         Ok((current_op, current_ty))
+    }
+
+    /// Register every adapter closure's parameters as callable, when the source
+    /// holds functions. Returns the names so they can be taken back out.
+    ///
+    /// Only up to the first `map`: after one, the element is whatever that
+    /// closure returned, so a later adapter's parameter isn't a function any
+    /// more.
+    fn register_callable_adapter_params(&mut self, chain: &super::IterChain<'_>) -> Vec<String> {
+        let Some(ret) = self.source_elem_fn_ret(chain.source) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for adapter in &chain.adapters {
+            let closure = match adapter {
+                super::IterAdapter::Map { closure } | super::IterAdapter::Filter { closure } => {
+                    closure
+                }
+                _ => continue,
+            };
+            if let ExprKind::Closure { params, .. } = &closure.kind {
+                for p in params {
+                    if self.closure_locals.insert(p.name.clone()) {
+                        names.push(p.name.clone());
+                    }
+                    self.func_sigs.insert(
+                        p.name.clone(),
+                        super::FuncSig {
+                            ret_ty: ret.clone(),
+                            scalar_mutate_params: Vec::new(),
+                            aggregate_mutate_params: Vec::new(),
+                            ret_vec_elem: None,
+                            param_ty_strs: Vec::new(),
+                        },
+                    );
+                }
+            }
+            if matches!(adapter, super::IterAdapter::Map { .. }) {
+                break;
+            }
+        }
+        names
+    }
+
+    /// The MIR return type of the functions a source holds, when it holds
+    /// functions. `Vec<func(i64) -> i64>` answers `i64`; anything else answers
+    /// nothing.
+    fn source_elem_fn_ret(&self, source: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(source.id)?;
+        let (name, args) = self.generic_head(ty)?;
+        if !matches!(name.as_str(), "Vec" | "Iterator") {
+            return None;
+        }
+        let rask_types::GenericArg::Type(elem) = args.first()? else { return None };
+        match &**elem {
+            rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
+            _ => None,
+        }
     }
 
     /// Emit the increment block: idx += 1, goto check
@@ -1101,6 +1666,211 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// .find(|x| pred) — fused loop, return Some on first match, None otherwise.
+    /// SEQ: `position(p)` — the index of the first yielded element the
+    /// predicate accepts, counted over what the chain *yields*, so a `filter`
+    /// in front of it doesn't leave gaps in the numbering.
+    pub(super) fn lower_iter_position(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        predicate: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let opt_ty = MirType::Option(Box::new(MirType::I64));
+        let result = self.builder.alloc_temp(opt_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)), // None
+            store_size: None,
+        }));
+        let pos = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pos,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        // This element's own position, before the counter moves on.
+        let here = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: here,
+            rvalue: MirRValue::Use(MirOperand::Local(pos)),
+        }));
+        let next = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: next,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(pos),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pos,
+            rvalue: MirRValue::Use(MirOperand::Local(next)),
+        }));
+
+        let (pred_op, _) = self.inline_closure_body(predicate, final_op, final_ty)?;
+        let found_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: pred_op,
+            then_block: found_block,
+            else_block: setup.inc_block,
+        }));
+
+        self.builder.switch_to_block(found_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)), // Some
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 8,
+            value: MirOperand::Local(here),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.exit_block }));
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+        Ok((MirOperand::Local(result), opt_ty))
+    }
+
+    /// SEQ: `reduce(f)` — `fold` seeded with the first yielded element. The
+    /// answer is `T?` because an empty source has no seed.
+    pub(super) fn lower_iter_reduce(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        closure: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let ExprKind::Closure { params, body, .. } = &closure.kind else {
+            return Err(LoweringError::InvalidConstruct("reduce takes a closure".to_string()));
+        };
+        if params.len() != 2 {
+            return Err(LoweringError::InvalidConstruct(
+                "reduce's closure takes two parameters".to_string(),
+            ));
+        }
+
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        let opt_ty = MirType::Option(Box::new(final_ty.clone()));
+        let acc = self.builder.alloc_temp(final_ty.clone());
+        let have = self.builder.alloc_temp(MirType::Bool);
+
+        // `have` and `acc` are declared outside the loop, but the loop body is
+        // the only writer, so the initial store has to happen before the
+        // header — which `setup_iter_chain_loop` has already emitted. Seed
+        // them at the top of the function's current block instead by branching
+        // on `have` each iteration: false takes the element as the seed.
+        let seed_block = self.builder.create_block();
+        let combine_block = self.builder.create_block();
+        let after_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(have),
+            then_block: combine_block,
+            else_block: seed_block,
+        }));
+
+        self.builder.switch_to_block(seed_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(final_op.clone()),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: have,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_block }));
+
+        self.builder.switch_to_block(combine_block);
+        let acc_name = &params[0].name;
+        let elem_name = &params[1].name;
+        let saved_acc = self.locals.remove(acc_name);
+        let saved_elem = self.locals.remove(elem_name);
+
+        let acc_param = self.builder.alloc_local(acc_name.clone(), final_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc_param,
+            rvalue: MirRValue::Use(MirOperand::Local(acc)),
+        }));
+        self.locals.insert(acc_name.clone(), (acc_param, final_ty.clone()));
+        let elem_param = self.builder.alloc_local(elem_name.clone(), final_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: elem_param,
+            rvalue: MirRValue::Use(final_op),
+        }));
+        self.locals.insert(elem_name.clone(), (elem_param, final_ty.clone()));
+
+        let saved_return_target = self.inline_return_target.take();
+        let saved_return_taken = self.inline_return_taken.take();
+        self.inline_return_target = Some((acc, after_block));
+        let (result_op, _) = self.lower_expr(body)?;
+        let returned = self.inline_return_taken.take().is_some();
+        self.inline_return_target = saved_return_target;
+        self.inline_return_taken = saved_return_taken;
+        if !returned {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: acc,
+                rvalue: MirRValue::Use(result_op),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_block }));
+        }
+
+        self.locals.remove(acc_name);
+        self.locals.remove(elem_name);
+        if let Some(prev) = saved_acc { self.locals.insert(acc_name.clone(), prev); }
+        if let Some(prev) = saved_elem { self.locals.insert(elem_name.clone(), prev); }
+
+        self.builder.switch_to_block(after_block);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+
+        // Build the `T?`: present only if the loop ran at least once.
+        let result = self.builder.alloc_temp(opt_ty.clone());
+        let some_block = self.builder.create_block();
+        let none_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(have),
+            then_block: some_block,
+            else_block: none_block,
+        }));
+        self.builder.switch_to_block(some_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(0)),
+            store_size: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result, offset: 8,
+            value: MirOperand::Local(acc),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        self.builder.switch_to_block(none_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result, offset: 0,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        self.builder.switch_to_block(done_block);
+        Ok((MirOperand::Local(result), opt_ty))
+    }
+
     pub(super) fn lower_iter_find(
         &mut self,
         chain: &super::IterChain<'_>,

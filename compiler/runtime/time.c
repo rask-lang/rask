@@ -16,6 +16,16 @@ int64_t rask_time_Instant_now(void) {
     return clock_monotonic_ns();
 }
 
+// time.wall_clock_nanos() → nanoseconds since the UNIX epoch.
+// SystemTime is built on this in Rask — the epoch conversions, the comparisons
+// and the checked difference are all arithmetic, so they live in stdlib/time.rk
+// where both backends run the same source.
+int64_t rask_time_wall_clock_nanos(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
 // instant.elapsed() → Duration (nanoseconds since instant)
 int64_t rask_time_Instant_elapsed(int64_t instant_ns) {
     return clock_monotonic_ns() - instant_ns;

@@ -253,7 +253,7 @@ fn stmt_accesses_handle_fields(stmt: &Stmt, handle_names: &[&str]) -> bool {
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             expr_accesses_handle_fields(init, handle_names)
         }
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             expr_accesses_handle_fields(target, handle_names)
                 || expr_accesses_handle_fields(value, handle_names)
         }

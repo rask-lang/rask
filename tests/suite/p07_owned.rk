@@ -26,4 +26,61 @@ test "mem.owned/OW3 — deref borrows a field, own value survives until drop" {
     assert x == 1
 }
 
+// --- own in a local, then into a declared slot (#739) ---
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Holder {
+    public inner: Owned<Big>
+}
+
+enum List {
+    Nil
+    Cons(i64, Owned<List>)
+}
+
+test "mem.owned/OW3 — a local bound to `own` holds the box, not a copy of it" {
+    let p = own Big { a: 4, b: 5, c: 6 }
+    assert p.b == 5
+    drop(p)
+}
+
+test "mem.owned/OW3 — a declared Owned field allocates once, whichever way it's filled" {
+    // Straight from the `own`.
+    let direct = Holder { inner: own Big { a: 1, b: 2, c: 3 } }
+    assert direct.inner.b == 2
+    drop(direct.inner)
+
+    // Through a local — the box moves, it isn't boxed again.
+    let p = own Big { a: 4, b: 5, c: 6 }
+    let moved = Holder { inner: p }
+    assert moved.inner.b == 5
+    drop(moved.inner)
+
+    // A plain value: OW5 lets a `T` stand where `Owned<T>` is asked for, and the
+    // slot is what allocates.
+    let plain = Big { a: 7, b: 8, c: 9 }
+    let boxed = Holder { inner: plain }
+    assert boxed.inner.b == 8
+    drop(boxed.inner)
+}
+
+test "mem.owned/OW6 — a recursive enum holds its tail behind an Owned" {
+    let l = List.Cons(1, own List.Cons(2, own List.Nil))
+    match l {
+        List.Cons(head, rest) => {
+            assert head == 1
+            match rest {
+                List.Cons(second, _) => assert second == 2
+                List.Nil => assert false
+            }
+        }
+        List.Nil => assert false
+    }
+}
+
 func main() {}

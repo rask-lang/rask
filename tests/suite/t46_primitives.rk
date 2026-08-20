@@ -133,3 +133,57 @@ test "type.primitives/P4 — comparisons produce bool" {
 }
 
 func main() {}
+
+// ── A shift's operands take the expected type (#833) ─────────────────
+//
+// `let a: i64 = 2 << 40` panicked at runtime with "shift amount exceeds i32 bit
+// width" — for an expression whose only written type is `i64`. The other
+// arithmetic operators are "homogeneous": the checker ties the two operands
+// together, so an annotation on the binding reaches both. Shifts aren't, and
+// rightly so — the shift amount has its own type — but nothing tied the *result*
+// to the receiver either, so a literal on the left was unconstrained and
+// defaulted to i32 before the annotation was consulted.
+//
+// A local worked (`let b: i64 = 2` then `b << 40`), which is what made this look
+// like a shift bug rather than an inference one.
+
+test "type.primitives — a shift's left literal takes the annotation" {
+    let a: i64 = 2 << 40
+    assert a == 2199023255552
+
+    // The other direction: the annotation narrows rather than widens.
+    let n: i32 = 1 << 20
+    assert n == 1048576
+
+    // Unsigned, and past the signed boundary.
+    let u: u64 = 1 << 63
+    assert u == 9223372036854775808
+
+    // Right shift too.
+    let r: i64 = 4398046511104 >> 40
+    assert r == 4
+}
+
+func shifted(n: i64) -> i64 {
+    return n
+}
+
+test "type.primitives — a parameter's type reaches a shift argument" {
+    // The expectation is the parameter's type rather than a binding's.
+    assert shifted(2 << 40) == 2199023255552
+}
+
+test "type.primitives — a local on the left still works" {
+    let base: i64 = 2
+    assert (base << 40) == 2199023255552
+}
+
+test "type.primitives — a typed shift amount keeps its own type" {
+    // ORD4 puts the shifts with arithmetic, so a mixed-signedness amount is a
+    // type error (`u64 << i32` — asserted in tests/compile_errors/). The widths
+    // don't have to match, though: only a *literal* amount takes the receiver's
+    // type, and one written at its own keeps it.
+    let n: u8 = 3
+    let v: u64 = 1
+    assert (v << n) == 8
+}

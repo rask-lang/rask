@@ -508,9 +508,30 @@ impl Interpreter {
                 // Kind comes from an explicit suffix, else the checker's
                 // inferred type for this literal (defaults to i32). This is
                 // where width first attaches to a value (type.overflow).
+                // A literal that needed 64 or 128 bits for its magnitude still
+                // leaves the type open — the marker says which types it *can't*
+                // be. So the checker's answer decides for those too, same as for
+                // a literal with no suffix at all (#800).
+                let open = matches!(
+                    suffix,
+                    None | Some(IntSuffix::U64ByMagnitude) | Some(IntSuffix::I128ByMagnitude)
+                );
+                if open {
+                    match self.node_types.get(&expr.id) {
+                        Some(rask_types::Type::I128) => return Ok(Value::Int128(*n)),
+                        Some(rask_types::Type::U128) => return Ok(Value::Uint128(*n as u128)),
+                        _ => {}
+                    }
+                }
                 let kind = match suffix {
-                    Some(IntSuffix::I128) => return Ok(Value::Int128(*n as i128)),
-                    Some(IntSuffix::U128) => return Ok(Value::Uint128(*n as u128)),
+                    Some(IntSuffix::I128) | Some(IntSuffix::I128ByMagnitude) => {
+                        return Ok(Value::Int128(*n))
+                    }
+                    // Past `i128::MAX` the token holds a bit pattern; reading
+                    // it back as `u128` is what recovers the value.
+                    Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => {
+                        return Ok(Value::Uint128(*n as u128))
+                    }
                     Some(IntSuffix::I8) => IntKind::I8,
                     Some(IntSuffix::I16) => IntKind::I16,
                     Some(IntSuffix::I32) => IntKind::I32,
@@ -520,10 +541,17 @@ impl Interpreter {
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
                     Some(IntSuffix::Usize) => IntKind::usize_kind(),
-                    Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => IntKind::U64,
+                    Some(IntSuffix::U64) => IntKind::U64,
+                    // The marker's own band is the fallback when the checker
+                    // left nothing behind.
+                    Some(IntSuffix::U64ByMagnitude) => self
+                        .node_types
+                        .get(&expr.id)
+                        .map(IntKind::from_type)
+                        .unwrap_or(IntKind::U64),
                     None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
                 };
-                Ok(Value::Int(*n, kind))
+                Ok(Value::Int(*n as i64, kind))
             }
             // Same as the integer literal above: the suffix wins, otherwise
             // take the width the checker inferred. This is where a float's
@@ -654,6 +682,15 @@ impl Interpreter {
                 if self.struct_decls.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
+                // `Holder<i64>.Full(4)` — written type arguments are folded into
+                // the name, and the enum table is keyed by the bare one. Only when
+                // arguments were actually written: a bare enum name is intercepted
+                // before it gets here, and answering for it too would change what
+                // `Holder` alone means. The arguments have already done their work
+                // in the checker (#782).
+                if base_name != name && self.enums.contains_key(base_name) {
+                    return Ok(Value::Type(base_name.to_string()));
+                }
                 // `make<i32>(2)` — the parser folds the written type arguments
                 // into the callee's name, and the function table is keyed by
                 // the bare one, so an explicitly instantiated call went looking
@@ -764,7 +801,17 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                if let ExprKind::Ident(name) = &object.kind {
+                if let ExprKind::Ident(written) = &object.kind {
+                    // `Holder<i64>.Full(4)` — written type arguments are folded
+                    // into the name and the enum table is keyed by the bare one, so
+                    // the whole-name lookup missed and the variant call fell through
+                    // to "type Holder has no method 'Full'". The arguments have
+                    // already done their work in the checker; the value carries the
+                    // bare enum name either way (#782).
+                    //
+                    // Only the enum lookup below is unwrapped. Everything after it
+                    // keys off the name as written, which is what it did before.
+                    let name = &written.split('<').next().unwrap_or(written).to_string();
                     if let Some(enum_decl) = self.enums.get(name).cloned() {
                         // .variants() — return Vec of all fieldless variant values
                         if method == "variants" {
@@ -864,6 +911,7 @@ impl Interpreter {
                         }
                     }
 
+                    let name = written;
                     // @binary static methods (e.g. IpHeader.parse(data))
                     if self.binary_structs.contains_key(name) {
                         let arg_vals: Vec<Value> = args
@@ -1071,8 +1119,8 @@ impl Interpreter {
                     UnaryOp::Deref => Ok(val),
                     // `own` heap-allocates on native (#739); the interpreter's
                     // values are already independent of any stack frame, so
-                    // there's nothing further to do here — same OW5
-                    // transparency as Deref above.
+                    // there's nothing further to do here — same OW5 transparency
+                    // as Deref above.
                     UnaryOp::Own => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
@@ -1370,7 +1418,15 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                if let ExprKind::Ident(enum_name) = &object.kind {
+                if let ExprKind::Ident(written) = &object.kind {
+                    // `Holder<i64>.Full(4)` — the parser folds written type
+                    // arguments into the name, and the enum table is keyed by the
+                    // bare one. Looked up whole, it missed, and the miss surfaced
+                    // as "undefined variable `Holder<i64>`" — at *runtime*, while
+                    // native failed during lowering (#782). The arguments have
+                    // already done their work in the checker; a variant value
+                    // carries the bare enum name either way.
+                    let enum_name = written.split('<').next().unwrap_or(written);
                     if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
                         if let Some((vidx, variant)) =
                             enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == field)
@@ -1378,14 +1434,14 @@ impl Interpreter {
                             let field_count = variant.fields.len();
                             if field_count == 0 {
                                 return Ok(Value::Enum {
-                                    name: enum_name.clone(),
+                                    name: enum_name.to_string(),
                                     variant: field.clone(),
                                     fields: vec![],
                                     variant_index: vidx as u32, origin: None,
                                 });
                             } else {
                                 return Ok(Value::EnumConstructor {
-                                    enum_name: enum_name.clone(),
+                                    enum_name: enum_name.to_string(),
                                     variant_name: field.clone(),
                                     field_count,
                                     variant_index: vidx as u32,

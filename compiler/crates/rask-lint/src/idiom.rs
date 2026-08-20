@@ -61,7 +61,7 @@ fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(init, source, diags);
         }
         StmtKind::Return(Some(e)) => walk_expr_for_unwrap(e, source, diags),
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             walk_expr_for_unwrap(target, source, diags);
             walk_expr_for_unwrap(value, source, diags);
         }
@@ -584,7 +584,7 @@ fn walk_stmts_for_none_eq(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiag
             StmtKind::LetTuple { init, .. } => check_expr_for_none_eq(init, source, diags),
             StmtKind::Expr(e) => check_expr_for_none_eq(e, source, diags),
             StmtKind::Return(Some(e)) => check_expr_for_none_eq(e, source, diags),
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, .. } => {
                 check_expr_for_none_eq(target, source, diags);
                 check_expr_for_none_eq(value, source, diags);
             }

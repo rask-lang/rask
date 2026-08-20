@@ -126,6 +126,29 @@ impl Interpreter {
             }
         }
 
+        // `5 == a` with an optional on the right. Equality is symmetric, and
+        // the optional side is the one that knows how to compare against a
+        // bare payload — dispatching on the receiver alone sent this to the
+        // scalar method, which refused the enum it was handed (#834).
+        if matches!(method, "eq" | "ne")
+            && args.len() == 1
+            && !matches!(&receiver, Value::Enum { name, .. } if name == "Option")
+        {
+            let opt = match args.first() {
+                Some(Value::Enum { name, variant, fields, .. }) if name == "Option" => {
+                    Some((variant.clone(), fields.clone()))
+                }
+                _ => None,
+            };
+            if let Some((variant, fields)) = opt {
+                let eq = self.call_option_method(&variant, &fields, "eq", vec![receiver])?;
+                return Ok(match (method, eq) {
+                    ("ne", Value::Bool(b)) => Value::Bool(!b),
+                    (_, v) => v,
+                });
+            }
+        }
+
         match &receiver {
             Value::Int(a, k) => return self.call_int_method(*a, *k, method, &args),
             Value::Int128(a) => return self.call_int128_method(*a, method, &args),
@@ -432,4 +455,18 @@ impl Interpreter {
             method: method.to_string(),
         })
     }
+}
+
+/// FNV-1a over bytes — what `x.hash()` answers on every scalar type.
+///
+/// The same function the C runtime's `rask_hash_bytes` computes, so the two
+/// backends agree on a value's hash and a value agrees with itself used as a Map
+/// key (HA1, #813). Unseeded: a hash has to be as stable as `==`.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }

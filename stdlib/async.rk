@@ -7,12 +7,12 @@
 /// Compile error if called outside any scope (directly or transitively);
 /// runtime panic for higher-order/trait-object cases the compiler can't prove.
 @native("rask_green_closure_spawn")
-public func spawn(f: func() -> T) -> TaskHandle<T> { }
+public func spawn(f: func() -> T) -> TaskHandle<T> {}
 
 /// Check if the current task has been cancelled.
 /// Returns true if cancel was requested. Use in long-running loops.
 @native
-public func cancelled() -> bool { }
+public func cancelled() -> bool {}
 
 // --- Task handles ---
 
@@ -25,28 +25,28 @@ extend TaskHandle<T> {
     /// Wait for the task to finish and return its result.
     /// Consumes the handle.
     @native("rask_green_join_simple")
-    public func join(take self) -> T or JoinError { }
+    public func join(take self) -> T or JoinError {}
 
     /// Detach the task (fire-and-forget). Consumes the handle.
     @native("rask_green_detach")
-    public func detach(take self) { }
+    public func detach(take self) {}
 
     /// Request cooperative cancellation, wait for exit.
     /// Consumes the handle.
     @native("rask_green_cancel_simple")
-    public func cancel(take self) -> T or JoinError { }
+    public func cancel(take self) -> T or JoinError {}
 }
 
 public enum JoinError {
-    Panicked(string),
-    Cancelled,
+    Panicked(string)
+    Cancelled
 }
 
 extend JoinError {
     public func message(self) -> string {
         match self {
-            JoinError.Panicked(msg) => return "task panicked: {msg}",
-            JoinError.Cancelled => return "task was cancelled",
+            JoinError.Panicked(msg) => return "task panicked: {msg}"
+            JoinError.Cancelled => return "task was cancelled"
         }
     }
 }
@@ -55,26 +55,26 @@ extend JoinError {
 
 /// Wait for all tasks to complete. Returns results in order.
 @native
-public func join_all(handles: Vec<TaskHandle<T>>) -> Vec<T or JoinError> { }
+public func join_all(handles: Vec<TaskHandle<T>>) -> Vec<T or JoinError> {}
 
 /// Return the first result, cancel remaining tasks.
 @native
-public func select_first(handles: Vec<TaskHandle<T>>) -> T or JoinError { }
+public func select_first(handles: Vec<TaskHandle<T>>) -> T or JoinError {}
 
 /// Dynamic task group for spawning a variable number of tasks.
 public struct TaskGroup<T> { }
 
 extend TaskGroup<T> {
     @native
-    public func new() -> TaskGroup<T> { }
+    public func new() -> TaskGroup<T> {}
 
     /// Spawn a task in this group.
     @native("rask_green_closure_spawn")
-    public func spawn(self, f: func() -> T) { }
+    public func spawn(self, f: func() -> T) {}
 
     /// Wait for all tasks in the group. Returns results in spawn order.
     @native
-    public func join_all(take self) -> Vec<T or JoinError> { }
+    public func join_all(take self) -> Vec<T or JoinError> {}
 }
 
 // --- Channels ---
@@ -82,11 +82,11 @@ extend TaskGroup<T> {
 extend Channel<T> {
     /// Create a buffered channel with the given capacity.
     @native("rask_channel_new_ptr")
-    public func buffered(capacity: u64) -> (Sender<T>, Receiver<T>) { }
+    public func buffered(capacity: u64) -> (Sender<T>, Receiver<T>) {}
 
     /// Create an unbuffered (synchronous) channel.
     @native("rask_channel_new_ptr")
-    public func unbuffered() -> (Sender<T>, Receiver<T>) { }
+    public func unbuffered() -> (Sender<T>, Receiver<T>) {}
 }
 
 public struct Sender<T> { }
@@ -94,15 +94,15 @@ public struct Sender<T> { }
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
-    public func send(self, value: T) -> void or SendError { }
+    public func send(self, value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
     @native("rask_channel_try_send_i64")
-    public func try_send(self, value: T) -> void or TrySendError { }
+    public func try_send(self, value: T) -> void or TrySendError {}
 
     /// Explicitly close the sender.
     @native("rask_sender_close_i64")
-    public func close(self) -> void or CloseError { }
+    public func close(self) -> void or CloseError {}
 }
 
 public struct Receiver<T> { }
@@ -110,55 +110,67 @@ public struct Receiver<T> { }
 extend Receiver<T> {
     /// Receive a value. Pauses/blocks if buffer empty.
     @native("rask_channel_recv_i64")
-    public func receive(self) -> T or ReceiveError { }
+    public func receive(self) -> T or ReceiveError {}
 
     /// Non-blocking receive. Returns error if empty or closed.
     @native("rask_channel_try_recv_into")
-    public func try_receive(self) -> T or TryReceiveError { }
+    public func try_receive(self) -> T or TryReceiveError {}
 
     /// Explicitly close the receiver.
     @native("rask_recver_close_i64")
-    public func close(self) -> void or CloseError { }
+    public func close(self) -> void or CloseError {}
 }
 
 // --- Channel errors ---
 
 public enum SendError { Closed }
+
 extend SendError {
-    public func message(self) -> string { return "send on closed channel" }
+    public func message(self) -> string {
+        return "send on closed channel"
+    }
 }
 
 public enum ReceiveError { Closed }
+
 extend ReceiveError {
-    public func message(self) -> string { return "receive on closed channel" }
+    public func message(self) -> string {
+        return "receive on closed channel"
+    }
 }
 
 public enum CloseError { AlreadyClosed, FlushFailed }
+
 extend CloseError {
     public func message(self) -> string {
         match self {
-            CloseError.AlreadyClosed => return "channel already closed",
-            CloseError.FlushFailed => return "flush failed on close",
+            CloseError.AlreadyClosed => return "channel already closed"
+            CloseError.FlushFailed => return "flush failed on close"
         }
     }
 }
 
-public enum TrySendError { Full(T), Closed(T) }
+public enum TrySendError {
+    Full(T)
+    Closed(T)
+}
+
 extend TrySendError<T> {
     public func message(self) -> string {
         match self {
-            TrySendError.Full(_) => return "channel is full",
-            TrySendError.Closed(_) => return "send on closed channel",
+            TrySendError.Full(_) => return "channel is full"
+            TrySendError.Closed(_) => return "send on closed channel"
         }
     }
 }
 
 public enum TryReceiveError { Empty, Closed }
+
 extend TryReceiveError {
     public func message(self) -> string {
         match self {
-            TryReceiveError.Empty => return "channel is empty",
-            TryReceiveError.Closed => return "receive on closed channel",
+            TryReceiveError.Empty => return "channel is empty"
+            TryReceiveError.Closed => return "receive on closed channel"
         }
     }
 }

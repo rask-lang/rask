@@ -16,7 +16,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     /// Integer literal
-    Int(i64, Option<IntSuffix>),
+    Int(i128, Option<IntSuffix>),
     /// Float literal
     Float(f64, Option<FloatSuffix>),
     /// String literal
@@ -419,7 +419,9 @@ pub enum UnaryOp {
     Ref,
     /// Dereference (*)
     Deref,
-    /// Heap-allocate (own) — mem.owned
+    /// Heap-allocate (`own expr`) — `mem.owned/OW3`. The operand is evaluated and
+    /// its value moved to the heap; the result is the pointer, which is also the
+    /// value's representation from here on (OW5).
     Own,
 }
 

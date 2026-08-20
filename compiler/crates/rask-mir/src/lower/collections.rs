@@ -18,14 +18,30 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
+        self.lower_vec_from_array_with(elems, None)
+    }
+
+    /// `lower_vec_from_array`, told what the elements are.
+    ///
+    /// The first element's own lowered type is a guess: it can't see that the
+    /// slot wants a `T?`, so `[1, none, 3]` into a `Vec<i64?>` built 8-byte slots
+    /// and dropped every tag. The checker knows, so it says.
+    pub(super) fn lower_vec_from_array_with(
+        &mut self,
+        elems: &[Expr],
+        elem_hint: Option<MirType>,
+    ) -> Result<TypedOperand, LoweringError> {
         let mut elem_ty = MirType::I64;
         let mut lowered = Vec::new();
         for (i, elem) in elems.iter().enumerate() {
             let (op, ty) = self.lower_expr(elem)?;
             if i == 0 {
-                elem_ty = ty;
+                elem_ty = ty.clone();
             }
-            lowered.push(op);
+            lowered.push((op, ty));
+        }
+        if let Some(hint) = elem_hint {
+            elem_ty = hint;
         }
         // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size 8
         // and readers load a whole word per element. An untyped integer literal
@@ -37,6 +53,12 @@ impl<'a> MirLowerer<'a> {
         if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
             elem_ty = MirType::I64;
         }
+        // A bare `T` filling a `T?` slot gets its layers here, same as an array
+        // literal's elements and a struct field's value.
+        let lowered: Vec<MirOperand> = lowered
+            .into_iter()
+            .map(|(op, val_ty)| self.wrap_collection_element(&elem_ty, &val_ty, op))
+            .collect();
         let elem_size = elem_ty.size();
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),
@@ -117,6 +139,29 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
+    /// Re-indent an encoded JSON string when the call was `encode_pretty`.
+    ///
+    /// The struct and Vec encoders build text directly, so there's no value
+    /// tree to hand a pretty printer — the indentation goes on afterwards, to
+    /// the same shape `JsonValue.to_string_pretty` writes (#847).
+    pub(super) fn maybe_json_pretty(
+        &mut self,
+        encoded: TypedOperand,
+        pretty: bool,
+    ) -> TypedOperand {
+        if !pretty {
+            return encoded;
+        }
+        let (op, _) = encoded;
+        let dst = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(dst),
+            func: FunctionRef::internal("json_pretty".to_string()),
+            args: vec![op],
+        }));
+        (MirOperand::Local(dst), MirType::String)
+    }
+
     pub(super) fn lower_json_encode_struct(
         &mut self,
         struct_op: MirOperand,
@@ -242,6 +287,21 @@ impl<'a> MirLowerer<'a> {
                 continue;
             }
 
+            // std.encoding/E22: a unit variant serializes as its own name.
+            // Without this an enum field fell through to the integer encoder
+            // and wrote the address of its slot as a number — valid JSON with a
+            // stack address in it, and no warning (#854).
+            let enum_layout = match &field.ty {
+                Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                    self.ctx.find_enum(name).map(|(_, l)| l.clone())
+                }
+                _ => None,
+            };
+            if let Some(layout) = enum_layout {
+                self.emit_json_enum_field(buf, &key, field_val, &layout);
+                continue;
+            }
+
             let helper = match &field.ty {
                 Type::String => "json_buf_add_string",
                 Type::Bool => "json_buf_add_bool",
@@ -271,6 +331,82 @@ impl<'a> MirLowerer<'a> {
         }));
 
         Ok((MirOperand::Local(result), MirType::String))
+    }
+
+    /// Write an enum field as its variant name (std.encoding/E22).
+    ///
+    /// A chain of tag comparisons rather than a jump table: an enum small
+    /// enough to be a struct field has a handful of variants, and this keeps
+    /// the emitted MIR to shapes every backend already handles. A variant that
+    /// carries a payload panics with what's missing — E23/E24 aren't written
+    /// yet, and the alternative was the address of the slot as a number.
+    fn emit_json_enum_field(
+        &mut self,
+        buf: crate::LocalId,
+        key: &str,
+        field_val: crate::LocalId,
+        layout: &rask_mono::EnumLayout,
+    ) {
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(field_val) },
+        }));
+
+        let done = self.builder.create_block();
+        for variant in &layout.variants {
+            let hit = self.builder.create_block();
+            let miss = self.builder.create_block();
+            let eq = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: eq,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(tag),
+                    right: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                },
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(eq),
+                then_block: hit,
+                else_block: miss,
+            }));
+
+            self.builder.switch_to_block(hit);
+            if variant.fields.is_empty() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("json_buf_add_string".to_string()),
+                    args: vec![
+                        MirOperand::Local(buf),
+                        MirOperand::Constant(MirConst::String(key.to_string())),
+                        MirOperand::Constant(MirConst::String(variant.name.clone())),
+                    ],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+            } else {
+                // E23/E24 aren't written yet. The check is per *value*, not per
+                // type: an enum can have both unit and payload variants, and
+                // the unit ones have an answer. The interpreter refuses the
+                // same way, at the same moment.
+                let msg = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(msg),
+                    func: FunctionRef::internal("panic".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::String(format!(
+                        "json.encode can't write `{}.{}` yet: a variant with a payload needs the tagged forms (std.encoding/E23, E24), and only unit variants are implemented",
+                        layout.name, variant.name,
+                    )))],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            }
+
+            self.builder.switch_to_block(miss);
+        }
+        // No variant matched, which a well-formed value can't do. Fall through
+        // rather than writing something invented.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+        self.builder.switch_to_block(done);
     }
 
     /// Add a `T?` field to a json buffer: the payload when present, `null` when

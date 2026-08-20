@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 extern "C" func rask_io_errno() -> i32
+
 extern "C" func rask_io_error_kind(err: i32) -> i32
+
 extern "C" func rask_io_error_text(err: i32) -> *u8
+
 extern "C" func rask_io_cstr_len(s: *u8) -> u64
 
 /// I/O error type — all I/O operations return T or IoError.
@@ -20,14 +23,14 @@ public enum IoError {
 extend IoError {
     public func message(self) -> string {
         match self {
-            IoError.NotFound(msg) => return "not found: {msg}",
-            IoError.PermissionDenied(msg) => return "permission denied: {msg}",
-            IoError.AlreadyExists(msg) => return "already exists: {msg}",
-            IoError.BrokenPipe => return "broken pipe",
-            IoError.ConnectionReset => return "connection reset",
-            IoError.TimedOut => return "timed out",
-            IoError.UnexpectedEof => return "unexpected end of file",
-            IoError.Other(msg) => return msg,
+            IoError.NotFound(msg) => return "not found: {msg}"
+            IoError.PermissionDenied(msg) => return "permission denied: {msg}"
+            IoError.AlreadyExists(msg) => return "already exists: {msg}"
+            IoError.BrokenPipe => return "broken pipe"
+            IoError.ConnectionReset => return "connection reset"
+            IoError.TimedOut => return "timed out"
+            IoError.UnexpectedEof => return "unexpected end of file"
+            IoError.Other(msg) => return msg
         }
     }
 
@@ -71,7 +74,10 @@ extend IoError {
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
 /// mirror the Writer trio (specs/stdlib/io.md R1-R3).
 public trait Reader {
-    func read(self, buf: Vec<u8>) -> i64 or IoError
+    /// `buf` is `mutate` because that's the whole point of `read` — it fills
+    /// the caller's buffer. Without it the trait was unimplementable: any body
+    /// that wrote into `buf` was rejected as mutating a read-only parameter.
+    func read(self, mutate buf: Vec<u8>) -> i64 or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
@@ -90,191 +96,387 @@ struct io { }
 extend io {
     /// Read a line of text from standard input.
     @native("rask_io_read_line")
-    public func read_line() -> string or IoError { }
+    public func read_line() -> string or IoError {}
 
     /// Acquire a handle to standard input.
-    @native
-    public func stdin() -> Stdin { }
+    public func stdin() -> Stdin {
+        return Stdin { stream: 0 }
+    }
 
     /// Acquire a handle to standard output.
-    @native
-    public func stdout() -> Stdout { }
+    public func stdout() -> Stdout {
+        return Stdout { stream: 1 }
+    }
 
     /// Acquire a handle to standard error.
-    @native
-    public func stderr() -> Stderr { }
+    public func stderr() -> Stderr {
+        return Stderr { stream: 2 }
+    }
+
+    /// The standard streams go through stdio rather than `write(2)`, so a
+    /// handle's output interleaves with `println` in the order the program
+    /// wrote it. `println` is buffered; a raw fd write would jump the queue.
+    ///
+    /// The stream number comes off the handle: 0 = stdin, 1 = stdout,
+    /// 2 = stderr. Bytes written, or -1.
+    @native("rask_io_std_write_text")
+    func write_std_text(stream: i32, data: string) -> i64 {}
+
+    /// The same, for bytes that needn't be UTF-8.
+    @native("rask_io_std_write_bytes")
+    func write_std_bytes(stream: i32, data: Vec<u8>) -> i64 {}
+
+    /// Push what stdio is holding. 0, or -1.
+    @native("rask_io_std_flush")
+    func flush_std(stream: i32) -> i64 {}
+
+    /// Read up to `max` bytes from standard input, stopping at end of input.
+    @native("rask_io_std_read_bytes")
+    func read_std_bytes(max: i64) -> Vec<u8> {}
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
-    @native
-    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError { }
+    ///
+    /// C1: no handles to acquire. Written in Rask over the two traits, so any
+    /// Reader/Writer pair works and both backends agree — there was no native
+    /// entry point for this at all before.
+    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {
+        let bytes = try reader.read_bytes()
+        let n = bytes.len().wrap<i64>()
+        try writer.write_bytes(bytes)
+        return n
+    }
 }
 
 /// Standard input handle. Implements Reader. Must be consumed via close().
+///
+/// The `stream` field is what a native entry point needs to know which stream
+/// it is talking to. All three handles were empty structs with `@native` on
+/// every method and no implementation behind any of them, so the stream number
+/// had nowhere to live (#859).
 @resource
-public struct Stdin { }
+public struct Stdin {
+    stream: i32
+}
 
 extend Stdin with Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
-    @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
+        let want = buf.len().wrap<i64>()
+        if want == 0 {
+            return 0
+        }
+        let got = io.read_std_bytes(want)
+        let n = got.len().wrap<i64>()
+        mut i: i64 = 0
+        while i < n {
+            buf.set(i, got.get(i) ?? 0)
+            i = i + 1
+        }
+        return n
+    }
 
     /// Read all remaining bytes.
-    @native
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        // Standard input has no length to ask for, so "everything" needs a
+        // bound. 16 MiB is far past any interactive or piped input, and small
+        // enough that a runaway producer can't exhaust memory.
+        return io.read_std_bytes(16777216)
+    }
 
     /// Read all remaining bytes as UTF-8 string.
-    @native
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes)
+        text catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return try text
+    }
 }
 
 extend Stdin {
     /// Read a single line from stdin.
     @native("rask_io_read_line")
-    public func read_line(self) -> string or IoError { }
+    public func read_line(self) -> string or IoError {}
 
     /// Close the handle.
-    @native
-    public func close(mutate self) { }
+    ///
+    /// `take self`, not `mutate self`: the handle is `@resource`, so it has to
+    /// be consumed exactly once before scope exit, and a `mutate` receiver
+    /// consumes nothing. Every program that acquired a standard stream failed
+    /// to compile with "resource must be consumed before scope exit" even with
+    /// `close()` right there (#859).
+    public func close(take self) -> void {
+        return
+    }
 }
 
 /// Standard output handle. Implements Writer. Must be consumed via close().
 @resource
-public struct Stdout { }
+public struct Stdout {
+    stream: i32
+}
 
 extend Stdout with Writer {
     /// Write bytes. Returns number of bytes written.
-    @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError {
+        let n = io.write_std_bytes(self.stream, data)
+        if n < 0 {
+            return IoError.last_os_error()
+        }
+        return n
+    }
 
     /// Write all bytes, retrying partial writes.
-    @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        let _ = try self.write(data)
+        return
+    }
 
     /// Write a string.
-    @native
-    public func write_text(self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError {
+        let n = io.write_std_text(self.stream, s)
+        if n < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 }
 
 extend Stdout {
     /// Flush buffered output.
-    @native
-    public func flush(self) -> void or IoError { }
+    public func flush(self) -> void or IoError {
+        if io.flush_std(self.stream) < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
-    /// Close the handle.
-    @native
-    public func close(mutate self) { }
+    /// Close the handle. See `Stdin.close` for why it takes `self`.
+    ///
+    /// The stream itself stays open — closing the process's own stdout is not
+    /// what `close` on a borrowed standard stream should mean. What it does is
+    /// discharge the linearity obligation, and flush, so nothing written
+    /// through the handle is still sitting in a buffer when it goes away.
+    public func close(take self) -> void {
+        let _ = io.flush_std(self.stream)
+        return
+    }
 }
 
 /// Standard error handle. Implements Writer. Must be consumed via close().
 @resource
-public struct Stderr { }
+public struct Stderr {
+    stream: i32
+}
 
 extend Stderr with Writer {
     /// Write bytes. Returns number of bytes written.
-    @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    public func write(self, data: Vec<u8>) -> i64 or IoError {
+        let n = io.write_std_bytes(self.stream, data)
+        if n < 0 {
+            return IoError.last_os_error()
+        }
+        return n
+    }
 
     /// Write all bytes, retrying partial writes.
-    @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        let _ = try self.write(data)
+        return
+    }
 
     /// Write a string.
-    @native
-    public func write_text(self, s: string) -> void or IoError { }
+    public func write_text(self, s: string) -> void or IoError {
+        let n = io.write_std_text(self.stream, s)
+        if n < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 }
 
 extend Stderr {
     /// Flush buffered output.
-    @native
-    public func flush(self) -> void or IoError { }
+    public func flush(self) -> void or IoError {
+        if io.flush_std(self.stream) < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
-    /// Close the handle.
-    @native
-    public func close(mutate self) { }
+    /// Close the handle. See `Stdin.close` for why it takes `self`.
+    ///
+    /// The stream itself stays open — closing the process's own stdout is not
+    /// what `close` on a borrowed standard stream should mean. What it does is
+    /// discharge the linearity obligation, and flush, so nothing written
+    /// through the handle is still sitting in a buffer when it goes away.
+    public func close(take self) -> void {
+        let _ = io.flush_std(self.stream)
+        return
+    }
 }
 
-/// In-memory buffer implementing both Reader and Writer. Not linear.
-public struct Buffer { }
+/// In-memory buffer implementing both Reader and Writer (B4). Not linear —
+/// there's no OS resource behind it.
+///
+/// The read position lives in a `Cell` because `Reader` takes `self`, not
+/// `mutate self`. Reading has to advance the cursor, and a box is how a `self`
+/// method changes something.
+///
+/// Written in Rask rather than native: it's bytes and an index, nothing the
+/// machine has to be asked about, so both backends run this source. Before
+/// this the whole type was nine `@native` declarations with no implementation
+/// anywhere — `Buffer.new()` failed on both backends (#860).
+public struct Buffer {
+    data: Vec<u8>
+    pos: Cell<i64>
+}
 
 extend Buffer with Reader {
-    /// Read bytes from the buffer.
-    @native
-    public func read(self, buf: Vec<u8>) -> i64 or IoError { }
+    /// Read up to `buf.len()` bytes into `buf`, starting at the read position.
+    /// Returns how many were copied — 0 once the buffer is exhausted (R1).
+    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
+        let total = self.data.len().wrap<i64>()
+        let want = buf.len().wrap<i64>()
+        mut copied: i64 = 0
+        with self.pos as at {
+            mut from = at
+            while copied < want && from < total {
+                buf.set(copied, self.data.get(from) ?? 0)
+                copied = copied + 1
+                from = from + 1
+            }
+            at = from
+        }
+        return copied
+    }
 
-    /// Read all remaining bytes.
-    @native
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    /// Read everything left, and leave the position at the end (R2).
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        let total = self.data.len().wrap<i64>()
+        mut out: Vec<u8> = Vec.new()
+        with self.pos as at {
+            mut from = at
+            while from < total {
+                out.push(self.data.get(from) ?? 0)
+                from = from + 1
+            }
+            at = from
+        }
+        return out
+    }
 
-    /// Read all as UTF-8 string.
-    @native
-    public func read_text(self) -> string or IoError { }
+    /// Read everything left as UTF-8 (R3). Invalid bytes are an `IoError`, the
+    /// way every other failure on a stream is.
+    public func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes)
+        text catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return try text
+    }
 }
 
 extend Buffer with Writer {
-    /// Write bytes to the buffer.
-    @native
-    public func write(self, data: Vec<u8>) -> i64 or IoError { }
+    /// Append bytes, and report how many went in (W1). A memory buffer never
+    /// writes short, so that's always all of them.
+    public func write(self, data: Vec<u8>) -> i64 or IoError {
+        mut written: i64 = 0
+        for byte in data {
+            self.data.push(byte)
+            written = written + 1
+        }
+        return written
+    }
 
-    /// Write all bytes.
-    @native
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError { }
+    /// Append every byte (W2).
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        let _ = try self.write(data)
+        return
+    }
 
-    /// Write a string.
-    @native
-    public func write_text(self, s: string) -> void or IoError { }
+    /// Append a string's UTF-8 bytes (W4).
+    public func write_text(self, s: string) -> void or IoError {
+        let len = s.len().wrap<i64>()
+        mut i: i64 = 0
+        while i < len {
+            self.data.push(s.byte_at(i.wrap<usize>()) ?? 0)
+            i = i + 1
+        }
+        return
+    }
 }
 
 extend Buffer {
     /// Create an empty buffer.
-    @native
-    public func new() -> Buffer { }
+    public func new() -> Buffer {
+        return Buffer { data: Vec.new(), pos: Cell.new(0) }
+    }
 
-    /// Create a buffer initialized with data.
-    @native
-    public func from(data: Vec<u8>) -> Buffer { }
+    /// Create a buffer initialized with data, position at 0.
+    public func from(data: Vec<u8>) -> Buffer {
+        return Buffer { data, pos: Cell.new(0) }
+    }
 
-    /// View all written bytes.
-    @unimplemented
-    public func as_bytes(self) -> Vec<u8> { }
+    /// Every byte written, from the start — not just what's left to read.
+    ///
+    /// A copy, not a view. A borrowed slice into a struct field isn't
+    /// something Rask can express yet (#492), and a copy that says so beats a
+    /// name that promises otherwise.
+    public func as_bytes(self) -> Vec<u8> {
+        return self.data.clone()
+    }
 
     /// Total bytes written.
-    @native
-    public func len(self) -> i64 { }
+    public func len(self) -> i64 {
+        return self.data.len().wrap<i64>()
+    }
 
     /// Reset read position to 0.
+    ///
+    /// Still nothing: specs/stdlib/io.md says rewinding is
+    /// `seek(SeekFrom.Start(0))` and there is no `reset`, but `Seeker` isn't
+    /// implemented either, so neither spelling works. Tracked in #860.
     @unimplemented
-    public func reset(mutate self) { }
+    public func reset(mutate self) {}
 }
 
 /// A file handle for reading and writing.
 public struct File { }
 
 extend File {
+    /// True when the handle is NULL — a failed `fopen`. `fs.open` uses it to
+    /// tell success from failure, since the runtime can't build an `IoError`.
+    @native("rask_file_is_null")
+    func is_null(self) -> bool {}
+
     /// Read the entire file contents as bytes.
     @native("rask_file_read_bytes")
-    public func read_bytes(self) -> Vec<u8> or IoError { }
+    public func read_bytes(self) -> Vec<u8> or IoError {}
 
     /// Read the entire file contents as text.
     @native("rask_file_read_all")
-    public func read_text(self) -> string or IoError { }
+    public func read_text(self) -> string or IoError {}
 
     /// Write a string to the file.
     @native("rask_file_write")
-    public func write(mutate self, data: string) -> void or IoError { }
+    public func write(mutate self, data: string) -> void or IoError {}
 
     /// Write all bytes, retrying partial writes.
     @native("rask_file_write_bytes")
-    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError { }
+    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError {}
 
     /// Write a string.
     @native("rask_file_write")
-    public func write_text(mutate self, data: string) -> void or IoError { }
+    public func write_text(mutate self, data: string) -> void or IoError {}
 
     /// Write a string followed by a newline.
     @native("rask_file_write_line")
-    public func write_line(mutate self, data: string) -> void or IoError { }
+    public func write_line(mutate self, data: string) -> void or IoError {}
 
     /// Close the file handle.
     @native("rask_file_close")
-    public func close(mutate self) { }
+    public func close(mutate self) {}
 }

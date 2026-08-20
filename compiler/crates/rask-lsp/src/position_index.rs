@@ -122,7 +122,7 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
             visit_expr(init, index);
         }
-        StmtKind::Assign { target, value } => {
+        StmtKind::Assign { target, value, .. } => {
             visit_expr(target, index);
             visit_expr(value, index);
         }

@@ -293,8 +293,11 @@ arithmetic the caller did themselves.
 |-----------|--------|-------|
 | `s.parse_int()` | `i64 or ParseError` | Parse to integer, trims whitespace |
 | `s.parse_float()` | `f64 or ParseError` | Parse to floating point, trims whitespace |
+| `s.parse<T>()` | `T or ParseError` | Any numeric `T`, answered at `T`'s width |
 
-One name per operation — there is no generic `s.parse()`. The error is a real type (`type.errors/ER4` forbids `string` as an error):
+`parse<T>` answers at the target's own width: `"70000".parse<u8>()` and
+`"-1".parse<u64>()` are both `OutOfRange`, and `parse<u64>` reaches `u64::MAX`.
+The error is a real type (`type.errors/ER4` forbids `string` as an error):
 
 <!-- test: parse -->
 ```rask

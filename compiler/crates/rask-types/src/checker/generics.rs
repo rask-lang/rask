@@ -98,15 +98,35 @@ impl TypeChecker {
                 }
                 ty.clone()
             }
+            // The arguments are types too. Resolving only the base left
+            // `Map<K2, string>` holding `UnresolvedNamed("K2")` for a declared
+            // struct, and an unresolved name is treated as "fits anything" by
+            // every check downstream — so `m.insert(1, "a")` on a
+            // `Map<K2, string>` type-checked (#812). A name that genuinely
+            // doesn't resolve, like the type parameter `T`, still doesn't, so
+            // the leniency stays exactly where it's needed.
             Type::UnresolvedGeneric { name, args } => {
-                if let Some(type_id) = self.types.get_type_id(name) {
-                    Type::Generic { base: type_id, args: args.clone() }
-                } else {
-                    ty.clone()
+                let args = self.resolve_named_args(args);
+                match self.types.get_type_id(name) {
+                    Some(type_id) => Type::Generic { base: type_id, args },
+                    None => Type::UnresolvedGeneric { name: name.clone(), args },
                 }
+            }
+            Type::Generic { base, args } => {
+                Type::Generic { base: *base, args: self.resolve_named_args(args) }
             }
             _ => ty.clone(),
         }
+    }
+
+    /// `resolve_named` over each type argument, leaving const arguments alone.
+    fn resolve_named_args(&self, args: &[GenericArg]) -> Vec<GenericArg> {
+        args.iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(t))),
+                other => other.clone(),
+            })
+            .collect()
     }
 
     /// Replace type parameter names (UnresolvedNamed) with concrete types.

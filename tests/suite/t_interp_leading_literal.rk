@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An interpolation whose expression starts with a string literal (#877).
+//
+//     println("C {"lit".len()}")
+//     error[E0100]: Expected ')', found a name
+//
+// The lexer has to decide, at a `"` inside `{ }`, whether it's opening a nested
+// literal or closing the outer string. #506 added a guard: a hole that is empty
+// so far isn't a hole, it's the `{"key": …}` of a JSON body — which is right for
+// JSON and threw out every expression that simply *begins* with a literal. The
+// string ended at the inner quote and the rest was parsed as code.
+//
+// What follows the literal is what tells the two apart: a colon in JSON, a `.`
+// or an operator in an expression.
+
+func take_two(a: string, b: string) -> string {
+    return "{a}{b}"
+}
+
+test "interpolation — a leading literal with a method call" {
+    assert_eq("{"lit".len()}", "3")
+    assert_eq("[{"  pad  ".trim()}]", "[pad]")
+    assert_eq("{"AB".to_lowercase()}", "ab")
+}
+
+test "interpolation — a leading literal in an operator expression" {
+    assert_eq("{"a" < "b"}", "true")
+    assert_eq("{"b" < "a"}", "false")
+    assert_eq("{"a" == "a"}", "true")
+}
+
+test "interpolation — a leading literal that parses" {
+    assert_eq("{"42".parse<i64>() catch _ => -1}", "42")
+    assert_eq("{"nope".parse<i64>() catch _ => -1}", "-1")
+}
+
+// A literal that isn't first has always worked; it must keep working.
+test "interpolation — a literal argument later in the expression" {
+    assert_eq("{take_two("x", "y")}", "xy")
+}
+
+// #506's shape: a quoted key followed by a colon is not an interpolation. It
+// still isn't — a `{` in a string always starts one, so a literal brace is
+// written `{{`, and that's what a JSON body has to use.
+test "interpolation — a brace-quote-colon body is not an expression" {
+    let pair = "{{\"k\": 1}}"
+    assert_eq(pair.len(), 8)
+    assert(pair.starts_with("{"))
+    assert(pair.ends_with("}"))
+    assert(pair.contains(": 1"))
+}
+
+test "interpolation — an empty placeholder and a lone brace are unchanged" {
+    assert_eq("{}".len(), 2)
+    assert_eq("{".len(), 1)
+}
+
+func main() {}

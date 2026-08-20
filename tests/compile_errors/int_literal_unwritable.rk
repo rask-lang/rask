@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The two integer literals that don't survive to the checker (#800).
+//
+// `u128::MAX` is the ceiling for digits and `i128::MIN` is the floor for a
+// negated literal, so past either end there's nothing to type-check — the file
+// stops in the lexer or the parser. Separate from `int_literal_range.rk`
+// because a parse failure there would hide its slot-range errors.
+
+func main() {
+    // ERROR: past `u128::MAX`, so no integer type holds it [E0004]
+    let a: u128 = 340282366920938463463374607431768211456
+
+    // ERROR: below `i128::MIN`, which is as far down as a literal goes [E0100]
+    let b: i128 = -340282366920938463463374607431768211455
+
+    println("{a} {b}")
+}

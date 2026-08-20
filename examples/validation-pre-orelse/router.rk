@@ -18,8 +18,8 @@ func route(req: Request) -> Response {
 
 func route_inner(req: Request) -> Response {
     match run_chain(middleware_chain, req) {
-        MwOutcome.Short(resp) => return resp,
-        MwOutcome.Continue    => {},
+        MwOutcome.Short(resp) => return resp
+        MwOutcome.Continue => {}
     }
 
     let outcome = dispatch(req)
@@ -33,16 +33,15 @@ func route_inner(req: Request) -> Response {
 func dispatch(req: Request) -> Response or ApiError {
     let path = req.path()
     match (req.method, path) {
-        (Method.Get, "/health")        => return handle_health(),
-        (Method.Get, "/metrics")       => return handle_metrics(),
-        (Method.Get, "/debug/sleep")   => return handle_sleep(req),
-        (Method.Get, "/debug/inspect") => return handle_inspect(),
-        (Method.Get, "/tasks")         => return handle_list_tasks(req),
-        (Method.Post, "/tasks")        => return handle_create_task(req),
-        (Method.Post, "/tasks/batch")  => return handle_batch(req),
-        (Method.Post, "/users")        => return handle_create_user(req),
-        (Method.Post, "/projects")     => return handle_create_project(req),
-
+        (Method.Get, "/health") => return handle_health()
+        (Method.Get, "/metrics") => return handle_metrics()
+        (Method.Get, "/debug/sleep") => return handle_sleep(req)
+        (Method.Get, "/debug/inspect") => return handle_inspect()
+        (Method.Get, "/tasks") => return handle_list_tasks(req)
+        (Method.Post, "/tasks") => return handle_create_task(req)
+        (Method.Post, "/tasks/batch") => return handle_batch(req)
+        (Method.Post, "/users") => return handle_create_user(req)
+        (Method.Post, "/projects") => return handle_create_project(req)
         (Method.Get, p) if p.starts_with("/users/") => {
             let id = try user_id(p)
             return handle_get_user(id)
@@ -63,8 +62,7 @@ func dispatch(req: Request) -> Response or ApiError {
             let id = try task_id(p)
             return handle_delete_task(id)
         }
-
-        _ => return json_response(404, json.encode(ErrorBody { error: "no route for {path}", code: "not_found" })),
+        _ => return json_response(404, json.encode(ErrorBody { error: "no route for {path}", code: "not_found" }))
     }
 }
 
@@ -83,7 +81,9 @@ func user_id(path: string) -> UserId or ApiError {
 func segment_id(path: string, prefix: string) -> u64 or ApiError {
     let rest = path[prefix.len()..].to_string()
     let trimmed = strip_suffix(rest, "/deps")
-    let n = trimmed.parse<u64>() ?? return ApiError.BadRequest("invalid id in path: {path}")
+    let n = trimmed.parse<u64>() ?? {
+        return ApiError.BadRequest("invalid id in path: {path}")
+    }
     return n
 }
 

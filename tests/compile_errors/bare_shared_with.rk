@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ERROR: bare `with shared as v` — the lock has to be named (conc.sync/R4)
+// Expected: typecheck error E0839 — `with config as c` doesn't say which lock
+//
+// Nothing enforced this. The interpreter got as far as a runtime error whose
+// message contradicted itself ("expected Cell, Mutex, Shared, or collection
+// index, got Shared") and native compiled it and read the wrong bytes — a field
+// holding 4 printed as 0 (#880).
+//
+// The two locks don't behave the same: a read binding permits other readers and
+// never writes back, a write binding blocks them and does. Which one you get is
+// written, not inferred.
+
+struct Config {
+    timeout: i64
+    retries: i64
+}
+
+func main() {
+    mut config = Shared.new(Config { timeout: 30, retries: 3 })
+
+    // Neither `.read()` nor `.write()` — rejected.
+    with config as c {
+        println("{c.timeout}")
+    }
+
+    // A scalar payload is the same rule.
+    mut count = Shared.new(7)
+    with count as n {
+        println("{n}")
+    }
+}

@@ -40,6 +40,9 @@ pub enum ArgAdapt {
     WrapArg1And2,
     /// Inject 16-byte string out-param as first arg
     StringOutParam,
+    /// Two i64s written into the destination's own 16-byte slot — a
+    /// `(usize, usize)` tuple, start at +0 and end at +8 (string_trim_indices).
+    PairOutParam,
     /// Same, but the call also returns a 0/1 status that becomes the
     /// `string or E` tag. The string goes to a scratch slot rather than to
     /// dst, because dst is the Result and the string is only its payload.
@@ -417,6 +420,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_len", "rask_string_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_eq", "rask_string_eq", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_hash", "rask_string_hash", &[types::I64], Some(types::I64), false),
+        // `x.hash()` on an integer, a bool or a char (HA1). (lo, hi, width) —
+        // width bytes taken little-endian from lo and then hi, so one entry point
+        // covers a 1-byte bool through a 16-byte u128 (#813).
+        StdlibEntry::simple("int_hash", "rask_int_hash", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_c_str", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
@@ -433,6 +440,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `s[i]` — indexing panics on an out-of-range index, so it needs its own
         // entry point rather than `char_at`'s none-on-miss (#353).
         StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry {
+            mir_name: "string_trim_indices", c_name: "rask_string_trim_indices",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::PairOutParam, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "json_pretty", c_name: "rask_json_pretty",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("string_starts_with", "rask_string_starts_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ends_with", "rask_string_ends_with", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_contains", "rask_string_contains", &[types::I64, types::I64], Some(types::I64), false),
@@ -444,6 +461,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // These use the *_into runtime entry points: the value comes back
         // through an out-param and the return value is a 0/1 status, so an
         // unparseable string becomes Err instead of Ok(0) (#472).
+        //
+        // Every width has its own entry point. Sharing the 64-bit signed parse
+        // meant u64::MAX exactly was "value out of range", a leading `-` came
+        // back as a huge positive number, and `"70000".parse<u8>()` succeeded —
+        // native truncating to 112, the interpreter keeping 70000 (#837).
         StdlibEntry {
             mir_name: "string_parse", c_name: "rask_string_parse_int_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -460,17 +482,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i8", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i8", c_name: "rask_string_parse_i8_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i16", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i16", c_name: "rask_string_parse_i16_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_i32", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_i32", c_name: "rask_string_parse_i32_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
@@ -485,27 +507,27 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u8", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u8", c_name: "rask_string_parse_u8_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u16", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u16", c_name: "rask_string_parse_u16_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u32", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u32", c_name: "rask_string_parse_u32_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_u64", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_u64", c_name: "rask_string_parse_uint_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_usize", c_name: "rask_string_parse_int_into",
+            mir_name: "string_parse_usize", c_name: "rask_string_parse_uint_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
@@ -614,6 +636,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_split", "rask_string_split", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_split_whitespace", "rask_string_split_whitespace", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_chars", "rask_string_chars", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_char_indices", "rask_string_char_indices", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_bytes", "rask_string_bytes", &[types::I64], Some(types::I64), false),
 
         // ── Conversion to string (out-param) ──────────────────
@@ -862,6 +885,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Random_f32", "rask_rng_f32", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Random_bool", "rask_rng_bool", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_range", "rask_rng_range", &[types::I64, types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Random_shuffle", "rask_random_shuffle", &[types::I64, types::I64], None, true),
+        // `choice` hands back a pointer to the element, or NULL for an empty
+        // Vec — the same shape `Vec_get` uses, so DerefOption builds the `T?`.
+        StdlibEntry {
+            mir_name: "Random_choice", c_name: "rask_random_choice",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
 
         // ── Random module convenience functions ───────────────────
         StdlibEntry::simple("random_f64", "rask_random_f64", &[], Some(types::F64), false),
@@ -924,13 +955,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Self-hosted from stdlib/fs.rk. Remaining C runtime stubs:
         StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
-        StdlibEntry::simple("fs_open", "rask_fs_open", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("fs_create", "rask_fs_create", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("fs_open_handle", "rask_fs_open", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("fs_create_handle", "rask_fs_create", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_is_null", "rask_file_is_null", &[types::I64], Some(types::I64), false),
         // `fs.metadata` and `Metadata`'s accessors used to live here. It's a
         // plain Rask struct built by Rask code now — see stdlib/fs.rk (#674).
 
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),
+        StdlibEntry::simple("time_wall_clock_nanos", "rask_time_wall_clock_nanos", &[], Some(types::I64), false),
         StdlibEntry::simple("Instant_elapsed", "rask_time_Instant_elapsed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_nanos", "rask_time_Duration_from_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_from_millis", "rask_time_Duration_from_millis", &[types::I64], Some(types::I64), false),
@@ -945,6 +978,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Duration_micros", "rask_time_Duration_micros", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_nanos", "rask_time_Duration_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_seconds_f64", "rask_time_Duration_from_secs_f64", &[types::F64], Some(types::I64), false),
+
+        // ── Standard streams ───────────────────────────────────────
+        // The handle carries the stream number, so one entry per operation
+        // covers stdout, stderr and stdin (#859).
+        StdlibEntry::simple("io_write_std_text", "rask_io_std_write_text", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_write_std_bytes", "rask_io_std_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_flush_std", "rask_io_std_flush", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("io_read_std_bytes", "rask_io_std_read_bytes", &[types::I64], Some(types::I64), false),
 
         // ── I/O primitives ─────────────────────────────────────────
         StdlibEntry {
@@ -966,9 +1007,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("io_close_fd", "rask_io_close_fd", &[types::I64], None, false),
 
         // ── Net module ──────────────────────────────────────────────
-        StdlibEntry::neg_err("net_tcp_listen", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("net_tcp_connect", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
-        StdlibEntry::neg_err("TcpListener_accept", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        // Plain handle returns, not `neg_err`. The adapter that turns a negative
+        // return into the error side has no way to build an `IoError` — it's a
+        // Rask enum — so it left the raw -1 as the payload, and matching -1 as an
+        // enum tag traps. `stdlib/net.rk` checks `is_invalid()` and builds the
+        // error itself (#863), the same way `fs.open` does (#858).
+        StdlibEntry::simple("net_listen_handle", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("net_connect_handle", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_accept_handle", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {
@@ -1008,6 +1058,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("os_set_env", "rask_os_set_env", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("os_remove_env", "rask_os_remove_env", &[types::I64], None, false),
+        StdlibEntry::simple("os_args", "rask_os_args", &[], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "os_platform", c_name: "rask_os_platform",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_arch", c_name: "rask_os_arch",
+            params: &[types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
@@ -1296,6 +1359,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("char_is_whitespace", "rask_char_is_whitespace", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_is_uppercase", "rask_char_is_uppercase", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_is_lowercase", "rask_char_is_lowercase", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_is_control", "rask_char_is_control", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_is_ascii_alphabetic", "rask_char_is_ascii_alphabetic", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_is_ascii_digit", "rask_char_is_ascii_digit", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_is_ascii_hexdigit", "rask_char_is_ascii_hexdigit", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_is_ascii_punctuation", "rask_char_is_ascii_punctuation", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_to_ascii_lowercase", "rask_char_to_ascii_lowercase", &[types::I32], Some(types::I64), false),
+        StdlibEntry::simple("char_to_ascii_uppercase", "rask_char_to_ascii_uppercase", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_to_int", "rask_char_to_int", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_to_uppercase", "rask_char_to_uppercase", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_to_lowercase", "rask_char_to_lowercase", &[types::I32], Some(types::I64), false),

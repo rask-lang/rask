@@ -23,18 +23,26 @@ pub enum IntSuffix {
     I8, I16, I32, I64, I128, Isize,
     U8, U16, U32, U64, U128, Usize,
     /// No suffix was written, but the literal's magnitude doesn't fit `i64`,
-    /// so it can only be a `u64` — the token carries its bit pattern. Distinct
-    /// from a written `u64` because a leading `-` can still claim it: the
-    /// parser folds the sign in, and `-9223372036854775808` is `i64::MIN`, not
-    /// a negated unsigned.
+    /// so it can only be a `u64`. Distinct from a written `u64` because a
+    /// leading `-` can still claim it: the parser folds the sign in, and
+    /// `-9223372036854775808` is `i64::MIN`, not a negated unsigned.
     U64ByMagnitude,
+    /// Doesn't fit `u64` either, so the narrowest type that holds it is
+    /// `i128`. A `-` in front still folds, down to `i128::MIN`.
+    I128ByMagnitude,
+    /// Above `i128::MAX`: only `u128` holds it, and the token carries its bit
+    /// pattern because that's the one value range `i128` can't represent.
+    U128ByMagnitude,
 }
 
 impl IntSuffix {
-    /// The width this suffix names, with `U64ByMagnitude` reading as `u64`.
+    /// The width this suffix names, with the `ByMagnitude` markers reading as
+    /// the type they landed in.
     pub fn effective(self) -> IntSuffix {
         match self {
             IntSuffix::U64ByMagnitude => IntSuffix::U64,
+            IntSuffix::I128ByMagnitude => IntSuffix::I128,
+            IntSuffix::U128ByMagnitude => IntSuffix::U128,
             other => other,
         }
     }
@@ -44,7 +52,7 @@ impl IntSuffix {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
-    Int(i64, Option<IntSuffix>),
+    Int(i128, Option<IntSuffix>),
     Float(f64, Option<FloatSuffix>),
     String(String),
     Char(char),

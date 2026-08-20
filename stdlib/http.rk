@@ -41,17 +41,16 @@ extend Method {
             return Method.Put    // PUT
         }
         if len == 6 && (s.byte_at(0) ?? 0) == 68 && (s.byte_at(1) ?? 0) == 69 && (s.byte_at(2) ?? 0) == 76 {
-            return Method.Delete // DELETE (check first 3 bytes)
+            return Method.Delete  // DELETE (check first 3 bytes)
         }
         if len == 5 && (s.byte_at(0) ?? 0) == 80 && (s.byte_at(1) ?? 0) == 65 && (s.byte_at(2) ?? 0) == 84 {
             return Method.Patch  // PATCH (check first 3 bytes)
         }
         if len == 7 && (s.byte_at(0) ?? 0) == 79 && (s.byte_at(1) ?? 0) == 80 && (s.byte_at(2) ?? 0) == 84 {
-            return Method.Options // OPTIONS (check first 3 bytes)
+            return Method.Options  // OPTIONS (check first 3 bytes)
         }
         return none
     }
-
 }
 
 // std.fmt/D3: an enum opts into Displayable by declaring the conformance — a
@@ -62,13 +61,13 @@ extend Method with Displayable {
     // Serialize to the standard HTTP method string.
     public func to_string(self) -> string {
         match self {
-            Method.Get => return "GET",
-            Method.Head => return "HEAD",
-            Method.Post => return "POST",
-            Method.Put => return "PUT",
-            Method.Delete => return "DELETE",
-            Method.Patch => return "PATCH",
-            Method.Options => return "OPTIONS",
+            Method.Get => return "GET"
+            Method.Head => return "HEAD"
+            Method.Post => return "POST"
+            Method.Put => return "PUT"
+            Method.Delete => return "DELETE"
+            Method.Patch => return "PATCH"
+            Method.Options => return "OPTIONS"
         }
     }
 }
@@ -82,28 +81,22 @@ extend Headers {
     public func new() -> Headers {
         return Headers { entries: Map.new() }
     }
-
     public func get(self, name: string) -> string? {
         // Case-insensitive: lowercase the key for lookup
         return self.entries.get(name.to_lowercase())
     }
-
     public func set(mutate self, name: string, value: string) -> void {
         self.entries.insert(name.to_lowercase(), value)
     }
-
     public func has(self, name: string) -> bool {
         return self.entries.contains_key(name.to_lowercase())
     }
-
     public func remove(mutate self, name: string) -> string? {
         return self.entries.remove(name.to_lowercase())
     }
-
     public func len(self) -> usize {
         return self.entries.len()
     }
-
     public func iter(self) -> Iterator<(string, string)> {
         return self.entries.iter()
     }
@@ -119,30 +112,30 @@ struct Request {
 extend Request {
     public func new(method: Method, url: string) -> Request {
         return Request {
-            method: method,
-            url: url,
+            method,
+            url,
             headers: Headers.new(),
             body: "",
         }
     }
-
     public func with_header(take self, name: string, value: string) -> Request {
         self.headers.set(name, value)
         return self
     }
-
     public func with_body(take self, body: string) -> Request {
         return Request {
             method: self.method,
             url: self.url,
             headers: self.headers,
-            body: body,
+            body,
         }
     }
 
     // URL path before '?'.
     public func path(self) -> string {
-        let qpos = self.url.index_of("?") ?? return self.url
+        let qpos = self.url.index_of("?") ?? {
+            return self.url
+        }
         return self.url[0..qpos].to_string()
     }
 
@@ -187,45 +180,36 @@ struct Response {
 
 extend Response {
     // ── Constructors ──
-
     public func new(status: u16, body: string) -> Response {
         return Response {
-            status: status,
+            status,
             headers: Headers.new(),
-            body: body,
+            body,
         }
     }
-
     public func ok(body: string) -> Response {
         return Response.new(200, body)
     }
-
     public func json(body: string) -> Response {
         mut resp = Response.new(200, body)
         resp.headers.set("Content-Type", "application/json")
         return resp
     }
-
     public func created(body: string) -> Response {
         return Response.new(201, body)
     }
-
     public func no_content() -> Response {
         return Response.new(204, "")
     }
-
     public func not_found() -> Response {
         return Response.new(404, "")
     }
-
     public func bad_request(message: string) -> Response {
         return Response.new(400, message)
     }
-
     public func internal_error(message: string) -> Response {
         return Response.new(500, message)
     }
-
     public func redirect(url: string) -> Response {
         mut resp = Response.new(302, "")
         resp.headers.set("Location", url)
@@ -233,38 +217,31 @@ extend Response {
     }
 
     // ── Builder ──
-
     public func with_status(take self, status: u16) -> Response {
         return Response {
-            status: status,
+            status,
             headers: self.headers,
             body: self.body,
         }
     }
-
     public func with_header(take self, name: string, value: string) -> Response {
         self.headers.set(name, value)
         return self
     }
 
     // ── Status checks ──
-
     public func is_ok(self) -> bool {
         return self.status >= 200 && self.status <= 299
     }
-
     public func is_redirect(self) -> bool {
         return self.status >= 300 && self.status <= 399
     }
-
     public func is_client_error(self) -> bool {
         return self.status >= 400 && self.status <= 499
     }
-
     public func is_server_error(self) -> bool {
         return self.status >= 500 && self.status <= 599
     }
-
     public func is_error(self) -> bool {
         return self.status >= 400 && self.status <= 599
     }
@@ -286,18 +263,17 @@ enum HttpError {
 extend HttpError {
     public func message(self) -> string {
         match self {
-            HttpError.InternalServerError(msg) => return "internal server error: {msg}",
-            HttpError.ConnectionFailed(msg) => return "connection failed: {msg}",
-            HttpError.Timeout => return "request timed out",
-            HttpError.InvalidUrl(msg) => return "invalid URL: {msg}",
-            HttpError.InvalidResponse(msg) => return "invalid response: {msg}",
-            HttpError.TooManyRedirects => return "too many redirects",
-            HttpError.Io(msg) => return "I/O error: {msg}",
-            HttpError.NotFound => return "not found",
+            HttpError.InternalServerError(msg) => return "internal server error: {msg}"
+            HttpError.ConnectionFailed(msg) => return "connection failed: {msg}"
+            HttpError.Timeout => return "request timed out"
+            HttpError.InvalidUrl(msg) => return "invalid URL: {msg}"
+            HttpError.InvalidResponse(msg) => return "invalid response: {msg}"
+            HttpError.TooManyRedirects => return "too many redirects"
+            HttpError.Io(msg) => return "I/O error: {msg}"
+            HttpError.NotFound => return "not found"
         }
     }
 }
-
 
 // ─── HTTP/1.1 Parser ─────────────────────────────────────────────
 //
@@ -338,8 +314,9 @@ func parse_http_request(raw: string) -> Request or HttpError {
     let method_str = raw[0..first_sp].to_string()
     let path = raw[first_sp + 1..second_sp].to_string()
 
-    let method = Method.from_string(method_str)
-        ?? return HttpError.InvalidResponse("unknown HTTP method")
+    let method = Method.from_string(method_str) ?? {
+        return HttpError.InvalidResponse("unknown HTTP method")
+    }
 
     // Parse headers: starts after first \r\n, ends at \r\n\r\n
     mut headers = Headers.new()
@@ -385,10 +362,10 @@ func parse_http_request(raw: string) -> Request or HttpError {
     }
 
     return Request {
-        method: method,
+        method,
         url: path,
-        headers: headers,
-        body: body,
+        headers,
+        body,
     }
 }
 
@@ -396,27 +373,27 @@ func parse_http_request(raw: string) -> Request or HttpError {
 
 func reason_phrase(status: u16) -> string {
     match status {
-        200 => return "OK",
-        201 => return "Created",
-        204 => return "No Content",
-        301 => return "Moved Permanently",
-        302 => return "Found",
-        304 => return "Not Modified",
-        400 => return "Bad Request",
-        401 => return "Unauthorized",
-        403 => return "Forbidden",
-        404 => return "Not Found",
-        405 => return "Method Not Allowed",
-        408 => return "Request Timeout",
-        409 => return "Conflict",
-        413 => return "Payload Too Large",
-        422 => return "Unprocessable Entity",
-        429 => return "Too Many Requests",
-        500 => return "Internal Server Error",
-        502 => return "Bad Gateway",
-        503 => return "Service Unavailable",
-        504 => return "Gateway Timeout",
-        _ => return "Unknown",
+        200 => return "OK"
+        201 => return "Created"
+        204 => return "No Content"
+        301 => return "Moved Permanently"
+        302 => return "Found"
+        304 => return "Not Modified"
+        400 => return "Bad Request"
+        401 => return "Unauthorized"
+        403 => return "Forbidden"
+        404 => return "Not Found"
+        405 => return "Method Not Allowed"
+        408 => return "Request Timeout"
+        409 => return "Conflict"
+        413 => return "Payload Too Large"
+        422 => return "Unprocessable Entity"
+        429 => return "Too Many Requests"
+        500 => return "Internal Server Error"
+        502 => return "Bad Gateway"
+        503 => return "Service Unavailable"
+        504 => return "Gateway Timeout"
+        _ => return "Unknown"
     }
 }
 
@@ -450,20 +427,25 @@ extern "C" {
     // didn't reinterpret it, so every request body read back as the pointer's
     // decimal value and request parsing failed.
     func rask_io_read_string(fd: i64, max: i64) -> string
-    func rask_io_write_string(fd: i64, s: i64) -> i64
     func rask_io_read_until_close(fd: i64, max: i64) -> string
+
+    func rask_io_write_string(fd: i64, s: i64) -> i64
     func rask_net_tcp_connect(addr: i64) -> i64
     func rask_io_close_fd(fd: i64) -> void
 }
 
 // Read raw bytes from a TCP connection (up to max_bytes).
 func read_raw(conn_fd: i64, max_bytes: i64) -> string {
-    return unsafe { rask_io_read_string(conn_fd, max_bytes) }
+    return unsafe {
+        rask_io_read_string(conn_fd, max_bytes)
+    }
 }
 
 // Write a string to a TCP connection.
 func write_raw(conn_fd: i64, data: string) {
-    unsafe { rask_io_write_string(conn_fd, data as i64) }
+    unsafe {
+        rask_io_write_string(conn_fd, data as i64)
+    }
 }
 
 // ─── Client Helpers ──────────────────────────────────────────────
@@ -571,8 +553,9 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     let status_str = raw[first_sp + 1..second_sp].to_string()
-    let status_val = status_str.parse_int()
-        ?? return HttpError.InvalidResponse("bad status code: {status_str}")
+    let status_val = status_str.parse_int() ?? {
+        return HttpError.InvalidResponse("bad status code: {status_str}")
+    }
     let status = status_val.wrap<u16>()
 
     // Parse headers
@@ -617,9 +600,9 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     return Response {
-        status: status,
-        headers: headers,
-        body: body,
+        status,
+        headers,
+        body,
     }
 }
 
@@ -630,7 +613,9 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     let addr = "{host}:{port}"
 
     // Connect
-    let conn_fd = unsafe { rask_net_tcp_connect(addr as i64) }
+    let conn_fd = unsafe {
+        rask_net_tcp_connect(addr as i64)
+    }
     if conn_fd < 0 {
         return HttpError.ConnectionFailed("cannot connect to {addr}")
     }
@@ -647,10 +632,14 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
     write_raw(conn_fd, raw_req)
 
     // Read response (reads until server closes connection)
-    let raw_resp = unsafe { rask_io_read_until_close(conn_fd, 1048576) }
+    let raw_resp = unsafe {
+        rask_io_read_until_close(conn_fd, 1048576)
+    }
 
     // Close connection
-    unsafe { rask_io_close_fd(conn_fd) }
+    unsafe {
+        rask_io_close_fd(conn_fd)
+    }
 
     return parse_http_response(raw_resp)
 }
@@ -676,7 +665,12 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
 // Write HTTP/1.1 response to a TCP connection.
 // Shadows the dispatch entry for TcpConnection_write_http_response.
 func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or HttpError {
-    let resp = resp_ptr as Response
+    // The dispatch entry hands the response over as a raw pointer, so reading
+    // it back as a `Response` is a reinterpretation, not a conversion. Same
+    // shim as `read_http_request` above, in the other direction.
+    let resp = unsafe {
+        resp_ptr as Response
+    }
     let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
     return 0
@@ -692,19 +686,19 @@ struct HttpServer {
 
 extend HttpServer {
     public func accept(self) -> (Request, Responder) or HttpError {
-        let conn = self.listener.accept() catch _ => return HttpError.Io("accept failed")
+        let conn = self.listener.accept() catch _ => {
+            return HttpError.Io("accept failed")
+        }
         let raw = read_raw(conn as i64, 65536)
-        let request = parse_http_request(raw)
-            catch _ => return HttpError.InvalidResponse("malformed request")
+        let request = parse_http_request(raw) catch _ => {
+            return HttpError.InvalidResponse("malformed request")
+        }
         let responder = Responder { conn_fd: conn as i64, sent: false }
         return (request, responder)
     }
-
     public func local_addr(self) -> string {
         return self.addr
     }
-
-
     public func close(take self) -> void or IoError {
         // Listener cleanup handled by drop
         return
@@ -734,21 +728,25 @@ extend http {
     /// with `ensure server.close()`. Each accepted request yields a linear
     /// `Responder` that must send exactly one response.
     public func listen(addr: string) -> HttpServer or HttpError {
-        let listener = net.tcp_listen(addr)
-            catch _ => return HttpError.ConnectionFailed("failed to bind {addr}")
-        return HttpServer { listener: listener, addr: addr }
+        let listener = net.tcp_listen(addr) catch _ => {
+            return HttpError.ConnectionFailed("failed to bind {addr}")
+        }
+        return HttpServer { listener, addr }
     }
 
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).
-    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError
-    {
-        mut server = http.listen(addr) catch _ => return HttpError.Io("listen failed")
+    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError {
+        mut server = http.listen(addr) catch _ => {
+            return HttpError.Io("listen failed")
+        }
         ensure server.close()
         loop {
             // A failed accept drops this connection, not the server.
-            let (req, responder) = server.accept() catch _ => continue
+            let (req, responder) = server.accept() catch _ => {
+                continue
+            }
             // `own` moves req/responder into the task. Borrowing them
             // leaves the task reading this iteration's frame, which the
             // next accept() reuses while the task is still running — the
@@ -758,27 +756,21 @@ extend http {
             }).detach()
         }
     }
-
     public func get(url: string) -> Response or HttpError {
         return _send_request_impl(Method.Get, url, "", Headers.new())
     }
-
     public func post(url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Post, url, body, Headers.new())
     }
-
     public func put(url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Put, url, body, Headers.new())
     }
-
     public func delete(url: string) -> Response or HttpError {
         return _send_request_impl(Method.Delete, url, "", Headers.new())
     }
-
     public func request(request: Request) -> Response or HttpError {
         return _send_request_impl(request.method, request.url, request.body, request.headers)
     }
-
     public func send_request(method: Method, url: string, body: string, headers: Headers) -> Response or HttpError {
         return _send_request_impl(method, url, body, headers)
     }
@@ -794,38 +786,30 @@ extend HttpClient {
     public func new() -> HttpClient {
         return HttpClient { default_headers: Headers.new() }
     }
-
     public func with_timeout(take self, timeout: Duration) -> HttpClient {
         // Timeout not yet wired to socket options
         return self
     }
-
     public func with_header(take self, name: string, value: string) -> HttpClient {
         self.default_headers.set(name, value)
         return self
     }
-
     public func with_max_redirects(take self, n: u32) -> HttpClient {
         // Redirect following not yet implemented
         return self
     }
-
     public func get(self, url: string) -> Response or HttpError {
         return _send_request_impl(Method.Get, url, "", self.default_headers)
     }
-
     public func post(self, url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Post, url, body, self.default_headers)
     }
-
     public func put(self, url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Put, url, body, self.default_headers)
     }
-
     public func delete(self, url: string) -> Response or HttpError {
         return _send_request_impl(Method.Delete, url, "", self.default_headers)
     }
-
     public func request(self, request: Request) -> Response or HttpError {
         return _send_request_impl(request.method, request.url, request.body, self.default_headers)
     }

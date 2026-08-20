@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An integer and a float can't meet under an operator (type.primitives/CV1a, #816).
+//
+// CV1a says int→float is never implicit — its own table has `let x: f64 = my_i32`
+// as a compile error. Nothing enforced the same thing for arithmetic, so `a + b`
+// with an `i64` and an `f64` type-checked. Native took the left operand's type and
+// dropped the other side (`5 + 0.5` came out `5`), and the interpreter refused the
+// same program at runtime, after `rask check` had passed it.
+
+func main() {
+    let i: i64 = 5
+    let f: f64 = 0.5
+
+    // ERROR: `+` between an integer and a float [E0371, CV1a]
+    let a = i + f
+    // ERROR: the other way round is the same answer [E0371]
+    let b = f - i
+    // ERROR: and every arithmetic operator [E0371]
+    let c = i * f
+    // ERROR: including division [E0371]
+    let d = f / i
+
+    println("{a} {b} {c} {d}")
+}

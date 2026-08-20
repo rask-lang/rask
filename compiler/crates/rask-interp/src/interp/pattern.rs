@@ -218,7 +218,9 @@ impl Interpreter {
                 // Bounds are literal chars or ints, checked by the parser.
                 let in_range = match (value, &start.kind, &end.kind) {
                     (Value::Char(c), ExprKind::Char(s), ExprKind::Char(e)) => c >= s && c <= e,
-                    (Value::Int(n, _), ExprKind::Int(s, _), ExprKind::Int(e, _)) => n >= s && n <= e,
+                    (Value::Int(n, _), ExprKind::Int(s, _), ExprKind::Int(e, _)) => {
+                        i128::from(*n) >= *s && i128::from(*n) <= *e
+                    }
                     _ => false,
                 };
                 if in_range { Some(HashMap::new()) } else { None }
@@ -283,8 +285,8 @@ impl Interpreter {
 
     pub(super) fn values_equal(&self, value: &Value, lit_expr: &Expr) -> bool {
         match (&value, &lit_expr.kind) {
-            (Value::Int(a, _), ExprKind::Int(b, _)) => *a == *b,
-            (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b as i128,
+            (Value::Int(a, _), ExprKind::Int(b, _)) => i128::from(*a) == *b,
+            (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b,
             (Value::Uint128(a), ExprKind::Int(b, _)) => *a == *b as u128,
             (Value::Float(a, _), ExprKind::Float(b, _)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
@@ -352,6 +354,23 @@ impl Interpreter {
                         b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
                     })
             }
+            // TU9: a tuple compares element by element. A tuple *is* a
+            // `Value::Vec` in here, so this arm is also what `Vec == Vec` would
+            // use — same element-wise answer either way. Without it a
+            // `Map<(i64, i64), …>` accepted an insert and then missed every read,
+            // while native found the key (#812).
+            //
+            // Same `ptr_eq` shortcut the struct arm carries: locking both sides
+            // hangs when they are the same buffer.
+            (Value::Vec(a), Value::Vec(b)) => {
+                if Arc::ptr_eq(a, b) {
+                    return true;
+                }
+                let a = a.lock().unwrap();
+                let b = b.lock().unwrap();
+                a.items.len() == b.items.len()
+                    && a.items.iter().zip(b.items.iter()).all(|(x, y)| Self::value_eq(x, y))
+            }
             // A nominal newtype is its underlying value plus a name (T9), so
             // two of the same type compare by what they wrap. Without this a
             // `Map<UserId, …>` could be inserted into but never read back.
@@ -394,6 +413,17 @@ impl Interpreter {
             Value::Nominal { type_name, inner } => {
                 type_name.hash(&mut hasher);
                 Self::value_hash(inner).hash(&mut hasher);
+            }
+            // A tuple, which shares the Vec representation. Element-wise, to
+            // match the equality arm — every tuple used to hash to the same
+            // number, which is only survivable because equality decides the
+            // bucket, and equality had no arm either.
+            Value::Vec(v) => {
+                let guard = v.lock().unwrap();
+                guard.items.len().hash(&mut hasher);
+                for item in &guard.items {
+                    Self::value_hash(item).hash(&mut hasher);
+                }
             }
             _ => 0u8.hash(&mut hasher),
         }
@@ -473,6 +503,9 @@ fn variant_payload(fields: &[Value]) -> Value {
 }
 
 fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
+    fn base_of(ty_name: &str) -> &str {
+        ty_name.split('<').next().unwrap_or(ty_name).trim()
+    }
     match value {
         Value::Bool(_) => ty_name == "bool",
         Value::Char(_) => ty_name == "char",
@@ -484,17 +517,27 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
                 || rask_ast::primitives::INT_ALIASES.contains(&ty_name)
         }
         Value::Float(_, _) => rask_ast::primitives::is_float(ty_name),
-        Value::Enum { name, .. } => name == ty_name,
+        // A user type compares on its base name. The value carries `Wrap`; the
+        // test can be written `Wrap<i64>`, and nothing at runtime records which
+        // instantiation this one is — same reason `Vec` below only checks `Vec`.
+        // `m.get("k") is Wrap<i64> as w` on a `Map<string, Wrap<i64>>` answered
+        // false here while native took the branch (#871).
+        Value::Enum { name, .. } => name == base_of(ty_name),
         Value::Struct(s) => {
             let guard = s.lock().unwrap();
-            guard.name == ty_name
+            guard.name == base_of(ty_name)
         }
         // Generic containers: compare the base name only (`Vec<i32>` ->
         // `Vec`) — the interpreter doesn't track element types at runtime,
         // so it can't verify `<i32>` matches. rask#217 generic type patterns.
         Value::Vec(_) => ty_name.split('<').next() == Some("Vec"),
         Value::Map(_) => ty_name.split('<').next() == Some("Map"),
-        _ => false,
+        // Everything else answers with its own runtime type name — Duration,
+        // Instant, File, Cell, Shared, TcpConnection, and the 128-bit integers.
+        // A catch-all `false` here said "no" for every one of them, so
+        // `r is Duration` on a `Duration or TimeError` took the else branch and
+        // bound the Duration as if it were the error.
+        other => other.type_name() == ty_name.split('<').next().unwrap_or(ty_name),
     }
 }
 

@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A named binding pattern with a guard (#875). Two native-only bugs.
+//
+//     match n {
+//         x if x < 0 => "neg"
+//         0 => "zero"
+//         x if x < 10 => "small"
+//         _ => "big"
+//     }
+//
+// 1. Nothing bound `x`. A binding pattern is a catch-all, and the switch routed
+//    it to the default and left it at that, so the guard read a variable that
+//    didn't exist:
+//
+//        error: MIR lowering 'bucket': unresolved variable `x`
+//
+//    The if-chain path — the one a match with range patterns takes — has always
+//    bound it. `_ if cond` worked, which is why every existing test spelled it
+//    that way.
+//
+// 2. A failed guard fell into the *next arm's body* rather than the next arm
+//    that takes the value whatever it is. The switch dispatches once, so running
+//    the next body means running an arm whose pattern doesn't match. Invisible
+//    while every arm below the guarded one is a catch-all; wrong the moment one
+//    isn't — 5 took the default to the first arm, failed `x < 0`, and fell into
+//    the `0` arm: "zero".
+
+func bucket(n: i64) -> string {
+    match n {
+        x if x < 0 => { return "neg" }
+        0 => { return "zero" }
+        x if x < 10 => { return "small" }
+        _ => { return "big" }
+    }
+}
+
+// The binding is what the body reads, not just the guard.
+func describe(n: i64) -> string {
+    match n {
+        0 => { return "zero" }
+        x if x < 0 => { return "neg {0 - x}" }
+        x => { return "pos {x}" }
+    }
+}
+
+// A guarded arm whose pattern is a literal: the switch sends only that value
+// here, and a failed guard still has to reach the catch-all below.
+func exactly(n: i64) -> string {
+    match n {
+        5 if n > 4 => { return "five" }
+        5 => { return "unreachable" }
+        _ => { return "other" }
+    }
+}
+
+// Guards over a char, where the pattern is a literal and the guard uses a
+// method on the scrutinee.
+func kind(c: char) -> string {
+    match c {
+        '+' => { return "plus" }
+        d if d.is_digit() => { return "digit" }
+        w if w.is_whitespace() => { return "space" }
+        _ => { return "other" }
+    }
+}
+
+// A binding with a guard on an enum scrutinee — the binding names the whole
+// value, not a variant.
+enum Colour {
+    Red
+    Green
+    Blue
+}
+
+func is_red(c: Colour) -> bool {
+    match c {
+        Colour.Red => { return true }
+        _ => { return false }
+    }
+}
+
+func colour_note(c: Colour) -> string {
+    match c {
+        Colour.Green => { return "green" }
+        other if is_red(other) => { return "red" }
+        _ => { return "rest" }
+    }
+}
+
+test "binding guard — the guard reads the binding" {
+    assert_eq(bucket(-1), "neg")
+    assert_eq(bucket(0), "zero")
+    assert_eq(bucket(5), "small")
+    assert_eq(bucket(50), "big")
+}
+
+// The failure that hid behind arm order: the guarded arm comes first and the arm
+// below it is a literal, so a failed guard must not run that body.
+test "binding guard — a failed guard skips a non-matching arm" {
+    assert_eq(bucket(9), "small")
+    assert_eq(bucket(10), "big")
+    assert_eq(bucket(-100), "neg")
+}
+
+test "binding guard — the body reads the binding too" {
+    assert_eq(describe(0), "zero")
+    assert_eq(describe(-3), "neg 3")
+    assert_eq(describe(7), "pos 7")
+}
+
+test "binding guard — a guard on a literal pattern" {
+    assert_eq(exactly(5), "five")
+    assert_eq(exactly(1), "other")
+}
+
+test "binding guard — over a char" {
+    assert_eq(kind('+'), "plus")
+    assert_eq(kind('7'), "digit")
+    assert_eq(kind(' '), "space")
+    assert_eq(kind('z'), "other")
+}
+
+test "binding guard — over an enum" {
+    assert_eq(colour_note(Colour.Green), "green")
+    assert_eq(colour_note(Colour.Red), "red")
+    assert_eq(colour_note(Colour.Blue), "rest")
+}
+
+func main() {}

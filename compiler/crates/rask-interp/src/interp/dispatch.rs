@@ -8,6 +8,57 @@ use crate::value::{BuiltinKind, FloatKind, Value};
 use super::{Interpreter, RuntimeError};
 
 impl Interpreter {
+    /// Call a closure and hand back both its result and the final value of its
+    /// first parameter.
+    ///
+    /// `modify` gives the closure mutable access to the element and is supposed
+    /// to keep whatever the closure leaves there. It didn't: it called the
+    /// closure with a copy and threw the copy away, so
+    /// `v.modify(0, |mutate x: i64| { x = x + 100; return x })` answered 101 and
+    /// left the element at 1 — and the spec's own
+    /// `|u| { u.visit_count += 1 }` example did nothing at all (#843).
+    ///
+    /// The interpreter's closure values carry parameter *names* and nothing
+    /// else, with no `mutate` marker, so the write-back can't be keyed off the
+    /// declaration the way `mutate_writebacks` is for a named function. Reading
+    /// the binding back out before the scope is popped is the same snapshot,
+    /// taken from the other side. Whether the closure was *allowed* to write is
+    /// the checker's business, and it already enforces `mutate`.
+    pub(crate) fn call_closure_keeping_arg(
+        &mut self,
+        func: Value,
+        args: Vec<Value>,
+    ) -> Result<(Value, Option<Value>), RuntimeError> {
+        if let Value::Closure { params, body, captured_env } = func {
+            self.env.push_scope();
+            for (name, val) in captured_env {
+                self.env.define(name, val);
+            }
+            let first = params.first().cloned();
+            for (param, arg) in params.iter().zip(args.into_iter()) {
+                self.env.define(param.clone(), arg.copy_on_bind());
+            }
+            let result = self.eval_expr(&body).map_err(|diag| diag.error);
+            let final_arg = first.and_then(|name| self.env.get(&name).cloned());
+            self.env.pop_scope();
+            let value = match result {
+                Ok(v) => v,
+                Err(RuntimeError::Return(v)) => v,
+                Err(e) => return Err(e),
+            };
+            return Ok((value, final_arg));
+        }
+        // A named function passed where a closure was expected keeps the
+        // ordinary path; its `mutate` snapshot is already recorded by index.
+        let value = self.call_value(func, args)?;
+        let written = self
+            .mutate_writebacks
+            .iter()
+            .find(|(i, _)| *i == 0)
+            .map(|(_, v)| v.clone());
+        Ok((value, written))
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name } => {
@@ -241,9 +292,10 @@ impl Interpreter {
             BuiltinKind::ExpectFail => {
                 Err(RuntimeError::TestExpectFail)
             }
-            // mem.owned: consumes the Owned<T>. Interpreter values aren't
-            // stack-allocated the way native's are, so there's no heap block
-            // to release here — native's `drop` is the one that actually frees.
+            // mem.owned/OW3: consuming an `Owned` frees its heap value. There's
+            // no heap block to release here — the interpreter's values go when the
+            // last name to them does — so this only has to agree about the result.
+            // Native's `drop` is the one that actually frees.
             BuiltinKind::Drop => Ok(Value::Unit),
         }
     }
@@ -467,10 +519,39 @@ impl Interpreter {
         }
     }
 
+    /// A shift or `pow` exponent, which the checker types the same as the
+    /// receiver — so a 128-bit receiver gets a 128-bit exponent. It's a count,
+    /// not a value, so widening it back down is the whole job (#800).
+    pub(crate) fn expect_shift_amount(&self, args: &[Value], idx: usize) -> Result<i64, RuntimeError> {
+        match args.get(idx) {
+            Some(Value::Int(n, _)) => Ok(*n),
+            // Out of `i64` range is out of any bit width, so clamping high is
+            // the same answer the caller's own overflow check would give.
+            Some(Value::Int128(n)) => Ok(i64::try_from(*n).unwrap_or(i64::MAX)),
+            Some(Value::Uint128(n)) => Ok(i64::try_from(*n).unwrap_or(i64::MAX)),
+            Some(v) => Err(RuntimeError::TypeError(format!(
+                "expected int, got {}",
+                v.type_name()
+            ))),
+            None => Err(RuntimeError::ArityMismatch {
+                expected: idx + 1,
+                got: args.len(),
+            }),
+        }
+    }
+
     /// Helper to extract a float from args.
+    ///
+    /// An `Int` counts. An unsuffixed literal in a float position is a `1` that
+    /// should have become `1.0` — the checker takes the slot's type and the
+    /// interpreter's value doesn't carry that, so `x + 1` on an `f64` arrived here
+    /// as an integer and was refused, while native computed 3.5. Mixing a float
+    /// with an integer *variable* is a compile error now (#816), so anything that
+    /// reaches this point is the literal case.
     pub(crate) fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {
             Some(Value::Float(n, _)) => Ok(*n),
+            Some(Value::Int(n, _)) => Ok(*n as f64),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected float, got {}",
                 v.type_name()

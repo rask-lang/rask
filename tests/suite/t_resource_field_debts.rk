@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A holder owes each resource field separately (mem.linear/L1, #828).
+//
+// The obligation used to live on the binding alone, which can only be
+// all-or-nothing: either a projection discharges the whole holder — so a struct
+// with two resource fields loses the second one silently — or it discharges
+// nothing, and `w.conn.close()` on a wrapper with one resource can't be written
+// at all, because there is no `w.close()` to call.
+//
+// `tests/compile_errors/resource_field_debts.rk` is the rejecting half. This is
+// the half that has to keep working — every one of these would be a false
+// "leaked" error if only the per-field bookkeeping had landed and not the
+// discharge.
+
+@resource
+struct Conn {
+    public id: i64
+}
+
+extend Conn {
+    public func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+struct Pair {
+    public a: Conn
+    public b: Conn
+}
+
+struct Wrapper {
+    public conn: Conn
+    public label: string
+}
+
+struct Outer {
+    public inner: Wrapper
+}
+
+func make_pair() -> Pair {
+    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+}
+
+func make_wrapper() -> Wrapper {
+    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+}
+
+func make_outer() -> Outer {
+    return Outer { inner: Wrapper { conn: Conn { id: 4 }, label: "o" } }
+}
+
+func closes_both() -> i64 {
+    let p = make_pair()
+    return p.a.close() + p.b.close()
+}
+
+test "mem.linear/L1 — two resource fields, both paid" {
+    assert_eq(closes_both(), 3)
+}
+
+// One resource field, and the holder is still readable after paying it. This is
+// the shape that couldn't be written at all before: `w` isn't a resource, there
+// is no `w.close()`, and the projection discharged nothing.
+func closes_the_one_field() -> string {
+    let w = make_wrapper()
+    let n = w.conn.close()
+    return "{w.label}{n}"
+}
+
+test "mem.linear/L1 — a wrapper stays readable after its resource is closed" {
+    assert_eq(closes_the_one_field(), "w3")
+}
+
+func closes_through_a_nested_path() -> i64 {
+    let o = make_outer()
+    return o.inner.conn.close()
+}
+
+test "mem.linear/L1 — a nested field path discharges the field it names" {
+    assert_eq(closes_through_a_nested_path(), 4)
+}
+
+// Handing the whole holder away pays every field with it — and the callee's own
+// `take` parameter owes the same fields in turn.
+func takes_pair(take p: Pair) -> i64 {
+    return p.a.close() + p.b.close()
+}
+
+func hands_it_over() -> i64 {
+    let p = make_pair()
+    return takes_pair(p)
+}
+
+test "mem.linear/L1 — moving the holder moves every debt with it" {
+    assert_eq(hands_it_over(), 3)
+}
+
+// L1 again, from the other end: a `@resource` is never Copy, whatever its size.
+// `Conn` is eight bytes of Copy field, so it read as Copy — and a Copy argument
+// isn't consumed, so passing a connection to a `take` parameter consumed nothing
+// and the caller was then told it had leaked the value it had just handed away.
+func takes_conn(take c: Conn) -> i64 {
+    return c.close()
+}
+
+func hands_over_a_bare_resource() -> i64 {
+    let c = Conn { id: 9 }
+    return takes_conn(c)
+}
+
+test "mem.linear/L1 — a small @resource is still not Copy" {
+    assert_eq(hands_over_a_bare_resource(), 9)
+}
+
+func main() {}

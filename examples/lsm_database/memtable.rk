@@ -26,8 +26,8 @@ extend Memtable {
 
         if pos < self.entries.len() && self.entries[pos].key == key {
             self.entries[pos] = kv
-        } else {
             // Manual insert at position: append then bubble into place
+        } else {
             self.entries.push(kv)
             mut i = self.entries.len() - 1
             while i > pos {

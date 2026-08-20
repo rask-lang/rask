@@ -59,10 +59,10 @@ extend Store {
 
         // status/assignee/deps/tags all fall to their field defaults (FD3).
         let task = Task {
-            id: id,
-            title: title,
-            project: project,
-            priority: priority,
+            id,
+            title,
+            project,
+            priority,
             created_at: now_millis(),
         }
 
@@ -72,12 +72,16 @@ extend Store {
     }
 
     func view_task(self, id: TaskId) -> TaskView or StoreError {
-        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? {
+            return StoreError.NotFound(id.value)
+        }
         return to_view(h)
     }
 
     func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
-        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? {
+            return StoreError.NotFound(id.value)
+        }
 
         with self.tasks[h] as t {
             if patch.status? as s { t.status = s }
@@ -96,7 +100,9 @@ extend Store {
     }
 
     func delete_task(mutate self, id: TaskId) -> void or StoreError {
-        let h = self.by_id.get(id) ?? return StoreError.NotFound(id.value)
+        let h = self.by_id.get(id) ?? {
+            return StoreError.NotFound(id.value)
+        }
         // Sweep h out of every other task's deps first — otherwise the
         // dependent tasks are left holding a stale handle that panics the
         // next time anything (e.g. task_is_blocked) walks it (#740).
@@ -119,8 +125,12 @@ extend Store {
     }
 
     func add_dependency(mutate self, task: TaskId, dep: TaskId) -> void or StoreError {
-        let th = self.by_id.get(task) ?? return StoreError.NotFound(task.value)
-        let dh = self.by_id.get(dep) ?? return StoreError.NotFound(dep.value)
+        let th = self.by_id.get(task) ?? {
+            return StoreError.NotFound(task.value)
+        }
+        let dh = self.by_id.get(dep) ?? {
+            return StoreError.NotFound(dep.value)
+        }
         with self.tasks[th] as t {
             t.deps.push(dh)
         }
@@ -145,14 +155,9 @@ extend Store {
             return by_priority
         })
 
-        let page: Vec<TaskView> = ranked
-            .iter()
-            .skip(filter.offset)
-            .take(filter.limit)
-            .map(|r| r.view.clone())
-            .to_vec()
+        let page: Vec<TaskView> = ranked.iter().skip(filter.offset).take(filter.limit).map(|r| r.view.clone()).to_vec()
 
-        return ListResponse { items: page, total: total, offset: filter.offset }
+        return ListResponse { items: page, total, offset: filter.offset }
     }
 
     // ─── Batch transaction ───────────────────────────────────────────
@@ -186,23 +191,42 @@ extend Store {
     func create_user(mutate self, name: string, email: EmailAddress) -> UserId or StoreError {
         let id = self.next_user
         self.next_user = self.next_user.next()
-        self.users.insert(id, User { id: id, name: name, email: email, active: true })
+        self.users.insert(id, User {
+            id,
+            name,
+            email,
+            active: true,
+        })
         return id
     }
 
     func view_user(self, id: UserId) -> UserView or StoreError {
-        let u = self.users.get(id) ?? return StoreError.NotFound(id.value)
-        return UserView { id: u.id.value, name: u.name, email: u.email.raw, active: u.active }
+        let u = self.users.get(id) ?? {
+            return StoreError.NotFound(id.value)
+        }
+        return UserView {
+            id: u.id.value,
+            name: u.name,
+            email: u.email.raw,
+            active: u.active,
+        }
     }
 
     func create_project(mutate self, name: string, owner: UserId) -> ProjectId or StoreError {
         let id = self.next_project
         self.next_project = self.next_project.next()
-        self.projects.insert(id, Project { id: id, name: name, owner: owner, archived: false })
+        self.projects.insert(id, Project {
+            id,
+            name,
+            owner,
+            archived: false,
+        })
         return id
     }
 
-    func task_count(self) -> usize { return self.tasks.len() }
+    func task_count(self) -> usize {
+        return self.tasks.len()
+    }
 }
 
 // ─── Ranking helpers (context-clause auto-resolution) ────────────────
@@ -278,9 +302,9 @@ enum TxOp {
 extend TxOp {
     func target(self) -> TaskId {
         match self {
-            SetStatus(id, _)   => return id,
-            SetPriority(id, _) => return id,
-            AddDep(id, _)      => return id,
+            SetStatus(id, _) => return id
+            SetPriority(id, _) => return id
+            AddDep(id, _) => return id
         }
     }
 }
@@ -307,20 +331,24 @@ extend TaskTx {
         for op in self.ops {
             match op {
                 SetStatus(id, st) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? {
+                        return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    }
                     h.status = st
                 }
                 SetPriority(id, p) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? {
+                        return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    }
                     h.priority = p
                 }
                 AddDep(id, dep_id) => {
-                    mut h = index.get(id)
-                        ?? return StoreError.TxConflict("task {id.value} vanished mid-commit")
-                    let dh = index.get(dep_id)
-                        ?? return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                    mut h = index.get(id) ?? {
+                        return StoreError.TxConflict("task {id.value} vanished mid-commit")
+                    }
+                    let dh = index.get(dep_id) ?? {
+                        return StoreError.TxConflict("dep {dep_id.value} vanished mid-commit")
+                    }
                     h.deps.push(dh)
                 }
             }

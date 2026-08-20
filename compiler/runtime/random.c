@@ -89,6 +89,31 @@ int64_t rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi) {
     return lo + (int64_t)(rng_next_u64(rng) % range);
 }
 
+// Random.shuffle(vec) — Fisher-Yates, walking down from the last index and
+// drawing `next_u64() % (i + 1)`. Same walk and same draw order as the
+// interpreter's, so a seeded shuffle produces the same permutation on both.
+//
+// Neither `shuffle` nor `choice` had a native entry point: both reached codegen
+// as "Function not found" while the interpreter ran them (#857).
+void rask_random_shuffle(RaskRng *rng, RaskVec *v) {
+    if (!rng || !v) return;
+    int64_t len = rask_vec_len(v);
+    for (int64_t i = len - 1; i >= 1; i--) {
+        int64_t j = (int64_t)(rng_next_u64(rng) % (uint64_t)(i + 1));
+        if (i != j) rask_vec_swap(v, i, j);
+    }
+}
+
+// Random.choice(vec) -> T? — a pointer to the element, or NULL for an empty
+// Vec, which the DerefOption adapter turns into `none`.
+void *rask_random_choice(RaskRng *rng, RaskVec *v) {
+    if (!rng || !v) return NULL;
+    int64_t len = rask_vec_len(v);
+    if (len <= 0) return NULL;
+    int64_t idx = (int64_t)(rng_next_u64(rng) % (uint64_t)len);
+    return rask_vec_get_unchecked(v, idx);
+}
+
 // ── Module-level convenience functions (thread-local PRNG) ───
 
 static __thread RaskRng *tl_random_rng = NULL;

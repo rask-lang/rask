@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic type instantiated with another instantiation (#871).
+//
+// `Wrap<Wrap<i64>>` segfaulted natively on the first read:
+//
+//     let n = Wrap { value: Wrap { value: 41 } }
+//     let i = n.value          // SIGSEGV
+//
+// Three things were wrong, and each one on its own was enough:
+//
+//   - A generic type's shared layout gives every type parameter one word, so a
+//     field declared `value: T` reports 8 bytes and an integer type whatever T
+//     is. The write copied the inner struct's 8 bytes into the slot; the read
+//     loaded them and dereferenced them as a pointer.
+//   - `n.get()` picked a body by naming the receiver's instantiation, and a
+//     nested one had no name — so it fell back to the *result* type and bound
+//     the method's `T` to the inner argument. `Wrap<Wrap<i64>>.get()` compiled
+//     as if it returned an i64.
+//   - On the interpreter, `x is Wrap<i64>` compared the written name against the
+//     value's runtime name `Wrap` and answered false, so reading a generic
+//     struct back out of a Map always took the else branch.
+
+struct Wrap<T> {
+    value: T
+}
+
+extend Wrap<T> {
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+// Wider than the one word a shared generic slot holds, so this one gets an
+// instance layout of its own — the other half of the same problem.
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+struct Both<A, B> {
+    left: A
+    right: B
+}
+
+enum Maybe<T> {
+    Nothing
+    Just(T)
+}
+
+func unwrap_or<T>(m: Maybe<T>, fallback: T) -> T {
+    match m {
+        Maybe.Just(v) => { return v }
+        Maybe.Nothing => { return fallback }
+    }
+}
+
+test "nested generics — a field read goes one level down" {
+    let n = Wrap { value: Wrap { value: 41 } }
+    assert_eq(n.value.value, 41)
+    let inner = n.value
+    assert_eq(inner.value, 41)
+}
+
+test "nested generics — a method hands back the inner instantiation" {
+    let n = Wrap { value: Wrap { value: 41 } }
+    let inner = n.get()
+    assert_eq(inner.value, 41)
+    assert_eq(inner.get(), 41)
+    assert_eq(n.get().get(), 41)
+}
+
+// The shared layout and the instance layout are different paths, and both had to
+// come out right. `Wrap<Big>` is 24 bytes, `Wrap<Wrap<Big>>` is 24 too.
+test "nested generics — an inner type too wide for a shared slot" {
+    let w = Wrap { value: Big { a: 1, b: 2, c: 3 } }
+    assert_eq(w.get().c, 3)
+    let n = Wrap { value: Wrap { value: Big { a: 4, b: 5, c: 6 } } }
+    assert_eq(n.get().get().c, 6)
+    assert_eq(n.value.value.a, 4)
+}
+
+test "nested generics — three levels" {
+    let deep = Wrap { value: Wrap { value: Wrap { value: 9 } } }
+    assert_eq(deep.value.value.value, 9)
+    assert_eq(deep.get().get().get(), 9)
+}
+
+// Each type parameter is instantiated on its own, and they don't have to agree.
+test "nested generics — two parameters, each holding an instantiation" {
+    let b = Both { left: Wrap { value: 5 }, right: Wrap { value: "five" } }
+    assert_eq(b.left.get(), 5)
+    assert_eq(b.right.get(), "five")
+}
+
+test "nested generics — a generic enum holding an instantiation" {
+    let j: Maybe<Wrap<i64>> = Maybe.Just(Wrap { value: 12 })
+    let fallback = Wrap { value: -1 }
+    assert_eq(unwrap_or(j, fallback).value, 12)
+
+    let no: Maybe<Wrap<i64>> = Maybe.Nothing
+    let other = Wrap { value: -1 }
+    assert_eq(unwrap_or(no, other).value, -1)
+}
+
+// A collection is where the interpreter's half showed up: the value comes back
+// as `Wrap<i64>?` and the test names the type with its argument.
+test "nested generics — read a generic struct back out of a Map" {
+    mut m: Map<string, Wrap<i64>> = Map.new()
+    m.insert("k", Wrap { value: 55 })
+    let got = m.get("k")
+    if got is Wrap<i64> as w {
+        assert_eq(w.value, 55)
+    } else {
+        assert false
+    }
+    assert m.get("nope") is none
+}
+
+test "nested generics — a Vec of instantiations" {
+    mut ws: Vec<Wrap<Wrap<i64>>> = Vec.new()
+    ws.push(Wrap { value: Wrap { value: 100 } })
+    ws.push(Wrap { value: Wrap { value: 200 } })
+    mut total = 0
+    for w in ws {
+        total = total + w.get().get()
+    }
+    assert_eq(total, 300)
+}
+
+// Narrow and float type arguments read through the same word-wide slot, and a
+// wrong register class or width there is silent.
+test "nested generics — narrow and float arguments" {
+    let f = Wrap { value: Wrap { value: 2.5 } }
+    assert_eq(f.get().get(), 2.5)
+    let s = Wrap { value: Wrap { value: "hi" } }
+    assert_eq(s.get().get(), "hi")
+    let b = Wrap { value: Wrap { value: true } }
+    assert(b.get().get())
+}
+
+func main() {}

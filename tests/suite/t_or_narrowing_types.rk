@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `r is T` on a `T or E` where T is one of the interpreter's own value kinds.
+//
+// The interpreter's runtime type test listed bool, char, string, the machine
+// integers, floats, enums, structs, Vec and Map — and answered `false` for
+// everything else. So a `Duration or TimeError` holding a perfectly good
+// Duration took the *else* branch, and `e` was bound to the Duration:
+//
+//     let d = later.duration_since(earlier)      // Ok(Duration)
+//     if d is Duration as span { … }             // native: taken
+//     else as e { e.message() }                  // interpreter: taken, e is a Duration
+//
+// Native never had the problem — it tests the Result tag, not the payload's
+// runtime kind. The catch-all answers with the value's own type name now, which
+// also covers `i128`/`u128`, `File`, `Instant` and the rest of the box family.
+
+import time
+import time.Duration
+import time.Instant
+import time.SystemTime
+
+enum Failed {
+    Reason(string)
+}
+
+extend Failed {
+    public func message(self) -> string {
+        match self {
+            Failed.Reason(why) => return why
+        }
+    }
+}
+
+func a_duration() -> Duration or Failed {
+    return Duration.millis(250)
+}
+
+func an_instant() -> Instant or Failed {
+    return Instant.now()
+}
+
+func a_wide_int() -> i128 or Failed {
+    return 170141183460469231731687303715884105727
+}
+
+func an_error() -> Duration or Failed {
+    return Failed.Reason("nope")
+}
+
+test "or-narrowing — a Duration payload is a Duration" {
+    let d = a_duration()
+    if d is Duration as span {
+        assert_eq(span.as_millis(), 250)
+    } else as e {
+        assert(false)
+    }
+}
+
+test "or-narrowing — an Instant payload is an Instant" {
+    let i = an_instant()
+    if i is Instant as when {
+        assert(when.elapsed().as_millis() < 5000)
+    } else as e {
+        assert(false)
+    }
+}
+
+test "or-narrowing — a 128-bit payload is an i128" {
+    let n = a_wide_int()
+    if n is i128 as v {
+        assert_eq(v, 170141183460469231731687303715884105727)
+    } else as e {
+        assert(false)
+    }
+}
+
+test "or-narrowing — the error branch still wins when it should" {
+    let d = an_error()
+    if d is Duration as span {
+        assert(false)
+    } else as e {
+        assert_eq(e.message(), "nope")
+    }
+}
+
+test "or-narrowing — an optional payload of a box type" {
+    let maybe: Duration? = Duration.seconds(2)
+    if maybe is Duration as span {
+        assert_eq(span.as_seconds(), 2)
+    } else {
+        assert(false)
+    }
+
+    let empty: Duration? = none
+    assert(empty is none)
+}
+
+func main() {}

@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The `{` after a match scrutinee opens the arms (#884).
+//
+//     const LIMIT = 49
+//     match LIMIT {
+//         49 => …
+//     }
+//     error[E0100]: Expected name, found a number
+//
+// A bare capitalised name read as the start of a struct literal, so the first
+// arm was parsed as a field. `match lower { 49 => … }` worked and
+// `match (LIMIT) { … }` worked, which is why it took a `const` in a match to
+// find it — every existing test matches on a lowercase local.
+//
+// `if`, `while` and `for` have always parsed their condition with braces
+// suppressed for the same reason. `match` now does too. Matching on a struct
+// literal directly still works, with the parens that shape has always needed.
+
+const LIMIT = 49
+const NAME = "bo"
+
+enum Colour {
+    Red
+    Green
+}
+
+const FAVOURITE = Colour.Red
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+extend Point {
+    func quadrant(self) -> string {
+        match self.x {
+            0 => { return "axis" }
+            _ => { return "off-axis" }
+        }
+    }
+}
+
+test "match scrutinee — an uppercase const" {
+    mut out = ""
+    match LIMIT {
+        49 => { out = "limit" }
+        _ => { out = "other" }
+    }
+    assert_eq(out, "limit")
+}
+
+test "match scrutinee — a string const" {
+    mut out = ""
+    match NAME {
+        "bo" => { out = "hit" }
+        _ => { out = "miss" }
+    }
+    assert_eq(out, "hit")
+}
+
+test "match scrutinee — an enum const" {
+    mut out = ""
+    match FAVOURITE {
+        Colour.Red => { out = "red" }
+        Colour.Green => { out = "green" }
+    }
+    assert_eq(out, "red")
+}
+
+// A lowercase local always worked; it must keep working.
+test "match scrutinee — a lowercase local" {
+    let n = 49
+    mut out = ""
+    match n {
+        49 => { out = "limit" }
+        _ => { out = "other" }
+    }
+    assert_eq(out, "limit")
+}
+
+// The parenthesised form was the workaround and stays valid.
+test "match scrutinee — parenthesised" {
+    mut out = ""
+    match (LIMIT) {
+        49 => { out = "limit" }
+        _ => { out = "other" }
+    }
+    assert_eq(out, "limit")
+}
+
+// A struct literal as the scrutinee needs its parens — the `{` would otherwise
+// be the arms.
+test "match scrutinee — a parenthesised struct literal" {
+    mut out = ""
+    match (Point { x: 0, y: 1 }).x {
+        0 => { out = "zero" }
+        _ => { out = "other" }
+    }
+    assert_eq(out, "zero")
+}
+
+// A field, a call and an index in scrutinee position — each ends in something
+// that isn't a bare name, so none of them were affected, but they go through the
+// same parse.
+test "match scrutinee — field, call and index" {
+    let p = Point { x: 0, y: 3 }
+    assert_eq(p.quadrant(), "axis")
+
+    let v: Vec<i64> = [49, 1]
+    mut out = ""
+    match v[0] {
+        49 => { out = "limit" }
+        _ => { out = "other" }
+    }
+    assert_eq(out, "limit")
+}
+
+func main() {}
