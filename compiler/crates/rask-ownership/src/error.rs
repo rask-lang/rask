@@ -231,6 +231,14 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// H1: a resource-typed value produced by an expression statement is
+    /// never bound to anything, so it's dropped unconsumed the instant it's
+    /// produced (e.g. `spawn(|| { ... })` with no `let`).
+    #[error("value of resource type `{type_name}` is dropped without being consumed")]
+    ResourceDiscardedAsStatement {
+        type_name: String,
+    },
+
     /// mem.linear/L1 for an `Owned<T>` local: `own` allocated and nothing
     /// consumed it. Kept apart from `ResourceNotConsumed` because the fix is
     /// `drop(name)`, not `.close()`.

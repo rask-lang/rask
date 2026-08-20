@@ -888,6 +888,22 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
+                // H1/L1: a resource-typed value with nothing to bind it to is
+                // dropped the instant it's produced — e.g. `spawn(f)` used as
+                // a bare statement, with the TaskHandle never joined/detached.
+                // A bare `Ident` is never a *fresh* value — it names an
+                // existing binding, which the end-of-scope check (E0805)
+                // already tracks; flagging it here too would double-report
+                // the same leak.
+                if !matches!(expr.kind, ExprKind::Ident(_)) && self.expr_is_resource_type(expr) {
+                    let type_name = self.program.node_types.get(&expr.id)
+                        .map(|ty| self.resource_type_display(ty))
+                        .unwrap_or_else(|| "?".to_string());
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ResourceDiscardedAsStatement { type_name },
+                        span: expr.span,
+                    });
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.check_expr(value);
@@ -3775,6 +3791,7 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
+                Type::Generic { base, .. } => Some(*base),
                 // A stdlib type arrives here as its own *name* when the call
                 // that produced it went through the module-function path — a
                 // stub's return type is parsed before the type table exists, so
@@ -3823,6 +3840,22 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
     }
+    /// Best-effort display name for a resource-typed value, recursing through
+    /// `T or E` to name whichever side is actually linear (E0834: a bare
+    /// statement whose type is `TaskHandle<T> or E` still leaks the handle).
+    fn resource_type_display(&self, ty: &Type) -> String {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self.program.types.type_name(*id),
+            Type::Result { ok, err } => {
+                if self.program.types.is_linear_value(ok) {
+                    self.resource_type_display(ok)
+                } else {
+                    self.resource_type_display(err)
+                }
+            }
+            _ => ty.to_string(),
+        }
+    }
 
     /// What must hold wherever control leaves the body: every resource consumed,
     /// every `mutate` parameter refilled. Reported at each `return` as well as at
@@ -3855,6 +3888,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         self.bindings.insert(name.to_string(), BindingState::Moved { at: span });
     }
+
     /// Name of the type a receiver expression evaluates to. Handles resolved
     /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/
     /// `UnresolvedGeneric`) forms. Returns the base name without generic params.
