@@ -130,6 +130,10 @@ pub struct OwnershipChecker<'a> {
     /// say — two `Store<Node>` parameters give links of the same type — so the
     /// origin is carried from wherever the link was derived.
     link_store_root: HashMap<String, String>,
+    /// Store bindings this body may write nodes through: `mut` locals, and
+    /// `mutate`/`deleting` parameters. A link is an access path into a store, not
+    /// a permission of its own, so this is what a node write is checked against.
+    writable_stores: HashSet<String>,
     take_link_params: HashSet<String>,
     identified_links: HashSet<String>,
     /// Spans where a link was consumed by `store.delete(...)`, so a use-after-move
@@ -191,6 +195,7 @@ impl<'a> OwnershipChecker<'a> {
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
             link_store_root: HashMap::new(),
+            writable_stores: HashSet::new(),
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
@@ -476,6 +481,7 @@ impl<'a> OwnershipChecker<'a> {
         self.exit_reported.clear();
         self.deleting_params.clear();
         self.link_store_root.clear();
+        self.writable_stores.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
         self.store_iterations.clear();
@@ -509,6 +515,16 @@ impl<'a> OwnershipChecker<'a> {
         self.param_type_strings.clear();
         for param in &fn_decl.params {
             self.param_type_strings.insert(param.name.clone(), param.ty.clone());
+        }
+
+        // A store reached through a `mutate`/`deleting` parameter is writable; one
+        // reached through a plain borrow is the caller's to write. Has to come
+        // after the map above — `name_holds_store` reads it, so running this in the
+        // earlier loop silently answered "no" for every parameter.
+        for param in &fn_decl.params {
+            if (param.is_mutate || param.is_deleting) && self.name_holds_store(&param.name) {
+                self.writable_stores.insert(param.name.clone());
+            }
         }
 
         // Register parameters as owned or borrowed bindings
@@ -722,6 +738,8 @@ impl<'a> OwnershipChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
+                // `mut` is what makes a store's nodes writable here.
+                self.writable_stores.insert(name.clone());
                 self.check_expr(init);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
@@ -885,6 +903,13 @@ impl<'a> OwnershipChecker<'a> {
                 // good. Nothing maintains a local, so a local-to-local copy revokes
                 // the source and `delete` takes it — which is what makes
                 // use-after-delete a compile error (analysis.fourth-option).
+                // A node write asks the *store*, not the link. A link is an
+                // access path — following an edge doesn't grant anything the
+                // store didn't already grant, which is why read-only needs no
+                // second link type and can't be laundered by one hop.
+                if !reinit_target {
+                    self.check_node_write(target, stmt.span);
+                }
                 let link_into_field = !reinit_target
                     && self
                         .program
@@ -2190,6 +2215,61 @@ impl<'a> OwnershipChecker<'a> {
             }
             None => {
                 self.link_store_root.remove(name);
+            }
+        }
+    }
+
+    /// A write through a link is permitted by the store the node lives in.
+    ///
+    /// `n.value = 5` doesn't change `n` — it changes a node inside a store, so
+    /// the question is whether *that store* is writable here. This is the rule
+    /// `Handle` has always had (`scene.nodes[h].f = x` needs `mutate scene`); a
+    /// link just spells the path differently. Asking the store rather than the
+    /// link is what makes a read-only view free: a function taking `s: Store<T>`
+    /// can read every node and write none, with nothing to propagate along edges
+    /// and no way to launder a read-only link into a writable one.
+    fn check_node_write(&mut self, target: &Expr, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(target).0 else { return };
+        let is_link = self
+            .binding_types
+            .get(&root)
+            .is_some_and(|ty| self.is_link_type(ty));
+        if !is_link && !self.take_link_params.contains(&root) {
+            let param_link = self
+                .param_type_strings
+                .get(&root)
+                .is_some_and(|t| t.starts_with("Link<"));
+            if !param_link {
+                return;
+            }
+        }
+        match self.link_root_of_expr(target) {
+            // The store has a name here, so the answer is about that name.
+            Some(store) => {
+                if !self.writable_stores.contains(&store) {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableStore {
+                            link: root,
+                            store: Some(store),
+                        },
+                        span,
+                    });
+                }
+            }
+            // The link arrived as a parameter, so its store isn't named here. One
+            // writable store parameter is unambiguous — that's the one it must
+            // belong to, since an edge can only connect co-owned nodes. None means
+            // nothing granted this write.
+            None => {
+                if self.writable_stores.is_empty() {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableStore {
+                            link: root,
+                            store: None,
+                        },
+                        span,
+                    });
+                }
             }
         }
     }

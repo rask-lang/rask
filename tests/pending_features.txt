@@ -18,3 +18,4 @@ p11_store_link.rk          # analysis.fourth-option Store<T>/Link<T> — no nati
 p12_store_link_churn.rk    # analysis.fourth-option edge lists/indexes under churn — same native gap
 p13_store_snapshot.rk      # analysis.fourth-option Store.snapshot — same native gap
 p14_deleting_mode.rk       # analysis.fourth-option `deleting` parameter mode — same native gap
+p15_read_only_graph.rk     # analysis.fourth-option read-only graph via the store — same native gap

@@ -1890,6 +1890,41 @@ fn store_link_delete_cost_follows_in_degree() {
 // Where a field path exists the obligation is per field; where one doesn't, the
 // whole binding is owed. That fallback is sound but it names the root, which reads
 // like a compiler bug unless the message says which shape stopped the walk.
+// A link says which node; the store says whether you may write it. Links were
+// exempt from the rule `Handle` has always had — `scene.nodes[h].f = x` needs
+// `mutate scene` — so a plain borrow of a store could rewrite every node in it.
+// The showcase program did exactly that, with a comment calling it the win over
+// handles.
+#[test]
+fn error_node_write_needs_a_writable_store() {
+    let (failed, out) = compile_error_output("node_write_needs_store.rk");
+    assert!(failed, "writing a node through a readable store must be rejected: {}", out);
+    // Named store, store in a field, and no store at all.
+    assert_eq!(
+        out.matches("error[E0378]").count(),
+        5,
+        "every way of writing a node without permission: {}",
+        out
+    );
+    assert!(
+        out.contains("`world` is only readable here") && out.contains("`scene` is only readable here"),
+        "the store is named, since that's what has to change: {}",
+        out
+    );
+    // The edge-crossing case is the one a read-only *link type* would have had
+    // to propagate. Asking the store makes it the same question as the first.
+    assert!(
+        out.contains("no writable store came with `e`"),
+        "a link that arrived alone grants nothing: {}",
+        out
+    );
+    assert!(
+        out.contains("mutate store: Store<…>") || out.contains("mutate scene"),
+        "the fix names what to change: {}",
+        out
+    );
+}
+
 #[test]
 fn error_resource_in_untrackable_shape_says_why() {
     let (failed, out) = compile_error_output("resource_in_untrackable_shape.rk");

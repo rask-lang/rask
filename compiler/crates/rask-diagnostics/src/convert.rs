@@ -2280,6 +2280,39 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
+            NodeWriteNeedsWritableStore { link, store } => {
+                // `with_help` isn't rendered on this path — `fix` and `why` are —
+                // so the actionable line goes in `with_fix`.
+                let d = match store {
+                    Some(s) => Diagnostic::error(format!(
+                        "cannot write this node — `{}` is only readable here",
+                        s
+                    ))
+                    .with_code("E0378")
+                    .with_primary(
+                        self.span,
+                        format!("writes a node in `{}` through `{}`", s, link),
+                    )
+                    .with_fix(format!(
+                        "make the store writable: `mut {}` if it's a local, `mutate {}: Store<…>` if it's a parameter",
+                        s, s
+                    )),
+                    None => Diagnostic::error(format!(
+                        "cannot write this node — no writable store came with `{}`",
+                        link
+                    ))
+                    .with_code("E0378")
+                    .with_primary(
+                        self.span,
+                        format!("`{}` points into a store this function wasn't given", link),
+                    )
+                    .with_fix(
+                        "take the store too: add a `mutate store: Store<…>` parameter — the link says which node, the store says whether you may write it"
+                            .to_string(),
+                    ),
+                };
+                d.with_why("a `Link<T>` is a path to a node, not permission to change it. The node lives in a store, so the store answers whether it may be written — the same rule `Handle` has, where `scene.nodes[h].f = x` needs `mutate scene`. Asking the store is also what makes a read-only graph free: a function taking `s: Store<T>` reads every node and writes none, with nothing to propagate along the edges you follow and no way to launder a readable link into a writable one")
+            }
             UndeclaredDelete { param, operation } => {
                 Diagnostic::error(format!(
                     "this can delete nodes the caller never named — declare `deleting {}`",

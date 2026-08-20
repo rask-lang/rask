@@ -175,6 +175,22 @@ pub enum OwnershipErrorKind {
         ty: String,
     },
 
+    /// analysis.fourth-option: a node written through a link whose store this
+    /// body may only read.
+    ///
+    /// A link is an access path into a store, not a permission of its own, so the
+    /// write is checked against the store — the same rule `Handle` has, where
+    /// `scene.nodes[h].f = x` needs `mutate scene`. Exempting links let
+    /// `func combat_round(world: Store<Entity>) { t.health -= e.damage }` mutate
+    /// every node behind a signature promising the store was only read.
+    #[error("cannot write through `{link}` — nothing here grants writing this store's nodes")]
+    NodeWriteNeedsWritableStore {
+        link: String,
+        /// The store, when this body can name it. `None` when the link came in as
+        /// a parameter and no writable store parameter came with it.
+        store: Option<String>,
+    },
+
     /// analysis.fourth-option: an unnamed delete through a parameter that didn't
     /// declare `deleting`. The caller was never told its links could die here.
     #[error("`{operation}` through `{param}` deletes nodes the caller never named")]
