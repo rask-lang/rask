@@ -2280,6 +2280,35 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
+            LinkOutlivesStore { link, store, via } => {
+                let (primary, fix) = match via {
+                    rask_ownership::LinkEscape::Return => (
+                        format!(
+                            "`{}` lives in `{}`, and `{}` dies when this function returns",
+                            link, store, store
+                        ),
+                        format!(
+                            "return the node's data instead, or take the store as a parameter so it outlives the call: `func …(mutate {}: Store<…>) -> Link<…>`",
+                            store
+                        ),
+                    ),
+                    rask_ownership::LinkEscape::Assignment { target } => (
+                        format!(
+                            "`{}` outlives `{}`, and the node `{}` points at dies with it",
+                            target, store, link
+                        ),
+                        format!(
+                            "move `{}` out to where `{}` lives, or copy the fields you need out of the node before the scope ends",
+                            store, target
+                        ),
+                    ),
+                };
+                Diagnostic::error(format!("`{}` would outlive the store it points into", link))
+                    .with_code("E0379")
+                    .with_primary(self.span, primary)
+                    .with_fix(fix)
+                    .with_why("a `Link<T>` is a pointer to a node, and the nodes live in the store — so when the store goes out of scope the node goes with it and the link dangles. Nothing else catches this: no `delete` happened, so the use-after-delete rule never looks, and a link is Copy so it escapes the scope that produced it. A link into a store the *caller* owns is fine — that store outlives the call")
+            }
             NodeWriteNeedsWritableStore { link, store } => {
                 // `with_help` isn't rendered on this path — `fix` and `why` are —
                 // so the actionable line goes in `with_fix`.

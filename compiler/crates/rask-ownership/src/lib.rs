@@ -11,7 +11,7 @@ mod error;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
-    AccessKind, LinearDiscardPosition, MoveReason, OwnershipError, OwnershipErrorKind,
+    AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -910,6 +910,13 @@ impl<'a> OwnershipChecker<'a> {
                 if !reinit_target {
                     self.check_node_write(target, stmt.span);
                 }
+                if let Some(target_root) = Self::extract_root_and_fields(target).0 {
+                    self.check_link_escape(
+                        value,
+                        LinkEscape::Assignment { target: target_root },
+                        stmt.span,
+                    );
+                }
                 let link_into_field = !reinit_target
                     && self
                         .program
@@ -992,6 +999,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
+                    self.check_link_escape(expr, LinkEscape::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
                     // consume or a replacement.
@@ -2272,6 +2280,70 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
         }
+    }
+
+
+    /// A link may not outlive the store it points into.
+    ///
+    /// Nothing else catches this. The use-after-delete rule tracks deletes, and
+    /// no delete happened — the store just went out of scope and took its nodes
+    /// with it. Block-scoped borrowing would have caught it, except a link is
+    /// Copy and escapes freely, which is the point of a link. So the escape has
+    /// to be checked directly: a link whose store this body declared can't be
+    /// returned, and can't be assigned into a name that outlives that store.
+    ///
+    /// A link into a *parameter* store is fine — the caller owns it, so it
+    /// outlives the call. That's the case that has to keep working:
+    /// `func first(mutate s: Store<T>) -> Link<T>` is an ordinary accessor.
+    fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) {
+        // A link inside an aggregate escapes just as well as a bare one —
+        // `return Holder { link: n }` is the same dangle with a wrapper on it.
+        match &expr.kind {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.check_link_escape(e, via.clone(), span);
+                }
+                return;
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.check_link_escape(&f.value, via.clone(), span);
+                }
+                if let Some(sp) = spread {
+                    self.check_link_escape(sp, via.clone(), span);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+        if !self.is_link_type(ty) {
+            return;
+        }
+        let Some(store) = self.link_root_of_expr(expr) else { return };
+        // A parameter store outlives this body, so nothing can escape it here.
+        if self.param_type_strings.contains_key(&store) {
+            return;
+        }
+        let Some(&store_block) = self.binding_decl_blocks.get(&store) else { return };
+        let escapes = match &via {
+            LinkEscape::Return => true,
+            LinkEscape::Assignment { target } => self
+                .binding_decl_blocks
+                .get(target)
+                .is_some_and(|&target_block| store_block > target_block),
+        };
+        if !escapes {
+            return;
+        }
+        let link = match &expr.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => store.clone(),
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::LinkOutlivesStore { link, store, via },
+            span,
+        });
     }
 
     /// Which store a link expression came out of, by root name. Follows the two

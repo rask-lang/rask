@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A link may not outlive the store it points into.
+//
+// Nothing else catches this. The use-after-delete rule tracks deletes, and no
+// delete happens here — the store goes out of scope and takes its nodes with it.
+// Block-scoped borrowing would have caught it, except a link is Copy and escapes
+// the scope that produced it, which is the whole point of a link. So links opt
+// out of the one mechanism built to prevent exactly this.
+
+struct Node {
+    value: i32
+}
+
+struct Holder {
+    link: Link<Node>?
+}
+
+// Out through a return.
+func returned() -> Link<Node> {
+    mut s: Store<Node> = Store.new()
+    let n = s.insert(Node { value: 1 })
+    return n                        // ERROR: `s` dies here
+}
+
+// Out inside a struct — the same dangle with a wrapper on it.
+func wrapped() -> Holder {
+    mut s: Store<Node> = Store.new()
+    let n = s.insert(Node { value: 2 })
+    return Holder { link: n }       // ERROR: still `s`
+}
+
+// Out through a tuple.
+func tupled() -> (Link<Node>, i32) {
+    mut s: Store<Node> = Store.new()
+    let n = s.insert(Node { value: 3 })
+    return (n, 7)                   // ERROR: still `s`
+}
+
+// Out through an assignment to a longer-lived name.
+func assigned() {
+    mut escaped: Link<Node>? = none
+    {
+        mut s: Store<Node> = Store.new()
+        let n = s.insert(Node { value: 4 })
+        escaped = n                 // ERROR: `escaped` outlives `s`
+    }
+    if escaped? as e { println("{e.value}") }
+}
+
+// --- These must keep working ---
+
+// The store belongs to the caller, so it outlives the call. An ordinary accessor.
+func from_a_parameter(mutate s: Store<Node>) -> Link<Node> {
+    return s.insert(Node { value: 5 })
+}
+
+// Same scope, no escape.
+func same_scope() -> i32 {
+    mut s: Store<Node> = Store.new()
+    let n = s.insert(Node { value: 6 })
+    return n.value
+}
+
+func main() {
+    mut s: Store<Node> = Store.new()
+    let k = from_a_parameter(mutate s)
+    println("{k.value} {same_scope()}")
+    assigned()
+}

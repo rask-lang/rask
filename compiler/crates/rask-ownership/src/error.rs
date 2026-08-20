@@ -175,6 +175,22 @@ pub enum OwnershipErrorKind {
         ty: String,
     },
 
+    /// analysis.fourth-option: a link that would outlive the store it points into.
+    ///
+    /// A link is a pointer to a node, and the nodes live in the store. When the
+    /// store dies the node goes with it, so a link that escapes the store's scope
+    /// is dangling — with nothing deleted, so the use-after-delete rule never
+    /// looks at it. A link is Copy and escapes freely, which is the point of a
+    /// link and also exactly what block-scoped borrowing exists to stop.
+    #[error("`{link}` would outlive the store it points into")]
+    LinkOutlivesStore {
+        link: String,
+        /// The store, when this body declared it.
+        store: String,
+        /// How it escapes — a return, or an assignment into a longer-lived name.
+        via: LinkEscape,
+    },
+
     /// analysis.fourth-option: a node written through a link whose store this
     /// body may only read.
     ///
@@ -331,6 +347,15 @@ pub enum OwnershipErrorKind {
         /// The transitively-linear type that would be dropped.
         type_name: String,
     },
+}
+
+/// How a link escapes its store's scope. Drives the E0379 copy.
+#[derive(Debug, Clone)]
+pub enum LinkEscape {
+    /// `return n` where the store is a local of this function.
+    Return,
+    /// Assigned into a name declared in an outer scope.
+    Assignment { target: String },
 }
 
 /// Where a linear-wildcard discard occurred. Drives the ER43 diagnostic copy.

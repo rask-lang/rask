@@ -1890,6 +1890,37 @@ fn store_link_delete_cost_follows_in_degree() {
 // Where a field path exists the obligation is per field; where one doesn't, the
 // whole binding is owed. That fallback is sound but it names the root, which reads
 // like a compiler bug unless the message says which shape stopped the walk.
+// A link may not outlive the store it points into. Nothing else caught this: no
+// `delete` happened, so the use-after-delete rule never looked, and a link is
+// Copy so it escapes the scope that produced it — opting out of the one
+// mechanism (block-scoped borrowing) built to stop exactly this.
+#[test]
+fn error_link_outlives_its_store() {
+    let (failed, out) = compile_error_output("link_outlives_store.rk");
+    assert!(failed, "a link escaping its store's scope must be rejected: {}", out);
+    // Bare return, inside a struct, inside a tuple, and out through an
+    // assignment to a longer-lived name.
+    assert_eq!(
+        out.matches("error[E0379]").count(),
+        4,
+        "every way out: bare, wrapped, tupled, assigned: {}",
+        out
+    );
+    // The two legitimate shapes must not be caught: a link into the caller's
+    // store, and a link used in the scope that made it.
+    assert!(
+        !out.contains("from_a_parameter") && !out.contains("same_scope"),
+        "a link into a parameter store is an ordinary accessor: {}",
+        out
+    );
+    assert!(
+        out.contains("dies when this function returns")
+            && out.contains("outlives `s`"),
+        "the message says which name outlives which: {}",
+        out
+    );
+}
+
 // A link says which node; the store says whether you may write it. Links were
 // exempt from the rule `Handle` has always had — `scene.nodes[h].f = x` needs
 // `mutate scene` — so a plain borrow of a store could rewrite every node in it.
