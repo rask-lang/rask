@@ -47,6 +47,11 @@ func assigned() {
     if escaped? as e { println("{e.value}") }
 }
 
+// Not caught yet: a link that leaves inside a collection. `v` holds links from
+// `s`, but the check works on expressions and `return v` isn't one — the link
+// went in through a `push` several statements back. Needs provenance on the
+// collection rather than the expression (#941).
+
 // --- These must keep working ---
 
 // The store belongs to the caller, so it outlives the call. An ordinary accessor.
