@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A read-only graph, without a read-only link type.
 //
-// The write permission lives on the store, not on the link. So `s: Store<T>` is
+// The write permission lives on the rack, not on the link. So `s: Rack<T>` is
 // a read-only view of the whole graph — every node reachable, none writable —
-// and `mutate s: Store<T>` is the writable one. No `LinkView`, no `mut` in a
+// and `mutate s: Rack<T>` is the writable one. No `LinkView`, no `mut` in a
 // type position, and nothing that changes as you follow edges.
 
 struct Entity {
@@ -14,7 +14,7 @@ struct Entity {
 }
 
 struct World {
-    nodes: Store<Entity>
+    nodes: Rack<Entity>
 }
 
 // Reader. Follows edges as far as it likes and cannot write any of it.
@@ -27,7 +27,7 @@ func total_health(w: World) -> i32 {
 }
 
 // Reader that walks an edge — the case a read-only link type would have had to
-// propagate across, and doesn't arise when the store answers instead.
+// propagate across, and doesn't arise when the rack answers instead.
 func describe_targets(w: World) -> i32 {
     mut named = 0
     for e in w.nodes.nodes() {
@@ -48,7 +48,7 @@ func combat_round(mutate w: World) {
 }
 
 func build() -> World {
-    mut w = World { nodes: Store.new() }
+    mut w = World { nodes: Rack.new() }
     let a = w.nodes.insert(Entity { name: "a", health: 100, damage: 10, target: none })
     let b = w.nodes.insert(Entity { name: "b", health: 80, damage: 7, target: none })
     a.target = b
@@ -56,7 +56,7 @@ func build() -> World {
     return w
 }
 
-test "a borrowed store is a read-only view of the whole graph" {
+test "a borrowed rack is a read-only view of the whole graph" {
     let w = build()
     assert total_health(w) == 180
     assert describe_targets(w) == 2

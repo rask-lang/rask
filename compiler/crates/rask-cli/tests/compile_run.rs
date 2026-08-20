@@ -1698,12 +1698,12 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 }
 
 // The litmus comparison's headline claim: the same program written with
-// `Pool`+`Handle` and with `Store`+`Link` produces the same output. That is what
+// `Pool`+`Handle` and with `Rack`+`Link` produces the same output. That is what
 // makes the ergonomics comparison in the write-up a comparison rather than two
 // unrelated programs, so it is asserted rather than eyeballed.
 // analysis.fourth-option: the cascade hole, closed by the `deleting` parameter
-// mode. A function that takes the store mutably and picks its own nodes to delete
-// has to say so, and the call then revokes every link local into that store.
+// mode. A function that takes the rack mutably and picks its own nodes to delete
+// has to say so, and the call then revokes every link local into that rack.
 //
 // Asserts the rejection, and that the call site needed no new marker — the mark is
 // on the declaration, because this very error backstops the misread while a misread
@@ -1712,10 +1712,10 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 // is whether the caller can see it: a link consumed at the call site is visible, a
 // node the callee picked is not.
 #[test]
-fn error_store_delete_undeclared() {
-    let (failed, out) = compile_error_output("store_delete_undeclared.rk");
+fn error_rack_delete_undeclared() {
+    let (failed, out) = compile_error_output("rack_delete_undeclared.rk");
     assert!(failed, "an undeclared unnamed delete must be rejected: {}", out);
-    // Three ways to pick your own victim: walk the store, clear it, or hand a
+    // Three ways to pick your own victim: walk the rack, clear it, or hand a
     // link you derived to something that consumes it.
     assert_eq!(
         out.matches("error[E0329]").count(),
@@ -1723,12 +1723,12 @@ fn error_store_delete_undeclared() {
         "each unnamed delete is reported once: {}",
         out
     );
-    // With two stores of the same node type, blame follows the store the consuming
+    // With two racks of the same node type, blame follows the rack the consuming
     // call receives — not a guess about where the link came from. So `left` is
     // named and `right`, which nothing deletes from, is left out of it.
     assert!(
         out.contains("declare `deleting left`") && !out.contains("declare `deleting right`"),
-        "blame must land on the store the call hands over, and only that one: {}",
+        "blame must land on the rack the call hands over, and only that one: {}",
         out
     );
     assert!(
@@ -1746,7 +1746,7 @@ fn error_store_delete_undeclared() {
 }
 
 #[test]
-fn store_link_cascade_delete_is_rejected() {
+fn rack_link_cascade_delete_is_rejected() {
     let rask = rask_binary();
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -1789,7 +1789,7 @@ fn store_link_cascade_delete_is_rejected() {
 }
 
 #[test]
-fn store_link_litmus_pairs_agree() {
+fn rack_link_litmus_pairs_agree() {
     let pairs = [
         ("L1 doubly-linked list", "l1_list_handles.rk", "l1_list_links.rk"),
         ("L3 scene tree", "l3_scene_handles.rk", "l3_scene_links.rk"),
@@ -1821,26 +1821,26 @@ fn store_link_litmus_pairs_agree() {
     }
 }
 
-// ─── Store<T> + Link<T> (analysis.fourth-option prototype) ───
+// ─── Rack<T> + Link<T> (analysis.fourth-option prototype) ───
 //
-// The *semantics* live in tests/suite/p11_store_link.rk and
-// p12_store_link_churn.rk as self-asserting `test` blocks, so the differential
+// The *semantics* live in tests/suite/p11_rack_link.rk and
+// p12_rack_link_churn.rk as self-asserting `test` blocks, so the differential
 // harness runs them on both backends and reports the day native support lands.
 // What's left here is what a single self-asserting program can't express:
 // stderr instrumentation, and comparing two programs against each other.
 
 // The delete cost the analysis flags as the model's one regression: linear in
-// in-degree, and independent of store size. `RASK_STORE_STATS=1` reports the
+// in-degree, and independent of rack size. `RASK_RACK_STATS=1` reports the
 // fixup work on stderr.
 #[test]
-fn store_link_delete_cost_follows_in_degree() {
+fn rack_link_delete_cost_follows_in_degree() {
     let rask = rask_binary();
     let run = |name: &str| -> String {
         let out = Command::new(&rask)
             .args(["run", "--interp"])
             .arg(fixture(name))
             .env("RASK_RUNTIME_DIR", runtime_dir())
-            .env("RASK_STORE_STATS", "1")
+            .env("RASK_RACK_STATS", "1")
             .output()
             .expect("failed to run rask");
         assert!(out.status.success(), "{} should run", name);
@@ -1848,25 +1848,25 @@ fn store_link_delete_cost_follows_in_degree() {
     };
 
     // 200 nodes all pointing at one hub: 200 edges to fix.
-    let fanin = run("store_link_fanin.rk");
+    let fanin = run("rack_link_fanin.rk");
     assert!(
         fanin.contains("deletes=1 edges_fixed=200 holders_visited=200"),
         "fan-in delete should walk its 200 incoming edges: {}",
         fanin
     );
 
-    // In-degree 1 in a 500-node store: one holder, not 499. This is the
+    // In-degree 1 in a 500-node rack: one holder, not 499. This is the
     // assertion that a scan would fail.
-    let sparse = run("store_link_sparse_delete.rk");
+    let sparse = run("rack_link_sparse_delete.rk");
     assert!(
         sparse.contains("deletes=1 edges_fixed=1 holders_visited=1"),
-        "a low-degree delete must not scale with store size: {}",
+        "a low-degree delete must not scale with rack size: {}",
         sparse
     );
 
     // A field rewritten 50 times leaves one backlink, not 50 stale ones, and
     // deleting a target it was re-pointed away from visits nobody.
-    let unlink = run("store_link_unlink_on_overwrite.rk");
+    let unlink = run("rack_link_unlink_on_overwrite.rk");
     assert!(
         unlink.contains("deletes=2 edges_fixed=1 holders_visited=1"),
         "overwriting an edge should unlink the old backlink: {}",
@@ -1890,14 +1890,14 @@ fn store_link_delete_cost_follows_in_degree() {
 // Where a field path exists the obligation is per field; where one doesn't, the
 // whole binding is owed. That fallback is sound but it names the root, which reads
 // like a compiler bug unless the message says which shape stopped the walk.
-// A link may not outlive the store it points into. Nothing else caught this: no
+// A link may not outlive the rack it points into. Nothing else caught this: no
 // `delete` happened, so the use-after-delete rule never looked, and a link is
 // Copy so it escapes the scope that produced it — opting out of the one
 // mechanism (block-scoped borrowing) built to stop exactly this.
 #[test]
-fn error_link_outlives_its_store() {
-    let (failed, out) = compile_error_output("link_outlives_store.rk");
-    assert!(failed, "a link escaping its store's scope must be rejected: {}", out);
+fn error_link_outlives_its_rack() {
+    let (failed, out) = compile_error_output("link_outlives_rack.rk");
+    assert!(failed, "a link escaping its rack's scope must be rejected: {}", out);
     // Bare return, inside a struct, inside a tuple, and out through an
     // assignment to a longer-lived name.
     assert_eq!(
@@ -1907,10 +1907,10 @@ fn error_link_outlives_its_store() {
         out
     );
     // The two legitimate shapes must not be caught: a link into the caller's
-    // store, and a link used in the scope that made it.
+    // rack, and a link used in the scope that made it.
     assert!(
         !out.contains("from_a_parameter") && !out.contains("same_scope"),
-        "a link into a parameter store is an ordinary accessor: {}",
+        "a link into a parameter rack is an ordinary accessor: {}",
         out
     );
     assert!(
@@ -1921,16 +1921,16 @@ fn error_link_outlives_its_store() {
     );
 }
 
-// A link says which node; the store says whether you may write it. Links were
+// A link says which node; the rack says whether you may write it. Links were
 // exempt from the rule `Handle` has always had — `scene.nodes[h].f = x` needs
-// `mutate scene` — so a plain borrow of a store could rewrite every node in it.
+// `mutate scene` — so a plain borrow of a rack could rewrite every node in it.
 // The showcase program did exactly that, with a comment calling it the win over
 // handles.
 #[test]
-fn error_node_write_needs_a_writable_store() {
-    let (failed, out) = compile_error_output("node_write_needs_store.rk");
-    assert!(failed, "writing a node through a readable store must be rejected: {}", out);
-    // Named store, store in a field, and no store at all.
+fn error_node_write_needs_a_writable_rack() {
+    let (failed, out) = compile_error_output("node_write_needs_rack.rk");
+    assert!(failed, "writing a node through a readable rack must be rejected: {}", out);
+    // Named rack, rack in a field, and no rack at all.
     assert_eq!(
         out.matches("error[E0378]").count(),
         5,
@@ -1939,18 +1939,18 @@ fn error_node_write_needs_a_writable_store() {
     );
     assert!(
         out.contains("`world` is only readable here") && out.contains("`scene` is only readable here"),
-        "the store is named, since that's what has to change: {}",
+        "the rack is named, since that's what has to change: {}",
         out
     );
     // The edge-crossing case is the one a read-only *link type* would have had
-    // to propagate. Asking the store makes it the same question as the first.
+    // to propagate. Asking the rack makes it the same question as the first.
     assert!(
-        out.contains("no writable store came with `e`"),
+        out.contains("no writable rack came with `e`"),
         "a link that arrived alone grants nothing: {}",
         out
     );
     assert!(
-        out.contains("mutate store: Store<…>") || out.contains("mutate scene"),
+        out.contains("mutate rack: Rack<…>") || out.contains("mutate scene"),
         "the fix names what to change: {}",
         out
     );
@@ -2089,8 +2089,8 @@ fn error_resource_unconsumed_in_test_body() {
 }
 
 #[test]
-fn error_store_link_use_after_delete() {
-    let (failed, out) = compile_error_output("store_link_use_after_delete.rk");
+fn error_rack_link_use_after_delete() {
+    let (failed, out) = compile_error_output("rack_link_use_after_delete.rk");
     assert!(failed, "using a link after its delete must be rejected: {}", out);
     assert!(
         out.contains("E0328") && out.contains("use after free"),
@@ -2113,7 +2113,7 @@ fn error_store_link_use_after_delete() {
         out
     );
     assert!(
-        out.contains("store.clear()"),
+        out.contains("rack.clear()"),
         "the `clear` case must be one of them: {}",
         out
     );

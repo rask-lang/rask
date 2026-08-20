@@ -4,13 +4,13 @@
 // This is the workload the fourth-option analysis names as its genuine
 // regression: `delete` is O(in-degree), against a handle remove's O(1).
 //
-// Run with RASK_STORE_STATS=1 to see the fixup work:
+// Run with RASK_RACK_STATS=1 to see the fixup work:
 //     holders_visited = incoming edges walked
 //     edges_fixed     = edges actually rewritten
 //
 // Both track FANIN exactly. Vary FANIN below to see it stay linear. Compare
-// sparse_delete_links.rk, where in-degree is 1 in a 500-node store and the
-// delete visits one holder — the cost follows in-degree, not store size.
+// sparse_delete_links.rk, where in-degree is 1 in a 500-node rack and the
+// delete visits one holder — the cost follows in-degree, not rack size.
 
 const FANIN: i32 = 200
 
@@ -20,26 +20,26 @@ struct Node {
 }
 
 func main() {
-    mut store: Store<Node> = Store.new()
+    mut rack: Rack<Node> = Rack.new()
 
-    let hub = store.insert(Node { id: 0, hub: none })
+    let hub = rack.insert(Node { id: 0, hub: none })
 
     mut i = 1
     while i <= FANIN {
-        let n = store.insert(Node { id: i, hub: none })
+        let n = rack.insert(Node { id: i, hub: none })
         n.hub = hub
         i += 1
     }
 
-    println("fan-in = {FANIN}, nodes = {store.len()}")
+    println("fan-in = {FANIN}, nodes = {rack.len()}")
 
     // One delete. Every one of the FANIN edges must be found and nulled.
-    store.delete(hub)
+    rack.delete(hub)
 
-    println("after deleting the hub, nodes = {store.len()}")
+    println("after deleting the hub, nodes = {rack.len()}")
 
     mut dangling = 0
-    for n in store.nodes() {
+    for n in rack.nodes() {
         if n.hub? as _h {
             dangling += 1
         }

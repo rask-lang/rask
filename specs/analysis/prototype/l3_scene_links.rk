@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// L3 — scene tree, with Store + Link. Reparent and subtree delete.
+// L3 — scene tree, with Rack + Link. Reparent and subtree delete.
 //
 // This is the program that exercises edge *lists*: `children: Vec<Link<Node>>`.
 // Deleting a node drops it out of its parent's children list — the entry does
@@ -15,7 +15,7 @@ struct SceneNode {
 }
 
 struct Scene {
-    nodes: Store<SceneNode>
+    nodes: Rack<SceneNode>
     root: Link<SceneNode>?
     selected: Link<SceneNode>?
 }
@@ -68,7 +68,7 @@ func report(scene: Scene) {
 }
 
 func main() {
-    mut scene = Scene { nodes: Store.new(), root: none, selected: none }
+    mut scene = Scene { nodes: Rack.new(), root: none, selected: none }
 
     let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
     scene.root = root
@@ -93,7 +93,7 @@ func main() {
     // the proposed rule `delete_subtree` would be `deleting scene: Scene`, and
     // that kills `root`, `b`, `a1` and `a2` from here on — but they are finished
     // with above, so no restructuring is needed. `scene.selected` survives
-    // because it is a field, and the store nulls it.
+    // because it is a field, and the rack nulls it.
     delete_subtree(deleting scene, a)
     report(scene)
 }

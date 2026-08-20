@@ -647,8 +647,8 @@ impl Interpreter {
                         kind: TypeConstructorKind::Pool,
                         type_param,
                     }),
-                    "Store" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Store,
+                    "Rack" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Rack,
                         type_param,
                     }),
                     "Cell" => return Ok(Value::TypeConstructor {
@@ -1414,7 +1414,7 @@ impl Interpreter {
                 let built = Value::new_struct(concrete_name, field_values, resource_id);
                 // `World { entities: store, player: link }` — edges born with
                 // the struct. Record them so a later delete can null them.
-                crate::store::register_nested(&built, 0);
+                crate::rack::register_nested(&built, 0);
                 Ok(built)
             }
 

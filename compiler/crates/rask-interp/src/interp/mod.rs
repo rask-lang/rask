@@ -763,7 +763,7 @@ impl Interpreter {
             crate::join_detached_reapers();
             // Before the `?`, so a program that ends in an error still reports
             // its store stats.
-            crate::store::print_stats();
+            crate::rack::print_stats();
             let value = value?;
             // struct.targets/EX4: an error out of main is exit status 1, not 0.
             // A `try` that propagates already lands in the error path; an

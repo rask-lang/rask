@@ -122,7 +122,7 @@ impl Resolver {
             ("Pool", BuiltinTypeKind::Pool),
             ("Cell", BuiltinTypeKind::Cell),
             ("Handle", BuiltinTypeKind::Handle),
-            ("Store", BuiltinTypeKind::Store),
+            ("Rack", BuiltinTypeKind::Rack),
             ("Link", BuiltinTypeKind::Link),
             ("Atomic", BuiltinTypeKind::Atomic),
             ("AtomicBool", BuiltinTypeKind::Atomic),

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// L2 — entity targeting, with Store + Link. Companion to
+// L2 — entity targeting, with Rack + Link. Companion to
 // l2_targeting_handles.rk: same program, same output, the other memory model.
 //
 // The shape this exists to show: the staleness branch is gone. Not moved,
@@ -14,7 +14,7 @@ struct Entity {
 }
 
 func main() {
-    mut world: Store<Entity> = Store.new()
+    mut world: Rack<Entity> = Rack.new()
 
     let a = world.insert(Entity { name: "a", health: 100, damage: 10, target: none })
     let b = world.insert(Entity { name: "b", health: 100, damage: 20, target: none })
@@ -38,10 +38,10 @@ func main() {
 }
 
 // A link is followed directly — no `world.nodes[h]` dance on either side of the
-// assignment. What the store parameter still carries is permission: this writes
-// nodes, so it says `mutate`. A reader would take `world: Store<Entity>` and be
+// assignment. What the rack parameter still carries is permission: this writes
+// nodes, so it says `mutate`. A reader would take `world: Rack<Entity>` and be
 // unable to write any of them.
-func combat_round(mutate world: Store<Entity>) {
+func combat_round(mutate world: Rack<Entity>) {
     for e in world.nodes() {
         if e.target? as t {
             t.health -= e.damage
@@ -49,20 +49,20 @@ func combat_round(mutate world: Store<Entity>) {
     }
 }
 
-func report(world: Store<Entity>, a: Link<Entity>, b: Link<Entity>, c: Link<Entity>) {
+func report(world: Rack<Entity>, a: Link<Entity>, b: Link<Entity>, c: Link<Entity>) {
     show(a, "a")
     show(b, "b")
     show(c, "c")
-    println("   store len = {world.len()}")
+    println("   rack len = {world.len()}")
 }
 
 // After a delete the deleted node's link is gone from every edge, so there is
-// nothing left to ask about it — the survivors are the store's contents.
-func report_survivors(world: Store<Entity>) {
+// nothing left to ask about it — the survivors are the rack's contents.
+func report_survivors(world: Rack<Entity>) {
     for e in world.nodes() {
         show(e, e.name)
     }
-    println("   store len = {world.len()}")
+    println("   rack len = {world.len()}")
 }
 
 func show(e: Link<Entity>, label: string) {

@@ -1,4 +1,4 @@
-// PENDING analysis.fourth-option — `Store<T>` + `Link<T>`, the delete-time edge
+// PENDING analysis.fourth-option — `Rack<T>` + `Link<T>`, the delete-time edge
 // fixup. Implemented on the interpreter only; there is no native lowering, so
 // this is expected RED on native until codegen learns the types. Interp is the
 // reference for what the answers should be.
@@ -14,14 +14,14 @@ struct Node {
 }
 
 struct World {
-    store: Store<Node>
-    focus: Link<Node>?          // root edge: beside the store, not in a node
+    rack: Rack<Node>
+    focus: Link<Node>?          // root edge: beside the rack, not in a node
 }
 
 func main() {}
 
 test "a scalar edge becomes none at its target's delete" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { id: 1, hits: 0, peer: none })
     let b = s.insert(Node { id: 2, hits: 0, peer: none })
     a.peer = b
@@ -39,20 +39,20 @@ test "a scalar edge becomes none at its target's delete" {
 }
 
 test "a link is the node's address, so writes through it are shared" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { id: 1, hits: 0, peer: none })
     let b = s.insert(Node { id: 2, hits: 0, peer: none })
     b.peer = a
 
     // Writing through b's edge and writing through `a` hit the same node: the
-    // node lives in the store, it is not copied into it.
+    // node lives in the rack, it is not copied into it.
     if b.peer? as through { through.hits += 5 }
     a.hits += 1
     assert_eq(a.hits, 6)
 }
 
 test "link equality is node identity" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { id: 1, hits: 0, peer: none })
     let b = s.insert(Node { id: 2, hits: 0, peer: none })
     assert a == a
@@ -67,9 +67,9 @@ test "link equality is node identity" {
     }
 }
 
-test "a root edge — a link beside the store — is fixed too" {
-    mut w = World { store: Store.new(), focus: none }
-    let n = w.store.insert(Node { id: 7, hits: 0, peer: none })
+test "a root edge — a link beside the rack — is fixed too" {
+    mut w = World { rack: Rack.new(), focus: none }
+    let n = w.rack.insert(Node { id: 7, hits: 0, peer: none })
     w.focus = n
     if w.focus? as f {
         assert_eq(f.id, 7)
@@ -78,8 +78,8 @@ test "a root edge — a link beside the store — is fixed too" {
     }
 
     // Nothing in `delete_subtree`-style code says "clear the focus". The edge
-    // lives outside the store, and it still gets nulled.
-    w.store.delete(n)
+    // lives outside the rack, and it still gets nulled.
+    w.rack.delete(n)
 
     if w.focus? as _f {
         assert false           // root edge survived the delete
@@ -87,7 +87,7 @@ test "a root edge — a link beside the store — is fixed too" {
 }
 
 test "re-pointing an edge forgets its old target" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let holder = s.insert(Node { id: 0, hits: 0, peer: none })
     let first = s.insert(Node { id: 1, hits: 0, peer: none })
     let second = s.insert(Node { id: 2, hits: 0, peer: none })
@@ -112,7 +112,7 @@ test "re-pointing an edge forgets its old target" {
 }
 
 test "a node inserted with edges already in its fields is registered" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let head = s.insert(Node { id: 1, hits: 0, peer: none })
     // The edge exists in the literal before the node has an identity; `insert`
     // is where it gets recorded.
@@ -126,7 +126,7 @@ test "a node inserted with edges already in its fields is registered" {
 }
 
 test "iteration and the structural ops" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     assert s.is_empty()
     assert_eq(s.len(), 0)
 
@@ -151,38 +151,38 @@ test "iteration and the structural ops" {
     assert_eq(after, 4)
     assert_eq(s.len(), 2)
 
-    // `clear` kills every name for a node in this store from here on. `a` and
+    // `clear` kills every name for a node in this rack from here on. `a` and
     // `c` are finished with above, so there is nothing to move and no scope to
     // open — the rule is about uses after the delete, not about names in scope.
     s.clear()
     assert s.is_empty()
 }
 
-test "clear nulls edges, it does not just empty the store" {
-    mut w = World { store: Store.new(), focus: none }
-    let a = w.store.insert(Node { id: 1, hits: 0, peer: none })
-    let b = w.store.insert(Node { id: 2, hits: 0, peer: none })
+test "clear nulls edges, it does not just empty the rack" {
+    mut w = World { rack: Rack.new(), focus: none }
+    let a = w.rack.insert(Node { id: 1, hits: 0, peer: none })
+    let b = w.rack.insert(Node { id: 2, hits: 0, peer: none })
     a.peer = b
     w.focus = a
     let _ = b
 
     // Both edges point at nodes that are about to die: one node-to-node, one
-    // root edge outside the store. Emptying the slots is not enough — the
+    // root edge outside the rack. Emptying the slots is not enough — the
     // edges have to be nulled or a later read follows a freed node.
-    w.store.clear()
+    w.rack.clear()
 
-    assert w.store.is_empty()
+    assert w.rack.is_empty()
     if w.focus? as _f {
         assert false           // root edge survived clear
     }
 }
 
 test "inserting never moves a node, so a link stays valid across growth" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let first = s.insert(Node { id: 1, hits: 0, peer: none })
 
     // A Vec element or a Pool slot can move out from under you; a link can't.
-    // It points at the node itself, so growing the store cannot relocate what
+    // It points at the node itself, so growing the rack cannot relocate what
     // it points at — which is why a link needs no `with` ceremony to be held.
     mut i = 0
     while i < 2000 {
@@ -196,15 +196,15 @@ test "inserting never moves a node, so a link stays valid across growth" {
     assert_eq(first.hits, 3)
 }
 
-test "a delete in one store leaves another store's edges alone" {
-    mut left: Store<Node> = Store.new()
-    mut right: Store<Node> = Store.new()
+test "a delete in one rack leaves another rack's edges alone" {
+    mut left: Rack<Node> = Rack.new()
+    mut right: Rack<Node> = Rack.new()
     let l = left.insert(Node { id: 1, hits: 0, peer: none })
     let r = right.insert(Node { id: 2, hits: 0, peer: none })
 
-    // A cross-store edge. Deleting the target still fixes it — the fixup keys on
+    // A cross-rack edge. Deleting the target still fixes it — the fixup keys on
     // the node, and the edge is found through the target's own backlink list
-    // rather than by walking the holder's store.
+    // rather than by walking the holder's rack.
     l.peer = r
     right.delete(r)
 

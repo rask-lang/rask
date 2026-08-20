@@ -1054,7 +1054,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0330")
                     .with_primary(*span, format!("passed to the `deleting {}` parameter", param_name))
                     .with_fix(format!("{}(deleting {}, …)", callee, arg))
-                    .with_why("PM5: the marker follows the signature. A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, and those are different contracts — writing `mutate` for both would print them the same. Your links into that store are revoked at this call, which is worth seeing here rather than discovering at the next read [mem.parameters/PM4, PM5, analysis.fourth-option]")
+                    .with_why("PM5: the marker follows the signature. A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, and those are different contracts — writing `mutate` for both would print them the same. Your links into that rack are revoked at this call, which is worth seeing here rather than discovering at the next read [mem.parameters/PM4, PM5, analysis.fourth-option]")
             }
 
             MissingMutateMarker { callee, arg, param_name, span } => {
@@ -1942,9 +1942,9 @@ fn link_deleted_diagnostic(
         .with_code("E0328")
         .with_primary(use_span, primary)
         .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
-        .with_help("read what you need before the delete, or keep the reference in a field so the store can null it")
-        .with_fix("move the reads above the delete, or store the link in a `Link<T>?` field")
-        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the store nulls it and the `?` makes you check; a local can't be reached by the store, so the compiler proves here that you never follow one")
+        .with_help("read what you need before the delete, or keep the reference in a field so the rack can null it")
+        .with_fix("move the reads above the delete, or rack the link in a `Link<T>?` field")
+        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the rack nulls it and the `?` makes you check; a local can't be reached by the rack, so the compiler proves here that you never follow one")
 }
 
 impl ToDiagnostic for rask_ownership::OwnershipError {
@@ -2099,7 +2099,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                             "a `Link<T>` moves like any other name for a node — `{}` handed its node over rather than copying it",
                             name
                         ),
-                        "read through the new name, or keep the edge in a `Link<T>?` field where the store maintains it".to_string(),
+                        "read through the new name, or keep the edge in a `Link<T>?` field where the rack maintains it".to_string(),
                     ),
                     MoveReason::Owned => (
                         format!(
@@ -2280,39 +2280,39 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
-            LinkOutlivesStore { link, store, via } => {
+            LinkOutlivesRack { link, rack, via } => {
                 let (primary, fix) = match via {
                     rask_ownership::LinkEscape::Return => (
                         format!(
                             "`{}` lives in `{}`, and `{}` dies when this function returns",
-                            link, store, store
+                            link, rack, rack
                         ),
                         format!(
-                            "return the node's data instead, or take the store as a parameter so it outlives the call: `func …(mutate {}: Store<…>) -> Link<…>`",
-                            store
+                            "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
+                            rack
                         ),
                     ),
                     rask_ownership::LinkEscape::Assignment { target } => (
                         format!(
                             "`{}` outlives `{}`, and the node `{}` points at dies with it",
-                            target, store, link
+                            target, rack, link
                         ),
                         format!(
                             "move `{}` out to where `{}` lives, or copy the fields you need out of the node before the scope ends",
-                            store, target
+                            rack, target
                         ),
                     ),
                 };
-                Diagnostic::error(format!("`{}` would outlive the store it points into", link))
+                Diagnostic::error(format!("`{}` would outlive the rack it points into", link))
                     .with_code("E0379")
                     .with_primary(self.span, primary)
                     .with_fix(fix)
-                    .with_why("a `Link<T>` is a pointer to a node, and the nodes live in the store — so when the store goes out of scope the node goes with it and the link dangles. Nothing else catches this: no `delete` happened, so the use-after-delete rule never looks, and a link is Copy so it escapes the scope that produced it. A link into a store the *caller* owns is fine — that store outlives the call")
+                    .with_why("a `Link<T>` is a pointer to a node, and the nodes live in the rack — so when the rack goes out of scope the node goes with it and the link dangles. Nothing else catches this: no `delete` happened, so the use-after-delete rule never looks, and a link is Copy so it escapes the scope that produced it. A link into a rack the *caller* owns is fine — that rack outlives the call")
             }
-            NodeWriteNeedsWritableStore { link, store } => {
+            NodeWriteNeedsWritableRack { link, rack } => {
                 // `with_help` isn't rendered on this path — `fix` and `why` are —
                 // so the actionable line goes in `with_fix`.
-                let d = match store {
+                let d = match rack {
                     Some(s) => Diagnostic::error(format!(
                         "cannot write this node — `{}` is only readable here",
                         s
@@ -2323,24 +2323,24 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("writes a node in `{}` through `{}`", s, link),
                     )
                     .with_fix(format!(
-                        "make the store writable: `mut {}` if it's a local, `mutate {}: Store<…>` if it's a parameter",
+                        "make the rack writable: `mut {}` if it's a local, `mutate {}: Rack<…>` if it's a parameter",
                         s, s
                     )),
                     None => Diagnostic::error(format!(
-                        "cannot write this node — no writable store came with `{}`",
+                        "cannot write this node — no writable rack came with `{}`",
                         link
                     ))
                     .with_code("E0378")
                     .with_primary(
                         self.span,
-                        format!("`{}` points into a store this function wasn't given", link),
+                        format!("`{}` points into a rack this function wasn't given", link),
                     )
                     .with_fix(
-                        "take the store too: add a `mutate store: Store<…>` parameter — the link says which node, the store says whether you may write it"
+                        "take the rack too: add a `mutate rack: Rack<…>` parameter — the link says which node, the rack says whether you may write it"
                             .to_string(),
                     ),
                 };
-                d.with_why("a `Link<T>` is a path to a node, not permission to change it. The node lives in a store, so the store answers whether it may be written — the same rule `Handle` has, where `scene.nodes[h].f = x` needs `mutate scene`. Asking the store is also what makes a read-only graph free: a function taking `s: Store<T>` reads every node and writes none, with nothing to propagate along the edges you follow and no way to launder a readable link into a writable one")
+                d.with_why("a `Link<T>` is a path to a node, not permission to change it. The node lives in a rack, so the rack answers whether it may be written — the same rule `Handle` has, where `scene.nodes[h].f = x` needs `mutate scene`. Asking the rack is also what makes a read-only graph free: a function taking `s: Rack<T>` reads every node and writes none, with nothing to propagate along the edges you follow and no way to launder a readable link into a writable one")
             }
             UndeclaredDelete { param, operation } => {
                 Diagnostic::error(format!(
@@ -2350,7 +2350,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0329")
                 .with_primary(self.span, format!("{} chooses which nodes die", operation))
                 .with_help(format!(
-                    "declare it: `deleting {}: Store<…>` — or delete only links the caller handed over, as `take` parameters",
+                    "declare it: `deleting {}: Rack<…>` — or delete only links the caller handed over, as `take` parameters",
                     param
                 ))
                 .with_fix(format!("deleting {}", param))

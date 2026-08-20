@@ -22,7 +22,7 @@ struct Node {
 }
 
 struct List {
-    nodes: Store<Node>
+    nodes: Rack<Node>
     head: Link<Node>?
     tail: Link<Node>?
 }
@@ -95,7 +95,7 @@ func print_backward(list: List) {
 }
 
 func main() {
-    mut list = List { nodes: Store.new(), head: none, tail: none }
+    mut list = List { nodes: Rack.new(), head: none, tail: none }
 
     push_back(mutate list, 1)
     push_back(mutate list, 2)

@@ -6,9 +6,9 @@
 // made graphs task-local, which would have been the model's biggest loss: no
 // simulate-here-render-there, the shape validation program 4 is named after.
 //
-// The store answers it. `snapshot()` deep-copies the graph and re-points every
+// The rack answers it. `snapshot()` deep-copies the graph and re-points every
 // edge inside the copy at the copy, so the reader owns everything it can reach
-// and shares nothing. The store crosses; no link does. It is the delete-time
+// and shares nothing. The rack crosses; no link does. It is the delete-time
 // fixup's walk with a different rewrite.
 //
 // The handle version of this is `pool.snapshot()` plus `using frozen Pool<T>`.
@@ -16,7 +16,7 @@
 
 struct Node { id: i32, peer: Link<Node>? }
 
-func walk(s: Store<Node>) -> i32 {
+func walk(s: Rack<Node>) -> i32 {
     mut t = 0
     for n in s.nodes() {
         t += n.id
@@ -26,7 +26,7 @@ func walk(s: Store<Node>) -> i32 {
 }
 
 func main() {
-    mut world: Store<Node> = Store.new()
+    mut world: Rack<Node> = Rack.new()
     let a = world.insert(Node { id: 1, peer: none })
     let b = world.insert(Node { id: 2, peer: none })
     a.peer = b

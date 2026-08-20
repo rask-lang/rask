@@ -3,7 +3,7 @@
 <!-- summary: Teaching guide for graphs and edges — how they work, how to use them, when to reach for them -->
 <!-- depends: analysis/fourth-option.md -->
 
-# Stores and Links: A Guide
+# Racks and Links: A Guide
 
 How you'd write Rask if this lands. Written as a tutorial partly because
 that's the honest design test — a model you can't teach in one page is a model
@@ -31,7 +31,7 @@ struct Task {
 
 <!-- test: skip -->
 ```rask
-mut tasks: Store<Task> = Graph.new()
+mut tasks: Rack<Task> = Graph.new()
 
 let design = tasks.insert(Task { title: "design", done: false })
 let build  = tasks.insert(Task { title: "build",  done: false })
@@ -153,14 +153,14 @@ needs, so a declared inverse costs no extra memory at all.
 
 <!-- test: skip -->
 ```rask
-struct Store {
-    tasks: Store<Task>
+struct Rack {
+    tasks: Rack<Task>
     by_id: Map<TaskId, Link<Task>>
 }
 
-store.by_id.insert(id, task)
+rack.by_id.insert(id, task)
 
-if store.by_id.get(id)? as t {
+if rack.by_id.get(id)? as t {
     println(t.title)
 }
 ```
@@ -176,7 +176,7 @@ one that fits — that's the whole decision.
 |---|---|---|
 | **Plain field** — `Entity { body: Body }` | Owned by exactly one thing, fixed size, nothing else references it | Nothing. It's inline |
 | **`Heap<T>`** — `Expr { left: Heap<Expr> }` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
-| **`Store<T>` + `Link<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
+| **`Rack<T>` + `Link<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
 
 The question that decides it: **does anything else point at this?** If not, you
 never needed a graph — nothing can be left dangling by a delete, so there's
@@ -240,7 +240,7 @@ combination is the whole trigger.
 
 | Your data | Use |
 |---|---|
-| Entities that target, own, or depend on each other | `Store<T>` + `Link<T>?` |
+| Entities that target, own, or depend on each other | `Rack<T>` + `Link<T>?` |
 | A list of values you iterate, no cross-references | `Vec<T>` — no graph |
 | One thing that belongs to exactly one other and is never referenced elsewhere | a plain field: `Entity { body: Body }` |
 | A tree you own and traverse, no back-pointers, single owner | `Heap<T>` |
@@ -260,7 +260,7 @@ Three concrete calls:
 - **You never delete.** No deletes, no dangling, no reason to pay for
   back-pointers. Use a `Vec`.
 - **You rewire far more often than you read.** Each edge write costs several
-  stores (it maintains the back-pointer); each read costs nothing. That trade
+  racks (it maintains the back-pointer); each read costs nothing. That trade
   is excellent when reads dominate — which is nearly always — and poor when
   they don't.
 - **You need the reference to leave.** Links live inside the graph's world.

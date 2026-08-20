@@ -63,7 +63,7 @@ struct DamageEvent {
     subject: Link<Entity>?     // goes none if the subject dies first
 }
 
-// events: Store<DamageEvent> — a field of the same world
+// events: Rack<DamageEvent> — a field of the same world
 for ev in world.events {
     if ev.subject? as target {
         target.health -= ev.amount
@@ -124,7 +124,7 @@ restart (the generation counters reset). Serializing a handle was already
 unsound-in-practice unless you serialized the whole pool with it.
 
 What programs actually do — including Rask's own flagship — is use a domain
-identity: `TaskId`, `UserId`, `OrderId`. The store's `by_id` map redeems it.
+identity: `TaskId`, `UserId`, `OrderId`. The rack's `by_id` map redeems it.
 That code exists today, works unchanged, and never involved a handle crossing
 the wire.
 
@@ -134,7 +134,7 @@ A generic structure with no natural identity field still needs a stable name
 sometimes — a cache keyed by node, a debugger, a plugin boundary.
 
 **`NodeId`: a name, not a reference.** The graph mints a never-reused `u64`;
-`store.find(id)` returns `T?`.
+`rack.find(id)` returns `T?`.
 
 <!-- test: skip -->
 ```rask
@@ -189,10 +189,10 @@ Rebinding which field holds a reference — `a.target` becomes `b.target`,
 with `a` left holding nothing.
 
 Written as copy-then-clear, that's link into the target's list for `b`, then
-unlink `a`: roughly 7–10 stores. A genuine *move* is cheaper, because the
+unlink `a`: roughly 7–10 racks. A genuine *move* is cheaper, because the
 target's incoming list never needs to grow or shrink — the same backlink entry
 just changes which slot owns it, so only the entry's neighbours and the two
-holder slots get written: ~4–5 stores. Worth its own form:
+holder slots get written: ~4–5 racks. Worth its own form:
 
 <!-- test: skip -->
 ```rask
@@ -215,7 +215,7 @@ O(in-degree), no new mechanism.
 
 That unlocks something handles structurally cannot do:
 
-| | `Pool` + `Handle` | `Store` + `Link` |
+| | `Pool` + `Handle` | `Rack` + `Link` |
 |---|---|---|
 | Node identity is | the slot index | the node itself |
 | Can a live node change slots? | **No** — the index *is* the handle; moving it invalidates every handle | Yes — incoming edges are rewritten to the new address |
@@ -228,7 +228,7 @@ property that forbids compaction. A graph can defragment its arena, or sort
 nodes into traversal order so a hot loop walks contiguous memory — an
 optimization that matters exactly in the workloads pools were designed for.
 
-**Decided: compaction is explicit, never automatic.** `store.compact()` is a
+**Decided: compaction is explicit, never automatic.** `rack.compact()` is a
 call the programmer writes, at a point they choose. A runtime that relocates
 nodes on its own schedule is a moving collector — unpredictable pauses
 decided by something other than the program — which is precisely what this

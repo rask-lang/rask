@@ -1,29 +1,29 @@
 <!-- id: analysis.fourth-option-prototype -->
 <!-- status: exploration -->
-<!-- summary: Store + Link built for real in the interpreter and run against Pool + Handle on the three litmus programs. The model works; the checkless read is bought with a borrow rule nobody has priced -->
+<!-- summary: Rack + Link built for real in the interpreter and run against Pool + Handle on the three litmus programs. The model works; the checkless read is bought with a borrow rule nobody has priced -->
 <!-- depends: analysis/fourth-option.md, analysis/fourth-option-litmus.md, memory/pools.md -->
 
 # Fourth Option: What the Prototype Found
 
-`Store<T>` and `Link<T>` now run on the interpreter. The three litmus programs
+`Rack<T>` and `Link<T>` now run on the interpreter. The three litmus programs
 are written twice, once each way, and both versions produce identical output.
 Everything below comes from running them rather than from reasoning about them.
 
 Programs live in [prototype/](prototype/). Native codegen is not implemented —
 this is `rask run --interp` only.
 
-Everything claimed below is asserted in CI (`compile_run.rs`, the `store_link_*`
+Everything claimed below is asserted in CI (`compile_run.rs`, the `rack_link_*`
 tests): the semantics, the container-churn cases, the delete-cost numbers, the
 documented hole, and the litmus pairs' agreement. Two deliberate mutations —
 skipping the unlink, and dropping only the first matching list element —
 each fail exactly one of those tests, so they check what they claim to.
 
-## What a link is, and what the store does
+## What a link is, and what the rack does
 
 Everything below depends on these three paragraphs, so they come first.
 
 **A link is a pointer to a node.** At runtime, literally
-`Link { store_id, node: <pointer to the node> }`. Reading `l.health` follows the
+`Link { rack_id, node: <pointer to the node> }`. Reading `l.health` follows the
 pointer and reads the field; that is the entire type. It is not a copy of the
 node, not an index, not a ticket. Copying a link copies the pointer — the node is
 never duplicated:
@@ -33,45 +33,45 @@ let a = s.insert(Node { id: 1, hits: 0 })
 let b = a                 // second pointer to the same node
 a.hits += 1
 b.hits += 1
-// hits through a = 2, through b = 2, store len = 1
+// hits through a = 2, through b = 2, rack len = 1
 ```
 
 A `Handle` is the opposite kind of thing: a number (slot + generation). It can't
 be followed on its own — the pool turns the number into an address, and checks the
 generation while doing it. That check is what the whole model is trying to remove.
 
-**The store does three things.** `insert` puts a node in the store and hands back a
+**The rack does three things.** `insert` puts a node in the rack and hands back a
 pointer. It writes down every place that holds a pointer to each node — "who points
 at me?". And `delete(n)` looks up everyone pointing at `n`, sets each of them to
 `none`, then frees `n`. That third step is the model: after a delete, no pointer to
-a dead node exists *anywhere the store wrote down*, so following a link needs no
+a dead node exists *anywhere the rack wrote down*, so following a link needs no
 check — it is `none`, or it is live.
 
-**The problem is that last phrase.** The store can write down a link held in a
+**The problem is that last phrase.** The rack can write down a link held in a
 *field* — `entity.target`, `world.player`, an element of `children` — because it
 knows where the field is. It cannot write down a link held in a *local variable*,
-because a local is on the stack and the store has no way to name it. So:
+because a local is on the stack and the rack has no way to name it. So:
 
 ```rask
-let n = store.insert(...)   // pointer now sits where the store can't see it
-store.delete(n)             // fixes every field; cannot touch `n`
+let n = rack.insert(...)   // pointer now sits where the rack can't see it
+rack.delete(n)             // fixes every field; cannot touch `n`
 n.name                      // follows a pointer to freed memory
 ```
 
-A link in a local is a pointer the store can't find, so delete can't fix it. That
+A link in a local is a pointer the rack can't find, so delete can't fix it. That
 one sentence is Finding 1, and everything in it is a candidate answer.
 
 A note on vocabulary, because the obvious framing is wrong: assigning a link
 *always* copies a pointer, in every position, and never copies the node. So the
 choice is not between copying and moving data. It is whether **the compiler keeps
 trusting the old variable name** — a field-held link stays trustworthy because the
-store maintains it, a local one does not because nothing does. Where this document
+rack maintains it, a local one does not because nothing does. Where this document
 says a local link "moves", it means the name is revoked, not that anything was
 transferred.
 
 ### The rule, derived from the type rather than the mechanism
 
-Everything above argues from what the store can reach. There is a shorter route,
+Everything above argues from what the rack can reach. There is a shorter route,
 and it gives the same answer from the other end.
 
 A link's type states whether it can be absent. `Link<T>?` says "this may be
@@ -88,34 +88,34 @@ reach the slot:
 
 | Where the link lives | Who keeps it honest | Rule |
 |---|---|---|
-| A field — `entity.target`, `world.player`, a list element | the store nulls it | must be `Link<T>?` |
+| A field — `entity.target`, `world.player`, a list element | the rack nulls it | must be `Link<T>?` |
 | A local, parameter or return | the compiler rejects use-after-delete | `Link<T>` is fine |
 | A module-level `const` | **nobody** | should be rejected; currently isn't |
 
-So the `?` is the signal for which discipline is in force: optional means the store
+So the `?` is the signal for which discipline is in force: optional means the rack
 maintains this slot, non-optional means the compiler guarantees liveness. One
 principle — *a link never points at a dead node* — with the mechanism chosen by
 reachability.
 
 Function parameters and return types are locals for this purpose, and already work
 unchanged: `func look(n: Link<Node>) -> i32` and
-`func first(s: Store<Node>) -> Link<Node>?` both run today, because the caller's
+`func first(s: Rack<Node>) -> Link<Node>?` both run today, because the caller's
 and callee's bodies are exactly where the compiler can see the deletes.
 
 **A third position has neither keeper, and the prototype accepts it.** A
 module-level `const` is outside every function body, so no flow analysis reaches
-it, and it is not a field, so the store never wrote it down:
+it, and it is not a field, so the rack never wrote it down:
 
 ```rask
-const ROOT: Link<Node> = Store.new().insert(Node { id: 1 })
+const ROOT: Link<Node> = Rack.new().insert(Node { id: 1 })
 func main() { println("{ROOT.id}") }        // typechecks, prints 1
 ```
 
-Worse than dangling-after-delete: the store here is a temporary that is gone by the
-time `main` runs, so `ROOT` points into a store that no longer exists. The
+Worse than dangling-after-delete: the rack here is a temporary that is gone by the
+time `main` runs, so `ROOT` points into a rack that no longer exists. The
 prototype survives only because its nodes are refcounted; with the raw pointers the
 design specifies, this dangles from program start. The rule the table implies —
-*a link may live only where the store or the compiler can reach it* — forbids
+*a link may live only where the rack or the compiler can reach it* — forbids
 const links, and nothing currently enforces that.
 
 It also sharpens what "checkless" claims, which is narrower than the phrase
@@ -135,7 +135,7 @@ does not remove checks; it moves them from every read to one per traversal, and 
 local is trustworthy precisely because delete-then-use won't compile.
 
 A corroboration that this is the right shape: under the compile-time experiment,
-`store.contains(n)` on a local link became an error. Correct — if the type
+`rack.contains(n)` on a local link became an error. Correct — if the type
 guarantees liveness, asking whether it is live is a question with no meaning.
 
 ### What a required edge in a field would need
@@ -175,7 +175,7 @@ lose its staleness branch. Three findings, in the order they matter:
    so it asserts its target is alive, and a delete would contradict that with no
    `none` to fall back to — **so use-after-delete is a type contradiction the
    compiler can reject.** Same sentence that justifies E0327 for fields, resolved
-   the other way because the store can reach a field and can't reach a local.
+   the other way because the rack can reach a field and can't reach a local.
    **Implemented**: `delete` takes the link, the move checker reports the use, no
    runtime check anywhere, and all thirteen comparison programs pass.
 2. **A link carries write permission, and an edge write mutates its target.**
@@ -197,13 +197,13 @@ bill is on those three counts, and only the first one is load-bearing.
 
 | Piece | Status |
 |---|---|
-| `Store<T>`: insert, delete, len, is_empty, contains, nodes, clear | works |
+| `Rack<T>`: insert, delete, len, is_empty, contains, nodes, clear | works |
 | `Link<T>`: field read/write, identity `==`, method calls on the node | works |
 | Delete sets scalar edges (`target: Link<T>?`) to `none` | works |
 | Delete drops entries from edge lists (`children: Vec<Link<T>>`) | works |
 | Delete drops entries from indexes (`by_name: Map<K, Link<T>>`) | works |
-| Root edges — link fields on the struct that *owns* the store | works |
-| `for n in store` | works |
+| Root edges — link fields on the struct that *owns* the rack | works |
+| `for n in rack` | works |
 | Backlinks — each node knows who points at it, delete is O(in-degree) | works |
 | Unlink on overwrite — a rewritten field drops its old backlink | works |
 | Required edges (`Link<T>`, no `?`) | rejected for now (E0327) |
@@ -214,11 +214,11 @@ bill is on those three counts, and only the first one is load-bearing.
 
 **Delete follows backlinks, it doesn't scan.** Each node carries the list of
 places pointing at it, so a delete visits exactly those. The measured cost is
-in-degree, not store size — deleting a node with in-degree 1 out of 500:
+in-degree, not rack size — deleting a node with in-degree 1 out of 500:
 
 ```
-$ RASK_STORE_STATS=1 rask run --interp sparse.rk
-store stats: deletes=1 edges_fixed=1 holders_visited=1
+$ RASK_RACK_STATS=1 rask run --interp sparse.rk
+rack stats: deletes=1 edges_fixed=1 holders_visited=1
 ```
 
 A backlink names a holder — a struct field, an edge list, an index — and never a
@@ -229,8 +229,8 @@ target's backlink precisely. Rewriting one field fifty times leaves one backlink
 on its current target and none on the forty-nine it passed through:
 
 ```
-$ RASK_STORE_STATS=1 rask run --interp unlink_on_overwrite_links.rk
-store stats: deletes=2 edges_fixed=1 holders_visited=1
+$ RASK_RACK_STATS=1 rask run --interp unlink_on_overwrite_links.rk
+rack stats: deletes=2 edges_fixed=1 holders_visited=1
 ```
 
 A container backlink names the container and no position, so it is one entry per
@@ -241,8 +241,8 @@ it. Nothing here grows.
 
 That coarseness is the one place the prototype is less precise than an intrusive
 list would be, so it is the part with the most tests rather than the most
-argument. `store_link_container_churn.rk` covers every way of removing an edge
-without telling the store — pop, remove-by-value, clear, a `filter` that builds
+argument. `rack_link_container_churn.rk` covers every way of removing an edge
+without telling the rack — pop, remove-by-value, clear, a `filter` that builds
 a fresh list, the same target twice in one list, one target in two lists, a list
 nested two deep, and an index key overwritten — and the fixup gets all of them
 right. The asymmetry costs a wasted check; it does not cost correctness.
@@ -251,7 +251,7 @@ Registration and unlinking are both O(1): the index is a map keyed by slot, not
 a list to scan. Building a hub of in-degree 25,600 is linear.
 
 **A node field and a root field are the same thing to this code.** That fell
-out of keying backlinks on the holder rather than on "is it inside the store":
+out of keying backlinks on the holder rather than on "is it inside the rack":
 `world.player` and `entity.target` are both a struct field holding a link. Root
 edges needed no separate mechanism, which is a small point in the design's
 favour — the analysis treats them as an addition, and they aren't one.
@@ -280,7 +280,7 @@ func combat_round(mutate world: Pool<Entity>) {
 Links:
 
 ```rask
-func combat_round(world: Store<Entity>) {
+func combat_round(world: Rack<Entity>) {
     for e in world.nodes() {
         if e.target? as t {
             t.health -= e.damage
@@ -291,8 +291,8 @@ func combat_round(world: Store<Entity>) {
 
 Both print the same thing. Three things went away, not one: the liveness check,
 the cleanup branch, and `mutate` on the parameter. The last one is worth
-noticing — the link version doesn't need the store to be mutable because it
-isn't writing to the store, it's writing to a node it already holds.
+noticing — the link version doesn't need the rack to be mutable because it
+isn't writing to the rack, it's writing to a node it already holds.
 
 ### Delete-time fixup does the bookkeeping the handle version writes by hand
 
@@ -357,7 +357,7 @@ and still writes: 99
 records it. With raw pointers that is a use-after-free.
 
 So the checkless read is not a property of `Link`. It is `Link` **plus** a rule
-that makes a local link a live borrow of the store, with delete-while-borrowed a
+that makes a local link a live borrow of the rack, with delete-while-borrowed a
 compile error. That rule is the load-bearing piece, and it is unwritten.
 
 ### Why the two obvious statements are both poison
@@ -388,7 +388,7 @@ was `insert`'s return. So state it there:
 > never local values.
 
 `prototype/l1_list_links_no_locals.rk` is L1 written that way, and it produces
-byte-identical output to the handle version. `push_back` stores the new node's
+byte-identical output to the handle version. `push_back` racks the new node's
 link straight into a field and reads it back out for the second use:
 
 ```rask
@@ -415,11 +415,11 @@ Use-after-delete is now a compile error, and no runtime check was added anywhere
 
 ```
 error[E0328]: `b` names a deleted node — this is a use after free
- 23 |     store.delete(b)
+ 23 |     rack.delete(b)
     |                  - the node `b` names was deleted here
  25 |     println("{b.name}")
     |               ^ `b` points at freed memory from here on
-    = fix: move the reads above the `delete`, or store the link in a `Link<T>?` field
+    = fix: move the reads above the `delete`, or rack the link in a `Link<T>?` field
 ```
 
 **The move checker is the mechanism, not the concept.** `delete` takes the link,
@@ -443,7 +443,7 @@ Four changes, three of them one-liners against machinery that already existed:
 2. `Link<T>` is no longer `Copy`, so the move checker tracks which names are dead.
 3. Assigning a link **into a field** leaves the source name usable; assigning into
    another local revokes it. Both copy the same pointer — the difference is who
-   keeps it honest afterwards, and only a field has the store doing that.
+   keeps it honest afterwards, and only a field has the rack doing that.
 4. Reading a link *out of* a field borrows nothing, and capturing one in a closure
    does not scope-limit the closure.
 
@@ -471,7 +471,7 @@ something you just made exists. Both are checks at runtime for something the
 compiler can prove. Neither is kept.
 
 **What it costs.** `delete(n)` revokes `n`, including a parameter just handed in,
-so `func kill(mutate s: Store<Node>, n: Link<Node>) { s.delete(n); n.id }` is
+so `func kill(mutate s: Rack<Node>, n: Link<Node>) { s.delete(n); n.id }` is
 rejected on the second statement. That is the rule working, but it means a function
 that deletes has to say so by taking the link, and callers see their name go away.
 
@@ -486,22 +486,22 @@ s.clear()
 println("{n.name}")        // read of a freed node, no diagnostic
 ```
 
-`clear` now revokes every local link whose element type matches the store's,
+`clear` now revokes every local link whose element type matches the rack's,
 which is the same kill the explicit `delete` performs, just for all of them at
-once. Conservative in one direction — two stores of the same node type revoke
+once. Conservative in one direction — two racks of the same node type revoke
 each other's locals — and worth fixing only if that pattern shows up.
 
-That leaves nothing else in the store's API that deletes: `insert`, `len`,
+That leaves nothing else in the rack's API that deletes: `insert`, `len`,
 `is_empty`, `contains` and `nodes` invalidate nothing, and `insert` in particular
 must stay exempt, since nodes are allocated individually.
 
-**What it does not cover: a user function that deletes inside.** The store is
+**What it does not cover: a user function that deletes inside.** The rack is
 passed mutably, the link never is, so the caller's name survives a delete the
 compiler cannot see:
 
 ```rask
-func cleanup(mutate s: Store<Node>) {
-    for n in s.nodes() { s.delete(n) }    // re-derives links from the store
+func cleanup(mutate s: Rack<Node>) {
+    for n in s.nodes() { s.delete(n) }    // re-derives links from the rack
 }
 
 let n = s.insert(Node { name: "a", peer: none })
@@ -509,7 +509,7 @@ cleanup(s)
 println("{n.name}")        // still compiles, still reads a freed node
 ```
 
-The obvious conservative rule — passing a store mutably revokes local links into
+The obvious conservative rule — passing a rack mutably revokes local links into
 it — is not available, and the flagship list is the counterexample. `push_back`
 takes `mutate list: List`, and `main` calls it four times while holding `n1..n4`:
 
@@ -519,16 +519,16 @@ let n2 = push_back(list, 2)    // would revoke n1 under that rule
 ```
 
 So the rule would have to distinguish a callee that deletes from one that only
-inserts — a "may delete this store" fact propagated through the call graph. That
+inserts — a "may delete this rack" fact propagated through the call graph. That
 is an effect, and enforcing it is what principle 5 says Rask doesn't do. The gap
 is genuine and closing it costs more than it has been shown to be worth.
 
 Two things narrow it in practice without any analysis. A function that deletes
-can take the link (`func kill(mutate s: Store<Node>, take n: Link<Node>)`), which
+can take the link (`func kill(mutate s: Rack<Node>, take n: Link<Node>)`), which
 puts the revocation back where the checker can see it. And a link kept in a
 `Link<T>?` field instead of a local is nulled by the delete itself, wherever the
 delete happens — the runtime fixup has no such gap, because a field is an edge
-the store indexes.
+the rack indexes.
 
 ### Exactly where the compiler stops being sure
 
@@ -539,27 +539,27 @@ actually uncertain.
 |---|---|---|
 | `take n: Link<T>` | yes | yes — the name is consumed at the call site |
 | `n: Link<T>` (borrow) | **should be no** | — |
-| `mutate s: Store<T>` | yes, by re-deriving links from `s.nodes()` | **no** |
+| `mutate s: Rack<T>` | yes, by re-deriving links from `s.nodes()` | **no** |
 
 The middle row is where the interesting part is. A borrow parameter means the
 caller keeps ownership, so the callee should not be able to hand it to `delete`,
 whose parameter is `take link`. It can today:
 
 ```rask
-func sneaky(mutate s: Store<Node>, n: Link<Node>) {
+func sneaky(mutate s: Rack<Node>, n: Link<Node>) {
     s.delete(n)            // `n` is a borrow parameter, but delete consumes it
 }
 sneaky(s, n)
 println("{n.name}")        // reads a freed node, no diagnostic
 ```
 
-That is not a Store problem. Any borrow parameter can be fed to any `take`
+That is not a Rack problem. Any borrow parameter can be fed to any `take`
 parameter, which lets a callee consume a `@resource` the caller still holds and
 turns a linearity violation into a runtime panic. Filed as #804; when it is
 fixed, the middle row becomes a real "no" and passing a link is certain either
 way.
 
-So the residual hole is one row wide: **handing the store to something that can
+So the residual hole is one row wide: **handing the rack to something that can
 delete**.
 
 ### The hole is in the showcase program
@@ -576,12 +576,12 @@ let _ = a2                  // reads a freed node; compiles clean
 
 `delete_subtree` deletes `n` and recurses on `n.children`. `n` is accounted for
 — the caller handed it over. The children are not: they come out of a field
-inside the callee, and the caller is holding links to them. The store shrank
+inside the callee, and the caller is holding links to them. The rack shrank
 from 5 nodes to 3, `scene.selected` was correctly nulled by the fixup, and the
 local `a2` kept reading the dead node.
 
 `prototype/cascade_hole_links.rk` reduces it to twelve lines and prints
-`store len = 0` followed by `kid.name = kid`.
+`rack len = 0` followed by `kid.name = kid`.
 
 This changes what the gap is worth. It is not an exotic aliasing case — it is
 **cascade delete**, the most ordinary reason to have a graph in the first place,
@@ -593,7 +593,7 @@ A delete is safe for the caller when the caller can see it. Three sources:
 
 - a link the function got as a `take` parameter — the caller gave it up, visibly
 - a link the function inserted itself — the caller never knew about it
-- **a link the function derived from the store** (`nodes()`, iteration, or a
+- **a link the function derived from the rack** (`nodes()`, iteration, or a
   field like `n.children`) — the caller may be holding the same node
 
 Only the third is dangerous, and it is exactly what `delete_subtree` does. So
@@ -603,15 +603,15 @@ the parameter has to say so:
 func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>)
 ```
 
-`mutate s: Store<T>` would stop permitting `delete` and `clear`; `deleting`
+`mutate s: Rack<T>` would stop permitting `delete` and `clear`; `deleting`
 permits them. At a call site with `deleting`, every non-optional local link into
-that store is revoked — the same kill `clear` already does, for the same reason: the set of
+that rack is revoked — the same kill `clear` already does, for the same reason: the set of
 deleted nodes is not enumerable from the call site, and a `Link<T>` whose type
 promises liveness cannot survive a promise nobody can keep. A link that needs to
-survive must be `Link<T>?`, which the store maintains.
+survive must be `Link<T>?`, which the rack maintains.
 
 This is a parameter mode, not an effect. It appears only on functions that
-receive a store, propagates only along the path the store travels, and is
+receive a rack, propagates only along the path the rack travels, and is
 checked one signature at a time — the same way `mutate` already works. Nothing
 is inferred and nothing is coloured.
 
@@ -661,14 +661,14 @@ has two types in one body depending on where you stand, and `take`'s rule is
 learnable once where predicting a widening means knowing which links a callee
 might delete.
 
-**Rejected earlier, on a mistake: "a local link is a borrow of the store."** The
+**Rejected earlier, on a mistake: "a local link is a borrow of the rack."** The
 argument against it was that a borrow has to end before the next mutation, and
 ending it at last use is NLL — the lifetime-shaped analysis Rask exists to refuse.
-That argument assumed *every* store mutation conflicts with the borrow. It
+That argument assumed *every* rack mutation conflicts with the borrow. It
 doesn't. `insert` cannot invalidate a link, so nothing needs the borrow to end
 early, and block scoping is enough.
 
-#### Why a Store is a fixed source
+#### Why a Rack is a fixed source
 
 `borrowing.md` splits containers by one test, and states the reason plainly:
 
@@ -676,13 +676,13 @@ early, and block scoping is enough.
 > rehashes. Block-scoped views into them would dangle.
 
 That is the whole basis for giving growable sources expression-only views and
-`with`. **A Store never relocates a node.** A link is a pointer to the node
+`with`. **A Rack never relocates a node.** A link is a pointer to the node
 itself, not an index into a slot table, so inserting cannot move what a link
 points at. Measured: 5001 inserts while holding a link to the first node, and the
 link still reads and writes it. A `Vec` view would have dangled hundreds of
 reallocations ago.
 
-So the Store is the first container that grows in count while keeping every
+So the Rack is the first container that grows in count while keeping every
 address fixed, and by B1/B2's own criterion it earns block-scoped views (S1–S5)
 rather than `with`. That is not a special case carved out for links — it is the
 existing test, applied to a container nobody had.
@@ -699,7 +699,7 @@ Everything the model needs stops being bespoke:
 | `s.delete(m)` is legal while holding `n` | different view, untouched — no conflict |
 | `s.clear()` kills every link local from there on | it deletes without naming a victim, so any name may be the dead one |
 | a `deleting` call kills them the same way | same, one call frame out |
-| a field must be `Link<T>?` | S3 no-escape: a view cannot be stored in a struct, so a field has to be the store-maintained kind instead |
+| a field must be `Link<T>?` | S3 no-escape: a view cannot be stored in a struct, so a field has to be the rack-maintained kind instead |
 
 The bespoke revoke becomes S5, which Rask already has vocabulary and diagnostics
 for. The error moves too, and moves in the right direction — it fires at the
@@ -779,7 +779,7 @@ println("first.id = {first.id}")   // printed 1, from a freed node
 `delete` takes its link, so the tracker was consuming `n` and considering the job
 done — but `n` is not a node the caller named, it is the loop's pick, and any other
 link local may be the one that just died. So a `delete` whose argument came from
-iterating the store now kills every other link local into it, exactly as `clear`
+iterating the rack now kills every other link local into it, exactly as `clear`
 does. The diagnostic hedges correctly, because the loop may or may not reach the
 node in question: *"`first` may name a deleted node — possible use after free"*.
 
@@ -809,7 +809,7 @@ one body:
 
 | Where the link came from | On a named delete of something else |
 |---|---|
-| `store.insert(...)` in this body | survives — it names a node nothing else here names |
+| `rack.insert(...)` in this body | survives — it names a node nothing else here names |
 | a `take` parameter | survives — the caller gave that specific node up |
 | anything else: an edge read, an iteration binding, a call result | **dies** — it may be a second name for whatever was named |
 
@@ -828,7 +828,7 @@ println("{a.name}")      // fine, no error
 A blanket "any delete kills every link" would flag that, and it is the ordinary
 shape — p11's scalar-edge test, `unlink_on_overwrite_links.rk` and
 `sparse_delete_links.rk` all do exactly this. Both halves are asserted in
-`store_link_use_after_delete.rk`, and the fixture also asserts no `E0800` leaks in,
+`rack_link_use_after_delete.rk`, and the fixture also asserts no `E0800` leaks in,
 so a delete can never be reported as an ordinary move.
 
 **Ergonomics re-check, since the flagship derives constantly.** The L2 loop binds
@@ -848,11 +848,11 @@ at which point a `first` from one test body got marked dead in another.
 
 #### The `?` opts out of the whole discipline
 
-A local declared `Link<T>?` is not a view at all — it is a slot the store
+A local declared `Link<T>?` is not a view at all — it is a slot the rack
 maintains, exactly like a field:
 
 ```rask
-mut keep: Link<Node>? = scene.nodes.insert(...)   // store-maintained slot
+mut keep: Link<Node>? = scene.nodes.insert(...)   // rack-maintained slot
 let quick = scene.nodes.insert(...)              // a view
 
 cascade(scene, parent)      // deleting: conflicts with `quick`, not with `keep`
@@ -871,10 +871,10 @@ They answer different questions for the caller — "can the contents change?" an
 "can my links die?" — so neither implies the other and both can appear:
 
 ```rask
-func report(s: Store<Node>)                      // read only
-func add(mutate s: Store<Node>)                  // inserts; links survive
-func gc(deleting s: Store<Node>)                 // deletes; cannot insert
-func compact(mutate deleting s: Store<Node>)     // both
+func report(s: Rack<Node>)                      // read only
+func add(mutate s: Rack<Node>)                  // inserts; links survive
+func gc(deleting s: Rack<Node>)                 // deletes; cannot insert
+func compact(mutate deleting s: Rack<Node>)     // both
 ```
 
 `deleting` grants only the unnamed delete — `delete(take n)` needs no annotation
@@ -888,11 +888,11 @@ afterwards costs one `?` at its declaration and one check.
 **What the prototype does today.** `mut kid: Link<Node>? = s.insert(...)` already
 typechecks and runs, but nothing registers it, so it is inert rather than
 maintained. Building that needs `Environment::get` to hand back owned values
-instead of `&Value` — a slot the store writes into cannot also be lent out by
+instead of `&Value` — a slot the rack writes into cannot also be lent out by
 reference — which is the interpreter's hot read path and not a change to make in
 passing.
 
-**Not built.** A new parameter mode is a language change, and treating a Store as
+**Not built.** A new parameter mode is a language change, and treating a Rack as
 a fixed source is an amendment to `borrowing.md` B1/B2. Both proposed in #806; the
 `take`-parameter half is only sound once #804 is fixed.
 
@@ -934,9 +934,9 @@ the only open question was which word. PM5 answers that:
 Writing `mutate` at a call whose parameter is declared `deleting` is the marker
 *not* following the signature. And the substantive reason agrees: with `mutate` at
 the call site, two different contracts print identically — "the contents may
-change" and "your links into this store are revoked". `take`'s conflation with a
+change" and "your links into this rack are revoked". `take`'s conflation with a
 plain borrow is tolerable because its blast radius is one name; a `deleting` call
-takes out every link into the store, including ones the reader never connected —
+takes out every link into the rack, including ones the reader never connected —
 `kid`, in the cascade program, was never passed to anything.
 
 So `delete_subtree(deleting scene, doomed)`. E0330 when a `deleting` parameter gets
@@ -944,7 +944,7 @@ So `delete_subtree(deleting scene, doomed)`. E0330 when a `deleting` parameter g
 the corpus: eight call sites.
 
 **`deleting` implies `mutate`.** Treating them as orthogonal was wrong — you cannot
-delete a node without mutating the store it lives in. The consequence showed up
+delete a node without mutating the rack it lives in. The consequence showed up
 immediately in real code: with `deleting` alone the call site's `mutate scene` was
 rejected as an unexpected annotation. So it is a lattice, not a product:
 `s` → `mutate s` → `deleting s`. Either order parses and both words are legal, but
@@ -960,25 +960,25 @@ all rejected without the declaration, and one that needs nothing:
 
 | In the callee | Needs `deleting`? |
 |---|---|
-| `store.delete(n)` where `n` is a `take` parameter | no — the caller watched the name die |
-| `store.delete(n)` where `n` came from iteration or an edge | **yes** |
-| `store.clear()` | **yes** — names no victim at all |
+| `rack.delete(n)` where `n` is a `take` parameter | no — the caller watched the name die |
+| `rack.delete(n)` where `n` came from iteration or an edge | **yes** |
+| `rack.clear()` | **yes** — names no victim at all |
 | handing a derived link to any `take` parameter | **yes** — a delete in disguise |
 
 That last row is the one that needed building twice. `delete_subtree` never deletes
 a node it derived; it *recurses*, handing `c` from `n.children` to itself. Without
 that row, `take n` alone would have made the cascade compile again.
 
-**Which store gets blamed comes from the call, not from tracking the link.** The
-first cut gave up when a function had two store parameters, since a link's type
-can't say which store it belongs to — two `Store<Node>` parameters hand out links
+**Which rack gets blamed comes from the call, not from tracking the link.** The
+first cut gave up when a function had two rack parameters, since a link's type
+can't say which rack it belongs to — two `Rack<Node>` parameters hand out links
 of identical type. Tracking each link's origin fixes that but guesses when a link
 arrives as a parameter. The exact answer needs neither: **a callee cannot delete a
-link without a store to delete it from**, and that store is an argument of the same
-call. So the blame is whichever store the consuming call hands over:
+link without a rack to delete it from**, and that rack is an argument of the same
+call. So the blame is whichever rack the consuming call hands over:
 
 ```rask
-func from_left(mutate left: Store<Node>, mutate right: Store<Node>) {
+func from_left(mutate left: Rack<Node>, mutate right: Rack<Node>) {
     for n in left.nodes() {
         drop_one(mutate left, n)     // error names `left`, and only `left`
         return
@@ -987,7 +987,7 @@ func from_left(mutate left: Store<Node>, mutate right: Store<Node>) {
 ```
 
 `right` is never deleted from, so it is not asked to declare anything. A call that
-passes no store at all cannot delete the caller's node, and needs nothing.
+passes no rack at all cannot delete the caller's node, and needs nothing.
 
 The link's origin is still tracked, for the other half — the caller-side revocation.
 `wipe(mutate a)` where `wipe` is `deleting` kills links that came out of `a` and
@@ -1020,7 +1020,7 @@ error[E0328]: `kid` names a deleted node — this is a use after free
 check is local: inside the body, a delete whose victim wasn't handed over is
 visible without looking at any caller. Every route was tested — a delete of a
 derived link, a `clear`, handing a derived link to a `take` parameter, a delete
-through a method receiver, and a delete inside a closure that captured the store.
+through a method receiver, and a delete inside a closure that captured the rack.
 Each reports E0329 naming the parameter to declare.
 
 Which raises the obvious question: **if the compiler can see it, why write it?**
@@ -1077,19 +1077,19 @@ is never a call that writes both.
 belong with parameters, and attributes are an unspecified area of the language
 (`TODO.md`) — building on one to avoid a keyword is a worse trade than the keyword.
 
-**Inference instead of a declaration.** Propagate "may delete this store" through
+**Inference instead of a declaration.** Propagate "may delete this rack" through
 the call graph and require nothing. Rejected: errors would appear at call sites
 whose cause is three functions away, and it is order-dependent whole-program
 analysis — the "explodes 20 lines later" failure that `borrowing.md`'s rationale
 exists to avoid.
 
-**No annotation, conservative rule.** "Passing a store mutably revokes local links
+**No annotation, conservative rule.** "Passing a rack mutably revokes local links
 into it." Ruled out by the flagship list: `push_back` takes `mutate list: List` and
 `main` calls it four times while holding `n1..n4`, so the second call would revoke
 the first call's result.
 
 **Linear threading.** `func cascade(take scene: Scene) -> Scene`, so the caller
-visibly loses and regains the store. Rejected: it is ceremony on every call for
+visibly loses and regains the rack. Rejected: it is ceremony on every call for
 information one word carries, and it still would not revoke the caller's *links*
 without the same rule underneath.
 
@@ -1108,13 +1108,13 @@ nothing *can* be marked read-only any more.
 *Not a context.* Rask's existing rule is that read-only comes from the source —
 the parser says so when it rejects `with c as mut inner`: "bindings are mutable;
 read-only access comes from the source (`.read()`, frozen pools)". Applied to
-links that would mean a read-only store, which is what `using frozen Pool<T>` was.
+links that would mean a read-only rack, which is what `using frozen Pool<T>` was.
 But a link outlives the context that produced it, so the context cannot constrain
 it:
 
 ```rask
-// `s` is not `mutate` — this function has read-only access to the store
-func find_first(s: Store<Node>) -> Link<Node>? {
+// `s` is not `mutate` — this function has read-only access to the rack
+func find_first(s: Rack<Node>) -> Link<Node>? {
     for n in s.nodes() { return n }
     return none
 }
@@ -1122,7 +1122,7 @@ func find_first(s: Store<Node>) -> Link<Node>? {
 if find_first(s)? as n { n.id = 99 }     // writes the node anyway
 ```
 
-That runs, and prints 99. Whatever permission the store parameter carried is gone
+That runs, and prints 99. Whatever permission the rack parameter carried is gone
 by the time the link is used, which is the difference between a link and a handle:
 a handle is inert without its pool, so restricting the pool restricts the handle. A
 link needs nothing.
@@ -1206,8 +1206,8 @@ The handle model has a complete story here and none of it has a link analogue:
 | | Handles | Links |
 |---|---|---|
 | identifier crosses tasks | `Handle<T>` is Send + Sync unconditionally — a number | an address; T2 forbids it |
-| container crosses | `Pool<T>`: Send if `T: Send`, Sync if `T: Sync` | `Store<T>` cannot even be captured today |
-| read-parallel access | `pool.snapshot()` → (frozen copy, live original) | `Store` has no `snapshot()` |
+| container crosses | `Pool<T>`: Send if `T: Send`, Sync if `T: Sync` | `Rack<T>` cannot even be captured today |
+| read-parallel access | `pool.snapshot()` → (frozen copy, live original) | `Rack` has no `snapshot()` |
 | read-only enforced | `using frozen Pool<T>` at the call site | does not exist |
 
 So a graph becomes task-local. Not merely "no shared mutation" — no shared
@@ -1220,16 +1220,16 @@ captured by `spawn` and written from both sides typechecks — filed as #830.
 Rejecting that is needed whichever way the design goes.
 
 **And this cuts against the withdrawal above, honestly.** Read-only links would
-have bought exactly this case: a read-only link into a frozen store is sound to
+have bought exactly this case: a read-only link into a frozen rack is sound to
 share, which is what `frozen Pool<T>` plus `snapshot()` already does for handles.
 The propagation-over-reachability that made `mut Link<T>` look like `&`/`&mut` is
 precisely what cross-task read-sharing needs. So dropping it is cheap only if
 read-parallel graph access is not wanted; if it is, the model needs something
 reachability-shaped, and that is the thing the language declines to add.
 
-### `Store.snapshot()` answers it, and it is built
+### `Rack.snapshot()` answers it, and it is built
 
-The store crosses; no link does. `snapshot()` deep-copies the graph and re-points
+The rack crosses; no link does. `snapshot()` deep-copies the graph and re-points
 every edge inside the copy at the copy, so a reader owns everything it can reach
 and shares nothing. Implemented and running:
 
@@ -1251,11 +1251,11 @@ live world now = 1001 + 1002
 ```
 
 `prototype/parallel_snapshot_links.rk`, and asserted in
-`tests/suite/p13_store_snapshot.rk`.
+`tests/suite/p13_rack_snapshot.rk`.
 
 **It is the delete-time fixup pointed at a different job.** Delete finds the edges
 *into* one node and nulls them; snapshot finds the edges *out of* every node and
-re-points them. Both work for the same reason — the store knows its own graph — and
+re-points them. Both work for the same reason — the rack knows its own graph — and
 both cost one walk. So the backlink machinery bought two features, not one.
 
 Edges *out of* the snapshot are deliberately left alone: a link in a caller's field
@@ -1276,7 +1276,7 @@ because the reader isn't sharing anything to begin with. `mut Link<T>` stays
 withdrawn and the concurrency story is intact.
 
 **What it costs, honestly.** O(nodes + edges) per snapshot, eagerly — `Pool`'s is
-copy-on-write and pays O(n) at the first mutation instead, so a store snapshot is
+copy-on-write and pays O(n) at the first mutation instead, so a rack snapshot is
 the more expensive of the two until someone builds the same trick. And a link still
 has no stable identity across the boundary: `corresponding` translates one you hold
 *now*, but a link sent back from the other task means nothing here. If you need to
@@ -1287,14 +1287,14 @@ looked, since a snapshot needs one translation rather than a shared vocabulary.
 **`a.target = b` writes to `b`.** Registering the backlink mutates the target, so
 an assignment that reads as touching `a` also modifies `b`. In the real design
 that is a store into `b`'s intrusive-list header. In this prototype it is a write
-to a third object neither name mentions — the store's backlink index — which is
+to a third object neither name mentions — the rack's backlink index — which is
 arguably the worse of the two for reading. Either way, Transparency of Cost
 should be made to bless this explicitly rather than inherit it. The sentence it
-needs, for whichever spec ends up owning `Store`:
+needs, for whichever spec ends up owning `Rack`:
 
 > Assigning a link into an edge writes the target as well as the holder: the
-> store records the incoming edge so that `delete` can find it. An edge write is
-> ~4–8 stores where a handle write is 1–2, and `a.target = b` modifies `b`.
+> rack records the incoming edge so that `delete` can find it. An edge write is
+> ~4–8 racks where a handle write is 1–2, and `a.target = b` modifies `b`.
 
 That is a cost the principle requires be visible, and it currently isn't stated
 anywhere normative — only measured here.
@@ -1345,7 +1345,7 @@ The premise of the trade is "a link is an address, and addresses don't survive
 being moved". That is true of an *absolute* address. It is not true of a
 **self-relative** one.
 
-Store a link in a field as a signed offset from the field's own address to the
+Rack a link in a field as a signed offset from the field's own address to the
 target node, rather than as a pointer. Following it is
 
 ```
@@ -1373,7 +1373,7 @@ reasons and turn out to be exactly what this needs:
 absolute pointers. A local is a register with no stable address to be relative to,
 so it cannot be self-relative — and it never needs to be, because a local is not
 part of the data. Field-to-local is one add, local-to-field one subtract, and that
-asymmetry already exists: the store maintains fields, the compiler tracks locals.
+asymmetry already exists: the rack maintains fields, the compiler tracks locals.
 
 Following an edge costs one add more than today. A handle costs an index, a bounds
 check, a generation check, then base + index × stride. Still far cheaper, and still
@@ -1385,23 +1385,23 @@ p11 — and if `peer` sits at the node's base the offset from the field to its o
 node is exactly 0. So 0 is a real value; the sentinel has to be something else, or
 the tag gets paid.
 
-**What it recovers, and what it does not.** It recovers the graph *shape*: a store
+**What it recovers, and what it does not.** It recovers the graph *shape*: a rack
 of flat nodes with link edges becomes mmap-and-go. It does not recover node
 *payloads* — `string`, `Vec` and `Map` fields are heap pointers no matter how edges
 are encoded, and FL1 excludes them from tier A regardless. So this restores tier-A
 eligibility for exactly the node shapes that had it, which is the slice measured
 above as the real loss.
 
-Two things it breaks that are worth naming. Cross-store edges stop working: p11
+Two things it breaks that are worth naming. Cross-rack edges stop working: p11
 asserts one, and self-relative is meaningful only within a single arena — a
-cross-store edge needs a store id plus an offset, which is a handle. And a handle
+cross-rack edge needs a rack id plus an offset, which is a handle. And a handle
 keeps one property no offset can have: it is an identifier you can *send* — put in
 a message, write in a config, hand to another process — because it means something
 without reference to a position inside an arena.
 
 So the honest version: **adopting links costs zero-copy persistence for flat
 graphs, and makes graph `Encode` do id assignment** — unless edges are stored
-self-relative, in which case most of it comes back and what is left is cross-store
+self-relative, in which case most of it comes back and what is left is cross-rack
 edges and sendable identifiers. Worth stating in the
 representation decision rather than leaving as "narrow in practice", because the
 reason it is narrow is FL1, not the feature's importance — but it does not need to
@@ -1420,8 +1420,8 @@ Fan-in sweep, one delete of a hub with N incoming edges:
 | 800 | 800 | 800 |
 | 25600 | 25600 | 25600 |
 
-Exactly linear in in-degree, exactly as predicted, and independent of store
-size — a node with in-degree 1 in a 500-node store visits one holder. The interesting half is the handle
+Exactly linear in in-degree, exactly as predicted, and independent of rack
+size — a node with in-degree 1 in a 500-node rack visits one holder. The interesting half is the handle
 comparison. `pool.remove(hub)` is O(1) — and then:
 
 ```
@@ -1446,7 +1446,7 @@ needs native codegen.
 
 - **Root edges are needed by all three litmus programs**, not just L1. `head`/
   `tail`, `selected`, and the `by_name` index are all links living outside the
-  store. Whatever schema closure answers "who can point at `T`?" has to cover
+  rack. Whatever schema closure answers "who can point at `T`?" has to cover
   every struct that can hold a link, not just node types.
 - **The specs disagree about whether required edges exist, and the entry point
   is the stale one.** The adversarial pass killed `Link<T>` without `?` on
@@ -1502,7 +1502,7 @@ list:
 
 1. **The locals rule is settled and mostly built** — compile-time delete
    tracking, covering named deletes, `clear`, and bulk-delete loops. What remains
-   is the call the compiler can't see: a store passed mutably to something that
+   is the call the compiler can't see: a rack passed mutably to something that
    deletes inside. That needs the `deleting` parameter mode (#806), which needs
    #804 first.
 2. **Read-only links don't exist, and shouldn't be made to.** Not a context: a
@@ -1524,7 +1524,7 @@ writes need Transparency of Cost to bless them explicitly.
 
 The model works. L1 and L3 produce output byte-identical to the handle versions
 with less code, L2 loses the dance, delete cost is linear in in-degree and
-independent of store size, and edges stay correct through container churn without
+independent of rack size, and edges stay correct through container churn without
 anyone writing fixup code.
 
 What it costs is three concepts, against the one runtime check handles spend:
@@ -1548,8 +1548,8 @@ Both questions this analysis ended on are now answered.
    delete is a use after free, demonstrated. Against it, the handle model spends
    context clauses, `frozen`, `WeakHandle`, generation coalescing and the W2a–d
    exceptions, so the signature-surface arithmetic favours it.
-2. ~~Is a task-local graph acceptable?~~ **Answered by `Store.snapshot()`, which
-   is built.** The store crosses and no link does, so read-parallel access works
+2. ~~Is a task-local graph acceptable?~~ **Answered by `Rack.snapshot()`, which
+   is built.** The rack crosses and no link does, so read-parallel access works
    without a read-only type: `spawn(own || { walk(frame) })` while the original
    keeps mutating. Costs an eager O(nodes + edges) copy and one `corresponding`
    call to translate a root. What remains is a lint for read-only *intent*, which
@@ -1558,7 +1558,7 @@ Both questions this analysis ended on are now answered.
 
 ### What accepting it does not yet decide
 
-`deleting` is a parameter mode in service of `Store`/`Link`, and `Store` is not in
+`deleting` is a parameter mode in service of `Rack`/`Link`, and `Rack` is not in
 `specs/` — it lives here, in an exploration. So the mode is settled and the fold-in
 is not. Three things it needs before it is a language feature rather than a
 prototype:
@@ -1566,7 +1566,7 @@ prototype:
 - **`mem.parameters` gains a fourth mode.** PM1–PM3 enumerate borrow/mutate/take;
   `deleting` sits above `mutate` and needs its own row, plus PM4/PM5 saying the
   call-site marker is the signature's word.
-- **A normative home for `Store`/`Link`.** Everything asserted here — delete-time
+- **A normative home for `Rack`/`Link`.** Everything asserted here — delete-time
   fixup, root edges, the E0327 required-edge rule, `snapshot`/`corresponding` — is
   spec text living in an analysis document.
 - **Whether `Pool`/`Handle` stays.** The litmus programs are written both ways and
@@ -1583,5 +1583,5 @@ why `p11`–`p14` are registered pending.
 rask run --interp specs/analysis/prototype/l2_targeting_links.rk
 rask run --interp specs/analysis/prototype/l2_targeting_handles.rk
 
-RASK_STORE_STATS=1 rask run --interp specs/analysis/prototype/fanin_links.rk
+RASK_RACK_STATS=1 rask run --interp specs/analysis/prototype/fanin_links.rk
 ```

@@ -19,7 +19,7 @@ questions:
 |---|---|---|---|
 | plain field | one | this value | — |
 | `Vec` / `Map` | many | this scope | no |
-| `Store` + `Link` | many | this scope | **yes** |
+| `Rack` + `Link` | many | this scope | **yes** |
 | `Heap<T>` | one | movable, exclusive | no |
 | `Cell<T>` | one | closures, one task | no |
 | `Mutex<T>` | any | many tasks | no |
@@ -82,14 +82,14 @@ strategy parameter exists for locks anyway; see
 [what `Cell` really is](#what-owned-and-cell-really-are). Left here because
 the reasoning that changed is worth seeing.
 
-**`Store` into `Vec`.** Also tempting: a `Store` with no links declared is
+**`Rack` into `Vec`.** Also tempting: a `Rack` with no links declared is
 nearly a `Vec`. But the guarantees are opposite — `Vec` gives contiguity and
-moves its elements on `push`; `Store` gives stable addresses and never moves
+moves its elements on `push`; `Rack` gives stable addresses and never moves
 them. Merging means one of those promises is broken, and both are load-bearing
 (contiguity for iteration speed, stability for links).
 
-`Heap` into `Store` fails on cost, argued in
-[the guide](fourth-option-guide.md): a store node carries a back-pointer per
+`Heap` into `Rack` fails on cost, argued in
+[the guide](fourth-option-guide.md): a rack node carries a back-pointer per
 reference, an AST doesn't need one, and a `Heap<T>` can be returned from a
 function where a node can't.
 
@@ -122,7 +122,7 @@ asked in the right order:
 
 1. **Is it one value, held by exactly one owner?** → a plain field. Done.
 2. **Many values?** → `Vec` or `Map`, unless…
-3. **…other things reference them, and they can be deleted?** → `Store` +
+3. **…other things reference them, and they can be deleted?** → `Rack` +
    `Link`.
 4. **Do several accessors share one mutable value?** → `Shared<T>`, plus a
    strategy if it crosses tasks (`Mutex` / `Readers`).
@@ -136,7 +136,7 @@ made it unchooseable:
   A concurrency primitive, not a storage choice.
 
 Read as a rule: **plain fields until you have many; `Vec`/`Map` until they
-reference each other; `Store` when they do; and the concurrency types only
+reference each other; `Rack` when they do; and the concurrency types only
 when a second task exists.** Nothing above step 3 is reached by an ordinary
 program.
 
@@ -316,7 +316,7 @@ let hits: Atomic<i64> = Atomic.new(0)
 
 hits.add(1)                          // one instruction, no lock, no block
 let n = hits.load()
-hits.store(0)
+hits.rack(0)
 let won = hits.compare_swap(old, new)
 ```
 
@@ -435,7 +435,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
-  (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
+  (`add`, `load`, `rack`, `compare_swap`) and no `with` blocks. Folding it
   into `Shared` would have dressed a one-instruction operation in lock
   ceremony. It still leaves the *storage* decision — it's a measured
   optimization, documented under concurrency.
@@ -443,7 +443,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   `DAY_ONE.md` and the boxes spec. The set isn't too large; it was presented
   as a flat menu when it's actually a sequence of yes/no questions.
 - **Re-test after the edge/link change lands.** `WeakHandle` already
-  disappears, `frozen` and context clauses go with it, and `Pool`→`Store`
+  disappears, `frozen` and context clauses go with it, and `Pool`→`Rack`
   removes the "when do I reach for a pool?" confusion that the
   interchangeability connotation caused. Some of the current difficulty is
   the old model's, not the set's.

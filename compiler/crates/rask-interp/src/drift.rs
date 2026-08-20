@@ -38,23 +38,23 @@ fn dummy_value(type_name: &str) -> Value {
             index: 0,
             generation: 0,
         },
-        "Store" => {
-            let store = Arc::new(Mutex::new(crate::value::StoreData::new()));
-            crate::value::register_store(&store);
-            Value::Store(store)
+        "Rack" => {
+            let rack = Arc::new(Mutex::new(crate::value::RackData::new()));
+            crate::value::register_rack(&rack);
+            Value::Rack(rack)
         }
         // A link needs a node to point at — that's the whole type.
         "Link" => {
-            let store = Arc::new(Mutex::new(crate::value::StoreData::new()));
-            crate::value::register_store(&store);
-            let store_id = store.lock().unwrap().store_id;
+            let rack = Arc::new(Mutex::new(crate::value::RackData::new()));
+            crate::value::register_rack(&rack);
+            let rack_id = rack.lock().unwrap().rack_id;
             let node = Arc::new(Mutex::new(crate::value::StructData {
                 name: "Node".to_string(),
                 fields: Default::default(),
                 resource_id: None,
             }));
-            store.lock().unwrap().insert(Arc::clone(&node));
-            Value::Link { store_id, node }
+            rack.lock().unwrap().insert(Arc::clone(&node));
+            Value::Link { rack_id, node }
         }
         "Result" => Value::Enum {
             name: "Result".to_string(),

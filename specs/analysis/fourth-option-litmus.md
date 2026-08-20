@@ -7,7 +7,7 @@
 
 Thought experiment, per METRICS.md. Three programs where references die behind
 your back, each written twice: today's `Pool` + `Handle`, and the proposed
-`Store` + `Link` (schema-declared, backlinked, fixed at delete —
+`Rack` + `Link` (schema-declared, backlinked, fixed at delete —
 [fourth-option.md](fourth-option.md)). Link syntax is hypothetical throughout.
 
 ## L1: Doubly-linked list
@@ -36,7 +36,7 @@ struct Node { value: i32, next: Link<Node>?, prev: Link<Node>? inverse(next) }
 func remove(self, n: Node) {
     if n.next == none { self.tail = n.prev }
     if n.prev? as p { p.next = n.next } else { self.head = n.next }
-    self.store.delete(n)     // remaining incoming edges unlink themselves
+    self.rack.delete(n)     // remaining incoming edges unlink themselves
 }
 ```
 
@@ -159,7 +159,7 @@ edge case edges don't have: a slot whose generation saturates is dead forever.
 | Operation | Handles | Links |
 |---|---|---|
 | Follow a reference | index math + bounds + generation compare + branch (~2 dependent loads, 2 branches; coalescing amortizes repeats) | 1 dependent load — it *is* a pointer chase; nothing to elide |
-| Write a reference | 1–2 stores (it's an integer) | unlink old + link new backlink: ~4–8 stores |
+| Write a reference | 1–2 racks (it's an integer) | unlink old + link new backlink: ~4–8 racks |
 | Delete | O(1), bump generation | O(degree), pointer-chasing walk |
 | Iterate | O(capacity) slot scan | O(capacity) arena scan — same shape |
 

@@ -6,7 +6,7 @@
 
 # Parameter Modes
 
-Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **deleting** (mutate, and may delete from a `Store` the caller has links into), **take** (ownership transfer). Anything that changes what the caller may assume is marked at both ends: the word in the signature *and* on the argument at the call site.
+Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **deleting** (mutate, and may delete from a `Rack` the caller has links into), **take** (ownership transfer). Anything that changes what the caller may assume is marked at both ends: the word in the signature *and* on the argument at the call site.
 
 ## Modes
 
@@ -23,12 +23,12 @@ Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow
 | **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate` or `deleting`, and it is *that* word at the call site, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
 | **PM6: A borrow can't be given away** | A `param: T` cannot be consumed inside the body — not by a `take` parameter, not by a `take self` method, not by storing it into a field or another aggregate, and `own` at the inner call site changes nothing. The caller keeps the value and goes on using it, so consuming it would leave them holding something that's gone (`mem.linear/L1`). Compile error at the consumption, pointing at the declaration; `take` on the declaration is the fix |
 | **PM7: A consumed `mutate` parameter is replaced** | A `mutate` parameter *may* be consumed — exclusive access is what makes taking the value out and writing a replacement back the mode's whole point. PM2 promises the value is still there when the call returns, so a replacement has to be assigned on every path that reaches the return. Consumed on some paths and replaced on none, or on only some, is a compile error. A function that keeps the value for good declares `take` instead, so the call site shows it going |
-| **PM8: `deleting` implies `mutate`** | Deleting a node mutates the store it lives in, so `deleting` grants everything `mutate` does. Writing both parses and is redundant; `deleting param: T` alone is the idiom. The two are a lattice — `param` → `mutate param` → `deleting param` — not independent axes |
-| **PM9: What `deleting` is for** | A callee may delete a link the caller handed over as a `take` parameter with no annotation: the name is consumed at the call site, so the caller watches it die. `deleting` covers the case the caller cannot see — the callee picking its own victims, by iterating the store, by `clear`, or by handing a link it derived to something that consumes it. At such a call every link the caller holds into that store is revoked, because which nodes died is not knowable from outside |
+| **PM8: `deleting` implies `mutate`** | Deleting a node mutates the rack it lives in, so `deleting` grants everything `mutate` does. Writing both parses and is redundant; `deleting param: T` alone is the idiom. The two are a lattice — `param` → `mutate param` → `deleting param` — not independent axes |
+| **PM9: What `deleting` is for** | A callee may delete a link the caller handed over as a `take` parameter with no annotation: the name is consumed at the call site, so the caller watches it die. `deleting` covers the case the caller cannot see — the callee picking its own victims, by iterating the rack, by `clear`, or by handing a link it derived to something that consumes it. At such a call every link the caller holds into that rack is revoked, because which nodes died is not knowable from outside |
 
 ### Deleting Mode
 
-`deleting` exists because `Store<T>` hands out `Link<T>`, and a link is a pointer to a node rather than a ticket to look one up. A delete the caller can see is safe without ceremony; a delete it cannot see is a use after free. The mode is what makes the second case visible.
+`deleting` exists because `Rack<T>` hands out `Link<T>`, and a link is a pointer to a node rather than a ticket to look one up. A delete the caller can see is safe without ceremony; a delete it cannot see is a use after free. The mode is what makes the second case visible.
 
 <!-- test: skip -->
 ```rask
@@ -51,7 +51,7 @@ The word is contextual, not reserved: it is a mode only when a parameter name or
 
 Omitting it where it is needed is a compile error in the callee (E0329), naming the parameter to declare. Writing `mutate` where the signature says `deleting` is an error at the call site (E0330), with the one-token fix — two different contracts should not print the same.
 
-**Status:** the mode is accepted and implemented; `Store<T>`/`Link<T>` themselves are still an exploration (`analysis.fourth-option`) with no normative spec and no native lowering.
+**Status:** the mode is accepted and implemented; `Rack<T>`/`Link<T>` themselves are still an exploration (`analysis.fourth-option`) with no normative spec and no native lowering.
 
 ### Borrow Mode (Default)
 
@@ -102,7 +102,7 @@ Ownership transfer. Caller gives up the value.
 ```rask
 func consume(take data: Data) {
     // Can do anything: store, send, drop
-    storage.store(data)
+    storage.rack(data)
 }
 
 let d = Data.new()
@@ -236,8 +236,8 @@ ERROR [mem.parameters/PM3]: cannot take ownership of borrowed parameter
    |
 5  |  func process(data: Data) {
    |             ^^^^ 'data' is borrowed, not taken
-6  |      storage.store(data)
-   |                    ^^^^ 'store' takes ownership
+6  |      storage.rack(data)
+   |                    ^^^^ 'rack' takes ownership
 
 FIX: Add 'take' to receive ownership:
    |

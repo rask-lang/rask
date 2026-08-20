@@ -110,7 +110,7 @@ pub struct OwnershipChecker<'a> {
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
     active_for_mutates: Vec<ForMutateInfo>,
-    /// Link locals whose initializer was a `store.insert(...)` — they name a node
+    /// Link locals whose initializer was a `rack.insert(...)` — they name a node
     /// nothing else in this body has a name for, so a delete elsewhere can't be
     /// deleting them. Every other link local is *derived* (a field read, an
     /// iteration binding, a call result) and may alias whatever a delete names.
@@ -126,23 +126,23 @@ pub struct OwnershipChecker<'a> {
     /// doesn't repeat itself.
     exit_reported: HashSet<String>,
     deleting_params: HashSet<String>,
-    /// Which store a link local came out of, by root name. A link's *type* can't
-    /// say — two `Store<Node>` parameters give links of the same type — so the
+    /// Which rack a link local came out of, by root name. A link's *type* can't
+    /// say — two `Rack<Node>` parameters give links of the same type — so the
     /// origin is carried from wherever the link was derived.
-    link_store_root: HashMap<String, String>,
-    /// Store bindings this body may write nodes through: `mut` locals, and
-    /// `mutate`/`deleting` parameters. A link is an access path into a store, not
+    link_rack_root: HashMap<String, String>,
+    /// Rack bindings this body may write nodes through: `mut` locals, and
+    /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
     /// a permission of its own, so this is what a node write is checked against.
-    writable_stores: HashSet<String>,
+    writable_racks: HashSet<String>,
     take_link_params: HashSet<String>,
     identified_links: HashSet<String>,
-    /// Spans where a link was consumed by `store.delete(...)`, so a use-after-move
+    /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
     /// on a link can tell "the node was deleted here" from "you moved it here".
     link_delete_spans: std::collections::HashSet<Span>,
-    /// Loops iterating a `Store`'s own nodes: (element type key, binding names).
+    /// Loops iterating a `Rack`'s own nodes: (element type key, binding names).
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
-    store_iterations: Vec<(Option<String>, Vec<String>)>,
+    rack_iterations: Vec<(Option<String>, Vec<String>)>,
     /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
     param_type_strings: HashMap<String, String>,
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
@@ -194,12 +194,12 @@ impl<'a> OwnershipChecker<'a> {
             coarse_resources: HashMap::new(),
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
-            link_store_root: HashMap::new(),
-            writable_stores: HashSet::new(),
+            link_rack_root: HashMap::new(),
+            writable_racks: HashSet::new(),
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
-            store_iterations: Vec::new(),
+            rack_iterations: Vec::new(),
             param_type_strings: HashMap::new(),
             borrow_bindings: HashMap::new(),
             binding_decl_blocks: HashMap::new(),
@@ -480,11 +480,11 @@ impl<'a> OwnershipChecker<'a> {
         self.mutate_params.clear();
         self.exit_reported.clear();
         self.deleting_params.clear();
-        self.link_store_root.clear();
-        self.writable_stores.clear();
+        self.link_rack_root.clear();
+        self.writable_racks.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
-        self.store_iterations.clear();
+        self.rack_iterations.clear();
         self.current_block = 0;
         self.current_stmt = 0;
     }
@@ -517,13 +517,13 @@ impl<'a> OwnershipChecker<'a> {
             self.param_type_strings.insert(param.name.clone(), param.ty.clone());
         }
 
-        // A store reached through a `mutate`/`deleting` parameter is writable; one
+        // A rack reached through a `mutate`/`deleting` parameter is writable; one
         // reached through a plain borrow is the caller's to write. Has to come
-        // after the map above — `name_holds_store` reads it, so running this in the
+        // after the map above — `name_holds_rack` reads it, so running this in the
         // earlier loop silently answered "no" for every parameter.
         for param in &fn_decl.params {
-            if (param.is_mutate || param.is_deleting) && self.name_holds_store(&param.name) {
-                self.writable_stores.insert(param.name.clone());
+            if (param.is_mutate || param.is_deleting) && self.name_holds_rack(&param.name) {
+                self.writable_racks.insert(param.name.clone());
             }
         }
 
@@ -745,8 +745,8 @@ impl<'a> OwnershipChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
-                // `mut` is what makes a store's nodes writable here.
-                self.writable_stores.insert(name.clone());
+                // `mut` is what makes a rack's nodes writable here.
+                self.writable_racks.insert(name.clone());
                 self.check_expr(init);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
@@ -921,14 +921,14 @@ impl<'a> OwnershipChecker<'a> {
                 // Assignments move the value — except a link into a field.
                 //
                 // A link is a pointer, so both cases copy the same pointer; what
-                // differs is who keeps it honest afterwards. The store maintains a
+                // differs is who keeps it honest afterwards. The rack maintains a
                 // field-held link (it nulls it at delete), so the source name stays
                 // good. Nothing maintains a local, so a local-to-local copy revokes
                 // the source and `delete` takes it — which is what makes
                 // use-after-delete a compile error (analysis.fourth-option).
-                // A node write asks the *store*, not the link. A link is an
+                // A node write asks the *rack*, not the link. A link is an
                 // access path — following an edge doesn't grant anything the
-                // store didn't already grant, which is why read-only needs no
+                // rack didn't already grant, which is why read-only needs no
                 // second link type and can't be laundered by one hop.
                 if !reinit_target {
                     self.check_node_write(target, stmt.span);
@@ -1081,9 +1081,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
-                let iterates_store = self.store_iteration_elem(iter);
-                if let Some(elem) = iterates_store {
-                    // The element of a store iteration is a link, and the binding
+                let iterates_rack = self.rack_iteration_elem(iter);
+                if let Some(elem) = iterates_rack {
+                    // The element of a rack iteration is a link, and the binding
                     // needs the type recorded or nothing downstream can tell it is
                     // one — that is what makes it a *derived* link rather than an
                     // untyped name.
@@ -1097,10 +1097,10 @@ impl<'a> OwnershipChecker<'a> {
                             self.binding_types.insert(name.clone(), ty);
                         }
                         if let Some(root) = self.link_root_of_expr(iter) {
-                            self.link_store_root.insert(name.clone(), root);
+                            self.link_rack_root.insert(name.clone(), root);
                         }
                     }
-                    self.store_iterations.push((elem, binding_names.clone()));
+                    self.rack_iterations.push((elem, binding_names.clone()));
                 }
                 // LP14/LP16: track for-mutate context
                 if *mutate {
@@ -1117,8 +1117,8 @@ impl<'a> OwnershipChecker<'a> {
                 if *mutate {
                     self.active_for_mutates.pop();
                 }
-                if self.store_iteration_elem(iter).is_some() {
-                    self.store_iterations.pop();
+                if self.rack_iteration_elem(iter).is_some() {
+                    self.rack_iterations.pop();
                 }
             }
             StmtKind::Loop { label: _, body } => {
@@ -1263,7 +1263,7 @@ impl<'a> OwnershipChecker<'a> {
                     None
                 };
                 let mut deleting_args: Vec<Expr> = Vec::new();
-                let store_args = self.store_arg_roots(args);
+                let rack_args = self.rack_arg_roots(args);
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as function argument
@@ -1289,7 +1289,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     let is_take_param =
                         callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
-                    // Passing a store to a `deleting` parameter revokes every link
+                    // Passing a rack to a `deleting` parameter revokes every link
                     // local into it — but not until the rest of the arguments have
                     // been checked, or a link passed alongside it reads as already
                     // dead at its own call.
@@ -1319,12 +1319,12 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
-                        self.require_deleting_for_derived_consume(&arg.expr, &store_args, expr.span);
+                        self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
                         self.consume_arg(&arg.expr, callee_name.as_deref());
                     }
                 }
-                for store_arg in &deleting_args {
-                    self.kill_links_for_deleting_arg(store_arg, expr.span);
+                for rack_arg in &deleting_args {
+                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
@@ -1333,11 +1333,11 @@ impl<'a> OwnershipChecker<'a> {
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
                 let channel_send = self.is_channel_send(object, method, expr.span);
-                let mut store_args = self.store_arg_roots(args);
+                let mut rack_args = self.rack_arg_roots(args);
                 // For a method call the receiver is an argument too.
                 if let Some(root) = Self::extract_root_and_fields(object).0 {
-                    if self.name_holds_store(&root) && !store_args.contains(&root) {
-                        store_args.push(root);
+                    if self.name_holds_rack(&root) && !rack_args.contains(&root) {
+                        rack_args.push(root);
                     }
                 }
                 // `deleting` on a method: the receiver carries it as often as a
@@ -1400,7 +1400,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                         if method != "delete" {
-                            self.require_deleting_for_derived_consume(&arg.expr, &store_args, expr.span);
+                            self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
                         }
                         self.consume_arg(&arg.expr, Some(method.as_str()));
                     }
@@ -1414,17 +1414,17 @@ impl<'a> OwnershipChecker<'a> {
                 // A delete names its victim only if the argument is a link this
                 // body can vouch for: one `insert` handed over, or one a caller
                 // passed by `take`. Anything else — a field read, an iteration
-                // binding, a call result — may alias any node in the store, so
+                // binding, a call result — may alias any node in the rack, so
                 // every *derived* link local has to die with it. And a delete of
                 // an unvouched-for link is not a named delete at all: it takes
                 // everything, the same way `clear` does.
-                if method == "delete" && self.receiver_type_name(object).as_deref() == Some("Store")
+                if method == "delete" && self.receiver_type_name(object).as_deref() == Some("Rack")
                 {
                     let named = args.first().is_some_and(|a| self.is_identified_link(&a.expr));
                     if named {
-                        self.kill_derived_links_into_store(object, expr.span);
+                        self.kill_derived_links_into_rack(object, expr.span);
                     } else {
-                        self.kill_links_into_store(object, expr.span);
+                        self.kill_links_into_rack(object, expr.span);
                     }
                     if let Some(a) = args.first() {
                         if let ExprKind::Ident(_) = &a.expr.kind {
@@ -1436,20 +1436,20 @@ impl<'a> OwnershipChecker<'a> {
                         self.require_deleting(object, "`delete` here", expr.span);
                     }
                 }
-                // `store.clear()` deletes every node at once. It names no link,
-                // so a local link into that store has to die here the same way
+                // `rack.clear()` deletes every node at once. It names no link,
+                // so a local link into that rack has to die here the same way
                 // it would at an explicit `delete` — otherwise the checkless
                 // read the whole model rests on reads freed memory.
-                if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Store")
+                if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Rack")
                 {
-                    self.kill_links_into_store(object, expr.span);
+                    self.kill_links_into_rack(object, expr.span);
                     // A clear is a delete, so the names it kills must report as
                     // freed rather than as moved.
                     self.link_delete_spans.insert(expr.span);
                     self.require_deleting(object, "`clear` here", expr.span);
                 }
-                for store_arg in &method_deleting_args {
-                    self.kill_links_for_deleting_arg(store_arg, expr.span);
+                for rack_arg in &method_deleting_args {
+                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
@@ -1933,7 +1933,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         self.identified_links.remove(name);
                         if let Some(root) = self.link_root_of_expr(inner) {
-                            self.link_store_root.insert(name.clone(), root);
+                            self.link_rack_root.insert(name.clone(), root);
                         }
                         self.binding_types.insert(name.clone(), narrowed);
                     }
@@ -2206,7 +2206,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// First type argument of a generic type, as a comparable string. Used to
-    /// pair a `Store<T>` with the `Link<T>` locals pointing into it.
+    /// pair a `Rack<T>` with the `Link<T>` locals pointing into it.
     fn elem_key(&self, ty: &rask_types::Type) -> Option<String> {
         let ty = ty.as_option().unwrap_or(ty);
         let arg = match ty {
@@ -2223,7 +2223,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Record whether a new link local names a node nothing else in this body
-    /// knows about. Only a direct `store.insert(...)` qualifies: a field read, an
+    /// knows about. Only a direct `rack.insert(...)` qualifies: a field read, an
     /// iteration binding or a call result may be a second name for a node some
     /// other local also names, and a delete of either invalidates both.
     fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
@@ -2233,7 +2233,7 @@ impl<'a> OwnershipChecker<'a> {
         let from_insert = matches!(
             &init.kind,
             ExprKind::MethodCall { object, method, .. }
-                if method == "insert" && self.receiver_type_name(object).as_deref() == Some("Store")
+                if method == "insert" && self.receiver_type_name(object).as_deref() == Some("Rack")
         );
         if from_insert {
             self.identified_links.insert(name.to_string());
@@ -2242,21 +2242,21 @@ impl<'a> OwnershipChecker<'a> {
         }
         match self.link_root_of_expr(init) {
             Some(root) => {
-                self.link_store_root.insert(name.to_string(), root);
+                self.link_rack_root.insert(name.to_string(), root);
             }
             None => {
-                self.link_store_root.remove(name);
+                self.link_rack_root.remove(name);
             }
         }
     }
 
-    /// A write through a link is permitted by the store the node lives in.
+    /// A write through a link is permitted by the rack the node lives in.
     ///
-    /// `n.value = 5` doesn't change `n` — it changes a node inside a store, so
-    /// the question is whether *that store* is writable here. This is the rule
+    /// `n.value = 5` doesn't change `n` — it changes a node inside a rack, so
+    /// the question is whether *that rack* is writable here. This is the rule
     /// `Handle` has always had (`scene.nodes[h].f = x` needs `mutate scene`); a
-    /// link just spells the path differently. Asking the store rather than the
-    /// link is what makes a read-only view free: a function taking `s: Store<T>`
+    /// link just spells the path differently. Asking the rack rather than the
+    /// link is what makes a read-only view free: a function taking `s: Rack<T>`
     /// can read every node and write none, with nothing to propagate along edges
     /// and no way to launder a read-only link into a writable one.
     fn check_node_write(&mut self, target: &Expr, span: Span) {
@@ -2275,28 +2275,28 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
         match self.link_root_of_expr(target) {
-            // The store has a name here, so the answer is about that name.
-            Some(store) => {
-                if !self.writable_stores.contains(&store) {
+            // The rack has a name here, so the answer is about that name.
+            Some(rack) => {
+                if !self.writable_racks.contains(&rack) {
                     self.errors.push(OwnershipError {
-                        kind: OwnershipErrorKind::NodeWriteNeedsWritableStore {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableRack {
                             link: root,
-                            store: Some(store),
+                            rack: Some(rack),
                         },
                         span,
                     });
                 }
             }
-            // The link arrived as a parameter, so its store isn't named here. One
-            // writable store parameter is unambiguous — that's the one it must
+            // The link arrived as a parameter, so its rack isn't named here. One
+            // writable rack parameter is unambiguous — that's the one it must
             // belong to, since an edge can only connect co-owned nodes. None means
             // nothing granted this write.
             None => {
-                if self.writable_stores.is_empty() {
+                if self.writable_racks.is_empty() {
                     self.errors.push(OwnershipError {
-                        kind: OwnershipErrorKind::NodeWriteNeedsWritableStore {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableRack {
                             link: root,
-                            store: None,
+                            rack: None,
                         },
                         span,
                     });
@@ -2306,18 +2306,18 @@ impl<'a> OwnershipChecker<'a> {
     }
 
 
-    /// A link may not outlive the store it points into.
+    /// A link may not outlive the rack it points into.
     ///
     /// Nothing else catches this. The use-after-delete rule tracks deletes, and
-    /// no delete happened — the store just went out of scope and took its nodes
+    /// no delete happened — the rack just went out of scope and took its nodes
     /// with it. Block-scoped borrowing would have caught it, except a link is
     /// Copy and escapes freely, which is the point of a link. So the escape has
-    /// to be checked directly: a link whose store this body declared can't be
-    /// returned, and can't be assigned into a name that outlives that store.
+    /// to be checked directly: a link whose rack this body declared can't be
+    /// returned, and can't be assigned into a name that outlives that rack.
     ///
-    /// A link into a *parameter* store is fine — the caller owns it, so it
+    /// A link into a *parameter* rack is fine — the caller owns it, so it
     /// outlives the call. That's the case that has to keep working:
-    /// `func first(mutate s: Store<T>) -> Link<T>` is an ordinary accessor.
+    /// `func first(mutate s: Rack<T>) -> Link<T>` is an ordinary accessor.
     fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) {
         // A link inside an aggregate escapes just as well as a bare one —
         // `return Holder { link: n }` is the same dangle with a wrapper on it.
@@ -2343,42 +2343,42 @@ impl<'a> OwnershipChecker<'a> {
         if !self.is_link_type(ty) {
             return;
         }
-        let Some(store) = self.link_root_of_expr(expr) else { return };
-        // A parameter store outlives this body, so nothing can escape it here.
-        if self.param_type_strings.contains_key(&store) {
+        let Some(rack) = self.link_root_of_expr(expr) else { return };
+        // A parameter rack outlives this body, so nothing can escape it here.
+        if self.param_type_strings.contains_key(&rack) {
             return;
         }
-        let Some(&store_block) = self.binding_decl_blocks.get(&store) else { return };
+        let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return };
         let escapes = match &via {
             LinkEscape::Return => true,
             LinkEscape::Assignment { target } => self
                 .binding_decl_blocks
                 .get(target)
-                .is_some_and(|&target_block| store_block > target_block),
+                .is_some_and(|&target_block| rack_block > target_block),
         };
         if !escapes {
             return;
         }
         let link = match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
-            _ => store.clone(),
+            _ => rack.clone(),
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::LinkOutlivesStore { link, store, via },
+            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via },
             span,
         });
     }
 
-    /// Which store a link expression came out of, by root name. Follows the two
-    /// ways a link is obtained — from a store (`g.nodes.insert(…)`,
+    /// Which rack a link expression came out of, by root name. Follows the two
+    /// ways a link is obtained — from a rack (`g.nodes.insert(…)`,
     /// `g.nodes.nodes()`) and from another link (`n.peer`, or a name that already
     /// has an origin recorded).
     fn link_root_of_expr(&self, expr: &Expr) -> Option<String> {
         match &expr.kind {
-            ExprKind::Ident(name) => self.link_store_root.get(name).cloned(),
+            ExprKind::Ident(name) => self.link_rack_root.get(name).cloned(),
             ExprKind::MethodCall { object, method, .. } => {
                 if matches!(method.as_str(), "insert" | "nodes" | "links" | "snapshot")
-                    && self.receiver_type_name(object).as_deref() == Some("Store")
+                    && self.receiver_type_name(object).as_deref() == Some("Rack")
                 {
                     return Self::extract_root_and_fields(object).0;
                 }
@@ -2406,11 +2406,11 @@ impl<'a> OwnershipChecker<'a> {
     /// Kill only the *derived* link locals — the ones that may be a second name
     /// for whatever just died. Locals with their own `insert` behind them name
     /// distinct nodes and survive.
-    fn kill_derived_links_into_store(&mut self, store: &Expr, span: Span) {
+    fn kill_derived_links_into_rack(&mut self, rack: &Expr, span: Span) {
         let elem = self
             .program
             .node_types
-            .get(&store.id)
+            .get(&rack.id)
             .and_then(|ty| self.elem_key(ty));
         let dead: Vec<String> = self
             .binding_types
@@ -2432,12 +2432,12 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Element type key if this expression iterates a `Store`'s nodes — either
-    /// `store.nodes()`/`store.links()` or the store itself.
-    fn store_iteration_elem(&self, iter: &Expr) -> Option<Option<String>> {
+    /// Element type key if this expression iterates a `Rack`'s nodes — either
+    /// `rack.nodes()`/`rack.links()` or the rack itself.
+    fn rack_iteration_elem(&self, iter: &Expr) -> Option<Option<String>> {
         if let ExprKind::MethodCall { object, method, .. } = &iter.kind {
             if matches!(method.as_str(), "nodes" | "links")
-                && self.receiver_type_name(object).as_deref() == Some("Store")
+                && self.receiver_type_name(object).as_deref() == Some("Rack")
             {
                 return Some(
                     self.program
@@ -2447,7 +2447,7 @@ impl<'a> OwnershipChecker<'a> {
                 );
             }
         }
-        if self.receiver_type_name(iter).as_deref() == Some("Store") {
+        if self.receiver_type_name(iter).as_deref() == Some("Rack") {
             return Some(
                 self.program
                     .node_types
@@ -2458,12 +2458,12 @@ impl<'a> OwnershipChecker<'a> {
         None
     }
 
-    /// True if this argument names a binding introduced by iterating a store.
-    fn is_store_iteration_binding(&self, arg: &Expr) -> bool {
+    /// True if this argument names a binding introduced by iterating a rack.
+    fn is_rack_iteration_binding(&self, arg: &Expr) -> bool {
         let ExprKind::Ident(name) = &arg.kind else {
             return false;
         };
-        self.store_iterations
+        self.rack_iterations
             .iter()
             .any(|(_, names)| names.contains(name))
     }
@@ -2475,7 +2475,7 @@ impl<'a> OwnershipChecker<'a> {
     fn require_deleting_for_derived_consume(
         &mut self,
         arg: &Expr,
-        store_args: &[String],
+        rack_args: &[String],
         span: Span,
     ) {
         let ExprKind::Ident(name) = &arg.kind else { return };
@@ -2491,15 +2491,15 @@ impl<'a> OwnershipChecker<'a> {
         if !is_link || self.is_identified_link(arg) {
             return;
         }
-        // Which store it belongs to isn't recoverable from the link, so this is
-        // exact only when the body has one store-bearing parameter — the ordinary
+        // Which rack it belongs to isn't recoverable from the link, so this is
+        // exact only when the body has one rack-bearing parameter — the ordinary
         // case. With none, there is nothing the caller could be holding.
-        // Which store will the callee delete from? Whichever one this same call
-        // hands it — a callee can't delete a link without a store to delete it
-        // from. That makes the blame exact however many stores are in scope, and
+        // Which rack will the callee delete from? Whichever one this same call
+        // hands it — a callee can't delete a link without a rack to delete it
+        // from. That makes the blame exact however many racks are in scope, and
         // needs no guess about where the link came from. A call that passes no
-        // store can't delete the caller's node at all.
-        for param in store_args.to_vec() {
+        // rack can't delete the caller's node at all.
+        for param in rack_args.to_vec() {
             if self.deleting_params.contains(&param) {
                 continue;
             }
@@ -2514,10 +2514,10 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// An unnamed delete reaches nodes the caller never handed over, so the
-    /// parameter it goes through has to say so. A store this body owns outright is
+    /// parameter it goes through has to say so. A rack this body owns outright is
     /// exempt — the caller has no links into it to lose.
-    fn require_deleting(&mut self, store: &Expr, op: &str, span: Span) {
-        let Some(root) = Self::extract_root_and_fields(store).0 else {
+    fn require_deleting(&mut self, rack: &Expr, op: &str, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(rack).0 else {
             return;
         };
         if !self.param_type_strings.contains_key(&root) || self.deleting_params.contains(&root) {
@@ -2533,7 +2533,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// At a call passing `arg` to a `deleting` parameter, the callee picks which
-    /// nodes die, so every link local into that store dies here.
+    /// nodes die, so every link local into that rack dies here.
     fn kill_links_for_deleting_arg(&mut self, arg: &Expr, span: Span) {
         let Some(root) = Self::extract_root_and_fields(arg).0 else {
             return;
@@ -2541,7 +2541,7 @@ impl<'a> OwnershipChecker<'a> {
         let elem = self
             .binding_types
             .get(&root)
-            .and_then(|ty| self.store_elem_of(ty));
+            .and_then(|ty| self.rack_elem_of(ty));
         let dead: Vec<String> = self
             .binding_types
             .iter()
@@ -2555,11 +2555,11 @@ impl<'a> OwnershipChecker<'a> {
                     return false;
                 }
                 // A link whose origin is recorded dies only if it came out of
-                // *this* store — two stores of the same node type hand out links
+                // *this* rack — two racks of the same node type hand out links
                 // of the same type, so the element type alone can't separate them.
                 // An unrecorded origin has to die: over-killing is a rejected
                 // program, under-killing is a use after free.
-                match self.link_store_root.get(name.as_str()) {
+                match self.link_rack_root.get(name.as_str()) {
                     Some(origin) => *origin == root,
                     None => elem.is_none() || self.elem_key(ty) == elem,
                 }
@@ -2572,7 +2572,7 @@ impl<'a> OwnershipChecker<'a> {
         self.link_delete_spans.insert(span);
     }
 
-    /// Element type of a sequence type (`Vec<T>`, `Store<T>`), if it has one.
+    /// Element type of a sequence type (`Vec<T>`, `Rack<T>`), if it has one.
     fn sequence_element(ty: &rask_types::Type) -> Option<rask_types::Type> {
         let args = match ty {
             rask_types::Type::Generic { args, .. } => args,
@@ -2585,12 +2585,12 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Root names of the arguments that carry a `Store`, deduplicated in order.
-    fn store_arg_roots(&self, args: &[rask_ast::expr::CallArg]) -> Vec<String> {
+    /// Root names of the arguments that carry a `Rack`, deduplicated in order.
+    fn rack_arg_roots(&self, args: &[rask_ast::expr::CallArg]) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for arg in args {
             if let Some(root) = Self::extract_root_and_fields(&arg.expr).0 {
-                if self.name_holds_store(&root) && !out.contains(&root) {
+                if self.name_holds_rack(&root) && !out.contains(&root) {
                     out.push(root);
                 }
             }
@@ -2598,28 +2598,28 @@ impl<'a> OwnershipChecker<'a> {
         out
     }
 
-    /// Is this name a parameter whose type carries a `Store`?
-    fn name_holds_store(&self, name: &str) -> bool {
+    /// Is this name a parameter whose type carries a `Rack`?
+    fn name_holds_rack(&self, name: &str) -> bool {
         self.param_type_strings
             .get(name)
-            .is_some_and(|ty| self.type_string_holds_store(ty))
+            .is_some_and(|ty| self.type_string_holds_rack(ty))
     }
 
-    /// Does a declared type name hold a `Store` — directly or in a field?
-    fn type_string_holds_store(&self, ty_str: &str) -> bool {
+    /// Does a declared type name hold a `Rack` — directly or in a field?
+    fn type_string_holds_rack(&self, ty_str: &str) -> bool {
         let base = ty_str.split('<').next().unwrap_or(ty_str).trim();
-        if base == "Store" {
+        if base == "Rack" {
             return true;
         }
         match self.program.types.get_type_id(base) {
-            Some(id) => self.store_elem_of(&rask_types::Type::Named(id)).is_some(),
+            Some(id) => self.rack_elem_of(&rask_types::Type::Named(id)).is_some(),
             None => false,
         }
     }
 
-    /// Element type of a `Store<T>`, looking through a struct that holds one.
-    fn store_elem_of(&self, ty: &rask_types::Type) -> Option<String> {
-        if self.type_name_of(ty).as_deref() == Some("Store") {
+    /// Element type of a `Rack<T>`, looking through a struct that holds one.
+    fn rack_elem_of(&self, ty: &rask_types::Type) -> Option<String> {
+        if self.type_name_of(ty).as_deref() == Some("Rack") {
             return self.elem_key(ty);
         }
         let id = match ty {
@@ -2633,7 +2633,7 @@ impl<'a> OwnershipChecker<'a> {
         fields
             .clone()
             .into_iter()
-            .find_map(|(_, fty)| self.store_elem_of(&fty))
+            .find_map(|(_, fty)| self.rack_elem_of(&fty))
     }
 
     fn type_name_of(&self, ty: &rask_types::Type) -> Option<String> {
@@ -2653,14 +2653,14 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Mark every live local link with the store's element type as deleted.
-    /// Conservative on the store: links are not tracked back to the store they
-    /// came from, so two stores of the same node type kill each other's locals.
-    fn kill_links_into_store(&mut self, store: &Expr, span: Span) {
+    /// Mark every live local link with the rack's element type as deleted.
+    /// Conservative on the rack: links are not tracked back to the rack they
+    /// came from, so two racks of the same node type kill each other's locals.
+    fn kill_links_into_rack(&mut self, rack: &Expr, span: Span) {
         let elem = self
             .program
             .node_types
-            .get(&store.id)
+            .get(&rack.id)
             .and_then(|ty| self.elem_key(ty));
         let dead: Vec<String> = self
             .binding_types

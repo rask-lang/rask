@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, StoreData, StructData, TypeConstructorKind, Value, VecData};
+use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, RackData, StructData, TypeConstructorKind, Value, VecData};
 
 /// The node a link names, seeing through the `Link<T>?` optional that every
 /// edge field carries.
@@ -76,7 +76,7 @@ impl Interpreter {
                 drop(guard);
                 // Pushing onto an edge list creates an incoming edge; record it
                 // so the target's delete can drop the entry.
-                crate::store::register_element(v, &pushed);
+                crate::rack::register_element(v, &pushed);
                 Ok(Value::Unit)
             }
             // C2: hands the value back rather than panicking. Native lowers the
@@ -711,63 +711,63 @@ impl Interpreter {
         }
     }
 
-    /// `Store<T>` methods — the arena side of the delete-time-fixup model
+    /// `Rack<T>` methods — the arena side of the delete-time-fixup model
     /// (analysis.fourth-option). Structural ops only; following a link never
     /// comes here, because a link is a pointer.
-    pub(crate) fn call_store_method(
+    pub(crate) fn call_rack_method(
         &mut self,
-        s: &Arc<Mutex<StoreData>>,
+        s: &Arc<Mutex<RackData>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
             "insert" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit);
-                // Nodes live in the store, so they keep their identity rather
+                // Nodes live in the rack, so they keep their identity rather
                 // than being copied into it — links must observe writes made
                 // through any other link to the same node.
                 let node = match item {
                     Value::Struct(st) => st,
                     other => {
                         return Err(RuntimeError::TypeError(format!(
-                            "store.insert() expects a struct node, found {}",
+                            "rack.insert() expects a struct node, found {}",
                             other.type_name()
                         )))
                     }
                 };
-                let (store_id, _idx) = {
-                    let mut store = s.lock().unwrap();
-                    let id = store.store_id;
-                    let idx = store.insert(Arc::clone(&node));
+                let (rack_id, _idx) = {
+                    let mut rack = s.lock().unwrap();
+                    let id = rack.rack_id;
+                    let idx = rack.insert(Arc::clone(&node));
                     (id, idx)
                 };
                 // A node can arrive with edges already in its fields
                 // (`Node { prev: list.tail, .. }`). Record them now — the
                 // struct literal that built it registered what it could see,
                 // but the node's own identity only exists from here.
-                crate::store::register_nested(&Value::Struct(Arc::clone(&node)), 0);
-                Ok(Value::Link { store_id, node })
+                crate::rack::register_nested(&Value::Struct(Arc::clone(&node)), 0);
+                Ok(Value::Link { rack_id, node })
             }
             "delete" => {
                 let target = args.first().ok_or_else(|| {
-                    RuntimeError::TypeError("store.delete() expects a Link".to_string())
+                    RuntimeError::TypeError("rack.delete() expects a Link".to_string())
                 })?;
                 let node = match link_node(target) {
                     Some(n) => n,
                     None => {
                         return Err(RuntimeError::TypeError(format!(
-                            "store.delete() expects a Link, found {}",
+                            "rack.delete() expects a Link, found {}",
                             target.type_name()
                         )))
                     }
                 };
-                match crate::store::delete_node(s, &node) {
+                match crate::rack::delete_node(s, &node) {
                     Some(_owned) => Ok(Value::Unit),
                     // The node is already gone. Under the model a link to a
                     // dead node cannot exist, so reaching this means the link
                     // came from somewhere the fixup walk could not see.
                     None => Err(RuntimeError::Panic(
-                        "store.delete(): link target is not in this store".to_string(),
+                        "rack.delete(): link target is not in this rack".to_string(),
                     )),
                 }
             }
@@ -781,55 +781,55 @@ impl Interpreter {
                     .unwrap_or(false);
                 Ok(Value::Bool(found))
             }
-            // Every live node, as links. This is what `for n in store` walks.
+            // Every live node, as links. This is what `for n in rack` walks.
             "nodes" | "links" => {
-                let store = s.lock().unwrap();
-                let store_id = store.store_id;
-                let links: Vec<Value> = store
+                let rack = s.lock().unwrap();
+                let rack_id = rack.rack_id;
+                let links: Vec<Value> = rack
                     .live_nodes()
                     .into_iter()
-                    .map(|node| Value::Link { store_id, node })
+                    .map(|node| Value::Link { rack_id, node })
                     .collect();
                 Ok(Value::vec(links))
             }
             // A reader gets its own graph rather than a pointer into someone
             // else's. No link crosses the boundary, so T2 is not in question.
-            "snapshot" => Ok(crate::store::snapshot_store(s)),
+            "snapshot" => Ok(crate::rack::snapshot_rack(s)),
             // Translate a link the caller still holds into this snapshot's copy
             // of the same node. One lookup at the boundary, not per access.
             "corresponding" => {
                 let Some(node) = args.first().and_then(link_node) else {
                     return Err(RuntimeError::TypeError(
-                        "store.corresponding() expects a Link".to_string(),
+                        "rack.corresponding() expects a Link".to_string(),
                     ));
                 };
-                let store = s.lock().unwrap();
-                let found = store
+                let rack = s.lock().unwrap();
+                let found = rack
                     .origin
                     .get(&crate::value::node_key(&node))
                     .map(|copy| Value::Link {
-                        store_id: store.store_id,
+                        rack_id: rack.rack_id,
                         node: Arc::clone(copy),
                     });
                 Ok(option_value(found))
             }
-            // Every node dies, so every edge pointing into this store must be
+            // Every node dies, so every edge pointing into this rack must be
             // nulled. Truncating the slots would leave root edges and
-            // cross-store edges pointing at freed nodes — the one thing the
+            // cross-rack edges pointing at freed nodes — the one thing the
             // model promises can't happen.
             "clear" => {
                 let live = s.lock().unwrap().live_nodes();
                 for node in &live {
-                    crate::store::delete_node(s, node);
+                    crate::rack::delete_node(s, node);
                 }
-                let mut store = s.lock().unwrap();
-                store.slots.clear();
-                store.free_list.clear();
-                store.len = 0;
+                let mut rack = s.lock().unwrap();
+                rack.slots.clear();
+                rack.free_list.clear();
+                rack.len = 0;
                 Ok(Value::Unit)
             }
             _ => Err(RuntimeError::TypeError(format!(
-                "no method `{}` on Store; structural ops are insert, delete, len, is_empty, contains, nodes, clear, snapshot, corresponding",
+                "no method `{}` on Rack; structural ops are insert, delete, len, is_empty, contains, nodes, clear, snapshot, corresponding",
                 method
             ))),
         }
@@ -839,7 +839,7 @@ impl Interpreter {
     /// is field access, which never routes through here.
     pub(crate) fn call_link_method(
         &mut self,
-        store_id: u32,
+        rack_id: u32,
         node: &Arc<Mutex<StructData>>,
         method: &str,
         args: Vec<Value>,
@@ -859,7 +859,7 @@ impl Interpreter {
                 // Fall through to the node's own methods, so `l.take_damage(3)`
                 // works the way `l.health` does.
                 let recv = Value::Struct(Arc::clone(node));
-                let _ = store_id;
+                let _ = rack_id;
                 self.call_builtin_method(recv, method, args)
             }
         }
@@ -1358,7 +1358,7 @@ impl Interpreter {
                 // database's index-maintenance move. Overwriting a key can
                 // remove the map's last edge to the displaced target, so the old
                 // value goes in too.
-                crate::store::register_entry(m, old.as_ref(), &inserted);
+                crate::rack::register_entry(m, old.as_ref(), &inserted);
                 Ok(option_of(old))
             }
             "get" => {
@@ -1604,10 +1604,10 @@ impl Interpreter {
                 pool.capacity = Some(cap);
                 Ok(Value::Pool(Arc::new(Mutex::new(pool))))
             }
-            (TypeConstructorKind::Store, "new") => {
-                let store = Arc::new(Mutex::new(StoreData::with_type_param(type_param.clone())));
-                crate::value::register_store(&store);
-                Ok(Value::Store(store))
+            (TypeConstructorKind::Rack, "new") => {
+                let rack = Arc::new(Mutex::new(RackData::with_type_param(type_param.clone())));
+                crate::value::register_rack(&rack);
+                Ok(Value::Rack(rack))
             }
             (TypeConstructorKind::Channel, "buffered") => {
                 let cap = self.expect_int(&args, 0)? as usize;

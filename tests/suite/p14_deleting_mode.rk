@@ -1,11 +1,11 @@
 // PENDING analysis.fourth-option — the `deleting` parameter mode. Interpreter
-// only, like the rest of the Store work.
+// only, like the rest of the Rack work.
 //
 // A delete the caller can see needs no declaration: `delete(take link)` consumes
 // the link at the call site. A delete that picks its own victim can't be seen from
 // outside, so the parameter says `deleting` and the call revokes the caller's
 // links. This file is the accepted side — the rejections live in
-// tests/compile_errors/store_delete_undeclared.rk.
+// tests/compile_errors/rack_delete_undeclared.rk.
 
 struct Node {
     id: i32
@@ -13,7 +13,7 @@ struct Node {
 }
 
 struct Scene {
-    nodes: Store<Node>
+    nodes: Rack<Node>
 }
 
 extend Scene {
@@ -33,12 +33,12 @@ extend Scene {
 }
 
 // Deletes only what it was handed, so it needs nothing.
-func drop_one(mutate s: Store<Node>, take n: Link<Node>) {
+func drop_one(mutate s: Rack<Node>, take n: Link<Node>) {
     s.delete(n)
 }
 
 // Picks its own, so it declares.
-func drop_all(deleting s: Store<Node>) -> i32 {
+func drop_all(deleting s: Rack<Node>) -> i32 {
     mut n = 0
     for node in s.nodes() {
         n += 1
@@ -50,7 +50,7 @@ func drop_all(deleting s: Store<Node>) -> i32 {
 func main() {}
 
 test "a named delete leaves other links alone" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { id: 1, peer: none })
     let b = s.insert(Node { id: 2, peer: none })
 
@@ -62,7 +62,7 @@ test "a named delete leaves other links alone" {
 }
 
 test "a deleting call revokes the caller's links" {
-    mut s: Store<Node> = Store.new()
+    mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { id: 1, peer: none })
     let b = s.insert(Node { id: 2, peer: none })
     a.peer = b
@@ -78,7 +78,7 @@ test "a deleting call revokes the caller's links" {
 }
 
 test "deleting on a method receiver works the same way" {
-    mut sc = Scene { nodes: Store.new() }
+    mut sc = Scene { nodes: Rack.new() }
     let _a = sc.nodes.insert(Node { id: 1, peer: none })
     let _b = sc.nodes.insert(Node { id: 2, peer: none })
     assert_eq(sc.count(), 2)

@@ -5,8 +5,8 @@
 // backlink `a.target = first` created. Deleting `first` afterwards then visits
 // nothing at all:
 //
-//     $ RASK_STORE_STATS=1 rask run --interp unlink_on_overwrite_links.rk
-//     store stats: deletes=2 edges_fixed=1 holders_visited=1
+//     $ RASK_RACK_STATS=1 rask run --interp unlink_on_overwrite_links.rk
+//     rack stats: deletes=2 edges_fixed=1 holders_visited=1
 //
 // Two deletes, one holder visited between them — the delete of `first` visits
 // nobody, the delete of `second` visits `a.target`. Without unlinking, `first`
@@ -25,18 +25,18 @@ struct Node {
 }
 
 func main() {
-    mut store: Store<Node> = Store.new()
+    mut rack: Rack<Node> = Rack.new()
 
-    let holder = store.insert(Node { id: 0, target: none })
-    let first = store.insert(Node { id: 1, target: none })
-    let second = store.insert(Node { id: 2, target: none })
+    let holder = rack.insert(Node { id: 0, target: none })
+    let first = rack.insert(Node { id: 1, target: none })
+    let second = rack.insert(Node { id: 2, target: none })
 
     holder.target = first
     holder.target = second
     holder.target = holder.target      // must not drop what it re-adds
 
     // `first` is no longer pointed at by anything.
-    store.delete(first)
+    rack.delete(first)
     if holder.target? as t {
         println("after deleting first, holder.target = {t.id} (expected 2)")
     } else {
@@ -47,13 +47,13 @@ func main() {
     // delete below visits one holder, not REWRITES of them.
     mut i = 0
     while i < REWRITES {
-        let scratch = store.insert(Node { id: 100 + i, target: none })
+        let scratch = rack.insert(Node { id: 100 + i, target: none })
         holder.target = scratch
         i += 1
     }
     holder.target = second
 
-    store.delete(second)
+    rack.delete(second)
     if holder.target? as _t {
         println("holder.target survived its target's delete -- WRONG")
     } else {

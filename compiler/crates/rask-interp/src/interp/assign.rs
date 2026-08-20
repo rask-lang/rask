@@ -111,7 +111,7 @@ impl Interpreter {
                     let value = wrap_like(previous.as_ref(), value);
                     guard.fields.insert(field.clone(), value.clone());
                     drop(guard);
-                    crate::store::register_field(s, field, previous.as_ref(), &value);
+                    crate::rack::register_field(s, field, previous.as_ref(), &value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
@@ -123,7 +123,7 @@ impl Interpreter {
                         drop(vec);
                         // A list backlink names the list, not the slot, so the
                         // displaced element needs no unlinking — see store.rs.
-                        crate::store::register_element(v, &value);
+                        crate::rack::register_element(v, &value);
                         return Ok(());
                     }
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });

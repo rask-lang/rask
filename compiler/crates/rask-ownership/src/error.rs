@@ -175,36 +175,36 @@ pub enum OwnershipErrorKind {
         ty: String,
     },
 
-    /// analysis.fourth-option: a link that would outlive the store it points into.
+    /// analysis.fourth-option: a link that would outlive the rack it points into.
     ///
-    /// A link is a pointer to a node, and the nodes live in the store. When the
-    /// store dies the node goes with it, so a link that escapes the store's scope
+    /// A link is a pointer to a node, and the nodes live in the rack. When the
+    /// rack dies the node goes with it, so a link that escapes the rack's scope
     /// is dangling — with nothing deleted, so the use-after-delete rule never
     /// looks at it. A link is Copy and escapes freely, which is the point of a
     /// link and also exactly what block-scoped borrowing exists to stop.
-    #[error("`{link}` would outlive the store it points into")]
-    LinkOutlivesStore {
+    #[error("`{link}` would outlive the rack it points into")]
+    LinkOutlivesRack {
         link: String,
-        /// The store, when this body declared it.
-        store: String,
+        /// The rack, when this body declared it.
+        rack: String,
         /// How it escapes — a return, or an assignment into a longer-lived name.
         via: LinkEscape,
     },
 
-    /// analysis.fourth-option: a node written through a link whose store this
+    /// analysis.fourth-option: a node written through a link whose rack this
     /// body may only read.
     ///
-    /// A link is an access path into a store, not a permission of its own, so the
-    /// write is checked against the store — the same rule `Handle` has, where
+    /// A link is an access path into a rack, not a permission of its own, so the
+    /// write is checked against the rack — the same rule `Handle` has, where
     /// `scene.nodes[h].f = x` needs `mutate scene`. Exempting links let
-    /// `func combat_round(world: Store<Entity>) { t.health -= e.damage }` mutate
-    /// every node behind a signature promising the store was only read.
-    #[error("cannot write through `{link}` — nothing here grants writing this store's nodes")]
-    NodeWriteNeedsWritableStore {
+    /// `func combat_round(world: Rack<Entity>) { t.health -= e.damage }` mutate
+    /// every node behind a signature promising the rack was only read.
+    #[error("cannot write through `{link}` — nothing here grants writing this rack's nodes")]
+    NodeWriteNeedsWritableRack {
         link: String,
-        /// The store, when this body can name it. `None` when the link came in as
-        /// a parameter and no writable store parameter came with it.
-        store: Option<String>,
+        /// The rack, when this body can name it. `None` when the link came in as
+        /// a parameter and no writable rack parameter came with it.
+        rack: Option<String>,
     },
 
     /// analysis.fourth-option: an unnamed delete through a parameter that didn't
@@ -357,10 +357,10 @@ pub enum OwnershipErrorKind {
     },
 }
 
-/// How a link escapes its store's scope. Drives the E0379 copy.
+/// How a link escapes its rack's scope. Drives the E0379 copy.
 #[derive(Debug, Clone)]
 pub enum LinkEscape {
-    /// `return n` where the store is a local of this function.
+    /// `return n` where the rack is a local of this function.
     Return,
     /// Assigned into a name declared in an outer scope.
     Assignment { target: String },

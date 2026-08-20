@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// L1 — doubly-linked list, with Store + Link.
+// L1 — doubly-linked list, with Rack + Link.
 //
 // Two things to watch:
 //
 // 1. `head`/`tail` are ROOT EDGES — link fields on the struct that owns the
-//    store, not inside a node. Deleting the last node has to null them, so the
-//    delete's fixup walk must reach outside the store. That is the one piece
+//    rack, not inside a node. Deleting the last node has to null them, so the
+//    delete's fixup walk must reach outside the rack. That is the one piece
 //    the sketch had to add after this program was written down.
 //
 // 2. The splice is still hand-written. Delete-unlink maintains referential
@@ -22,7 +22,7 @@ struct Node {
 }
 
 struct List {
-    nodes: Store<Node>
+    nodes: Rack<Node>
     head: Link<Node>?
     tail: Link<Node>?
 }
@@ -67,7 +67,7 @@ func print_backward(list: List) {
 }
 
 func main() {
-    mut list = List { nodes: Store.new(), head: none, tail: none }
+    mut list = List { nodes: Rack.new(), head: none, tail: none }
 
     let n1 = push_back(mutate list, 1)
     let n2 = push_back(mutate list, 2)

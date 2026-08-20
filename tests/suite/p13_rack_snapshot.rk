@@ -1,14 +1,14 @@
-// PENDING analysis.fourth-option — `Store.snapshot()`, the answer to how a graph
-// crosses a task boundary. Interpreter only, like the rest of the Store work.
+// PENDING analysis.fourth-option — `Rack.snapshot()`, the answer to how a graph
+// crosses a task boundary. Interpreter only, like the rest of the Rack work.
 //
 // A link can't cross: it's a mutable reference to a node, and mem.ownership/T2
-// forbids sharing those between tasks. So the *store* crosses instead. `snapshot`
+// forbids sharing those between tasks. So the *rack* crosses instead. `snapshot`
 // deep-copies the graph and re-points every edge inside the copy at the copy, so
 // the reader owns everything it can reach and nothing is shared.
 //
 // It is the delete-time fixup's walk with a different rewrite: delete finds the
 // edges into one node and nulls them, snapshot finds the edges out of every node
-// and re-points them. Both work because the store knows its own graph.
+// and re-points them. Both work because the rack knows its own graph.
 
 struct Node {
     id: i32
@@ -16,11 +16,11 @@ struct Node {
     kids: Vec<Link<Node>>
 }
 
-func fresh() -> Store<Node> {
-    return Store.new()
+func fresh() -> Rack<Node> {
+    return Rack.new()
 }
 
-func sum(s: Store<Node>) -> i32 {
+func sum(s: Rack<Node>) -> i32 {
     mut t = 0
     for n in s.nodes() { t += n.id }
     return t
@@ -110,7 +110,7 @@ test "deleting on either side leaves the other alone" {
     assert_eq(s.len(), 1)          // clearing the copy doesn't touch the original
 }
 
-test "corresponding says none for a node this store never copied" {
+test "corresponding says none for a node this rack never copied" {
     mut left = fresh()
     mut right = fresh()
     let l = left.insert(Node { id: 1, peer: none, kids: Vec.new() })
@@ -124,7 +124,7 @@ test "corresponding says none for a node this store never copied" {
     }
 }
 
-test "snapshotting an empty store is empty" {
+test "snapshotting an empty rack is empty" {
     mut s = fresh()
     let copy = s.snapshot()
     assert copy.is_empty()

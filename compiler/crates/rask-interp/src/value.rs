@@ -406,31 +406,31 @@ impl PoolData {
     }
 }
 
-/// Global store ID counter. Each Store gets a unique ID.
+/// Global rack ID counter. Each Rack gets a unique ID.
 static NEXT_STORE_ID: AtomicU32 = AtomicU32::new(1);
 
-pub fn next_store_id() -> u32 {
+pub fn next_rack_id() -> u32 {
     NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Live stores by id, weakly held.
+/// Live racks by id, weakly held.
 ///
-/// Root-edge registration needs to get from a link to its store at the moment
+/// Root-edge registration needs to get from a link to its rack at the moment
 /// the link is written into an outside field. In the real design that's static
-/// — the compiler knows which field targets which store — so this registry is
+/// — the compiler knows which field targets which rack — so this registry is
 /// prototype scaffolding, not part of the model. Nothing on the read path
 /// touches it.
-static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<StoreData>>>>> =
+static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<RackData>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub fn register_store(store: &Arc<Mutex<StoreData>>) {
-    let id = store.lock().unwrap().store_id;
+pub fn register_rack(rack: &Arc<Mutex<RackData>>) {
+    let id = rack.lock().unwrap().rack_id;
     let mut reg = STORE_REGISTRY.lock().unwrap();
     reg.retain(|_, w| w.strong_count() > 0);
-    reg.insert(id, Arc::downgrade(store));
+    reg.insert(id, Arc::downgrade(rack));
 }
 
-pub fn store_by_id(id: u32) -> Option<Arc<Mutex<StoreData>>> {
+pub fn rack_by_id(id: u32) -> Option<Arc<Mutex<RackData>>> {
     STORE_REGISTRY.lock().unwrap().get(&id).and_then(|w| w.upgrade())
 }
 
@@ -448,7 +448,7 @@ pub struct BacklinkKey {
     pub field: Option<String>,
 }
 
-/// One place that holds an edge — a *backlink*. The store keeps, per node, the
+/// One place that holds an edge — a *backlink*. The rack keeps, per node, the
 /// set of places pointing at it, so `delete` can find and fix every incoming
 /// edge without looking at anything else (analysis.fourth-option, rule 2).
 ///
@@ -456,7 +456,7 @@ pub struct BacklinkKey {
 /// (`target: Link<T>?`), an element of an edge list (`children: Vec<Link<T>>`),
 /// or a value in an index (`by_name: Map<K, Link<T>>`). A node field and a root
 /// field are the same kind here — a root edge is just an edge whose holder
-/// happens to live outside the store, which is why root edges need no separate
+/// happens to live outside the rack, which is why root edges need no separate
 /// mechanism.
 ///
 /// Weak throughout: recording a backlink must not keep the holder alive.
@@ -492,14 +492,14 @@ impl Backlink {
 /// Node identity used to key the backlink index. A link carries the node's
 /// `Arc`, so this is available at O(1) wherever a link is.
 ///
-/// Sound as a key because the store holds a strong reference to every live
+/// Sound as a key because the rack holds a strong reference to every live
 /// node: the allocation can't be freed and its address reused while the node is
-/// still in the store, so two live nodes never share a key.
+/// still in the rack, so two live nodes never share a key.
 pub fn node_key(node: &Arc<Mutex<StructData>>) -> usize {
     Arc::as_ptr(node) as usize
 }
 
-/// Internal store storage — the arena half of `Store<T>` + `Link<T>`.
+/// Internal rack storage — the arena half of `Rack<T>` + `Link<T>`.
 ///
 /// Unlike `PoolData` there are no generation counters, because there is no
 /// stale state to detect: `delete` walks every incoming edge and nulls it, so
@@ -507,8 +507,8 @@ pub fn node_key(node: &Arc<Mutex<StructData>>) -> usize {
 /// and a `Value::Link` holds that same Arc — following a link is a pointer
 /// deref with nothing to check.
 #[derive(Debug, Clone)]
-pub struct StoreData {
-    pub store_id: u32,
+pub struct RackData {
+    pub rack_id: u32,
     /// Live nodes, in insertion order. `None` marks a freed slot.
     pub slots: Vec<Option<Arc<Mutex<StructData>>>>,
     pub free_list: Vec<u32>,
@@ -523,17 +523,17 @@ pub struct StoreData {
     pub incoming: HashMap<usize, IndexMap<BacklinkKey, Backlink>>,
     /// Slot index per node, so `delete` doesn't scan `slots` to find one.
     pub slot_of: HashMap<usize, u32>,
-    /// For a snapshot: the store it was copied from, and the node it copied each
+    /// For a snapshot: the rack it was copied from, and the node it copied each
     /// of its own nodes from. `corresponding` uses these to translate a link the
     /// caller still holds into the equivalent node over here.
     pub origin_id: Option<u32>,
     pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
 }
 
-impl StoreData {
+impl RackData {
     pub fn new() -> Self {
         Self {
-            store_id: next_store_id(),
+            rack_id: next_rack_id(),
             slots: Vec::new(),
             free_list: Vec::new(),
             len: 0,
@@ -566,7 +566,7 @@ impl StoreData {
         idx
     }
 
-    /// Slot index of a node, or `None` if it isn't in this store. O(1).
+    /// Slot index of a node, or `None` if it isn't in this rack. O(1).
     pub fn index_of(&self, node: &Arc<Mutex<StructData>>) -> Option<usize> {
         self.slot_of.get(&node_key(node)).map(|i| *i as usize)
     }
@@ -647,7 +647,7 @@ pub enum TypeConstructorKind {
     String,
     Char,
     Pool,
-    Store,
+    Rack,
     Cell,
     Channel,
     Shared,
@@ -1044,13 +1044,13 @@ pub enum Value {
     Cell(Arc<Mutex<Value>>),
     /// Pool (sparse storage with generation counters)
     Pool(Arc<Mutex<PoolData>>),
-    /// Store (arena of nodes; edges into it are fixed at delete)
-    Store(Arc<Mutex<StoreData>>),
+    /// Rack (arena of nodes; edges into it are fixed at delete)
+    Rack(Arc<Mutex<RackData>>),
     /// Link — one edge to a node. Holds the node pointer directly, so following
-    /// it is a deref with no generation check and no store lookup. `store_id`
-    /// only names the owning store for structural ops and for delete's fixup.
+    /// it is a deref with no generation check and no rack lookup. `rack_id`
+    /// only names the owning rack for structural ops and for delete's fixup.
     Link {
-        store_id: u32,
+        rack_id: u32,
         node: Arc<Mutex<StructData>>,
     },
     /// Handle (opaque reference into a pool)
@@ -1340,7 +1340,7 @@ impl Value {
             Value::Type(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
-            Value::Store(_) => "Store",
+            Value::Rack(_) => "Rack",
             Value::Link { .. } => "Link",
             Value::Handle { .. } => "Handle",
             Value::WeakHandle { .. } => "WeakHandle",
@@ -1616,7 +1616,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Char => "char",
                     TypeConstructorKind::Pool => "Pool",
-                    TypeConstructorKind::Store => "Store",
+                    TypeConstructorKind::Rack => "Rack",
                     TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
@@ -1671,9 +1671,9 @@ impl fmt::Display for Value {
                 let pool = p.lock().unwrap();
                 write!(f, "<Pool len={}>", pool.len)
             }
-            Value::Store(s) => {
-                let store = s.lock().unwrap();
-                write!(f, "<Store len={}>", store.len)
+            Value::Rack(s) => {
+                let rack = s.lock().unwrap();
+                write!(f, "<Rack len={}>", rack.len)
             }
             // Print the node, not the address — a link is the node, as far as
             // reading it goes.

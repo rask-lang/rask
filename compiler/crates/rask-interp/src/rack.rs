@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! `Store<T>` + `Link<T>` — the delete-time edge fixup (analysis.fourth-option).
+//! `Rack<T>` + `Link<T>` — the delete-time edge fixup (analysis.fourth-option).
 //!
 //! The model in one line: deleting a node walks every edge pointing at it and
 //! sets it to `none`, so a dead link never exists and following a live one needs
 //! no check.
 //!
-//! Each node carries the list of places pointing at it (`StoreData::incoming`),
+//! Each node carries the list of places pointing at it (`RackData::incoming`),
 //! so a delete visits exactly those places — O(in-degree), not a scan. Edges are
 //! recorded wherever a link is stored: into a node on `insert`, into a field on
 //! assignment, into an edge list on `push`, into an index on `insert`.
 //!
 //! A node field and a root field are the same thing to this code. That falls out
-//! of keying backlinks on the holder rather than on "is it inside the store":
+//! of keying backlinks on the holder rather than on "is it inside the rack":
 //! `world.player` and `entity.target` are both a struct field holding a link, so
 //! root edges need no separate machinery.
 
@@ -19,10 +19,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::value::{node_key, Backlink, BacklinkKey, MapKey, StoreData, StructData, Value};
+use crate::value::{node_key, Backlink, BacklinkKey, MapKey, RackData, StructData, Value};
 
 /// Fixup work, for the delete-cost question the analysis flags as the model's
-/// one real regression. `RASK_STORE_STATS=1` prints the totals at exit.
+/// one real regression. `RASK_RACK_STATS=1` prints the totals at exit.
 ///
 /// `HOLDERS_VISITED` is the in-degree actually walked; `EDGES_FIXED` is the
 /// edges rewritten. A struct field unlinks exactly on overwrite, so the two
@@ -39,7 +39,7 @@ pub static HOLDERS_VISITED: AtomicUsize = AtomicUsize::new(0);
 pub static DELETES: AtomicUsize = AtomicUsize::new(0);
 
 pub fn stats_enabled() -> bool {
-    std::env::var("RASK_STORE_STATS").is_ok()
+    std::env::var("RASK_RACK_STATS").is_ok()
 }
 
 pub fn print_stats() {
@@ -47,7 +47,7 @@ pub fn print_stats() {
         return;
     }
     eprintln!(
-        "store stats: deletes={} edges_fixed={} holders_visited={}",
+        "rack stats: deletes={} edges_fixed={} holders_visited={}",
         DELETES.load(Ordering::Relaxed),
         EDGES_FIXED.load(Ordering::Relaxed),
         HOLDERS_VISITED.load(Ordering::Relaxed),
@@ -61,20 +61,20 @@ const MAX_DEPTH: usize = 32;
 
 /// The node a value names, seeing through the `Link<T>?` optional every edge
 /// field carries.
-fn link_target(v: &Value, store_id: u32) -> Option<Arc<Mutex<StructData>>> {
+fn link_target(v: &Value, rack_id: u32) -> Option<Arc<Mutex<StructData>>> {
     match v {
-        Value::Link { store_id: sid, node } if *sid == store_id => Some(Arc::clone(node)),
+        Value::Link { rack_id: sid, node } if *sid == rack_id => Some(Arc::clone(node)),
         Value::Enum { name, variant, fields, .. } if name == "Option" && variant == "Some" => {
-            fields.first().and_then(|f| link_target(f, store_id))
+            fields.first().and_then(|f| link_target(f, rack_id))
         }
         _ => None,
     }
 }
 
-/// Any link, whichever store it belongs to.
+/// Any link, whichever rack it belongs to.
 fn any_link(v: &Value) -> Option<(u32, Arc<Mutex<StructData>>)> {
     match v {
-        Value::Link { store_id, node } => Some((*store_id, Arc::clone(node))),
+        Value::Link { rack_id, node } => Some((*rack_id, Arc::clone(node))),
         Value::Enum { name, variant, fields, .. } if name == "Option" && variant == "Some" => {
             fields.first().and_then(any_link)
         }
@@ -82,8 +82,8 @@ fn any_link(v: &Value) -> Option<(u32, Arc<Mutex<StructData>>)> {
     }
 }
 
-fn is_link_to(v: &Value, store_id: u32, dead: &Arc<Mutex<StructData>>) -> bool {
-    link_target(v, store_id).is_some_and(|n| Arc::ptr_eq(&n, dead))
+fn is_link_to(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> bool {
+    link_target(v, rack_id).is_some_and(|n| Arc::ptr_eq(&n, dead))
 }
 
 fn option_none() -> Value {
@@ -116,19 +116,19 @@ pub fn register_field(
     let slot = BacklinkKey { holder: Arc::as_ptr(holder) as usize, field: Some(field.to_string()) };
 
     // Unlink first: `a.target = a.target` must not drop the backlink it re-adds.
-    if let Some((store_id, previous)) = old.and_then(any_link) {
-        if let Some(store) = crate::value::store_by_id(store_id) {
+    if let Some((rack_id, previous)) = old.and_then(any_link) {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
             let same = any_link(value)
-                .is_some_and(|(sid, next)| sid == store_id && Arc::ptr_eq(&next, &previous));
+                .is_some_and(|(sid, next)| sid == rack_id && Arc::ptr_eq(&next, &previous));
             if !same {
-                store.lock().unwrap().unregister_backlink(&previous, &slot);
+                rack.lock().unwrap().unregister_backlink(&previous, &slot);
             }
         }
     }
 
-    if let Some((store_id, target)) = any_link(value) {
-        if let Some(store) = crate::value::store_by_id(store_id) {
-            store.lock().unwrap().register_backlink(
+    if let Some((rack_id, target)) = any_link(value) {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack.lock().unwrap().register_backlink(
                 &target,
                 Backlink::Field(Arc::downgrade(holder), field.to_string()),
             );
@@ -146,9 +146,9 @@ pub fn register_field(
 /// matching element goes away is dropped by `fix_elements` on the visit that
 /// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
-    if let Some((store_id, target)) = any_link(value) {
-        if let Some(store) = crate::value::store_by_id(store_id) {
-            store
+    if let Some((rack_id, target)) = any_link(value) {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack
                 .lock()
                 .unwrap()
                 .register_backlink(&target, Backlink::Element(Arc::downgrade(vec)));
@@ -164,23 +164,23 @@ pub fn register_entry(
     value: &Value,
 ) {
     let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
-    if let Some((store_id, previous)) = old.and_then(any_link) {
-        if let Some(store) = crate::value::store_by_id(store_id) {
+    if let Some((rack_id, previous)) = old.and_then(any_link) {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
             // Only if no other entry still points there — the backlink covers
             // the whole map, not this one key.
             let still_held = map
                 .lock()
                 .unwrap()
                 .values()
-                .any(|v| link_target(v, store_id).is_some_and(|n| Arc::ptr_eq(&n, &previous)));
+                .any(|v| link_target(v, rack_id).is_some_and(|n| Arc::ptr_eq(&n, &previous)));
             if !still_held {
-                store.lock().unwrap().unregister_backlink(&previous, &slot);
+                rack.lock().unwrap().unregister_backlink(&previous, &slot);
             }
         }
     }
-    if let Some((store_id, target)) = any_link(value) {
-        if let Some(store) = crate::value::store_by_id(store_id) {
-            store
+    if let Some((rack_id, target)) = any_link(value) {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack
                 .lock()
                 .unwrap()
                 .register_backlink(&target, Backlink::Entry(Arc::downgrade(map)));
@@ -191,7 +191,7 @@ pub fn register_entry(
 /// Record every edge reachable inside `value` without crossing a link.
 ///
 /// Used where a whole aggregate arrives at once and its interior hasn't been
-/// registered piecewise: `store.insert(node)`, a struct literal, and a field
+/// registered piecewise: `rack.insert(node)`, a struct literal, and a field
 /// assignment whose value is a container (`old.children = old.children.filter(…)`
 /// builds a fresh `Vec`, whose entries nothing has recorded yet).
 pub fn register_nested(value: &Value, depth: usize) {
@@ -236,7 +236,7 @@ pub fn register_nested(value: &Value, depth: usize) {
 // ---------------------------------------------------------------------------
 
 /// Null one field if it points at the dying node.
-fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, store_id: u32, dead: &Arc<Mutex<StructData>>) {
+fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     let current = {
         let guard = holder.lock().unwrap();
         match guard.fields.get(field) {
@@ -244,24 +244,24 @@ fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, store_id: u32, dead: 
             None => return,
         }
     };
-    if is_link_to(&current, store_id, dead) {
+    if is_link_to(&current, rack_id, dead) {
         EDGES_FIXED.fetch_add(1, Ordering::Relaxed);
         holder.lock().unwrap().fields.insert(field.to_string(), option_none());
         return;
     }
     // The backlink may name a field whose edge now sits inside a container the
     // field holds, rather than in the field itself.
-    fix_container(&current, store_id, dead, 0);
+    fix_container(&current, rack_id, dead, 0);
 }
 
 /// Drop entries pointing at the dying node from an edge list. A list of live
 /// things loses the entry rather than holding a `none`.
-fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, store_id: u32, dead: &Arc<Mutex<StructData>>) {
+fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     let mut guard = vec.lock().unwrap();
     let before = guard.len();
     let kept: Vec<Value> = guard
         .iter()
-        .filter(|el| !is_link_to(el, store_id, dead))
+        .filter(|el| !is_link_to(el, rack_id, dead))
         .cloned()
         .collect();
     let removed = before - kept.len();
@@ -274,11 +274,11 @@ fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, store_id: u32, dead: &A
 
 /// Drop index entries pointing at the dying node — the database's
 /// index-maintenance move.
-fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, store_id: u32, dead: &Arc<Mutex<StructData>>) {
+fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     let mut guard = map.lock().unwrap();
     let doomed: Vec<MapKey> = guard
         .iter()
-        .filter(|(_, v)| is_link_to(v, store_id, dead))
+        .filter(|(_, v)| is_link_to(v, rack_id, dead))
         .map(|(k, _)| k.clone())
         .collect();
     if !doomed.is_empty() {
@@ -291,26 +291,26 @@ fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, store_id: u32, dead: &Ar
 
 /// Fix edges nested inside a value a backlink pointed at. Bounded by the value's
 /// own size, and never follows a link.
-fn fix_container(v: &Value, store_id: u32, dead: &Arc<Mutex<StructData>>, depth: usize) {
+fn fix_container(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>, depth: usize) {
     if depth >= MAX_DEPTH {
         return;
     }
     match v {
         Value::Vec(vec) => {
-            fix_elements(vec, store_id, dead);
+            fix_elements(vec, rack_id, dead);
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
-                if link_target(it, store_id).is_none() {
-                    fix_container(it, store_id, dead, depth + 1);
+                if link_target(it, rack_id).is_none() {
+                    fix_container(it, rack_id, dead, depth + 1);
                 }
             }
         }
         Value::Map(map) => {
-            fix_entries(map, store_id, dead);
+            fix_entries(map, rack_id, dead);
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
-                if link_target(it, store_id).is_none() {
-                    fix_container(it, store_id, dead, depth + 1);
+                if link_target(it, rack_id).is_none() {
+                    fix_container(it, rack_id, dead, depth + 1);
                 }
             }
         }
@@ -320,7 +320,7 @@ fn fix_container(v: &Value, store_id: u32, dead: &Arc<Mutex<StructData>>, depth:
                 guard.fields.keys().cloned().collect()
             };
             for name in names {
-                fix_field(s, &name, store_id, dead);
+                fix_field(s, &name, rack_id, dead);
             }
         }
         _ => {}
@@ -330,22 +330,22 @@ fn fix_container(v: &Value, store_id: u32, dead: &Arc<Mutex<StructData>>, depth:
 /// Delete a node: unlink every edge pointing at it, then free the slot.
 ///
 /// Returns the node's value, owned — `@resource` fields inside it stay linear,
-/// same as `pool.remove`. Returns `None` if the node is not in this store.
+/// same as `pool.remove`. Returns `None` if the node is not in this rack.
 pub fn delete_node(
-    store: &Arc<Mutex<StoreData>>,
+    rack: &Arc<Mutex<RackData>>,
     node: &Arc<Mutex<StructData>>,
 ) -> Option<Value> {
-    let (store_id, holders) = {
-        let mut guard = store.lock().unwrap();
+    let (rack_id, holders) = {
+        let mut guard = rack.lock().unwrap();
         let idx = guard.index_of(node)?;
         // Free the slot first, so nothing the fixup touches can reach the dying
-        // node through the store.
+        // node through the rack.
         guard.slots[idx] = None;
         guard.free_list.push(idx as u32);
         guard.slot_of.remove(&node_key(node));
         guard.len -= 1;
         let holders = guard.take_incoming(node);
-        (guard.store_id, holders)
+        (guard.rack_id, holders)
     };
 
     DELETES.fetch_add(1, Ordering::Relaxed);
@@ -355,17 +355,17 @@ pub fn delete_node(
         match holder {
             Backlink::Field(w, field) => {
                 if let Some(s) = w.upgrade() {
-                    fix_field(&s, field, store_id, node);
+                    fix_field(&s, field, rack_id, node);
                 }
             }
             Backlink::Element(w) => {
                 if let Some(v) = w.upgrade() {
-                    fix_elements(&v, store_id, node);
+                    fix_elements(&v, rack_id, node);
                 }
             }
             Backlink::Entry(w) => {
                 if let Some(m) = w.upgrade() {
-                    fix_entries(&m, store_id, node);
+                    fix_entries(&m, rack_id, node);
                 }
             }
         }
@@ -374,11 +374,11 @@ pub fn delete_node(
     Some(Value::Struct(Arc::clone(node)))
 }
 
-/// Deep-copy a store, rewriting every edge inside the copy to point at the copy.
+/// Deep-copy a rack, rewriting every edge inside the copy to point at the copy.
 ///
 /// This is the delete-time fixup's machinery pointed at a different job. Delete
 /// walks the edges into one node and nulls them; a snapshot walks the edges out of
-/// every node and re-points them. Both work because the store knows its own graph.
+/// every node and re-points them. Both work because the rack knows its own graph.
 ///
 /// Edges *out* of the snapshot are left alone: a link held in a caller's field
 /// still names the original node, which is what the caller asked for. Use
@@ -386,10 +386,10 @@ pub fn delete_node(
 ///
 /// Root edges into the original are untouched for the same reason — nothing about
 /// the original changes.
-pub fn snapshot_store(store: &Arc<Mutex<StoreData>>) -> Value {
+pub fn snapshot_rack(rack: &Arc<Mutex<RackData>>) -> Value {
     let (old_id, nodes) = {
-        let guard = store.lock().unwrap();
-        (guard.store_id, guard.live_nodes())
+        let guard = rack.lock().unwrap();
+        (guard.rack_id, guard.live_nodes())
     };
 
     // Copy the nodes first, so every target exists before any edge is rewritten.
@@ -402,18 +402,18 @@ pub fn snapshot_store(store: &Arc<Mutex<StoreData>>) -> Value {
         copies.push(copy);
     }
 
-    let new_store = Arc::new(Mutex::new(StoreData::with_type_param(
-        store.lock().unwrap().type_param.clone(),
+    let new_rack = Arc::new(Mutex::new(RackData::with_type_param(
+        rack.lock().unwrap().type_param.clone(),
     )));
-    crate::value::register_store(&new_store);
-    let new_id = new_store.lock().unwrap().store_id;
+    crate::value::register_rack(&new_rack);
+    let new_id = new_rack.lock().unwrap().rack_id;
 
     for copy in &copies {
-        new_store.lock().unwrap().insert(Arc::clone(copy));
+        new_rack.lock().unwrap().insert(Arc::clone(copy));
     }
 
-    // Now the edges. A link is rewritten only if it names a node of *this* store;
-    // a cross-store edge points somewhere this snapshot has no copy of, and
+    // Now the edges. A link is rewritten only if it names a node of *this* rack;
+    // a cross-rack edge points somewhere this snapshot has no copy of, and
     // rewriting it would invent one.
     for copy in &copies {
         let fields: Vec<(String, Value)> = {
@@ -425,15 +425,15 @@ pub fn snapshot_store(store: &Arc<Mutex<StoreData>>) -> Value {
                 copy.lock().unwrap().fields.insert(name.clone(), rewritten);
             }
         }
-        crate::store::register_nested(&Value::Struct(Arc::clone(copy)), 0);
+        crate::rack::register_nested(&Value::Struct(Arc::clone(copy)), 0);
     }
 
     {
-        let mut guard = new_store.lock().unwrap();
+        let mut guard = new_rack.lock().unwrap();
         guard.origin_id = Some(old_id);
         guard.origin = map;
     }
-    Value::Store(new_store)
+    Value::Rack(new_rack)
 }
 
 /// Rebuild `value` with links into `old_id` re-pointed at their copies. Returns
@@ -449,9 +449,9 @@ fn rewrite_links(
         return None;
     }
     match value {
-        Value::Link { store_id, node } if *store_id == old_id => map
+        Value::Link { rack_id, node } if *rack_id == old_id => map
             .get(&node_key(node))
-            .map(|copy| Value::Link { store_id: new_id, node: Arc::clone(copy) }),
+            .map(|copy| Value::Link { rack_id: new_id, node: Arc::clone(copy) }),
         Value::Vec(items) => {
             let current: Vec<Value> = items.lock().unwrap().iter().cloned().collect();
             let mut changed = false;

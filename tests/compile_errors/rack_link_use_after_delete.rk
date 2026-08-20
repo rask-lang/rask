@@ -15,49 +15,49 @@ struct Node {
 }
 
 func read_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let a = store.insert(Node { name: "a", next: none })
-    let b = store.insert(Node { name: "b", next: none })
-    a.next = b                  // fine: the field is an edge the store maintains
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { name: "a", next: none })
+    let b = rack.insert(Node { name: "b", next: none })
+    a.next = b                  // fine: the field is an edge the rack maintains
 
-    store.delete(b)
+    rack.delete(b)
 
     println("{b.name}")         // ERROR: E0328 — reading a freed node
 }
 
 func write_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let n = store.insert(Node { name: "n", next: none })
-    store.delete(n)
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { name: "n", next: none })
+    rack.delete(n)
     n.name = "zombie"           // ERROR: E0328 — same, for a write
 }
 
 func ask_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let n = store.insert(Node { name: "n", next: none })
-    store.delete(n)
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { name: "n", next: none })
+    rack.delete(n)
     // Also an error, and correctly so: if the type guarantees liveness, asking
     // whether it is live is a question with no meaning.
-    println("{store.contains(n)}")   // ERROR: E0328
+    println("{rack.contains(n)}")   // ERROR: E0328
 }
 
 func clear_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let n = store.insert(Node { name: "n", next: none })
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { name: "n", next: none })
     // `clear` names no link, but it deletes every node — so it revokes every
-    // local link into the store, same as writing `delete` on each one.
-    store.clear()
+    // local link into the rack, same as writing `delete` on each one.
+    rack.clear()
     println("{n.name}")         // ERROR: E0328
 }
 
 func bulk_loop_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let n = store.insert(Node { name: "n", next: none })
-    let _other = store.insert(Node { name: "o", next: none })
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { name: "n", next: none })
+    let _other = rack.insert(Node { name: "o", next: none })
     // `x` is whichever node the loop reached, not a node the caller named — so
     // this is the same unnamed delete `clear` is, written longhand.
-    for x in store.nodes() {
-        store.delete(x)
+    for x in rack.nodes() {
+        rack.delete(x)
     }
     println("{n.name}")         // ERROR: E0328
 }
@@ -68,13 +68,13 @@ func bulk_loop_after_delete() {
 // it, which means an `insert` it made or a `take` a caller handed over. Everything
 // else dies with the delete.
 func derived_alias_after_delete() {
-    mut store: Store<Node> = Store.new()
-    let a = store.insert(Node { name: "a", next: none })
-    let b = store.insert(Node { name: "b", next: none })
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { name: "a", next: none })
+    let b = rack.insert(Node { name: "b", next: none })
     a.next = b
 
     if a.next? as t {
-        store.delete(b)
+        rack.delete(b)
         let _ = t.name          // ERROR: E0328 — `t` may be `b`
     }
 }
@@ -83,11 +83,11 @@ func derived_alias_after_delete() {
 // behind it and so cannot be a second name for `b`. This is the precision that
 // makes the rule usable rather than a blanket kill.
 func unrelated_link_survives_a_named_delete() {
-    mut store: Store<Node> = Store.new()
-    let a = store.insert(Node { name: "a", next: none })
-    let b = store.insert(Node { name: "b", next: none })
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { name: "a", next: none })
+    let b = rack.insert(Node { name: "b", next: none })
     a.next = b
-    store.delete(b)
+    rack.delete(b)
     println("{a.name}")         // fine — no error here
 }
 

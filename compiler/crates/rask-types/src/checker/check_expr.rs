@@ -2698,7 +2698,7 @@ impl TypeChecker {
             // `len` found for type `fs`".
             let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
             if !shadowed
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Store" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
@@ -4191,7 +4191,7 @@ impl TypeChecker {
                     },
                     // A store iterates its links — the same shape as a pool
                     // iterating handles, minus the redemption step.
-                    Some("Store") => match arg(0) {
+                    Some("Rack") => match arg(0) {
                         Some(node) => ContainerElem::Known(Type::UnresolvedGeneric {
                             name: "Link".to_string(),
                             args: vec![GenericArg::Type(Box::new(node))],
@@ -4208,7 +4208,7 @@ impl TypeChecker {
     }
 
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
-        const NAMES: [&str; 6] = ["Vec", "Map", "Pool", "Handle", "Store", "Link"];
+        const NAMES: [&str; 6] = ["Vec", "Map", "Pool", "Handle", "Rack", "Link"];
         match ty {
             Type::UnresolvedGeneric { name, .. } => {
                 NAMES.iter().copied().find(|n| *n == name)
