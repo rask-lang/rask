@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: let, mut, reassignment, shadowing, and compound assignment.
+//
+// The `let` vs `mut` split is the first thing that surprises a Rust or Python
+// reader, so this pins down what each one allows: `let` binds once, `mut`
+// rebinds, `+=` and friends work on `mut`, and a nested block can shadow an
+// outer name without touching it.
+
+test "let binds a value" {
+    let x = 42
+    assert x == 42
+    let name = "Alice"
+    assert name == "Alice"
+}
+
+test "mut rebinds" {
+    mut counter = 0
+    assert counter == 0
+    counter = 1
+    assert counter == 1
+    counter = counter + 10
+    assert counter == 11
+}
+
+test "compound assignment" {
+    mut n = 10
+    n += 5
+    assert n == 15
+    n -= 3
+    assert n == 12
+    n *= 2
+    assert n == 24
+    n /= 4
+    assert n == 6
+    n %= 4
+    assert n == 2
+}
+
+test "explicit type annotation" {
+    let a: i64 = 42
+    assert a == 42
+    let b: u8 = 255
+    assert b == 255
+    let c: f32 = 0.5
+    assert c == 0.5
+    let d: bool = false
+    assert !d
+}
+
+test "shadowing in an inner block" {
+    let x = 1
+    {
+        let x = 2
+        assert x == 2
+    }
+    assert x == 1
+}
+
+test "a mut counter survives a loop" {
+    mut total = 0
+    for i in 1..5 {
+        total += i
+    }
+    assert total == 10
+}
+
+test "binding from a block expression" {
+    let v = {
+        let a = 3
+        let b = 4
+        a * b
+    }
+    assert v == 12
+}
+
+test "binding from an if expression" {
+    let x = 7
+    let sign = if x > 0: "+" else: "-"
+    assert sign == "+"
+    let y = -7
+    let sign2 = if y > 0: "+" else: "-"
+    assert sign2 == "-"
+}
+
+test "several bindings on one line" {
+    let a = 1; let b = 2
+    assert a + b == 3
+}
+
+test "mut string rebinding" {
+    mut s = "one"
+    assert s == "one"
+    s = "two"
+    assert s == "two"
+}
+
+func main() {}

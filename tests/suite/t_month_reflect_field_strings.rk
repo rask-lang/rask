@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A comptime `FieldInfo.name` outliving its unrolled iteration — #931.
+//
+// `f.name` inside a `comptime for` is a `string` on the interpreter and carries no
+// type on the native path. Two faces of the one cause:
+//
+//   a string method on it fails at MIR lowering — "method `len` on receiver of
+//   unresolved type — dispatch could not determine a stdlib type prefix";
+//
+//   pushing it into an inferred `Vec.new()` stores a raw word where a 16-byte
+//   RaskStr belongs, so the string reads back with a wrong length. Printing it
+//   runs past its end and eats the literal after it, and `== "x"` answers false —
+//   which in a test reads `assertion failed: "x" == "x"`.
+//
+// Annotating fixes both, and using `f.name` *in place* — interpolating it or
+// comparing it inside the iteration — works on both backends. That's why this
+// survived: the comptime-for tests in the tree read the name and use it
+// immediately. It breaks the moment the value outlives the iteration, which is
+// what collecting field names into a Vec does — a header row, a key list, a
+// schema.
+//
+// FieldInfo.name is declared `public name: string` in stdlib/reflect.rk, so the
+// type is written down; it just isn't reaching the native path for a value the
+// unroller produced. Same family as #905 and #775.
+
+import std.reflect
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "std.reflect — a string method on f.name" {
+    mut total: usize = 0
+    comptime for f in reflect.fields<Point>() {
+        total = total + f.name.len()
+    }
+    assert total == 2
+}
+
+test "std.reflect — f.name collected into an inferred Vec" {
+    mut names = Vec.new()
+    comptime for f in reflect.fields<Point>() {
+        names.push(f.name)
+    }
+    assert names.len() == 2
+    assert names[0] == "x"
+    assert names[1] == "y"
+}
+
+test "std.reflect — the collected names join correctly" {
+    mut names = Vec.new()
+    comptime for f in reflect.fields<Point>() {
+        names.push(f.name)
+    }
+    assert names.join(",") == "x,y"
+}
+
+// Controls: both of these work on both backends today.
+test "std.reflect — an annotated binding is the first control" {
+    mut total: usize = 0
+    comptime for f in reflect.fields<Point>() {
+        let n: string = f.name
+        total = total + n.len()
+    }
+    assert total == 2
+}
+
+test "std.reflect — an annotated Vec is the second control" {
+    mut names: Vec<string> = Vec.new()
+    comptime for f in reflect.fields<Point>() {
+        names.push(f.name)
+    }
+    assert names[0] == "x"
+    assert names[1] == "y"
+}
+
+test "std.reflect — using f.name in place is the third control" {
+    mut hits = 0
+    comptime for f in reflect.fields<Point>() {
+        if f.name == "x" {
+            hits = hits + 1
+        }
+    }
+    assert hits == 1
+}
+
+func main() {}

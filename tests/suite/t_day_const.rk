@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: module-level `const`.
+//
+// `const` lives at module level only — inside a function it's a parse error that
+// points at `let`. Each primitive type, a const built from other consts, consts
+// read from functions and from test blocks, and a const used as an array size
+// and as a default argument.
+
+const MAX_RETRIES = 3
+const NAME = "rask"
+const PI: f64 = 3.14159
+const ENABLED = true
+const LETTER = 'r'
+const BIG: i64 = 9000000000
+const SMALL: u8 = 200
+
+// Built from another const, evaluated at compile time.
+const DOUBLE_MAX = MAX_RETRIES * 2
+const LABEL = "{NAME}-v1"
+
+func retries() -> i32 {
+    return MAX_RETRIES
+}
+
+func with_default(n: i32 = MAX_RETRIES) -> i32 {
+    return n
+}
+
+func label() -> string {
+    return LABEL
+}
+
+test "an integer const" {
+    assert MAX_RETRIES == 3
+    assert MAX_RETRIES + 1 == 4
+}
+
+test "a string const" {
+    assert NAME == "rask"
+    assert NAME.len() == 4
+    assert "{NAME}!" == "rask!"
+}
+
+test "consts at other primitive types" {
+    assert PI > 3.14
+    assert PI < 3.15
+    assert ENABLED
+    assert LETTER == 'r'
+    assert BIG == 9000000000
+    assert SMALL == 200
+}
+
+test "a const built from another const" {
+    assert DOUBLE_MAX == 6
+    assert LABEL == "rask-v1"
+}
+
+test "a function can read a const" {
+    assert retries() == 3
+}
+
+test "a const as a default argument" {
+    assert with_default() == 3
+    assert with_default(9) == 9
+}
+
+test "a const in a loop bound" {
+    mut count = 0
+    for _ in 0..MAX_RETRIES {
+        count = count + 1
+    }
+    assert count == 3
+}
+
+test "a const in a condition" {
+    if ENABLED {
+        assert true
+    } else {
+        assert false
+    }
+    let n = if MAX_RETRIES > 2: "many" else: "few"
+    assert n == "many"
+}
+
+test "a const reaches a function that builds a string from it" {
+    assert label() == "rask-v1"
+}
+
+func main() {}

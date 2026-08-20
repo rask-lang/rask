@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An opaque stdlib handle as a struct field — #924.
+//
+// `struct JustDuration { took: Duration }` lays the field out at size 0 on
+// native. What that looks like depends on the neighbours: alone it segfaults,
+// after a string it reads garbage, after an i64 it reads 0 while the i64 itself
+// is fine.
+//
+// `layout.rs` has an explicit list of stdlib types that are opaque runtime
+// handles and get pointer size. `Duration` and `Instant` aren't on it, so they
+// fall through to the arm that consults the layout cache — and `stdlib/time.rk`
+// declares them `public struct Duration { }` with an empty body, so the cache
+// says 0. The fallback right below would have given (8, 8) with a warning, but
+// the cache hit short-circuits first, which is why nothing warns.
+//
+// At runtime a Duration is an 8-byte nanosecond count and the MIR is correct —
+// only the containing struct's size is wrong.
+//
+// `Random` and `StringBuilder` are on the list and work in the same position;
+// they're the controls at the bottom. `Args`, `Command`, `Thread`, `cstring` and
+// `Timer` are the same shape and unprotected too, untested here.
+
+import time.Duration
+import time.Instant
+import random.Random
+
+struct JustDuration {
+    took: Duration
+}
+
+struct AfterString {
+    label: string
+    took: Duration
+}
+
+struct AfterInt {
+    n: i64
+    took: Duration
+}
+
+struct HoldsInstant {
+    at: Instant
+}
+
+struct HasRandom {
+    n: i64
+    r: Random
+}
+
+struct HasBuilder {
+    n: i64
+    b: StringBuilder
+}
+
+test "std.time — a Duration as the only field" {
+    let a = JustDuration { took: Duration.from_millis(30) }
+    assert a.took.as_millis() == 30
+}
+
+test "std.time — a Duration after a string field" {
+    let b = AfterString { label: "build", took: Duration.from_millis(30) }
+    assert b.label == "build"
+    assert b.took.as_millis() == 30
+}
+
+test "std.time — a Duration after an integer field" {
+    let c = AfterInt { n: 7, took: Duration.from_millis(30) }
+    assert c.n == 7
+    assert c.took.as_millis() == 30
+}
+
+test "std.time — an Instant as a struct field" {
+    let h = HoldsInstant { at: Instant.now() }
+    assert h.at.elapsed().as_millis() >= 0
+}
+
+test "std.time — a Duration field built from a binding" {
+    let d = Duration.from_millis(45)
+    let a = JustDuration { took: d }
+    assert a.took.as_millis() == 45
+}
+
+// A bare binding is fine on both backends — it's the field that's wrong.
+test "std.time — a Duration in a local binding is the control" {
+    let d = Duration.from_millis(30)
+    assert d.as_millis() == 30
+    let i = Instant.now()
+    assert i.elapsed().as_millis() >= 0
+}
+
+// These two opaque handles are on layout.rs's list, so they work today.
+test "std.random — Random as a struct field is the other control" {
+    mut h = HasRandom { n: 7, r: Random.from_seed(5) }
+    assert h.n == 7
+    let a = h.r.i64()
+    let b = h.r.i64()
+    assert a != b
+}
+
+test "std.string — StringBuilder as a struct field is the other control" {
+    mut h = HasBuilder { n: 7, b: StringBuilder.new() }
+    assert h.n == 7
+    h.b.push("hi")
+    assert h.b.build() == "hi"
+}
+
+func main() {}

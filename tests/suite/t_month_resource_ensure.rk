@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: `@resource` types and `ensure` cleanup.
+//
+// A `@resource` struct must be consumed exactly once — it can't be copied and it
+// can't be dropped, so forgetting to close it is a compile error rather than a
+// leak. `ensure` schedules cleanup at scope exit, and it runs on every path out
+// including an early `return`.
+//
+// Covers: consuming a resource on the straight path, consuming it on both arms of
+// a branch, `ensure` running at the end of a block, `ensure` running before an
+// early return, several `ensure`s running in reverse order, `ensure` inside a
+// loop body, and a resource passed to a function that consumes it.
+
+@resource
+struct Handle {
+    id: i32
+}
+
+extend Handle {
+    func open(id: i32) -> Handle {
+        return Handle { id }
+    }
+
+    func value(self) -> i32 {
+        return self.id
+    }
+
+    func close(take self) -> i32 {
+        return self.id
+    }
+}
+
+// A plain counter the ensure blocks can write to, so the ordering is observable.
+struct Log {
+    order: Vec<i32>
+}
+
+func consume(take h: Handle) -> i32 {
+    return h.close()
+}
+
+func open_and_close(id: i32) -> i32 {
+    let h = Handle.open(id)
+    return h.close()
+}
+
+func branch_then_close(id: i32, take_early: bool) -> i32 {
+    let h = Handle.open(id)
+    if take_early {
+        return h.close()
+    }
+    return h.close() + 100
+}
+
+func ensure_at_end(mutate log: Log) {
+    ensure log.order.push(1)
+    log.order.push(0)
+}
+
+func ensure_before_early_return(mutate log: Log, early: bool) -> i32 {
+    ensure log.order.push(9)
+    if early {
+        return 1
+    }
+    log.order.push(0)
+    return 2
+}
+
+func per_iteration(mutate log: Log) {
+    for i in 0..3 {
+        ensure log.order.push(9)
+        log.order.push(i)
+    }
+    log.order.push(7)
+}
+
+func two_ensures(mutate log: Log) {
+    ensure log.order.push(1)
+    ensure log.order.push(2)
+    log.order.push(0)
+}
+
+test "mem.resource — a resource consumed on the straight path" {
+    assert open_and_close(7) == 7
+    assert open_and_close(0) == 0
+}
+
+test "mem.resource — a resource read before it is consumed" {
+    let h = Handle.open(5)
+    assert h.value() == 5
+    assert h.close() == 5
+}
+
+test "mem.resource — consumed on both arms of a branch" {
+    assert branch_then_close(3, true) == 3
+    assert branch_then_close(3, false) == 103
+}
+
+test "mem.resource — a resource passed to a consuming function" {
+    let h = Handle.open(11)
+    assert consume(h) == 11
+}
+
+test "mem.resource — several resources each consumed once" {
+    let a = Handle.open(1)
+    let b = Handle.open(2)
+    assert a.close() + b.close() == 3
+}
+
+// `mut h`, not `let h`: consuming a @resource from a `let` binding inside a loop
+// is rejected as mutation (#928), even though the spec says ownership transfer
+// isn't mutation. `t_month_resource_loop.rk` carries that probe.
+test "mem.resource — a resource consumed inside a loop body" {
+    mut total = 0
+    for i in 1..4 {
+        mut h = Handle.open(i)
+        total = total + h.close()
+    }
+    assert total == 6
+}
+
+test "ctrl.ensure — an ensure runs at the end of the block" {
+    mut log = Log { order: Vec.new() }
+    ensure_at_end(mutate log)
+    assert log.order.len() == 2
+    // The body ran first, the ensure after.
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+}
+
+test "ctrl.ensure — an ensure runs before an early return" {
+    mut log = Log { order: Vec.new() }
+    assert ensure_before_early_return(mutate log, true) == 1
+    assert log.order.len() == 1
+    assert log.order[0] == 9
+}
+
+test "ctrl.ensure — the same ensure runs on the normal path too" {
+    mut log = Log { order: Vec.new() }
+    assert ensure_before_early_return(mutate log, false) == 2
+    assert log.order.len() == 2
+    assert log.order[0] == 0
+    assert log.order[1] == 9
+}
+
+test "ctrl.ensure — several ensures run in reverse declaration order" {
+    mut log = Log { order: Vec.new() }
+    two_ensures(mutate log)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    // Last declared runs first.
+    assert log.order[1] == 2
+    assert log.order[2] == 1
+}
+
+// A *nested* block's ensure is deferred to function exit on native (#929), so the
+// block-scope cases live in `t_month_ensure_block_scope.rk`. A loop body is
+// correct on both backends, which is what EN7 gets here.
+test "ctrl.ensure — an ensure in a loop body runs each iteration" {
+    mut log = Log { order: Vec.new() }
+    per_iteration(mutate log)
+    assert log.order.len() == 7
+    assert log.order[0] == 0
+    assert log.order[1] == 9
+    assert log.order[2] == 1
+    assert log.order[3] == 9
+    assert log.order[6] == 7
+}
+
+func main() {}

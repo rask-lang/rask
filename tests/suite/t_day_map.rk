@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one: Map — insert, look up, overwrite, remove, iterate.
+//
+// `get` hands back an absent value rather than panicking, and `insert` hands
+// back the value it displaced, which is how you tell "new key" from "overwrote
+// something". Both string and integer keys, since which types can be keys is
+// the first question people ask.
+
+test "insert then get" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    assert m.len() == 2
+    assert m.get("a")! == 1
+    assert m.get("b")! == 2
+}
+
+test "a missing key is absent, not a panic" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    assert m.get("zzz") == none
+    assert (m.get("zzz") ?? -1) == -1
+    assert !m.contains_key("zzz")
+    assert m.contains_key("a")
+}
+
+// Overwriting a key keeps the map at one entry. What `insert` *returns* — the
+// value it displaced — is broken on native (#903), so that half lives in
+// `t_day_map_insert_displaced.rk`.
+test "inserting an existing key overwrites in place" {
+    mut m = Map.new()
+    m.insert("k", 1)
+    m.insert("k", 2)
+    assert m.get("k")! == 2
+    assert m.len() == 1
+}
+
+test "a fresh Map is empty" {
+    mut m = Map.new()
+    m.insert("x", 1)
+    m.remove("x")
+    assert m.is_empty()
+    assert m.len() == 0
+}
+
+test "remove returns the value and drops the key" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    assert m.remove("a")! == 10
+    assert m.len() == 1
+    assert !m.contains_key("a")
+    assert m.remove("a") == none
+}
+
+test "clear empties it" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.clear()
+    assert m.is_empty()
+    m.insert("c", 3)
+    assert m.len() == 1
+}
+
+test "integer keys" {
+    mut m = Map.new()
+    m.insert(1, "one")
+    m.insert(2, "two")
+    assert m.get(1)! == "one"
+    assert m.get(2)! == "two"
+    assert m.get(3) == none
+}
+
+test "iterating key and value" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    mut total = 0
+    mut keys = 0
+    for (k, v) in m {
+        total = total + v
+        keys = keys + k.len()
+    }
+    assert total == 6
+    assert keys == 3
+}
+
+test "keys and values separately" {
+    mut m = Map.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    let ks = m.keys().to_vec()
+    assert ks.len() == 2
+    let vs = m.values().to_vec()
+    assert vs.len() == 2
+    mut sum = 0
+    for v in vs {
+        sum = sum + v
+    }
+    assert sum == 30
+}
+
+test "counting occurrences — the classic first Map program" {
+    let words = ["a", "b", "a", "c", "a"]
+    mut counts = Map.new()
+    for w in words {
+        let seen = counts.get(w) ?? 0
+        counts.insert(w, seen + 1)
+    }
+    assert counts.len() == 3
+    assert counts.get("a")! == 3
+    assert counts.get("b")! == 1
+    assert counts.get("c")! == 1
+}
+
+test "a Map holding a Vec" {
+    mut m: Map<string, Vec<i32>> = Map.new()
+    let nums: Vec<i32> = [1, 2, 3]
+    m.insert("nums", nums)
+    assert m.get("nums")!.len() == 3
+    assert m.get("nums")![1] == 2
+}
+
+func main() {}

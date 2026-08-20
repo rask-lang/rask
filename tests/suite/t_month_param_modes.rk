@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Parameter modes: borrow (the default), mutate, take — and #899.
+//
+// mem.parameters gives three modes. Borrow is the default and read-only.
+// `mutate` is a mutable borrow, marked at the call site as well as in the
+// signature (PM4). `take` moves ownership in, and the call site does not mark it.
+//
+// #899 is the `mutate` half. The spec says two things about it and the compiler
+// matches neither cleanly:
+//
+//   PM2's prose — "unrestricted write access to the value; the constraint is
+//   that the caller keeps ownership after the call", and "there's no
+//   half-mutable state" — reads as: the caller sees the write.
+//
+//   The edge-case table — "Copy type + mutate: value is copied in; mutations
+//   affect the copy" — reads as: the caller does not.
+//
+// What actually happens is a third thing: a *primitive* parameter drops the
+// write, and an *aggregate* keeps it at any size, including a 4-byte one-field
+// struct that is every bit as Copy as an i32. Same on both backends. The
+// primitive tests below assert PM2's reading, which is the one the rest of the
+// spec supports; if the edge-case table wins instead, `mutate` on a Copy type
+// should be a compile error rather than a silent no-op.
+
+struct Small {
+    a: i32
+}
+
+struct Mid {
+    a: i32
+    b: i32
+    c: i32
+}
+
+struct Big {
+    a: i32
+    b: i32
+    c: i32
+    d: i32
+    e: i32
+    f: i32
+}
+
+func read_only(s: Small) -> i32 {
+    return s.a
+}
+
+func bump_i32(mutate c: i32) {
+    c = c + 1
+}
+
+func flip_bool(mutate b: bool) {
+    b = !b
+}
+
+func bump_f64(mutate f: f64) {
+    f = f + 1.0
+}
+
+func bump_i32_seen(mutate c: i32) -> i32 {
+    c = c + 1
+    return c
+}
+
+func bump_small(mutate s: Small) {
+    s.a = s.a + 1
+}
+
+func bump_mid(mutate s: Mid) {
+    s.a = s.a + 1
+}
+
+func bump_big(mutate s: Big) {
+    s.a = s.a + 1
+}
+
+func replace_small(mutate s: Small) {
+    s = Small { a: 99 }
+}
+
+func grow(mutate v: Vec<i32>) {
+    v.push(9)
+}
+
+func consume(take s: Small) -> i32 {
+    return s.a
+}
+
+test "mem.parameters — borrow is the default and reads fine" {
+    let s = Small { a: 5 }
+    assert read_only(s) == 5
+    // Still there afterwards: a borrow took nothing.
+    assert s.a == 5
+}
+
+test "mem.parameters — take moves the value in" {
+    let s = Small { a: 7 }
+    assert consume(s) == 7
+}
+
+test "mem.parameters — mutate on a struct field is visible to the caller" {
+    mut s = Small { a: 0 }
+    bump_small(mutate s)
+    assert s.a == 1
+    bump_small(mutate s)
+    assert s.a == 2
+}
+
+test "mem.parameters — mutate is visible at every aggregate size" {
+    mut m = Mid { a: 0, b: 0, c: 0 }
+    bump_mid(mutate m)
+    assert m.a == 1
+    mut g = Big { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0 }
+    bump_big(mutate g)
+    assert g.a == 1
+}
+
+test "mem.parameters — mutate can replace the whole value" {
+    mut s = Small { a: 0 }
+    replace_small(mutate s)
+    assert s.a == 99
+}
+
+test "mem.parameters — mutate on a collection is visible to the caller" {
+    mut v: Vec<i32> = [1]
+    grow(mutate v)
+    assert v.len() == 2
+    assert v[1] == 9
+}
+
+// PM2: "unrestricted write access to the value; the constraint is that the
+// caller keeps ownership after the call." A write the caller cannot see is not
+// write access to the caller's value. (#899)
+test "mem.parameters — mutate on an i32 is visible to the caller" {
+    mut n = 0
+    bump_i32(mutate n)
+    assert n == 1
+    bump_i32(mutate n)
+    assert n == 2
+}
+
+test "mem.parameters — mutate on a bool is visible to the caller" {
+    mut b = false
+    flip_bool(mutate b)
+    assert b
+}
+
+test "mem.parameters — mutate on an f64 is visible to the caller" {
+    mut f: f64 = 0.0
+    bump_f64(mutate f)
+    assert f == 1.0
+}
+
+// The write does happen — the callee reads back what it wrote. It's dropped on
+// the way out, which is what makes the current behaviour a silent one.
+test "mem.parameters — the callee sees its own write either way" {
+    mut n = 0
+    let seen = bump_i32_seen(mutate n)
+    assert seen == 1
+    assert n == 1
+}
+
+func main() {}

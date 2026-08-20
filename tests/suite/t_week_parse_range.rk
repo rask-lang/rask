@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `parse<T>()` and the target type's range — #919.
+//
+// `"300".parse()` into a u8 succeeds, and what you get depends on the backend:
+// interp stores 300 in the u8 untouched, native wraps it to 44. Neither returns
+// `ParseError.OutOfRange`, which exists in stdlib/string.rk with the comment
+// "doesn't fit the target type" and is unreachable.
+//
+// `parse<T>` is declared `@native("rask_string_parse_int_into")` — the same
+// helper `parse_int` uses, which parses to i64. T never reaches it, so there is
+// nothing to range-check against, and the i64 lands in the narrower slot.
+//
+// Native's answer is the worse one: the language refuses to *write* the same
+// value, and says why in as many words — "`u8` holds 0 through 255 ... nothing
+// here wraps silently". And `300.to<u8>()` fails correctly on both backends, so
+// the checking machinery is there; parse just doesn't use it.
+//
+// The rest of the parse and format surface is green in `t_week_parse_format.rk`.
+
+test "std.string — parse<u8> rejects a value above the range" {
+    let a: u8 = "300".parse() catch _ => 0
+    assert a == 0
+}
+
+test "std.string — parse<u8> rejects a negative value" {
+    let a: u8 = "-1".parse() catch _ => 0
+    assert a == 0
+}
+
+test "std.string — parse<i8> rejects a value above the range" {
+    let a: i8 = "200".parse() catch _ => 0
+    assert a == 0
+}
+
+test "std.string — parse<i32> rejects a value that needs 64 bits" {
+    let a: i32 = "99999999999999".parse() catch _ => 0
+    assert a == 0
+}
+
+test "std.string — a value that fits is the control" {
+    let a: u8 = "200".parse()!
+    assert a == 200
+    let b: i8 = "-128".parse()!
+    assert b == -128
+    let c: i32 = "2147483647".parse()!
+    assert c == 2147483647
+}
+
+// The explicit conversion gets this right today, on both backends — the contrast
+// that names the fix.
+test "type.primitives — to<T> rejects what parse<T> accepts" {
+    let big: i64 = 300
+    assert (big.to<u8>() catch _ => 0) == 0
+    let neg: i64 = -1
+    assert (neg.to<u8>() catch _ => 0) == 0
+}
+
+func main() {}

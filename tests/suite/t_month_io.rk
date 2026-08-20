@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one: file handles and buffered io.
+//
+// `fs.read_text`/`write_text` are the whole-file shortcuts covered in
+// `t_month_stdlib_modules.rk`. This file is the handle-based side: `fs.open` and
+// `fs.create` hand back a `File or IoError`, and the handle's own methods read,
+// write and close it. (The constructors live on `fs`, not on `File` — `File` has
+// only the instance methods.)
+//
+// Everything writes to a unique temp path and removes it afterwards, so the file
+// leaves no trace and can run in parallel with itself.
+
+import fs
+
+func temp_path(tag: string) -> string {
+    return "/tmp/rask-sweep-io-{tag}.txt"
+}
+
+test "std.io — create a handle, write through it, close it" {
+    let p = temp_path("create-write")
+    mut f = fs.create(p)!
+    let _ = f.write_text("through a handle")
+    let _ = f.close()
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "through a handle"
+    let _ = fs.remove_file(p)
+}
+
+test "std.io — open an existing file and read through the handle" {
+    let p = temp_path("open-read")
+    let _ = fs.write_text(p, "prewritten")
+    mut f = fs.open(p)!
+    let got = f.read_text() catch _ => "FAILED"
+    let _ = f.close()
+    assert got == "prewritten"
+    let _ = fs.remove_file(p)
+}
+
+test "std.io — opening a path that isn't there fails" {
+    let missing = temp_path("absent-9f3a")
+    assert !fs.exists(missing)
+    let opened: File or IoError = fs.open(missing)
+    assert opened is IoError
+}
+
+test "std.io — creating truncates an existing file" {
+    let p = temp_path("truncate")
+    let _ = fs.write_text(p, "a much longer original body")
+    mut f = fs.create(p)!
+    let _ = f.write_text("short")
+    let _ = f.close()
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "short"
+    let _ = fs.remove_file(p)
+}
+
+test "std.io — several writes through one handle accumulate" {
+    let p = temp_path("several-writes")
+    mut f = fs.create(p)!
+    let _ = f.write_text("one")
+    let _ = f.write_text("-two")
+    let _ = f.write_text("-three")
+    let _ = f.close()
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "one-two-three"
+    let _ = fs.remove_file(p)
+}
+
+test "std.io — an empty write leaves an empty file" {
+    let p = temp_path("empty-write")
+    mut f = fs.create(p)!
+    let _ = f.write_text("")
+    let _ = f.close()
+    assert fs.exists(p)
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == ""
+    let _ = fs.remove_file(p)
+}
+
+test "std.io — a handle closed inside a loop, one per iteration" {
+    mut written = 0
+    for i in 0..3 {
+        let p = temp_path("loop-{i}")
+        mut f = fs.create(p)!
+        let _ = f.write_text("body")
+        let _ = f.close()
+        if fs.exists(p): written = written + 1
+        let _ = fs.remove_file(p)
+    }
+    assert written == 3
+}
+
+test "std.fs — append_text adds without truncating" {
+    let p = temp_path("append")
+    let _ = fs.write_text(p, "first")
+    let _ = fs.append_text(p, "-second")
+    let got = fs.read_text(p) catch _ => "FAILED"
+    assert got == "first-second"
+    let _ = fs.remove_file(p)
+}
+
+test "std.fs — read_lines splits a file into lines" {
+    let p = temp_path("read-lines")
+    let _ = fs.write_text(p, "one\ntwo\nthree")
+    let lines = fs.read_lines(p) catch _ => Vec.new()
+    assert lines.len() == 3
+    assert lines[0] == "one"
+    assert lines[2] == "three"
+    let _ = fs.remove_file(p)
+}
+
+test "std.fs — copy duplicates a file's contents" {
+    let src = temp_path("copy-src")
+    let dst = temp_path("copy-dst")
+    let _ = fs.write_text(src, "copied body")
+    let _ = fs.copy(src, dst)
+    assert fs.exists(dst)
+    let got = fs.read_text(dst) catch _ => "FAILED"
+    assert got == "copied body"
+    let _ = fs.remove_file(src)
+    let _ = fs.remove_file(dst)
+}
+
+test "std.fs — rename moves a file" {
+    let src = temp_path("rename-src")
+    let dst = temp_path("rename-dst")
+    let _ = fs.write_text(src, "moved body")
+    let _ = fs.rename(src, dst)
+    assert !fs.exists(src)
+    assert fs.exists(dst)
+    let got = fs.read_text(dst) catch _ => "FAILED"
+    assert got == "moved body"
+    let _ = fs.remove_file(dst)
+}
+
+test "std.fs — read_bytes gives the raw bytes" {
+    let p = temp_path("bytes")
+    let _ = fs.write_text(p, "abc")
+    let bytes = fs.read_bytes(p) catch _ => Vec.new()
+    assert bytes.len() == 3
+    assert bytes[0] == 97
+    assert bytes[2] == 99
+    let _ = fs.remove_file(p)
+}
+
+func main() {}
