@@ -18,7 +18,9 @@ public func cancelled() -> bool {}
 
 /// Handle to a spawned task. Must be joined or detached — dropping
 /// an unconsumed handle is a compile error.
-public struct TaskHandle<T> { }
+@resource
+public struct TaskHandle<T> {
+}
 
 extend TaskHandle<T> {
     /// Wait for the task to finish and return its result.

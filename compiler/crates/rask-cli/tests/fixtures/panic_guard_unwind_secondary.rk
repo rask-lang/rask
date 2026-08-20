@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // ctrl.panic/E3, issue #298: a runtime guard (H1 here — an unconsumed
 // TaskHandle) firing at scope exit *during unwind* is a secondary panic, not
-// a replacement for the one already in flight. `nested` panics with "boom";
-// its unjoined handle trips H1 on the way out, but "boom" stays the task's
-// panic and the leak is reported to stderr instead.
+// a replacement for the one already in flight. `h.join()` below is what makes
+// `h` statically consumed (issue #797 now rejects a handle no path ever
+// consumes, at compile time) — but "boom" unwinds past it before it runs, so
+// at runtime the handle is never actually joined. That's the corner H1 can't
+// see: `nested` panics with "boom", the still-live handle trips the runtime
+// guard on the way out, and "boom" stays the task's panic while the leak is
+// reported to stderr instead.
 func nested() -> i64 {
     let h: TaskHandle<i64> = spawn(|| { return 1 })
     panic("boom")
+    let _ = h.join()
+    return 0
 }
 
 func main() {
