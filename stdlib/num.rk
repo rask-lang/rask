@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Wrapping<T> and Saturating<T> (type.overflow W1-W4) — non-panicking
+// arithmetic as a type instead of a call per operation. The one-off methods
+// (.wrapping_add() etc, M1) already do the real work per width; these wrap a
+// value once so every `+`/`-`/`*` on it goes through the same hatch without
+// spelling out the method name each time.
+
+public struct Wrapping<T: Integer> {
+    public value: T
+}
+
+// PascalCase on purpose (type.overflow W1) — `Wrapping(5381u32)` reads as
+// constructing the type, not calling a function named after it.
+@allow(style/snake-case-func)
+public func Wrapping<T: Integer>(value: T) -> Wrapping<T> {
+    return Wrapping { value }
+}
+
+extend Wrapping<T> where T: Integer {
+    public func add(self, other: Wrapping<T>) -> Wrapping<T> {
+        return Wrapping { value: self.value.wrapping_add(other.value) }
+    }
+    public func sub(self, other: Wrapping<T>) -> Wrapping<T> {
+        return Wrapping { value: self.value.wrapping_sub(other.value) }
+    }
+    public func mul(self, other: Wrapping<T>) -> Wrapping<T> {
+        return Wrapping { value: self.value.wrapping_mul(other.value) }
+    }
+}
+
+public struct Saturating<T: Integer> {
+    public value: T
+}
+
+@allow(style/snake-case-func)
+public func Saturating<T: Integer>(value: T) -> Saturating<T> {
+    return Saturating { value }
+}
+
+extend Saturating<T> where T: Integer {
+    public func add(self, other: Saturating<T>) -> Saturating<T> {
+        return Saturating { value: self.value.saturating_add(other.value) }
+    }
+    public func sub(self, other: Saturating<T>) -> Saturating<T> {
+        return Saturating { value: self.value.saturating_sub(other.value) }
+    }
+    public func mul(self, other: Saturating<T>) -> Saturating<T> {
+        return Saturating { value: self.value.saturating_mul(other.value) }
+    }
+}
