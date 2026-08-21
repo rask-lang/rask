@@ -134,6 +134,18 @@ pub struct OwnershipChecker<'a> {
     /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
     /// a permission of its own, so this is what a node write is checked against.
     writable_racks: HashSet<String>,
+    /// Link parameters, by name. A link handed in this way has no rack in scope,
+    /// so its writability was settled at the call site instead.
+    link_params: HashSet<String>,
+    /// Links this body may write nodes through: a `mutate`/`deleting` link
+    /// parameter, and anything reached from one by following edges.
+    ///
+    /// Permission propagates *outward* along edges, which is the direction that
+    /// makes sense: an edge only connects co-owned nodes, so if you may write
+    /// this node you may write the ones it points at. The read-only case needs no
+    /// propagation at all — no permission is the default, so a link derived from
+    /// a plain borrow inherits nothing and stays a view.
+    writable_links: HashSet<String>,
     take_link_params: HashSet<String>,
     identified_links: HashSet<String>,
     /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
@@ -196,6 +208,8 @@ impl<'a> OwnershipChecker<'a> {
             deleting_params: HashSet::new(),
             link_rack_root: HashMap::new(),
             writable_racks: HashSet::new(),
+            link_params: HashSet::new(),
+            writable_links: HashSet::new(),
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
@@ -482,6 +496,8 @@ impl<'a> OwnershipChecker<'a> {
         self.deleting_params.clear();
         self.link_rack_root.clear();
         self.writable_racks.clear();
+        self.link_params.clear();
+        self.writable_links.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
         self.rack_iterations.clear();
@@ -508,6 +524,12 @@ impl<'a> OwnershipChecker<'a> {
             }
             if param.is_deleting {
                 self.deleting_params.insert(param.name.clone());
+            }
+            if param.ty.starts_with("Link<") {
+                self.link_params.insert(param.name.clone());
+                if param.is_mutate || param.is_deleting {
+                    self.writable_links.insert(param.name.clone());
+                }
             }
         }
 
@@ -1935,6 +1957,13 @@ impl<'a> OwnershipChecker<'a> {
                         if let Some(root) = self.link_root_of_expr(inner) {
                             self.link_rack_root.insert(name.clone(), root);
                         }
+                        // `if n.child? as c` is how an edge is followed, so this
+                        // is the main place write permission has to carry over.
+                        if self.expr_root_is_writable_link(inner) {
+                            self.writable_links.insert(name.clone());
+                        } else {
+                            self.writable_links.remove(name);
+                        }
                         self.binding_types.insert(name.clone(), narrowed);
                     }
                 }
@@ -2248,6 +2277,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.link_rack_root.remove(name);
             }
         }
+        // Following an edge off a writable link yields another writable link.
+        if self.expr_root_is_writable_link(init) {
+            self.writable_links.insert(name.to_string());
+        } else {
+            self.writable_links.remove(name);
+        }
+    }
+
+    /// Whether this expression is reached from a link this body may write through.
+    fn expr_root_is_writable_link(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.writable_links.contains(name),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. }
+            | ExprKind::MethodCall { object, .. } => self.expr_root_is_writable_link(object),
+            ExprKind::IsPresent { expr: inner, .. } | ExprKind::Unwrap { expr: inner, .. } => {
+                self.expr_root_is_writable_link(inner)
+            }
+            _ => false,
+        }
     }
 
     /// A write through a link is permitted by the rack the node lives in.
@@ -2273,6 +2323,15 @@ impl<'a> OwnershipChecker<'a> {
             if !param_link {
                 return;
             }
+        }
+        // A `mutate` link parameter is the callee's licence to write the node —
+        // that's the whole point of passing links around instead of racks. The
+        // caller proved it may at the call site; here the signature says it will.
+        if self.mutate_params.contains_key(&root)
+            || self.deleting_params.contains(&root)
+            || self.writable_links.contains(&root)
+        {
+            return;
         }
         match self.link_root_of_expr(target) {
             // The rack has a name here, so the answer is about that name.

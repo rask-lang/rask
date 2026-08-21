@@ -2327,20 +2327,20 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         s, s
                     )),
                     None => Diagnostic::error(format!(
-                        "cannot write this node — no writable rack came with `{}`",
+                        "cannot write this node — `{}` is a view",
                         link
                     ))
                     .with_code("E0378")
                     .with_primary(
                         self.span,
-                        format!("`{}` points into a rack this function wasn't given", link),
+                        format!("`{}` was lent for reading, not for writing", link),
                     )
-                    .with_fix(
-                        "take the rack too: add a `mutate rack: Rack<…>` parameter — the link says which node, the rack says whether you may write it"
-                            .to_string(),
-                    ),
+                    .with_fix(format!(
+                        "say the function writes it: `mutate {}: Link<…>` in the signature — the caller then marks it `mutate {}` at the call",
+                        link, link
+                    )),
                 };
-                d.with_why("a `Link<T>` is a path to a node, not permission to change it. The node lives in a rack, so the rack answers whether it may be written — the same rule `Handle` has, where `scene.nodes[h].f = x` needs `mutate scene`. Asking the rack is also what makes a read-only graph free: a function taking `s: Rack<T>` reads every node and writes none, with nothing to propagate along the edges you follow and no way to launder a readable link into a writable one")
+                d.with_why("writing a node is a permission, and permission travels with the link: `n: Link<T>` is a view — it reads the node and everything reachable from it — and `mutate n: Link<T>` is the writable one. It's the same borrow-versus-mutate distinction every other type has, so no second link type is needed and no rack has to be threaded through. A view stays a view when you follow an edge, and can't be passed on as `mutate`; a writer's permission does travel along edges, because an edge only connects nodes in one rack")
             }
             UndeclaredDelete { param, operation } => {
                 Diagnostic::error(format!(

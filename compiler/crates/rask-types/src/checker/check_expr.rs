@@ -2523,10 +2523,26 @@ impl TypeChecker {
             // Deep const: passing a const binding to a `mutate` parameter is
             // rejected. `take` (ownership transfer) is still allowed — moving
             // a value is not mutation.
+            //
+            // A link argument is exempt from the *`let`* half of this, and only
+            // that half. `mutate n: Link<T>` writes the node the link points at;
+            // the link itself is a pointer that stays exactly as it was, so
+            // demanding `mut` on a `let` binding asks permission to change the one
+            // thing that isn't changing — and that demand is what would drag `mut`
+            // into a link's type position, which the box family doesn't do.
+            //
+            // A read-only *parameter* is a different question and stays rejected:
+            // there the caller never granted write access, so passing it on as
+            // `mutate` would launder a view into a writer in one hop. That's the
+            // guarantee that makes `n: Link<T>` a usable read-only view.
+            let arg_is_link = param_sym
+                .ty
+                .as_deref()
+                .is_some_and(|t| t.starts_with("Link<"));
             if is_mutate && !is_take {
                 if let ExprKind::Ident(arg_name) = &arg.expr.kind {
                     match self.lookup_binding_kind(arg_name) {
-                        Some(super::BindingKind::Let) => {
+                        Some(super::BindingKind::Let) if !arg_is_link => {
                             self.errors.push(TypeError::MutateConst {
                                 name: arg_name.clone(),
                                 span: arg.expr.span,

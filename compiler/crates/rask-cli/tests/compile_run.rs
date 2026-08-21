@@ -1890,6 +1890,41 @@ fn rack_link_delete_cost_follows_in_degree() {
 // Where a field path exists the obligation is per field; where one doesn't, the
 // whole binding is owed. That fallback is sound but it names the root, which reads
 // like a compiler bug unless the message says which shape stopped the walk.
+// A read-only link is a parameter mode, not a type. `n: Link<T>` is a view;
+// `mutate n: Link<T>` writes. That's what a `LinkView<T>` type was reaching for,
+// and the mode delivers it without a second type, without `mut` in a type
+// position, and without threading the rack — links are the thing you pass around.
+#[test]
+fn error_a_link_view_cannot_write() {
+    let (failed, out) = compile_error_output("link_view_cannot_write.rk");
+    assert!(failed, "a view must not be able to write: {}", out);
+    // Writing directly, and one edge along: the view has to survive following
+    // an edge, or it guarantees nothing.
+    assert_eq!(
+        out.matches("error[E0378]").count(),
+        2,
+        "a view can't write its node or a node it reaches: {}",
+        out
+    );
+    assert!(
+        out.contains("is a view") && out.contains("was lent for reading"),
+        "the message names the mode, not a missing rack: {}",
+        out
+    );
+    // And the fix is the mode on the declaration, not a rack parameter.
+    assert!(
+        out.contains("mutate n: Link<…>") && !out.contains("add a `mutate rack"),
+        "the fix is the parameter mode: {}",
+        out
+    );
+    // Laundering a view into a writer is rejected, directly and via an edge.
+    assert!(
+        out.contains("cannot mutate parameter `n`") && out.contains("cannot mutate `c`"),
+        "a view must not be passable as `mutate`: {}",
+        out
+    );
+}
+
 // A link may not outlive the rack it points into. Nothing else caught this: no
 // `delete` happened, so the use-after-delete rule never looked, and a link is
 // Copy so it escapes the scope that produced it — opting out of the one
@@ -1942,15 +1977,17 @@ fn error_node_write_needs_a_writable_rack() {
         "the rack is named, since that's what has to change: {}",
         out
     );
-    // The edge-crossing case is the one a read-only *link type* would have had
-    // to propagate. Asking the rack makes it the same question as the first.
+    // A link that arrived alone grants nothing — and it reports as a view, with
+    // the parameter mode as the fix. Naming a rack there would be the wrong
+    // advice: links are what you pass around, so the permission belongs on the
+    // link's own declaration rather than on a rack threaded in beside it.
     assert!(
-        out.contains("no writable rack came with `e`"),
-        "a link that arrived alone grants nothing: {}",
+        out.contains("`e` is a view") && out.contains("was lent for reading"),
+        "a link that arrived alone is a view: {}",
         out
     );
     assert!(
-        out.contains("mutate rack: Rack<…>") || out.contains("mutate scene"),
+        out.contains("mutate e: Link<…>") || out.contains("mutate scene"),
         "the fix names what to change: {}",
         out
     );

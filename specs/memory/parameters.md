@@ -26,6 +26,48 @@ Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow
 | **PM8: `deleting` implies `mutate`** | Deleting a node mutates the rack it lives in, so `deleting` grants everything `mutate` does. Writing both parses and is redundant; `deleting param: T` alone is the idiom. The two are a lattice — `param` → `mutate param` → `deleting param` — not independent axes |
 | **PM9: What `deleting` is for** | A callee may delete a link the caller handed over as a `take` parameter with no annotation: the name is consumed at the call site, so the caller watches it die. `deleting` covers the case the caller cannot see — the callee picking its own victims, by iterating the rack, by `clear`, or by handing a link it derived to something that consumes it. At such a call every link the caller holds into that rack is revoked, because which nodes died is not knowable from outside |
 
+### A `Link<T>` parameter is a view or a writer
+
+`mutate` on a link means "I will write the node", not "I will change the link".
+That distinction does real work, because it is what a read-only link is:
+
+<!-- test: skip -->
+```rask
+// A view. Reads the node and everything reachable from it, writes none of it.
+func total(n: Link<Node>) -> i32 {
+    mut t = n.value
+    if n.child? as c { t = t + c.value }
+    return t
+}
+
+// A writer. Says so in the signature; needs no rack in scope.
+func zero_all(mutate n: Link<Node>) {
+    n.value = 0
+    if n.child? as c { c.value = 0 }
+}
+
+let a = rack.insert(Node { value: 5, child: none })
+zero_all(mutate a)              // `let a` — see PM10
+```
+
+Two properties make the view worth having, and both are checked. A view cannot
+be passed on as `mutate`, so it can't be laundered into a writer in one hop. And
+it stays a view when you follow an edge — `c` above inherits nothing, because no
+permission is the default.
+
+Write permission travels the other way: it propagates *outward* along edges, so
+a writer may write anything reachable. An edge only connects nodes in one rack,
+so if you may write this node you may write the ones it points at.
+
+This is why there is no `LinkView<T>`. A read-only *type* would have to either
+propagate along every edge or leak in one hop, and it would put `mut` in a type
+position, which no other box does. The mode is the same borrow-versus-mutate
+distinction every other type already has.
+
+| Rule | Description |
+|------|-------------|
+| **PM10: A link's mutability is the node's** | `mutate n: Link<T>` grants writing the node the link points at; the link itself is a pointer and is not modified. So a `let` binding may be passed as `mutate` when the parameter is a link — demanding `mut` there would ask permission to change the one thing that isn't changing. A read-only *parameter* is not exempt: passing `n: Link<T>` on as `mutate` is an error, or a view would launder into a writer |
+
 ### Deleting Mode
 
 `deleting` exists because `Rack<T>` hands out `Link<T>`, and a link is a pointer to a node rather than a ticket to look one up. A delete the caller can see is safe without ceremony; a delete it cannot see is a use after free. The mode is what makes the second case visible.
