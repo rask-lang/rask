@@ -5857,6 +5857,7 @@ mod tests {
                         is_public: true,
                         is_type_param: false,
                     }],
+                    attrs: vec![],
                 },
                 VariantLayout {
                     name: "Square".to_string(),
@@ -5875,8 +5876,10 @@ mod tests {
                         is_public: true,
                         is_type_param: false,
                     }],
+                    attrs: vec![],
                 },
             ],
+            attrs: vec![],
         };
 
         let enum_layouts = vec![shape_enum];
@@ -5947,10 +5950,11 @@ mod tests {
             tag_ty: rask_types::Type::U8,
             tag_offset: 0,
             variants: vec![
-                VariantLayout { name: "Red".to_string(), tag: 0, payload_offset: 0, payload_size: 0, fields: vec![] },
-                VariantLayout { name: "Green".to_string(), tag: 1, payload_offset: 0, payload_size: 0, fields: vec![] },
-                VariantLayout { name: "Blue".to_string(), tag: 2, payload_offset: 0, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Red".to_string(), tag: 0, payload_offset: 0, payload_size: 0, fields: vec![], attrs: vec![] },
+                VariantLayout { name: "Green".to_string(), tag: 1, payload_offset: 0, payload_size: 0, fields: vec![], attrs: vec![] },
+                VariantLayout { name: "Blue".to_string(), tag: 2, payload_offset: 0, payload_size: 0, fields: vec![], attrs: vec![] },
             ],
+            attrs: vec![],
         };
 
         let enum_layouts = vec![color_enum];
@@ -6019,7 +6023,7 @@ mod tests {
             tag_ty: rask_types::Type::U8,
             tag_offset: 0,
             variants: vec![
-                VariantLayout { name: "Empty".to_string(), tag: 0, payload_offset: 4, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Empty".to_string(), tag: 0, payload_offset: 4, payload_size: 0, fields: vec![], attrs: vec![] },
                 VariantLayout {
                     name: "Pair".to_string(),
                     tag: 1,
@@ -6031,8 +6035,10 @@ mod tests {
                         FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false,
                             declared_default: None, is_public: true, is_type_param: false },
                     ],
+                    attrs: vec![],
                 },
             ],
+            attrs: vec![],
         };
 
         let enum_layouts = vec![msg_enum];
