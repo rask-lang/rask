@@ -57,8 +57,8 @@ delete-locked scope isn't a separate feature; it's what a batch *is*.
 ## B2 — Inserted nodes are private until apply
 
 An inserted node is real (allocated, linkable, readable) but is **not
-published to the store's iteration** until the batch applies. A `for` over
-the store inside the batch doesn't see it.
+published to the rack's iteration** until the batch applies. A `for` over
+the rack inside the batch doesn't see it.
 
 Without this, a loop that inserts while iterating would visit its own output
 — the same reason today's pools snapshot (`mem.pools/PF3`, "elements inserted
@@ -148,8 +148,8 @@ The commonest loop in the corpus deletes the element it is standing on:
 
 <!-- test: skip -->
 ```rask
-for e in store {
-    if e.expired { store.delete(e) }      // no batch — immediate
+for e in rack {
+    if e.expired { rack.delete(e) }      // no batch — immediate
 }
 ```
 
@@ -157,11 +157,11 @@ This has to keep working; pools guarantee it today (`mem.pools/PF1`,
 "removing the current element is always safe"). Two rules make it fall out
 rather than needing an exception:
 
-- **`delete` consumes the reference it is given.** After `store.delete(e)`,
+- **`delete` consumes the reference it is given.** After `rack.delete(e)`,
   `e` is unusable — the same shape as any consuming operation. So there is no
   window where a borrow outlives its node.
 - **Iteration is position-based, not reference-based.** The iterator holds a
-  slot position in the store's arena, so freeing the current slot doesn't
+  slot position in the rack's arena, so freeing the current slot doesn't
   disturb it; it advances to the next position as usual.
 
 What stays a compile error is deleting a *different* node while holding a
@@ -174,7 +174,7 @@ for a problem that doesn't arise.
 ## What this does *not* provide
 
 - **No rollback of ordinary code.** Local variables, I/O, and anything
-  outside the store are untouched by abandonment. A batch is not a
+  outside the rack are untouched by abandonment. A batch is not a
   transaction over your whole program.
 - **No cross-task atomicity.** Each task's buffer applies as a unit; two
   tasks' batches are not one transaction.
@@ -189,10 +189,10 @@ allocate concurrently, and the design's whole claim is that nothing on the
 hot path takes a lock.
 
 Four options were weighed. **Per-task arenas merged at the join** work but
-fragment the store and complicate iteration. **Deferring inserts too** breaks
+fragment the rack and complicate iteration. **Deferring inserts too** breaks
 the case that motivated immediate inserts — you can't wire links to a node
 that doesn't exist yet — and any fix for that reconstructs per-task arenas
-with extra steps. **Pre-allocating** (`Store.with_capacity`) suits real-time
+with extra steps. **Pre-allocating** (`Rack.with_capacity`) suits real-time
 and games but fails unbounded workloads.
 
 **Adopted: allocation is a single atomic bump.** Claiming a slot is one
@@ -206,7 +206,7 @@ stay a plain deref.
 Two details make it work:
 
 - **Growth is chunked.** When a chunk fills, a worker atomically installs a
-  new one. The store becomes a list of chunks rather than one contiguous
+  new one. The rack becomes a list of chunks rather than one contiguous
   arena — which slightly weakens the locality story, and is exactly what
   `compact()` (explicit, never automatic) exists to fix.
 - **B2 does the rest.** Iteration reads the bump value captured at phase
@@ -242,12 +242,12 @@ snapshot allocation — the cursor is a position, so there is nothing to copy.
 ## B8 — `delete` must not mean two things
 
 A flaw caught after the first pass, and it's one this exploration already
-ruled against elsewhere. Under B1, `store.delete(x)` outside a batch happens
+ruled against elsewhere. Under B1, `rack.delete(x)` outside a batch happens
 immediately and `w.delete(x)` inside one is deferred — the same verb, two
 timings, distinguished only by which block encloses it.
 
 That's precisely the objection used to reject implicit delete-locked loops
-(`fourth-option.md`, option (b)): *"`store.delete(x)` would mean something
+(`fourth-option.md`, option (b)): *"`rack.delete(x)` would mean something
 different inside a loop than outside it, with no syntax marking the
 difference."* The reasoning doesn't get to apply to loops and not to batches.
 
@@ -269,7 +269,7 @@ with self.blocks.batch() as b { b.delete(victim) }
 
 Three lines where one would do, in a fairly common shape.
 
-**(b) The deferred one gets its own verb.** Keep `store.delete(x)` immediate,
+**(b) The deferred one gets its own verb.** Keep `rack.delete(x)` immediate,
 and name the batch's version for what it does — `retire`, `mark_deleted`,
 `schedule_delete`. The timing lands in the call rather than in the enclosing
 block, which is what the transparency argument asks for.
@@ -295,8 +295,8 @@ is sugar, not a second mechanism:
 
 <!-- test: skip -->
 ```rask
-store.delete(x)                                  // sugar for:
-with store.batch() as b { b.delete(x) }
+rack.delete(x)                                  // sugar for:
+with rack.batch() as b { b.delete(x) }
 ```
 
 Which collapses the whole thing to one sentence:
@@ -304,7 +304,7 @@ Which collapses the whole thing to one sentence:
 > **A delete takes effect at the end of its enclosing batch. A bare delete is
 > its own batch.**
 
-Nesting (B6) makes that hold everywhere: write `store.delete(x)` *inside* an
+Nesting (B6) makes that hold everywhere: write `rack.delete(x)` *inside* an
 explicit batch and it flattens into that batch and defers, exactly as the
 sentence says. No case is special, and the ergonomics objection to (a)
 evaporates — `evict_one` keeps its one-liner.
@@ -313,7 +313,7 @@ evaporates — `evict_one` keeps its one-liner.
 
 With the timing rule uniform, one verb everywhere is defensible: the receiver
 already marks it (`w.delete` where `w` is bound by a batch block, versus
-`store.delete`), which is how ECS command buffers distinguish the two.
+`rack.delete`), which is how ECS command buffers distinguish the two.
 
 But "the receiver marks it" is a weaker signal than putting it in the verb,
 and the honest reading of `w.delete(enemy)` in isolation is still "delete the
@@ -330,7 +330,7 @@ enemy, now."
 **Decided: `delete` on both.** Once the timing rule is uniform, a second verb
 would be marking a distinction that no longer exists — `delete` means the
 same thing in both positions, and the receiver (`w` bound by a batch block
-versus the store itself) shows which one you're in. Adding `retire` would buy
+versus the rack itself) shows which one you're in. Adding `retire` would buy
 a little honesty at a call site in exchange for a second name for one
 operation, and the exploration has consistently traded the other way.
 

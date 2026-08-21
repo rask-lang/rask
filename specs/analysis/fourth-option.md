@@ -37,18 +37,18 @@ a spec draft starts here.
 
 | | Decided |
 |---|---|
-| Types | `Store<T>` (where nodes live), `Link<T>` (one reference). No plural type — `Vec<Link<T>>` and `Map<K, Link<T>>` are edge-aware underneath |
+| Types | `Rack<T>` (where nodes live), `Link<T>` (one reference). No plural type — `Vec<Link<T>>` and `Map<K, Link<T>>` are edge-aware underneath |
 | Reference semantics | An edge goes `none` when its target dies. That's the whole model |
 | Representation | Raw pointers. `mem.relocatable` stays keys-only |
-| Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. Not locals (block-scoped borrows instead) |
+| Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. **Locals hold links too**, kept honest by the compiler rather than the rack: `delete` takes the link, so use-after-delete is a move error (not a borrow rule, not lifetime inference). A `const` can hold neither |
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
-| Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site |
+| Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site. Note this is only complete while every edge is optional — a required edge has no `none` to be set to, so admitting `Link<T>` (see below) makes one of cascade/restrict mandatory rather than deferred |
 | Ownership | Composition by value (`Entity { body: Body }`), not a policy |
 | Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Parallel inserts claim slots by atomic bump (B10) |
 | Atomicity | Batches — a region where **deletes** defer to the end. No validation step (required links are a compile-time check), no rollback needed. Also the delete-locked scope, and how required-link cycles get built. See [batches](fourth-option-batches.md) |
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |
 | Escapes | Domain ids at process/sync boundaries. `NodeId` deferred |
-| Pool / Handle | Pool folds into `Store<T>`; `Handle` becomes boundary-only, if it's needed at all |
+| Pool / Handle | Pool folds into `Rack<T>`; `Handle` becomes boundary-only, if it's needed at all |
 | `Heap<T>` | **Kept.** Different rung of the ownership ladder — exclusively-owned heap data that nothing else references, and unlike a node it can be returned and moved. An AST wants it: movable, half the memory, free delete |
 
 **Deferred on purpose:** `@lazy`, cascade/restrict, `NodeId`. Each failed the
@@ -62,7 +62,7 @@ No — it shrinks it by one, and stratifies what's left.
 | Type | Status after this change |
 |---|---|
 | `Vec`, `Map` | untouched |
-| `Pool` → `Store` | renamed, not added |
+| `Pool` → `Rack` | renamed, not added |
 | `Handle` → `Link` | renamed, not added |
 | `WeakHandle` | **deleted** — its whole job was surviving a stale reference, and stale references stop existing |
 | `Owned` → `Heap<T>` | renamed. Same job, sharper boundary: exclusively-owned heap data, and unlike a node it can be returned |
@@ -76,7 +76,7 @@ Also gone, though they aren't types: `using Pool<T>` context clauses,
 
 - **Day one:** `Vec`, `Map`, `string`, `T?`, `T or E`. Unchanged by any of
   this.
-- **When things reference each other and can be deleted:** `Store` + `Link`.
+- **When things reference each other and can be deleted:** `Rack` + `Link`.
 - **When several accessors share one mutable value:** `Shared<T>`, plus a
   strategy (`Readers` / `Mutex`) if it crosses tasks.
 - **Orthogonal, not part of the sequence:** `Heap<T>` when data is recursive
@@ -110,8 +110,8 @@ re-point their backlinks as it moves them.* The compiler knows the element
 type is a link, so it emits the fixup in `Vec`'s compaction and `Map`'s
 rehash alike.
 
-(An earlier draft "solved" this by inventing a store-owned index —
-`Store<Task> @key(id)` with a generated `by_id` lookup. That was a feature
+(An earlier draft "solved" this by inventing a rack-owned index —
+`Rack<Task> @key(id)` with a generated `by_id` lookup. That was a feature
 answering a question the rule above answers for free, and it introduced
 magic method names derived from field names. Withdrawn.)
 
@@ -121,9 +121,9 @@ without a delete invalidating one mid-loop. Inside a staged batch, deletes
 are *enqueued and applied at the end* — so no node dies while the batch runs
 and references stay valid by construction. The batch already is the scope.
 
-**Should an ordinary `for` over a store imply one?** No — weighed below.
+**Should an ordinary `for` over a rack imply one?** No — weighed below.
 
-### Should `for` over a store be implicitly delete-locked?
+### Should `for` over a rack be implicitly delete-locked?
 
 Three shapes, and the middle one is the tempting mistake.
 
@@ -136,7 +136,7 @@ line of ceremony is a bad deal.
 
 **(b) `for` silently stages deletes and applies them at loop end.** Gets both
 properties — delete-during-iteration works *and* references stay valid. It's
-also the tempting mistake: `store.delete(x)` would then mean something
+also the tempting mistake: `rack.delete(x)` would then mean something
 different inside a loop than outside it, with no syntax marking the
 difference. A reader can't tell when the delete takes effect without knowing
 which construct encloses them. That's the kind of action-at-a-distance this
@@ -177,21 +177,21 @@ resolved in B10: allocation is a single atomic bump, which is lock-free and
 not a lock, with chunked growth and `compact()` to defragment.
 
 **4. Root link registration — dissolved, it's static.**
-"Root link" means a link stored on the struct that *owns* the store rather
+"Root link" means a link stored on the struct that *owns* the rack rather
 than inside a node — a list's `head`/`tail`, an editor's `selected`, a
 world's `player`:
 
 <!-- test: skip -->
 ```rask
 struct World {
-    entities: Store<Entity>
-    player: Link<Entity>?          // beside the store, not inside a node
+    entities: Rack<Entity>
+    player: Link<Entity>?          // beside the rack, not inside a node
 }
 ```
 
 Deleting the player has to null that field, so the fixup walk must reach it.
 No runtime registration is needed: the compiler knows at `World`'s module
-that this field targets that store — the same schema closure that answers
+that this field targets that rack — the same schema closure that answers
 "who can point at `Entity`?" (A9) — so the fixup for root fields is emitted
 statically, like any other known link.
 
@@ -206,16 +206,56 @@ rather than needing a decision.)
 
 **Untested, not unsolved:**
 
-- **Nothing is measured.** Every performance claim in these documents is
-  analytic. The read-path claim (a plain deref versus a checked one) is the
-  load-bearing one and the easiest to measure with a prototype.
+- **The read-path claim is still unmeasured.** An interpreter prototype now
+  exists ([prototype](fourth-option-prototype.md)) and confirms the *semantics*
+  — the litmus programs run both ways with identical output — but a
+  tree-walking interpreter can't price a deref against a checked deref.
+  That needs native codegen. Delete cost *was* measured and is linear in
+  in-degree, exactly as predicted.
+- **The locals rule is settled: use-after-delete is a compile error.** `delete`
+  takes the link, so the existing move checker reports the use — no runtime check,
+  and not lifetime inference either, since the invalidation point is the `delete`
+  statement rather than an inferred last use. Built and passing on every comparison
+  program. The reasoning below is why it is the right rule; what remains open is
+  the delete the compiler can't see (a call taking the rack mutably that deletes
+  inside), for which Rask's existing exclusivity rule is the right shape. A
+  local link is non-optional, so it asserts its target is alive; a delete
+  contradicts that and there is no `none` to fall back to, which makes
+  use-after-delete a type contradiction rather than only a memory hazard. That is
+  the same sentence that forces a *field* edge to be `Link<T>?`, resolved the other
+  way: the rack can reach a field so it nulls it at runtime, and cannot reach a
+  local so the compiler must reject the use. The `?` is therefore the signal for
+  which discipline applies. Demonstrated in the prototype; not written down here. `rack.insert()` hands a link into a local,
+  which rule 1 forbids; without a rule reconciling those, a local link outlives
+  its node and the checkless read isn't sound. Both obvious statements of the rule
+  are things Rask chose against — last-use borrow ends is NLL, and
+  `with`-everywhere restores the ceremony the model removes. A third statement
+  works ("an `insert` result must be stored into a field"), demonstrated in
+  `prototype/l1_list_links_no_locals.rk`, but it costs the ability to keep a
+  reference to what you just inserted — so `Key<T>` returns to ordinary code, not
+  just the serialization boundary, against the census's claim that no in-process
+  use needs one.
+- **There is no read-only link.** A handle gives read-only access by not passing
+  the pool mutably; a link carries write permission wherever it goes. Answering
+  it means `ReadLink<T>`, which puts back a type the census deleted.
+- **Representation bets against #626.** Declining pointer-freedom is one line
+  here, but `mem.relocatable` opens by asserting user-visible types hold "owned
+  values and integer handles — never pointers", and #626's tier-A `Persistable`
+  is defined around handles surviving a round-trip. Links are pointers, so
+  tier-A zero-copy persistence dies for anything with edges. Possibly the right
+  trade; not one a representation footnote should make.
+
+  These three outrank `inverse`, cascade and `@lazy` on the open list. See the
+  prototype document.
 - **The `Local` default has no corpus example.** Not one program shares a
   mutable value between closures in a single task, so the case `Shared<T>`
   defaults to is unrepresented in the evidence.
 - **Migration cost is unsized.** Ten specs, two backends, the whole example
   corpus. Nobody has counted it.
 
-**Companion documents:** [batches](fourth-option-batches.md) ·
+**Companion documents:** [prototype](fourth-option-prototype.md) (**built and
+run** — the litmus programs both ways on the interpreter, and what that
+changed) · [batches](fourth-option-batches.md) ·
 [litmus](fourth-option-litmus.md) (three programs
 both ways, scored) · [in practice](fourth-option-in-practice.md) (worked
 example, costs, what it retires) · [adversarial](fourth-option-adversarial.md)
@@ -286,7 +326,7 @@ now they can all be found.
 
 ## The sketch: edges instead of handles
 
-A graph-shaped box (working name `Store<T>`; naming comes last). Nodes live in
+A graph-shaped box (working name `Rack<T>`; naming comes last). Nodes live in
 it like they live in a pool — it owns their memory. The difference: instead of
 handles, nodes refer to each other with **edges**, declared in the schema.
 
@@ -314,7 +354,7 @@ The rules that make it work, all reusing existing machinery:
    `children`'s. The memory the mechanism needs is memory those structures
    already carry by hand today.
 
-3. **Delete unlinks.** `store.delete(n)` walks n's incoming edges (enumerable,
+3. **Delete unlinks.** `rack.delete(n)` walks n's incoming edges (enumerable,
    via backlinks), sets each `Link?` to `none` or removes it from its list
    list, unregisters n's outgoing backlinks, frees the node, returns it owned
    (so `@resource` fields follow `mem.linear`, same as `pool.remove`). O(degree),
@@ -332,7 +372,7 @@ The rules that make it work, all reusing existing machinery:
 5. **Delete respects open borrows.** Deleting while a local borrows a node is
    the existing W2c-shaped compile error. Worklist algorithms that need node
    identity in local collections get it from the frozen discipline: inside
-   `using frozen Store<T>` no deletes can happen, so raw node refs in a local
+   `using frozen Rack<T>` no deletes can happen, so raw node refs in a local
    `Vec` are valid for the whole scope by construction — regions falling out of
    a rule (`PF5`) that already exists.
 
@@ -418,7 +458,7 @@ trade is favorable. For churn-heavy, high-fan-in structures (10,000 edges into
 one node, deleted every frame) it's worse, and honestly so: the delete's cost is
 proportional to what must be fixed.
 
-| | `Pool` + `Handle` | `Store` + `Link` |
+| | `Pool` + `Handle` | `Rack` + `Link` |
 |---|---|---|
 | Read a reference | ~1ns check + indirection (elidable sometimes) | plain deref, nothing to elide |
 | Write a reference | free (it's an integer copy) | O(1) backlink register |
@@ -453,7 +493,7 @@ Walking every pool use case in the specs and examples:
 | Observer lists, in-world caches, event nodes | Links, when the holder lives in the graph |
 | Iterate-and-delete loops | Graph iteration, same shape as pools |
 | Ordered views (`line_order: Vec<Handle<Line>>`, text_editor) | Root edge containers — an ordered `Vec<Link<Line>>` on the owner; entries drop at delete |
-| Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation store) | Root `Map<K, Link<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
+| Secondary indexes (`by_name: Map<string, Handle<Pkg>>`, package_manager; `by_id: Map<TaskId, Handle<Task>>`, validation rack) | Root `Map<K, Link<T>>` — delete removes the entry, the database's index-maintenance move. Needs spec: the backlink must carry the key (or survive rehash) |
 | Chunked parallel iteration (game_loop's aspirational `spawn` over handle chunks) | Scoped parallel iteration under a delete-locked scope — disjoint node sets, no keys, and none of the `Arc<Mutex>` pools currently smuggle in for cross-task `using` |
 | References serialized out (save files, network) | Keys — though the validation flagship's actual escaping identity is `TaskId`, a user-level ID redeemed through the `by_id` index, not a `Handle`. Even the web-service case prefers domain keys + a maintained index |
 | References held by unsynchronized concurrent holders | Keys |
@@ -462,7 +502,7 @@ What's left of `Pool` after edges take topology is small: a registry that hands
 out checked keys. That doesn't earn a separate box. **Direction (decided): Pool
 folds into Graph.** One box, two reference kinds — `Link<T>` inside (checkless,
 fixed at delete), `Key<T>` escaping (a Copy value, Send, storable anywhere,
-redeemed via `store.get(k)?`). `Key` is today's `Handle` with its honest name;
+redeemed via `rack.get(k)?`). `Key` is today's `Handle` with its honest name;
 a keys-only graph with no edge fields is today's `Pool`. Box count shrinks by
 one.
 
@@ -515,7 +555,7 @@ returns — O(1), a handle-remove's cost. A read of a not-yet-healed edge checks
 one flag in the target's header (same cache line as the data it was about to
 load), sees dead, self-nulls — after which that edge is a plain pointer again.
 Remaining unlinks amortize onto later graph operations or an explicit
-`store.flush_deletes()`; memory is reused when the backlink list drains.
+`rack.flush_deletes()`; memory is reused when the backlink list drains.
 Observationally identical to eager edges: a node or `none`, never a panic,
 never a stale value.
 
@@ -574,9 +614,13 @@ non-none pointer → load the target's header flag → if dead, self-heal to
 not be there" the programmer already acknowledged by writing `?` is the only
 place the runtime needs. (An earlier draft carved out non-optional edges as
 eager-only; the adversarial pass then killed non-optional edges entirely —
-they can't be constructed under cycles — so every edge has a `?` site and
-lazy covers the whole model uniformly. See
-[fourth-option-adversarial.md](fourth-option-adversarial.md), A4.)
+they can't be constructed under cycles — so every edge had a `?` site and lazy
+covered the whole model uniformly. See
+[fourth-option-adversarial.md](fourth-option-adversarial.md), A4. **That kill
+was later reversed**: batches give a required cycle a legal transient state, so
+`Link<T>` and `Link<T>?` both live and lazy has a non-optional case to answer
+for again — see [concurrency](fourth-option-concurrency.md), "Delta to the
+earlier docs".)
 
 ### Open
 
@@ -584,6 +628,109 @@ The partition pattern — collect refs into a local Vec, then mutate through
 them — needs a scope where deletes are locked but field writes are allowed.
 `frozen` is too strong (forbids writes). A weaker delete-locked tier is the
 one new scope concept this design asks for.
+
+## The Rack is a slab
+
+Worth writing down, because it changes what's available and because two people
+have now asked why the container exists at all.
+
+### Why there's a container when the interest is in nodes
+
+Measured on the corpus: 256 node operations (field reads and writes through a
+link) against 183 rack operations, and of the rack ones 74 are `insert` and 39
+are `len`. Birth and reporting. Field access — the thing programs actually spend
+their time on — never mentions the rack:
+
+<!-- test: skip -->
+```rask
+if e.target? as t { t.health -= e.damage }
+```
+
+So the container is nearly invisible in bodies and unavoidably visible in
+declarations. It isn't there because anyone wanted a collection. It's the object
+that **owns the nodes' lifetime**, and five rules hang off exactly that with
+nowhere else to live:
+
+1. **Delete-time edge fixup.** `delete` nulls every `Link<T>?` pointing at the
+   node. That needs the reverse-edge index, and the index needs one home per
+   graph.
+2. **The lifetime rule.** A link may not outlive its rack (E0379). Remove the
+   rack and there is nothing for a link's validity to attach to.
+3. **`snapshot()`.** Crossing a task boundary means copying the graph, which
+   needs a thing to copy.
+4. **The frozen graph.** `let g = build()` freezes structure and contents; that
+   needs a handle to freeze.
+5. **Ownership.** Two racks of one node type are independent — a delete in one
+   doesn't touch the other, so two tasks can own two graphs.
+
+The implicit alternative — an ambient arena per node type, so you never name a
+rack — breaks all five, and (5) fatally: a per-type arena is a global, so every
+graph of a type becomes one ownership unit.
+
+**And a one-node rack is not the smaller version of this.** A one-node graph has
+no edges: a single node can only point at itself, so the backlink index has
+nothing to maintain. For one value the answer is a plain field, `Owned<T>` if it
+needs the heap, or `Shared<T>` if several accessors share it — steps 1 and 4 of
+the choice order in `analysis.storage-type-consolidation`. The rack starts at
+"they reference each other", which is plural by construction.
+
+### What the backing store already is
+
+<!-- test: skip -->
+```
+slots: Vec<Option<T>>     // None marks a freed slot
+free_list: Vec<u32>
+slot_of: HashMap<node, u32>
+```
+
+A flat array of slots, a free list, elements that never move. That is a slab, and
+it means the objection recorded against merging `Rack` and `Vec` — "contiguity
+versus stability" — named the wrong pair. A slab has both. What it gives up is
+**density and order**: iteration walks the high-water mark rather than the live
+count, and slot reuse doesn't preserve insertion order.
+
+Density largely self-heals: freed slots are reused, so 1000 live nodes still
+occupy 1000 slots after 500 deletes and 500 inserts. Order does not, and that is
+the honest reason to keep `Vec` separate — a program indexing by position depends
+on order, and a slab cannot promise it.
+
+### What that buys, and what it doesn't
+
+`Rack`/`Link` closed the graph cases. What's left of "no stored references" is
+narrower than it was:
+
+| case | answer |
+|---|---|
+| many of one type, contiguous iteration, point at individual ones | a slab-backed rack — this is it |
+| a stored iterator (a position in a collection) | hold a `Link` to the element |
+| `&v[3]` where `v` stays dense *and* ordered under removal | impossible: density under removal means moving elements |
+| a `string_view` into a buffer | out of scope — a sub-range of one value, not an element |
+
+So the residue is sub-ranges of a single buffer. Everything else that used to
+want a stored pointer has a name now.
+
+### The open question, pending native
+
+The prototype's slots hold *pointers* to heap-allocated nodes, so today the
+contiguity is in the index array only — the nodes themselves are scattered. A
+native lowering would want nodes inline in the array, which is where the cache
+win actually is. Until that exists, "the rack is a slab" is true in shape and
+unproven in payoff.
+
+Two affordances to weigh once it is:
+
+- **Contiguous iteration as a stated guarantee**, so an aggregate reader gets the
+  scan a `Vec` promises and a rack currently doesn't.
+- **An explicit `compact()`** that regains density by moving nodes and
+  re-pointing their backlinks. The fixup rule already exists — *a container that
+  stores links and moves them must re-point their backlinks as it moves them* —
+  and the cost stays visible because you typed the call.
+
+And one to note rather than propose: a slot index *is* a handle. A slab is the
+one structure that can hand out both — a link for checkless traversal, a slot
+index as a compact stable name for serialization or an external reference —
+without choosing between them. That is the #626 trade ("a handle is a name, a
+link is an address") stated as a both-and rather than an either-or.
 
 ## Alternatives weighed and set aside
 

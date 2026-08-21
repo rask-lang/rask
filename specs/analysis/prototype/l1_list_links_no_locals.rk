@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L1 again, written under the restriction the model actually needs: NO LINK EVER
+// LIVES IN A LOCAL.
+//
+// This is the third statement of the locals rule — the one that is neither NLL
+// (last-use borrow ends, the lifetime-shaped analysis Rask exists to refuse) nor
+// `with`-everywhere (which puts back the ceremony the model exists to delete):
+//
+//     an `insert` result must be stored into a field; links are fields and
+//     borrows, never local values.
+//
+// Traversal already obeys it — `if x? as n` binds a borrow, not a link value —
+// so the only place a link tried to escape into a local was `insert`'s return.
+//
+// Compare l1_list_links.rk, which holds `let n1 = push_back(...)`. Same output.
+// The question this file answers is what the restriction costs to read.
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+    prev: Link<Node>?
+}
+
+struct List {
+    nodes: Rack<Node>
+    head: Link<Node>?
+    tail: Link<Node>?
+}
+
+// No return value: the caller can't be handed a link, so the new node's identity
+// is reachable only through `list.tail` afterwards. Each `insert` result goes
+// directly into a field, and the second use reads it back out of that field.
+func push_back(mutate list: List, value: i32) {
+    if list.tail? as t {
+        t.next = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+        list.tail = t.next
+    } else {
+        list.head = list.nodes.insert(Node { value: value, next: none, prev: none })
+        list.tail = list.head
+    }
+}
+
+// Unchanged from the ordinary version: a parameter link is a borrow the caller
+// already holds in a field, which the rule permits.
+func remove(mutate list: List, take n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
+    list.nodes.delete(n)
+}
+
+// Removing by position instead of by a stashed link. This is what the caller has
+// to do without locals — and it is the honest cost of the rule.
+func remove_at(deleting list: List, index: i32) {
+    mut cur = list.head
+    mut i = 0
+    while cur? as n {
+        if i == index {
+            remove(mutate list, n)
+            return
+        }
+        cur = n.next
+        i += 1
+    }
+}
+
+func remove_value(deleting list: List, value: i32) {
+    mut cur = list.head
+    while cur? as n {
+        if n.value == value {
+            remove(mutate list, n)
+            return
+        }
+        cur = n.next
+    }
+}
+
+func print_forward(list: List) {
+    mut out = "forward:"
+    mut cur = list.head
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.next
+    }
+    println(out)
+}
+
+func print_backward(list: List) {
+    mut out = "backward:"
+    mut cur = list.tail
+    while cur? as n {
+        out = "{out} {n.value}"
+        cur = n.prev
+    }
+    println(out)
+}
+
+func main() {
+    mut list = List { nodes: Rack.new(), head: none, tail: none }
+
+    push_back(mutate list, 1)
+    push_back(mutate list, 2)
+    push_back(mutate list, 3)
+    push_back(mutate list, 4)
+
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the middle node (2)")
+    remove_value(deleting list, 2)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the head (1)")
+    remove_value(deleting list, 1)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the tail (4)")
+    remove_value(deleting list, 4)
+    print_forward(list)
+    print_backward(list)
+
+    println("len = {list.nodes.len()}")
+}

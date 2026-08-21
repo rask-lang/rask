@@ -2511,8 +2511,10 @@ impl TypeChecker {
         // Validate each argument annotation
         for (i, (arg, &param_id)) in args.iter().zip(param_ids.iter()).enumerate() {
             let Some(param_sym) = self.resolved.symbols.get(param_id) else { continue };
-            let (is_take, is_mutate) = match &param_sym.kind {
-                SymbolKind::Parameter { is_take, is_mutate } => (*is_take, *is_mutate),
+            let (is_take, is_mutate, is_deleting) = match &param_sym.kind {
+                SymbolKind::Parameter { is_take, is_mutate, is_deleting } => {
+                    (*is_take, *is_mutate, *is_deleting)
+                }
                 _ => continue,
             };
 
@@ -2521,10 +2523,26 @@ impl TypeChecker {
             // Deep const: passing a const binding to a `mutate` parameter is
             // rejected. `take` (ownership transfer) is still allowed — moving
             // a value is not mutation.
+            //
+            // A link argument is exempt from the *`let`* half of this, and only
+            // that half. `mutate n: Link<T>` writes the node the link points at;
+            // the link itself is a pointer that stays exactly as it was, so
+            // demanding `mut` on a `let` binding asks permission to change the one
+            // thing that isn't changing — and that demand is what would drag `mut`
+            // into a link's type position, which the box family doesn't do.
+            //
+            // A read-only *parameter* is a different question and stays rejected:
+            // there the caller never granted write access, so passing it on as
+            // `mutate` would launder a view into a writer in one hop. That's the
+            // guarantee that makes `n: Link<T>` a usable read-only view.
+            let arg_is_link = param_sym
+                .ty
+                .as_deref()
+                .is_some_and(|t| t.starts_with("Link<"));
             if is_mutate && !is_take {
                 if let ExprKind::Ident(arg_name) = &arg.expr.kind {
                     match self.lookup_binding_kind(arg_name) {
-                        Some(super::BindingKind::Let) => {
+                        Some(super::BindingKind::Let) if !arg_is_link => {
                             self.errors.push(TypeError::MutateConst {
                                 name: arg_name.clone(),
                                 span: arg.expr.span,
@@ -2576,7 +2594,30 @@ impl TypeChecker {
                 (ArgMode::Default, true, _) => {}
                 // Correct annotations are fine
                 (ArgMode::Own, true, _) => {}
-                (ArgMode::Mutate, _, true) => {}
+                (ArgMode::Mutate, _, true) if !is_deleting => {}
+                (ArgMode::Deleting, _, _) if is_deleting => {}
+                // PM5: the marker follows the signature. A `deleting` parameter is
+                // a `mutate` parameter that may also delete nodes the caller
+                // never named, so the call site says the more specific word —
+                // otherwise two different contracts print identically.
+                (ArgMode::Mutate, _, _) if is_deleting => {
+                    let arg_text = Self::argument_text(&arg.expr)
+                        .unwrap_or_else(|| param_name.clone());
+                    self.errors.push(TypeError::MissingDeletingMarker {
+                        callee: callee_name.clone(),
+                        arg: arg_text,
+                        param_name: param_name.clone(),
+                        span: arg.expr.span,
+                    });
+                }
+                (ArgMode::Deleting, _, _) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "deleting".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
                 // Wrong annotation type: `mutate` where `take` expected
                 (ArgMode::Mutate, true, false) => {
                     self.errors.push(TypeError::UnexpectedAnnotation {
@@ -2673,7 +2714,7 @@ impl TypeChecker {
             // `len` found for type `fs`".
             let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
             if !shadowed
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
@@ -4164,6 +4205,15 @@ impl TypeChecker {
                         }),
                         None => ContainerElem::Deferred,
                     },
+                    // A store iterates its links — the same shape as a pool
+                    // iterating handles, minus the redemption step.
+                    Some("Rack") => match arg(0) {
+                        Some(node) => ContainerElem::Known(Type::UnresolvedGeneric {
+                            name: "Link".to_string(),
+                            args: vec![GenericArg::Type(Box::new(node))],
+                        }),
+                        None => ContainerElem::Deferred,
+                    },
                     // A user generic may implement the iterator protocol, and
                     // its element type isn't readable from here.
                     _ => ContainerElem::Deferred,
@@ -4174,7 +4224,7 @@ impl TypeChecker {
     }
 
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
-        const NAMES: [&str; 4] = ["Vec", "Map", "Pool", "Handle"];
+        const NAMES: [&str; 6] = ["Vec", "Map", "Pool", "Handle", "Rack", "Link"];
         match ty {
             Type::UnresolvedGeneric { name, .. } => {
                 NAMES.iter().copied().find(|n| *n == name)
@@ -4189,6 +4239,72 @@ impl TypeChecker {
     /// #310: validate deferred index sites. Runs after constraint solving but
     /// before literal defaults, so an unsuffixed literal index is still a
     /// literal var — it can adapt to an integer Map key instead of forcing i32.
+    /// Judge every field/index write against its root binding, now that the
+    /// root's type is resolved.
+    ///
+    /// Writing through a reference is not mutating the binding that holds it: a
+    /// `Handle<T>` write lands in pool storage (mem.context/CC1) and a `Link<T>`
+    /// write lands in the node, so a read-only binding is fine for both. Any
+    /// other root gets the read-only-binding error.
+    ///
+    /// This runs after constraint solving because the answer depends on the
+    /// root's type, and during the statement walk that type is often still a
+    /// variable — a link bound by `if e.target? as t` comes from a deferred
+    /// `HasField`, and a handle can arrive the same way.
+    pub(super) fn validate_pending_mutations(&mut self) {
+        let pending = std::mem::take(&mut self.pending_mutations);
+        for pm in pending {
+            if matches!(pm.kind, super::BindingKind::Mut) {
+                continue;
+            }
+            let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
+            if self.handle_element_type(&ty).is_some() || self.link_node_type(&ty).is_some() {
+                continue;
+            }
+            // Still unknown after solving — stay quiet rather than guess. An
+            // unresolved root has its own diagnostic; guessing here would stack
+            // a second, wronger one on top.
+            if matches!(ty, Type::Var(_) | Type::Error) {
+                continue;
+            }
+            let name = pm.root;
+            let span = pm.span;
+            match pm.kind {
+                super::BindingKind::Let => {
+                    self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::WithRead => {
+                    self.errors.push(TypeError::MutateWithBinding { name, span })
+                }
+                super::BindingKind::Param => {
+                    self.errors.push(TypeError::MutateReadOnlyParam { name, span })
+                }
+                super::BindingKind::Bound(from) => {
+                    self.errors.push(TypeError::MutateBoundName { name, from, span })
+                }
+                super::BindingKind::Mut => {}
+            }
+        }
+    }
+
+    /// mem.pools/PF5: a write through a handle whose element type is backed by a
+    /// `using frozen Pool<T>` context is rejected. Deferred alongside the
+    /// read-only check for the same reason — it needs the handle's element type.
+    pub(super) fn validate_pending_frozen_writes(&mut self) {
+        let pending = std::mem::take(&mut self.pending_frozen_writes);
+        for pfw in pending {
+            let ty = self.resolve_named(&self.ctx.apply(&pfw.ty));
+            let Some(elem) = self.handle_element_type(&ty) else { continue };
+            if self.frozen_context_elems.iter().any(|e| *e == elem) {
+                self.errors.push(TypeError::FrozenContextWrite {
+                    op: "write".to_string(),
+                    elem: self.fmt_ty(&elem),
+                    span: pfw.span,
+                });
+            }
+        }
+    }
+
     pub(super) fn validate_pending_index(&mut self) {
         let pending = std::mem::take(&mut self.pending_index);
         for pi in pending {

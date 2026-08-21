@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A required edge — bare `Link<T>` with no `?` — is rejected for now (E0327).
+//
+// Not because the language forbids it: the adversarial pass killed required
+// edges (A4) and batches reversed that, so `Link<T>` and `Link<T>?` are both
+// meant to exist. It's rejected because neither half of a required edge's
+// lifecycle is implemented — no batch to construct it in, and no cascade or
+// restrict policy for when its target dies and there is no `none` to fall back
+// to (analysis.fourth-option).
+//
+// Inside a container a bare link is fine either way: delete drops the entry.
+
+struct Entity {
+    name: string
+    target: Link<Entity>          // ERROR: E0327 — required edge, needs `?` for now
+}
+
+struct Ok1 {
+    name: string
+    target: Link<Ok1>?            // fine: the edge can hold `none`
+    children: Vec<Link<Ok1>>      // fine: delete drops the entry
+    index: Map<string, Link<Ok1>> // fine: delete drops the entry
+}
+
+enum Event {
+    Died(Link<Entity>)            // ERROR: E0327 — required payload edge
+    Nothing
+}
+
+func main() {
+    println("does not compile")
+}

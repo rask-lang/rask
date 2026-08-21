@@ -230,6 +230,12 @@ pub enum TypeError {
         elem: String,
         span: Span,
     },
+    /// A required edge (`Link<T>`, no `?`) — needs batches to build and a delete
+    /// policy to destroy, neither of which the prototype has.
+    #[error("a required `Link<T>` edge is not supported yet — write `Link<T>?`")]
+    NonOptionalLink {
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -340,6 +346,15 @@ pub enum TypeError {
         annotation: String,
         param_name: String,
         param_index: usize,
+        span: Span,
+    },
+    /// PM4: an argument going into a `mutate` parameter is written
+    /// `mutate arg`. Method receivers are exempt.
+    #[error("`{callee}` can delete from `{arg}` — say `deleting` at the call site")]
+    MissingDeletingMarker {
+        callee: String,
+        arg: String,
+        param_name: String,
         span: Span,
     },
     /// PM4: an argument going into a `mutate` parameter is written
@@ -981,6 +996,7 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
             | StringIsImmutable { .. }
@@ -994,6 +1010,7 @@ impl TypeError {
             | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
+            | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
             | UnsafeRequired { .. }
             | TraitObjectSelfReturn { .. }

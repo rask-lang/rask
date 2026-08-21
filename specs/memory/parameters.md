@@ -6,7 +6,7 @@
 
 # Parameter Modes
 
-Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **take** (ownership transfer). Mutation is marked at both ends: `mutate` in the signature *and* on the argument at the call site.
+Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **deleting** (mutate, and may delete from a `Rack` the caller has links into), **take** (ownership transfer). Anything that changes what the caller may assume is marked at both ends: the word in the signature *and* on the argument at the call site.
 
 ## Modes
 
@@ -14,14 +14,86 @@ Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borro
 |------|------|-----------|-----------|--------------|
 | **PM1: Borrow** | Borrow | `param: T` | `f(x)` | Value still valid |
 | **PM2: Mutate** | Mutate | `mutate param: T` | `f(mutate x)` — marker required (PM4) | Value still valid |
+| **PM2b: Deleting** | Mutate + delete | `deleting param: T` | `f(deleting x)` — marker required (PM4) | Value still valid; links into it are not |
 | **PM3: Take** | Take | `take param: T` | `f(x)` or `f(own x)` — marker optional | Value invalid |
 
 | Rule | Description |
 |------|-------------|
 | **PM4: Call-site mutate marker** | An argument passed to a `mutate` parameter is written `mutate arg` at the call site. Omitting it is a compile error with the one-token fix. Method receivers are exempt: `player.take_damage(10)` needs no marker — the receiver is understood to be the thing operated on |
-| **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate`, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
+| **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate` or `deleting`, and it is *that* word at the call site, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
 | **PM6: A borrow can't be given away** | A `param: T` cannot be consumed inside the body — not by a `take` parameter, not by a `take self` method, not by storing it into a field or another aggregate, and `own` at the inner call site changes nothing. The caller keeps the value and goes on using it, so consuming it would leave them holding something that's gone (`mem.linear/L1`). Compile error at the consumption, pointing at the declaration; `take` on the declaration is the fix |
 | **PM7: A consumed `mutate` parameter is replaced** | A `mutate` parameter *may* be consumed — exclusive access is what makes taking the value out and writing a replacement back the mode's whole point. PM2 promises the value is still there when the call returns, so a replacement has to be assigned on every path that reaches the return. Consumed on some paths and replaced on none, or on only some, is a compile error. A function that keeps the value for good declares `take` instead, so the call site shows it going |
+| **PM8: `deleting` implies `mutate`** | Deleting a node mutates the rack it lives in, so `deleting` grants everything `mutate` does. Writing both parses and is redundant; `deleting param: T` alone is the idiom. The two are a lattice — `param` → `mutate param` → `deleting param` — not independent axes |
+| **PM9: What `deleting` is for** | A callee may delete a link the caller handed over as a `take` parameter with no annotation: the name is consumed at the call site, so the caller watches it die. `deleting` covers the case the caller cannot see — the callee picking its own victims, by iterating the rack, by `clear`, or by handing a link it derived to something that consumes it. At such a call every link the caller holds into that rack is revoked, because which nodes died is not knowable from outside |
+
+### A `Link<T>` parameter is a view or a writer
+
+`mutate` on a link means "I will write the node", not "I will change the link".
+That distinction does real work, because it is what a read-only link is:
+
+<!-- test: skip -->
+```rask
+// A view. Reads the node and everything reachable from it, writes none of it.
+func total(n: Link<Node>) -> i32 {
+    mut t = n.value
+    if n.child? as c { t = t + c.value }
+    return t
+}
+
+// A writer. Says so in the signature; needs no rack in scope.
+func zero_all(mutate n: Link<Node>) {
+    n.value = 0
+    if n.child? as c { c.value = 0 }
+}
+
+let a = rack.insert(Node { value: 5, child: none })
+zero_all(mutate a)              // `let a` — see PM10
+```
+
+Two properties make the view worth having, and both are checked. A view cannot
+be passed on as `mutate`, so it can't be laundered into a writer in one hop. And
+it stays a view when you follow an edge — `c` above inherits nothing, because no
+permission is the default.
+
+Write permission travels the other way: it propagates *outward* along edges, so
+a writer may write anything reachable. An edge only connects nodes in one rack,
+so if you may write this node you may write the ones it points at.
+
+This is why there is no `LinkView<T>`. A read-only *type* would have to either
+propagate along every edge or leak in one hop, and it would put `mut` in a type
+position, which no other box does. The mode is the same borrow-versus-mutate
+distinction every other type already has.
+
+| Rule | Description |
+|------|-------------|
+| **PM10: A link's mutability is the node's** | `mutate n: Link<T>` grants writing the node the link points at; the link itself is a pointer and is not modified. So a `let` binding may be passed as `mutate` when the parameter is a link — demanding `mut` there would ask permission to change the one thing that isn't changing. A read-only *parameter* is not exempt: passing `n: Link<T>` on as `mutate` is an error, or a view would launder into a writer |
+
+### Deleting Mode
+
+`deleting` exists because `Rack<T>` hands out `Link<T>`, and a link is a pointer to a node rather than a ticket to look one up. A delete the caller can see is safe without ceremony; a delete it cannot see is a use after free. The mode is what makes the second case visible.
+
+<!-- test: skip -->
+```rask
+// Deletes exactly what it was handed — no annotation. The `take` already tells
+// the caller which node died.
+func remove(mutate list: List, take n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    list.nodes.delete(n)
+}
+
+// Picks its own nodes, so it says so — and the call revokes the caller's links.
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids { delete_subtree(deleting scene, c) }
+    scene.nodes.delete(n)
+}
+```
+
+The word is contextual, not reserved: it is a mode only when a parameter name or another mode word follows it, so `func d(deleting: i32)` and a field named `deleting` keep working.
+
+Omitting it where it is needed is a compile error in the callee (E0329), naming the parameter to declare. Writing `mutate` where the signature says `deleting` is an error at the call site (E0330), with the one-token fix — two different contracts should not print the same.
+
+**Status:** the mode is accepted and implemented; `Rack<T>`/`Link<T>` themselves are still an exploration (`analysis.fourth-option`) with no normative spec and no native lowering.
 
 ### Borrow Mode (Default)
 
@@ -72,7 +144,7 @@ Ownership transfer. Caller gives up the value.
 ```rask
 func consume(take data: Data) {
     // Can do anything: store, send, drop
-    storage.store(data)
+    storage.rack(data)
 }
 
 let d = Data.new()
@@ -206,8 +278,8 @@ ERROR [mem.parameters/PM3]: cannot take ownership of borrowed parameter
    |
 5  |  func process(data: Data) {
    |             ^^^^ 'data' is borrowed, not taken
-6  |      storage.store(data)
-   |                    ^^^^ 'store' takes ownership
+6  |      storage.rack(data)
+   |                    ^^^^ 'rack' takes ownership
 
 FIX: Add 'take' to receive ownership:
    |

@@ -15,7 +15,7 @@ Look at what actually gets declared:
 
 <!-- test: skip -->
 ```rask
-tasks: Graph<Task>          // a task store. Not a graph
+tasks: Graph<Task>          // a task rack. Not a graph
 entities: Graph<Entity>     // a game's entities. Not a graph
 lines: Graph<Line>          // a text buffer. Not a graph
 users: Graph<User>          // a user table. Not a graph
@@ -69,7 +69,7 @@ struct Task {
     deps: Vec<Link<Task>>
 }
 
-struct Store {
+struct Rack {
     tasks: Pool<Task>
     by_id: Map<TaskId, Link<Task>>
 }
@@ -131,7 +131,7 @@ Working candidates, judged as pairs:
 | `Pool<T>` + `Link<T>` | nothing — two unrelated words | familiar; zero migration on container declarations; but carries object-pool baggage (recycling, reuse) that was never what this is |
 | **`Table<T>` + `Link<T>`** | the actual model — this *is* `ON DELETE SET NULL`, so the DB analogy is a teaching tool, not a metaphor | "table" means hash-map in Lua and rows-and-columns to everyone else; game devs may find `Table<Entity>` odd |
 | `Registry<T>` + `Link<T>` | things register and get identity | verbose; `Registry<Entity>` is a mouthful in hot-path code |
-| `Store<T>` + `Link<T>` | plain and honest | collides with real programs — the flagship's own struct is named `Store` |
+| `Rack<T>` + `Link<T>` | plain and honest | collides with real programs — the flagship's own struct is named `Rack` |
 
 **`Table<T>` is out.** It isn't a table — no rows, no columns, no schema in
 the SQL sense, and "table" already means hash-map to a large audience. The
@@ -185,22 +185,22 @@ and leaves the plain ones. Cold-read again, on the survivors:
 
 | Candidate | `<Task>` | `<Entity>` | `<Line>` | Notes |
 |---|---|---|---|---|
-| **`Store`** | good | good | good | plain, accurate, reads naturally everywhere. Common in user code — but so is `Map`; shadowing is a general issue, not a reason to pick a worse name |
+| **`Rack`** | good | good | good | plain, accurate, reads naturally everywhere. Common in user code — but so is `Map`; shadowing is a general issue, not a reason to pick a worse name |
 | `Registry` | good | good | good | the most precise word — things register, get identity, deregister — but long in hot-path declarations |
 | `Roll` | ok | ok | odd | short and correct (a roll of members) — collides with rotate/dice |
 | `Bank` | ok | ok | ok | neutral, faintly financial |
 
-**Recommendation: `Store<T>` + `Link<T>`.**
+**Recommendation: `Rack<T>` + `Link<T>`.**
 
 <!-- test: skip -->
 ```rask
 struct World {
-    entities: Store<Entity>
+    entities: Rack<Entity>
     player: Link<Entity>?
 }
 
 struct Tracker {
-    tasks: Store<Task>
+    tasks: Rack<Task>
     by_id: Map<TaskId, Link<Task>>
 }
 ```
@@ -239,17 +239,94 @@ leaving the file, whether a field holds a value or points at one. The
 back-pointer it implies is an ordinary small opaque cost, and doesn't need
 to be visible at all.
 
-## Recommendation so far
-
-`Store<T>` and `Link<T>?`.
+## Decided: `Rack<T>` and `Link<T>?`
 
 - `Link<T>` — decided. The wrapper is non-negotiable: it tells a reader
   whether a field holds a value or points at one, without leaving the file.
-- `Store<T>` — the container, with `Registry<T>` the runner-up. `Pool` is
-  rejected outright: it names a supply of interchangeable things, the
-  opposite of a container built on stable identity.
+- `Rack<T>` — decided, and implemented. `Pool` is rejected outright: it names
+  a supply of interchangeable things, the opposite of a container built on
+  stable identity.
 - `node struct` (wrapper-free) — rejected. Makes value-versus-link a
   non-local fact.
+
+### Why `Rack` and not `Store`
+
+`Store<T>` was the working name and it collides with real programs. Not
+hypothetically — in this repo, in the flagship:
+
+<!-- test: skip -->
+```rask
+// examples/validation/store.rk
+const store = Mutex.new(Store.new())     // the user's own struct
+
+// tests/suite/t_map_struct_values.rk
+struct Store { users: Map<string, User> }
+```
+
+`Store.new()` meant either the stdlib container or the program's own type
+depending on which file you were in, in the example that exists to show what
+Rask looks like. A container name that a domain wants for itself is the wrong
+name, and `Store` is one of the words every application reaches for.
+
+`Rack` fixes the collision and, unlike `Pool`, teaches something true. A rack
+holds many things in individual places: each one put in and taken out on its
+own, each fetched as *that* one rather than *a* one. That's stable identity,
+which is the model. `Pool` taught the opposite and that is why it fell.
+
+Weighed and rejected on the way: `Table` (isn't one, and means hash-map to a
+large audience), `Roster`/`Colony`/`Ledger`/`Web` (each reads wrong outside one
+domain — `Ledger<Line>`, `Colony<Task>`), `Slab` (see below), `Bag` (a term of
+art for a collection *without* identity — precisely wrong), `Shelf` (implies a
+row, and "shelved" means
+abandoned), `Truss` and `Plexus` (both name the topology the contents might
+form, which is why `Graph` fell in the first place), `Hird`/`Flokk`/`Tun`/`Lag`
+(Norse register, but each reads as a false friend in English — "herd" and
+"flock" are interchangeability again, a "tun" is a cask, and "lag" is latency).
+
+The near-misses were `Yard` — a rail yard is individually identified cars,
+coupled to each other, shunted in and out one at a time, but it carries two
+everyday homographs — and `Ward`, which is the only candidate that beats
+`Rack` on anything: a ward admits and discharges individuals *not* identified
+by bed position. Which points at the one thing to keep in view.
+
+### `Slab` — the accurate word, and still the wrong name
+
+`Rack` *is* a slab: a flat array of slots, a free list, elements that never move.
+So the obvious question is why it isn't called one.
+
+Not for the reason I first gave. I rejected `Slab` as "Rust's word", which is
+false — it's Jeff Bonwick's, from the Solaris slab allocator in 1994, and it is
+ordinary kernel vocabulary (Linux ships SLAB, SLUB and SLOB). Rust's `slab` crate
+borrowed it like everyone else. On provenance it passes.
+
+It fails on the same test that killed `Graph<T>` at the top of this document.
+`Graph` named a *topology* the contents might have; `Slab` names a *memory
+layout*. Both describe the wrong thing — a container should be named for the job
+it does, not for the shape of its insides. `Slab<Task>` puts an allocator word in
+a task tracker's type.
+
+There is also a durability argument. If the backing store changes — nodes inline
+rather than boxed, or a compacting variant — `Slab` stops being true. `Rack`
+doesn't, because "individual places, things stay put, removed one at a time" is a
+role and survives a reimplementation.
+
+So the word is right in prose and wrong as a name, which is why
+`analysis.fourth-option` has a section called "The Rack is a slab" and the type is
+still called `Rack`.
+
+### The caveat, on the record
+
+A rack's occupants are conventionally identified **by position** — slot 7, 3U
+from the bottom. That is the `Handle` model: an index redeemed against the
+container. A `Link` does not go through the rack at all; it points straight at
+the node. So the word faintly suggests the mechanism it replaces.
+
+It's mild — you can walk up and touch the machine in slot 7 without consulting
+the rack — and it's much weaker than `Pool`'s failure, which taught the wrong
+thing about identity itself rather than about how identity is spelled. But it
+is the same *category* of error, so it belongs here rather than in someone's
+head. If it turns out to mislead in practice, `Ward<T>` is the replacement that
+fixes exactly this and costs a slightly odd read in non-entity domains.
 
 Everything else in the exploration is unaffected — this is spelling, and the
 semantics were settled first on purpose.
@@ -274,7 +351,7 @@ Rask's transparency principle says major costs belong in the source.
 
 `Box<T>` is rejected for two reasons: it's familiar rather than better (a
 "box" says nothing about heap allocation), and `mem.boxes` already uses "box"
-for the whole family — `Cell`, `Store`, `Shared`, `Owned`. Naming one member
+for the whole family — `Cell`, `Rack`, `Shared`, `Owned`. Naming one member
 after the category is worse than the status quo.
 
 ### `Heap<T>`

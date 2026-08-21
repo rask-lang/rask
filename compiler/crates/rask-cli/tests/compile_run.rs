@@ -1674,6 +1674,532 @@ fn error_frozen_pool_write() {
     assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
 }
 
+/// Run a .rk file given by repo-relative path via `rask run --interp`.
+///
+/// For the comparison programs in `specs/analysis/prototype/`: the documented
+/// programs are the tested ones, so the write-up can't drift from what runs.
+fn run_interp_repo_path(rel: &str) -> (String, i32) {
+    let rask = rask_binary();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join(rel);
+    let out = Command::new(&rask)
+        .args(["run", "--interp"])
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run --interp");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+// The litmus comparison's headline claim: the same program written with
+// `Pool`+`Handle` and with `Rack`+`Link` produces the same output. That is what
+// makes the ergonomics comparison in the write-up a comparison rather than two
+// unrelated programs, so it is asserted rather than eyeballed.
+// analysis.fourth-option: the cascade hole, closed by the `deleting` parameter
+// mode. A function that takes the rack mutably and picks its own nodes to delete
+// has to say so, and the call then revokes every link local into that rack.
+//
+// Asserts the rejection, and that the call site needed no new marker — the mark is
+// on the declaration, because this very error backstops the misread while a misread
+// mutation has nothing to catch it (the rule E0373 already applies).
+// analysis.fourth-option: which deletes need `deleting` and which don't. The line
+// is whether the caller can see it: a link consumed at the call site is visible, a
+// node the callee picked is not.
+#[test]
+fn error_rack_delete_undeclared() {
+    let (failed, out) = compile_error_output("rack_delete_undeclared.rk");
+    assert!(failed, "an undeclared unnamed delete must be rejected: {}", out);
+    // Three ways to pick your own victim: walk the rack, clear it, or hand a
+    // link you derived to something that consumes it.
+    assert_eq!(
+        out.matches("error[E0329]").count(),
+        4,
+        "each unnamed delete is reported once: {}",
+        out
+    );
+    // With two racks of the same node type, blame follows the rack the consuming
+    // call receives — not a guess about where the link came from. So `left` is
+    // named and `right`, which nothing deletes from, is left out of it.
+    assert!(
+        out.contains("declare `deleting left`") && !out.contains("declare `deleting right`"),
+        "blame must land on the rack the call hands over, and only that one: {}",
+        out
+    );
+    assert!(
+        out.contains("declare `deleting g`"),
+        "the fix names the parameter: {}",
+        out
+    );
+    // And the one that deletes only what it was handed needs nothing — a `take`
+    // parameter is already visible at the call site.
+    assert!(
+        !out.contains("drop_one(mutate g, a)"),
+        "deleting a `take` parameter must not need the annotation: {}",
+        out
+    );
+}
+
+#[test]
+fn rack_link_cascade_delete_is_rejected() {
+    let rask = rask_binary();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("specs/analysis/prototype/cascade_hole_links.rk");
+    let out = Command::new(&rask)
+        .args(["check"])
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "reading a link after a `deleting` call must be rejected: {}",
+        text
+    );
+    assert!(
+        text.contains("E0328") && text.contains("`kid` names a deleted node"),
+        "the caller's *other* link is what dies, not just the one passed in: {}",
+        text
+    );
+    // PM5: the marker follows the signature, so a `deleting` parameter takes
+    // `deleting` at the call site. Two different contracts, two different words.
+    assert!(
+        text.contains("cascade(deleting scene, parent)"),
+        "the call site names the mode the signature declares: {}",
+        text
+    );
+    assert!(
+        !text.contains("E0329"),
+        "the declaration is correct, so no undeclared-delete error: {}",
+        text
+    );
+}
+
+#[test]
+fn rack_link_litmus_pairs_agree() {
+    let pairs = [
+        ("L1 doubly-linked list", "l1_list_handles.rk", "l1_list_links.rk"),
+        ("L3 scene tree", "l3_scene_handles.rk", "l3_scene_links.rk"),
+    ];
+    for (label, handles, links) in pairs {
+        let (h_out, h_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{handles}"));
+        let (l_out, l_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{links}"));
+        assert_eq!(h_code, 0, "{label}: handle version should run: {h_out}");
+        assert_eq!(l_code, 0, "{label}: link version should run: {l_out}");
+        assert!(!h_out.trim().is_empty(), "{label}: handle version printed nothing");
+        assert_eq!(
+            h_out, l_out,
+            "{label}: the two memory models must agree.\nhandles:\n{h_out}\nlinks:\n{l_out}"
+        );
+    }
+
+    // L2 is the flagship and deliberately does *not* match line-for-line: the
+    // handle version can still ask about a removed node, the link version has
+    // nothing left to ask. Both must run, and both must reach round 2 with the
+    // dead target's edges cleared.
+    for name in ["l2_targeting_handles.rk", "l2_targeting_links.rk"] {
+        let (out, code) = run_interp_repo_path(&format!("specs/analysis/prototype/{name}"));
+        assert_eq!(code, 0, "{name} should run: {out}");
+        assert!(out.contains("-- round 2"), "{name} should reach round 2: {out}");
+        assert!(
+            out.contains("a: health=100 target=none"),
+            "{name}: a's edge to the dead target should be cleared by round 2: {out}"
+        );
+    }
+}
+
+// ─── Rack<T> + Link<T> (analysis.fourth-option prototype) ───
+//
+// The *semantics* live in tests/suite/p11_rack_link.rk and
+// p12_rack_link_churn.rk as self-asserting `test` blocks, so the differential
+// harness runs them on both backends and reports the day native support lands.
+// What's left here is what a single self-asserting program can't express:
+// stderr instrumentation, and comparing two programs against each other.
+
+// The delete cost the analysis flags as the model's one regression: linear in
+// in-degree, and independent of rack size. `RASK_RACK_STATS=1` reports the
+// fixup work on stderr.
+#[test]
+fn rack_link_delete_cost_follows_in_degree() {
+    let rask = rask_binary();
+    let run = |name: &str| -> String {
+        let out = Command::new(&rask)
+            .args(["run", "--interp"])
+            .arg(fixture(name))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("RASK_RACK_STATS", "1")
+            .output()
+            .expect("failed to run rask");
+        assert!(out.status.success(), "{} should run", name);
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    // 200 nodes all pointing at one hub: 200 edges to fix.
+    let fanin = run("rack_link_fanin.rk");
+    assert!(
+        fanin.contains("deletes=1 edges_fixed=200 holders_visited=200"),
+        "fan-in delete should walk its 200 incoming edges: {}",
+        fanin
+    );
+
+    // In-degree 1 in a 500-node rack: one holder, not 499. This is the
+    // assertion that a scan would fail.
+    let sparse = run("rack_link_sparse_delete.rk");
+    assert!(
+        sparse.contains("deletes=1 edges_fixed=1 holders_visited=1"),
+        "a low-degree delete must not scale with rack size: {}",
+        sparse
+    );
+
+    // A field rewritten 50 times leaves one backlink, not 50 stale ones, and
+    // deleting a target it was re-pointed away from visits nobody.
+    let unlink = run("rack_link_unlink_on_overwrite.rk");
+    assert!(
+        unlink.contains("deletes=2 edges_fixed=1 holders_visited=1"),
+        "overwriting an edge should unlink the old backlink: {}",
+        unlink
+    );
+}
+
+// Using a link after its node is deleted is a compile error. The move checker is
+// the mechanism, but the report has to say what actually happened: `delete` freed
+// the node, so this is a use after free, proven rather than checked. Reporting it
+// as a move would be wrong — nothing moved — and the generic move advice
+// ("add `.clone()`") would hand back a second dead pointer.
+// mem.linear/L1 has to hold in a `test` body too. Test and benchmark bodies were
+// walked without the scope-exit check, so a resource left open inside one compiled
+// clean while the identical code in a function was rejected — and a test body is
+// exactly where you exercise a resource.
+// mem.linear/L1 is owed per resource *field*, not per binding. A struct holding
+// two resources owes both; closing one used to discharge the holder outright, so
+// the other was dropped in silence. The path in the message is the point — naming
+// the root can't tell you which one you missed.
+// Where a field path exists the obligation is per field; where one doesn't, the
+// whole binding is owed. That fallback is sound but it names the root, which reads
+// like a compiler bug unless the message says which shape stopped the walk.
+// A read-only link is a parameter mode, not a type. `n: Link<T>` is a view;
+// `mutate n: Link<T>` writes. That's what a `LinkView<T>` type was reaching for,
+// and the mode delivers it without a second type, without `mut` in a type
+// position, and without threading the rack — links are the thing you pass around.
+#[test]
+fn error_a_link_view_cannot_write() {
+    let (failed, out) = compile_error_output("link_view_cannot_write.rk");
+    assert!(failed, "a view must not be able to write: {}", out);
+    // Writing directly, and one edge along: the view has to survive following
+    // an edge, or it guarantees nothing.
+    assert_eq!(
+        out.matches("error[E0378]").count(),
+        2,
+        "a view can't write its node or a node it reaches: {}",
+        out
+    );
+    assert!(
+        out.contains("is a view") && out.contains("was lent for reading"),
+        "the message names the mode, not a missing rack: {}",
+        out
+    );
+    // And the fix is the mode on the declaration, not a rack parameter.
+    assert!(
+        out.contains("mutate n: Link<…>") && !out.contains("add a `mutate rack"),
+        "the fix is the parameter mode: {}",
+        out
+    );
+    // Laundering a view into a writer is rejected, directly and via an edge.
+    assert!(
+        out.contains("cannot mutate parameter `n`") && out.contains("cannot mutate `c`"),
+        "a view must not be passable as `mutate`: {}",
+        out
+    );
+}
+
+// A link may not outlive the rack it points into. Nothing else caught this: no
+// `delete` happened, so the use-after-delete rule never looked, and a link is
+// Copy so it escapes the scope that produced it — opting out of the one
+// mechanism (block-scoped borrowing) built to stop exactly this.
+#[test]
+fn error_link_outlives_its_rack() {
+    let (failed, out) = compile_error_output("link_outlives_rack.rk");
+    assert!(failed, "a link escaping its rack's scope must be rejected: {}", out);
+    // Bare return, inside a struct, inside a tuple, and out through an
+    // assignment to a longer-lived name.
+    assert_eq!(
+        out.matches("error[E0379]").count(),
+        4,
+        "every way out: bare, wrapped, tupled, assigned: {}",
+        out
+    );
+    // The two legitimate shapes must not be caught: a link into the caller's
+    // rack, and a link used in the scope that made it.
+    assert!(
+        !out.contains("from_a_parameter") && !out.contains("same_scope"),
+        "a link into a parameter rack is an ordinary accessor: {}",
+        out
+    );
+    assert!(
+        out.contains("dies when this function returns")
+            && out.contains("outlives `s`"),
+        "the message says which name outlives which: {}",
+        out
+    );
+}
+
+// A link says which node; the rack says whether you may write it. Links were
+// exempt from the rule `Handle` has always had — `scene.nodes[h].f = x` needs
+// `mutate scene` — so a plain borrow of a rack could rewrite every node in it.
+// The showcase program did exactly that, with a comment calling it the win over
+// handles.
+#[test]
+fn error_node_write_needs_a_writable_rack() {
+    let (failed, out) = compile_error_output("node_write_needs_rack.rk");
+    assert!(failed, "writing a node through a readable rack must be rejected: {}", out);
+    // Named rack, rack in a field, and no rack at all.
+    assert_eq!(
+        out.matches("error[E0378]").count(),
+        5,
+        "every way of writing a node without permission: {}",
+        out
+    );
+    assert!(
+        out.contains("`world` is only readable here") && out.contains("`scene` is only readable here"),
+        "the rack is named, since that's what has to change: {}",
+        out
+    );
+    // A link that arrived alone grants nothing — and it reports as a view, with
+    // the parameter mode as the fix. Naming a rack there would be the wrong
+    // advice: links are what you pass around, so the permission belongs on the
+    // link's own declaration rather than on a rack threaded in beside it.
+    assert!(
+        out.contains("`e` is a view") && out.contains("was lent for reading"),
+        "a link that arrived alone is a view: {}",
+        out
+    );
+    assert!(
+        out.contains("mutate e: Link<…>") || out.contains("mutate scene"),
+        "the fix names what to change: {}",
+        out
+    );
+}
+
+#[test]
+fn error_resource_in_untrackable_shape_says_why() {
+    let (failed, out) = compile_error_output("resource_in_untrackable_shape.rk");
+    assert!(failed, "a resource with no field path must still be owed: {}", out);
+    // An optional field *does* have a path — the walk names `h.c`, which beats any
+    // shape note. The fallback is for shapes with no path at all.
+    assert!(
+        out.contains("resource `h.c` must be consumed"),
+        "a resource behind an optional field is still named by its path: {}",
+        out
+    );
+    // A tuple element has no name to give, so the whole binding is owed — and the
+    // message says which shape stopped the walk, or a root-named error reads like
+    // a compiler bug.
+    assert!(
+        out.contains("resource `t` must be consumed")
+            && out.contains("the resource sits in a tuple"),
+        "the shape that blocked the walk is named: {}",
+        out
+    );
+}
+
+#[test]
+fn error_resource_field_partially_consumed() {
+    let (failed, out) = compile_error_output("resource_field_partially_consumed.rk");
+    assert!(failed, "a half-consumed holder must be rejected: {}", out);
+    assert!(
+        out.contains("resource `p.b` must be consumed"),
+        "the unconsumed field is named by path, not by root: {}",
+        out
+    );
+    assert!(
+        out.contains("resource `n.inner.b` must be consumed"),
+        "and the path reaches through nesting: {}",
+        out
+    );
+    // The consumed halves must not be reported — over-reporting here would make
+    // the correct two-resource program uncompilable, which is the bug this
+    // replaced running in the other direction.
+    assert!(
+        !out.contains("`p.a`") && !out.contains("`n.inner.a`"),
+        "a consumed field must not still be owed: {}",
+        out
+    );
+    assert_eq!(
+        out.matches("error[E0805]").count(),
+        2,
+        "exactly the two outstanding fields: {}",
+        out
+    );
+}
+
+// #804: mem.linear/L1 across a call boundary. A parameter without `take` is a
+// borrow, so consuming it consumes one value twice — and for a `@resource` that
+// ran the cleanup twice, caught only by the interpreter's runtime flag while
+// native had none. `mutate` is the exception, and only half of one: consuming an
+// exclusive borrow is fine if something is put back.
+// mem.linear/L1 has to hold at every exit. The consumption check ran at the end of
+// the body only, so an early `return` that skipped a `.close()` compiled clean —
+// pre-existing, and the same mechanism as a `mutate` parameter left empty on one
+// path.
+#[test]
+fn error_resource_leaked_on_early_return() {
+    let (failed, out) = compile_error_output("resource_leaked_on_early_return.rk");
+    assert!(failed, "an early return that skips the close must be rejected: {}", out);
+    assert!(
+        out.contains("E0805") && out.contains("must be consumed"),
+        "the ordinary linearity error, reported at the return: {}",
+        out
+    );
+    // One report, not one per exit.
+    assert_eq!(
+        out.matches("error[E0805]").count(),
+        1,
+        "a body with several exits reports each name once: {}",
+        out
+    );
+}
+
+#[test]
+fn error_consumed_borrow_param() {
+    let (failed, out) = compile_error_output("consumed_borrow_param.rk");
+    assert!(failed, "consuming a borrowed parameter must be rejected: {}", out);
+    // The resource case and the plain-value case are the same bug; a resource is
+    // just where it hurts.
+    assert!(
+        out.contains("cannot give away `c`"),
+        "the @resource double-close must be caught: {}",
+        out
+    );
+    // Plain twice, a call-site `own` that doesn't buy the permission, and a
+    // resource behind `mutate` — which stays banned even with a replacement put
+    // back, because mem.parameters says only `take` may consume a resource.
+    assert_eq!(
+        out.matches("error[E0835]").count(),
+        4,
+        "every way of giving away a borrow: {}",
+        out
+    );
+    // `mutate` on an ordinary move-only value consumes legally but owes a
+    // replacement — a different error, and owed at every exit, not just the last.
+    assert_eq!(
+        out.matches("error[E0836]").count(),
+        2,
+        "one with no replacement at all, one where an early return skips it: {}",
+        out
+    );
+    // Refilling a `mutate` slot is what the mode is for, so the replacement must
+    // not itself read as a leak — the caller is about to get that value back.
+    assert!(
+        !out.contains("error[E0805]"),
+        "a replacement assigned into a `mutate` parameter isn't this body's to consume: {}",
+        out
+    );
+    assert!(
+        out.contains("take b: ") && out.contains("take c: "),
+        "the fix names the declaration to change: {}",
+        out
+    );
+}
+
+#[test]
+fn error_resource_unconsumed_in_test_body() {
+    let (failed, out) = compile_error_output("resource_unconsumed_in_test_body.rk");
+    assert!(failed, "an unconsumed resource in a test body must be rejected: {}", out);
+    assert!(
+        out.contains("E0805") && out.contains("must be consumed"),
+        "should be the ordinary linearity error, not something test-specific: {}",
+        out
+    );
+}
+
+#[test]
+fn error_rack_link_use_after_delete() {
+    let (failed, out) = compile_error_output("rack_link_use_after_delete.rk");
+    assert!(failed, "using a link after its delete must be rejected: {}", out);
+    assert!(
+        out.contains("E0328") && out.contains("use after free"),
+        "should be reported as a use after free, not a move: {}",
+        out
+    );
+    assert!(
+        !out.contains("clone()"),
+        "must not suggest cloning — that would be a second dead pointer: {}",
+        out
+    );
+    // Six: a read, a write, `contains`, a read after `clear`, a read after a
+    // bulk-delete loop, and a read through a *derived* alias of the deleted node.
+    // `contains` is correct too — a non-optional link's type already asserts the
+    // node is alive, so asking is a question with no meaning.
+    assert_eq!(
+        out.matches("error[E0328]").count(),
+        6,
+        "exactly the six uses after delete rejected: {}",
+        out
+    );
+    assert!(
+        out.contains("rack.clear()"),
+        "the `clear` case must be one of them: {}",
+        out
+    );
+    assert!(
+        out.contains("may name a deleted node"),
+        "the loop case is path-dependent, so it must hedge: {}",
+        out
+    );
+    // The intra-function sibling of the cascade hole: `t` came out of an edge, so
+    // it may be a second name for whatever the delete named.
+    assert!(
+        out.contains("`t` names a deleted node"),
+        "a derived alias must not survive a named delete: {}",
+        out
+    );
+    // And the other half — precision. `a` has its own `insert` behind it, so it
+    // cannot be a second name for `b`, and a blanket kill would flag it.
+    assert!(
+        !out.contains("`a` names a deleted node") && !out.contains("`a` may name"),
+        "a link with its own insert must survive an unrelated named delete: {}",
+        out
+    );
+    // Nothing here is an ordinary move, so no E0800 should leak into this fixture.
+    assert!(
+        !out.contains("E0800"),
+        "delete invalidation must not report as a move: {}",
+        out
+    );
+}
+
+// analysis.fourth-option: a required edge (`Link<T>`, no `?`) is unsupported for
+// now — it needs a batch to construct and a cascade/restrict delete policy to
+// destroy, and neither is built. A bare link inside a Vec/Map stays legal,
+// because delete drops the entry instead of nulling it.
+#[test]
+fn error_non_optional_link() {
+    let (failed, out) = compile_error_output("non_optional_link.rk");
+    assert!(failed, "a required `Link<T>` edge must be rejected for now: {}", out);
+    assert!(out.contains("E0327"), "should be a non-optional-link error (E0327): {}", out);
+    // The struct field and the enum payload, and nothing else: the `Link<T>?`
+    // field and the Vec/Map-of-link fields in the same file must pass.
+    assert_eq!(
+        out.matches("error[E0327]").count(),
+        2,
+        "exactly the two required edges rejected: {}",
+        out
+    );
+}
+
 #[test]
 fn error_type_mismatch_arg() {
     assert!(compile_error("type_mismatch_arg.rk"), "should reject type mismatch in argument");

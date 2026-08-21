@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Delete cost follows in-degree, not rack size.
+//
+// One node with in-degree 1 in a rack of 500. If the fixup found incoming
+// edges by scanning the rack it would visit 499 nodes; following backlinks it
+// visits one:
+//
+//     $ RASK_RACK_STATS=1 rask run --interp sparse_delete_links.rk
+//     rack stats: deletes=1 edges_fixed=1 holders_visited=1
+//
+// This is the companion to fanin_links.rk, where in-degree happens to equal
+// rack size and so can't tell the two costs apart.
+
+const FILLER: i32 = 498
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+}
+
+func main() {
+    mut rack: Rack<Node> = Rack.new()
+
+    let victim = rack.insert(Node { id: -1, peer: none })
+    let pointer = rack.insert(Node { id: -2, peer: none })
+    pointer.peer = victim
+
+    mut i = 0
+    while i < FILLER {
+        let _n = rack.insert(Node { id: i, peer: none })
+        i += 1
+    }
+
+    println("nodes = {rack.len()}, victim in-degree = 1")
+
+    rack.delete(victim)
+
+    println("after delete, nodes = {rack.len()}")
+
+    if pointer.peer? as _p {
+        println("the one incoming edge survived -- WRONG")
+    } else {
+        println("the one incoming edge was nulled")
+    }
+}

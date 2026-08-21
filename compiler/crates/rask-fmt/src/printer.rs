@@ -703,20 +703,25 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// `deleting` before `mutate`: it implies `mutate`, so printing both would be
+    /// redundant and printing only `mutate` would lose the declaration — which
+    /// then contradicts the call site's `deleting` marker.
+    fn emit_param_mode(&mut self, param: &Param) {
+        if param.is_take {
+            self.emit("take ");
+        } else if param.is_deleting {
+            self.emit("deleting ");
+        } else if param.is_mutate {
+            self.emit("mutate ");
+        }
+    }
+
     fn format_param(&mut self, param: &Param) {
         if param.name == "self" {
-            if param.is_take {
-                self.emit("take ");
-            } else if param.is_mutate {
-                self.emit("mutate ");
-            }
+            self.emit_param_mode(param);
             self.emit("self");
         } else {
-            if param.is_take {
-                self.emit("take ");
-            } else if param.is_mutate {
-                self.emit("mutate ");
-            }
+            self.emit_param_mode(param);
             self.emit(&param.name);
             if !param.ty.is_empty() {
                 self.emit(": ");
@@ -1821,6 +1826,7 @@ impl<'a> Printer<'a> {
         }
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
+            ArgMode::Deleting => self.emit("deleting "),
             ArgMode::Own => self.emit("own "),
             ArgMode::Default => {}
         }
@@ -1907,7 +1913,10 @@ impl<'a> Printer<'a> {
                 // found `i64`" on the formatter's own output (#805).
                 let needs_parens = !Self::binds_tighter_than_prefix(&operand.kind);
                 if needs_parens { self.emit("("); }
-                self.format_expr(operand);
+                // Only ask the operand for its own parentheses when this arm isn't
+                // already emitting them, or `!(a < b)` prints `!((a < b))`.
+                let inner_prec = if needs_parens { None } else { Some(POSTFIX_PREC) };
+                self.format_expr_inner(operand, inner_prec);
                 if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
@@ -2117,8 +2126,18 @@ impl<'a> Printer<'a> {
                 self.format_expr(default);
             }
             ExprKind::Range { start, end, inclusive } => {
+                // A range in a postfix position needs its own parentheses:
+                // `(1..10).rev()` is not `1..10.rev()`.
+                let need_parens = parent_prec.is_some_and(|pp| RANGE_PREC < pp);
+                if need_parens {
+                    self.emit("(");
+                }
+                // The endpoints need nothing from us: `..` binds looser than every
+                // binary operator, so the parser already reads `i + 1..n` as
+                // `(i + 1)..n`. Passing RANGE_PREC down here added parentheses the
+                // source never had and no one needs.
                 if let Some(ref s) = start {
-                    self.format_expr(s);
+                    self.format_expr_inner(s, None);
                 }
                 if *inclusive {
                     self.emit("..=");
@@ -2126,7 +2145,10 @@ impl<'a> Printer<'a> {
                     self.emit("..");
                 }
                 if let Some(ref e) = end {
-                    self.format_expr(e);
+                    self.format_expr_inner(e, None);
+                }
+                if need_parens {
+                    self.emit(")");
                 }
             }
             ExprKind::StructLit { name, fields, spread } => {
@@ -2792,6 +2814,16 @@ impl<'a> Printer<'a> {
 }
 
 // --- Operator helpers ---
+
+/// Tighter than every binary operator, so a binary expression in one of these
+/// positions has to be parenthesised. There is no `Paren` node in the AST — the
+/// printer reconstructs parentheses from precedence — so a position that forgets
+/// to pass its binding power silently reassociates the expression (#896).
+const POSTFIX_PREC: u8 = 11;
+/// Looser than every binary operator, tighter than nothing: a range needs its own
+/// parentheses in a postfix position — `(1..10).rev()` is not `1..10.rev()` — but
+/// its endpoints never need any.
+const RANGE_PREC: u8 = 0;
 
 /// Comparison and equality are non-associative in Rask — `a < b < c` is
 /// rejected — so nesting one inside another always needs parentheses.

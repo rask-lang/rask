@@ -827,6 +827,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a `using frozen Pool<T>` context is read-only (mem.pools/PF5) — it allows reads through handles but no writes, inserts, removes, or clears")
             }
 
+            NonOptionalLink { span } => {
+                Diagnostic::error("a required `Link<T>` edge is not supported yet")
+                    .with_code("E0327")
+                    .with_primary(*span, "this edge is required, so delete has no `none` to set it to")
+                    .with_help("write the field as `Link<T>?` for now")
+                    .with_fix("add `?` — `target: Link<Entity>?`")
+                    .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
+            }
+
             MutateConst { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — declared `let`", name))
                     .with_code("E0322")
@@ -1035,6 +1044,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("remove `{}` annotation — parameter does not expect it", annotation))
                     .with_fix("remove the annotation")
                     .with_why("annotations must match parameter declarations")
+            }
+
+            MissingDeletingMarker { callee, arg, param_name, span } => {
+                Diagnostic::error(format!(
+                    "`{}` can delete from `{}` — say `deleting`, not `mutate`",
+                    callee, arg
+                ))
+                    .with_code("E0330")
+                    .with_primary(*span, format!("passed to the `deleting {}` parameter", param_name))
+                    .with_fix(format!("{}(deleting {}, …)", callee, arg))
+                    .with_why("PM5: the marker follows the signature. A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, and those are different contracts — writing `mutate` for both would print them the same. Your links into that rack are revoked at this call, which is worth seeing here rather than discovering at the next read [mem.parameters/PM4, PM5, analysis.fourth-option]")
             }
 
             MissingMutateMarker { callee, arg, param_name, span } => {
@@ -1897,11 +1917,53 @@ impl ToDiagnostic for rask_types::TraitError {
 // Ownership Errors
 // ============================================================================
 
+/// Using a `Link<T>` after its node was deleted.
+///
+/// The move checker is what proves this, but nothing moved: `delete` freed the
+/// node, so every name for it is dead. Saying "moved" here would be wrong, and
+/// the generic advice — "add `.clone()`" — would hand back a second dead pointer.
+fn link_deleted_diagnostic(
+    name: &str,
+    deleted_at: rask_ast::Span,
+    use_span: rask_ast::Span,
+    maybe: bool,
+) -> Diagnostic {
+    let headline = if maybe {
+        format!("`{}` may name a deleted node — possible use after free", name)
+    } else {
+        format!("`{}` names a deleted node — this is a use after free", name)
+    };
+    let primary = if maybe {
+        format!("`{}` is dead on at least one path reaching here", name)
+    } else {
+        format!("`{}` points at freed memory from here on", name)
+    };
+    Diagnostic::error(headline)
+        .with_code("E0328")
+        .with_primary(use_span, primary)
+        .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
+        .with_help("read what you need before the delete, or keep the reference in a field so the rack can null it")
+        .with_fix("move the reads above the delete, or rack the link in a `Link<T>?` field")
+        .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the rack nulls it and the `?` makes you check; a local can't be reached by the rack, so the compiler proves here that you never follow one")
+}
+
 impl ToDiagnostic for rask_ownership::OwnershipError {
     fn to_diagnostic(&self) -> Diagnostic {
         use rask_ownership::OwnershipErrorKind::*;
 
         match &self.kind {
+            UseAfterMove { name, moved_at, reason }
+                if matches!(reason, rask_ownership::MoveReason::LinkDeleted) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, false)
+            }
+
+            UseAfterMaybeMove { name, moved_at, reason }
+                if matches!(reason, rask_ownership::MoveReason::LinkDeleted) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, true)
+            }
+
             SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {
                 let label = match offending_field {
                     Some((field, field_size, field_ty)) => format!(
@@ -2026,6 +2088,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     MoveReason::Resource { type_name } => (
                         format!("`{}` is @resource — must be consumed exactly once", type_name),
                         "restructure so the resource is only used once".to_string(),
+                    ),
+                    MoveReason::LinkDeleted => (
+                        // Unreachable — the guarded arm above handles it.
+                        format!("`{}` names a deleted node", name),
+                        "read the node before deleting it".to_string(),
+                    ),
+                    MoveReason::LinkMoved => (
+                        format!(
+                            "a `Link<T>` moves like any other name for a node — `{}` handed its node over rather than copying it",
+                            name
+                        ),
+                        "read through the new name, or keep the edge in a `Link<T>?` field where the rack maintains it".to_string(),
                     ),
                     MoveReason::Owned => (
                         format!(
@@ -2163,6 +2237,147 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("ensure the value lives long enough, or clone it")
                 .with_fix("ensure the value lives long enough, or clone it")
                 .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
+            }
+
+            MutateParamNotReplaced { name, ty, consumed_at } => {
+                let ctor = if ty.is_empty() {
+                    "a new one".to_string()
+                } else {
+                    format!("`{}.new(…)`", ty)
+                };
+                Diagnostic::error(format!(
+                    "`{}` was consumed and never put back",
+                    name
+                ))
+                .with_code("E0807")
+                .with_primary(self.span, format!("`{}` is still empty when this returns", name))
+                .with_secondary(*consumed_at, format!("`{}` was consumed here", name))
+                .with_help(format!(
+                    "assign {} to `{}` before returning, or declare it `take {}` and return the replacement",
+                    ctor, name, name
+                ))
+                .with_fix(format!("{} = {}", name, ctor))
+                .with_why("`mutate` lends the value and takes it back — the caller keeps using the same binding afterwards. Consuming it is allowed, because consume-and-replace is a real pattern, but the slot has to hold something again by the time control leaves [mem.parameters/PM3]")
+            }
+
+            ConsumedBorrowedParam { name, ty } => {
+                let decl = if ty.is_empty() {
+                    format!("take {}", name)
+                } else {
+                    format!("take {}: {}", name, ty)
+                };
+                Diagnostic::error(format!(
+                    "`{}` is borrowed from the caller — it can't be given away here",
+                    name
+                ))
+                .with_code("E0806")
+                .with_primary(self.span, format!("`{}` is consumed here", name))
+                .with_help(format!(
+                    "declare it `{}` if this function should own it, or read what you need instead of passing it on",
+                    decl
+                ))
+                .with_fix(decl)
+                .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
+            }
+
+            LinkOutlivesRack { link, rack, via } => {
+                let (primary, fix) = match via {
+                    rask_ownership::LinkEscape::Return => (
+                        format!(
+                            "`{}` lives in `{}`, and `{}` dies when this function returns",
+                            link, rack, rack
+                        ),
+                        format!(
+                            "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
+                            rack
+                        ),
+                    ),
+                    rask_ownership::LinkEscape::Assignment { target } => (
+                        format!(
+                            "`{}` outlives `{}`, and the node `{}` points at dies with it",
+                            target, rack, link
+                        ),
+                        format!(
+                            "move `{}` out to where `{}` lives, or copy the fields you need out of the node before the scope ends",
+                            rack, target
+                        ),
+                    ),
+                };
+                Diagnostic::error(format!("`{}` would outlive the rack it points into", link))
+                    .with_code("E0379")
+                    .with_primary(self.span, primary)
+                    .with_fix(fix)
+                    .with_why("a `Link<T>` is a pointer to a node, and the nodes live in the rack — so when the rack goes out of scope the node goes with it and the link dangles. Nothing else catches this: no `delete` happened, so the use-after-delete rule never looks, and a link is Copy so it escapes the scope that produced it. A link into a rack the *caller* owns is fine — that rack outlives the call")
+            }
+            NodeWriteNeedsWritableRack { link, rack } => {
+                // `with_help` isn't rendered on this path — `fix` and `why` are —
+                // so the actionable line goes in `with_fix`.
+                let d = match rack {
+                    Some(s) => Diagnostic::error(format!(
+                        "cannot write this node — `{}` is only readable here",
+                        s
+                    ))
+                    .with_code("E0378")
+                    .with_primary(
+                        self.span,
+                        format!("writes a node in `{}` through `{}`", s, link),
+                    )
+                    .with_fix(format!(
+                        "make the rack writable: `mut {}` if it's a local, `mutate {}: Rack<…>` if it's a parameter",
+                        s, s
+                    )),
+                    None => Diagnostic::error(format!(
+                        "cannot write this node — `{}` is a view",
+                        link
+                    ))
+                    .with_code("E0378")
+                    .with_primary(
+                        self.span,
+                        format!("`{}` was lent for reading, not for writing", link),
+                    )
+                    .with_fix(format!(
+                        "say the function writes it: `mutate {}: Link<…>` in the signature — the caller then marks it `mutate {}` at the call",
+                        link, link
+                    )),
+                };
+                d.with_why("writing a node is a permission, and permission travels with the link: `n: Link<T>` is a view — it reads the node and everything reachable from it — and `mutate n: Link<T>` is the writable one. It's the same borrow-versus-mutate distinction every other type has, so no second link type is needed and no rack has to be threaded through. A view stays a view when you follow an edge, and can't be passed on as `mutate`; a writer's permission does travel along edges, because an edge only connects nodes in one rack")
+            }
+            UndeclaredDelete { param, operation } => {
+                Diagnostic::error(format!(
+                    "this can delete nodes the caller never named — declare `deleting {}`",
+                    param
+                ))
+                .with_code("E0329")
+                .with_primary(self.span, format!("{} chooses which nodes die", operation))
+                .with_help(format!(
+                    "declare it: `deleting {}: Rack<…>` — or delete only links the caller handed over, as `take` parameters",
+                    param
+                ))
+                .with_fix(format!("deleting {}", param))
+                .with_why("`delete(take link)` is safe for the caller because the link is consumed at the call site — they can see the name die. A delete that chooses its own victim can't be seen from outside, so the caller's links are revoked at the call instead, and `deleting` is what tells them to expect it. `mutate` doesn't imply it: inserting and writing can't invalidate a link, deleting can")
+            }
+
+            ResourceNotConsumedOpaque { name, where_ } => {
+                Diagnostic::error(format!(
+                    "resource `{}` must be consumed before scope exit",
+                    name
+                ))
+                .with_code("E0805")
+                .with_primary(self.span, "resource goes out of scope here")
+                .with_help(format!(
+                    "consume the resource inside `{}`, then `discard {}` — or hold it \
+                     somewhere the compiler can name, like a plain field",
+                    name, name
+                ))
+                .with_fix(format!(
+                    "take the resource out of `{}` and consume it",
+                    name
+                ))
+                .with_note(format!(
+                    "the resource sits in {} — there is no field path to it, so the whole of `{}` is owed rather than one field",
+                    where_, name
+                ))
+                .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
             ResourceNotConsumed { name } => {

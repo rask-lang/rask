@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L1 applies inside a `test` body, not only inside a function.
+//
+// Test and benchmark bodies were walked without the scope-exit check, so this
+// compiled clean while the identical code in a function was E0805.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+func main() {}
+
+test "resource left open" {
+    let c = Conn { id: 1 }
+    assert_eq(c.id, 1)          // ERROR: E0805 — never consumed
+}

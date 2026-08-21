@@ -69,6 +69,22 @@ pub enum BoundFrom {
     Element,
 }
 
+/// A deferred read-only-binding check. See `pending_mutations`.
+#[derive(Debug, Clone)]
+pub struct PendingMutation {
+    pub root: String,
+    pub ty: crate::types::Type,
+    pub kind: BindingKind,
+    pub span: rask_ast::Span,
+}
+
+/// A deferred frozen-context write check. See `pending_frozen_writes`.
+#[derive(Debug, Clone)]
+pub struct PendingFrozenWrite {
+    pub ty: crate::types::Type,
+    pub span: rask_ast::Span,
+}
+
 impl BindingKind {
     pub fn is_read_only(&self) -> bool {
         matches!(
@@ -228,6 +244,14 @@ pub struct TypeChecker {
     /// #310: index sites validated after literal defaults resolve their index
     /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
     pub(super) pending_index: Vec<check_expr::PendingIndex>,
+    /// Field/index writes whose root type was still a variable when the
+    /// statement was walked. Judged in `validate_pending_mutations`, so a write
+    /// through a `Handle`/`Link` bound by optional narrowing is recognised for
+    /// what it is instead of being reported as mutating a `let`.
+    pub(super) pending_mutations: Vec<PendingMutation>,
+    /// mem.pools/PF5 frozen-context write sites, deferred for the same reason as
+    /// `pending_mutations` — the check needs the handle's element type.
+    pub(super) pending_frozen_writes: Vec<PendingFrozenWrite>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -354,6 +378,8 @@ impl TypeChecker {
             pending_int_literals: Vec::new(),
             deferred_methods: Vec::new(),
             pending_index: Vec::new(),
+            pending_mutations: Vec::new(),
+            pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
@@ -455,6 +481,8 @@ impl TypeChecker {
         // K for Map, Handle<T> for Pool) BEFORE literal defaults land, so a
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
+        self.validate_pending_mutations();
+        self.validate_pending_frozen_writes();
 
         // #314: verify generic call type args satisfy their declared bounds.
         self.validate_pending_bound_checks();

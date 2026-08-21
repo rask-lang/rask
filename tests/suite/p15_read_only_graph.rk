@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A read-only graph, without a read-only link type.
+//
+// The write permission lives on the rack, not on the link. So `s: Rack<T>` is
+// a read-only view of the whole graph — every node reachable, none writable —
+// and `mutate s: Rack<T>` is the writable one. No `LinkView`, no `mut` in a
+// type position, and nothing that changes as you follow edges.
+
+struct Entity {
+    name: string
+    health: i32
+    damage: i32
+    target: Link<Entity>?
+}
+
+struct World {
+    nodes: Rack<Entity>
+}
+
+// Reader. Follows edges as far as it likes and cannot write any of it.
+func total_health(w: World) -> i32 {
+    mut sum = 0
+    for e in w.nodes.nodes() {
+        sum = sum + e.health
+    }
+    return sum
+}
+
+// Reader that walks an edge — the case a read-only link type would have had to
+// propagate across, and doesn't arise when the rack answers instead.
+func describe_targets(w: World) -> i32 {
+    mut named = 0
+    for e in w.nodes.nodes() {
+        if e.target? as t {
+            if t.health > 0 { named = named + 1 }
+        }
+    }
+    return named
+}
+
+// Writer. Same body shape as the reader; one word says the nodes change.
+func combat_round(mutate w: World) {
+    for e in w.nodes.nodes() {
+        if e.target? as t {
+            t.health -= e.damage
+        }
+    }
+}
+
+func build() -> World {
+    mut w = World { nodes: Rack.new() }
+    let a = w.nodes.insert(Entity { name: "a", health: 100, damage: 10, target: none })
+    let b = w.nodes.insert(Entity { name: "b", health: 80, damage: 7, target: none })
+    a.target = b
+    b.target = a
+    return w
+}
+
+test "a borrowed rack is a read-only view of the whole graph" {
+    let w = build()
+    assert total_health(w) == 180
+    assert describe_targets(w) == 2
+    // The reads didn't change anything.
+    assert total_health(w) == 180
+}
+
+test "the writable view mutates through the same links" {
+    mut w = build()
+    combat_round(mutate w)
+    assert total_health(w) == 180 - 10 - 7
+    combat_round(mutate w)
+    assert total_health(w) == 180 - 2 * (10 + 7)
+}
+
+test "reading and writing compose in one body" {
+    mut w = build()
+    let before = total_health(w)
+    combat_round(mutate w)
+    assert total_health(w) < before
+    assert describe_targets(w) == 2
+}

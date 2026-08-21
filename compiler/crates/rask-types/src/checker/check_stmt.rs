@@ -145,33 +145,32 @@ impl TypeChecker {
                 // parameters (default params). `const` is deep: rebinding,
                 // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
-                    // mem.context/CC1: writing `h.field = v` through a `Handle<T>`
-                    // mutates pool storage, not the handle binding, so a read-only
-                    // handle is fine. Only a bare rebind (`h = other`) is a real
-                    // binding mutation.
-                    let handle_elem = if matches!(
+                    // Writing *through* a reference is not mutating the binding
+                    // that holds it: `h.field = v` on a `Handle<T>` lands in pool
+                    // storage (mem.context/CC1), and `l.field = v` on a `Link<T>`
+                    // lands in the node, because a link is the node's address.
+                    // Only a bare rebind (`h = other`) mutates the binding.
+                    //
+                    // Whether the root is such a reference depends on its type,
+                    // and at this point the type is often still a variable — a
+                    // link bound by `if e.target? as t` comes from a deferred
+                    // `HasField`. So field and index writes are always judged in
+                    // `validate_pending_mutations`, after solving, and never here.
+                    // One decision site, reading a resolved type.
+                    let writes_through_place = matches!(
                         &target.kind,
                         ExprKind::Field { .. } | ExprKind::Index { .. }
-                    ) {
-                        self.lookup_local(&root)
-                            .map(|t| self.resolve_named(&t))
-                            .and_then(|t| self.handle_element_type(&t))
-                    } else {
-                        None
-                    };
-                    let through_handle = handle_elem.is_some();
-                    // mem.pools/PF5: a write through a handle whose element type is
-                    // backed by a frozen context is rejected.
-                    if let Some(elem) = &handle_elem {
-                        if self.frozen_context_elems.iter().any(|e| e == elem) {
-                            self.errors.push(TypeError::FrozenContextWrite {
-                                op: "write".to_string(),
-                                elem: self.fmt_ty(elem),
+                    );
+                    if writes_through_place {
+                        if let Some(kind) = self.lookup_binding_kind(&root) {
+                            self.pending_mutations.push(super::PendingMutation {
+                                root: root.clone(),
+                                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                                kind,
                                 span: stmt.span,
                             });
                         }
-                    }
-                    if !through_handle {
+                    } else {
                         match self.lookup_binding_kind(&root) {
                             Some(super::BindingKind::Let) => {
                                 self.errors.push(TypeError::MutateConst {
@@ -200,6 +199,15 @@ impl TypeChecker {
                             }
                             _ => {}
                         }
+                    }
+                    // mem.pools/PF5: a write through a handle whose element type is
+                    // backed by a frozen context is rejected. Needs the element
+                    // type, so it waits for solving too.
+                    if writes_through_place {
+                        self.pending_frozen_writes.push(super::PendingFrozenWrite {
+                            ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                            span: stmt.span,
+                        });
                     }
                     // ESAD Phase 2: Reject mutation of persistently borrowed sources
                     if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {

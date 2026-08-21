@@ -1,10 +1,21 @@
 <!-- id: mem.pools -->
-<!-- status: decided -->
-<!-- summary: Handle-based sparse storage with generation counters, `with`-based multi-statement access -->
+<!-- status: deprecated -->
+<!-- summary: Superseded by mem.racks. Handle-based sparse storage with generation counters, `with`-based multi-statement access -->
 <!-- depends: memory/ownership.md, memory/borrowing.md, memory/resource-types.md -->
 <!-- implemented-by: compiler/crates/rask-interp/ -->
 
 # Pools and Handles
+
+> **Superseded by [`mem.racks`](racks.md).** `Rack<T>` + `Link<T>` does the same
+> job — many things of one type, individually addressable and removable — and
+> replaces the ticket-and-check mechanism with a pointer you follow: no lookup
+> per read, no liveness check per hop, and no manual clearing of stale
+> references.
+>
+> `Pool` and `Handle` remain implemented and supported until `Rack` has a native
+> lowering; retiring them sooner would leave the language with no shipping graph
+> story. Sequencing is tracked in rask-lang/rask#908. New code should use
+> `Rack`; this page documents what exists.
 
 `Pool<T>` is handle-based sparse storage. Handles are opaque IDs validated at access via generation counters.
 

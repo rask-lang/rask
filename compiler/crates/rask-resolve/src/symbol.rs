@@ -23,6 +23,7 @@ pub enum SymbolKind {
         is_take: bool,
         /// Whether this parameter is mutable.
         is_mutate: bool,
+        is_deleting: bool,
     },
     /// A function.
     Function {
@@ -124,6 +125,10 @@ pub enum BuiltinTypeKind {
     Cell,
     /// Handle<T> - typed reference into a Pool<T>
     Handle,
+    /// Rack<T> - arena whose incoming edges are fixed at delete
+    Rack,
+    /// Link<T> - one edge to a node in a Rack<T>
+    Link,
     /// Atomic<T> - atomic operations
     Atomic,
     /// Shared<T> - shared state with interior mutability

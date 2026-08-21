@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L1 at every exit, not just the last one.
+//
+// The consumption check ran at the end of the body only, so an early `return` that
+// skipped a `.close()` compiled clean. A `return` is an exit like any other.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+func maybe_close(cond: bool) -> i32 {
+    let c = Conn { id: 1 }
+    if cond {
+        return 0                // ERROR: E0805 — `c` never consumed on this path
+    }
+    return c.close()
+}
+
+func main() {
+    println("{maybe_close(true)}")
+}

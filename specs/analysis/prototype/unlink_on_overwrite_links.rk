@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Overwriting an edge unlinks the old target's backlink.
+//
+// A struct field names its slot, so `a.target = second` can remove exactly the
+// backlink `a.target = first` created. Deleting `first` afterwards then visits
+// nothing at all:
+//
+//     $ RASK_RACK_STATS=1 rask run --interp unlink_on_overwrite_links.rk
+//     rack stats: deletes=2 edges_fixed=1 holders_visited=1
+//
+// Two deletes, one holder visited between them — the delete of `first` visits
+// nobody, the delete of `second` visits `a.target`. Without unlinking, `first`
+// would still carry a backlink and its delete would walk to `a.target` only to
+// find it pointing somewhere else.
+//
+// The self-assignment in the middle is the case that makes unlink-then-relink
+// order matter: dropping the backlink before re-adding it must not leave the
+// live edge unrecorded.
+
+const REWRITES: i32 = 50
+
+struct Node {
+    id: i32
+    target: Link<Node>?
+}
+
+func main() {
+    mut rack: Rack<Node> = Rack.new()
+
+    let holder = rack.insert(Node { id: 0, target: none })
+    let first = rack.insert(Node { id: 1, target: none })
+    let second = rack.insert(Node { id: 2, target: none })
+
+    holder.target = first
+    holder.target = second
+    holder.target = holder.target      // must not drop what it re-adds
+
+    // `first` is no longer pointed at by anything.
+    rack.delete(first)
+    if holder.target? as t {
+        println("after deleting first, holder.target = {t.id} (expected 2)")
+    } else {
+        println("holder.target was nulled -- WRONG, unlink hit a live edge")
+    }
+
+    // Rewriting the same field many times must not accumulate backlinks: the
+    // delete below visits one holder, not REWRITES of them.
+    mut i = 0
+    while i < REWRITES {
+        let scratch = rack.insert(Node { id: 100 + i, target: none })
+        holder.target = scratch
+        i += 1
+    }
+    holder.target = second
+
+    rack.delete(second)
+    if holder.target? as _t {
+        println("holder.target survived its target's delete -- WRONG")
+    } else {
+        println("holder.target nulled after {REWRITES} rewrites")
+    }
+}

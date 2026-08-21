@@ -22,6 +22,14 @@ pub enum MoveReason {
     Unique { type_name: String },
     /// Type is marked @resource.
     Resource { type_name: String },
+    /// A `Link<T>` whose node was deleted. Not a move at all: the pointer stayed
+    /// put and the thing it pointed at was freed, so every name for it is dead.
+    /// The move checker is only the mechanism that proves it (analysis.fourth-option).
+    LinkDeleted,
+    /// A `Link<T>` moved into another name the ordinary way. Nothing was deleted —
+    /// links are affine among locals so that two names for one node can't drift
+    /// apart, and this is that rule firing, not a use after free.
+    LinkMoved,
     /// The binding holds an `Owned` box — `own` allocated it and something has
     /// already consumed it, so a second use is a second free (mem.linear/L3).
     Owned,
@@ -147,6 +155,74 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` would become invalid after this point")]
     BorrowEscapes {
         name: String,
+    },
+
+    /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
+    /// is left holding a value that moved out from under it.
+    #[error("`{name}` was consumed and not replaced before returning")]
+    MutateParamNotReplaced {
+        name: String,
+        ty: String,
+        consumed_at: Span,
+    },
+
+    /// #804: a plain (borrowed) parameter was consumed — passed to a `take`
+    /// parameter, or had a `take self` method called on it. The caller still owns
+    /// it, so this is a second consumption of one value.
+    #[error("`{name}` is borrowed from the caller and can't be given away")]
+    ConsumedBorrowedParam {
+        name: String,
+        ty: String,
+    },
+
+    /// analysis.fourth-option: a link that would outlive the rack it points into.
+    ///
+    /// A link is a pointer to a node, and the nodes live in the rack. When the
+    /// rack dies the node goes with it, so a link that escapes the rack's scope
+    /// is dangling — with nothing deleted, so the use-after-delete rule never
+    /// looks at it. A link is Copy and escapes freely, which is the point of a
+    /// link and also exactly what block-scoped borrowing exists to stop.
+    #[error("`{link}` would outlive the rack it points into")]
+    LinkOutlivesRack {
+        link: String,
+        /// The rack, when this body declared it.
+        rack: String,
+        /// How it escapes — a return, or an assignment into a longer-lived name.
+        via: LinkEscape,
+    },
+
+    /// analysis.fourth-option: a node written through a link whose rack this
+    /// body may only read.
+    ///
+    /// A link is an access path into a rack, not a permission of its own, so the
+    /// write is checked against the rack — the same rule `Handle` has, where
+    /// `scene.nodes[h].f = x` needs `mutate scene`. Exempting links let
+    /// `func combat_round(world: Rack<Entity>) { t.health -= e.damage }` mutate
+    /// every node behind a signature promising the rack was only read.
+    #[error("cannot write through `{link}` — nothing here grants writing this rack's nodes")]
+    NodeWriteNeedsWritableRack {
+        link: String,
+        /// The rack, when this body can name it. `None` when the link came in as
+        /// a parameter and no writable rack parameter came with it.
+        rack: Option<String>,
+    },
+
+    /// analysis.fourth-option: an unnamed delete through a parameter that didn't
+    /// declare `deleting`. The caller was never told its links could die here.
+    #[error("`{operation}` through `{param}` deletes nodes the caller never named")]
+    UndeclaredDelete {
+        param: String,
+        operation: String,
+    },
+
+    /// A binding that holds a resource the field walk could not name — inside a
+    /// `Vec`, a `Map`, an optional, a tuple, an enum payload. The obligation falls
+    /// back to the whole binding, and `where_` says which shape forced that so the
+    /// root-named error doesn't read like a bug.
+    #[error("`{name}` holds a resource in {where_} and must be used before the end of this block")]
+    ResourceNotConsumedOpaque {
+        name: String,
+        where_: String,
     },
 
     /// Resource type not consumed before scope exit.
@@ -279,6 +355,15 @@ pub enum OwnershipErrorKind {
         /// The transitively-linear type that would be dropped.
         type_name: String,
     },
+}
+
+/// How a link escapes its rack's scope. Drives the E0379 copy.
+#[derive(Debug, Clone)]
+pub enum LinkEscape {
+    /// `return n` where the rack is a local of this function.
+    Return,
+    /// Assigned into a name declared in an outer scope.
+    Assignment { target: String },
 }
 
 /// Where a linear-wildcard discard occurred. Drives the ER43 diagnostic copy.

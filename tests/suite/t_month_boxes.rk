@@ -136,14 +136,19 @@ test "mem.owned — own heap-allocates and derefs back" {
     assert *p == 42
 }
 
+// A struct payload really is allocated, so the box owes a drop (mem.linear/L1).
+// `Owned<i64>` above doesn't: a scalar was never allocated, so there is nothing
+// to free (#819).
 test "mem.owned — an Owned struct payload" {
     let p: Owned<Counter> = own Counter { n: 5 }
     assert (*p).n == 5
+    drop(p)
 }
 
 test "mem.owned — an Owned field on a struct" {
     let c: Owned<Counter> = own Counter { n: 7 }
     assert (*c).n == 7
+    drop(c)
 }
 
 func main() {}

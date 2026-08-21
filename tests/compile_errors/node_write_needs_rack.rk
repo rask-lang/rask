@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A link says which node. The rack says whether you may write it.
+//
+// This is the rule `Handle` has always had — `scene.nodes[h].f = x` needs
+// `mutate scene` — and links were exempt from it, so a plain borrow of a rack
+// could rewrite every node in it. Asking the rack instead of the link is also
+// what makes a read-only graph free: no second link type, nothing to propagate
+// along the edges you follow, and no way to launder a readable link into a
+// writable one.
+
+struct Entity {
+    health: i32
+    damage: i32
+    target: Link<Entity>?
+}
+
+struct Scene {
+    nodes: Rack<Entity>
+}
+
+// The rack is named here and only readable.
+func read_only_rack(world: Rack<Entity>) {
+    for e in world.nodes() {
+        e.health = 0            // ERROR: `world` is only readable
+    }
+}
+
+// Same, one edge further along. Following `target` changes nothing about which
+// rack the node lives in, so the answer is the same — this is the case a
+// read-only *link type* would have had to propagate or leak.
+func read_only_across_an_edge(world: Rack<Entity>) {
+    for e in world.nodes() {
+        if e.target? as t {
+            t.health -= e.damage    // ERROR: still `world`
+        }
+    }
+}
+
+// A rack inside a struct, reached through a plain borrow.
+func read_only_field(scene: Scene) {
+    for e in scene.nodes.nodes() {
+        e.health = 1            // ERROR: `scene` is only readable
+    }
+}
+
+// No rack in scope at all: the link arrived alone.
+func no_store_at_all(e: Link<Entity>) {
+    e.health = 2                // ERROR: nothing granted this write
+}
+
+// And the same through a `take` link, which owns the name but not the node.
+func taken_link(take e: Link<Entity>) {
+    e.health = 3                // ERROR: still no rack
+}
+
+func main() {
+    mut world: Rack<Entity> = Rack.new()
+    let a = world.insert(Entity { health: 100, damage: 5, target: none })
+    read_only_rack(world)
+    read_only_across_an_edge(world)
+    no_store_at_all(a)
+    println("{a.health}")
+}
