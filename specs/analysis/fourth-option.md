@@ -629,6 +629,109 @@ them — needs a scope where deletes are locked but field writes are allowed.
 `frozen` is too strong (forbids writes). A weaker delete-locked tier is the
 one new scope concept this design asks for.
 
+## The Rack is a slab
+
+Worth writing down, because it changes what's available and because two people
+have now asked why the container exists at all.
+
+### Why there's a container when the interest is in nodes
+
+Measured on the corpus: 256 node operations (field reads and writes through a
+link) against 183 rack operations, and of the rack ones 74 are `insert` and 39
+are `len`. Birth and reporting. Field access — the thing programs actually spend
+their time on — never mentions the rack:
+
+<!-- test: skip -->
+```rask
+if e.target? as t { t.health -= e.damage }
+```
+
+So the container is nearly invisible in bodies and unavoidably visible in
+declarations. It isn't there because anyone wanted a collection. It's the object
+that **owns the nodes' lifetime**, and five rules hang off exactly that with
+nowhere else to live:
+
+1. **Delete-time edge fixup.** `delete` nulls every `Link<T>?` pointing at the
+   node. That needs the reverse-edge index, and the index needs one home per
+   graph.
+2. **The lifetime rule.** A link may not outlive its rack (E0379). Remove the
+   rack and there is nothing for a link's validity to attach to.
+3. **`snapshot()`.** Crossing a task boundary means copying the graph, which
+   needs a thing to copy.
+4. **The frozen graph.** `let g = build()` freezes structure and contents; that
+   needs a handle to freeze.
+5. **Ownership.** Two racks of one node type are independent — a delete in one
+   doesn't touch the other, so two tasks can own two graphs.
+
+The implicit alternative — an ambient arena per node type, so you never name a
+rack — breaks all five, and (5) fatally: a per-type arena is a global, so every
+graph of a type becomes one ownership unit.
+
+**And a one-node rack is not the smaller version of this.** A one-node graph has
+no edges: a single node can only point at itself, so the backlink index has
+nothing to maintain. For one value the answer is a plain field, `Owned<T>` if it
+needs the heap, or `Shared<T>` if several accessors share it — steps 1 and 4 of
+the choice order in `analysis.storage-type-consolidation`. The rack starts at
+"they reference each other", which is plural by construction.
+
+### What the backing store already is
+
+<!-- test: skip -->
+```
+slots: Vec<Option<T>>     // None marks a freed slot
+free_list: Vec<u32>
+slot_of: HashMap<node, u32>
+```
+
+A flat array of slots, a free list, elements that never move. That is a slab, and
+it means the objection recorded against merging `Rack` and `Vec` — "contiguity
+versus stability" — named the wrong pair. A slab has both. What it gives up is
+**density and order**: iteration walks the high-water mark rather than the live
+count, and slot reuse doesn't preserve insertion order.
+
+Density largely self-heals: freed slots are reused, so 1000 live nodes still
+occupy 1000 slots after 500 deletes and 500 inserts. Order does not, and that is
+the honest reason to keep `Vec` separate — a program indexing by position depends
+on order, and a slab cannot promise it.
+
+### What that buys, and what it doesn't
+
+`Rack`/`Link` closed the graph cases. What's left of "no stored references" is
+narrower than it was:
+
+| case | answer |
+|---|---|
+| many of one type, contiguous iteration, point at individual ones | a slab-backed rack — this is it |
+| a stored iterator (a position in a collection) | hold a `Link` to the element |
+| `&v[3]` where `v` stays dense *and* ordered under removal | impossible: density under removal means moving elements |
+| a `string_view` into a buffer | out of scope — a sub-range of one value, not an element |
+
+So the residue is sub-ranges of a single buffer. Everything else that used to
+want a stored pointer has a name now.
+
+### The open question, pending native
+
+The prototype's slots hold *pointers* to heap-allocated nodes, so today the
+contiguity is in the index array only — the nodes themselves are scattered. A
+native lowering would want nodes inline in the array, which is where the cache
+win actually is. Until that exists, "the rack is a slab" is true in shape and
+unproven in payoff.
+
+Two affordances to weigh once it is:
+
+- **Contiguous iteration as a stated guarantee**, so an aggregate reader gets the
+  scan a `Vec` promises and a rack currently doesn't.
+- **An explicit `compact()`** that regains density by moving nodes and
+  re-pointing their backlinks. The fixup rule already exists — *a container that
+  stores links and moves them must re-point their backlinks as it moves them* —
+  and the cost stays visible because you typed the call.
+
+And one to note rather than propose: a slot index *is* a handle. A slab is the
+one structure that can hand out both — a link for checkless traversal, a slot
+index as a compact stable name for serialization or an external reference —
+without choosing between them. That is the #626 trade ("a handle is a name, a
+link is an address") stated as a both-and rather than an either-or.
+
 ## Alternatives weighed and set aside
 
 - **Scoped regions with deferred delete** (arena row): open a region, traverse

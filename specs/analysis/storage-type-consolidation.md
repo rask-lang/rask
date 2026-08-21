@@ -83,10 +83,26 @@ strategy parameter exists for locks anyway; see
 the reasoning that changed is worth seeing.
 
 **`Rack` into `Vec`.** Also tempting: a `Rack` with no links declared is
-nearly a `Vec`. But the guarantees are opposite — `Vec` gives contiguity and
-moves its elements on `push`; `Rack` gives stable addresses and never moves
-them. Merging means one of those promises is broken, and both are load-bearing
-(contiguity for iteration speed, stability for links).
+nearly a `Vec`. I argued the guarantees were opposite — `Vec` gives contiguity
+and moves its elements on `push`; `Rack` gives stable addresses and never moves
+them — so merging had to break one of them.
+
+**That named the wrong pair.** A slab is contiguous *and* stable: a flat array
+of slots, `None` for a hole, a free list, elements that never move. It's what
+`Rack` is already built on (`slots: Vec<Option<T>>` + `free_list` + `slot_of`).
+What a slab actually gives up is **density and order**: iteration walks the
+high-water mark rather than the live count, and slot reuse means insertion order
+doesn't survive churn.
+
+That's a much weaker objection, and the first half largely self-heals — freed
+slots are reused, so 1000 live nodes still sit in 1000 slots after 500 deletes
+and 500 inserts. Holes persist only if you delete and stop.
+
+So the merge is more available than this section claimed. The remaining reason to
+keep two types is `Vec`'s *order*, which a program indexing by position depends
+on and a slab cannot promise. That's a real difference; "contiguity versus
+stability" was not. See [the slab section](fourth-option.md#the-rack-is-a-slab)
+for what exposing the slab shape would buy.
 
 `Heap` into `Rack` fails on cost, argued in
 [the guide](fourth-option-guide.md): a rack node carries a back-pointer per
