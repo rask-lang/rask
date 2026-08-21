@@ -1,14 +1,21 @@
 <!-- id: analysis.c3-lessons -->
 <!-- status: proposed -->
-<!-- summary: C3 checked against Rask — contracts stay out, the scoped arena already exists, Raido names the one rule it's missing -->
+<!-- summary: C3 checked against Rask — nothing transfers; contracts stay out, the arena is already specced, interop ceremony measures at zero. Five bugs found in the measuring -->
 <!-- depends: memory/allocators.md, memory/pools.md, memory/relocatable.md, types/integer-overflow.md, structure/c-interop.md, tooling/annotate.md -->
 
 # C3, Checked Against Rask
 
-**Result: almost nothing transfers.** Two of the three things I went in thinking were gaps
-turned out to be a settled decision and an existing spec rule. What survives is one
-unspecced rule (an arena rewind marker, and it comes from Raido, not C3) and one unmeasured
-number (C interop ceremony). Recorded so nobody reruns this.
+**Result: no C3 feature transfers.** All three things I went in thinking were gaps closed on
+inspection — contracts were a settled call, the scoped arena was already specced, and the
+interop ceremony gap measured at zero. What survives is one unspecced rule: an arena rewind
+marker, and that one comes from Raido, not C3.
+
+The exercise wasn't wasted, though, just not in the way intended. Measuring the interop
+claim instead of asserting it turned up four broken type bridges (#946–#949), and writing a
+C baseline for `grep_clone.rk` to compare ceremony turned up a type-checker hole that had
+been silently eating every error message in two shipped examples (#950). Recorded so nobody
+reruns the analysis — and as an argument for measuring the next such claim rather than
+reasoning about it.
 
 C3 (Christoffer Lernö, at 0.8.x, LLVM backend, effectively one compiler author) is the only
 contemporary language that keeps C's procedural feel as a hard constraint rather than a
