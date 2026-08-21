@@ -3,7 +3,12 @@
 <!-- summary: C3 checked against Rask — contracts stay out, the scoped arena already exists, Raido names the one rule it's missing -->
 <!-- depends: memory/allocators.md, memory/pools.md, memory/relocatable.md, types/integer-overflow.md, structure/c-interop.md, tooling/annotate.md -->
 
-# What Rask Can Learn From C3
+# C3, Checked Against Rask
+
+**Result: almost nothing transfers.** Two of the three things I went in thinking were gaps
+turned out to be a settled decision and an existing spec rule. What survives is one
+unspecced rule (an arena rewind marker, and it comes from Raido, not C3) and one unmeasured
+number (C interop ceremony). Recorded so nobody reruns this.
 
 C3 (Christoffer Lernö, at 0.8.x, LLVM backend, effectively one compiler author) is the only
 contemporary language that keeps C's procedural feel as a hard constraint rather than a
