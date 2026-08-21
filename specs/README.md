@@ -14,7 +14,8 @@ Organized by what each category does.
 5. [control/control-flow.md](control/control-flow.md) — if, loops, expressions
 
 **Building graphs/trees?**
-- [memory/pools.md](memory/pools.md) — Handle-based indirection for cycles and entity systems
+- [memory/racks.md](memory/racks.md) — Nodes with stable identity and links you can store in a field
+- [memory/pools.md](memory/pools.md) — Handle-based indirection (deprecated: superseded by racks.md)
 
 ---
 
@@ -26,7 +27,7 @@ Quick navigation by task or concept:
 | "How do I..." | See |
 |---------------|-----|
 | Store dynamic collections | [stdlib/collections.md](stdlib/collections.md) (Vec, Map) |
-| Build graphs/trees with cycles | [memory/pools.md](memory/pools.md) (handles) |
+| Build graphs/trees with cycles | [memory/racks.md](memory/racks.md) (racks and links) |
 | Pass data to functions | [memory/parameters.md](memory/parameters.md) (borrow vs take) |
 | Ensure resources are cleaned up | [control/ensure.md](control/ensure.md) (deferred cleanup) |
 | Work with files/connections | [memory/resource-types.md](memory/resource-types.md) (must-consume) |
@@ -74,7 +75,8 @@ Quick navigation by task or concept:
 |------|---------------------|
 | Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
 | Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (Cell, Pool, Shared, Mutex, Owned) |
-| Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool |
+| Link | [memory/racks.md](memory/racks.md) — A stored reference to a node in a Rack |
+| Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool (deprecated) |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
 | Take | [memory/parameters.md](memory/parameters.md) — Ownership transfer |
 | Resource type | [memory/resource-types.md](memory/resource-types.md) — Struct marked linear with `@resource` |
@@ -118,7 +120,8 @@ Quick navigation by task or concept:
 | [resource-types.md](memory/resource-types.md) | `@resource` annotation — linear struct types |
 | [owned.md](memory/owned.md) | `Owned<T>` — linear heap pointer for recursive types |
 | [closures.md](memory/closures.md) | Capture rules, scope constraints, Cell/Pool patterns |
-| [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing |
+| [racks.md](memory/racks.md) | Racks and links, delete-time edge fixup, link lifetime |
+| [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing (deprecated) |
 | [cell.md](memory/cell.md) | Single-value mutable box |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
 | [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |

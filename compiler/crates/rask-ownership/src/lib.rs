@@ -11,7 +11,7 @@ mod error;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
-    AccessKind, LinearDiscardPosition, MoveReason, OwnershipError, OwnershipErrorKind,
+    AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -110,6 +110,51 @@ pub struct OwnershipChecker<'a> {
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
     active_for_mutates: Vec<ForMutateInfo>,
+    /// Link locals whose initializer was a `rack.insert(...)` — they name a node
+    /// nothing else in this body has a name for, so a delete elsewhere can't be
+    /// deleting them. Every other link local is *derived* (a field read, an
+    /// iteration binding, a call result) and may alias whatever a delete names.
+    /// `take` parameters whose type is a link: the caller consumed the name at the
+    /// call site, so deleting one here is already visible to them.
+    /// Bindings whose resource the field walk could not name, and the shape that
+    /// stopped it. These owe the whole binding; the reason rides along so the
+    /// error can say why it named the root.
+    coarse_resources: HashMap<String, String>,
+    /// Parameters declared `deleting`: the caller was told this call may delete
+    /// nodes it never named, so an unnamed delete through them is allowed.
+    /// Names already reported by an exit check, so a body with several returns
+    /// doesn't repeat itself.
+    exit_reported: HashSet<String>,
+    deleting_params: HashSet<String>,
+    /// Which rack a link local came out of, by root name. A link's *type* can't
+    /// say — two `Rack<Node>` parameters give links of the same type — so the
+    /// origin is carried from wherever the link was derived.
+    link_rack_root: HashMap<String, String>,
+    /// Rack bindings this body may write nodes through: `mut` locals, and
+    /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
+    /// a permission of its own, so this is what a node write is checked against.
+    writable_racks: HashSet<String>,
+    /// Link parameters, by name. A link handed in this way has no rack in scope,
+    /// so its writability was settled at the call site instead.
+    link_params: HashSet<String>,
+    /// Links this body may write nodes through: a `mutate`/`deleting` link
+    /// parameter, and anything reached from one by following edges.
+    ///
+    /// Permission propagates *outward* along edges, which is the direction that
+    /// makes sense: an edge only connects co-owned nodes, so if you may write
+    /// this node you may write the ones it points at. The read-only case needs no
+    /// propagation at all — no permission is the default, so a link derived from
+    /// a plain borrow inherits nothing and stays a view.
+    writable_links: HashSet<String>,
+    take_link_params: HashSet<String>,
+    identified_links: HashSet<String>,
+    /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
+    /// on a link can tell "the node was deleted here" from "you moved it here".
+    link_delete_spans: std::collections::HashSet<Span>,
+    /// Loops iterating a `Rack`'s own nodes: (element type key, binding names).
+    /// A `delete` of one of those bindings is picking an arbitrary node rather
+    /// than a node the caller named, so it invalidates every other link local.
+    rack_iterations: Vec<(Option<String>, Vec<String>)>,
     /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
     param_type_strings: HashMap<String, String>,
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
@@ -129,6 +174,11 @@ pub struct OwnershipChecker<'a> {
     /// Free-function `take` parameters by name → per-position take flags.
     /// Lets a call consume arguments to `take` params without call-site `own` (#296).
     fn_take_params: HashMap<String, Vec<bool>>,
+    /// Per function name, which parameters carry `deleting`.
+    fn_deleting_params: HashMap<String, Vec<bool>>,
+    /// (type, method) -> (is the receiver `deleting`, which parameters are). Built
+    /// here rather than carried on `MethodSig`, which has 46 construction sites.
+    method_deleting: HashMap<(String, String), (bool, Vec<bool>)>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -153,12 +203,25 @@ impl<'a> OwnershipChecker<'a> {
             frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
+            coarse_resources: HashMap::new(),
+            exit_reported: HashSet::new(),
+            deleting_params: HashSet::new(),
+            link_rack_root: HashMap::new(),
+            writable_racks: HashSet::new(),
+            link_params: HashSet::new(),
+            writable_links: HashSet::new(),
+            take_link_params: HashSet::new(),
+            identified_links: HashSet::new(),
+            link_delete_spans: std::collections::HashSet::new(),
+            rack_iterations: Vec::new(),
             param_type_strings: HashMap::new(),
             borrow_bindings: HashMap::new(),
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
             last_closure_scope_limit: None,
             fn_take_params: HashMap::new(),
+            fn_deleting_params: HashMap::new(),
+            method_deleting: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -168,8 +231,37 @@ impl<'a> OwnershipChecker<'a> {
         // Collect `take`-parameter positions for every free function so calls
         // can consume the matching argument (PM3) without call-site `own` (#296).
         for decl in decls {
+            // Methods too: `sc.purge()` has to revoke the caller's links when
+            // `purge` is declared `deleting self`, and the receiver is where that
+            // declaration sits.
+            if let DeclKind::Impl(impl_decl) = &decl.kind {
+                let ty = impl_decl
+                    .target_ty
+                    .split('<')
+                    .next()
+                    .unwrap_or(&impl_decl.target_ty)
+                    .to_string();
+                for m in &impl_decl.methods {
+                    let self_deleting = m
+                        .params
+                        .iter()
+                        .any(|p| p.name == "self" && p.is_deleting);
+                    let params: Vec<bool> = m
+                        .params
+                        .iter()
+                        .filter(|p| p.name != "self")
+                        .map(|p| p.is_deleting)
+                        .collect();
+                    if self_deleting || params.iter().any(|d| *d) {
+                        self.method_deleting
+                            .insert((ty.clone(), m.name.clone()), (self_deleting, params));
+                    }
+                }
+            }
             if let DeclKind::Fn(fn_decl) = &decl.kind {
                 let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
+                let deletings: Vec<bool> = fn_decl.params.iter().map(|p| p.is_deleting).collect();
+                self.fn_deleting_params.insert(fn_decl.name.clone(), deletings);
                 if takes.iter().any(|&t| t) {
                     self.fn_take_params.insert(fn_decl.name.clone(), takes);
                 }
@@ -359,17 +451,14 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Import(_) => {}
             DeclKind::Export(_) => {}
             DeclKind::Const(_) => {} // Module-level consts handled differently
+            // "Like a function" has to include the exit check, or a `test` block
+            // is the one place linearity doesn't apply — which is exactly where
+            // resources get exercised.
             DeclKind::Test(test_decl) => {
-                // Check test body like a function
-                self.bindings.clear();
-                self.borrows.clear();
-                self.check_block(&test_decl.body);
+                self.check_body(&test_decl.body);
             }
             DeclKind::Benchmark(bench_decl) => {
-                // Check benchmark body like a function
-                self.bindings.clear();
-                self.borrows.clear();
-                self.check_block(&bench_decl.body);
+                self.check_body(&bench_decl.body);
             }
             DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
@@ -377,17 +466,47 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    fn check_fn(&mut self, fn_decl: &FnDecl) {
-        // Reset state for each function (local analysis only)
+    /// Per-body state. `binding_types` and `binding_decl_blocks` were not being
+    /// reset, so a name declared in one body stayed typed in the next — latent
+    /// until something iterated the map to decide which names to invalidate, at
+    /// which point a `first` from one test body got marked dead in another.
+    fn reset_body_state(&mut self) {
         self.bindings.clear();
+        self.binding_types.clear();
+        self.binding_decl_blocks.clear();
+        self.borrow_bindings.clear();
         self.borrows.clear();
         self.resource_bindings.clear();
         self.owned_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
+        self.in_ensure = false;
         self.frozen_contexts.clear();
+        self.active_with_bindings.clear();
+        self.active_for_mutates.clear();
+        self.scope_limited_closures.clear();
+        self.last_closure_scope_limit = None;
+        self.param_type_strings.clear();
+        self.identified_links.clear();
+        self.coarse_resources.clear();
+        self.resource_field_debts.clear();
+        self.borrowed_params.clear();
+        self.mutate_params.clear();
+        self.exit_reported.clear();
+        self.deleting_params.clear();
+        self.link_rack_root.clear();
+        self.writable_racks.clear();
+        self.link_params.clear();
+        self.writable_links.clear();
+        self.take_link_params.clear();
+        self.link_delete_spans.clear();
+        self.rack_iterations.clear();
         self.current_block = 0;
         self.current_stmt = 0;
+    }
+
+    fn check_fn(&mut self, fn_decl: &FnDecl) {
+        self.reset_body_state();
 
         // CC3/PF5: Track frozen pool contexts
         for clause in &fn_decl.context_clauses {
@@ -399,10 +518,35 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
 
+        for param in &fn_decl.params {
+            if param.is_take && param.ty.starts_with("Link<") {
+                self.take_link_params.insert(param.name.clone());
+            }
+            if param.is_deleting {
+                self.deleting_params.insert(param.name.clone());
+            }
+            if param.ty.starts_with("Link<") {
+                self.link_params.insert(param.name.clone());
+                if param.is_mutate || param.is_deleting {
+                    self.writable_links.insert(param.name.clone());
+                }
+            }
+        }
+
         // Register parameter type strings for W2 pool detection
         self.param_type_strings.clear();
         for param in &fn_decl.params {
             self.param_type_strings.insert(param.name.clone(), param.ty.clone());
+        }
+
+        // A rack reached through a `mutate`/`deleting` parameter is writable; one
+        // reached through a plain borrow is the caller's to write. Has to come
+        // after the map above — `name_holds_rack` reads it, so running this in the
+        // earlier loop silently answered "no" for every parameter.
+        for param in &fn_decl.params {
+            if (param.is_mutate || param.is_deleting) && self.name_holds_rack(&param.name) {
+                self.writable_racks.insert(param.name.clone());
+            }
         }
 
         // Register parameters as owned or borrowed bindings
@@ -410,7 +554,17 @@ impl<'a> OwnershipChecker<'a> {
         self.mutate_params.clear();
         for param in &fn_decl.params {
             if param.is_mutate {
-                self.mutate_params.insert(param.name.clone(), param.name_span);
+                // "Resource types must be consumed exactly once. Only `take`
+                // parameters can consume them" (mem.parameters). A resource behind
+                // a `mutate` borrow can't be given away even if something is put
+                // back, so it joins the borrows instead — consume-and-replace is
+                // for ordinary move-only values, where the spec is silent.
+                if self.is_resource_type_name(&param.ty) {
+                    self.borrowed_params
+                        .insert(param.name.clone(), (param.name_span, true));
+                } else {
+                    self.mutate_params.insert(param.name.clone(), param.name_span);
+                }
             }
             if !param.is_take && !param.is_mutate {
                 // What the caller lent out. Giving it away is an error — they keep
@@ -472,9 +626,19 @@ impl<'a> OwnershipChecker<'a> {
         self.check_mutate_params_refilled(exit_span);
     }
 
+    /// A body with no parameters: reset, walk, then the scope-exit check.
+    fn check_body(&mut self, body: &[Stmt]) {
+        self.reset_body_state();
+        self.check_block(body);
+        self.check_resource_consumption(
+            body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
+        );
+    }
+
     fn check_block(&mut self, stmts: &[Stmt]) {
         let block_id = self.current_block;
         self.current_block += 1;
+        let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
 
         for stmt in stmts {
             self.check_stmt(stmt);
@@ -486,6 +650,12 @@ impl<'a> OwnershipChecker<'a> {
 
         // Release persistent borrows at block end
         self.release_persistent_borrows(block_id);
+
+        // Resources this block introduced go out of scope here.
+        self.check_block_resources(
+            &resources_on_entry,
+            stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
+        );
 
         // SL2: Check if any scope-limited closures would escape this block.
         // A closure escapes if its borrow_block is inside the block being exited
@@ -597,6 +767,8 @@ impl<'a> OwnershipChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
+                // `mut` is what makes a rack's nodes writable here.
+                self.writable_racks.insert(name.clone());
                 self.check_expr(init);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
@@ -604,6 +776,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                    self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
                 }
                 // SL1: inherit scope limit from closure expression
@@ -655,6 +828,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
+                    self.record_link_provenance(name, &t, init);
                     // SL1: Only a projection (field/index) borrow creates a borrow view.
                     // Whole-variable moves create owned bindings; closures can capture freely.
                     let (_, projection) = Self::extract_root_and_fields(init);
@@ -766,8 +940,38 @@ impl<'a> OwnershipChecker<'a> {
                         false
                     }
                 };
-                // Assignments move the value
-                self.handle_assignment(value, stmt.span, true);
+                // Assignments move the value — except a link into a field.
+                //
+                // A link is a pointer, so both cases copy the same pointer; what
+                // differs is who keeps it honest afterwards. The rack maintains a
+                // field-held link (it nulls it at delete), so the source name stays
+                // good. Nothing maintains a local, so a local-to-local copy revokes
+                // the source and `delete` takes it — which is what makes
+                // use-after-delete a compile error (analysis.fourth-option).
+                // A node write asks the *rack*, not the link. A link is an
+                // access path — following an edge doesn't grant anything the
+                // rack didn't already grant, which is why read-only needs no
+                // second link type and can't be laundered by one hop.
+                if !reinit_target {
+                    self.check_node_write(target, stmt.span);
+                }
+                if let Some(target_root) = Self::extract_root_and_fields(target).0 {
+                    self.check_link_escape(
+                        value,
+                        LinkEscape::Assignment { target: target_root },
+                        stmt.span,
+                    );
+                }
+                let link_into_field = !reinit_target
+                    && self
+                        .program
+                        .node_types
+                        .get(&value.id)
+                        .cloned()
+                        .is_some_and(|ty| self.is_link_type(&ty));
+                if !link_into_field {
+                    self.handle_assignment(value, stmt.span, true);
+                }
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
@@ -776,7 +980,16 @@ impl<'a> OwnershipChecker<'a> {
                         // what makes `mut c: Conn? = none` work: nothing to
                         // consume at the declaration, and a real one to consume
                         // once something fills it (#827).
-                        if self.expr_is_resource_type(value) {
+                        // Unless the target is a parameter: PM2 hands a `mutate`
+                        // slot back to the caller, so refilling one is the
+                        // consume-and-replace pattern, not a new obligation this
+                        // body owes. Registering it made `c = Conn { … }` inside
+                        // `churn(mutate c: Conn)` report a leak of the very value
+                        // the caller is about to get back.
+                        if self.expr_is_resource_type(value)
+                            && !self.mutate_params.contains_key(target_name)
+                            && !self.borrowed_params.contains_key(target_name)
+                        {
                             self.resource_bindings.insert(target_name.clone());
                         }
                     }
@@ -831,6 +1044,11 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
+                    self.check_link_escape(expr, LinkEscape::Return, stmt.span);
+                    // Control leaves here, so this is an exit like any other. The
+                    // end-of-body check alone misses an early return that skips a
+                    // consume or a replacement.
+                    self.check_exit_obligations(stmt.span);
                     // SL2: Check if returning a scope-limited closure
                     if let ExprKind::Ident(name) = &expr.kind {
                         if self.scope_limited_closures.contains_key(name) {
@@ -855,6 +1073,9 @@ impl<'a> OwnershipChecker<'a> {
                             span: stmt.span,
                         });
                     }
+                } else {
+                    // A bare `return` is an exit too.
+                    self.check_exit_obligations(stmt.span);
                 }
             }
             StmtKind::While { cond, body, .. } => {
@@ -882,6 +1103,27 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                let iterates_rack = self.rack_iteration_elem(iter);
+                if let Some(elem) = iterates_rack {
+                    // The element of a rack iteration is a link, and the binding
+                    // needs the type recorded or nothing downstream can tell it is
+                    // one — that is what makes it a *derived* link rather than an
+                    // untyped name.
+                    if let ForBinding::Single(name) = binding {
+                        if let Some(ty) = self
+                            .program
+                            .node_types
+                            .get(&iter.id)
+                            .and_then(|t| Self::sequence_element(t))
+                        {
+                            self.binding_types.insert(name.clone(), ty);
+                        }
+                        if let Some(root) = self.link_root_of_expr(iter) {
+                            self.link_rack_root.insert(name.clone(), root);
+                        }
+                    }
+                    self.rack_iterations.push((elem, binding_names.clone()));
+                }
                 // LP14/LP16: track for-mutate context
                 if *mutate {
                     let collection_name = Self::extract_iter_collection(iter);
@@ -896,6 +1138,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names);
                 if *mutate {
                     self.active_for_mutates.pop();
+                }
+                if self.rack_iteration_elem(iter).is_some() {
+                    self.rack_iterations.pop();
                 }
             }
             StmtKind::Loop { label: _, body } => {
@@ -959,8 +1204,8 @@ impl<'a> OwnershipChecker<'a> {
                                 MoveReason::Owned
                             } else {
                                 self.program.node_types.get(&expr.id)
-                                    .map(|ty| self.move_reason(ty))
-                                    .unwrap_or_else(|| self.move_reason_for(name))
+                                    .map(|ty| self.move_reason_at(ty, *at))
+                                    .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMove {
@@ -980,8 +1225,8 @@ impl<'a> OwnershipChecker<'a> {
                                 MoveReason::Owned
                             } else {
                                 self.program.node_types.get(&expr.id)
-                                    .map(|ty| self.move_reason(ty))
-                                    .unwrap_or_else(|| self.move_reason_for(name))
+                                    .map(|ty| self.move_reason_at(ty, *at))
+                                    .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::UseAfterMaybeMove {
@@ -1034,6 +1279,13 @@ impl<'a> OwnershipChecker<'a> {
                 } else {
                     None
                 };
+                let callee_deletings: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
+                    self.fn_deleting_params.get(name).cloned()
+                } else {
+                    None
+                };
+                let mut deleting_args: Vec<Expr> = Vec::new();
+                let rack_args = self.rack_arg_roots(args);
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as function argument
@@ -1059,6 +1311,18 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     let is_take_param =
                         callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                    // Passing a rack to a `deleting` parameter revokes every link
+                    // local into it — but not until the rest of the arguments have
+                    // been checked, or a link passed alongside it reads as already
+                    // dead at its own call.
+                    if callee_deletings
+                        .as_ref()
+                        .and_then(|d| d.get(i))
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        deleting_args.push(arg.expr.clone());
+                    }
                     let callee_name = match &func.kind {
                         ExprKind::Ident(n) => Some(n.clone()),
                         _ => None,
@@ -1077,8 +1341,12 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
+                        self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
                         self.consume_arg(&arg.expr, callee_name.as_deref());
                     }
+                }
+                for rack_arg in &deleting_args {
+                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
@@ -1087,6 +1355,31 @@ impl<'a> OwnershipChecker<'a> {
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
                 let channel_send = self.is_channel_send(object, method, expr.span);
+                let mut rack_args = self.rack_arg_roots(args);
+                // For a method call the receiver is an argument too.
+                if let Some(root) = Self::extract_root_and_fields(object).0 {
+                    if self.name_holds_rack(&root) && !rack_args.contains(&root) {
+                        rack_args.push(root);
+                    }
+                }
+                // `deleting` on a method: the receiver carries it as often as a
+                // parameter does, and a call has to revoke the caller's links
+                // either way.
+                let mut method_deleting_args: Vec<Expr> = Vec::new();
+                if let Some(recv_ty) = self.receiver_type_name(object) {
+                    if let Some((self_deleting, param_deleting)) =
+                        self.method_deleting.get(&(recv_ty, method.clone())).cloned()
+                    {
+                        if self_deleting {
+                            method_deleting_args.push((**object).clone());
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            if param_deleting.get(i).copied().unwrap_or(false) {
+                                method_deleting_args.push(arg.expr.clone());
+                            }
+                        }
+                    }
+                }
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as method argument
@@ -1128,6 +1421,9 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                             }
                         }
+                        if method != "delete" {
+                            self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
+                        }
                         self.consume_arg(&arg.expr, Some(method.as_str()));
                     }
                 }
@@ -1136,6 +1432,46 @@ impl<'a> OwnershipChecker<'a> {
                 // been read, same reason as the struct literal above.
                 if self.names_a_variant(object, method) {
                     self.consume_owned_into_aggregate(expr);
+                }
+                // A delete names its victim only if the argument is a link this
+                // body can vouch for: one `insert` handed over, or one a caller
+                // passed by `take`. Anything else — a field read, an iteration
+                // binding, a call result — may alias any node in the rack, so
+                // every *derived* link local has to die with it. And a delete of
+                // an unvouched-for link is not a named delete at all: it takes
+                // everything, the same way `clear` does.
+                if method == "delete" && self.receiver_type_name(object).as_deref() == Some("Rack")
+                {
+                    let named = args.first().is_some_and(|a| self.is_identified_link(&a.expr));
+                    if named {
+                        self.kill_derived_links_into_rack(object, expr.span);
+                    } else {
+                        self.kill_links_into_rack(object, expr.span);
+                    }
+                    if let Some(a) = args.first() {
+                        if let ExprKind::Ident(_) = &a.expr.kind {
+                            self.link_delete_spans.insert(a.expr.span);
+                        }
+                    }
+                    self.link_delete_spans.insert(expr.span);
+                    if !named {
+                        self.require_deleting(object, "`delete` here", expr.span);
+                    }
+                }
+                // `rack.clear()` deletes every node at once. It names no link,
+                // so a local link into that rack has to die here the same way
+                // it would at an explicit `delete` — otherwise the checkless
+                // read the whole model rests on reads freed memory.
+                if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Rack")
+                {
+                    self.kill_links_into_rack(object, expr.span);
+                    // A clear is a delete, so the names it kills must report as
+                    // freed rather than as moved.
+                    self.link_delete_spans.insert(expr.span);
+                    self.require_deleting(object, "`clear` here", expr.span);
+                }
+                for rack_arg in &method_deleting_args {
+                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {
@@ -1603,8 +1939,34 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(&clause.body);
                 self.bindings = pre_handler;
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
+            ExprKind::IsPresent { expr: inner, binding } => {
                 self.check_expr(inner);
+                // OPT19: `x? as v` introduces `v` in the then-branch, and the pass
+                // was dropping the name entirely. Moves happened to be caught
+                // anyway — `consume_arg` marks by name whether or not the name was
+                // registered — but the *type* was missing, so anything reasoning
+                // about what `v` is saw nothing.
+                if let Some(name) = binding {
+                    if let Some(ty) = self.program.node_types.get(&inner.id).cloned() {
+                        let narrowed = ty.as_option().cloned().unwrap_or(ty);
+                        self.bindings.insert(name.clone(), BindingState::Owned);
+                        if self.type_is_resource(&narrowed) {
+                            self.resource_bindings.insert(name.clone());
+                        }
+                        self.identified_links.remove(name);
+                        if let Some(root) = self.link_root_of_expr(inner) {
+                            self.link_rack_root.insert(name.clone(), root);
+                        }
+                        // `if n.child? as c` is how an edge is followed, so this
+                        // is the main place write permission has to carry over.
+                        if self.expr_root_is_writable_link(inner) {
+                            self.writable_links.insert(name.clone());
+                        } else {
+                            self.writable_links.remove(name);
+                        }
+                        self.binding_types.insert(name.clone(), narrowed);
+                    }
+                }
             }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
@@ -1852,6 +2214,531 @@ impl<'a> OwnershipChecker<'a> {
     /// Copy types (VS1/VS2): implicit bitwise copy, source stays valid.
     /// Non-Copy + `let` (is_mutable=true): move, source invalidated.
     /// Non-Copy + `const` (is_mutable=false): block-scoped borrow.
+
+    /// Is this a `Link<T>`? Both spellings: `Link` resolves to a declared stdlib
+    /// struct, so the type arrives as `Generic` after resolution and
+    /// `UnresolvedGeneric` before it.
+    fn is_link_type(&self, ty: &rask_types::Type) -> bool {
+        // `Link<T>?` counts too — an edge field is optional, so reading one out
+        // yields the optional shape rather than a bare link, and it is still just
+        // a pointer being copied.
+        if let Some(inner) = ty.as_option() {
+            return self.is_link_type(inner);
+        }
+        match ty {
+            rask_types::Type::UnresolvedGeneric { name, .. } => name == "Link",
+            rask_types::Type::Generic { base, .. } => {
+                self.program.types.type_name(*base) == "Link"
+            }
+            _ => false,
+        }
+    }
+
+    /// First type argument of a generic type, as a comparable string. Used to
+    /// pair a `Rack<T>` with the `Link<T>` locals pointing into it.
+    fn elem_key(&self, ty: &rask_types::Type) -> Option<String> {
+        let ty = ty.as_option().unwrap_or(ty);
+        let arg = match ty {
+            rask_types::Type::UnresolvedGeneric { args, .. } => args.first()?,
+            rask_types::Type::Generic { args, .. } => args.first()?,
+            _ => return None,
+        };
+        match arg {
+            rask_types::GenericArg::Type(t) => {
+                Some(format!("{}", self.program.types.resolve_type_names(t)))
+            }
+            rask_types::GenericArg::ConstUsize(n) => Some(n.to_string()),
+        }
+    }
+
+    /// Record whether a new link local names a node nothing else in this body
+    /// knows about. Only a direct `rack.insert(...)` qualifies: a field read, an
+    /// iteration binding or a call result may be a second name for a node some
+    /// other local also names, and a delete of either invalidates both.
+    fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
+        if !self.is_link_type(ty) {
+            return;
+        }
+        let from_insert = matches!(
+            &init.kind,
+            ExprKind::MethodCall { object, method, .. }
+                if method == "insert" && self.receiver_type_name(object).as_deref() == Some("Rack")
+        );
+        if from_insert {
+            self.identified_links.insert(name.to_string());
+        } else {
+            self.identified_links.remove(name);
+        }
+        match self.link_root_of_expr(init) {
+            Some(root) => {
+                self.link_rack_root.insert(name.to_string(), root);
+            }
+            None => {
+                self.link_rack_root.remove(name);
+            }
+        }
+        // Following an edge off a writable link yields another writable link.
+        if self.expr_root_is_writable_link(init) {
+            self.writable_links.insert(name.to_string());
+        } else {
+            self.writable_links.remove(name);
+        }
+    }
+
+    /// Whether this expression is reached from a link this body may write through.
+    fn expr_root_is_writable_link(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.writable_links.contains(name),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. }
+            | ExprKind::MethodCall { object, .. } => self.expr_root_is_writable_link(object),
+            ExprKind::IsPresent { expr: inner, .. } | ExprKind::Unwrap { expr: inner, .. } => {
+                self.expr_root_is_writable_link(inner)
+            }
+            _ => false,
+        }
+    }
+
+    /// A write through a link is permitted by the rack the node lives in.
+    ///
+    /// `n.value = 5` doesn't change `n` — it changes a node inside a rack, so
+    /// the question is whether *that rack* is writable here. This is the rule
+    /// `Handle` has always had (`scene.nodes[h].f = x` needs `mutate scene`); a
+    /// link just spells the path differently. Asking the rack rather than the
+    /// link is what makes a read-only view free: a function taking `s: Rack<T>`
+    /// can read every node and write none, with nothing to propagate along edges
+    /// and no way to launder a read-only link into a writable one.
+    fn check_node_write(&mut self, target: &Expr, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(target).0 else { return };
+        let is_link = self
+            .binding_types
+            .get(&root)
+            .is_some_and(|ty| self.is_link_type(ty));
+        if !is_link && !self.take_link_params.contains(&root) {
+            let param_link = self
+                .param_type_strings
+                .get(&root)
+                .is_some_and(|t| t.starts_with("Link<"));
+            if !param_link {
+                return;
+            }
+        }
+        // A `mutate` link parameter is the callee's licence to write the node —
+        // that's the whole point of passing links around instead of racks. The
+        // caller proved it may at the call site; here the signature says it will.
+        if self.mutate_params.contains_key(&root)
+            || self.deleting_params.contains(&root)
+            || self.writable_links.contains(&root)
+        {
+            return;
+        }
+        match self.link_root_of_expr(target) {
+            // The rack has a name here, so the answer is about that name.
+            Some(rack) => {
+                if !self.writable_racks.contains(&rack) {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableRack {
+                            link: root,
+                            rack: Some(rack),
+                        },
+                        span,
+                    });
+                }
+            }
+            // The link arrived as a parameter, so its rack isn't named here. One
+            // writable rack parameter is unambiguous — that's the one it must
+            // belong to, since an edge can only connect co-owned nodes. None means
+            // nothing granted this write.
+            None => {
+                if self.writable_racks.is_empty() {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::NodeWriteNeedsWritableRack {
+                            link: root,
+                            rack: None,
+                        },
+                        span,
+                    });
+                }
+            }
+        }
+    }
+
+
+    /// A link may not outlive the rack it points into.
+    ///
+    /// Nothing else catches this. The use-after-delete rule tracks deletes, and
+    /// no delete happened — the rack just went out of scope and took its nodes
+    /// with it. Block-scoped borrowing would have caught it, except a link is
+    /// Copy and escapes freely, which is the point of a link. So the escape has
+    /// to be checked directly: a link whose rack this body declared can't be
+    /// returned, and can't be assigned into a name that outlives that rack.
+    ///
+    /// A link into a *parameter* rack is fine — the caller owns it, so it
+    /// outlives the call. That's the case that has to keep working:
+    /// `func first(mutate s: Rack<T>) -> Link<T>` is an ordinary accessor.
+    fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) {
+        // A link inside an aggregate escapes just as well as a bare one —
+        // `return Holder { link: n }` is the same dangle with a wrapper on it.
+        match &expr.kind {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.check_link_escape(e, via.clone(), span);
+                }
+                return;
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.check_link_escape(&f.value, via.clone(), span);
+                }
+                if let Some(sp) = spread {
+                    self.check_link_escape(sp, via.clone(), span);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+        if !self.is_link_type(ty) {
+            return;
+        }
+        let Some(rack) = self.link_root_of_expr(expr) else { return };
+        // A parameter rack outlives this body, so nothing can escape it here.
+        if self.param_type_strings.contains_key(&rack) {
+            return;
+        }
+        let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return };
+        let escapes = match &via {
+            LinkEscape::Return => true,
+            LinkEscape::Assignment { target } => self
+                .binding_decl_blocks
+                .get(target)
+                .is_some_and(|&target_block| rack_block > target_block),
+        };
+        if !escapes {
+            return;
+        }
+        let link = match &expr.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => rack.clone(),
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via },
+            span,
+        });
+    }
+
+    /// Which rack a link expression came out of, by root name. Follows the two
+    /// ways a link is obtained — from a rack (`g.nodes.insert(…)`,
+    /// `g.nodes.nodes()`) and from another link (`n.peer`, or a name that already
+    /// has an origin recorded).
+    fn link_root_of_expr(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.link_rack_root.get(name).cloned(),
+            ExprKind::MethodCall { object, method, .. } => {
+                if matches!(method.as_str(), "insert" | "nodes" | "links" | "snapshot")
+                    && self.receiver_type_name(object).as_deref() == Some("Rack")
+                {
+                    return Self::extract_root_and_fields(object).0;
+                }
+                self.link_root_of_expr(object)
+            }
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. } => self.link_root_of_expr(object),
+            ExprKind::IsPresent { expr: inner, .. } | ExprKind::Unwrap { expr: inner, .. } => {
+                self.link_root_of_expr(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// True if this argument is a link the body can vouch for: an `insert` result,
+    /// or a `take` parameter the caller already gave up.
+    fn is_identified_link(&self, arg: &Expr) -> bool {
+        let ExprKind::Ident(name) = &arg.kind else {
+            return false;
+        };
+        self.identified_links.contains(name) || self.take_link_params.contains(name)
+    }
+
+    /// Kill only the *derived* link locals — the ones that may be a second name
+    /// for whatever just died. Locals with their own `insert` behind them name
+    /// distinct nodes and survive.
+    fn kill_derived_links_into_rack(&mut self, rack: &Expr, span: Span) {
+        let elem = self
+            .program
+            .node_types
+            .get(&rack.id)
+            .and_then(|ty| self.elem_key(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                self.is_link_type(ty)
+                    && !self.identified_links.contains(name.as_str())
+                    && !self.take_link_params.contains(name.as_str())
+                    && matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                    && (elem.is_none() || self.elem_key(ty) == elem)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name, BindingState::Moved { at: span });
+        }
+    }
+
+    /// Element type key if this expression iterates a `Rack`'s nodes — either
+    /// `rack.nodes()`/`rack.links()` or the rack itself.
+    fn rack_iteration_elem(&self, iter: &Expr) -> Option<Option<String>> {
+        if let ExprKind::MethodCall { object, method, .. } = &iter.kind {
+            if matches!(method.as_str(), "nodes" | "links")
+                && self.receiver_type_name(object).as_deref() == Some("Rack")
+            {
+                return Some(
+                    self.program
+                        .node_types
+                        .get(&object.id)
+                        .and_then(|ty| self.elem_key(ty)),
+                );
+            }
+        }
+        if self.receiver_type_name(iter).as_deref() == Some("Rack") {
+            return Some(
+                self.program
+                    .node_types
+                    .get(&iter.id)
+                    .and_then(|ty| self.elem_key(ty)),
+            );
+        }
+        None
+    }
+
+    /// True if this argument names a binding introduced by iterating a rack.
+    fn is_rack_iteration_binding(&self, arg: &Expr) -> bool {
+        let ExprKind::Ident(name) = &arg.kind else {
+            return false;
+        };
+        self.rack_iterations
+            .iter()
+            .any(|(_, names)| names.contains(name))
+    }
+
+    /// Handing a link to a `take` parameter is handing it to something that may
+    /// delete it. If the link is one this body derived — out of an edge, out of
+    /// iteration — the caller never named it, so this is an unnamed delete wearing
+    /// a call's clothing and needs the same declaration.
+    fn require_deleting_for_derived_consume(
+        &mut self,
+        arg: &Expr,
+        rack_args: &[String],
+        span: Span,
+    ) {
+        let ExprKind::Ident(name) = &arg.kind else { return };
+        let is_link = match self.binding_types.get(name) {
+            Some(ty) => self.is_link_type(ty),
+            // Parameters aren't in `binding_types`, so fall back to the declared
+            // type name.
+            None => self
+                .param_type_strings
+                .get(name)
+                .is_some_and(|t| t.starts_with("Link<")),
+        };
+        if !is_link || self.is_identified_link(arg) {
+            return;
+        }
+        // Which rack it belongs to isn't recoverable from the link, so this is
+        // exact only when the body has one rack-bearing parameter — the ordinary
+        // case. With none, there is nothing the caller could be holding.
+        // Which rack will the callee delete from? Whichever one this same call
+        // hands it — a callee can't delete a link without a rack to delete it
+        // from. That makes the blame exact however many racks are in scope, and
+        // needs no guess about where the link came from. A call that passes no
+        // rack can't delete the caller's node at all.
+        for param in rack_args.to_vec() {
+            if self.deleting_params.contains(&param) {
+                continue;
+            }
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::UndeclaredDelete {
+                    param,
+                    operation: format!("handing `{}` to something that consumes it", name),
+                },
+                span,
+            });
+        }
+    }
+
+    /// An unnamed delete reaches nodes the caller never handed over, so the
+    /// parameter it goes through has to say so. A rack this body owns outright is
+    /// exempt — the caller has no links into it to lose.
+    fn require_deleting(&mut self, rack: &Expr, op: &str, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(rack).0 else {
+            return;
+        };
+        if !self.param_type_strings.contains_key(&root) || self.deleting_params.contains(&root) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::UndeclaredDelete {
+                param: root,
+                operation: op.to_string(),
+            },
+            span,
+        });
+    }
+
+    /// At a call passing `arg` to a `deleting` parameter, the callee picks which
+    /// nodes die, so every link local into that rack dies here.
+    fn kill_links_for_deleting_arg(&mut self, arg: &Expr, span: Span) {
+        let Some(root) = Self::extract_root_and_fields(arg).0 else {
+            return;
+        };
+        let elem = self
+            .binding_types
+            .get(&root)
+            .and_then(|ty| self.rack_elem_of(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                if !self.is_link_type(ty)
+                    || !matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                {
+                    return false;
+                }
+                // A link whose origin is recorded dies only if it came out of
+                // *this* rack — two racks of the same node type hand out links
+                // of the same type, so the element type alone can't separate them.
+                // An unrecorded origin has to die: over-killing is a rejected
+                // program, under-killing is a use after free.
+                match self.link_rack_root.get(name.as_str()) {
+                    Some(origin) => *origin == root,
+                    None => elem.is_none() || self.elem_key(ty) == elem,
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+        }
+        self.link_delete_spans.insert(span);
+    }
+
+    /// Element type of a sequence type (`Vec<T>`, `Rack<T>`), if it has one.
+    fn sequence_element(ty: &rask_types::Type) -> Option<rask_types::Type> {
+        let args = match ty {
+            rask_types::Type::Generic { args, .. } => args,
+            rask_types::Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }
+    }
+
+    /// Root names of the arguments that carry a `Rack`, deduplicated in order.
+    fn rack_arg_roots(&self, args: &[rask_ast::expr::CallArg]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for arg in args {
+            if let Some(root) = Self::extract_root_and_fields(&arg.expr).0 {
+                if self.name_holds_rack(&root) && !out.contains(&root) {
+                    out.push(root);
+                }
+            }
+        }
+        out
+    }
+
+    /// Is this name a parameter whose type carries a `Rack`?
+    fn name_holds_rack(&self, name: &str) -> bool {
+        self.param_type_strings
+            .get(name)
+            .is_some_and(|ty| self.type_string_holds_rack(ty))
+    }
+
+    /// Does a declared type name hold a `Rack` — directly or in a field?
+    fn type_string_holds_rack(&self, ty_str: &str) -> bool {
+        let base = ty_str.split('<').next().unwrap_or(ty_str).trim();
+        if base == "Rack" {
+            return true;
+        }
+        match self.program.types.get_type_id(base) {
+            Some(id) => self.rack_elem_of(&rask_types::Type::Named(id)).is_some(),
+            None => false,
+        }
+    }
+
+    /// Element type of a `Rack<T>`, looking through a struct that holds one.
+    fn rack_elem_of(&self, ty: &rask_types::Type) -> Option<String> {
+        if self.type_name_of(ty).as_deref() == Some("Rack") {
+            return self.elem_key(ty);
+        }
+        let id = match ty {
+            rask_types::Type::Named(id) => *id,
+            rask_types::Type::Generic { base, .. } => *base,
+            _ => return None,
+        };
+        let rask_types::TypeDef::Struct { fields, .. } = self.program.types.get(id)? else {
+            return None;
+        };
+        fields
+            .clone()
+            .into_iter()
+            .find_map(|(_, fty)| self.rack_elem_of(&fty))
+    }
+
+    fn type_name_of(&self, ty: &rask_types::Type) -> Option<String> {
+        match ty {
+            rask_types::Type::UnresolvedGeneric { name, .. } => {
+                Some(name.split('<').next().unwrap_or(name).to_string())
+            }
+            rask_types::Type::Generic { base, .. } => {
+                let n = self.program.types.type_name(*base);
+                Some(n.split('<').next().unwrap_or(&n).to_string())
+            }
+            rask_types::Type::Named(id) => {
+                let n = self.program.types.type_name(*id);
+                Some(n.split('<').next().unwrap_or(&n).to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// Mark every live local link with the rack's element type as deleted.
+    /// Conservative on the rack: links are not tracked back to the rack they
+    /// came from, so two racks of the same node type kill each other's locals.
+    fn kill_links_into_rack(&mut self, rack: &Expr, span: Span) {
+        let elem = self
+            .program
+            .node_types
+            .get(&rack.id)
+            .and_then(|ty| self.elem_key(ty));
+        let dead: Vec<String> = self
+            .binding_types
+            .iter()
+            .filter(|(name, ty)| {
+                self.is_link_type(ty)
+                    && matches!(
+                        self.bindings.get(name.as_str()),
+                        None | Some(BindingState::Owned)
+                    )
+                    && (elem.is_none() || self.elem_key(ty) == elem)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in dead {
+            self.bindings.insert(name, BindingState::Moved { at: span });
+        }
+    }
+
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
             // Copy types: both source and target remain valid (VS1/VS2). An
@@ -1871,6 +2758,16 @@ impl<'a> OwnershipChecker<'a> {
             let (root, projection) = Self::extract_root_and_fields(expr);
             if let Some(source_name) = root {
                 if projection.is_some() {
+                    // Reading a link out of a field copies a pointer and leaves the
+                    // field exactly as it was — so it borrows nothing, the same way
+                    // a Copy value above borrows nothing. Without this, the ordinary
+                    // graph splice `p.next = n.next` reads as an exclusive borrow of
+                    // `n` (correct when the field is owned data being moved out) and
+                    // collides with the shared borrow `if n.prev? as p` already
+                    // holds (analysis.fourth-option).
+                    if self.is_link_type(ty) {
+                        return;
+                    }
                     // F1: Field-projected — borrow the source
                     let mode = if is_mutable { BorrowMode::Exclusive } else { BorrowMode::Shared };
                     self.create_borrow_with_projection(source_name, mode, span, projection);
@@ -2080,15 +2977,24 @@ impl<'a> OwnershipChecker<'a> {
     /// Copy-ness of a captured name. Locals carry a resolved `Type`; a bare
     /// parameter only has its type-annotation string, so fall back to that.
     fn capture_is_copy(&self, name: &str) -> bool {
+        // A link counts here for the same reason a Copy value does: capturing one
+        // copies a pointer into the closure, so it can't dangle and must not
+        // scope-limit the closure. Without this, `children.filter(|c| c != n)` —
+        // the ordinary "drop this child" idiom — is rejected because `n` reads as
+        // a scoped borrow (analysis.fourth-option).
         if let Some(t) = self.binding_types.get(name) {
-            return self.is_copy(t);
+            return self.is_copy(t) || self.is_link_type(t);
         }
         if let Some(tn) = self.param_type_strings.get(name) {
             if let Some(t) = self.type_from_name(tn) {
-                return self.is_copy(&t);
+                return self.is_copy(&t) || self.is_link_type(&t);
             }
         }
-        false
+        // A parameter whose annotation didn't resolve: fall back to the spelling,
+        // so a `Link<T>` param behaves the same as a resolved one.
+        self.param_type_strings
+            .get(name)
+            .is_some_and(|tn| tn.starts_with("Link<"))
     }
 
     /// Resolve a simple type-annotation string to a `Type`. Handles primitives,
@@ -2141,6 +3047,7 @@ impl<'a> OwnershipChecker<'a> {
     fn is_native_opaque_generic(base_name: &str) -> bool {
         matches!(base_name,
             "Vec" | "Map" | "Wide" | "Cell" | "Pool" | "Handle" | "WeakHandle"
+            | "Rack" | "Link"
             | "TaskHandle" | "TaskGroup" | "Sender" | "Receiver" | "ThreadHandle")
     }
 
@@ -2393,7 +3300,30 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Determine why a type is move-only (not Copy).
+    /// `move_reason`, but told where the invalidation happened. A link is only
+    /// reported as deleted if that span really was a `delete` — an ordinary move
+    /// into another name is a move, and saying "deleted here" about a `let` that
+    /// deleted nothing is worse than saying nothing at all.
+    fn move_reason_at(&self, ty: &Type, at: Span) -> MoveReason {
+        if self.is_link_type(ty) && !self.link_delete_spans.contains(&at) {
+            return MoveReason::LinkMoved;
+        }
+        self.move_reason(ty)
+    }
+
+    fn move_reason_for_at(&self, name: &str, at: Span) -> MoveReason {
+        match self.binding_types.get(name) {
+            Some(ty) => self.move_reason_at(ty, at),
+            None => MoveReason::Unknown,
+        }
+    }
+
     fn move_reason(&self, ty: &Type) -> MoveReason {
+        // A link isn't moved anywhere — `delete` frees its node, which kills every
+        // name for it. Report it as what it is rather than as a transfer.
+        if self.is_link_type(ty) {
+            return MoveReason::LinkDeleted;
+        }
         let type_name = format!("{}", self.program.types.resolve_type_names(ty));
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached
@@ -3120,6 +4050,15 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// What must hold wherever control leaves the body: every resource consumed,
+    /// every `mutate` parameter refilled. Reported at each `return` as well as at
+    /// the end, because an early return is an exit and the end-of-body check can't
+    /// see it.
+    fn check_exit_obligations(&mut self, span: Span) {
+        self.check_resource_consumption(span);
+        self.check_mutate_params_refilled(span);
+    }
+
     /// Give a binding away: mark it moved, or refuse if it was only borrowed.
     ///
     /// A parameter without `take` is the caller's value on loan (PM1). Handing it
@@ -3245,6 +4184,65 @@ impl<'a> OwnershipChecker<'a> {
     /// `Pool<File>`, etc. as linear. A handle is a copyable value and a pool is
     /// the sanctioned resource container (its own drop story is R5, not L1), so
     /// binding one must not demand consumption (`mem.resource-types/RC2`).
+
+    /// Why the field walk can't reach a resource inside this type — `None` when it
+    /// can, i.e. the type is a plain struct with named fields. Every shape that
+    /// holds values without giving them a field path is listed, so a type matching
+    /// none of them is reported as unrecognised rather than joining the bucket in
+    /// silence.
+    fn opaque_resource_shape(&self, ty: &Type) -> Option<String> {
+        if ty.as_option().is_some() {
+            return Some("an optional".to_string());
+        }
+        if let Type::Tuple(_) = ty {
+            return Some("a tuple".to_string());
+        }
+        if let Type::UnresolvedGeneric { name, args } = ty {
+            if !args.is_empty() {
+                let base = name.split('<').next().unwrap_or(name);
+                return Some(Self::container_shape(base));
+            }
+        }
+        let (id, args) = match ty {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (*base, args.clone()),
+            _ => return Some("a type the checker does not recognise".to_string()),
+        };
+        let name = self.program.types.type_name(id);
+        let base = name.split('<').next().unwrap_or(&name).to_string();
+        if !args.is_empty() {
+            return Some(Self::container_shape(&base));
+        }
+        match self.program.types.get(id) {
+            Some(rask_types::TypeDef::Enum { .. }) => Some("an enum payload".to_string()),
+            Some(rask_types::TypeDef::Union { .. }) => Some("a union member".to_string()),
+            Some(rask_types::TypeDef::Struct { .. }) => None,
+            _ => Some("a type the checker does not recognise".to_string()),
+        }
+    }
+
+    fn container_shape(base: &str) -> String {
+        match base {
+            "Vec" => "a `Vec` element".to_string(),
+            "Map" => "a `Map` entry".to_string(),
+            "Set" => "a `Set` element".to_string(),
+            other => format!("a `{}` payload", other),
+        }
+    }
+
+    /// The type carries `@resource` itself, as opposed to merely containing one.
+    fn is_directly_resource(&self, ty: &Type) -> bool {
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            _ => return false,
+        };
+        matches!(
+            self.program.types.get(id),
+            Some(rask_types::TypeDef::Struct { is_resource: true, .. })
+        )
+    }
+
     fn type_is_resource(&self, ty: &Type) -> bool {
         self.program.types.is_linear_value(ty)
     }
@@ -3412,6 +4410,11 @@ impl<'a> OwnershipChecker<'a> {
             self.mutate_params.iter().map(|(n, s)| (n.clone(), *s)).collect();
         names.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, declared_at) in names {
+            // Every `return` runs this as well as the closing brace, so without a
+            // dedupe one empty slot reports once per exit.
+            if !self.exit_reported.insert(format!("mutate:{}", name)) {
+                continue;
+            }
             let (consumed_at, maybe) = match self.bindings.get(&name) {
                 Some(BindingState::Moved { at }) => (*at, false),
                 Some(BindingState::MaybeMoved { at }) => (*at, true),
@@ -3593,6 +4596,12 @@ impl<'a> OwnershipChecker<'a> {
         let paths = self.resource_field_paths(ty, 0);
         if !paths.is_empty() {
             self.resource_field_debts.insert(name.to_string(), paths);
+            return;
+        }
+        if !self.is_directly_resource(ty) {
+            if let Some(shape) = self.opaque_resource_shape(ty) {
+                self.coarse_resources.insert(name.to_string(), shape);
+            }
         }
     }
 
@@ -3681,8 +4690,50 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn check_resource_consumption(&mut self, span: Span) {
-        let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
+        let names: Vec<String> = {
+            let mut v: Vec<String> = self.resource_bindings.iter().cloned().collect();
+            v.sort();
+            v
+        };
+        self.check_resource_names(names, span);
+    }
+
+    /// The obligations a block introduced, judged where that block ends.
+    ///
+    /// A resource declared inside a block goes out of scope at the closing brace,
+    /// so that's where "was it consumed" has an answer. Deferring it to the
+    /// function's exit worked for a plain nested block — the binding state
+    /// survives — but not for a branch: the merge drops branch-local names, so at
+    /// the function's exit `c` was absent from `bindings` entirely, "absent" isn't
+    /// `Moved`, and a resource opened *and* closed inside an `if` was reported as
+    /// leaked.
+    ///
+    /// Which names belong to this block comes from a snapshot taken on entry, not
+    /// from `binding_decl_blocks`. Block ids are depth-like rather than unique —
+    /// a nested block is numbered with the depth its enclosing block was at — so
+    /// a binding declared in the enclosing block matches the nested block's id,
+    /// and an id comparison judged it early, while it was still `Moved` inside the
+    /// branch. That silently *dropped* a real maybe-consumed leak.
+    fn check_block_resources(&mut self, entered_with: &HashSet<String>, span: Span) {
+        let mut names: Vec<String> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !entered_with.contains(*n))
+            .cloned()
+            .collect();
+        if names.is_empty() {
+            return;
+        }
         names.sort();
+        self.check_resource_names(names.clone(), span);
+        // Judged, so the function-exit pass must not judge them again — by then
+        // the state they were judged on is gone.
+        for name in names {
+            self.resource_bindings.remove(&name);
+        }
+    }
+
+    fn check_resource_names(&mut self, names: Vec<String>, span: Span) {
         for name in names {
             if self.ensure_registered.contains(&name) {
                 // C3/C4: ensure commits consumption. At scope exit the receiver
@@ -3704,6 +4755,9 @@ impl<'a> OwnershipChecker<'a> {
             }
             // Not registered with ensure: must be consumed (Moved) before exit.
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                if !self.exit_reported.insert(name.clone()) {
+                    continue;
+                }
                 // A holder that owes named fields is reported by field, so the
                 // message points at what's actually still open rather than at a
                 // binding with no `close()` of its own (#828).
@@ -3723,6 +4777,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let kind = if self.owned_bindings.contains(&name) {
                     OwnershipErrorKind::OwnedNotConsumed { name }
+                } else if let Some(where_) = self.coarse_resources.get(&name).cloned() {
+                    // The walk found a resource it had no field path to, so the
+                    // obligation fell back to the whole binding. Saying which shape
+                    // stopped it is what keeps that from reading like a bug.
+                    OwnershipErrorKind::ResourceNotConsumedOpaque { name, where_ }
                 } else {
                     OwnershipErrorKind::ResourceNotConsumed { name }
                 };

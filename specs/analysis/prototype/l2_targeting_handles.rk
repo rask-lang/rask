@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L2 — entity targeting, with Pool + Handle. Companion to
+// l2_targeting_links.rk: same program, same output, the other memory model.
+//
+// The shape this exists to show: following a stored handle needs a liveness
+// check at every hop, and the `else` branch that clears the dead handle is
+// load-bearing for correctness yet the program runs without it.
+
+struct Entity {
+    name: string
+    health: i32
+    damage: i32
+    target: Handle<Entity>?
+}
+
+func main() {
+    mut world: Pool<Entity> = Pool.new()
+
+    let a = world.insert(Entity { name: "a", health: 100, damage: 10, target: none })
+    let b = world.insert(Entity { name: "b", health: 100, damage: 20, target: none })
+    let c = world.insert(Entity { name: "c", health: 100, damage: 30, target: none })
+
+    world[a].target = b
+    world[b].target = c
+    world[c].target = b
+
+    println("-- round 1, everyone alive")
+    combat_round(mutate world)
+    report(world, a, b, c)
+
+    // b dies. Its handle stays in a.target and c.target, stale.
+    world.remove(b)
+    println("-- b removed; a.target and c.target are now stale handles")
+
+    println("-- round 2")
+    combat_round(mutate world)
+    report(world, a, b, c)
+}
+
+// The stale dance. Every follow of a stored handle is three steps: read it,
+// prove it, then either act or clean up.
+func combat_round(mutate world: Pool<Entity>) {
+    for h in world {
+        if world[h].target? as t {
+            if world.get(t)? as _alive {
+                let dmg = world[h].damage
+                world[t].health -= dmg
+            } else {
+                // Without this the stale handle sits there forever and every
+                // future round re-checks it. Forgetting it is silent.
+                world[h].target = none
+            }
+        }
+    }
+}
+
+func report(world: Pool<Entity>, a: Handle<Entity>, b: Handle<Entity>, c: Handle<Entity>) {
+    show(world, a, "a")
+    show(world, b, "b")
+    show(world, c, "c")
+    println("   store len = {world.len()}")
+}
+
+func show(world: Pool<Entity>, h: Handle<Entity>, label: string) {
+    if world.get(h)? as e {
+        mut target_name = "none"
+        if e.target? as t {
+            if world.get(t)? as te {
+                target_name = te.name
+            } else {
+                target_name = "<stale>"
+            }
+        }
+        println("   {label}: health={e.health} target={target_name}")
+    } else {
+        println("   {label}: <removed>")
+    }
+}

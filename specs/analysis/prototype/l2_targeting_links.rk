@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L2 — entity targeting, with Rack + Link. Companion to
+// l2_targeting_handles.rk: same program, same output, the other memory model.
+//
+// The shape this exists to show: the staleness branch is gone. Not moved,
+// not hidden — `target` became `none` at the moment its target was deleted,
+// so there is no dead-reference state left for a reader to detect.
+
+struct Entity {
+    name: string
+    health: i32
+    damage: i32
+    target: Link<Entity>?
+}
+
+func main() {
+    mut world: Rack<Entity> = Rack.new()
+
+    let a = world.insert(Entity { name: "a", health: 100, damage: 10, target: none })
+    let b = world.insert(Entity { name: "b", health: 100, damage: 20, target: none })
+    let c = world.insert(Entity { name: "c", health: 100, damage: 30, target: none })
+
+    a.target = b
+    b.target = c
+    c.target = b
+
+    println("-- round 1, everyone alive")
+    combat_round(mutate world)
+    report(world, a, b, c)
+
+    // b dies. a.target and c.target become none before delete returns.
+    world.delete(b)
+    println("-- b deleted; a.target and c.target were unlinked by the delete")
+
+    println("-- round 2")
+    combat_round(mutate world)
+    report_survivors(world)
+}
+
+// A link is followed directly — no `world.nodes[h]` dance on either side of the
+// assignment. What the rack parameter still carries is permission: this writes
+// nodes, so it says `mutate`. A reader would take `world: Rack<Entity>` and be
+// unable to write any of them.
+func combat_round(mutate world: Rack<Entity>) {
+    for e in world.nodes() {
+        if e.target? as t {
+            t.health -= e.damage
+        }
+    }
+}
+
+func report(world: Rack<Entity>, a: Link<Entity>, b: Link<Entity>, c: Link<Entity>) {
+    show(a, "a")
+    show(b, "b")
+    show(c, "c")
+    println("   rack len = {world.len()}")
+}
+
+// After a delete the deleted node's link is gone from every edge, so there is
+// nothing left to ask about it — the survivors are the rack's contents.
+func report_survivors(world: Rack<Entity>) {
+    for e in world.nodes() {
+        show(e, e.name)
+    }
+    println("   rack len = {world.len()}")
+}
+
+func show(e: Link<Entity>, label: string) {
+    mut target_name = "none"
+    if e.target? as t {
+        target_name = t.name
+    }
+    println("   {label}: health={e.health} target={target_name}")
+}

@@ -761,6 +761,9 @@ impl Interpreter {
             // vanishes, which is the failure O4 exists to prevent. Wait here,
             // whichever way main finished.
             crate::join_detached_reapers();
+            // Before the `?`, so a program that ends in an error still reports
+            // its store stats.
+            crate::rack::print_stats();
             let value = value?;
             // struct.targets/EX4: an error out of main is exit status 1, not 0.
             // A `try` that propagates already lands in the error path; an

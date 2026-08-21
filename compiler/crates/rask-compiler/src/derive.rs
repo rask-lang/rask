@@ -161,7 +161,7 @@ fn gen_struct_compare(
                 name_span: DUMMY,
                 ty: type_name.to_string(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             },
             Param {
@@ -169,7 +169,7 @@ fn gen_struct_compare(
                 name_span: DUMMY,
                 ty: type_name.to_string(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             },
         ],

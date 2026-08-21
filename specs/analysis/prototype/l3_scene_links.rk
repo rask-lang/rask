@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L3 — scene tree, with Rack + Link. Reparent and subtree delete.
+//
+// This is the program that exercises edge *lists*: `children: Vec<Link<Node>>`.
+// Deleting a node drops it out of its parent's children list — the entry does
+// not become `none`, it disappears, which is what a list of live things means.
+//
+// `selected` is a root edge on the editor, so deleting the selected node
+// clears the selection with no code in `delete_subtree` saying so.
+
+struct SceneNode {
+    name: string
+    parent: Link<SceneNode>?
+    children: Vec<Link<SceneNode>>
+}
+
+struct Scene {
+    nodes: Rack<SceneNode>
+    root: Link<SceneNode>?
+    selected: Link<SceneNode>?
+}
+
+func add_child(mutate scene: Scene, parent: Link<SceneNode>, name: string) -> Link<SceneNode> {
+    let n = scene.nodes.insert(SceneNode { name: name, parent: parent, children: Vec.new() })
+    parent.children.push(n)
+    return n
+}
+
+// Reparent. The inverse (`parent` <-> `children`) is NOT compiler-maintained in
+// this prototype, so both sides are written by hand — same as the handle
+// version. See the write-up: `inverse` is the piece that would make this one
+// assignment, and it is not implemented here.
+func reparent(mutate scene: Scene, n: Link<SceneNode>, new_parent: Link<SceneNode>) {
+    if n.parent? as old {
+        old.children = old.children.filter(|c| c != n)
+    }
+    new_parent.children.push(n)
+    n.parent = new_parent
+}
+
+// No cascade policy in the prototype either, so the recursion is explicit.
+// What delete DOES do for free: drop `n` from its parent's children list,
+// and clear `scene.selected` if it pointed here.
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids {
+        delete_subtree(deleting scene, c)
+    }
+    scene.nodes.delete(n)
+}
+
+func print_tree(n: Link<SceneNode>, indent: string) {
+    println("{indent}{n.name}")
+    for c in n.children {
+        print_tree(c, "{indent}  ")
+    }
+}
+
+func report(scene: Scene) {
+    if scene.root? as r {
+        print_tree(r, "   ")
+    }
+    mut sel = "none"
+    if scene.selected? as s {
+        sel = s.name
+    }
+    println("   selected = {sel}, nodes = {scene.nodes.len()}")
+}
+
+func main() {
+    mut scene = Scene { nodes: Rack.new(), root: none, selected: none }
+
+    let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
+    scene.root = root
+
+    let a = add_child(mutate scene, root, "a")
+    let b = add_child(mutate scene, root, "b")
+    let a1 = add_child(mutate scene, a, "a1")
+    let a2 = add_child(mutate scene, a, "a2")
+
+    println("-- initial")
+    report(scene)
+
+    println("-- reparent a1 under b")
+    reparent(mutate scene, a1, b)
+    report(scene)
+
+    println("-- select a2, then delete the subtree at a")
+    scene.selected = a2
+    report(scene)
+
+    // Nothing below reads a link local, which is the whole requirement. Under
+    // the proposed rule `delete_subtree` would be `deleting scene: Scene`, and
+    // that kills `root`, `b`, `a1` and `a2` from here on — but they are finished
+    // with above, so no restructuring is needed. `scene.selected` survives
+    // because it is a field, and the rack nulls it.
+    delete_subtree(deleting scene, a)
+    report(scene)
+}

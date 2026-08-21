@@ -14,17 +14,17 @@ worse than what's there today.
 
 | Where | Today | Question it lands on | Becomes | Verdict |
 |---|---|---|---|---|
-| `validation/store.rk` | `Pool<Task>` + `Map<TaskId, Handle<Task>>` | 3 — they reference each other and get deleted | `Store<Task>` + `Map<TaskId, Link<Task>>` | clean; fixes [#740](https://github.com/rask-lang/rask/issues/740) |
-| `validation/store.rk` | `const store = Mutex.new(Store.new())` | 4 — crosses tasks, write-heavy | `Shared<Store, Mutex>` | clean |
+| `validation/rack.rk` | `Pool<Task>` + `Map<TaskId, Handle<Task>>` | 3 — they reference each other and get deleted | `Rack<Task>` + `Map<TaskId, Link<Task>>` | clean; fixes [#740](https://github.com/rask-lang/rask/issues/740) |
+| `validation/rack.rk` | `const rack = Mutex.new(Rack.new())` | 4 — crosses tasks, write-heavy | `Shared<Rack, Mutex>` | clean |
 | `validation/config.rk` | `const config = Shared.new(…)` | 4 — crosses tasks, read-heavy | `Shared<Config, Readers>` | clean |
 | `validation/metrics.rk` | `const metrics = Mutex.new(…)` | 4 — crosses tasks | `Shared<Metrics, Mutex>` | clean |
 | `validation/middleware.rk` | `counters: Mutex<Map<string, u64>>` | 4 — crosses tasks | `Shared<Map<…>, Mutex>` | clean |
 | `http_api_server.rk` | `const db = Shared.new(…)` | 4 | `Shared<Database, Readers>` | clean |
-| `package_manager.rk` | `Pool<ResolvedPkg>` + `Map<string, Handle<…>>` | 3 — dependency graph | `Store` + `Link` | clean |
+| `package_manager.rk` | `Pool<ResolvedPkg>` + `Map<string, Handle<…>>` | 3 — dependency graph | `Rack` + `Link` | clean |
 | `package_manager.rk` | `let counter = Mutex.new(0)` | 4 — cross-task integer counter | `Shared<i32, Mutex>` | **see below** |
-| `lsm_database/cache.rk` | `Pool<CacheBlock>` + `Map<string, Handle<…>>` | 3 — LRU cache with an index | `Store` + `Link` | clean; removes real ceremony |
-| `text_editor.rk` | `Pool<Line>` + `Vec<Handle<Line>>` | 3 — ordered line view | `Store` + `Vec<Link<Line>>` | clean |
-| `game_loop.rk` | `Pool<Entity>` + `Handle<Entity>?` | 3 — entities target each other | `Store` + `Link` | clean |
+| `lsm_database/cache.rk` | `Pool<CacheBlock>` + `Map<string, Handle<…>>` | 3 — LRU cache with an index | `Rack` + `Link` | clean; removes real ceremony |
+| `text_editor.rk` | `Pool<Line>` + `Vec<Handle<Line>>` | 3 — ordered line view | `Rack` + `Vec<Link<Line>>` | clean |
+| `game_loop.rk` | `Pool<Entity>` + `Handle<Entity>?` | 3 — entities target each other | `Rack` + `Link` | clean |
 | `cli_calculator.rk` | `Heap<Expr>` | orthogonal — recursive, needs the heap | `Heap<Expr>` | unchanged |
 | anywhere | `Cell<T>` | — | — | **zero usages** |
 | anywhere | `Atomic<T>` | — | — | **zero usages** |
@@ -86,7 +86,7 @@ Its header comment reads: *"Demonstrates `Pool<T>` and `Handle<T>` for
 **non-graph** use cases."* The corpus is explicitly documenting that this
 container is used for things that aren't graphs — written before any of this
 exploration existed. `Graph<CacheBlock>` (an early working name) would have
-contradicted a comment already in the tree. `Store<CacheBlock>` reads
+contradicted a comment already in the tree. `Rack<CacheBlock>` reads
 correctly.
 
 ### 5. `own` already means something else

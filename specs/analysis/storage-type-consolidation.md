@@ -19,7 +19,7 @@ questions:
 |---|---|---|---|
 | plain field | one | this value | — |
 | `Vec` / `Map` | many | this scope | no |
-| `Store` + `Link` | many | this scope | **yes** |
+| `Rack` + `Link` | many | this scope | **yes** |
 | `Heap<T>` | one | movable, exclusive | no |
 | `Cell<T>` | one | closures, one task | no |
 | `Mutex<T>` | any | many tasks | no |
@@ -82,14 +82,30 @@ strategy parameter exists for locks anyway; see
 [what `Cell` really is](#what-owned-and-cell-really-are). Left here because
 the reasoning that changed is worth seeing.
 
-**`Store` into `Vec`.** Also tempting: a `Store` with no links declared is
-nearly a `Vec`. But the guarantees are opposite — `Vec` gives contiguity and
-moves its elements on `push`; `Store` gives stable addresses and never moves
-them. Merging means one of those promises is broken, and both are load-bearing
-(contiguity for iteration speed, stability for links).
+**`Rack` into `Vec`.** Also tempting: a `Rack` with no links declared is
+nearly a `Vec`. I argued the guarantees were opposite — `Vec` gives contiguity
+and moves its elements on `push`; `Rack` gives stable addresses and never moves
+them — so merging had to break one of them.
 
-`Heap` into `Store` fails on cost, argued in
-[the guide](fourth-option-guide.md): a store node carries a back-pointer per
+**That named the wrong pair.** A slab is contiguous *and* stable: a flat array
+of slots, `None` for a hole, a free list, elements that never move. It's what
+`Rack` is already built on (`slots: Vec<Option<T>>` + `free_list` + `slot_of`).
+What a slab actually gives up is **density and order**: iteration walks the
+high-water mark rather than the live count, and slot reuse means insertion order
+doesn't survive churn.
+
+That's a much weaker objection, and the first half largely self-heals — freed
+slots are reused, so 1000 live nodes still sit in 1000 slots after 500 deletes
+and 500 inserts. Holes persist only if you delete and stop.
+
+So the merge is more available than this section claimed. The remaining reason to
+keep two types is `Vec`'s *order*, which a program indexing by position depends
+on and a slab cannot promise. That's a real difference; "contiguity versus
+stability" was not. See [the slab section](fourth-option.md#the-rack-is-a-slab)
+for what exposing the slab shape would buy.
+
+`Heap` into `Rack` fails on cost, argued in
+[the guide](fourth-option-guide.md): a rack node carries a back-pointer per
 reference, an AST doesn't need one, and a `Heap<T>` can be returned from a
 function where a node can't.
 
@@ -122,7 +138,7 @@ asked in the right order:
 
 1. **Is it one value, held by exactly one owner?** → a plain field. Done.
 2. **Many values?** → `Vec` or `Map`, unless…
-3. **…other things reference them, and they can be deleted?** → `Store` +
+3. **…other things reference them, and they can be deleted?** → `Rack` +
    `Link`.
 4. **Do several accessors share one mutable value?** → `Shared<T>`, plus a
    strategy if it crosses tasks (`Mutex` / `Readers`).
@@ -136,7 +152,7 @@ made it unchooseable:
   A concurrency primitive, not a storage choice.
 
 Read as a rule: **plain fields until you have many; `Vec`/`Map` until they
-reference each other; `Store` when they do; and the concurrency types only
+reference each other; `Rack` when they do; and the concurrency types only
 when a second task exists.** Nothing above step 3 is reached by an ordinary
 program.
 
@@ -170,16 +186,41 @@ see below: atomics need an API that doesn't look like locking, so they keep
 their own type.)
 
 **Why the type stays uniform.** The strategy is a defaulted type parameter —
-`Shared<T, S = Readers>` — resolved at monomorphization, exactly like the
-allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and more
-importantly a function written `func serve(c: Shared<Config>)` accepts every
-variant. Today, `Mutex<T>` and `Shared<T>` being separate types means an API
-must pick one and callers must match it; consolidating removes that too.
+`Shared<T, S = Local>` — resolved at monomorphization, exactly like the
+allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and one type covers
+what `Mutex<T>` and `Shared<T>` need two of today: an API no longer has to pick
+a lock type that its callers must then match.
+
+### One rule for what bare `Shared<T>` means
+
+**`Shared<T>` means `Shared<T, Local>`, in every position.** A `let`, a
+parameter, a return type, a field: the same type expression means the same
+thing everywhere. A function that works with any strategy says so:
+
+<!-- test: skip -->
+```rask
+func serve(c: Shared<Config>)                    // Local only
+func serve<S>(c: Shared<Config, S>)              // any strategy
+```
+
+Earlier drafts of this document had it both ways — bare-in-parameter accepting
+every variant while bare-in-`let` defaulted to `Local` — which would make one
+type expression mean two things depending on where it sits. That is the
+elision-shaped context-dependence this language removes everywhere else, so it
+loses to the version that costs ceremony: a strategy-agnostic API writes its
+type parameter.
+
+The ceremony is real and worth naming. Every function that genuinely doesn't
+care gains `<S>`, and library code that wants to accept all three has to say so
+rather than getting it by default. The alternative — bare means "any" in
+signatures — buys that back and pays for it with a positional rule, and a
+positional rule is the more expensive of the two.
 
 This is *not* the objection that killed folding `Cell` into the lock family.
-There, the parameter would have carried **semantics** — thread-safe or not,
-which changes what the code means. Here every variant is equally correct and
-they differ only in speed, so a caller can never be wrong, only suboptimal.
+There, the parameter carries **semantics** — sendable across tasks or not,
+which changes what the code means, and is exactly why the default has to be the
+conservative one. Between `Readers` and `Mutex` the choice is only speed, and a
+caller can be suboptimal but never wrong.
 
 **Which way the default should lean.** Conservative. A reader of
 `Shared.new(x)` should never discover it was secretly doing something
@@ -216,9 +257,20 @@ though the type doesn't. (An earlier draft called it `Exclusive`, which is
 both non-standard and misleading: a plain mutex covers reads *and* writes, so
 "exclusive" describes the locking, not what you're allowed to do.)
 
-Write the bare `Shared<i64>` and you get the task-local default; write the
-parameter and you've said it out loud. Constructor and annotation agree, and either one
-alone is enough for a reader to know what they have.
+Write the bare `Shared<i64>` and you get `Local` — in a `let`, a parameter, a
+field or a return type alike (see the rule above). Write the strategy and you've
+said it out loud. Constructor and annotation agree, and either one alone is
+enough for a reader to know what they have.
+
+**On the name.** A `Shared<T>` whose default cannot be shared between tasks
+reads oddly, and anyone arriving from Rust or Go will assume thread-safe until
+told otherwise. Kept deliberately: the sharing in the name is among
+*accessors* — several names reaching one value through a box — and the task
+question is the strategy's business. What makes it a wrong assumption rather
+than a trap is that it fails loudly at the boundary, not quietly at runtime:
+sending a `Shared<T, Local>` is `SH7`, and the error names the fix. Noted here
+so the tension is a decision on the record rather than an omission someone
+files a bug about.
 
 ### Accessing
 
@@ -250,7 +302,18 @@ site. Read/write intent becomes visible in code that currently hides it.
 **Uniformity is the point:** `read()` under the `Mutex` strategy takes the
 exclusive lock — slower than `Readers` would be there, never wrong. Code
 written generically over the strategy compiles and behaves correctly against
-all three, which is what makes the parameter safe to default.
+all three.
+
+**`staged()` composes per strategy.** `ctrl.panic` specifies staged access on
+`Mutex` (`with mutex.staged() as v { }`, `conc.sync/ST1–ST4`) — a copy that
+commits as one move on non-panic exit and is discarded on unwind, so a
+multi-field update can't be seen torn. Under the unified type it stays available
+wherever it means something: legal on `Mutex` and `Readers`, and rejected on
+`Local`, where there is no other task to observe a torn update and no unwind
+boundary to protect against. `tool.warnings/W9` (`torn_lock_update`) keeps its
+escape hatch: it fires on a `with` block over a sync box that assigns two or
+more fields without `staged()`, and that means the two shared strategies, so the
+warning and its remedy survive the merge together. A `Local` box never trips it.
 
 ## `Atomic` earns its own type after all
 
@@ -269,7 +332,7 @@ let hits: Atomic<i64> = Atomic.new(0)
 
 hits.add(1)                          // one instruction, no lock, no block
 let n = hits.load()
-hits.store(0)
+hits.rack(0)
 let won = hits.compare_swap(old, new)
 ```
 
@@ -388,7 +451,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
-  (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
+  (`add`, `load`, `rack`, `compare_swap`) and no `with` blocks. Folding it
   into `Shared` would have dressed a one-instruction operation in lock
   ceremony. It still leaves the *storage* decision — it's a measured
   optimization, documented under concurrency.
@@ -396,7 +459,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   `DAY_ONE.md` and the boxes spec. The set isn't too large; it was presented
   as a flat menu when it's actually a sequence of yes/no questions.
 - **Re-test after the edge/link change lands.** `WeakHandle` already
-  disappears, `frozen` and context clauses go with it, and `Pool`→`Store`
+  disappears, `frozen` and context clauses go with it, and `Pool`→`Rack`
   removes the "when do I reach for a pool?" confusion that the
   interchangeability connotation caused. Some of the current difficulty is
   the old model's, not the set's.

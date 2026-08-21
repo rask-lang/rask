@@ -1020,6 +1020,32 @@ impl TypeChecker {
     // Pass 2: Check Declarations
     // ------------------------------------------------------------------------
 
+    /// A required edge — bare `Link<T>` rather than `Link<T>?` — is rejected in
+    /// this prototype, because neither half of its lifecycle is implemented.
+    ///
+    /// It can't be *built*: a required cycle needs one side written before its
+    /// target exists, which the design answers with batches (a staged region
+    /// gives the cycle a legal transient state, constraints checked at apply).
+    /// Batches aren't built here.
+    ///
+    /// It can't be *destroyed*: delete's whole job is to set incoming edges to
+    /// `none`, and a required field has no `none` to be set to. The design's
+    /// answer is a declared delete policy — cascade or restrict — and neither is
+    /// built here.
+    ///
+    /// So this is a prototype limit, not a language rule. The adversarial pass
+    /// did once kill required edges outright (A4), but batches reversed that;
+    /// `Link<T>` and `Link<T>?` are both meant to exist.
+    ///
+    /// A bare link inside a container is a different thing and stays allowed:
+    /// `Vec<Link<T>>` and `Map<K, Link<T>>` lose the *entry* at delete rather
+    /// than nulling it, which is what a list of live things means.
+    fn reject_non_optional_link(&mut self, ty: &Type, span: Span) {
+        if self.link_node_type(ty).is_some() {
+            self.errors.push(TypeError::NonOptionalLink { span });
+        }
+    }
+
     pub(super) fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
@@ -1030,6 +1056,7 @@ impl TypeChecker {
                 for field in &s.fields {
                     if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                         self.validate_signature_names(&ty, &allowed, field.name_span);
+                        self.reject_non_optional_link(&ty, field.name_span);
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
@@ -1045,6 +1072,7 @@ impl TypeChecker {
                     for field in &variant.fields {
                         if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
+                            self.reject_non_optional_link(&ty, field.name_span);
                         }
                     }
                 }

@@ -286,19 +286,21 @@ impl TypeChecker {
             Type::Named(id) => {
                 let name = self.types.type_name(*id);
                 match name.as_str() {
-                    "Vec" | "Pool" | "Map" => SourceStability::Growable,
+                    "Vec" | "Pool" | "Map" | "Rack" => SourceStability::Growable,
                     _ => SourceStability::Fixed,
                 }
             }
             Type::Generic { base, .. } => {
                 let name = self.types.type_name(*base);
                 match name.as_str() {
-                    "Vec" | "Pool" | "Map" => SourceStability::Growable,
+                    "Vec" | "Pool" | "Map" | "Rack" => SourceStability::Growable,
                     _ => SourceStability::Fixed,
                 }
             }
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                if name.starts_with("Vec") || name.starts_with("Pool") || name.starts_with("Map") {
+                if name.starts_with("Vec") || name.starts_with("Pool") || name.starts_with("Map")
+                    || name.starts_with("Rack")
+                {
                     SourceStability::Growable
                 } else {
                     SourceStability::Fixed

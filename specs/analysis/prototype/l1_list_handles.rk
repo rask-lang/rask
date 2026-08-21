@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// L1 — doubly-linked list, with Pool + Handle.
+//
+// `remove` is where the models differ. Here: four branches of neighbour
+// splicing, and head/tail maintained by hand.
+
+struct Node {
+    value: i32
+    next: Handle<Node>?
+    prev: Handle<Node>?
+}
+
+struct List {
+    nodes: Pool<Node>
+    head: Handle<Node>?
+    tail: Handle<Node>?
+}
+
+func push_back(mutate list: List, value: i32) -> Handle<Node> {
+    let h = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+    if list.tail? as t {
+        list.nodes[t].next = h
+    } else {
+        list.head = h
+    }
+    list.tail = h
+    return h
+}
+
+// Splice the neighbours together, then drop the node. head/tail are ordinary
+// fields, so they need explicit maintenance.
+func remove(mutate list: List, h: Handle<Node>) {
+    let p = list.nodes[h].prev
+    let n = list.nodes[h].next
+    if p? as ph { list.nodes[ph].next = n } else { list.head = n }
+    if n? as nh { list.nodes[nh].prev = p } else { list.tail = p }
+    list.nodes.remove(h)
+}
+
+func print_forward(list: List) {
+    mut out = "forward:"
+    mut cur = list.head
+    while cur? as h {
+        out = "{out} {list.nodes[h].value}"
+        cur = list.nodes[h].next
+    }
+    println(out)
+}
+
+func print_backward(list: List) {
+    mut out = "backward:"
+    mut cur = list.tail
+    while cur? as h {
+        out = "{out} {list.nodes[h].value}"
+        cur = list.nodes[h].prev
+    }
+    println(out)
+}
+
+func main() {
+    mut list = List { nodes: Pool.new(), head: none, tail: none }
+
+    let n1 = push_back(mutate list, 1)
+    let n2 = push_back(mutate list, 2)
+    let n3 = push_back(mutate list, 3)
+    let n4 = push_back(mutate list, 4)
+
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the middle node (2)")
+    remove(mutate list, n2)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the head (1)")
+    remove(mutate list, n1)
+    print_forward(list)
+    print_backward(list)
+
+    println("-- remove the tail (4)")
+    remove(mutate list, n4)
+    print_forward(list)
+    print_backward(list)
+
+    println("len = {list.nodes.len()}")
+    let _ = n3
+}

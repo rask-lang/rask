@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
 use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
@@ -406,6 +406,214 @@ impl PoolData {
     }
 }
 
+/// Global rack ID counter. Each Rack gets a unique ID.
+static NEXT_STORE_ID: AtomicU32 = AtomicU32::new(1);
+
+pub fn next_rack_id() -> u32 {
+    NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Live racks by id, weakly held.
+///
+/// Root-edge registration needs to get from a link to its rack at the moment
+/// the link is written into an outside field. In the real design that's static
+/// — the compiler knows which field targets which rack — so this registry is
+/// prototype scaffolding, not part of the model. Nothing on the read path
+/// touches it.
+static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<RackData>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn register_rack(rack: &Arc<Mutex<RackData>>) {
+    let id = rack.lock().unwrap().rack_id;
+    let mut reg = STORE_REGISTRY.lock().unwrap();
+    reg.retain(|_, w| w.strong_count() > 0);
+    reg.insert(id, Arc::downgrade(rack));
+}
+
+pub fn rack_by_id(id: u32) -> Option<Arc<Mutex<RackData>>> {
+    STORE_REGISTRY.lock().unwrap().get(&id).and_then(|w| w.upgrade())
+}
+
+/// Which slot holds an edge, for dedup and for unlinking on overwrite.
+///
+/// Owned rather than borrowed so it can key a map: registration is then O(1),
+/// which matters because a hub with N incoming edges gets N registrations and a
+/// linear dedup scan would make building it quadratic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BacklinkKey {
+    /// Holder allocation address. Stable for the allocation's life.
+    pub holder: usize,
+    /// Field name for a struct slot; `None` for a container, whose backlink
+    /// names the container rather than a position.
+    pub field: Option<String>,
+}
+
+/// One place that holds an edge — a *backlink*. The rack keeps, per node, the
+/// set of places pointing at it, so `delete` can find and fix every incoming
+/// edge without looking at anything else (analysis.fourth-option, rule 2).
+///
+/// Three kinds because an edge can be held three ways: a scalar field
+/// (`target: Link<T>?`), an element of an edge list (`children: Vec<Link<T>>`),
+/// or a value in an index (`by_name: Map<K, Link<T>>`). A node field and a root
+/// field are the same kind here — a root edge is just an edge whose holder
+/// happens to live outside the rack, which is why root edges need no separate
+/// mechanism.
+///
+/// Weak throughout: recording a backlink must not keep the holder alive.
+///
+/// A struct slot is named exactly, so overwriting `a.target` unlinks the old
+/// target's backlink precisely. A container backlink names the container and no
+/// position, because positions shift under insertion and rehashing — so it is
+/// one entry per (container, target) pair however many elements match, and it is
+/// dropped when a fixup visit finds the container no longer holds that edge.
+#[derive(Debug, Clone)]
+pub enum Backlink {
+    /// A named field of a struct — a node's edge, or a root edge.
+    Field(Weak<Mutex<StructData>>, String),
+    /// An element of an edge list.
+    Element(Weak<Mutex<VecData>>),
+    /// A value in an index.
+    Entry(Weak<Mutex<MapData>>),
+}
+
+impl Backlink {
+    pub fn key(&self) -> BacklinkKey {
+        match self {
+            Backlink::Field(w, f) => BacklinkKey {
+                holder: w.as_ptr() as usize,
+                field: Some(f.clone()),
+            },
+            Backlink::Element(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
+            Backlink::Entry(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
+        }
+    }
+}
+
+/// Node identity used to key the backlink index. A link carries the node's
+/// `Arc`, so this is available at O(1) wherever a link is.
+///
+/// Sound as a key because the rack holds a strong reference to every live
+/// node: the allocation can't be freed and its address reused while the node is
+/// still in the rack, so two live nodes never share a key.
+pub fn node_key(node: &Arc<Mutex<StructData>>) -> usize {
+    Arc::as_ptr(node) as usize
+}
+
+/// Internal rack storage — the arena half of `Rack<T>` + `Link<T>`.
+///
+/// Unlike `PoolData` there are no generation counters, because there is no
+/// stale state to detect: `delete` walks every incoming edge and nulls it, so
+/// a link is either absent or valid. Slots hold the node's `Arc<Mutex<StructData>>`,
+/// and a `Value::Link` holds that same Arc — following a link is a pointer
+/// deref with nothing to check.
+#[derive(Debug, Clone)]
+pub struct RackData {
+    pub rack_id: u32,
+    /// Live nodes, in insertion order. `None` marks a freed slot.
+    pub slots: Vec<Option<Arc<Mutex<StructData>>>>,
+    pub free_list: Vec<u32>,
+    pub len: usize,
+    pub type_param: Option<String>,
+    /// Incoming edges per node: who points at me. This is what makes `delete`
+    /// cost O(in-degree) instead of a scan.
+    /// Keyed by slot so registration and unlinking are both O(1) — a hub with
+    /// N incoming edges takes N registrations, and a linear dedup scan would
+    /// make building it quadratic. `IndexMap` rather than `HashMap` so the
+    /// fixup visits holders in a deterministic order.
+    pub incoming: HashMap<usize, IndexMap<BacklinkKey, Backlink>>,
+    /// Slot index per node, so `delete` doesn't scan `slots` to find one.
+    pub slot_of: HashMap<usize, u32>,
+    /// For a snapshot: the rack it was copied from, and the node it copied each
+    /// of its own nodes from. `corresponding` uses these to translate a link the
+    /// caller still holds into the equivalent node over here.
+    pub origin_id: Option<u32>,
+    pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
+}
+
+impl RackData {
+    pub fn new() -> Self {
+        Self {
+            rack_id: next_rack_id(),
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            len: 0,
+            type_param: None,
+            incoming: HashMap::new(),
+            slot_of: HashMap::new(),
+            origin_id: None,
+            origin: HashMap::new(),
+        }
+    }
+
+    pub fn with_type_param(type_param: Option<String>) -> Self {
+        Self { type_param, ..Self::new() }
+    }
+
+    /// Insert a node, returning its slot index.
+    pub fn insert(&mut self, node: Arc<Mutex<StructData>>) -> u32 {
+        self.len += 1;
+        let key = node_key(&node);
+        let idx = if let Some(free_idx) = self.free_list.pop() {
+            self.slots[free_idx as usize] = Some(node);
+            free_idx
+        } else {
+            self.slots.push(Some(node));
+            (self.slots.len() - 1) as u32
+        };
+        self.slot_of.insert(key, idx);
+        // A reused slot must not inherit the previous occupant's backlinks.
+        self.incoming.remove(&key);
+        idx
+    }
+
+    /// Slot index of a node, or `None` if it isn't in this rack. O(1).
+    pub fn index_of(&self, node: &Arc<Mutex<StructData>>) -> Option<usize> {
+        self.slot_of.get(&node_key(node)).map(|i| *i as usize)
+    }
+
+    /// Record that `holder` points at `target`. Idempotent, and drops entries
+    /// whose holder has died.
+    ///
+    /// Over-approximating is safe: a backlink left behind after its edge was
+    /// overwritten costs the fixup one wasted visit, because the fixup re-checks
+    /// that the slot really points at the dying node before rewriting it. A
+    /// *missing* backlink would be unsound, so registration errs toward
+    /// recording.
+    pub fn register_backlink(&mut self, target: &Arc<Mutex<StructData>>, holder: Backlink) {
+        self.incoming
+            .entry(node_key(target))
+            .or_default()
+            .insert(holder.key(), holder);
+    }
+
+    /// Forget that `slot` points at `target` — the old half of an overwrite.
+    ///
+    /// Exact for a struct field, which names its slot. A container slot names
+    /// only the container, so its backlink is dropped when the container stops
+    /// holding *any* edge to the target, not when one element changes.
+    pub fn unregister_backlink(&mut self, target: &Arc<Mutex<StructData>>, slot: &BacklinkKey) {
+        let key = node_key(target);
+        if let Some(entry) = self.incoming.get_mut(&key) {
+            entry.shift_remove(slot);
+            if entry.is_empty() {
+                self.incoming.remove(&key);
+            }
+        }
+    }
+
+    /// Take a node's incoming-edge list, for the delete that is about to fix it.
+    pub fn take_incoming(&mut self, node: &Arc<Mutex<StructData>>) -> Vec<Backlink> {
+        self.incoming
+            .remove(&node_key(node))
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn live_nodes(&self) -> Vec<Arc<Mutex<StructData>>> {
+        self.slots.iter().flatten().cloned().collect()
+    }
+}
+
 /// Built-in function kinds (global functions without module prefix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinKind {
@@ -439,6 +647,7 @@ pub enum TypeConstructorKind {
     String,
     Char,
     Pool,
+    Rack,
     Cell,
     Channel,
     Shared,
@@ -835,6 +1044,15 @@ pub enum Value {
     Cell(Arc<Mutex<Value>>),
     /// Pool (sparse storage with generation counters)
     Pool(Arc<Mutex<PoolData>>),
+    /// Rack (arena of nodes; edges into it are fixed at delete)
+    Rack(Arc<Mutex<RackData>>),
+    /// Link — one edge to a node. Holds the node pointer directly, so following
+    /// it is a deref with no generation check and no rack lookup. `rack_id`
+    /// only names the owning rack for structural ops and for delete's fixup.
+    Link {
+        rack_id: u32,
+        node: Arc<Mutex<StructData>>,
+    },
     /// Handle (opaque reference into a pool)
     Handle {
         pool_id: u32,
@@ -1122,6 +1340,8 @@ impl Value {
             Value::Type(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Pool(_) => "Pool",
+            Value::Rack(_) => "Rack",
+            Value::Link { .. } => "Link",
             Value::Handle { .. } => "Handle",
             Value::WeakHandle { .. } => "WeakHandle",
             Value::ThreadHandle(_) => "ThreadHandle",
@@ -1396,6 +1616,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Char => "char",
                     TypeConstructorKind::Pool => "Pool",
+                    TypeConstructorKind::Rack => "Rack",
                     TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
@@ -1449,6 +1670,16 @@ impl fmt::Display for Value {
             Value::Pool(p) => {
                 let pool = p.lock().unwrap();
                 write!(f, "<Pool len={}>", pool.len)
+            }
+            Value::Rack(s) => {
+                let rack = s.lock().unwrap();
+                write!(f, "<Rack len={}>", rack.len)
+            }
+            // Print the node, not the address — a link is the node, as far as
+            // reading it goes.
+            Value::Link { node, .. } => {
+                let guard = node.lock().unwrap();
+                write!(f, "{}", Value::Struct(Arc::new(Mutex::new(guard.clone()))))
             }
             Value::Handle {
                 pool_id,

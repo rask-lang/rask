@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L1 per resource *field*, not per binding.
+//
+// A struct that holds two resources owes both. Closing one used to discharge the
+// whole holder, so the other was dropped silently. The obligation is tracked by
+// field path now, and the message names the path that is still owed.
+
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 { return self.id }
+}
+
+struct Pair {
+    a: Conn
+    b: Conn
+}
+
+struct Nest {
+    inner: Pair
+    tag: i32
+}
+
+func make_pair() -> Pair {
+    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+}
+
+func one_of_two() -> i32 {
+    let p = make_pair()
+    return p.a.close()          // ERROR: E0805 — `p.b` still owed
+}
+
+func nested() -> i32 {
+    let n = Nest { inner: make_pair(), tag: 7 }
+    return n.inner.a.close()    // ERROR: E0805 — `n.inner.b` still owed
+}
+
+func main() {
+    println("{one_of_two()} {nested()}")
+}

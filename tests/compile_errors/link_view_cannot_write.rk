@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A read-only link is a parameter mode, not a type.
+//
+// `n: Link<T>` is a view: it reads the node and everything reachable from it,
+// and writes none of it. `mutate n: Link<T>` is the writable one. That's the
+// distinction a `LinkView<T>` type was reaching for, and the mode gets it
+// without a second type, without `mut` in a type position, and without needing
+// the rack in scope — links are the thing you pass around.
+//
+// The two properties that make the view worth having are both checked below: a
+// view can't be laundered into a writer, and it stays a view when you follow an
+// edge.
+
+struct Node {
+    value: i32
+    child: Link<Node>?
+}
+
+// The writer. Writes the node, and anything reachable from it — an edge only
+// connects co-owned nodes, so permission travels outward along edges.
+func zero_all(mutate n: Link<Node>) {
+    n.value = 0
+    if n.child? as c { c.value = 0 }
+}
+
+// --- The view must not become a writer ---
+
+func launder(n: Link<Node>) {
+    zero_all(mutate n)          // ERROR: `n` is a view; the caller granted no write
+}
+
+func launder_across_an_edge(n: Link<Node>) {
+    if n.child? as c {
+        zero_all(mutate c)      // ERROR: derived from a view, so still a view
+    }
+}
+
+// --- The view must not write directly either ---
+
+func writes_directly(n: Link<Node>) {
+    n.value = 1                 // ERROR: no write permission came with `n`
+}
+
+func writes_across_an_edge(n: Link<Node>) {
+    if n.child? as c {
+        c.value = 2             // ERROR: still no permission, one edge along
+    }
+}
+
+func main() {
+    mut r: Rack<Node> = Rack.new()
+    // `let`, not `mut`: writing through a link doesn't change the link, so the
+    // binding needs no mutability of its own.
+    let a = r.insert(Node { value: 5, child: none })
+    zero_all(mutate a)
+    println("{a.value}")
+}

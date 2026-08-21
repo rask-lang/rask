@@ -252,6 +252,26 @@ impl Parser {
 
     /// Allow keywords as field/method names.
     /// After `.` or `?.`, any keyword can be used as an identifier.
+    /// Match a contextual parameter mode: the word only counts as a mode when an
+    /// identifier follows it, so it stays usable as an ordinary name.
+    fn match_contextual_mode(&mut self, word: &str) -> bool {
+        if let TokenKind::Ident(name) = &self.current().kind {
+            if name == word {
+                // A mode when a parameter name follows — or another mode word,
+                // since `deleting mutate s` is legal. Anything else and this is an
+                // ordinary parameter called `deleting`.
+                if matches!(
+                    self.peek(1),
+                    TokenKind::Ident(_) | TokenKind::MutateKw | TokenKind::Take
+                ) {
+                    self.advance();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
         let name = match self.current_kind() {
             TokenKind::Ident(name) => name.clone(),
@@ -952,6 +972,24 @@ impl Parser {
         loop {
             let is_take = self.match_token(&TokenKind::Take);
             let is_mutate = if !is_take { self.match_token(&TokenKind::MutateKw) } else { false };
+            // `deleting` is contextual: only a mode when another identifier
+            // follows it, so `deleting: i32` and a parameter actually named
+            // `deleting` both keep working. Composes with `mutate` in either
+            // order — they answer different questions and neither implies the
+            // other (analysis.fourth-option).
+            // Either order parses. `deleting` implies `mutate`, so writing both is
+            // redundant rather than different — `deleting s` is the idiom.
+            let mut is_deleting = self.match_contextual_mode("deleting");
+            let is_mutate = is_mutate || (is_deleting && self.match_token(&TokenKind::MutateKw));
+            if !is_deleting && !is_take {
+                is_deleting = self.match_contextual_mode("deleting");
+            }
+            // `deleting` implies `mutate`: you cannot delete a node without
+            // mutating the store it lives in. So the call site marks `mutate` as
+            // it already does, and the extra word appears only on the
+            // declaration — deletion is backstopped by the use-after-delete
+            // error, mutation isn't, which is the rule E0373 already applies.
+            let is_mutate = is_mutate || is_deleting;
             let name_span = self.current().span;
             let name = self.expect_ident_or_keyword()?;
 
@@ -970,7 +1008,7 @@ impl Parser {
                 None
             };
 
-            params.push(Param { name, name_span, ty, is_take, is_mutate, default });
+            params.push(Param { name, name_span, ty, is_take, is_mutate, is_deleting, default });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -4442,6 +4480,8 @@ impl Parser {
             let mode = if self.check(&TokenKind::MutateKw) {
                 self.advance();
                 ArgMode::Mutate
+            } else if self.match_contextual_mode("deleting") {
+                ArgMode::Deleting
             } else if self.check(&TokenKind::Own)
                 && !matches!(self.peek(1), TokenKind::Pipe | TokenKind::PipePipe)
             {

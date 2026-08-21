@@ -100,17 +100,30 @@ impl Interpreter {
         if field_chain.len() == 1 {
             let field = &field_chain[0];
             match obj {
-                Value::Struct(s) => {
+                // A struct field and a node field are the same write. Writing a
+                // link into either creates an incoming edge, and the target's
+                // delete has to be able to find it — so both record a backlink.
+                // (`world.player = e` and `entity.target = e` differ only in
+                // where the holder lives.)
+                Value::Struct(s) | Value::Link { node: s, .. } => {
                     let mut guard = s.lock().unwrap();
-                    let value = wrap_like(guard.fields.get(field), value);
-                    guard.fields.insert(field.clone(), value);
+                    let previous = guard.fields.get(field).cloned();
+                    let value = wrap_like(previous.as_ref(), value);
+                    guard.fields.insert(field.clone(), value.clone());
+                    drop(guard);
+                    crate::rack::register_field(s, field, previous.as_ref(), &value);
                     return Ok(());
                 }
                 Value::Vec(v) if field.parse::<usize>().is_ok() => {
                     let idx = field.parse::<usize>().unwrap();
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        vec[idx] = wrap_like(Some(&vec[idx]), value);
+                        let value = wrap_like(Some(&vec[idx]), value);
+                        vec[idx] = value.clone();
+                        drop(vec);
+                        // A list backlink names the list, not the slot, so the
+                        // displaced element needs no unlinking — see store.rs.
+                        crate::rack::register_element(v, &value);
                         return Ok(());
                     }
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
@@ -131,6 +144,21 @@ impl Interpreter {
                 })?;
                 drop(guard);
                 Self::assign_nested_field(&inner, &field_chain[1..], value)
+            }
+            Value::Link { node, .. } => {
+                let guard = node.lock().unwrap();
+                let inner = guard.fields.get(first).cloned().ok_or_else(|| {
+                    RuntimeError::TypeError(format!("no field '{}' on node", first))
+                })?;
+                drop(guard);
+                Self::assign_nested_field(&inner, &field_chain[1..], value)
+            }
+            // `world.player.health = x` — the edge is optional, so the chain
+            // steps through `Some(link)` transparently once it is known live.
+            Value::Enum { name, variant, fields, .. }
+                if name == "Option" && variant == "Some" && !fields.is_empty() =>
+            {
+                Self::assign_nested_field(&fields[0], field_chain, value)
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot access field '{}' on {}", first, obj.type_name()

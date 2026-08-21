@@ -1,0 +1,216 @@
+// PENDING analysis.fourth-option — `Rack<T>` + `Link<T>`, the delete-time edge
+// fixup. Implemented on the interpreter only; there is no native lowering, so
+// this is expected RED on native until codegen learns the types. Interp is the
+// reference for what the answers should be.
+//
+// The model: deleting a node sets every edge pointing at it to `none` before the
+// delete returns, so a dead link never exists and following a live one needs no
+// check. Everything below is a consequence of that.
+
+struct Node {
+    id: i32
+    hits: i32
+    peer: Link<Node>?
+}
+
+struct World {
+    rack: Rack<Node>
+    focus: Link<Node>?          // root edge: beside the rack, not in a node
+}
+
+func main() {}
+
+test "a scalar edge becomes none at its target's delete" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = b
+    b.peer = a
+    assert s.len() == 2
+
+    s.delete(b)
+
+    assert s.len() == 1
+    // The edge is `none` — not stale, not a panic on read. There is no third
+    // state to check for.
+    if a.peer? as _p {
+        assert false           // a.peer survived its target's delete
+    }
+}
+
+test "a link is the node's address, so writes through it are shared" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    b.peer = a
+
+    // Writing through b's edge and writing through `a` hit the same node: the
+    // node lives in the rack, it is not copied into it.
+    if b.peer? as through { through.hits += 5 }
+    a.hits += 1
+    assert_eq(a.hits, 6)
+}
+
+test "link equality is node identity" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    assert a == a
+    assert a != b
+
+    // A self-edge is legal, and reads back as the same node.
+    a.peer = a
+    if a.peer? as p {
+        assert p == a
+    } else {
+        assert false
+    }
+}
+
+test "a root edge — a link beside the rack — is fixed too" {
+    mut w = World { rack: Rack.new(), focus: none }
+    let n = w.rack.insert(Node { id: 7, hits: 0, peer: none })
+    w.focus = n
+    if w.focus? as f {
+        assert_eq(f.id, 7)
+    } else {
+        assert false
+    }
+
+    // Nothing in `delete_subtree`-style code says "clear the focus". The edge
+    // lives outside the rack, and it still gets nulled.
+    w.rack.delete(n)
+
+    if w.focus? as _f {
+        assert false           // root edge survived the delete
+    }
+}
+
+test "re-pointing an edge forgets its old target" {
+    mut s: Rack<Node> = Rack.new()
+    let holder = s.insert(Node { id: 0, hits: 0, peer: none })
+    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+    let second = s.insert(Node { id: 2, hits: 0, peer: none })
+
+    holder.peer = first
+    holder.peer = second
+    holder.peer = holder.peer      // self-assign must not drop what it re-adds
+
+    // `first` is no longer pointed at, so its delete must leave `holder.peer`
+    // alone rather than nulling it.
+    s.delete(first)
+    if holder.peer? as p {
+        assert_eq(p.id, 2)
+    } else {
+        assert false
+    }
+
+    s.delete(second)
+    if holder.peer? as _p {
+        assert false
+    }
+}
+
+test "a node inserted with edges already in its fields is registered" {
+    mut s: Rack<Node> = Rack.new()
+    let head = s.insert(Node { id: 1, hits: 0, peer: none })
+    // The edge exists in the literal before the node has an identity; `insert`
+    // is where it gets recorded.
+    let tail = s.insert(Node { id: 2, hits: 0, peer: head })
+
+    s.delete(head)
+
+    if tail.peer? as _p {
+        assert false
+    }
+}
+
+test "iteration and the structural ops" {
+    mut s: Rack<Node> = Rack.new()
+    assert s.is_empty()
+    assert_eq(s.len(), 0)
+
+    let a = s.insert(Node { id: 1, hits: 0, peer: none })
+    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let c = s.insert(Node { id: 3, hits: 0, peer: none })
+
+    mut sum = 0
+    for n in s.nodes() { sum += n.id }
+    assert_eq(sum, 6)
+    assert s.contains(a)
+    assert s.contains(c)
+
+    // `contains` before the delete, not after: `delete` takes the link, so
+    // asking about it afterwards doesn't compile — and shouldn't, since a
+    // non-optional link's type already asserts the node is alive. Deleting `b`
+    // while `a` and `c` are live is fine: it names its victim, so only `b` dies.
+    assert s.contains(b)
+    s.delete(b)
+    mut after = 0
+    for n in s.nodes() { after += n.id }
+    assert_eq(after, 4)
+    assert_eq(s.len(), 2)
+
+    // `clear` kills every name for a node in this rack from here on. `a` and
+    // `c` are finished with above, so there is nothing to move and no scope to
+    // open — the rule is about uses after the delete, not about names in scope.
+    s.clear()
+    assert s.is_empty()
+}
+
+test "clear nulls edges, it does not just empty the rack" {
+    mut w = World { rack: Rack.new(), focus: none }
+    let a = w.rack.insert(Node { id: 1, hits: 0, peer: none })
+    let b = w.rack.insert(Node { id: 2, hits: 0, peer: none })
+    a.peer = b
+    w.focus = a
+    let _ = b
+
+    // Both edges point at nodes that are about to die: one node-to-node, one
+    // root edge outside the rack. Emptying the slots is not enough — the
+    // edges have to be nulled or a later read follows a freed node.
+    w.rack.clear()
+
+    assert w.rack.is_empty()
+    if w.focus? as _f {
+        assert false           // root edge survived clear
+    }
+}
+
+test "inserting never moves a node, so a link stays valid across growth" {
+    mut s: Rack<Node> = Rack.new()
+    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+
+    // A Vec element or a Pool slot can move out from under you; a link can't.
+    // It points at the node itself, so growing the rack cannot relocate what
+    // it points at — which is why a link needs no `with` ceremony to be held.
+    mut i = 0
+    while i < 2000 {
+        let _ = s.insert(Node { id: 99, hits: 0, peer: none })
+        i += 1
+    }
+
+    assert_eq(s.len(), 2001)
+    assert_eq(first.id, 1)
+    first.hits += 3
+    assert_eq(first.hits, 3)
+}
+
+test "a delete in one rack leaves another rack's edges alone" {
+    mut left: Rack<Node> = Rack.new()
+    mut right: Rack<Node> = Rack.new()
+    let l = left.insert(Node { id: 1, hits: 0, peer: none })
+    let r = right.insert(Node { id: 2, hits: 0, peer: none })
+
+    // A cross-rack edge. Deleting the target still fixes it — the fixup keys on
+    // the node, and the edge is found through the target's own backlink list
+    // rather than by walking the holder's rack.
+    l.peer = r
+    right.delete(r)
+
+    assert_eq(left.len(), 1)
+    assert_eq(right.len(), 0)
+    if l.peer? as _p {
+        assert false
+    }
+}

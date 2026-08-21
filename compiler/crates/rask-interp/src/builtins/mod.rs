@@ -161,6 +161,10 @@ impl Interpreter {
             Value::Wide(w) => return self.call_wide_method(w, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Pool(p) => return self.call_pool_method(p, method, args),
+            Value::Rack(s) => return self.call_rack_method(s, method, args),
+            Value::Link { rack_id, node } => {
+                return self.call_link_method(*rack_id, node, method, args);
+            }
             Value::Handle { pool_id, index, generation, .. } => {
                 return self.call_handle_method(&receiver, *pool_id, *index, *generation, method, args);
             }

@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The hole that `deleting` closes, in twelve lines. This program is REJECTED — it
+// is kept as the demonstration, not as something that runs.
+//
+// It was a live use after free before the mode existed: `cascade` took the rack
+// mutably, chose its own nodes to delete, and nothing at the call site said the
+// caller's links could die. It was found in l3_scene_links.rk, the program written
+// to show the model working, where `delete_subtree(scene, a)` deleted `a2` and
+// main read it afterwards.
+//
+// Now `cascade` has to say `deleting scene`, and the call revokes every link local
+// into that rack. The last line is the error:
+//
+//   error[E0328]: `kid` names a deleted node — this is a use after free
+//        cascade(deleting scene, parent)
+//        ----------------------------- the node `kid` names was deleted here
+//        println("kid.name = ...")
+//                             ^^^ `kid` points at freed memory from here on
+//
+// The call site says `deleting scene`, not `mutate scene`: PM5 has the marker
+// follow the signature, and a `deleting` parameter is a different contract from a
+// `mutate` one — the caller's links into that rack are revoked here.
+
+struct Node {
+    name: string
+    kids: Vec<Link<Node>>
+}
+
+struct Scene {
+    nodes: Rack<Node>
+}
+
+// Deletes `n` and everything under it. `n` is accounted for — the caller handed
+// it over. The children are not: they come out of `n.kids`, and the caller may
+// be holding links to them.
+func cascade(deleting scene: Scene, take n: Link<Node>) {
+    let kids = n.kids.clone()
+    for c in kids {
+        cascade(deleting scene, c)
+    }
+    scene.nodes.delete(n)
+}
+
+func main() {
+    mut scene = Scene { nodes: Rack.new() }
+
+    let parent = scene.nodes.insert(Node { name: "parent", kids: Vec.new() })
+    let kid = scene.nodes.insert(Node { name: "kid", kids: Vec.new() })
+    parent.kids.push(kid)
+
+    cascade(deleting scene, parent)
+
+    // `kid` was deleted inside `cascade`. The rack agrees it is gone. The name
+    // still reads it.
+    println("rack len = {scene.nodes.len()}")
+    println("kid.name = {kid.name}")
+}

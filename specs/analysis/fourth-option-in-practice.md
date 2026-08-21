@@ -5,7 +5,7 @@
 
 # The Fourth Option in Practice
 
-What programs look like if `Store` + `Link` lands (eager default, per
+What programs look like if `Rack` + `Link` lands (eager default, per
 [fourth-option.md](fourth-option.md)). Syntax is placeholder throughout.
 
 ## The two types
@@ -17,11 +17,11 @@ collections that already exist.
 
 | Today | Proposed | What it is |
 |---|---|---|
-| `Pool<Task>` | `Store<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
+| `Pool<Task>` | `Rack<Task>` | **where the things live.** Owns the memory. You insert, delete, and iterate it |
 | `Handle<Task>` in a field | `Link<Task>?` | **one reference** to a thing that lives in a graph |
 | `Vec<Handle<Task>>` | `Vec<Link<Task>>` | **many references** — an ordinary Vec |
 
-Read as a database, which is where the model comes from: `Store<Task>` is the
+Read as a database, which is where the model comes from: `Rack<Task>` is the
 tasks table, `Link<User>?` is a foreign key column pointing at one row, and a
 `Vec<Link<Task>>` is the many side.
 
@@ -32,14 +32,14 @@ struct Task {
     assignee: Handle<User>?          // one, maybe
     deps: Vec<Handle<Task>>          // several
 }
-struct Store { tasks: Pool<Task>, users: Pool<User> }
+struct Rack { tasks: Pool<Task>, users: Pool<User> }
 
 // Proposed — same shape, different guarantee
 struct Task {
     assignee: Link<User>?            // one, maybe
     deps: Vec<Link<Task>>            // several
 }
-struct Store { tasks: Store<Task>, users: Store<User> }
+struct Rack { tasks: Rack<Task>, users: Rack<User> }
 ```
 
 `Vec<Link<T>>` and `Map<K, Link<T>>` work because the compiler knows the
@@ -67,11 +67,11 @@ Less than today, and visibly instead of invisibly.
 
 Compare today, where even a *read-only helper* needs the pool, because a
 handle is a detached integer that means nothing without it. In the flagship
-store, five helpers carry `using frozen Pool<Task>` for exactly that reason —
+rack, five helpers carry `using frozen Pool<Task>` for exactly that reason —
 `rank_of`, `id_of`, `matches_filter`, `task_is_blocked`, `to_view`. All five
 take a plain `Task` under edges and need no context at all. None of the
 mutating functions gain a parameter, because they're already methods on the
-store.
+rack.
 
 So the count goes down: hidden context clauses disappear, and the graph shows
 up as a normal argument exactly where the code actually mutates structure.
@@ -106,7 +106,7 @@ The data model reads like an ER diagram — because it is one:
 <!-- test: skip -->
 ```rask
 struct World {
-    entities: Store<Entity>
+    entities: Rack<Entity>
     player: Link<Entity>?                  // root edge: nulls itself if the player dies
     by_name: Map<string, Link<Entity>>     // root index: entry drops at delete
 }
@@ -175,7 +175,7 @@ player. All of that is the schema executing, not code someone remembered to
 write. Note that no delete *policy* appears anywhere — the set-to-`none`
 default and ordinary composition carry the whole example (see A16).
 
-(Splitting `Body` into its own `Store<Body>` for cache locality — the usual
+(Splitting `Body` into its own `Rack<Body>` for cache locality — the usual
 ECS reason — is the one shape that *would* need an ownership policy, since
 the entity would then reference its body rather than contain it. That policy
 is deliberately deferred; see A16.)
@@ -210,10 +210,10 @@ reuse until edges heal or flush runs.
 
 ### What an edge write actually costs
 
-`a.target = b` is not one store. Counting an intrusive doubly-linked
+`a.target = b` is not one rack. Counting an intrusive doubly-linked
 back-list:
 
-| | Stores |
+| | Racks |
 |---|---|
 | The pointer itself (`a.target = b`) | 1 |
 | Unlink `a` from the **old** target's incoming list | ~2–3 (plus loads) |
@@ -233,7 +233,7 @@ that isn't a declared relation compile to a plain store, which is most of a
 Rask program.
 
 **The crossover, stated plainly.** Handles make the write cheap (one integer
-store) and the read expensive (a check, forever). Links make the write cost
+rack) and the read expensive (a check, forever). Links make the write cost
 ~4–7 stores and the read free. Set a target once and read it 60×/second for
 ten seconds: handles pay ~600 checks (~1.2µs), edges pay one write (~5ns)
 and 600 free reads. Reads dominate by orders of magnitude in every real
@@ -252,7 +252,7 @@ rather than pretend the write is free.
   that handles survive growth is the very property that forbids moving a live
   element. This is a structural capability gain, not a tradeoff, and it lands
   in exactly the workloads pools were designed for. **Explicit only** —
-  `store.compact()` is a call you write. A runtime that relocates on its own
+  `rack.compact()` is a call you write. A runtime that relocates on its own
   schedule is a moving collector, which is the thing this design exists to
   avoid.
 - **Cycle-safe serialization.** The encoder knows the schema, so `Encode` on

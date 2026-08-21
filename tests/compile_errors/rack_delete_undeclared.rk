@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// analysis.fourth-option: a delete that picks its own victim has to say so.
+//
+// `delete(take link)` is safe for the caller without any annotation — the link is
+// consumed at the call site, so they watch the name die. A delete that chooses
+// which node goes can't be seen from outside, so the parameter carries `deleting`
+// and the call revokes the caller's links.
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+}
+
+struct Graph {
+    nodes: Rack<Node>
+}
+
+// Fine, no annotation: deletes exactly the link it was handed.
+func drop_one(mutate g: Graph, take n: Link<Node>) {
+    g.nodes.delete(n)
+}
+
+// Not fine: picks its own victim by walking the rack.
+func drop_all(mutate g: Graph) {
+    for n in g.nodes.nodes() {
+        g.nodes.delete(n)       // ERROR: E0329 — declare `deleting g`
+    }
+}
+
+// Not fine either: `clear` names no victim at all.
+func wipe(mutate g: Graph) {
+    g.nodes.clear()             // ERROR: E0329
+}
+
+// Also not fine: handing on a link this body derived is a delete in disguise —
+// `drop_one` consumes it, and the caller never named it.
+func drop_first(mutate g: Graph) {
+    for n in g.nodes.nodes() {
+        drop_one(mutate g, n)   // ERROR: E0329
+        return
+    }
+}
+
+// Two racks of the same node type. Blame follows the rack the consuming call
+// receives, not a guess about where the link came from — so `left` is named and
+// `right`, which nothing deletes from, is left alone.
+func from_left(mutate left: Rack<Node>, mutate right: Rack<Node>) {
+    for n in left.nodes() {
+        drop_bare(mutate left, n)   // ERROR: E0329 — declare `deleting left`
+        return
+    }
+}
+
+func drop_bare(mutate s: Rack<Node>, take n: Link<Node>) {
+    s.delete(n)
+}
+
+func main() {
+    mut g = Graph { nodes: Rack.new() }
+    let a = g.nodes.insert(Node { id: 1, peer: none })
+    drop_one(mutate g, a)
+    drop_all(mutate g)
+    wipe(mutate g)
+    drop_first(mutate g)
+    mut l: Rack<Node> = Rack.new()
+    mut r: Rack<Node> = Rack.new()
+    from_left(mutate l, mutate r)
+}

@@ -1,0 +1,57 @@
+// mem.parameters/PM3 across a call boundary (#804): what a callee may and may not
+// do with a value it was lent.
+//
+// A plain parameter is a borrow — read it, pass it on, but don't give it away.
+// A `mutate` parameter is an exclusive borrow, so consuming it is allowed as long
+// as something is put back. `take` is the one that owns.
+
+struct Bag {
+    items: Vec<i32>
+}
+
+func eat(take b: Bag) -> usize {
+    return b.items.len()
+}
+
+func fresh(n: i32) -> Bag {
+    mut v: Vec<i32> = Vec.new()
+    v.push(n)
+    return Bag { items: v }
+}
+
+// Reading without consuming: the common case.
+func peek(b: Bag) -> usize {
+    return b.items.len()
+}
+
+// Consume-and-replace through an exclusive borrow. The caller keeps using the same
+// binding afterwards, so it has to hold something again by the time this returns.
+func swap_out(mutate b: Bag) -> usize {
+    let n = eat(b)
+    b = Bag { items: Vec.new() }
+    return n
+}
+
+// Owning it outright: the caller gave it up at the call.
+func own_it(take b: Bag) -> usize {
+    return eat(b)
+}
+
+func main() {}
+
+test "a borrowed parameter can be read" {
+    let bag = fresh(7)
+    assert_eq(peek(bag), 1)
+    assert_eq(peek(bag), 1)        // still the caller's
+}
+
+test "a mutate parameter can be consumed if it is replaced" {
+    mut bag = fresh(7)
+    assert_eq(swap_out(mutate bag), 1)
+    assert_eq(peek(bag), 0)        // the replacement is what's left
+}
+
+test "a take parameter owns what it was given" {
+    let bag = fresh(7)
+    assert_eq(own_it(bag), 1)
+}

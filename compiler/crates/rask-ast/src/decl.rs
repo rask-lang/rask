@@ -154,6 +154,11 @@ pub struct Param {
     pub ty: String,
     pub is_take: bool,
     pub is_mutate: bool,
+    /// analysis.fourth-option: this parameter's `Store` may have nodes deleted
+    /// from it that the callee picked itself. Separate from `is_mutate`, which
+    /// covers inserting and writing — the two answer different questions for the
+    /// caller ("can the contents change?" and "can my links die?").
+    pub is_deleting: bool,
     pub default: Option<Expr>,
 }
 

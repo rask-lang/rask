@@ -903,6 +903,7 @@ impl Hasher {
                 ArgMode::Default => 0,
                 ArgMode::Own => 1,
                 ArgMode::Mutate => 2,
+                ArgMode::Deleting => 3,
             });
             self.hash_expr(&arg.expr);
         }
@@ -1129,7 +1130,7 @@ mod tests {
                 name_span: sp(),
                 ty: ty.into(),
                 is_take: false,
-                is_mutate: false,
+                is_mutate: false, is_deleting: false,
                 default: None,
             }).collect(),
             ret_ty: None,
