@@ -275,9 +275,9 @@ which is the model. `Pool` taught the opposite and that is why it fell.
 
 Weighed and rejected on the way: `Table` (isn't one, and means hash-map to a
 large audience), `Roster`/`Colony`/`Ledger`/`Web` (each reads wrong outside one
-domain — `Ledger<Line>`, `Colony<Task>`), `Slab` (Rust's word, borrowed for no
-reason but familiarity), `Bag` (a term of art for a collection *without*
-identity — precisely wrong), `Shelf` (implies a row, and "shelved" means
+domain — `Ledger<Line>`, `Colony<Task>`), `Slab` (see below), `Bag` (a term of
+art for a collection *without* identity — precisely wrong), `Shelf` (implies a
+row, and "shelved" means
 abandoned), `Truss` and `Plexus` (both name the topology the contents might
 form, which is why `Graph` fell in the first place), `Hird`/`Flokk`/`Tun`/`Lag`
 (Norse register, but each reads as a false friend in English — "herd" and
@@ -288,6 +288,31 @@ coupled to each other, shunted in and out one at a time, but it carries two
 everyday homographs — and `Ward`, which is the only candidate that beats
 `Rack` on anything: a ward admits and discharges individuals *not* identified
 by bed position. Which points at the one thing to keep in view.
+
+### `Slab` — the accurate word, and still the wrong name
+
+`Rack` *is* a slab: a flat array of slots, a free list, elements that never move.
+So the obvious question is why it isn't called one.
+
+Not for the reason I first gave. I rejected `Slab` as "Rust's word", which is
+false — it's Jeff Bonwick's, from the Solaris slab allocator in 1994, and it is
+ordinary kernel vocabulary (Linux ships SLAB, SLUB and SLOB). Rust's `slab` crate
+borrowed it like everyone else. On provenance it passes.
+
+It fails on the same test that killed `Graph<T>` at the top of this document.
+`Graph` named a *topology* the contents might have; `Slab` names a *memory
+layout*. Both describe the wrong thing — a container should be named for the job
+it does, not for the shape of its insides. `Slab<Task>` puts an allocator word in
+a task tracker's type.
+
+There is also a durability argument. If the backing store changes — nodes inline
+rather than boxed, or a compacting variant — `Slab` stops being true. `Rack`
+doesn't, because "individual places, things stay put, removed one at a time" is a
+role and survives a reimplementation.
+
+So the word is right in prose and wrong as a name, which is why
+`analysis.fourth-option` has a section called "The Rack is a slab" and the type is
+still called `Rack`.
 
 ### The caveat, on the record
 
