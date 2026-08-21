@@ -1,7 +1,7 @@
 <!-- id: analysis.c3-lessons -->
 <!-- status: proposed -->
-<!-- summary: C3 checked against Rask — take Ada-shaped type constraints and Raido's arena frame, reject the safe/fast mode split -->
-<!-- depends: memory/allocators.md, memory/pools.md, memory/relocatable.md, types/integer-overflow.md, types/type-aliases.md, structure/c-interop.md, tooling/annotate.md -->
+<!-- summary: C3 checked against Rask — contracts stay out, the scoped arena already exists, Raido names the one rule it's missing -->
+<!-- depends: memory/allocators.md, memory/pools.md, memory/relocatable.md, types/integer-overflow.md, structure/c-interop.md, tooling/annotate.md -->
 
 # What Rask Can Learn From C3
 
@@ -29,16 +29,16 @@ competitor to argue with.
 
 | C3 feature | Rask today | Verdict |
 |------------|-----------|---------|
-| `@require` / `@ensure` contracts on declarations | Nothing — never specified, never rejected | **Take the Ada shape instead** — constrain the type, not the function |
-| Precondition failure reported at the caller | Bound violations already report at the call site (`type.generics/G2`) | **Take the diagnostic shape** |
-| Thread-local temp arena, freed at `@pool` scope exit | `using Allocator` plumbing, no bulk-free region (`mem.alloc`, still proposed) | **Take it** — Raido's frame model, with escape caught at compile time |
+| `@require` / `@ensure` contracts on declarations | Nothing — and no written record of why | **Skip** — always-checked is a straight tax, and C3's escape hatch is the mode split |
+| Single-value range constraint (Ada `subtype`, VHDL) | Hand-written validating constructor, `primitives/CV11` shape | **Naming convenience only** — same runtime check either way |
+| Thread-local temp arena, freed at `@pool` scope exit | Already specced — `mem.alloc/AL12–AL13`, `Arena.scoped` (unimplemented) | **Have it** — the gap is a rewind marker, one rule |
 | Zero-ceremony C consumption (include the header, call it) | `compile_c()` plus generated bindings (`struct.c-interop`) | **Open** — worth measuring the gap |
 | Safe/fast modes; violated contract is UB in fast mode | One behavior in all builds (`type.overflow/OV4`) | **Reject** |
 | No destructors; cleanup is manual `defer` | `ensure` blocks plus `@resource` linearity (`mem.linear/L1–L6`) | **Rask already wins** |
 | Arenas as the memory-safety story | `Pool` + generational `Handle` catches stale access | **Rask already wins** |
 | Macro system (`$if`, `$foreach`, `#expr`, `@macro`, `$$builtin`) | No macros; `comptime` over typed values | **Cautionary tale** |
 
-## Take: constraints, Ada-shaped rather than C3-shaped
+## Skip: contracts — the check is the problem
 
 C3 puts pre- and postconditions on the function:
 
@@ -47,101 +47,43 @@ C3 puts pre- and postconditions on the function:
 fn int grow(int x)
 ```
 
-Nothing in Rask does this, and nothing ever rejected it — there's no
-`rejected-features.md` entry, no spec, no issue, no deleted draft. It's an
-unexamined gap, not a settled question.
+Nothing in Rask does this. There's no `rejected-features.md` entry, no spec, no issue, no
+deleted draft — so the reasoning was never written down, only remembered. It comes down to
+one line: **you'd have to check it at runtime.**
 
-But before copying C3's shape, note that Ada and VHDL — the languages that actually
-made constraints work in production — put them somewhere else. Ada's `subtype Positive is
-Integer range 1 .. Integer'Last` and VHDL's ranged subtypes constrain the **type**, not the
-function. The difference decides where the check runs and who pays for it:
+That objection holds, and C3 proves it by flinching. Its way out is fast mode, where a
+violated contract becomes unspecified behaviour the optimizer may assume away — one source
+file, two different programs. `type.overflow/OV4` forbids exactly that. So Rask's only
+honest options are check-always or don't-have-it, and check-always is where the cost lands:
 
-| | Constraint on the function | Constraint on the type |
-|---|---|---|
-| Where checked | every call site | once, where the value is built |
-| Who pays | every caller, forever | the boundary, once |
-| What it can say | relations between arguments, state | one value's own range or predicate |
-| Travels with the value | no | yes |
+- **`@ensure` is pure addition.** A postcondition checks the return value on every return,
+  forever, for a property the code was supposed to have anyway. Nobody hand-writes that, so
+  there's no existing cost it replaces. Straight tax.
+- **Relational `@require` (`lo <= hi`) is nearly as bad.** Checked at every call site,
+  including the thousand that obviously satisfy it.
 
-The type-side version is the one Rask is already shaped for. `type Port = u16` exists
-(`type.aliases/T1`), its constructor `Port(x)` exists (`T7`), and `primitives/CV11` already
-established the idiom of a fallible narrowing that hands you `T or ConvertError` so the
-caller picks `try`, `!`, or `catch`. Adding a predicate to the nominal type makes the
-constructor fallible and nothing else changes:
+The one case the objection doesn't reach is a constraint on a single value's own range —
+Ada's `subtype Positive is Integer range 1 .. Integer'Last`, VHDL's ranged subtypes. There
+the check runs once, where the value is built, and the value carries the proof afterward; no
+call site pays. But Rask already writes that check by hand:
 
 <!-- test: skip -->
 ```rask
-type Port = u16 where 1..=65535
-
-let p = try Port(raw)          // checked here, once
-listen(p)                      // no check — the type is the proof
-```
-
-That's cheaper than a contract, needs no new checking phase, and puts the check exactly
-where Rask already puts its others: at the boundary where a value is constructed.
-
-Function-level `@require` remains worth having for what a type can't say — a relation
-between two parameters (`lo <= hi`), or a condition on `self`'s state. That's the tail case,
-not the headline, and it's where the C3 semantics must be refused: C3 makes a violated
-contract unspecified behaviour the optimizer may assume away in fast mode, so one source
-file means two different programs. `type.overflow/OV4` exists to forbid exactly that. A Rask
-contract is checked in every build, or it's a lint — both fine, the C3 middle position is
-not. (Ada's `Pre`/`Post` are also where SPARK does static proof. Not on Rask's table.)
-
-## Take: a scoped arena — and Raido already designed the missing half
-
-C3's answer for scratch memory is two moves. Functions that allocate take an allocator as
-their first parameter, and anything intermediate goes on a thread-local temp arena that
-rewinds at the closest `@pool` block:
-
-```c3
-fn void render(Allocator alloc) {
-    @pool() {
-        String tmp = string::format(tmem, "%d items", count);  // no free needed
-        ...
-    };  // temp arena rewinds here
+type Port = u16
+func port(raw: u16) -> Port or RangeError {
+    if raw < 1 { return RangeError.TooSmall }
+    return Port(raw)
 }
 ```
 
-`mem.alloc` covers the plumbing — `using Allocator` threads a non-default allocator without
-touching signatures, `Vec<T, Global>` keeps the zero-cost default. What's missing is the
-bulk-free region itself.
+`primitives/CV11` established this shape deliberately — `to()` runtime-checks a narrowing and
+yields `T or ConvertError` so the caller picks `try`, `!`, or `catch`. A
+`type Port = u16 where 1..=65535` spelling would cost exactly what the function above costs,
+because it *is* the function above. That makes it a naming convenience, not a new capability,
+and not worth language surface on its own.
 
-Raido already specified that region, and specified it better than C3. `raido.vm/architecture`
-has `frame_begin()` saving `top` as `frame_base` and `frame_end()` resetting to it —
-everything below the marker persists, everything above dies. It also names the failure C3
-ignores: a frame-local value stored into persistent state is a dangling offset after
-`frame_end()`, and `debug_frame_writes: true` catches it by validating that any offset in a
-stored value sits below `frame_base`, raising `FrameStoreViolation`.
-
-So the three positions on escape are:
-
-| | Rewind | Escape caught |
-|---|---|---|
-| C3 temp allocator | yes | never — silent use-after-free |
-| Raido arena | yes | runtime check, opt-in, off by default |
-| Rask | yes | **compile time, no check to run** |
-
-Rask's column is free because of `mem.relocatable/NP2`: a value holds owned values and
-integer handles, never an address. Nothing can *store a pointer* into arena memory, so the
-only way to escape the region is to move the owning value out of the block — and that's
-ownership, which the compiler already tracks. Scope-binding arena values the way borrows are
-already scope-bound (`mem.borrowing`) closes it with no runtime cost and no build-mode split.
-
-<!-- test: skip -->
-```rask
-with arena.scope() {
-    let msg = "{count} items"      // arena-allocated
-    log(msg)
-}                                  // whole region rewinds; escaping msg is a compile error
-```
-
-Two details to take from Raido verbatim. **Fixed size, no auto-grow** — its stated reason is
-"hides allocation cost", which is principle 1 in Raido's own words; a growing arena is an
-invisible malloc. And **exhaustion is an error, not a panic**, at a deterministic point.
-
-This is also the case `Pool` doesn't serve: `Pool` is long-lived identity with generational
-handles, not scratch that dies at the end of a frame or a request.
+So: no contracts. If range-constrained nominal types come up again, the case for them has to
+be ergonomic, not safety — the check was always going to run.
 
 ## Reject: the safe/fast switch
 
@@ -150,6 +92,62 @@ fast mode removes them. Rask decided the other way — overflow panics in releas
 (`OV1`, `OV4`) — and the reason holds up: a mode switch means the program you tested isn't
 the program you shipped, and every bug report starts with "which mode". C3 pays for
 compatibility with C's expectations here. Rask doesn't have that debt.
+
+## The scoped arena already exists — Raido names what's still missing
+
+C3's answer for scratch memory is two moves: functions that allocate take an allocator as
+their first parameter, and anything intermediate goes on a thread-local temp arena that
+rewinds at the closest `@pool` block.
+
+I went in thinking Rask lacked the region and needed a spec for it. It doesn't. `mem.alloc`
+already has all of it — `AL12` (`using expr { body }` sets the allocator for the block),
+`AL13` ("values allocated in a `using` allocator block cannot escape that block"), and
+`Arena` in the standard-allocator table as a bump allocator with bulk free on drop. Its own
+example is C3's use case, written out:
+
+<!-- test: skip -->
+```rask
+using Arena.scoped(1.megabytes()) {
+    let scratch = Vec.new()       // Arena — cannot escape this block
+    scratch.push(1)
+    // return scratch             // COMPILE ERROR: arena-scoped, cannot escape
+}
+// arena freed, all scratch memory gone
+```
+
+**AL13 is its own rule, not a consequence of borrowing.** Worth stating, because the obvious
+guess is wrong: `mem.borrowing/S3` ("cannot store in struct, return, or send cross-task")
+governs *views*, and an arena-allocated `Vec` is an owned value, not a view. Ownership would
+happily let you return it. AL13 exists precisely because nothing else stops that.
+
+The three positions on escape:
+
+| | Rewind | Escape caught |
+|---|---|---|
+| C3 temp allocator | yes | never — silent use-after-free |
+| Raido arena | yes | runtime check (`debug_frame_writes`), opt-in, off by default |
+| Rask | yes | compile time, `mem.alloc/AL13` |
+
+What Raido has that `mem.alloc` doesn't is the **rewind marker**. `Arena.scoped` ties the
+arena's life to one block: enter, allocate, free the whole thing. Raido's
+`frame_begin()`/`frame_end()` keeps the arena and everything below the marker alive and
+rewinds only what the frame added — so a game loop acquires backing memory once and rewinds
+per frame, rather than acquiring and releasing per frame. `mem.alloc` mentions
+`alloc.reset()` once in prose (the AL8 aside) and never gives it a rule. That's the gap, and
+it's one rule wide.
+
+Two details Raido states better than C3, worth carrying into that rule: **fixed size, no
+auto-grow** (its reason — "hides allocation cost" — is principle 1 restated; a growing arena
+is an invisible malloc) and **exhaustion is a deterministic error, not a panic**.
+
+This stays an add-on. `Arena` is a stdlib allocator behind the `Allocator` trait (AL1),
+reached through `using`, and a reset marker doesn't change that. Nothing here is load-bearing
+for the memory model — `Pool` + `Handle` remains the answer for long-lived identity; the
+arena is for scratch that dies at a frame or request boundary.
+
+**None of it is built.** `mem.alloc` is `status: proposed`; there is no `Arena` in `stdlib/`
+and no AL12/AL13 enforcement in the compiler. The Rask row above is a spec claim, not a
+shipped one.
 
 ## Where Rask is already ahead
 
@@ -191,6 +189,5 @@ with C3 as the concept-count baseline rather than Rust or Zig.
 
 - [rust-zig-friction.md](rust-zig-friction.md) — same exercise against Rust and Zig
 - [complexity-stress-test.md](complexity-stress-test.md) — concept-budget audit
-- [../memory/allocators.md](../memory/allocators.md) — where the arena scope would land
+- [../memory/allocators.md](../memory/allocators.md) — AL12/AL13 and the `Arena` allocator
 - [../../projects/raido/vm/architecture.md](../../projects/raido/vm/architecture.md) — `frame_begin`/`frame_end` and the escape check
-- [../types/type-aliases.md](../types/type-aliases.md) — the nominal type a range constraint would hang off
