@@ -37,7 +37,7 @@ competitor to argue with.
 | `@require` / `@ensure` contracts on declarations | Nothing — and no written record of why | **Skip** — always-checked is a straight tax, and C3's escape hatch is the mode split |
 | Single-value range constraint (Ada `subtype`, VHDL) | Hand-written validating constructor, `primitives/CV11` shape | **Naming convenience only** — same runtime check either way |
 | Thread-local temp arena, freed at `@pool` scope exit | Already specced — `mem.alloc/AL12–AL13`, `Arena.scoped` (unimplemented) | **Have it** — the gap is a rewind marker, one rule |
-| Zero-ceremony C consumption (include the header, call it) | `compile_c()` plus generated bindings (`struct.c-interop`) | **Open** — worth measuring the gap |
+| Zero-ceremony C consumption (include the header, call it) | `import c "hdr.h"` + one `compile_c()` line — measured, works | **Tie** — but the string and struct bridges are broken (#946–#949) |
 | Safe/fast modes; violated contract is UB in fast mode | One behavior in all builds (`type.overflow/OV4`) | **Reject** |
 | No destructors; cleanup is manual `defer` | `ensure` blocks plus `@resource` linearity (`mem.linear/L1–L6`) | **Rask already wins** |
 | Arenas as the memory-safety story | `Pool` + generational `Handle` catches stale access | **Rask already wins** |
@@ -170,12 +170,49 @@ families (`$` compile-time, `#` unevaluated expression, `@` macro, `$$` builtin)
 itself readable. Macros are still unspecified in Rask; the lesson is that a macro layer
 grows its own grammar, and `comptime` over typed values doesn't.
 
-## Still open: the C interop gap
+## Measured: the C interop gap is not a gap
 
-C3's strongest retention feature is that a C programmer can point it at an existing header
-and keep working. Rask goes through `compile_c()` and generated bindings. That's a
-defensible design, but the ceremony delta is unmeasured, and "how many lines to call an
-existing C library" is the number a C-minded evaluator will actually check.
+I wrote here that "C3's strongest retention feature is that a C programmer can point it at
+an existing header and keep working. Rask goes through `compile_c()` and generated
+bindings." That was wrong on both halves. Rask points at the header too (`CI1`), and it
+works — `import c` is implemented end to end, not just specced.
+
+Measured on the built compiler. Calling your own C library takes two lines:
+
+<!-- test: skip -->
+```rask
+import c "mylib.h"                              // 1. in the source
+```
+```rask
+func build(ctx: BuildContext) {
+    ctx.compile_c(["mylib.c"], ["-O2"])         // 2. in build.rk
+}
+```
+
+`rask build` compiles the C, links it, and `c.mylib_add(6, 7)` returns 13. The C
+equivalent — `#include "mylib.h"` plus adding `mylib.c` to the build — is also two lines.
+**The interop ceremony delta is zero.** `import c "stdio.h"` also parses the real system
+header and links against libc.
+
+So the retention feature isn't the gap. What's behind it is:
+
+| | State |
+|---|---|
+| Scalar calls, own static lib | works |
+| Pointer/buffer args from a `Vec` | works (but see the width bug) |
+| System headers (`stdio.h`) | parses and links; ~40 warning lines of skipped macros |
+| Passing a `string` to `const char*` | **no working path** — `to_cstring()` is `@unimplemented` (#949) |
+| Constructing an imported C struct | **impossible** — `c.Rect { … }` won't parse (#948) |
+| `[T; N].as_ptr()` | **segfault** — resolves to the Vec native (#946) |
+| `*i64` where the header says `int*` | **silently wrong** — no diagnostic (#947) |
+
+`const char*` and by-value structs are most of a real C API's surface, so the plumbing
+being finished doesn't yet mean a real library is reachable. There is also no `.rk` file in
+`tests/` or `examples/` that uses `import c` at all, which is why none of the four was
+already known.
+
+The lesson from C3 survives in a smaller form: not "close the ceremony gap" — there isn't
+one — but "the ceremony being zero is worth nothing until the type bridges work."
 
 ## On "just do it"
 

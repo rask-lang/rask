@@ -93,7 +93,7 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
 
 func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
     let content = fs.read_text(path) catch e => {
-        return GrepError.FileError(e)
+        return GrepError.FileError("{path}: {e.message()}")
     }
 
     mut match_count: i64 = 0
