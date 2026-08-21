@@ -6003,10 +6003,35 @@ impl<'a> MirLowerer<'a> {
         // aggregate operator to `{Type}_{method}` sent derived comparisons to a
         // function that was never emitted — `Status_eq` not found (#399/#463).
         let aggregate_receiver = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_));
+        // `mir_type_name` reads the struct/enum layout's own `name`, which for
+        // a generic type is the bare declared name ("Wrapping"), never mono's
+        // mangled one ("Wrapping$u32") — `compute_struct_layout` never adds
+        // the type-argument suffix to `.name`. The registered function is
+        // keyed the other way around, method mangled *after* the base name
+        // (`Wrapping_mul$u32`, from `mangle_name("Wrapping_mul", [u32])`). An
+        // exact-match lookup on `"{ty_name}_{method}"` only ever finds a
+        // non-generic overload; on a generic one it silently missed, so
+        // `a.mul(b)` on `Wrapping<u32>` fell through to a raw struct-address
+        // multiply instead of calling `Wrapping_mul$u32` (#838). A generic
+        // instantiation's key always starts with the unmangled prefix plus
+        // `$`, so match on that instead of requiring an exact hit.
+        // The fallback scan below is a linear pass over every registered
+        // function, so it only runs for a generic receiver — the one case an
+        // exact-match lookup can't ever find. A non-generic receiver's exact
+        // key either exists or the method just isn't an overload, and the
+        // first `contains_key` already answers both (#937 review).
+        let receiver_is_generic = matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(rask_types::Type::Generic { .. } | rask_types::Type::UnresolvedGeneric { .. })
+        );
         let has_operator_overload = aggregate_receiver
             && self.mir_type_name(obj_ty)
                 .map(|ty_name| format!("{}_{}", ty_name, method))
-                .is_some_and(|qualified| self.func_sigs.contains_key(&qualified));
+                .is_some_and(|qualified| {
+                    self.func_sigs.contains_key(&qualified)
+                        || (receiver_is_generic
+                            && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
+                });
         let skip_binop = skip_binop || has_operator_overload;
 
         // std.bits B1 on an integer receiver. These aren't operator methods —
@@ -6297,9 +6322,16 @@ impl<'a> MirLowerer<'a> {
         if let Some(rot) = match method {
             "rotate_left" => Some(crate::operand::BinOp::RotateLeft),
             "rotate_right" => Some(crate::operand::BinOp::RotateRight),
-            "wrapping_add" => Some(crate::operand::BinOp::WrappingAdd),
-            "wrapping_sub" => Some(crate::operand::BinOp::WrappingSub),
-            "wrapping_mul" => Some(crate::operand::BinOp::WrappingMul),
+            // UN1: `.unchecked_*()` has no defined behavior on overflow, but
+            // there's no separate "don't check" instruction to emit — a plain
+            // add/sub/mul *is* the unchecked op, which is exactly what the
+            // wrapping variant already lowers to (no overflow branch, just
+            // the raw instruction). Reusing it costs nothing: whenever the
+            // overflow the caller promised not to hit doesn't happen, wrapping
+            // and unchecked compute the identical bits.
+            "wrapping_add" | "unchecked_add" => Some(crate::operand::BinOp::WrappingAdd),
+            "wrapping_sub" | "unchecked_sub" => Some(crate::operand::BinOp::WrappingSub),
+            "wrapping_mul" | "unchecked_mul" => Some(crate::operand::BinOp::WrappingMul),
             "wrapping_shl" => Some(crate::operand::BinOp::WrappingShl),
             "wrapping_shr" => Some(crate::operand::BinOp::WrappingShr),
             "saturating_add" => Some(crate::operand::BinOp::SaturatingAdd),

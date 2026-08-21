@@ -1078,9 +1078,17 @@ impl TypeChecker {
                         }
                     }
                 }
+                // CC2: `extend Foo<T> where T: Trait { }` bounds cover every
+                // method in the block, so a call like `t.wrapping_add(u)`
+                // inside one of these methods needs to see them the same way
+                // a method's own `where` clause would (#838).
+                self.current_impl_type_param_bounds = i.where_bounds.iter()
+                    .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+                    .collect();
                 for method in &i.methods {
                     self.check_fn(method);
                 }
+                self.current_impl_type_param_bounds = std::collections::HashMap::new();
                 self.current_self_type = None;
             }
             DeclKind::Const(c) => {
