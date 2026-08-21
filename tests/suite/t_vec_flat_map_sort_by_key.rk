@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `flat_map` and `sort_by_key` on a Vec, natively (#842).
+//
+// Both reached codegen as calls to `Vec_flat_map` / `Vec_sort_by_key`, which
+// don't exist — the interpreter answered them and native didn't compile at
+// all. `flat_map` is the same fused loop as `map`/`filter`, with an inner
+// loop pushing every element of what the closure returns instead of the
+// closure's result itself. `sort_by_key` extracts each element's key once
+// into a parallel Vec, then selection-sorts on that — not stable, same as
+// `sort` (only `sort_by` promises stability).
+
+struct Ranked { name: string, score: i64 }
+struct Tagged { key: i64, tag: string }
+
+func pair_of(x: i64) -> Vec<i64> {
+    mut r: Vec<i64> = []
+    r.push(x)
+    r.push(x * 10)
+    return r
+}
+
+test "std.collections — flat_map maps then flattens" {
+    let v: Vec<i64> = [1, 2, 3]
+    let doubled: Vec<i64> = v.flat_map(|x| {
+        mut pair: Vec<i64> = []
+        pair.push(x)
+        pair.push(x * 2)
+        return pair
+    })
+    assert_eq(doubled.len(), 6)
+    assert_eq(doubled[0], 1)
+    assert_eq(doubled[1], 2)
+    assert_eq(doubled[2], 2)
+    assert_eq(doubled[3], 4)
+    assert_eq(doubled[4], 3)
+    assert_eq(doubled[5], 6)
+}
+
+test "std.collections — flat_map on an empty Vec is empty" {
+    let e: Vec<i64> = []
+    let out: Vec<i64> = e.flat_map(|x| {
+        mut r: Vec<i64> = []
+        r.push(x)
+        return r
+    })
+    assert_eq(out.len(), 0)
+}
+
+test "std.collections — flat_map can drop elements entirely" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let evens: Vec<i64> = v.flat_map(|x| {
+        mut r: Vec<i64> = []
+        if x % 2 == 0 {
+            r.push(x)
+        }
+        return r
+    })
+    assert_eq(evens.len(), 2)
+    assert_eq(evens[0], 2)
+    assert_eq(evens[1], 4)
+}
+
+test "std.collections — flat_map works on struct elements" {
+    mut v: Vec<Ranked> = []
+    v.push(Ranked { name: "a", score: 1 })
+    v.push(Ranked { name: "b", score: 2 })
+    let doubled: Vec<Ranked> = v.flat_map(|r| {
+        mut out: Vec<Ranked> = []
+        out.push(r)
+        out.push(r)
+        return out
+    })
+    assert_eq(doubled.len(), 4)
+    assert_eq(doubled[0].name, "a")
+    assert_eq(doubled[1].name, "a")
+    assert_eq(doubled[2].name, "b")
+    assert_eq(doubled[3].name, "b")
+}
+
+test "std.collections — sort_by_key sorts by extracted numeric key" {
+    mut s: Vec<i64> = [3, 1, 4, 1, 5, 9, 2, 6]
+    s.sort_by_key(|x| { return -x })
+    assert_eq(s[0], 9)
+    assert_eq(s[1], 6)
+    assert_eq(s[2], 5)
+    assert_eq(s[7], 1)
+}
+
+test "std.collections — sort_by_key sorts by extracted string key" {
+    mut names: Vec<Ranked> = []
+    names.push(Ranked { name: "charlie", score: 3 })
+    names.push(Ranked { name: "alice", score: 1 })
+    names.push(Ranked { name: "bob", score: 2 })
+    names.sort_by_key(|r| { return r.name })
+    assert_eq(names[0].name, "alice")
+    assert_eq(names[1].name, "bob")
+    assert_eq(names[2].name, "charlie")
+}
+
+test "std.collections — sort_by_key on an empty or single-element Vec is a no-op" {
+    mut e: Vec<i64> = []
+    e.sort_by_key(|x| { return x })
+    assert_eq(e.len(), 0)
+
+    mut one: Vec<i64> = [5]
+    one.sort_by_key(|x| { return -x })
+    assert_eq(one[0], 5)
+}
+
+// A closure body doesn't have to be a braced block with a `return`. Reading the
+// element type only out of `return` statements missed these two shapes, and
+// native failed to compile a form the interpreter runs.
+test "std.collections — flat_map takes a braceless closure body" {
+    let v: Vec<i64> = [1, 2]
+    let out: Vec<i64> = v.flat_map(|x| pair_of(x))
+    assert_eq(out.len(), 4)
+    assert_eq(out[0], 1)
+    assert_eq(out[1], 10)
+    assert_eq(out[2], 2)
+    assert_eq(out[3], 20)
+}
+
+test "std.collections — flat_map takes a block ending in a trailing expression" {
+    let v: Vec<i64> = [3]
+    let out: Vec<i64> = v.flat_map(|x| {
+        let doubled = x * 2
+        pair_of(doubled)
+    })
+    assert_eq(out.len(), 2)
+    assert_eq(out[0], 6)
+    assert_eq(out[1], 60)
+}
+
+// SO1: equal keys keep their original relative order. The interpreter sorts
+// with a stable sort, so an unstable one here makes the backends disagree.
+test "std.collections — sort_by_key is stable on tied keys" {
+    mut v: Vec<Tagged> = []
+    v.push(Tagged { key: 5, tag: "a" })
+    v.push(Tagged { key: 5, tag: "b" })
+    v.push(Tagged { key: 3, tag: "c" })
+    v.push(Tagged { key: 5, tag: "d" })
+    v.push(Tagged { key: 1, tag: "e" })
+    v.sort_by_key(|t| { return t.key })
+    assert_eq(v[0].tag, "e")
+    assert_eq(v[1].tag, "c")
+    assert_eq(v[2].tag, "a")
+    assert_eq(v[3].tag, "b")
+    assert_eq(v[4].tag, "d")
+}
+
+test "std.collections — sort_by_key leaves an already-sorted Vec alone" {
+    mut v: Vec<Tagged> = []
+    v.push(Tagged { key: 1, tag: "x" })
+    v.push(Tagged { key: 1, tag: "y" })
+    v.push(Tagged { key: 2, tag: "z" })
+    v.sort_by_key(|t| { return t.key })
+    assert_eq(v[0].tag, "x")
+    assert_eq(v[1].tag, "y")
+    assert_eq(v[2].tag, "z")
+}
+
+func main() {}
