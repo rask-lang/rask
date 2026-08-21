@@ -1,9 +1,6 @@
-// PENDING type.operators — user-defined and derived operators don't round-trip
-// on native: user `+` (add) crashes codegen, `-`/`*` compute on struct
-// addresses, derived struct `==` compares addresses, enum `==`/`<` emit no
-// `*_eq`/`*_lt` (#399); interp also disagrees on user `lt` vs derived (#400).
-// Interp is mostly correct; NATIVE is the gap. Expected RED until built. Do NOT
-// assert current (wrong) behavior.
+// type.operators — user-defined and derived operators on structs/enums.
+// Was PENDING (native computed on struct addresses instead of dispatching to
+// the user method, #399) — fixed by #536; both backends agree now.
 
 func main() {}
 

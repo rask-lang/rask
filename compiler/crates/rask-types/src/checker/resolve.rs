@@ -3680,6 +3680,30 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
+            // UN1: the last-resort hatch — no overflow check at all, UB if it
+            // actually overflows. Same shape as `wrapping_*` (same type in,
+            // same type out); the only difference is the compiler makes you
+            // say `unsafe` before it'll let you have it.
+            "unchecked_add" | "unchecked_sub" | "unchecked_mul"
+                if args.len() == 1
+                    && !matches!(ty, Type::I128 | Type::U128) => {
+                // Recorded whether or not it's actually inside `unsafe` — an
+                // out-of-context call still gets flagged below, but `rask
+                // unsafe`'s report is about auditing the unsafe surface a
+                // file already has, and this op belongs on it either way
+                // (every other unsafe op here — transmute, raw pointer
+                // deref, extern calls, union access — records unconditionally
+                // too).
+                self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
+                if !self.in_unsafe {
+                    self.errors.push(TypeError::UnsafeRequired {
+                        operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
+                        span,
+                    });
+                }
+                let _ = self.unify(&args[0], ty, span);
+                self.unify(ret, ty, span)
+            }
             // The same table's fallible forms. `checked_*` hands back `T?` —
             // `none` when the answer doesn't exist — and `overflowing_*` hands
             // back both the wrapped answer and whether it wrapped.

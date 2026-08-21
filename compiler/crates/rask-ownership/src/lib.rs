@@ -736,6 +736,22 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
+                // H1/L1: a resource-typed value with nothing to bind it to is
+                // dropped the instant it's produced — e.g. `spawn(f)` used as
+                // a bare statement, with the TaskHandle never joined/detached.
+                // A bare `Ident` is never a *fresh* value — it names an
+                // existing binding, which the end-of-scope check (E0805)
+                // already tracks; flagging it here too would double-report
+                // the same leak.
+                if !matches!(expr.kind, ExprKind::Ident(_)) && self.expr_is_resource_type(expr) {
+                    let type_name = self.program.node_types.get(&expr.id)
+                        .map(|ty| self.resource_type_display(ty))
+                        .unwrap_or_else(|| "?".to_string());
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ResourceDiscardedAsStatement { type_name },
+                        span: expr.span,
+                    });
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.check_expr(value);
@@ -2118,6 +2134,53 @@ impl<'a> OwnershipChecker<'a> {
         })
     }
 
+    /// Compiler-native generic containers whose layout lives in the runtime
+    /// rather than in a visible struct decl (an empty `struct Vec<T> { }`
+    /// stub) — field-based size/Copy inference can't see them, so they're
+    /// named explicitly instead.
+    fn is_native_opaque_generic(base_name: &str) -> bool {
+        matches!(base_name,
+            "Vec" | "Map" | "Wide" | "Cell" | "Pool" | "Handle" | "WeakHandle"
+            | "TaskHandle" | "TaskGroup" | "Sender" | "Receiver" | "ThreadHandle")
+    }
+
+    /// Map a generic struct/enum's own type parameter names to the concrete
+    /// types plugged in at this instantiation (`Wrapping<u32>`'s `T` -> `u32`).
+    /// Const-generic args have nothing to bind to a type parameter and are
+    /// skipped.
+    fn generic_field_subst(type_params: &[String], args: &[rask_types::GenericArg]) -> std::collections::HashMap<String, Type> {
+        type_params.iter().zip(args.iter()).filter_map(|(name, arg)| match arg {
+            rask_types::GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }).collect()
+    }
+
+    /// Replace a struct/enum field's type parameter with the concrete type
+    /// from `subst`, recursing through the same compound shapes
+    /// `substitute_type_params` (rask-types) handles for method signatures —
+    /// duplicated here rather than shared because that one is
+    /// checker-internal (`pub(super)`).
+    fn substitute_generic_field(ty: &Type, subst: &std::collections::HashMap<String, Type>) -> Type {
+        match ty {
+            Type::UnresolvedNamed(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(Self::substitute_generic_field(elem, subst)),
+                len: *len,
+            },
+            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_generic_field(elem, subst))),
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
+            ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| match a {
+                    rask_types::GenericArg::Type(t) => rask_types::GenericArg::Type(Box::new(Self::substitute_generic_field(t, subst))),
+                    other => other.clone(),
+                }).collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
     fn is_copy(&self, ty: &Type) -> bool {
         // L1: a linear value is never Copy, whatever its size or its fields.
         // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
@@ -2192,10 +2255,46 @@ impl<'a> OwnershipChecker<'a> {
             }
 
             // Handle/WeakHandle are Copy: an 8-byte index+generation pair whose
-            // whole point is to be duplicated freely (mem.pools). Other generic
-            // containers stay conservative.
-            Type::Generic { base, .. } => {
-                matches!(self.program.types.type_name(*base).as_str(), "Handle" | "WeakHandle")
+            // whole point is to be duplicated freely (mem.pools). The other
+            // compiler-native generics (Vec, Map, Pool, ...) have no fields
+            // visible to the type system — their layout lives in the runtime,
+            // not in a struct decl — so field-based inference can't see them
+            // and they stay hardcoded move-only.
+            //
+            // A user-defined generic struct (`struct Wrapping<T> { value: T }`)
+            // *does* have real fields, so its Copy-ness depends on what T ends
+            // up being at this instantiation — same rule as a non-generic
+            // struct, just substituted first (W4).
+            Type::Generic { base, args } => {
+                let base_name = self.program.types.type_name(*base);
+                if Self::is_native_opaque_generic(&base_name) {
+                    matches!(base_name.as_str(), "Handle" | "WeakHandle")
+                } else if let Some(def) = self.program.types.get(*base) {
+                    match def {
+                        rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
+                            if *is_unique { return false; }
+                            let subst = Self::generic_field_subst(type_params, args);
+                            fields.iter().all(|(_, t)| self.is_copy(&Self::substitute_generic_field(t, &subst)))
+                                && self.type_size(ty) <= 16
+                        }
+                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))))
+                                && self.type_size(ty) <= 16
+                        }
+                        rask_types::TypeDef::Trait { .. } => false,
+                        // Unions aren't generic (no type_params to substitute) —
+                        // reaching this arm through a `Type::Generic` would mean
+                        // a union name got parsed with type arguments, which
+                        // shouldn't happen.
+                        rask_types::TypeDef::Union { .. } => false,
+                        rask_types::TypeDef::NominalAlias { underlying, .. } => {
+                            self.is_copy(underlying)
+                        }
+                    }
+                } else {
+                    false
+                }
             }
 
             // Function types are Copy (just a pointer)
@@ -2256,6 +2355,37 @@ impl<'a> OwnershipChecker<'a> {
                     8
                 }
             }
+            // A user-defined generic struct/enum is sized the same way as a
+            // non-generic one, once its own type parameter is substituted
+            // with the type argument at this instantiation (`Wrapping<u8>` is
+            // one byte, not whatever the unsubstituted `T` would default to).
+            // The compiler-native generics (Vec, Pool, ...) declare an empty
+            // field list — their real layout lives in the runtime, not in the
+            // struct decl — so summing fields would say 0 instead of their
+            // actual size. Keep them at the old flat 8-byte guess rather than
+            // let an empty sum silently answer 0.
+            Type::Generic { base, args } if !Self::is_native_opaque_generic(&self.program.types.type_name(*base)) => {
+                if let Some(def) = self.program.types.get(*base) {
+                    match def {
+                        rask_types::TypeDef::Struct { type_params, fields, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            fields.iter().map(|(_, t)| self.type_size(&Self::substitute_generic_field(t, &subst))).sum()
+                        }
+                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            let max_variant = variants
+                                .iter()
+                                .map(|(_, data)| data.iter().map(|t| self.type_size(&Self::substitute_generic_field(t, &subst))).sum::<usize>())
+                                .max()
+                                .unwrap_or(0);
+                            max_variant + 1
+                        }
+                        _ => 8,
+                    }
+                } else {
+                    8
+                }
+            }
             // Pointers/references/slices/trait objects: fat pointer
             Type::String | Type::Slice(_) | Type::Fn { .. } | Type::TraitObject { .. } => 16,
             _ => 8,
@@ -2268,19 +2398,43 @@ impl<'a> OwnershipChecker<'a> {
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached
             Type::String => MoveReason::Unknown,
-            Type::Generic { base, .. } => {
-                // Check if the base type is a heap-owning collection
-                let base_name = if let Some(def) = self.program.types.get(*base) {
-                    match def {
-                        rask_types::TypeDef::Struct { name, .. }
-                        | rask_types::TypeDef::Enum { name, .. } => Some(name.as_str()),
-                        _ => None,
+            Type::Generic { base, args } => {
+                let base_name = self.program.types.type_name(*base);
+                // The compiler-native generics have no fields to blame — same
+                // gap `is_copy` has to work around for the same reason.
+                if Self::is_native_opaque_generic(&base_name) {
+                    if matches!(base_name.as_str(), "Vec" | "Map" | "Pool") {
+                        MoveReason::OwnsHeapMemory { type_name }
+                    } else {
+                        MoveReason::Unknown
                     }
-                } else {
-                    None
-                };
-                if matches!(base_name, Some("Vec" | "Map" | "Pool")) {
-                    MoveReason::OwnsHeapMemory { type_name }
+                } else if let Some(def) = self.program.types.get(*base) {
+                    match def {
+                        rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
+                            if *is_unique {
+                                return MoveReason::Unique { type_name };
+                            }
+                            let subst = Self::generic_field_subst(type_params, args);
+                            let all_fields_copy = fields.iter()
+                                .all(|(_, t)| self.is_copy(&Self::substitute_generic_field(t, &subst)));
+                            if all_fields_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            let all_copy = variants.iter().all(|(_, data)| data.iter()
+                                .all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))));
+                            if all_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        _ => MoveReason::Unknown,
+                    }
                 } else {
                     MoveReason::Unknown
                 }
@@ -2900,6 +3054,7 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
+                Type::Generic { base, .. } => Some(*base),
                 // A stdlib type arrives here as its own *name* when the call
                 // that produced it went through the module-function path — a
                 // stub's return type is parsed before the type table exists, so
@@ -2948,6 +3103,22 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
     }
+    /// Best-effort display name for a resource-typed value, recursing through
+    /// `T or E` to name whichever side is actually linear (E0834: a bare
+    /// statement whose type is `TaskHandle<T> or E` still leaks the handle).
+    fn resource_type_display(&self, ty: &Type) -> String {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self.program.types.type_name(*id),
+            Type::Result { ok, err } => {
+                if self.program.types.is_linear_value(ok) {
+                    self.resource_type_display(ok)
+                } else {
+                    self.resource_type_display(err)
+                }
+            }
+            _ => ty.to_string(),
+        }
+    }
 
     /// Give a binding away: mark it moved, or refuse if it was only borrowed.
     ///
@@ -2971,6 +3142,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         self.bindings.insert(name.to_string(), BindingState::Moved { at: span });
     }
+
     /// Name of the type a receiver expression evaluates to. Handles resolved
     /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/
     /// `UnresolvedGeneric`) forms. Returns the base name without generic params.

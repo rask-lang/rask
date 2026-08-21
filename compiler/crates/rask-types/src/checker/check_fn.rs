@@ -93,6 +93,10 @@ impl TypeChecker {
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
         let saved_type_param_bounds = std::mem::take(&mut self.current_type_param_bounds);
+        // Seed from the enclosing `extend Foo<T> where T: Trait { }` block's
+        // own bounds, if any — a bound declared there covers every method in
+        // the block, not just one with its own `where` clause (#838).
+        self.current_type_param_bounds = self.current_impl_type_param_bounds.clone();
         for tp in &f.type_params {
             if !tp.bounds.is_empty() {
                 self.current_type_param_bounds
