@@ -93,6 +93,19 @@ test "std.encoding/E23 — a single unnamed payload goes in directly" {
     assert_eq(json.encode(Number.Fraction(0.5)), "{{\"Fraction\":0.5}}")
 }
 
+// A tuple-style variant whose one field is written *with* a name
+// (`Wrapped(value: i64)`, not `Wrapped(i64)`) is struct-shaped (E22), not
+// E23's bare value — the interpreter used to only check the field count and
+// missed this, giving `{"Wrapped":5}` where native correctly gave
+// `{"Wrapped":{"value":5}}` (#951 review).
+enum Message {
+    Wrapped(value: i64)
+}
+
+test "std.encoding/E22 — a named single field in a tuple variant still nests" {
+    assert_eq(json.encode(Message.Wrapped(5)), "{{\"Wrapped\":{{\"value\":5}}}}")
+}
+
 @tag("type")
 enum Event {
     Click { x: i32, y: i32 }

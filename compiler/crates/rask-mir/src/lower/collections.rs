@@ -454,6 +454,23 @@ impl<'a> MirLowerer<'a> {
                     )))],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            } else if tag_field.as_deref().is_some_and(|tf| variant.fields.iter().any(|f| f.name == tf)) {
+                // @tag's field name collides with one of the payload's own
+                // fields. Writing both means either a duplicate JSON key
+                // (native, pre-fix) or the tag silently overwritten by the
+                // field (interpreter, pre-fix) — refuse instead of guessing
+                // which one should win.
+                let tf = tag_field.as_deref().unwrap();
+                let msg = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(msg),
+                    func: FunctionRef::internal("panic".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::String(format!(
+                        "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a payload field of the same name",
+                        layout.name, variant.name, tf,
+                    )))],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             } else {
                 // E22 (external) or E24 (internal): a struct-shaped payload.
                 let buf = self.new_json_buf();

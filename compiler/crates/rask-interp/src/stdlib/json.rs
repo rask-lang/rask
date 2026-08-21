@@ -787,10 +787,8 @@ fn value_to_json(
         // this arm only ever sees the positional (tuple/unit) construction.
         Value::Enum { name, variant, fields, .. } => {
             let enum_decl = enums.get(name);
-            let variant_attrs: &[String] = enum_decl
-                .and_then(|d| d.variants.iter().find(|v| &v.name == variant))
-                .map(|v| v.attrs.as_slice())
-                .unwrap_or(&[]);
+            let variant_decl = enum_decl.and_then(|d| d.variants.iter().find(|v| &v.name == variant));
+            let variant_attrs: &[String] = variant_decl.map(|v| v.attrs.as_slice()).unwrap_or(&[]);
             let serial_name = field_attrs::serial_name(variant_attrs, variant);
             let tag_field = enum_decl.and_then(|d| field_attrs::tag_field(&d.attrs));
 
@@ -800,12 +798,26 @@ fn value_to_json(
                     Some(tf) => Ok(make_json_object(vec![(tf, make_json_string(&serial_name))])),
                 };
             }
-            if fields.len() == 1 && tag_field.is_none() {
+            // Field names come from the declaration, not from how many there
+            // are: a written name (`Wrapped(value: i64)`) makes this
+            // struct-shaped (E22) even with a single field. Only the
+            // parser's synthetic `_0` for a truly unnamed lone field gets the
+            // bare-value form (E23) — matching native, which reads the same
+            // distinction off `FieldLayout.name` (#951 review).
+            let field_name = |i: usize| -> String {
+                variant_decl
+                    .and_then(|v| v.fields.get(i))
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| format!("_{}", i))
+            };
+            let is_single_unnamed = fields.len() == 1 && field_name(0) == "_0";
+
+            if is_single_unnamed && tag_field.is_none() {
                 // E23: the payload goes directly under the variant name.
                 let payload = value_to_json(&fields[0], struct_decls, enums)?;
                 return Ok(make_json_object(vec![(serial_name, payload)]));
             }
-            if fields.len() == 1 {
+            if is_single_unnamed {
                 // Internal tagging has no field name to flatten this payload
                 // into — same gap native reports for the same shape.
                 return Err(RuntimeError::TypeError(format!(
@@ -815,16 +827,23 @@ fn value_to_json(
                     name, variant
                 )));
             }
-            // Several unnamed fields (`Point(f64, f64)`) — the spec doesn't
-            // give this shape a JSON form, so it gets the same synthetic
-            // `_0`, `_1`, … keys the parser gave the fields themselves.
+            // Struct-shaped: named field(s), or several fields the parser
+            // numbered `_0`, `_1`, … because none of them were written with
+            // a name.
             let mut entries = Vec::with_capacity(fields.len());
             for (i, f) in fields.iter().enumerate() {
-                entries.push((format!("_{}", i), value_to_json(f, struct_decls, enums)?));
+                entries.push((field_name(i), value_to_json(f, struct_decls, enums)?));
             }
             match tag_field {
                 None => Ok(make_json_object(vec![(serial_name, make_json_object(entries))])),
                 Some(tf) => {
+                    if entries.iter().any(|(k, _)| *k == tf) {
+                        return Err(RuntimeError::TypeError(format!(
+                            "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a \
+                             payload field of the same name",
+                            name, variant, tf
+                        )));
+                    }
                     entries.insert(0, (tf, make_json_string(&serial_name)));
                     Ok(make_json_object(entries))
                 }
@@ -850,6 +869,13 @@ fn encode_enum_variant(
     match field_attrs::tag_field(&enum_decl.attrs) {
         None => Ok(make_json_object(vec![(serial_name, make_json_object(entries))])),
         Some(tf) => {
+            if entries.iter().any(|(k, _)| *k == tf) {
+                return Err(RuntimeError::TypeError(format!(
+                    "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a payload \
+                     field of the same name",
+                    enum_decl.name, variant.name, tf
+                )));
+            }
             entries.insert(0, (tf, make_json_string(&serial_name)));
             Ok(make_json_object(entries))
         }
