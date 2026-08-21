@@ -10,11 +10,13 @@
 // logged or persisted an enum field shipped that. The interpreter refused
 // outright, which was better but also not right.
 //
-// `std.encoding/E22` says a unit variant serializes as its own name, and that's
-// what both backends do now. The payload forms (E23 external tagging with a
-// value, E24 internal tagging) aren't written yet, and both backends say so
-// instead of inventing something — per *value*, since an enum can hold a unit
-// variant and a payload variant and the unit one has an answer.
+// `std.encoding/E22` says a unit variant serializes as its own name — that
+// part landed first. This file also covers the payload forms: E22's struct
+// payload (`{"Circle": {"radius": 1.0}}`), E23's single unnamed payload
+// (`{"Circle": 1.0}`), E24's internal tagging (`@tag("field")`), and E25's
+// per-variant `@rename`. `@tag` combined with an unnamed payload has no field
+// to flatten the value into, so both backends refuse that one combination
+// rather than invent a key for it.
 
 import json
 
@@ -64,6 +66,67 @@ struct Holder {
 
 test "std.encoding — a unit variant works even with payload siblings" {
     assert_eq(json.encode(Holder { s: Shape.Point }), "{{\"s\":\"Point\"}}")
+}
+
+// A bare enum value, not nested in a struct field. Native had no enum case in
+// `json.encode`'s top-level dispatcher and fell through to the integer
+// encoder — `json.encode(Shape.Point)` printed the address of the enum's
+// stack slot as a number, silently, with no panic to catch it (found writing
+// this fix; same family as the struct-field case #854 itself is about).
+test "std.encoding — a bare enum value encodes the same as a field" {
+    assert_eq(json.encode(Shape.Point), "\"Point\"")
+    assert_eq(json.encode(Shape.Circle { radius: 4.0 }), "{{\"Circle\":{{\"radius\":4}}}}")
+}
+
+test "std.encoding/E22 — a struct-shaped payload nests under the variant name" {
+    assert_eq(json.encode(Holder { s: Shape.Circle { radius: 1.5 } }), "{{\"s\":{{\"Circle\":{{\"radius\":1.5}}}}}}")
+    assert_eq(json.encode(Shape.Circle { radius: 2.5 }), "{{\"Circle\":{{\"radius\":2.5}}}}")
+}
+
+enum Number {
+    Whole(i64)
+    Fraction(f64)
+}
+
+test "std.encoding/E23 — a single unnamed payload goes in directly" {
+    assert_eq(json.encode(Number.Whole(7)), "{{\"Whole\":7}}")
+    assert_eq(json.encode(Number.Fraction(0.5)), "{{\"Fraction\":0.5}}")
+}
+
+// A tuple-style variant whose one field is written *with* a name
+// (`Wrapped(value: i64)`, not `Wrapped(i64)`) is struct-shaped (E22), not
+// E23's bare value — the interpreter used to only check the field count and
+// missed this, giving `{"Wrapped":5}` where native correctly gave
+// `{"Wrapped":{"value":5}}` (#951 review).
+enum Message {
+    Wrapped(value: i64)
+}
+
+test "std.encoding/E22 — a named single field in a tuple variant still nests" {
+    assert_eq(json.encode(Message.Wrapped(5)), "{{\"Wrapped\":{{\"value\":5}}}}")
+}
+
+@tag("type")
+enum Event {
+    Click { x: i32, y: i32 }
+
+    @rename("key_press")
+    KeyPress { code: u32 }
+}
+
+test "std.encoding/E24 — @tag flattens the tag into the same object" {
+    assert_eq(json.encode(Event.Click { x: 10, y: 20 }), "{{\"type\":\"Click\",\"x\":10,\"y\":20}}")
+}
+
+test "std.encoding/E25 — @rename overrides a variant's serialized name" {
+    assert_eq(json.encode(Event.KeyPress { code: 65 }), "{{\"type\":\"key_press\",\"code\":65}}")
+}
+
+@tag("kind")
+enum Signal { Ready  Done }
+
+test "std.encoding/E24 — a unit variant under @tag is still an object" {
+    assert_eq(json.encode(Signal.Ready), "{{\"kind\":\"Ready\"}}")
 }
 
 func main() {}

@@ -68,6 +68,10 @@ pub struct EnumLayout {
     pub tag_ty: Type,
     pub tag_offset: u32,
     pub variants: Vec<VariantLayout>,
+    /// Enum-level annotations, verbatim (`tag("type")`, …). JSON encoding
+    /// reads these for internal tagging (std.encoding/E24) — see
+    /// `rask_ast::decl::field_attrs`.
+    pub attrs: Vec<String>,
 }
 
 /// Variant layout within enum
@@ -78,6 +82,9 @@ pub struct VariantLayout {
     pub payload_offset: u32,
     pub payload_size: u32,
     pub fields: Vec<FieldLayout>,
+    /// Variant-level annotations, verbatim (`rename("...")`, …). JSON
+    /// encoding reads these for variant rename (std.encoding/E25).
+    pub attrs: Vec<String>,
 }
 
 /// Get size and alignment for a type (after monomorphization).
@@ -591,8 +598,10 @@ pub fn ordering_layout() -> EnumLayout {
                 payload_offset: tag_size,
                 payload_size: 0,
                 fields: Vec::new(),
+                attrs: Vec::new(),
             })
             .collect(),
+        attrs: Vec::new(),
     }
 }
 
@@ -677,6 +686,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
             payload_offset: 0, // Will be computed from tag
             payload_size,
             fields: variant_fields,
+            attrs: variant.attrs.clone(),
         });
     }
 
@@ -701,6 +711,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
         tag_ty,
         tag_offset: 0, // E1: Tag is first
         variants: variant_layouts,
+        attrs: enum_decl.attrs.clone(),
     }
 }
 

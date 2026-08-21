@@ -197,127 +197,7 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
 
-            // A `Vec<T>` field is an array, not a number. Without this the field
-            // went through json_buf_add_i64 and `{"items": [...]}` came out as
-            // `{"items":{}}`.
-            let vec_args = match &field.ty {
-                Type::UnresolvedGeneric { name, args } if name == "Vec" => Some(args),
-                Type::Generic { base, args }
-                    if self.ctx.type_names.get(base).map(|n| n == "Vec").unwrap_or(false) =>
-                {
-                    Some(args)
-                }
-                _ => None,
-            };
-            let vec_elem = vec_args.and_then(|args| {
-                args.first().and_then(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                    _ => None,
-                })
-            });
-            if let Some(elem) = vec_elem {
-                let elem_mir = self.ctx.type_to_mir(&elem);
-                let (arr_json, _) = self.lower_json_encode_vec(
-                    MirOperand::Local(field_val),
-                    Some(elem),
-                    Some(elem_mir),
-                )?;
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("json_buf_add_raw".to_string()),
-                    args: vec![
-                        MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(key.clone())),
-                        arr_json,
-                    ],
-                }));
-                continue;
-            }
-
-            // Two shapes can't be unrolled here and go to the runtime encoder
-            // instead: a `Map<string, V>`, whose keys aren't known until it's
-            // walked, and a `T?` around a collection, whose payload is a Vec or
-            // Map pointer. The map used to match the nested-struct branch below
-            // (find_struct finds the stdlib Map layout) and encode as `{}`; the
-            // optional collection went through json_buf_add_i64 and printed the
-            // pointer as a number.
-            if self.is_map_type(&field.ty) || self.is_optional_collection(&field.ty) {
-                if let Some(json) = self.lower_json_encode_shaped(field_val, &field.ty) {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: None,
-                        func: FunctionRef::internal("json_buf_add_raw".to_string()),
-                        args: vec![
-                            MirOperand::Local(buf),
-                            MirOperand::Constant(MirConst::String(key.clone())),
-                            MirOperand::Local(json),
-                        ],
-                    }));
-                    continue;
-                }
-            }
-
-            // A `T?` field is the value or `null`. It used to go through
-            // json_buf_add_i64, which wrote the address of the option's storage —
-            // `"assignee":140204924960672` where the answer is `null`.
-            if matches!(&field.ty, Type::Result { err, .. } if **err == Type::None) {
-                self.emit_json_optional_field(buf, &field.name, field_val)?;
-                continue;
-            }
-
-            let nested_struct = match &field.ty {
-                Type::UnresolvedNamed(name) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-                Type::UnresolvedGeneric { name, .. } => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-                _ => None,
-            };
-
-            if let Some(nested_layout) = nested_struct {
-                let (nested_json, _) = self.lower_json_encode_struct(
-                    MirOperand::Local(field_val),
-                    nested_layout,
-                )?;
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("json_buf_add_raw".to_string()),
-                    args: vec![
-                        MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(key.clone())),
-                        nested_json,
-                    ],
-                }));
-                continue;
-            }
-
-            // std.encoding/E22: a unit variant serializes as its own name.
-            // Without this an enum field fell through to the integer encoder
-            // and wrote the address of its slot as a number — valid JSON with a
-            // stack address in it, and no warning (#854).
-            let enum_layout = match &field.ty {
-                Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                    self.ctx.find_enum(name).map(|(_, l)| l.clone())
-                }
-                _ => None,
-            };
-            if let Some(layout) = enum_layout {
-                self.emit_json_enum_field(buf, &key, field_val, &layout);
-                continue;
-            }
-
-            let helper = match &field.ty {
-                Type::String => "json_buf_add_string",
-                Type::Bool => "json_buf_add_bool",
-                Type::F32 | Type::F64 => "json_buf_add_f64",
-                _ => "json_buf_add_i64",
-            };
-
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal(helper.to_string()),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(key.clone())),
-                    MirOperand::Local(field_val),
-                ],
-            }));
+            self.encode_field_into_buf(buf, &key, field_val, &field.ty)?;
         }
 
         // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
@@ -333,26 +213,186 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result), MirType::String))
     }
 
-    /// Write an enum field as its variant name (std.encoding/E22).
+    /// Encode one already-loaded value into a json buffer under `key`.
     ///
-    /// A chain of tag comparisons rather than a jump table: an enum small
-    /// enough to be a struct field has a handful of variants, and this keeps
-    /// the emitted MIR to shapes every backend already handles. A variant that
-    /// carries a payload panics with what's missing — E23/E24 aren't written
-    /// yet, and the alternative was the address of the slot as a number.
-    fn emit_json_enum_field(
+    /// Shared between struct fields (`lower_json_encode_struct`) and enum
+    /// variant payload fields (`lower_json_encode_enum`) — both are "a typed
+    /// slot with a name," and the encoding rules (Vec, Map, `T?`, nested
+    /// struct, nested enum, scalar) don't care which one it came from.
+    fn encode_field_into_buf(
         &mut self,
         buf: crate::LocalId,
         key: &str,
         field_val: crate::LocalId,
+        field_ty: &rask_types::Type,
+    ) -> Result<(), LoweringError> {
+        use rask_types::Type;
+
+        // A `Vec<T>` field is an array, not a number. Without this the field
+        // went through json_buf_add_i64 and `{"items": [...]}` came out as
+        // `{"items":{}}`.
+        let vec_args = match field_ty {
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => Some(args),
+            Type::Generic { base, args }
+                if self.ctx.type_names.get(base).map(|n| n == "Vec").unwrap_or(false) =>
+            {
+                Some(args)
+            }
+            _ => None,
+        };
+        let vec_elem = vec_args.and_then(|args| {
+            args.first().and_then(|a| match a {
+                rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
+                _ => None,
+            })
+        });
+        if let Some(elem) = vec_elem {
+            let elem_mir = self.ctx.type_to_mir(&elem);
+            let (arr_json, _) = self.lower_json_encode_vec(
+                MirOperand::Local(field_val),
+                Some(elem),
+                Some(elem_mir),
+            )?;
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(key.to_string())),
+                    arr_json,
+                ],
+            }));
+            return Ok(());
+        }
+
+        // Two shapes can't be unrolled here and go to the runtime encoder
+        // instead: a `Map<string, V>`, whose keys aren't known until it's
+        // walked, and a `T?` around a collection, whose payload is a Vec or
+        // Map pointer. The map used to match the nested-struct branch below
+        // (find_struct finds the stdlib Map layout) and encode as `{}`; the
+        // optional collection went through json_buf_add_i64 and printed the
+        // pointer as a number.
+        if self.is_map_type(field_ty) || self.is_optional_collection(field_ty) {
+            if let Some(json) = self.lower_json_encode_shaped(field_val, field_ty) {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                    args: vec![
+                        MirOperand::Local(buf),
+                        MirOperand::Constant(MirConst::String(key.to_string())),
+                        MirOperand::Local(json),
+                    ],
+                }));
+                return Ok(());
+            }
+        }
+
+        // A `T?` field is the value or `null`. It used to go through
+        // json_buf_add_i64, which wrote the address of the option's storage —
+        // `"assignee":140204924960672` where the answer is `null`.
+        if matches!(field_ty, Type::Result { err, .. } if **err == Type::None) {
+            self.emit_json_optional_field(buf, key, field_val)?;
+            return Ok(());
+        }
+
+        let nested_struct = match field_ty {
+            Type::UnresolvedNamed(name) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
+            Type::UnresolvedGeneric { name, .. } => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
+            _ => None,
+        };
+
+        if let Some(nested_layout) = nested_struct {
+            let (nested_json, _) = self.lower_json_encode_struct(
+                MirOperand::Local(field_val),
+                nested_layout,
+            )?;
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(key.to_string())),
+                    nested_json,
+                ],
+            }));
+            return Ok(());
+        }
+
+        // std.encoding/E22: a unit variant serializes as its own name.
+        // Without this an enum field fell through to the integer encoder
+        // and wrote the address of its slot as a number — valid JSON with a
+        // stack address in it, and no warning (#854).
+        let enum_layout = match field_ty {
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                self.ctx.find_enum(name).map(|(_, l)| l.clone())
+            }
+            _ => None,
+        };
+        if let Some(layout) = enum_layout {
+            let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(key.to_string())),
+                    nested_json,
+                ],
+            }));
+            return Ok(());
+        }
+
+        let helper = match field_ty {
+            Type::String => "json_buf_add_string",
+            Type::Bool => "json_buf_add_bool",
+            Type::F32 | Type::F64 => "json_buf_add_f64",
+            _ => "json_buf_add_i64",
+        };
+
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(helper.to_string()),
+            args: vec![
+                MirOperand::Local(buf),
+                MirOperand::Constant(MirConst::String(key.to_string())),
+                MirOperand::Local(field_val),
+            ],
+        }));
+        Ok(())
+    }
+
+    /// Encode an enum value as JSON (std.encoding/E22-E25).
+    ///
+    /// A chain of tag comparisons rather than a jump table: an enum small
+    /// enough to be a struct field, or to be the whole argument to
+    /// `json.encode()`, has a handful of variants, and this keeps the emitted
+    /// MIR to shapes every backend already handles.
+    ///
+    /// Default (no `@tag` on the enum) is external tagging: a unit variant is
+    /// its own name as a bare JSON string (`"Point"`); a variant with one
+    /// unnamed field (`Circle(f64)`) puts the payload directly under the
+    /// variant name (`{"Circle": 1.0}`, E23); anything else (named fields, or
+    /// several unnamed ones) nests an object under the variant name
+    /// (`{"Circle": {"radius": 1.0}}`, E22). `@tag("field")` switches to
+    /// internal tagging: the tag goes in `field` inside the same object the
+    /// payload's fields flatten into (`{"type": "Click", "x": 10}`, E24) —
+    /// there's no field to flatten an unnamed payload into, so that
+    /// combination panics naming what's missing rather than inventing a key.
+    /// `@rename` on a variant overrides its serialized name either way (E25).
+    pub(super) fn lower_json_encode_enum(
+        &mut self,
+        enum_op: MirOperand,
         layout: &rask_mono::EnumLayout,
-    ) {
+    ) -> Result<TypedOperand, LoweringError> {
+        let tag_field = rask_ast::decl::field_attrs::tag_field(&layout.attrs);
+
         let tag = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tag,
-            rvalue: MirRValue::EnumTag { value: MirOperand::Local(field_val) },
+            rvalue: MirRValue::EnumTag { value: enum_op.clone() },
         }));
 
+        let result = self.builder.alloc_temp(MirType::String);
         let done = self.builder.create_block();
         for variant in &layout.variants {
             let hit = self.builder.create_block();
@@ -373,32 +413,92 @@ impl<'a> MirLowerer<'a> {
             }));
 
             self.builder.switch_to_block(hit);
+            let variant_name = rask_ast::decl::field_attrs::serial_name(&variant.attrs, &variant.name);
+            let is_single_unnamed = variant.fields.len() == 1 && variant.fields[0].name == "_0";
+
             if variant.fields.is_empty() {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("json_buf_add_string".to_string()),
-                    args: vec![
-                        MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(key.to_string())),
-                        MirOperand::Constant(MirConst::String(variant.name.clone())),
-                    ],
-                }));
+                match &tag_field {
+                    None => {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result),
+                            func: FunctionRef::internal("json_encode_string".to_string()),
+                            args: vec![MirOperand::Constant(MirConst::String(variant_name))],
+                        }));
+                    }
+                    Some(tf) => {
+                        let buf = self.new_json_buf();
+                        self.push_json_add_string(buf, tf, MirOperand::Constant(MirConst::String(variant_name)));
+                        self.push_json_finish(buf, result);
+                    }
+                }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
-            } else {
-                // E23/E24 aren't written yet. The check is per *value*, not per
-                // type: an enum can have both unit and payload variants, and
-                // the unit ones have an answer. The interpreter refuses the
-                // same way, at the same moment.
+            } else if is_single_unnamed && tag_field.is_none() {
+                // E23: the payload goes directly under the variant name.
+                let field = &variant.fields[0];
+                let field_val = self.load_variant_field(enum_op.clone(), variant, field, 0);
+                let buf = self.new_json_buf();
+                self.encode_field_into_buf(buf, &variant_name, field_val, &field.ty)?;
+                self.push_json_finish(buf, result);
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+            } else if is_single_unnamed {
+                // Internal tagging has no field name to flatten this payload
+                // into — the object already has one job (the tag) and an
+                // unnamed value can't share it without a made-up key.
                 let msg = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(msg),
                     func: FunctionRef::internal("panic".to_string()),
                     args: vec![MirOperand::Constant(MirConst::String(format!(
-                        "json.encode can't write `{}.{}` yet: a variant with a payload needs the tagged forms (std.encoding/E23, E24), and only unit variants are implemented",
+                        "json.encode can't write `{}.{}` yet: @tag needs a named payload to flatten into the tagged object, and this variant's payload is unnamed (std.encoding/E24)",
                         layout.name, variant.name,
                     )))],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            } else if tag_field.as_deref().is_some_and(|tf| variant.fields.iter().any(|f| f.name == tf)) {
+                // @tag's field name collides with one of the payload's own
+                // fields. Writing both means either a duplicate JSON key
+                // (native, pre-fix) or the tag silently overwritten by the
+                // field (interpreter, pre-fix) — refuse instead of guessing
+                // which one should win.
+                let tf = tag_field.as_deref().unwrap();
+                let msg = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(msg),
+                    func: FunctionRef::internal("panic".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::String(format!(
+                        "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a payload field of the same name",
+                        layout.name, variant.name, tf,
+                    )))],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            } else {
+                // E22 (external) or E24 (internal): a struct-shaped payload.
+                let buf = self.new_json_buf();
+                if let Some(tf) = &tag_field {
+                    self.push_json_add_string(buf, tf, MirOperand::Constant(MirConst::String(variant_name.clone())));
+                }
+                for (i, field) in variant.fields.iter().enumerate() {
+                    let field_val = self.load_variant_field(enum_op.clone(), variant, field, i as u32);
+                    self.encode_field_into_buf(buf, &field.name, field_val, &field.ty)?;
+                }
+                if tag_field.is_none() {
+                    let inner = self.builder.alloc_temp(MirType::String);
+                    self.push_json_finish(buf, inner);
+                    let outer = self.new_json_buf();
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                        args: vec![
+                            MirOperand::Local(outer),
+                            MirOperand::Constant(MirConst::String(variant_name)),
+                            MirOperand::Local(inner),
+                        ],
+                    }));
+                    self.push_json_finish(outer, result);
+                } else {
+                    self.push_json_finish(buf, result);
+                }
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
             }
 
             self.builder.switch_to_block(miss);
@@ -407,6 +507,58 @@ impl<'a> MirLowerer<'a> {
         // rather than writing something invented.
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
         self.builder.switch_to_block(done);
+        Ok((MirOperand::Local(result), MirType::String))
+    }
+
+    fn new_json_buf(&mut self) -> crate::LocalId {
+        let buf = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(buf),
+            func: FunctionRef::internal("json_buf_new".to_string()),
+            args: vec![],
+        }));
+        buf
+    }
+
+    fn push_json_add_string(&mut self, buf: crate::LocalId, key: &str, value: MirOperand) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("json_buf_add_string".to_string()),
+            args: vec![MirOperand::Local(buf), MirOperand::Constant(MirConst::String(key.to_string())), value],
+        }));
+    }
+
+    fn push_json_finish(&mut self, buf: crate::LocalId, dst: crate::LocalId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(dst),
+            func: FunctionRef::internal("json_buf_finish".to_string()),
+            args: vec![MirOperand::Local(buf)],
+        }));
+    }
+
+    /// Load one field out of an enum's matched-variant payload, at its exact
+    /// offset — same mechanism `match_lower.rs` uses to bind a payload
+    /// pattern, since this is the same operation: read a named slot out of
+    /// whichever variant the tag already picked.
+    fn load_variant_field(
+        &mut self,
+        enum_op: MirOperand,
+        variant: &rask_mono::VariantLayout,
+        field: &rask_mono::FieldLayout,
+        field_index: u32,
+    ) -> crate::LocalId {
+        let field_mir_ty = self.ctx.type_to_mir(&field.ty);
+        let field_val = self.builder.alloc_temp(field_mir_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: field_val,
+            rvalue: MirRValue::Field {
+                base: enum_op,
+                field_index,
+                byte_offset: Some(variant.payload_offset + field.offset),
+                access: FieldAccess::for_field(&field_mir_ty, field.size),
+            },
+        }));
+        field_val
     }
 
     /// Add a `T?` field to a json buffer: the payload when present, `null` when

@@ -2081,6 +2081,7 @@ mod tests {
                                     is_type_param: false,
                                 },
                             ],
+                            attrs: vec![],
                         },
                         rask_mono::VariantLayout {
                             name: "Err".to_string(),
@@ -2101,8 +2102,10 @@ mod tests {
                                     is_type_param: false,
                                 },
                             ],
+                            attrs: vec![],
                         },
                     ],
+                    attrs: vec![],
                 },
             ],
             call_rewrites: std::collections::HashMap::new(),
