@@ -404,6 +404,35 @@ impl TypeChecker {
             }
         }
 
+        // E24: `@tag` is only meaningful if every payload can carry the tag
+        // alongside its own fields. Both failures are decidable from the
+        // declaration alone — no value has to reach json.encode for the
+        // shape to be wrong — so they are rejected here rather than lowered
+        // into a runtime panic (ctrl.panic/S7).
+        if let Some(tag) = rask_ast::decl::field_attrs::tag_field(&e.attrs) {
+            for v in &e.variants {
+                // An unnamed payload has no field name to flatten into: the
+                // object already holds the tag, and the payload would need an
+                // invented key to sit beside it.
+                if v.fields.len() == 1 && v.fields[0].name == "_0" {
+                    self.errors.push(TypeError::TagOnUnnamedPayload {
+                        enum_name: e.name.clone(),
+                        variant: v.name.clone(),
+                        tag: tag.clone(),
+                        span: v.name_span,
+                    });
+                } else if v.fields.iter().any(|f| f.name == tag) {
+                    // Writing both would mean a duplicate JSON key.
+                    self.errors.push(TypeError::TagCollidesWithField {
+                        enum_name: e.name.clone(),
+                        variant: v.name.clone(),
+                        tag: tag.clone(),
+                        span: v.name_span,
+                    });
+                }
+            }
+        }
+
         // Parse variant payload types first (immutable borrow of self.types),
         // then validate (mutable borrow of self for errors).
         let variants: Vec<(String, Vec<(Span, Type)>)> = e

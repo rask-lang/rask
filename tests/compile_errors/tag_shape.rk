@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `@tag` has two malformed shapes, and both used to compile and then panic at
+// runtime — native wrote a duplicate JSON key, the interpreter dropped the tag
+// (#951 review). Neither needs a value to decide: the declaration alone says
+// the enum can't encode, so both are compile errors now (ctrl.panic/S7).
+
+import std.encoding.json
+
+// E24a: internal tagging writes the tag as a field beside the payload's own
+// fields, so an unnamed payload has no key to pair its value with.
+@tag("type")
+enum Shape {
+    Circle(f64)                    // ERROR: E0841 unnamed payload under @tag
+}
+
+// E24b: the tag and the field would both be written as "kind".
+@tag("kind")
+enum Event {
+    Click { kind: string }         // ERROR: E0842 @tag collides with a field
+}
+
+// The collision is per-variant: a sibling that doesn't use the name is fine,
+// but the offending one is still reported.
+@tag("t")
+enum Mixed {
+    Fine { x: i64 }
+    Bad { t: string }              // ERROR: E0842 @tag collides with a field
+}
+
+func main() {
+    let s = Shape.Circle(1.0)
+    println(json.encode(s))
+    let e = Event.Click { kind: "press" }
+    println(json.encode(e))
+    let m = Mixed.Bad { t: "x" }
+    println(json.encode(m))
+}

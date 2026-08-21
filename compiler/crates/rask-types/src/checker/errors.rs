@@ -627,6 +627,24 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E24: `@tag` needs a named payload to flatten into the tagged object
+    #[error("enum `{enum_name}`: `@tag(\"{tag}\")` needs named payloads, but variant `{variant}` has an unnamed one")]
+    TagOnUnnamedPayload {
+        enum_name: String,
+        variant: String,
+        tag: String,
+        span: Span,
+    },
+
+    /// E24: `@tag`'s key collides with one of a variant's own payload fields
+    #[error("enum `{enum_name}`: `@tag(\"{tag}\")` collides with field `{tag}` on variant `{variant}`")]
+    TagCollidesWithField {
+        enum_name: String,
+        variant: String,
+        tag: String,
+        span: Span,
+    },
+
     /// ER3: success and error types in `T or E` must be distinct
     #[error("`T or E` requires T and E to be distinct types — both sides are `{ty}`")]
     ResultNotDisjoint {
@@ -1025,6 +1043,8 @@ impl TypeError {
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }
+            | TagOnUnnamedPayload { .. }
+            | TagCollidesWithField { .. }
             | ElseBindingNotResult { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
