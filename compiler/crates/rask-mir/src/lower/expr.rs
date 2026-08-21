@@ -4259,6 +4259,21 @@ impl<'a> MirLowerer<'a> {
                                 return Ok(Some((MirOperand::Local(dst), MirType::String)));
                             }
 
+                            // A bare enum value, not nested in a struct field
+                            // (and not a JsonValue — that's handled above,
+                            // through its own Rask encoder). This used to fall
+                            // all the way to "Non-struct: string or integer"
+                            // below, which has no enum case and silently sent
+                            // it through json_encode_i64 — `json.encode(Color.Green)`
+                            // printed the address of the enum's stack slot as
+                            // a number (std.encoding/E22-E25).
+                            if let crate::types::MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &arg_ty {
+                                if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
+                                    let encoded = self.lower_json_encode_enum(arg_op, &layout)?;
+                                    return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
+                                }
+                            }
+
                             // Non-struct: string or integer
                             let helper = if matches!(arg_ty, MirType::String) {
                                 "json_encode_string"

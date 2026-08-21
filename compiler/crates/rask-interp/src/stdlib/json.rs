@@ -57,7 +57,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let json_val = value_to_json(&value, &self.struct_decls)?;
+                let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, false, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
             }
@@ -66,7 +66,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                let json_val = value_to_json(&value, &self.struct_decls)?;
+                let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, true, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
             }
@@ -75,7 +75,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
-                value_to_json(&value, &self.struct_decls)
+                value_to_json(&value, &self.struct_decls, &self.enums)
             }
             "decode" => {
                 // decode(type_name, json_string) — type_name injected from type_args
@@ -680,6 +680,7 @@ fn escape_json_string(s: &str) -> String {
 fn value_to_json(
     value: &Value,
     struct_decls: &HashMap<String, StructDecl>,
+    enums: &HashMap<String, rask_ast::decl::EnumDecl>,
 ) -> Result<Value, RuntimeError> {
     match value {
         Value::Unit => Ok(make_json_null()),
@@ -694,22 +695,40 @@ fn value_to_json(
         Value::Vec(v) => {
             let vec = v.lock().unwrap();
             let items: Result<Vec<Value>, RuntimeError> =
-                vec.iter().map(|v| value_to_json(v, struct_decls)).collect();
+                vec.iter().map(|v| value_to_json(v, struct_decls, enums)).collect();
             Ok(make_json_array(items?))
         }
         // A struct-shaped enum variant (`Shape.Circle { radius: f64 }`) is a
         // plain struct value here — the interpreter doesn't keep the enum
-        // identity on it — so it used to encode as `{"radius":1}`, dropping the
-        // variant name, while native panicked with what's missing. Anything
-        // that isn't a declared struct isn't one (#854).
+        // identity on it, only the dotted name the parser desugared it to —
+        // so it used to encode as `{"radius":1}`, dropping the variant name
+        // entirely. Anything that isn't a declared struct isn't one (#854).
         Value::Struct(ref s) if !struct_decls.contains_key(&s.lock().unwrap().name) => {
-            let name = s.lock().unwrap().name.clone();
-            Err(RuntimeError::TypeError(format!(
-                "json.encode can't write `{}` yet: a variant with a payload needs \
-                 the tagged forms (std.encoding/E23, E24), and only unit variants \
-                 are implemented",
-                name
-            )))
+            let dotted = s.lock().unwrap().name.clone();
+            let found = dotted.split_once('.').and_then(|(enum_name, variant_name)| {
+                enums.get(enum_name).and_then(|decl| {
+                    decl.variants
+                        .iter()
+                        .find(|v| v.name == variant_name)
+                        .map(|v| (decl, v))
+                })
+            });
+            let Some((enum_decl, variant)) = found else {
+                return Err(RuntimeError::TypeError(format!(
+                    "cannot convert enum variant `{}` to JSON: no declaration found for it",
+                    dotted
+                )));
+            };
+            let guard = s.lock().unwrap();
+            let mut entries = Vec::with_capacity(guard.fields.len());
+            for (k, v) in guard.fields.iter() {
+                if k.starts_with('_') {
+                    continue; // internal field
+                }
+                entries.push((k.clone(), value_to_json(v, struct_decls, enums)?));
+            }
+            drop(guard);
+            encode_enum_variant(enum_decl, variant, entries)
         }
         Value::Struct(ref s) => {
             let guard = s.lock().unwrap();
@@ -730,7 +749,7 @@ fn value_to_json(
                 }
                 entries.push((
                     field_attrs::serial_name(attrs, k),
-                    value_to_json(v, struct_decls)?,
+                    value_to_json(v, struct_decls, enums)?,
                 ));
             }
             Ok(make_json_object(entries))
@@ -743,13 +762,13 @@ fn value_to_json(
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };
-                entries.push((key, value_to_json(v, struct_decls)?));
+                entries.push((key, value_to_json(v, struct_decls, enums)?));
             }
             Ok(make_json_object(entries))
         }
         Value::Enum { name, variant, fields, .. } if name == "Option" => {
             match variant.as_str() {
-                "Some" if !fields.is_empty() => value_to_json(&fields[0], struct_decls),
+                "Some" if !fields.is_empty() => value_to_json(&fields[0], struct_decls, enums),
                 _ => Ok(make_json_null()),
             }
         }
@@ -762,22 +781,78 @@ fn value_to_json(
                 variant_index: *variant_index, origin: None,
             })
         }
-        // std.encoding/E22: a unit variant serializes as its own name. Native
-        // used to write the address of the enum's slot as a number here and say
-        // nothing; this side refused outright. Both were wrong (#854).
-        Value::Enum { variant, fields, .. } if fields.is_empty() => {
-            Ok(make_json_string(variant))
+        // std.encoding/E22-E25: unit and tuple-shaped variants. A struct-shaped
+        // variant goes through the `Value::Struct` arm above instead — the
+        // parser desugars `Enum.Variant { ... }` into a struct literal, so
+        // this arm only ever sees the positional (tuple/unit) construction.
+        Value::Enum { name, variant, fields, .. } => {
+            let enum_decl = enums.get(name);
+            let variant_attrs: &[String] = enum_decl
+                .and_then(|d| d.variants.iter().find(|v| &v.name == variant))
+                .map(|v| v.attrs.as_slice())
+                .unwrap_or(&[]);
+            let serial_name = field_attrs::serial_name(variant_attrs, variant);
+            let tag_field = enum_decl.and_then(|d| field_attrs::tag_field(&d.attrs));
+
+            if fields.is_empty() {
+                return match tag_field {
+                    None => Ok(make_json_string(&serial_name)),
+                    Some(tf) => Ok(make_json_object(vec![(tf, make_json_string(&serial_name))])),
+                };
+            }
+            if fields.len() == 1 && tag_field.is_none() {
+                // E23: the payload goes directly under the variant name.
+                let payload = value_to_json(&fields[0], struct_decls, enums)?;
+                return Ok(make_json_object(vec![(serial_name, payload)]));
+            }
+            if fields.len() == 1 {
+                // Internal tagging has no field name to flatten this payload
+                // into — same gap native reports for the same shape.
+                return Err(RuntimeError::TypeError(format!(
+                    "json.encode can't write `{}.{}` yet: @tag needs a named payload to \
+                     flatten into the tagged object, and this variant's payload is unnamed \
+                     (std.encoding/E24)",
+                    name, variant
+                )));
+            }
+            // Several unnamed fields (`Point(f64, f64)`) — the spec doesn't
+            // give this shape a JSON form, so it gets the same synthetic
+            // `_0`, `_1`, … keys the parser gave the fields themselves.
+            let mut entries = Vec::with_capacity(fields.len());
+            for (i, f) in fields.iter().enumerate() {
+                entries.push((format!("_{}", i), value_to_json(f, struct_decls, enums)?));
+            }
+            match tag_field {
+                None => Ok(make_json_object(vec![(serial_name, make_json_object(entries))])),
+                Some(tf) => {
+                    entries.insert(0, (tf, make_json_string(&serial_name)));
+                    Ok(make_json_object(entries))
+                }
+            }
         }
-        Value::Enum { name, .. } => Err(RuntimeError::TypeError(format!(
-            "json.encode can't write `{}` yet: a variant with a payload needs \
-             the tagged forms (std.encoding/E23, E24), and only unit variants \
-             are implemented",
-            name
-        ))),
         _ => Err(RuntimeError::TypeError(format!(
             "cannot convert {} to JSON",
             value.type_name()
         ))),
+    }
+}
+
+/// Wrap a struct-shaped variant's already-encoded fields per E22/E24, honoring
+/// `@rename` (E25). External (default): nest under the variant name
+/// (`{"Circle": {"radius": 1.0}}`). Internal (`@tag("field")`): flatten the
+/// tag into the same object as the fields (`{"type": "Click", "x": 10}`).
+fn encode_enum_variant(
+    enum_decl: &rask_ast::decl::EnumDecl,
+    variant: &rask_ast::decl::Variant,
+    mut entries: Vec<(String, Value)>,
+) -> Result<Value, RuntimeError> {
+    let serial_name = field_attrs::serial_name(&variant.attrs, &variant.name);
+    match field_attrs::tag_field(&enum_decl.attrs) {
+        None => Ok(make_json_object(vec![(serial_name, make_json_object(entries))])),
+        Some(tf) => {
+            entries.insert(0, (tf, make_json_string(&serial_name)));
+            Ok(make_json_object(entries))
+        }
     }
 }
 

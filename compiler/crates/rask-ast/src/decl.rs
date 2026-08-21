@@ -252,6 +252,12 @@ pub mod field_attrs {
         attrs.iter().find_map(|a| call_arg(a, "default"))
     }
 
+    /// `@tag("field")` on an enum: internal tagging, the variant name goes in
+    /// this field instead of being the object's own key (std.encoding/E24).
+    pub fn tag_field(attrs: &[String]) -> Option<String> {
+        attrs.iter().find_map(|a| call_arg(a, "tag").and_then(string_literal))
+    }
+
     /// The argument text of `name(...)`, if this attribute is that call.
     fn call_arg<'a>(attr: &'a str, name: &str) -> Option<&'a str> {
         let rest = attr.trim().strip_prefix(name)?.trim_start();
