@@ -1254,7 +1254,7 @@ impl Resolver {
             let is_stdlib_module = matches!(pkg_name.as_str(),
                 "io" | "fs" | "env" | "cli" | "std" | "json" | "random"
                 | "time" | "math" | "path" | "os" | "net" | "core" | "async"
-                | "thread" | "http"
+                | "thread" | "http" | "num"
             );
 
             if is_stdlib_module {

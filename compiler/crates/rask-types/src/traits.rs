@@ -857,7 +857,19 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             // constants, which have no MethodSig to stand for them — a
             // primitive answers through the membership test above, and a user
             // type is held to the methods it can actually declare.
-            "Numeric" | "Integer" => Some(numeric_method_sigs()),
+            "Numeric" => Some(numeric_method_sigs()),
+            // `Integer` gets the shared eight plus the overflow-hatch methods
+            // (type.integer-overflow M1) — floats have no wrapping/saturating
+            // semantics, so these don't belong on `Numeric` itself. Needed so
+            // a generic body bounded by `T: Integer` (e.g. `Wrapping<T>`'s
+            // `add`) can call `.wrapping_add()` on its receiver — without this
+            // the concrete-type methods exist but a generic `T` can't see
+            // them (#838).
+            "Integer" => {
+                let mut sigs = numeric_method_sigs();
+                sigs.extend(integer_overflow_hatch_method_sigs());
+                Some(sigs)
+            }
             "Float" => {
                 let mut sigs = numeric_method_sigs();
                 sigs.push(MethodSig {
@@ -1130,6 +1142,29 @@ fn is_abstract_arg(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// The wrapping/saturating one-off methods (type.integer-overflow M1) that
+/// `Integer` adds on top of `Numeric`'s eight. Same shape as `Numeric`'s
+/// binary operators — one operand of the receiver's own type, same type back
+/// — since each is the checked operator with the panic swapped for wrap or
+/// saturate.
+fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
+    let binary = |name: &str| MethodSig {
+        type_params: Vec::new(),
+        name: name.to_string(),
+        self_param: SelfParam::Value,
+        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+        ret: Type::Var(crate::types::TypeVarId(0)),
+    };
+    vec![
+        binary("wrapping_add"),
+        binary("wrapping_sub"),
+        binary("wrapping_mul"),
+        binary("saturating_add"),
+        binary("saturating_sub"),
+        binary("saturating_mul"),
+    ]
 }
 
 /// The eight methods the roster gives `Numeric`.

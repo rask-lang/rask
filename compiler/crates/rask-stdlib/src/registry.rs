@@ -49,7 +49,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
 /// Classify a stdlib module by its runtime requirements.
 pub fn module_layer(module: &str) -> StdlibLayer {
     match module {
-        "json" | "math" | "path" => StdlibLayer::Pure,
+        "json" | "math" | "path" | "num" => StdlibLayer::Pure,
         "fs" | "io" | "net" | "os" | "cli" => StdlibLayer::Runtime,
         "time" | "random" => StdlibLayer::Hybrid,
         _ => StdlibLayer::Runtime,

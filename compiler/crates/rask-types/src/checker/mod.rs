@@ -108,6 +108,7 @@ pub enum UnsafeCategory {
     UnsafeFuncCall,
     Transmute,
     UnionFieldAccess,
+    UncheckedArith,
 }
 
 pub struct TypeChecker {
@@ -135,6 +136,14 @@ pub struct TypeChecker {
     /// Trait bounds on the current function's type params (name → trait names).
     /// Lets `g.greet()` resolve against `T: Greeter` for static dispatch (#314).
     pub(super) current_type_param_bounds: HashMap<String, Vec<String>>,
+    /// Trait bounds from the enclosing `extend Foo<T> where T: Trait { }`
+    /// block's own where-clause, distinct from a method's own bounds (those
+    /// live on the method's `FnDecl` and are folded into
+    /// `current_type_param_bounds` directly). A bound declared at the extend
+    /// level covers every method in the block, so `check_fn` seeds
+    /// `current_type_param_bounds` from this before layering the method's own
+    /// bounds on top (#838).
+    pub(super) current_impl_type_param_bounds: HashMap<String, Vec<String>>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -334,6 +343,7 @@ impl TypeChecker {
             loop_value_types: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
+            current_impl_type_param_bounds: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),

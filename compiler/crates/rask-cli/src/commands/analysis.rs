@@ -249,6 +249,7 @@ fn category_label(cat: UnsafeCategory) -> &'static str {
         UnsafeCategory::UnsafeFuncCall => "Unsafe Function Call",
         UnsafeCategory::Transmute => "Transmute",
         UnsafeCategory::UnionFieldAccess => "Union Field Access",
+        UnsafeCategory::UncheckedArith => "Unchecked Arithmetic",
     }
 }
 
