@@ -170,12 +170,8 @@ extend Vec<T> {
     @native("rask_vec_sort_by")
     public func sort_by(mutate self, f: func(T, T) -> Ordering) {}
 
-    /// Sort by a key extracted from each element.
-    ///
-    /// Native has no lowering — see #886, and #887 for why a Rask body over
-    /// `sort_by` doesn't work yet: the body compares two keys, and `K` is the
-    /// method's own type parameter. The copy is made with it unsubstituted, so
-    /// `compare` lands on a receiver with no type at all.
+    /// Sort by a key extracted from each element. Not stable, like `sort` —
+    /// only `sort_by` promises that.
     @native
     public func sort_by_key(mutate self, f: func(T) -> K) {}
 
@@ -197,12 +193,6 @@ extend Vec<T> {
     public func wide(self) -> Wide<T> {}
 
     /// Map then flatten results.
-    ///
-    /// Native has no lowering — see #886, and #887 for why a Rask body doesn't
-    /// work yet: `U` is the method's own type parameter, nothing resolves it at
-    /// the call site, and a copy made with it unsubstituted lays the result out
-    /// at the wrong width. A `Vec<string>` came back with its first element
-    /// truncated and the rest gone.
     @native
     public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> {}
 
