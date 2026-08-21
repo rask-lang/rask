@@ -106,7 +106,7 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
 
     // Check not same file (using canonical paths)
     let src_canonical = fs.absolute_path(opts.source) catch e => {
-        return CopyError.ReadError(e)
+        return CopyError.ReadError(e.message())
     }
     let dst_canonical = fs.absolute_path(opts.dest) catch _ => none
 
@@ -118,12 +118,12 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
 
     // Copy the file
     fs.copy(opts.source, opts.dest) catch e => {
-        return CopyError.WriteError(e)
+        return CopyError.WriteError(e.message())
     }
 
     // fs.copy returns void — read the copied size back off disk for the report
     let meta = fs.metadata(opts.dest) catch e => {
-        return CopyError.WriteError(e)
+        return CopyError.WriteError(e.message())
     }
     return meta.size
 }
