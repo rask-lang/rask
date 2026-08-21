@@ -159,7 +159,7 @@ edge case edges don't have: a slot whose generation saturates is dead forever.
 | Operation | Handles | Links |
 |---|---|---|
 | Follow a reference | index math + bounds + generation compare + branch (~2 dependent loads, 2 branches; coalescing amortizes repeats) | 1 dependent load — it *is* a pointer chase; nothing to elide |
-| Write a reference | 1–2 racks (it's an integer) | unlink old + link new backlink: ~4–8 racks |
+| Write a reference | 1–2 stores (it's an integer) | unlink old + link new backlink: ~4–8 stores |
 | Delete | O(1), bump generation | O(degree), pointer-chasing walk |
 | Iterate | O(capacity) slot scan | O(capacity) arena scan — same shape |
 

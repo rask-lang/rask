@@ -189,10 +189,10 @@ Rebinding which field holds a reference — `a.target` becomes `b.target`,
 with `a` left holding nothing.
 
 Written as copy-then-clear, that's link into the target's list for `b`, then
-unlink `a`: roughly 7–10 racks. A genuine *move* is cheaper, because the
+unlink `a`: roughly 7–10 stores. A genuine *move* is cheaper, because the
 target's incoming list never needs to grow or shrink — the same backlink entry
 just changes which slot owns it, so only the entry's neighbours and the two
-holder slots get written: ~4–5 racks. Worth its own form:
+holder slots get written: ~4–5 stores. Worth its own form:
 
 <!-- test: skip -->
 ```rask

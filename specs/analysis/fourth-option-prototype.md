@@ -388,7 +388,7 @@ was `insert`'s return. So state it there:
 > never local values.
 
 `prototype/l1_list_links_no_locals.rk` is L1 written that way, and it produces
-byte-identical output to the handle version. `push_back` racks the new node's
+byte-identical output to the handle version. `push_back` stores the new node's
 link straight into a field and reads it back out for the second use:
 
 ```rask
@@ -1294,10 +1294,33 @@ needs, for whichever spec ends up owning `Rack`:
 
 > Assigning a link into an edge writes the target as well as the holder: the
 > rack records the incoming edge so that `delete` can find it. An edge write is
-> ~4–8 racks where a handle write is 1–2, and `a.target = b` modifies `b`.
+> ~4–8 stores where a handle write is 1–2, and `a.target = b` modifies `b`.
 
-That is a cost the principle requires be visible, and it currently isn't stated
-anywhere normative — only measured here.
+**Withdrawn: Transparency of Cost doesn't reach this.** I had this filed as a
+principle-1 violation needing a normative sentence. That was a misreading of what
+the principle is for. Its subject is the costs a reader cannot see and cannot
+bound — does this copy a 16MB value, does a write trigger copy-on-write, is a
+collector involved. Those get a name at the call site, which is why a value over
+the copy threshold moves rather than copies and `.clone()` has to be typed out.
+
+An edge write is a fixed handful of pointer stores into a header: no allocation,
+no unbounded work, and no difference in kind from the bounds check on `v[i]`.
+Counting 4–8 against 1–2 is the sort of thing a profiler answers, not the sort of
+thing a principle about hidden costs was written to catch. The measurement above
+stays — it's useful — but it isn't a finding against the design.
+
+The related question that reading it raises: an edge write touches the *target*,
+so does it break a read-only link? `func aim(mutate a: Link<Node>, b: Link<Node>)`
+with `a.target = b` compiles, and should. What the write touches is `b`'s backlink
+header — compiler bookkeeping — not any field `b` declares. `b.value` is
+unchanged, and nothing observable through `b`'s type moves. A view is a promise
+about fields, the same way a `Vec`'s length changing on `push` isn't a mutation of
+your elements. So the two rules are consistent, and it is worth saying which half
+an edge write touches:
+
+> An edge write records an incoming edge in the target's header. It does not
+> write any field the target declares, so a link lent for reading stays valid
+> for reading.
 
 ## Finding 3: the #626 trade is real but smaller than it first looks
 

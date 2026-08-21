@@ -105,7 +105,7 @@ location. No asymptotic cost on an operation that was already O(n), and no
 new mechanism, because `Vec<Link<T>>` compaction (A5) needs exactly the same
 thing.
 
-**One rule covers both:** *a container that racks links and moves them must
+**One rule covers both:** *a container that stores links and moves them must
 re-point their backlinks as it moves them.* The compiler knows the element
 type is a link, so it emits the fixup in `Vec`'s compaction and `Map`'s
 rehash alike.
@@ -594,7 +594,7 @@ Eager keeps the model's headline claim literally true — a dead pointer does
 not exist, so following one needs no check. Lazy makes that claim
 "eventually true, with a transient check," which is a real weakening of the
 central promise for a benefit most schemas never collect: ordinary in-degree
-is 1–5, so eager's per-delete work is a handful of racks.
+is 1–5, so eager's per-delete work is a handful of stores.
 
 Lazy survives as an opt-in for the pathological shape it was invented for:
 a hub with 100k incoming edges, where walking the list at apply is a genuine

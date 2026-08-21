@@ -260,7 +260,7 @@ Three concrete calls:
 - **You never delete.** No deletes, no dangling, no reason to pay for
   back-pointers. Use a `Vec`.
 - **You rewire far more often than you read.** Each edge write costs several
-  racks (it maintains the back-pointer); each read costs nothing. That trade
+  stores (it maintains the back-pointer); each read costs nothing. That trade
   is excellent when reads dominate — which is nearly always — and poor when
   they don't.
 - **You need the reference to leave.** Links live inside the graph's world.

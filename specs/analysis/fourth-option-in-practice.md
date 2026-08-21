@@ -194,7 +194,7 @@ not there.
 | Operation | Cost | vs C with raw pointers |
 |---|---|---|
 | Follow an `Link<T>?` | the `?` test you wrote; + one header-flag load until the edge heals | 1.0× steady-state; ~1 extra predictable branch transiently |
-| Assign an edge | pointer rack + backlink relink (~4–8 racks) | ~4× a raw rack — but the C/handle program does this relinking by hand as visible code |
+| Assign an edge | pointer store + backlink relink (~4–8 stores) | ~4× a raw store — but the C/handle program does this relinking by hand as visible code |
 | `delete` | O(1) tombstone | cheaper than free() |
 | `flush_deletes()` | O(pending fixups), each edge pays once | the same work manual unlinking would do, batched |
 | Memory per bidirectional link | 16B (two pointers) | pools: 32B + generations |
@@ -223,9 +223,9 @@ So ~4 when setting a `none` edge, ~7 when rewiring a live one, all to hot
 nearby memory — the node's own inline link fields, the target's list head,
 and one neighbor. Call it 2–5ns.
 
-When the relation declares an inverse, those racks **are** the data
+When the relation declares an inverse, those stores **are** the data
 structure — a tree's sibling links, a list's `prev`/`next`. The hand-written
-version writes exactly the same racks (and is where the classic
+version writes exactly the same stores (and is where the classic
 forgot-one-direction bug lives). No separate backlink storage exists at all.
 
 Non-edge writes have no barrier whatsoever. Scalars, values, and everything
@@ -234,7 +234,7 @@ Rask program.
 
 **The crossover, stated plainly.** Handles make the write cheap (one integer
 rack) and the read expensive (a check, forever). Links make the write cost
-~4–7 racks and the read free. Set a target once and read it 60×/second for
+~4–7 stores and the read free. Set a target once and read it 60×/second for
 ten seconds: handles pay ~600 checks (~1.2µs), edges pay one write (~5ns)
 and 600 free reads. Reads dominate by orders of magnitude in every real
 graph workload, which is why this trade is favorable — but it is a trade. A
