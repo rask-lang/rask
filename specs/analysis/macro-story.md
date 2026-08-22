@@ -63,15 +63,45 @@ func dbg<T: Debug>(v: T, text: str = @call_site.text(v)) -> T {
 }
 ```
 
-Rules sketch:
+Rules sketch — written to keep the blast radius at zero:
 
 - `@call_site.text(param)` → `str`: source text of the argument expression for `param`.
-  `@call_site.location()` → `SourceLoc { file, line, column }`. Both const-representable,
-  spliced per call site like any comptime value (CT58).
-- Only valid as a default value. Caller passes explicitly → nothing captured. Wrappers
-  propagate by passing the value along — explicitly, no `#[track_caller]` attribute chain.
-- The text is an opaque `str`. No AST, no evaluation, no way to turn it back into code.
-  That's the line that keeps this from being a macro.
+  `@call_site.location()` → `SourceLoc { file, line, column }`. Spliced per call site as
+  string constants.
+- **Data, never code.** No AST, no token access, no evaluation. The text can only flow
+  where any other `str` flows.
+- **Runtime-only.** Captured values are *not* comptime-known, even though the compiler
+  produced them. They cannot appear in comptime position: no `comptime if` on them, no
+  `value.(text)`, no feeding them to comptime evaluation. This is the load-bearing rule —
+  without it, a library could parse the *spelling* of an argument and compile different
+  code for `f(a + b)` than for `f((a) + (b))`, which is a macro in disguise. With it, the
+  program's meaning can never depend on how an argument was written; only its diagnostic
+  *output* can. That's the entire blast radius: strings in error messages.
+- **Only as parameter defaults.** Visible in the signature, overridable by the caller,
+  and a function only ever sees facts about *its own* call site — nothing upstream.
+- Source text ends up in the binary as string constants, same as the file:line panics
+  embed today. A release strip flag can blank them if that ever matters.
+
+**Wrapper propagation is explicit.** The problem `#[track_caller]` solves: a helper that
+panics should blame the *user's* line, not its own internals. Rust threads the location
+through an invisible attribute chain. Here the location is an ordinary parameter, so a
+wrapper keeps the original caller by declaring its own capture and handing it down:
+
+<!-- test: skip -->
+```rask
+func expect<T>(v: T?, msg: str, loc: SourceLoc = @call_site.location()) -> T {
+    let x = v is Some else { panic("{loc.file}:{loc.line}: {msg}") }
+    return x
+}
+
+// Wants failures blamed on ITS caller, not on line 3 below:
+func env_or_die(key: str, loc: SourceLoc = @call_site.location()) -> string {
+    return expect(os.env(key), "missing env {key}", loc: loc)   // hand it down
+}
+```
+
+Each hop is a visible parameter. Forget to pass `loc` and the report points one level
+deeper — annoying, but inspectable in the signature, which an attribute chain never is.
 
 Cost: a couple of interned strings per call site — bounds-check tier, implicit is fine.
 Tooling: call sites are ordinary calls; nothing to expand. Rides the existing
@@ -151,8 +181,20 @@ lint, not a feature: "argument is a literal and the callee is comptime-evaluable
 - **Comptime type creation** — CT66 is load-bearing: fixed type set is what makes comptime
   deterministic and order-free (CT65). Types from schemas remain build-script territory.
 - **User syntax (`vec![]`, DSL blocks)** — tooling opacity. `Vec.from([...])` stands.
-- **Lazy parameters** — hidden non-evaluation is hidden control flow. Closures are three
-  characters.
+- **Lazy parameters** — hidden non-evaluation is hidden control flow. What the explicit
+  version costs, side by side:
+
+  <!-- test: skip -->
+  ```rask
+  // Rust macro: args silently not evaluated when the level is off
+  //   debug!("state: {}", expensive_dump(world))
+
+  log.debug("tick {n}")                        // cheap case: plain string, nothing changes
+  log.debug(|| "state: {expensive_dump(world)}")  // expensive case: || marks "maybe skipped"
+  ```
+
+  `debug` overloads on `str` and `func() -> string`. Three extra characters buy visible
+  control flow; the reader sees exactly which arguments might never run.
 
 The pattern in all three gaps: macros are being used as a workaround for *information a
 function can't see* — its call site, user metadata, a type's methods. Rask can hand over the
