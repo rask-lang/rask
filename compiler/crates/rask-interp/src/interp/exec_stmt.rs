@@ -28,6 +28,7 @@ impl Interpreter {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    backfill_pool_type_param(&value, ty_str);
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
@@ -47,7 +48,9 @@ impl Interpreter {
                 };
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
-                    auto_wrap_for_annotation(value, ty_str, is_none_literal(init))
+                    let value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    backfill_pool_type_param(&value, ty_str);
+                    value
                 } else {
                     value
                 };
@@ -606,6 +609,25 @@ impl Interpreter {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Stamp a freshly created `Pool`'s element type from its `let`/`mut`
+/// annotation. `Pool.new()` written bare (the normal style — the element
+/// type is already on the left of the `=`) never learns its own element
+/// type otherwise: nothing else records it anywhere on the value. Named
+/// context-clause resolution (mem.context/CC4) needs that to tell one pool
+/// from another when more than one is in scope (`pool_for_context`, #867).
+/// A no-op once the pool already carries one (e.g. `Pool<Item>.new()`
+/// written out, or a pool passed in from elsewhere).
+pub(crate) fn backfill_pool_type_param(value: &Value, ty: &str) {
+    if let Value::Pool(p) = value {
+        if let Some(elem) = ty.trim().strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+            let mut guard = p.lock().unwrap();
+            if guard.type_param.is_none() {
+                guard.type_param = Some(elem.trim().to_string());
             }
         }
     }
