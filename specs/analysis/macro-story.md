@@ -63,24 +63,62 @@ func dbg<T: Debug>(v: T, text: str = @call_site.text(v)) -> T {
 }
 ```
 
-Rules sketch — written to keep the blast radius at zero:
+Rules sketch — written to keep the blast radius small:
 
 - `@call_site.text(param)` → `str`: source text of the argument expression for `param`.
   `@call_site.location()` → `SourceLoc { file, line, column }`. Spliced per call site as
   string constants.
 - **Data, never code.** No AST, no token access, no evaluation. The text can only flow
   where any other `str` flows.
-- **Runtime-only.** Captured values are *not* comptime-known, even though the compiler
-  produced them. They cannot appear in comptime position: no `comptime if` on them, no
-  `value.(text)`, no feeding them to comptime evaluation. This is the load-bearing rule —
-  without it, a library could parse the *spelling* of an argument and compile different
-  code for `f(a + b)` than for `f((a) + (b))`, which is a macro in disguise. With it, the
-  program's meaning can never depend on how an argument was written; only its diagnostic
-  *output* can. That's the entire blast radius: strings in error messages.
-- **Only as parameter defaults.** Visible in the signature, overridable by the caller,
-  and a function only ever sees facts about *its own* call site — nothing upstream.
+- **Comptime-known, but it cannot steer compilation.** Captured values are comptime-known
+  `str`/`SourceLoc` — usable in comptime value computation, so `assert_eq`'s whole message
+  prefix (`"{loc.file}:{loc.line}: {a_text} != {b_text}"`) fuses into one static string at
+  compile time and the failure path costs nothing until it fires. Two restrictions keep it
+  from becoming a macro: captured values are illegal in staging positions — the condition
+  of a `comptime if`, the iterable of a `comptime for` — and illegal in `value.(...)`.
+  Which code exists can never depend on how an argument was spelled; only *values* can.
+  A residue stays: a comptime *value* computed from the text is spelling-dependent
+  (`f(a + b)` vs `f((a)+(b))` can differ in a string constant). Accepted — it can only
+  produce data or select code the program already contains, never synthesize code, and
+  comptime evaluation is debuggable by construction (call stacks, `@comptime_print`,
+  IDE hover), which is the actual complaint against macros.
+- **A function sees its own call site only** — nothing upstream, nothing about other
+  calls.
 - Source text ends up in the binary as string constants, same as the file:line panics
   embed today. A release strip flag can blank them if that ever matters.
+
+### Where the capture lives: three placements
+
+The `@` builtin family is existing syntax (`@embed_file`, `@comptime_quota`); the open
+question is where a capture may appear.
+
+**A. Default expression** (shown above). A default argument is *already* an expression
+the compiler inserts per call site — capture in default position reuses that semantics
+exactly; the only new thing is the two builtins. Add one rule to cut the noise: a
+parameter whose default captures the call site is **named-only** — it can't be filled
+positionally, so `assert_eq(a, b, oops)` can't land in `a_text` by accident.
+
+**B. Parameter annotation**, reusing gap 2's annotation syntax:
+
+<!-- test: skip -->
+```rask
+func assert_eq<T: Equal + Debug>(a: T, b: T,
+    @call_site(text: a) a_text: str,
+    @call_site(location) loc: SourceLoc)
+```
+
+Reads cleaner, and gap 2 introduces `annotation` anyway. But it's surface reuse only:
+it needs a brand-new semantic ("compiler-supplied parameter"), and wrappers still must
+be able to pass the value explicitly — which reintroduces default-argument behavior
+under an annotation costume.
+
+**C. Body builtin with implicit propagation** (Zig's `@src`, Rust's `#[track_caller]`):
+no signature noise, but the caller's location threads through calls invisibly — hidden
+parameters, hidden cost. Rejected on transparency.
+
+I recommend A: it's the placement where the semantics already exist, and named-only
+handles the accident risk. B is a defensible surface if signature noise ends up mattering
+more in practice.
 
 **Wrapper propagation is explicit.** The problem `#[track_caller]` solves: a helper that
 panics should blame the *user's* line, not its own internals. Rust threads the location
@@ -140,10 +178,45 @@ Whoever walks the fields decides what they mean. This is `#[serde(...)]`-grade
 extensibility with zero codegen: the same residue mechanism (CT57) that already powers
 encoding. It's also Principle 5 verbatim — metadata surfaced, nothing enforced.
 
+### The API contract
+
+**Not traits.** A trait is a behavior contract; an annotation is a data record. There is
+no conformance, no dispatch, no methods, and no "annotation processor" hook (Java's
+mistake — behavior belongs in the library that reads the data, not in the annotation).
+
+**Declaration** is a restricted struct: fields with optional defaults, field types limited
+to the const-representable set (primitives, `str`, enums and fixed arrays of these —
+the CT58 splice set). Optionally declares its targets: `annotation validate on field`;
+attaching it anywhere else is a compile error, so metadata can't sit somewhere no reader
+will ever look. Default: attachable anywhere.
+
+**Attachment is checked as construction.** `@validate(max: 100)` type-checks exactly like
+the struct literal `validate { max: 100 }` — non-defaulted fields required, names checked,
+values must be comptime constants. That's the whole checking story; the existing struct
+diagnostics do the work. Duplicate attachment of the same annotation to one item is an
+error, which keeps reading unambiguous.
+
+**Reading** is three operations on reflect items (fields, variants, methods, and the
+type itself), all comptime:
+
+<!-- test: skip -->
+```rask
+field.has<validate>()   // -> bool
+field.get<validate>()   // -> validate?   (the record, or none)
+field.annotations       // comptime array of all attached, for generic tooling
+```
+
+That's the entire surface: declare, attach, `has`, `get`, enumerate. Anything an
+annotation "does" is written as ordinary code in whatever walks it.
+
 ## Gap 3: Comptime method dispatch
 
-`value.(field.name)` resolves fields by comptime string (CT49). The same move on *methods*
-would finish the reflection story:
+`value.(field.name)` resolves fields by comptime string — this is settled canon
+(`ctrl.comptime/CT49`, decided and implemented; the entire encoding story runs on it).
+The parens are the signal that the member name is computed rather than literal, while
+staying visually a field access — the alternatives were worse: `value[expr]` collides
+with indexing, and a `reflect.get(value, name)` builtin hides that it compiles to a
+direct field access. The same move on *methods* would finish the reflection story:
 
 <!-- test: skip -->
 ```rask
