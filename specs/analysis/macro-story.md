@@ -70,18 +70,21 @@ Rules sketch — written to keep the blast radius small:
   string constants.
 - **Data, never code.** No AST, no token access, no evaluation. The text can only flow
   where any other `str` flows.
-- **Comptime-known, but it cannot steer compilation.** Captured values are comptime-known
-  `str`/`SourceLoc` — usable in comptime value computation, so `assert_eq`'s whole message
-  prefix (`"{loc.file}:{loc.line}: {a_text} != {b_text}"`) fuses into one static string at
-  compile time and the failure path costs nothing until it fires. Two restrictions keep it
-  from becoming a macro: captured values are illegal in staging positions — the condition
-  of a `comptime if`, the iterable of a `comptime for` — and illegal in `value.(...)`.
-  Which code exists can never depend on how an argument was spelled; only *values* can.
-  A residue stays: a comptime *value* computed from the text is spelling-dependent
-  (`f(a + b)` vs `f((a)+(b))` can differ in a string constant). Accepted — it can only
-  produce data or select code the program already contains, never synthesize code, and
-  comptime evaluation is debuggable by construction (call stacks, `@comptime_print`,
-  IDE hover), which is the actual complaint against macros.
+- **Runtime parameters, and that falls out for free.** An earlier draft made captures
+  comptime-known with fences against steering compilation. Poking at it broke it: comptime
+  code in a callee evaluates once per *instantiation* (CT63), but captured values differ
+  per *call site* — a callee observing them at comptime would force one instantiation per
+  call site (500 asserts = 500 monomorphized bodies). The annotation placement dissolves
+  the whole question: the only place a captured value is ever visible is inside the
+  callee, as a parameter — and parameters are runtime values (CT8 already bars them from
+  comptime). No fences needed; spelling can't steer compilation because captures can't
+  reach comptime at all. The values are still compile-time-produced constants at each
+  call site, and message fusion (`assert_eq` is small and inlines) happens through
+  ordinary constant folding — an optimization, not a semantics. If per-call-site comptime
+  ever earns its keep, the existing comptime-parameter machinery (CT4) is the extension
+  point: a capture param marked `comptime` would opt into per-call-site instantiation,
+  visibly. Deferred — it needs taint rules to keep capture-derived values out of staging,
+  and the instantiation bloat is real.
 - **A function sees its own call site only** — nothing upstream, nothing about other
   calls.
 - Source text ends up in the binary as string constants, same as the file:line panics
@@ -138,6 +141,46 @@ semantics and the same new machinery; only the surface differs. A's surface then
 (looks like an ordinary overridable default, isn't), B's surface says exactly what
 happens. The annotation isn't the costlier option that won on ergonomics — it's the
 honest spelling of the chosen semantics.
+
+### Poking at it: where it cracks
+
+Adversarial pass over the chosen design. Found four, one of which reshaped a rule (the
+comptime story above); the rest get rules or honest caps here.
+
+- **The indirect-call hole is a family, not a case.** Function values were already
+  restricted, but closures declaring captures and trait methods called through
+  `any Trait` vtables have the same problem: an indirect call site can't know the target
+  captures. One unified v1 rule instead of three: `@call_site` parameters are legal only
+  on named functions, and a capturing function can't be referenced as a value, used as a
+  closure body's implicit target, or declared in a trait's method signature. Generic
+  bounds are fine — calls through `T: Trait` monomorphize into direct calls, and the
+  captured location is the call inside the generic body, which is the right answer.
+- **Forwarding guarantees provenance, not correspondence.** With two text captures,
+  a wrapper can forward its text-of-`a` into a callee slot documented as text-of-`b` —
+  kinds match, meaning scrambled. Tightening this would need per-argument kind identity,
+  which wrappers structurally can't satisfy. Honest cap: a captured `str` is genuinely
+  something some caller wrote and a `SourceLoc` genuinely names a real call site;
+  *which* argument it describes is trusted to the forwarding code, same as any other
+  argument order. Diagnostics can be stale-labeled by a buggy wrapper, not fabricated.
+- **Text needs three edge rules.** (1) An argument the caller didn't write — a filled
+  default — captures the default expression's text as written at the declaration.
+  (2) Text is the source slice with runs of whitespace collapsed, so multiline arguments
+  don't break diagnostic layout. (3) Text longer than 256 bytes is truncated with `…` —
+  captures are for diagnostics, not storage, and unbounded capture of a huge closure
+  argument is binary bloat for nothing.
+- **Binary-size pressure is real but boring.** Every capturing call site embeds a string.
+  Identical texts intern; the strip flag (above) zeroes them for size-critical builds.
+
+Gap 2, poked: repeated annotations stay forbidden — the `@alias("a") @alias("b")` want is
+served by an array field, `@alias(names: ["a", "b"])`. And removing a public annotation
+is a semver-relevant API change (downstream walkers change behavior) — same class as
+removing a field, worth a line in the eventual spec.
+
+Gap 3, poked: a dispatch table built from `reflect.methods<T>()` assumes the filtered
+methods share a signature; when one doesn't, the type error lands inside an unrolled
+iteration. That's fine — but the diagnostic must carry the comptime-for context ("while
+unrolling for m = cmd_restart") or it's unreadable. Same requirement encoding already
+imposes, so the machinery exists.
 
 **Wrapper propagation is forward-only.** The problem `#[track_caller]` solves: a helper
 that panics should blame the *user's* line, not its own internals. Rust threads the
