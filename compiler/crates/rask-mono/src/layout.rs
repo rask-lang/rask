@@ -106,7 +106,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         ty if ty.is_option() => {
             let inner = ty.as_option().unwrap();
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
-            if matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+            if matches!(inner, Type::UnresolvedGeneric { name, .. }
+                if name == "Handle" || name == "Link")
+            {
                 return (8, 8);
             }
             let (size, align) = type_size_align(inner, cache);
@@ -149,6 +151,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // Generic builtins with known sizes
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
+        // A link is the node's address; a rack is a pointer to its slab.
+        Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
         Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map

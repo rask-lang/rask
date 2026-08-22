@@ -1703,8 +1703,12 @@ impl<'a> FunctionBuilder<'a> {
             // Instant) have empty layouts and stay pointer-sized scalars.
             RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
             RaskType::Named(_) => false,
-            // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
-            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
+            // The niche options — `Handle<T>?` and `Link<T>?` — are one word
+            // with a sentinel for `none`, so they load like a scalar. Answering
+            // "aggregate" here handed back the field's *address*, and a root
+            // edge read as a stack address instead of the node it named.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
+                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link") =>
             {
                 false
             }
@@ -6377,6 +6381,31 @@ impl<'a> FunctionBuilder<'a> {
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
+    /// Byte offsets of the `Link<T>` / `Link<T>?` fields of an aggregate arg.
+    ///
+    /// This is the whole descriptor the rack needs: `insert` walks it to record
+    /// the edges a node literal already carries, and `delete` walks it to drop
+    /// the edges the dying node holds. A link is a leaf — neither walk follows
+    /// one — so nested aggregates aren't descended into.
+    fn link_field_offsets(mir_args: &[MirOperand], arg_index: usize, ctx: &CodegenCtx) -> Vec<u32> {
+        let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
+        let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
+        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
+        let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) else { return Vec::new() };
+        layout
+            .fields
+            .iter()
+            .filter(|f| Self::is_link_field(&f.ty))
+            .map(|f| f.offset)
+            .collect()
+    }
+
+    fn is_link_field(ty: &rask_types::Type) -> bool {
+        use rask_types::Type;
+        let bare = ty.as_option().unwrap_or(ty);
+        matches!(bare, Type::UnresolvedGeneric { name, .. } if name == "Link")
+    }
+
     /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).
     /// (byte size, already-a-pointer) for an aggregate argument.
     ///
@@ -6682,6 +6711,34 @@ impl<'a> FunctionBuilder<'a> {
                         let val = args[1];
                         args[1] = Self::value_to_ptr(builder, val);
                     }
+                }
+                CallAdapt::None
+            }
+
+            // Rack insert: the node's bytes by address, then the shape of `T` —
+            // its size, and the byte offsets of its link fields. `Rack.new()`
+            // had no argument to read `T` off, so this is where the runtime
+            // learns what it is holding (mem.racks).
+            "Rack_insert" => {
+                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
+                if args.len() >= 2 && !is_struct {
+                    let val = args[1];
+                    args[1] = Self::value_to_ptr(builder, val);
+                }
+                let offsets = Self::link_field_offsets(mir_args, 1, ctx);
+                args.push(builder.ins().iconst(types::I64, elem_size));
+                args.push(builder.ins().iconst(types::I64, offsets.len() as i64));
+                if offsets.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (offsets.len() * 4) as u32, 0,
+                    ));
+                    for (i, off) in offsets.iter().enumerate() {
+                        let v = builder.ins().iconst(types::I32, *off as i64);
+                        builder.ins().stack_store(v, ss, (i * 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 }
                 CallAdapt::None
             }

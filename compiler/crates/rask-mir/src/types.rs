@@ -40,6 +40,13 @@ pub enum MirType {
     FuncPtr(SignatureId),
     /// Handle<T> — pool handle, packed as i64 (index:32 | gen:32) in current codegen.
     Handle,
+    /// Link<T> — the address of a node whose payload has this layout
+    /// (mem.racks/RK2). Carrying the layout is what makes `l.field` an ordinary
+    /// base+offset projection: the local holds the address, exactly as an
+    /// aggregate local does. `Link<T>?` is the same word with the all-ones
+    /// sentinel for `none`, which is why it shares the niche machinery with
+    /// `Handle`.
+    Link(StructLayoutId),
     /// Tuple type — struct-like layout with positional fields.
     /// Stored as (field types, total byte size).
     Tuple(Vec<MirType>),
@@ -110,6 +117,15 @@ impl MirType {
         )
     }
 
+    /// True for the two one-word niche payloads: a pool handle and a link.
+    ///
+    /// `T?` for either of these is the same word, with the all-ones sentinel
+    /// standing for `none` — no tag, no separate payload slot. Everywhere that
+    /// asks "is this option a niche?" is asking this.
+    pub fn is_niche_payload(&self) -> bool {
+        matches!(self, MirType::Handle | MirType::Link(_))
+    }
+
     /// Byte size of this type. Structs/enums use pointer size as fallback.
     pub fn size(&self) -> u32 {
         match self {
@@ -118,7 +134,7 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
-            | MirType::Handle => 8,
+            | MirType::Handle | MirType::Link(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size,
@@ -138,8 +154,14 @@ impl MirType {
             MirType::Slice(_) => 16,         // ptr (8) + len (8)
             MirType::TraitObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
-                // tag (8 bytes, aligned) + payload
-                8 + inner.size()
+                // The niche pair are one word: the value *is* the option, and
+                // `none` is the all-ones sentinel. Everything else is
+                // tag (8 bytes, aligned) + payload.
+                if matches!(**inner, MirType::Handle | MirType::Link(_)) {
+                    8
+                } else {
+                    8 + inner.size()
+                }
             }
             MirType::Result { ok, err } => {
                 // [tag:8][origin_file:8][origin_line:8][payload] — offsets in rask_mono::abi (ER15).
@@ -200,7 +222,7 @@ impl MirType {
             // sentinel, so it keeps the word store. `string` is a pointer to its
             // 16 bytes and keeps it too, which is why this isn't just
             // "everything passed by address".
-            MirType::Option(inner) => **inner != MirType::Handle,
+            MirType::Option(inner) => !matches!(**inner, MirType::Handle | MirType::Link(_)),
             _ => false,
         }
     }

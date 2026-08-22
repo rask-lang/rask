@@ -140,7 +140,11 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
                 match ty {
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty, None)),
+                    // A link local holds the node's address, which is the same
+                    // thing an aggregate local holds — so it roots a place chain
+                    // the same way, and `n.field = v` is one store rather than a
+                    // write into a copy.
+                    MirType::Struct(_) | MirType::Tuple(_) | MirType::Link(_) => Some((id, 0, ty, None)),
                     _ => None,
                 }
             }
@@ -266,6 +270,12 @@ impl<'a> MirLowerer<'a> {
         oty: &MirType,
         field: &str,
     ) -> Option<(u32, MirType, Option<u32>)> {
+        // A link is the node's address, so a field through it projects exactly
+        // as it would through an aggregate local — same base, same offsets.
+        let oty = match oty {
+            MirType::Link(sid) => &MirType::Struct(sid.clone()),
+            other => other,
+        };
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
@@ -276,6 +286,26 @@ impl<'a> MirLowerer<'a> {
             return Some((off, ety, fsize));
         }
         None
+    }
+
+    /// Write a link into a slot through the rack, so the target learns who
+    /// points at it. `base + offset` is the slot's address; the runtime writes
+    /// it, unregisters whatever edge it held, and registers the new one.
+    fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_set".to_string()),
+            args: vec![MirOperand::Local(slot), value],
+        }));
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
@@ -456,7 +486,17 @@ impl<'a> MirLowerer<'a> {
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, _, fsize)) = self.lower_place_chain(target) {
+                        if let Some((base, offset, fty, fsize)) = self.lower_place_chain(target) {
+                            // An edge write is not a plain store: the rack
+                            // records who points at whom, so `delete` can find
+                            // this slot later and null it (mem.racks/RK3). The
+                            // runtime does the recording and the store together,
+                            // which is also what makes re-pointing an edge forget
+                            // its old target.
+                            if matches!(fty, MirType::Link(_)) {
+                                self.emit_link_store(base, offset, val_op);
+                                return Ok(());
+                            }
                             // The field's own width, not None. Codegen only
                             // copies the bytes when the size says the value is
                             // wider than a pointer; with no size it stored the

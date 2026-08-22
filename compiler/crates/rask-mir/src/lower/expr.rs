@@ -287,7 +287,7 @@ impl<'a> MirLowerer<'a> {
         val: MirOperand,
     ) -> MirOperand {
         let Some(field_ty) = field_ty else { return val };
-        if matches!(field_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+        if matches!(field_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             // A source already carrying `Option(Handle)` is already
             // niche-encoded — the same sentinel scheme the field uses — so its
             // operand IS the value to store, real handle or sentinel alike.
@@ -296,7 +296,7 @@ impl<'a> MirLowerer<'a> {
             // before this field's type was known) needs converting to the
             // sentinel here; storing a real `Handle?` value used to be
             // overwritten by this same branch and silently became `none` (#733).
-            if matches!(val_ty, MirType::Option(inner) if !matches!(**inner, MirType::Handle)) {
+            if matches!(val_ty, MirType::Option(inner) if !inner.is_niche_payload()) {
                 return MirOperand::Constant(MirConst::Int(crate::lower::HANDLE_NONE_SENTINEL));
             }
             return val;
@@ -318,7 +318,7 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
         val: MirOperand,
     ) -> MirOperand {
-        if matches!(elem_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+        if matches!(elem_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return val;
         }
         self.coerce_into_wrapper(
@@ -340,7 +340,11 @@ impl<'a> MirLowerer<'a> {
             .filter(|t| matches!(t, MirType::Option(_)))
             .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
         if self.option_is_niche(expr, &option_ty) {
-            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle));
+            let repr = match &option_ty {
+                MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => (**inner).clone(),
+                _ => MirType::Handle,
+            };
+            return Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), repr));
         }
         let result_local = self.builder.alloc_temp(option_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -2393,9 +2397,14 @@ impl<'a> MirLowerer<'a> {
                     //   `Handle<T>?` is a niche — the handle *is* the value and
                     //   `none` is the all-ones sentinel — so it occupies 8 bytes
                     //   even though `Option(Handle).size()` reports 16.
+                    //   `Link<T>?` is the same niche, and its `none` is often
+                    //   still an untyped tagged option at this point — the
+                    //   field's own declared type is what settles it.
                     let stores_a_reference = field_layout
                         .is_some_and(|f| self.owned_payload(&f.ty).is_some())
-                        || matches!(&val_ty, MirType::Option(inner) if **inner == MirType::Handle);
+                        || field_layout.is_some_and(|f| super::is_niche_option_handle(&f.ty))
+                        || matches!(&val_ty, MirType::Option(inner) if inner.is_niche_payload())
+                        || val_ty.is_niche_payload();
                     if let Some(fl) = field_layout {
                         let value_size = val_ty.size();
                         if !stores_a_reference
@@ -4970,6 +4979,29 @@ impl<'a> MirLowerer<'a> {
                     .filter(|t| !matches!(t, MirType::Ptr)))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
             Some(MirType::Option(Box::new(elem_ty)))
+        } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
+            // Both hand back a link. The stub says `Link<T>`, which reaches MIR
+            // without `T`'s layout attached — and a link without its layout
+            // can't project a field, so `rack.insert(n).health` had nothing to
+            // offset from. The call site knows what `T` became.
+            {
+                if std::env::var("RASK_DEBUG_LINK").is_ok() {
+                    let raw = self.ctx.lookup_raw_type(expr.id);
+                    let base_name = match raw {
+                        Some(rask_types::Type::Generic { base, args }) => format!(
+                            "base={:?} arg0={:?}",
+                            self.ctx.type_names.get(base),
+                            args.first().map(|a| match a {
+                                rask_types::GenericArg::Type(t) => self.ctx.type_to_mir(t),
+                                _ => MirType::Void,
+                            })),
+                        _ => String::new(),
+                    };
+                    eprintln!("[link] {} raw={:?} {} mir={:?}", qualified_name,
+                        raw, base_name, self.ctx.lookup_node_type(expr.id));
+                }
+                self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Link(_)))
+            }
         } else if matches!(qualified_name.as_str(), "Cell_get" | "Cell_replace" | "Cell_into_inner") {
             // What the cell holds — all three hand back the payload. The stub's
             // return type is a bare `T`, which maps to i64, so a `Cell<string>`

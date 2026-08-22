@@ -442,6 +442,47 @@ RaskVec    *rask_pool_drain(RaskPool *p);
 // Option<Handle<T>> uses this as None; any other i64 is Some(handle).
 #define RASK_HANDLE_PACKED_NONE ((int64_t)-1)
 
+// ─── Rack + Link (mem.racks) ────────────────────────────────
+//
+// A `Link<T>` is the node's address — no ticket, no generation check. `none` is
+// a null pointer, which is what makes `Link<T>?` eight bytes and lets `delete`
+// null an edge with one store.
+
+typedef struct RaskRack RaskRack;
+
+// `none` for a link. Shares the handle sentinel so the niche machinery in MIR
+// lowering needs one constant, not two — a link is a pointer into a chunk the
+// rack allocated, so all-ones can't collide with a real one. Zero is treated as
+// `none` too, so a slot that was never written can't be dereferenced.
+#define RASK_LINK_NONE ((void *)(intptr_t)-1)
+
+static inline int rask_link_is_none(const void *p) {
+    return p == NULL || p == RASK_LINK_NONE;
+}
+
+RaskRack *rask_rack_new(void);
+void      rask_rack_free(RaskRack *r);
+int64_t   rask_rack_len(const RaskRack *r);
+int64_t   rask_rack_is_empty(const RaskRack *r);
+int64_t   rask_rack_contains(const RaskRack *r, const void *link);
+// The node type's shape arrives here rather than at `new`: `Rack.new()` has no
+// argument to read `T` off. `link_offsets` lists the byte offsets of `T`'s
+// `Link<T>?` fields, which is what lets the fixup find a node's own edges.
+void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
+                           int64_t link_count, const int32_t *link_offsets);
+void      rask_rack_delete(RaskRack *r, void *link);
+void      rask_rack_clear(RaskRack *r);
+RaskVec  *rask_rack_nodes(const RaskRack *r);
+RaskRack *rask_rack_snapshot(const RaskRack *r);
+void     *rask_rack_corresponding(const RaskRack *r, const void *link);
+void      rask_rack_print_stats(void);
+
+// Edge maintenance. `set` writes the slot and keeps the target's incoming list
+// in step; `forget` drops the record without writing, for a holder that is
+// going away while its target stays alive.
+void      rask_link_set(void **slot, void *target);
+void      rask_link_forget(void **slot);
+
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.
 

@@ -808,7 +808,7 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::FuncPtr(_) | MirType::Handle => 8,
+            | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size as i64,

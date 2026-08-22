@@ -876,6 +876,31 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
 
+        // ── Rack + Link operations (mem.racks) ─────────────────
+        // `Rack.new()` has nothing to read `T` off, so the node type's size and
+        // link-field offsets ride along with the first `insert` instead.
+        StdlibEntry::simple("Rack_new", "rask_rack_new", &[], Some(types::I64), false),
+        StdlibEntry::simple("Rack_free", "rask_rack_free", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Rack_insert", c_name: "rask_rack_insert",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Rack_delete", "rask_rack_delete", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Rack_len", "rask_rack_len", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_is_empty", "rask_rack_is_empty", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_contains", "rask_rack_contains", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_nodes", "rask_rack_nodes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_clear", "rask_rack_clear", &[types::I64], None, false),
+        StdlibEntry::simple("Rack_snapshot", "rask_rack_snapshot", &[types::I64], Some(types::I64), false),
+        // `corresponding` answers `Link<T>?`, which is the niche — the sentinel
+        // the runtime returns *is* the none, so nothing needs wrapping.
+        StdlibEntry::simple("Rack_corresponding", "rask_rack_corresponding", &[types::I64, types::I64], Some(types::I64), false),
+        // Edge maintenance, emitted by lowering rather than written by anyone.
+        StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
+
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
         StdlibEntry::simple("Random_from_seed", "rask_rng_from_seed", &[types::I64], Some(types::I64), false),

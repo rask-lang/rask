@@ -34,10 +34,15 @@ type TypedOperand = (MirOperand, MirType);
 /// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
 pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
-/// Check if a raw Type is Option<Handle<T>> (eligible for niche optimization).
+/// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
+///
+/// Both are one word where the value *is* the option and `none` is the all-ones
+/// sentinel, so neither carries a tag. They share the sentinel deliberately: a
+/// link points into a chunk the rack allocated, so all-ones can't collide with
+/// a real one, and one constant is easier to keep right than two.
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
     if let Some(inner) = ty.as_option() {
-        matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle")
+        matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
     } else {
         false
     }
@@ -868,11 +873,11 @@ impl<'a> MirContext<'a> {
                 }
                 // "Option<T>" → MirType::Option
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                    return Self::option_of(self.resolve_type_str(inner));
                 }
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
-                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                    return Self::option_of(self.resolve_type_str(inner));
                 }
                 // "any TraitName" → TraitObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
@@ -898,6 +903,15 @@ impl<'a> MirContext<'a> {
                 }
                 if name.starts_with("Handle<") {
                     return MirType::Handle;
+                }
+                if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
+                    return match self.resolve_type_str(node.trim()) {
+                        MirType::Struct(sid) => MirType::Link(sid),
+                        _ => MirType::Ptr,
+                    };
+                }
+                if name.starts_with("Rack<") || name == "Rack" {
+                    return MirType::Ptr;
                 }
                 if name.starts_with("Channel<") || name.starts_with("Sender<")
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
@@ -937,6 +951,55 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// `T?`, collapsing the link niche. `Link<T>?` *is* one word — the address,
+    /// with all-ones for `none` — so wrapping it in an `Option` would give the
+    /// local a tagged-union shape codegen then reads a tag byte out of. That
+    /// read is through the sentinel itself, which is address -1.
+    ///
+    /// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
+    /// collapses it and this path doesn't, and the checks downstream have been
+    /// written to accept either. Not worth churning while fixing something else.
+    fn option_of(inner: MirType) -> MirType {
+        if matches!(inner, MirType::Link(_)) {
+            return inner;
+        }
+        MirType::Option(Box::new(inner))
+    }
+
+    /// Is this the `Link<T>` type, however the checker happens to spell it?
+    ///
+    /// A resolved `Generic` names its base by the declaration's own spelling —
+    /// `"Link<T>"`, parameter and all — so the comparison is on the head, not
+    /// the whole string.
+    fn is_link_type(&self, ty: &Type) -> bool {
+        self.generic_head(ty).as_deref() == Some("Link")
+    }
+
+    /// The head of a generic type's name: `Link<T>` and `Link` both give `Link`.
+    fn generic_head(&self, ty: &Type) -> Option<String> {
+        let name = match ty {
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
+            _ => return None,
+        };
+        Some(name.split('<').next().unwrap_or(&name).to_string())
+    }
+
+    /// `Link<T>` — the node's address, carrying `T`'s layout so a field access
+    /// through it is the same base+offset projection an aggregate local gets.
+    /// Falls back to a bare pointer when `T` has no layout to attach (a generic
+    /// body, or a node type nothing instantiated).
+    fn link_mir_type(&self, arg: Option<&rask_types::GenericArg>) -> MirType {
+        let node = match arg {
+            Some(rask_types::GenericArg::Type(t)) => self.type_to_mir(t),
+            _ => return MirType::Ptr,
+        };
+        match node {
+            MirType::Struct(sid) => MirType::Link(sid),
+            _ => MirType::Ptr,
+        }
+    }
+
     /// Convert a Type from the type checker to MirType.
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
         match ty {
@@ -962,6 +1025,19 @@ impl<'a> MirContext<'a> {
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
             Type::UnresolvedGeneric { name, .. } if name == "Handle" => MirType::Handle,
+            // Link<T> → the node's address; Rack<T> → the rack's. The checker
+            // hands these over as `Generic` once the name resolves and as
+            // `UnresolvedGeneric` before that, so both spellings land here.
+            Type::UnresolvedGeneric { name, args } if name == "Link" => {
+                self.link_mir_type(args.first())
+            }
+            Type::UnresolvedGeneric { name, .. } if name == "Rack" => MirType::Ptr,
+            Type::Generic { args, .. } if self.is_link_type(ty) => {
+                self.link_mir_type(args.first())
+            }
+            Type::Generic { .. } if self.generic_head(ty).as_deref() == Some("Rack") => {
+                MirType::Ptr
+            }
             // Resolved named types — look up via type_names, then struct/enum layouts
             Type::Named(id) => {
                 if let Some(name) = self.type_names.get(id) {
@@ -1001,6 +1077,8 @@ impl<'a> MirContext<'a> {
             Type::Result { ok: inner, err } if **err == Type::None => {
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                     MirType::Handle
+                } else if self.is_link_type(inner) {
+                    self.type_to_mir(inner)
                 } else {
                     MirType::Option(Box::new(self.type_to_mir(inner)))
                 }
@@ -3718,7 +3796,11 @@ impl<'a> MirLowerer<'a> {
     /// kept getting used where a MIR type was sitting right there.
     pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
         self.is_niche_option_expr(expr)
-            || matches!(ty, MirType::Option(inner) if **inner == MirType::Handle)
+            || matches!(ty, MirType::Option(inner)
+                if matches!(**inner, MirType::Handle | MirType::Link(_)))
+            // The collapsed spelling: a `Link<T>?` local is typed `Link`, since
+            // the option and the value are the same word.
+            || matches!(ty, MirType::Link(_))
     }
 
     /// `option_is_niche` for a value that's already lowered — reads the MIR
@@ -3731,7 +3813,9 @@ impl<'a> MirLowerer<'a> {
             MirOperand::Local(id) => self
                 .builder
                 .local_type(*id)
-                .is_some_and(|t| matches!(t, MirType::Option(inner) if *inner == MirType::Handle)),
+                .is_some_and(|t| matches!(&t, MirType::Option(inner)
+                    if matches!(*inner.as_ref(), MirType::Handle | MirType::Link(_)))
+                    || matches!(&t, MirType::Link(_))),
             _ => false,
         }
     }
