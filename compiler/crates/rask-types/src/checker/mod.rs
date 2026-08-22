@@ -17,6 +17,7 @@ mod errors;
 mod parse_type;
 mod borrow;
 mod declarations;
+mod annotations;
 mod check_pattern;
 mod check_fn;
 mod check_stmt;
@@ -437,6 +438,7 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
         }
         self.collect_type_declarations(decls);
+        self.check_user_annotations(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
