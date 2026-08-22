@@ -3,7 +3,7 @@
 //! Error handling lowering: try, try-else, map_err.
 
 use crate::FieldAccess;
-use super::{LoweringError, MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL};
+use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::{BinOp, MirConst}, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
@@ -1130,9 +1130,16 @@ impl<'a> MirLowerer<'a> {
         // address of a value it never gave a stack slot, and the store landed
         // on whatever that defaulted to (#556-adjacent; caught via
         // `examples/game_loop.rk` segfaulting in `GameState.spawn_enemy(..).ok()`).
-        let is_niche = self.option_is_niche(expr, &result_ty);
-        if is_niche {
-            let result_local = self.builder.alloc_temp(MirType::Handle);
+        let niche = self.option_niche(expr, &result_ty);
+        if let Some(sentinel) = niche {
+            // A handle and a link are both this shape, and they don't agree on
+            // which word means `none` — take it from the type.
+            let payload_ty = match &result_ty {
+                MirType::Option(inner) if inner.is_niche_payload() => (**inner).clone(),
+                t if t.is_niche_payload() => t.clone(),
+                _ => MirType::Handle,
+            };
+            let result_local = self.builder.alloc_temp(payload_ty.clone());
 
             self.builder.switch_to_block(ok_block);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1149,12 +1156,12 @@ impl<'a> MirLowerer<'a> {
             self.builder.switch_to_block(err_block);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
-                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL))),
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(sentinel))),
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
             self.builder.switch_to_block(merge_block);
-            return Ok((MirOperand::Local(result_local), MirType::Handle));
+            return Ok((MirOperand::Local(result_local), payload_ty));
         }
 
         let result_local = self.builder.alloc_temp(result_ty.clone());

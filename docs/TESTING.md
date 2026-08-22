@@ -87,7 +87,7 @@ Witnessed on BOTH backends (green in the harness):
 
 Tracked KNOWN-FAIL witnesses (RED until fixed, in `known_divergences.txt`):
 `t43_widening_regressions.rk` (optional widening interp #393, result T-bind native #389),
-`t53_math.rk` (math module unlinked in codegen), `t50_boxes.rk` (Cell/Mutex native).
+`t53_math.rk` (math module unlinked in codegen), `t50_boxes.rk` (`Shared` strategies, native).
 
 Filed from the harness — native codegen: #386 (struct param+return), #387 (enum string
 payload), #388 (f64 enum payload), #389 (union error handling), #390 (test-registration

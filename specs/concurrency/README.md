@@ -24,7 +24,7 @@ Concurrency model for Rask.
 | [runtime.md](runtime.md) | Draft | **Runtime implementation**: M:N scheduler, reactor, task state machines |
 | [runtime-strategy.md](runtime-strategy.md) | Draft | **Implementation strategy**: OS threads first, M:N later |
 | [io-context.md](io-context.md) | Draft | **I/O dispatch**: How stdlib detects async context, sync/async code paths |
-| [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
+| [sync.md](sync.md) | Draft | **Shared state**: `Shared<T, S>` — one box, three strategies |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 | [phase-b-transforms.md](phase-b-transforms.md) | Proposed | **Phase B transforms**: vtable ABI, closures, separate compilation, FFI |
 | [heterogeneous-hardware.md](heterogeneous-hardware.md) | Proposed | **GPU/accelerator map + decisions**: read this first for the Wide story |

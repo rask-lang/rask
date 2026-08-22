@@ -135,8 +135,8 @@ pub enum BuiltinTypeKind {
     Shared,
     /// Mutex<T> - mutual exclusion lock
     Mutex,
-    /// Owned<T> - heap-allocated owned value
-    Owned,
+    /// Heap<T> - the one-pointer indirection (mem.heap)
+    Heap,
     /// SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
     Simd,
     /// Rng - random number generator
@@ -178,7 +178,7 @@ pub enum BuiltinFunctionKind {
     Skip,
     /// expect_fail - invert pass/fail for test
     ExpectFail,
-    /// drop - consume an `Owned<T>`, freeing it if `own` heap-allocated one
+    /// drop - consume a `Heap<T>`, freeing what it points at
     /// (mem.owned/OW3)
     Drop,
 }

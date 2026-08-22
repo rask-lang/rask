@@ -21,7 +21,7 @@ enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 
 | Rule | Description |
 |------|-------------|
-| **E1: Inline storage** | Variant payloads stored inline (no heap except `Owned<T>`) |
+| **E1: Inline storage** | Variant payloads stored inline (no heap except `Heap<T>`) |
 | **E2: Discriminant sizing** | Auto-sized: u8 (≤256 variants), u16 (≤65536 variants) |
 | **E3: Max variants** | Maximum 65536 variants per enum |
 
@@ -364,13 +364,13 @@ let present = Maybe<i64>.Present(4)
 
 ## Recursive Enums
 
-Self-referential enums need explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md).
+Self-referential enums need explicit `Heap<T>` indirection. See [heap.md](../memory/heap.md).
 
 <!-- test: parse -->
 ```rask
 enum Tree<T> {
     Leaf(T),
-    Node(Owned<Tree<T>>, Owned<Tree<T>>)
+    Node(Heap<Tree<T>>, Heap<Tree<T>>)
 }
 
 let tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
@@ -378,14 +378,14 @@ let tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 
 | Rule | Description |
 |------|-------------|
-| **E6: Indirection required** | Recursive enum without `Owned<T>` indirection is rejected |
+| **E6: Indirection required** | Recursive enum without `Heap<T>` indirection is rejected |
 
 | Syntax | Meaning |
 |--------|---------|
-| `own expr` | Heap-allocate expr, return `Owned<T>` |
-| `Owned<T>` | Owning heap pointer (linear) |
+| `own expr` | Heap-allocate expr, return `Heap<T>` |
+| `Heap<T>` | Owning heap pointer (linear) |
 
-`Owned<T>` is linear—must consume exactly once. Drop deallocates automatically.
+`Heap<T>` is linear—must consume exactly once. Drop deallocates automatically.
 
 ## Variant Iteration
 
@@ -444,7 +444,7 @@ For enums with explicit backing types (E14), the return type matches the backing
 
 | Type | Representation |
 |------|----------------|
-| `Owned<T>?` | null pointer = absent, non-null = present |
+| `Heap<T>?` | null pointer = absent, non-null = present |
 | `Handle<T>?` | generation=0 = absent, else present |
 
 ## Explicit Discriminants

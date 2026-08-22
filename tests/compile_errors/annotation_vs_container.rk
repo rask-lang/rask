@@ -5,7 +5,7 @@
 // primitive annotation on a Mutex/Sender/Vec type-checked (#730).
 
 func mutex_as_string() -> string {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     let probe: string = m              // ERROR: string vs Mutex
     return probe
 }

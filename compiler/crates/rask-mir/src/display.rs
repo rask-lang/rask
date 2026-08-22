@@ -32,6 +32,7 @@ impl fmt::Display for MirType {
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
             MirType::Handle => write!(f, "handle"),
+            MirType::Link(sid) => write!(f, "link<#{}>", sid.id),
             MirType::Tuple(fields) => {
                 write!(f, "(")?;
                 for (i, field) in fields.iter().enumerate() {

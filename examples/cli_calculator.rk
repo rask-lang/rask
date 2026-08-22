@@ -21,8 +21,8 @@ enum Token {
 // AST nodes
 enum Expr {
     Number(f64)
-    Binary { left: Owned<Expr>, op: BinaryOp, right: Owned<Expr> }
-    Unary { op: UnaryOp, expr: Owned<Expr> }
+    Binary { left: Heap<Expr>, op: BinaryOp, right: Heap<Expr> }
+    Unary { op: UnaryOp, expr: Heap<Expr> }
 }
 
 enum BinaryOp {
@@ -240,7 +240,7 @@ extend Parser {
         if self.current is Caret {
             try self.advance()
             let exp = try self.parse_power()  // Right associative
-            return Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp)
+            return Expr.Binary(left: Heap(base), op: BinaryOp.Pow, right: Heap(exp))
         } else {
             return base
         }
@@ -251,7 +251,7 @@ extend Parser {
         if self.current is Minus {
             try self.advance()
             let expr = try self.parse_unary()
-            return Expr.Unary(op: UnaryOp.Neg, expr: own expr)
+            return Expr.Unary(op: UnaryOp.Neg, expr: Heap(expr))
         } else {
             return self.parse_primary()
         }

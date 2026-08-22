@@ -106,7 +106,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         ty if ty.is_option() => {
             let inner = ty.as_option().unwrap();
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
-            if matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+            if matches!(inner, Type::UnresolvedGeneric { name, .. }
+                if name == "Handle" || name == "Link")
+            {
                 return (8, 8);
             }
             let (size, align) = type_size_align(inner, cache);
@@ -149,6 +151,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // Generic builtins with known sizes
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
+        // A link is the node's address; a rack is a pointer to its slab.
+        Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
         Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
@@ -159,7 +164,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // generic on every build even though (8, 8) is the right answer.
         Type::UnresolvedGeneric { name, .. }
             if matches!(name.as_str(),
-                "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic"
+                "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
                 | "Sender" | "Receiver" | "TaskHandle") => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
@@ -217,7 +222,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
                         "Vec" | "Wide" | "Map" | "Handle" | "Pool"
-                        | "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic" | "Channel") {
+                        | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,

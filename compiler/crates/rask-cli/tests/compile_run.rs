@@ -903,7 +903,7 @@ fn compile_error_output(name: &str) -> (bool, String) {
 fn error_annotation_against_a_container_initializer() {
     // #730: `unify` defers whenever either side is an unresolved generic, since
     // the name may still resolve — and a deferred `Equal` that never resolved
-    // was dropped in silence. So `let probe: string = m` on a `Mutex` passed.
+    // was dropped in silence. So `let probe: string = m` on a sync box passed.
     // Reported for a primitive against a stdlib container only: two *named*
     // types legitimately unify across names (union members, enum variants,
     // trait objects, nominal aliases) and judging those reported the stdlib's
@@ -911,8 +911,8 @@ fn error_annotation_against_a_container_initializer() {
     let (failed, out) = compile_error_output("annotation_vs_container.rk");
     assert!(failed, "an annotation must be checked against a container init: {}", out);
     assert!(
-        out.contains("expected `string`, found `Mutex"),
-        "should name both sides for the Mutex case: {}", out,
+        out.contains("expected `string`, found `Shared"),
+        "should name both sides for the sync-box case: {}", out,
     );
     assert!(
         out.contains("expected `i64`, found `Sender"),
@@ -1062,7 +1062,7 @@ fn error_no_auto_wrap_outside_return() {
 // block's duration, not a value of its own — returning it raw let a caller
 // keep reading through the mutex after the lock released. Struct payloads
 // are rejected; a field read, a method call, and a scalar payload (the
-// flagship example's `with counter.lock() as c { c }`) all still compile.
+// flagship example's `with counter.write() as c { c }`) all still compile.
 #[test]
 fn error_with_guard_escapes() {
     let (failed, out) = compile_error_output("with_guard_escapes.rk");
@@ -1832,19 +1832,40 @@ fn rack_link_litmus_pairs_agree() {
 // The delete cost the analysis flags as the model's one regression: linear in
 // in-degree, and independent of rack size. `RASK_RACK_STATS=1` reports the
 // fixup work on stderr.
+// Both backends are checked: the numbers are what says the native fixup follows
+// incoming edges rather than scanning, and a native regression to a scan would
+// otherwise only show up as "it got slower".
 #[test]
 fn rack_link_delete_cost_follows_in_degree() {
     let rask = rask_binary();
-    let run = |name: &str| -> String {
-        let out = Command::new(&rask)
-            .args(["run", "--interp"])
+    let run_on = |name: &str, interp: bool| -> String {
+        let mut cmd = Command::new(&rask);
+        cmd.arg("run");
+        if interp {
+            cmd.arg("--interp");
+        }
+        let out = cmd
             .arg(fixture(name))
             .env("RASK_RUNTIME_DIR", runtime_dir())
             .env("RASK_RACK_STATS", "1")
             .output()
             .expect("failed to run rask");
-        assert!(out.status.success(), "{} should run", name);
+        assert!(out.status.success(), "{} should run ({})", name,
+                if interp { "interp" } else { "native" });
         String::from_utf8_lossy(&out.stderr).to_string()
+    };
+    let run = |name: &str| -> String {
+        let interp = run_on(name, true);
+        let native = run_on(name, false);
+        let line = |s: &str| s.lines()
+            .find(|l| l.starts_with("rack stats:"))
+            .unwrap_or("<no stats>")
+            .to_string();
+        assert_eq!(
+            line(&interp), line(&native),
+            "{name}: the two backends must do the same fixup work"
+        );
+        interp
     };
 
     // 200 nodes all pointing at one hub: 200 edges to fix.
@@ -2121,6 +2142,32 @@ fn error_resource_unconsumed_in_test_body() {
     assert!(
         out.contains("E0805") && out.contains("must be consumed"),
         "should be the ordinary linearity error, not something test-specific: {}",
+        out
+    );
+}
+
+// conc.sync/SH7. `Shared.local` is the opt-out — no lock at all — and this rule
+// is what makes it safe to reach for: taking one to a second task doesn't
+// compile. The default and both explicit locks pass, so the test also pins down
+// that the error is about `Local` and not about `spawn`.
+#[test]
+fn error_a_task_local_shared_cannot_be_sent() {
+    let (failed, out) = compile_error_output("local_shared_sent.rk");
+    assert!(failed, "sending a `Local` box must be rejected: {}", out);
+    assert_eq!(
+        out.matches("error[E0346]").count(),
+        1,
+        "exactly the `Shared.local` capture, not the default or the `mutex` one: {}",
+        out
+    );
+    assert!(
+        out.contains("uses the `Local` strategy"),
+        "the message has to name the strategy, since that's what the fix changes: {}",
+        out
+    );
+    assert!(
+        out.contains("Shared.new") && out.contains("Shared.mutex"),
+        "and it has to name the ways out: {}",
         out
     );
 }
@@ -3460,14 +3507,14 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
-fn deref_of_owned_is_a_safe_borrow() {
+fn deref_of_a_heap_box_is_a_safe_borrow() {
     // #737: `*x` was classified as a raw-pointer dereference by syntax alone,
-    // so `(*p).x` on an Owned needed an `unsafe` block — which made owned.md's
-    // own examples uncompilable. mem.owned/OW3 says it's an ordinary borrow.
+    // so `(*p).x` on a heap box needed an `unsafe` block — which made heap.md's
+    // own examples uncompilable. mem.heap/HP3 says it's an ordinary borrow.
     // Neither backend could evaluate it either: the interpreter had no Deref
     // arm, and native emitted a real load and segfaulted.
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "owned_deref.rk");
+        let (stdout, stderr, code) = run_capture(mode, "heap_deref.rk");
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(
             stdout,
@@ -3944,7 +3991,7 @@ type UserId = u64 with (Equal, Hashable, Comparable, Debug)
         // `main.rk` sorts before `store.rk`, so the body is reached first.
         ("main.rk", r#"
 func run() -> string or StoreError {
-    let id = try store.lock().make()
+    let id = try store.write().make()
     return "value={id.value}"
 }
 
@@ -3964,7 +4011,7 @@ extend Store {
     func make(self) -> UserId or StoreError { return self.next }
 }
 
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())
 "#),
     ]);
 
@@ -4007,7 +4054,7 @@ func store_code(e: StoreError) -> string {
 struct View { public id: u64 }
 
 func handle(id: u64) -> View or ApiError {
-    let v = try store.lock().view(id)
+    let v = try store.write().view(id)
     return v
 }
 
@@ -4038,7 +4085,7 @@ extend Store {
     }
 }
 
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())
 "#),
     ]);
 
@@ -4653,7 +4700,7 @@ fn a_recursive_type_can_be_built_with_owned() {
         "wrapped=5 (expect 5)\n",
     );
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "owned_recursive_enum.rk");
+        let (stdout, stderr, code) = run_capture(mode, "heap_recursive_enum.rk");
         assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }
@@ -5480,13 +5527,13 @@ fn error_consume_borrowed_param() {
 // no type to look at — the `own` in the source is the signal, and the box is linear
 // however small its payload.
 #[test]
-fn error_owned_not_consumed() {
-    let (failed, out) = compile_error_output("owned_not_consumed.rk");
+fn error_heap_not_consumed() {
+    let (failed, out) = compile_error_output("heap_not_consumed.rk");
     assert!(failed, "an unconsumed `own` value must be rejected: {}", out);
     assert_eq!(out.matches("E0837").count(), 2, "two leaks: {}", out);
     assert_eq!(out.matches("E0800").count(), 2, "two second-consumes: {}", out);
     assert!(
-        out.contains("allocated with `own` and never dropped"),
+        out.contains("allocated with `Heap(…)` and never dropped"),
         "should say what wasn't done: {}", out,
     );
     assert!(
@@ -5494,12 +5541,12 @@ fn error_owned_not_consumed() {
         "should suggest drop, not .close(): {}", out,
     );
     assert!(
-        out.contains("is an Owned box — it was consumed there"),
+        out.contains("is a Heap box — it was consumed there"),
         "the second consume should blame the box, not the copy threshold: {}", out,
     );
     assert!(
         !out.contains("copy threshold"),
-        "an Owned box is linear whatever its payload's size: {}", out,
+        "a Heap box is linear whatever its payload's size: {}", out,
     );
 }
 

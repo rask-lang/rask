@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// mem.owned/OW3: dereferencing an Owned is a borrow — safe, and it doesn't
-// consume. These are owned.md's own examples.
+// mem.heap/HP3: dereferencing a Heap box is a borrow — safe, and it doesn't
+// consume. These are heap.md's own examples.
 
 struct Point {
     x: i64
@@ -8,7 +8,7 @@ struct Point {
 }
 
 func main() {
-    mut p = own Point { x: 1, y: 2 }
+    mut p = Heap(Point { x: 1, y: 2 })
 
     // Borrow for read
     println("read {(*p).x} {(*p).y}")

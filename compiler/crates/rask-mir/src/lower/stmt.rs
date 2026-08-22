@@ -140,7 +140,11 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
                 match ty {
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty, None)),
+                    // A link local holds the node's address, which is the same
+                    // thing an aggregate local holds — so it roots a place chain
+                    // the same way, and `n.field = v` is one store rather than a
+                    // write into a copy.
+                    MirType::Struct(_) | MirType::Tuple(_) | MirType::Link(_) => Some((id, 0, ty, None)),
                     _ => None,
                 }
             }
@@ -266,6 +270,12 @@ impl<'a> MirLowerer<'a> {
         oty: &MirType,
         field: &str,
     ) -> Option<(u32, MirType, Option<u32>)> {
+        // A link is the node's address, so a field through it projects exactly
+        // as it would through an aggregate local — same base, same offsets.
+        let oty = match oty {
+            MirType::Link(sid) => &MirType::Struct(sid.clone()),
+            other => other,
+        };
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
@@ -276,6 +286,49 @@ impl<'a> MirLowerer<'a> {
             return Some((off, ety, fsize));
         }
         None
+    }
+
+    /// Record the edges a struct's own fields carry, against the storage it
+    /// just landed in.
+    ///
+    /// An assignment writes one edge and can register it as it goes. A *literal*
+    /// can't: `Cursor { at: victim }` fills the field before the value has an
+    /// address, so nothing knew which slot to record. This runs once the
+    /// destination is settled, which is the first moment there is a slot.
+    ///
+    /// Not emitted for the temporary that feeds `rack.insert(...)` — that one is
+    /// stack scratch about to be copied into a node, and registering it would
+    /// leave the rack holding the address of a dead frame. `insert` records the
+    /// node's own copy from the same descriptor.
+    pub(crate) fn emit_struct_link_registration(&mut self, dst: crate::LocalId, ty: &MirType) {
+        if !self.ctx.struct_carries_links(ty) {
+            return;
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_register_struct".to_string()),
+            args: vec![MirOperand::Local(dst)],
+        }));
+    }
+
+    /// Write a link into a slot through the rack, so the target learns who
+    /// points at it. `base + offset` is the slot's address; the runtime writes
+    /// it, unregisters whatever edge it held, and registers the new one.
+    fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_set".to_string()),
+            args: vec![MirOperand::Local(slot), value],
+        }));
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
@@ -404,6 +457,27 @@ impl<'a> MirLowerer<'a> {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
                     None => (val_op, val_ty),
                 };
+                // A container of links that arrived whole — a `filter` result,
+                // say — carries edges nothing recorded. Register them here; the
+                // records dedupe per (container, target), so this is free where
+                // the pushes already did it.
+                if let Some(func) = self
+                    .ctx
+                    .lookup_raw_type(value.id)
+                    .cloned()
+                    .and_then(|t| self.ctx.container_link_registration(&t))
+                {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(func.to_string()),
+                        args: vec![val_op.clone()],
+                    }));
+                }
+                // A whole struct written over a name carries whatever edges its
+                // fields hold, and a literal's fields were filled before there
+                // was a slot to record — same gap the binding path closes.
+                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
+                    && matches!(&value.kind, ExprKind::StructLit { .. });
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self
@@ -449,6 +523,12 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Use(val_op),
                             }));
                         }
+                        // After the write, not before: the slots have to hold the
+                        // links before there is anything to record.
+                        if struct_assigned {
+                            let dst_ty = dst_ty.clone();
+                            self.emit_struct_link_registration(local_id, &dst_ty);
+                        }
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
@@ -456,7 +536,26 @@ impl<'a> MirLowerer<'a> {
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, _, fsize)) = self.lower_place_chain(target) {
+                        if let Some((base, offset, fty, fsize)) = self.lower_place_chain(target) {
+                            // An edge write is not a plain store: the rack
+                            // records who points at whom, so `delete` can find
+                            // this slot later and null it (mem.racks/RK3). The
+                            // runtime does the recording and the store together,
+                            // which is also what makes re-pointing an edge forget
+                            // its old target.
+                            if matches!(fty, MirType::Link(_)) {
+                                // A bare `none` on the right lowers as a tagged
+                                // option whenever the checker hasn't settled its
+                                // type, and the field is a niche — it wants the
+                                // sentinel word. Without this, `n.peer = none`
+                                // stored the *address* of the tagged local and
+                                // the rack recorded an edge to the stack.
+                                let val_op = self.wrap_sum_field_value(
+                                    Some(&fty), fty.niche_none(), &val_ty, val_op,
+                                );
+                                self.emit_link_store(base, offset, val_op);
+                                return Ok(());
+                            }
                             // The field's own width, not None. Codegen only
                             // copies the bytes when the size says the value is
                             // wider than a pointer; with no size it stored the
@@ -1176,6 +1275,10 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
+        // The struct may carry edges nothing has recorded — a literal writes its
+        // fields before the value has anywhere to live, so there was no slot to
+        // register (mem.racks/RK3). Now there is.
+        self.emit_struct_link_registration(local_id, &var_ty);
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.
@@ -1718,8 +1821,9 @@ impl<'a> MirLowerer<'a> {
         let bind_in_body = match presence {
             Some((inner, name)) => {
                 let (val, scrutinee_ty) = self.lower_expr(inner)?;
-                let is_niche = self.option_is_niche(inner, &scrutinee_ty);
-                let tag = self.emit_option_tag(&val, is_niche);
+                let niche = self.option_niche(inner, &scrutinee_ty);
+                let is_niche = niche.is_some();
+                let tag = self.emit_option_tag(&val, niche);
                 // Tag 0 is present (Some/Ok); anything else ends the loop.
                 let is_present = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

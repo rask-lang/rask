@@ -1,36 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-/// One mutable value behind a stable heap address. Access via
-/// `with cell as v { }`; `get`/`set` are the single-expression shorthands.
-///
-/// A Cell is single-task by construction — no lock, so no `Mutex` overhead.
-/// Mutation goes through the heap slot, not the binding, which is why `set` and
-/// `replace` take a plain `self`: `let c = Cell.new(0)` followed by `c.set(1)`
-/// is the point of the type, not a mistake (mem.cell/CE1, CE2).
-public struct Cell<T> { }
-
-extend Cell<T> {
-    /// Heap-allocate `value` and hand back a cell holding it.
-    @native("rask_cell_new")
-    public func new(value: T) -> Cell<T> {}
-
-    /// Copy the inner value out. Copy types only (CE6).
-    @native("rask_cell_get")
-    public func get(self) -> T {}
-
-    /// Replace the inner value.
-    @native("rask_cell_set")
-    public func set(self, value: T) {}
-
-    /// Swap in a new value, return the old one.
-    @native("rask_cell_replace")
-    public func replace(self, value: T) -> T {}
-
-    /// Consume the cell, return what it held.
-    @native("rask_cell_get")
-    public func into_inner(take self) -> T {}
-}
-
 /// Arena allocator for graph structures. Elements are accessed via handles.
 public struct Pool<T> { }
 
@@ -42,8 +11,6 @@ public struct Handle<T> { }
 /// Use `upgrade()` to convert back to a Handle (returns none if invalidated).
 public struct WeakHandle<T> { }
 
-/// PROTOTYPE (analysis.fourth-option) — interpreter only, no native backend.
-///
 /// Arena of nodes whose incoming edges are fixed when a node is deleted.
 /// Where a `Pool` hands out handles that get validated at every use, a `Rack`
 /// hands out links that are followed directly: `delete` walks every edge
@@ -51,7 +18,7 @@ public struct WeakHandle<T> { }
 /// exists to be checked.
 public struct Rack<T> { }
 
-/// PROTOTYPE — one edge to a node in a `Rack<T>`.
+/// One edge to a node in a `Rack<T>`.
 ///
 /// A link is a reference, not a ticket: `l.field` reads the node with no
 /// generation check and no `using` context. An edge that can die is declared

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A `Mutex<T>`/`Shared<T>` holds whatever T is, not just a struct or a word.
+// A `Shared<T, Mutex>`/`Shared<T>` holds whatever T is, not just a struct or a word.
 //
 // The box stores the payload's bytes and the lock hands back their address. For
 // something that lives in its own storage — a struct, a string, a tuple — that
 // address *is* the value; a word-sized payload has to be loaded out of it. Four
 // places decided that separately and spelled out different lists, and the
-// shortest one said `Struct | Enum`. So a `Mutex<string>` was called word-sized,
+// shortest one said `Struct | Enum`. So a `Shared<string, Mutex>` was called word-sized,
 // its first eight bytes were read as if they were the value, and printing it
-// gave back garbage. `Mutex.new("hello")` also copied only 8 of the string's 16
+// gave back garbage. `Shared.mutex("hello")` also copied only 8 of the string's 16
 // bytes in, because a string *constant* was sized by the same short list.
 
 struct Point {
@@ -16,8 +16,8 @@ struct Point {
 }
 
 test "a string payload survives the round trip" {
-    let m = Mutex.new("hello")
-    with m.lock() as s {
+    let m = Shared.mutex("hello")
+    with m.write() as s {
         assert s == "hello"
         assert s.len() == 5
     }
@@ -26,37 +26,37 @@ test "a string payload survives the round trip" {
 test "a heap string payload survives too" {
     mut base = "hel"
     base = "{base}lo there"
-    let m = Mutex.new(base)
-    with m.lock() as s {
+    let m = Shared.mutex(base)
+    with m.write() as s {
         assert s == "hello there"
     }
-    with m.lock() as s {
+    with m.write() as s {
         assert s.len() == 11
     }
 }
 
 test "a tuple payload keeps both fields" {
-    let t = Mutex.new((1, 2))
-    with t.lock() as p {
+    let t = Shared.mutex((1, 2))
+    with t.write() as p {
         assert p.0 == 1
         assert p.1 == 2
     }
 }
 
 test "a struct payload still works" {
-    let m = Mutex.new(Point { x: 3, y: 4 })
-    with m.lock() as p {
+    let m = Shared.mutex(Point { x: 3, y: 4 })
+    with m.write() as p {
         assert p.x == 3
         assert p.y == 4
     }
 }
 
 test "a word-sized payload still gets loaded and written back" {
-    let m = Mutex.new(41)
-    with m.lock() as n {
+    let m = Shared.mutex(41)
+    with m.write() as n {
         n = n + 1
     }
-    with m.lock() as n {
+    with m.write() as n {
         assert n == 42
     }
 }

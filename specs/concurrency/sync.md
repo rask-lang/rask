@@ -1,38 +1,68 @@
 <!-- id: conc.sync -->
 <!-- status: decided -->
-<!-- summary: `with`-based Shared<T> and Mutex<T> for cross-task shared state -->
+<!-- summary: One box, `Shared<T, S>` — several accessors reach one value; the strategy says what synchronization it costs -->
 <!-- depends: memory/ownership.md, types/generics.md -->
 <!-- implemented-by: compiler/crates/rask-interp/ -->
 
-# Synchronization Primitives
+# Shared Values
 
-Cross-task shared state when channels aren't enough.
+One value, reached by several accessors, mutated through a scoped view. That's
+one concept, so it's one type:
 
-## Primitives
+<!-- test: skip -->
+```rask
+let config  = Shared.new(cfg)               // many tasks, concurrent reads
+let queue   = Shared.mutex(Vec.new())       // many tasks, one at a time
+let counter = Shared.local(0)               // one task, no lock at all
+```
 
-| Rule | Description |
-|------|-------------|
-| **SY1: Shared** | `Shared<T>` — read-heavy concurrent access (multiple readers, exclusive writer) |
-| **SY2: Mutex** | `Mutex<T>` — exclusive access for write-heavy patterns |
-| **SY3: Atomics** | Atomic types for single values — lock-free (see `mem.atomics`) |
-| **SY4: Explicit escape hatches** | All three are visible escape hatches from "no shared mutable memory" |
+`Cell<T>` and `Mutex<T>` used to be separate types. They aren't different
+concepts — they're the same box with different synchronization — so they're now
+**strategies** on one type. The words survive; the fork in the road doesn't.
 
-| Primitive | Pattern | Contention | Use Case |
-|-----------|---------|------------|----------|
-| `Shared<T>` | Read-heavy | Low (readers don't block) | Config, feature flags |
-| `Mutex<T>` | Write-heavy | High (all access exclusive) | Queues, state machines |
-| Atomics | Single values | None (lock-free) | Counters, flags |
-
-## Shared\<T\>
+## The type
 
 | Rule | Description |
 |------|-------------|
-| **R1: Read** | `with shared.read() as v { ... }` — shared read lock; multiple readers concurrent. Mutation through a read binding is a compile error (E0360) and never writes back |
-| **R2: Write** | `with shared.write() as v { ... }` — exclusive write lock; blocks until readers finish |
-| **R2a: Unused write warning** | Compiler warns when `.write()` used but binding never mutated — suggests `.read()` |
-| **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `none` if contended |
-| **R4: Bare access forbidden** | `with shared as v { ... }` is a compile error — must use `.read()` or `.write()` |
-| **R5: Inline access** | `shared.read().chain` and `shared.write().chain` — expression-scoped lock for single-expression access. Follows `mem.borrowing/E5` rules. Standalone `.read()`/`.write()` without chaining is a compile error |
+| **SH1: One box** | `Shared<T, S>` holds one value that several names reach. `S` is the access strategy: `Local`, `Readers`, or `Mutex` |
+| **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Readers>`, resolved at monomorphization like the allocator parameter (`mem.alloc/AL4`). Zero cost — no dispatch, no stored tag. Defaulted, not absent: `Shared<T>` *is* `Shared<T, Readers>`, and mixing it with another strategy is a type error (E0381), not a coercion |
+| **SH3: Bare means `Readers`, everywhere** | `Shared<T>` is `Shared<T, Readers>` in a `let`, a parameter, a field and a return type alike. One type expression, one meaning, whatever position it sits in |
+| **SH4: Strategy-agnostic code says so** | A function that works with any strategy writes the parameter: `func serve<S>(c: Shared<Config, S>)`. Leaving it off means `Readers`, so a `Local` box handed to `serve(c: Shared<Config>)` is rejected — the strategy picks which lock the accessors take, and getting it wrong deadlocks rather than misbehaving visibly |
+| **SH5: Two verbs** | `read()` and `write()`, inline or as a `with` block. Both exist under every strategy — `read()` under `Mutex` takes the exclusive lock: slower than `Readers` would be, never wrong |
+| **SH6: Bare access forbidden** | `with s as v { }` is a compile error. Say `read()` or `write()`, so the page shows which one you meant |
+| **SH7: `Local` can't cross a task** | Sending a `Shared<T, Local>` to another task is a compile error. `Local` takes no lock, so two tasks touching it would race. This rule is what makes the opt-out safe to reach for |
+| **SH8: The default serves the common case** | Most boxes are reached by more than one task, so the default locks. Opting out is a word (`Shared.local`) and the compiler catches you if you were wrong; not opting out costs some time you can measure. The direction that can't be caught is the one that isn't the default |
+
+| Strategy | Who reaches it | Synchronization | Crosses tasks | Constructor |
+|---|---|---|---|---|
+| `Readers` *(default)* | many tasks | read-write lock | yes | `Shared.new(v)` |
+| `Mutex` | many tasks | plain lock | yes | `Shared.mutex(v)` |
+| `Local` | closures and scopes in one task | none | no (SH7) | `Shared.local(v)` |
+
+The strategy lives in the type, so it is always writable and always inspectable.
+A constructor that silently changed behaviour with no type-level trace would be
+magic:
+
+<!-- test: skip -->
+```rask
+let config:  Shared<Config> = Shared.new(cfg)             // Readers, the default
+let queue:   Shared<Queue, Mutex> = Shared.mutex(q)       // writes dominate
+let counter: Shared<i64, Local> = Shared.local(0)         // never leaves this task
+```
+
+Constructor and annotation agree, and either one alone tells a reader what they
+have.
+
+### Reading and writing
+
+| Rule | Description |
+|------|-------------|
+| **R1: Read** | `with s.read() as v { ... }` — shared read access. Mutating through a read binding is a compile error (E0360) and never writes back |
+| **R2: Write** | `with s.write() as v { ... }` — exclusive access |
+| **R2a: Unused write warning** | `.write()` whose binding is never mutated warns and suggests `.read()` |
+| **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, `none` if contended. Always succeed under `Local` |
+| **R4: Bare access forbidden** | See SH6 |
+| **R5: Inline access** | `s.read().chain` and `s.write().chain` — scope is the expression (`mem.borrowing/E5`). A standalone `.read()`/`.write()` with nothing chained is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -41,84 +71,81 @@ mut config = Shared.new(AppConfig {
     max_retries: 3,
 })
 
-// Inline access (single expression)
+// Inline — scope is the expression
 let timeout = config.read().timeout
 config.write().timeout = 60.seconds
-let name = config.read().user.name
 
-// Multi-statement access (with block)
-let timeout = with config.read() as c { c.timeout }
+// Block — scope is the block
 with config.write() as c {
     c.timeout = 60.seconds
     c.max_retries = 5
 }
 ```
 
+`return`, `try`, `break` and `continue` propagate through the block (`mem.borrowing/W1`).
+
 ### API
 
 <!-- test: skip -->
 ```rask
-struct Shared<T> { }
+struct Shared<T, S = Readers> { }
 
-extend Shared<T> {
-    func new(value: T) -> Shared<T>
-    func read(self) -> T             // inline access (R5) — expression-scoped read lock
-    func write(self) -> T            // inline access (R5) — expression-scoped write lock
-    func staged(self) -> T           // staged access (ST1) — exclusive lock, working copy
+extend Shared<T, S> {
+    func new(value: T) -> Shared<T, Readers>       // the default
+    func mutex(value: T) -> Shared<T, Mutex>
+    func local(value: T) -> Shared<T, Local>
+
+    func read(self) -> T             // inline or `with` (R5)
+    func write(self) -> T            // inline or `with` (R5)
+    func staged(self) -> T           // staged access (ST1) — Readers and Mutex only
     func try_read<R>(self, f: |T| -> R) -> R?
     func try_write<R>(self, f: |T| -> R) -> R?
+
+    func get(self) -> T              // copy the value out; Copy types only
+    func set(self, value: T)         // replace the value
+    func replace(self, value: T) -> T
+    func into_inner(take self) -> T
 }
 ```
 
-Three access patterns:
-- **Inline:** `shared.read().field` / `shared.write().field = x` — single-expression access, lock scoped to expression
-- **`with` block:** `with shared.read() as v { ... }` / `with shared.write() as v { ... }` — multi-statement access
-- **Non-blocking closures:** `try_read(f)` / `try_write(f)` — return `none` if contended
+`get`/`set`/`replace`/`into_inner` are the single-expression shorthands `Cell`
+had. They work under every strategy and take the appropriate access for one
+operation.
 
-Bare `with shared as v` is a compile error — the lock type must be explicit.
+### Sending one across a task boundary
 
-## Mutex\<T\>
-
-| Rule | Description |
-|------|-------------|
-| **MX1: Lock** | `with mutex as v { ... }` — exclusive lock; blocks until available |
-| **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `none` if held |
-| **MX3: Inline access** | `mutex.lock().chain` — expression-scoped exclusive lock for single-expression access. Follows `mem.borrowing/E5` rules |
+The default crosses freely. The opt-out doesn't, and that is the whole reason
+it's safe to reach for:
 
 <!-- test: skip -->
 ```rask
-let queue = Mutex.new(Vec.new())
-
-// Inline access (single expression)
-queue.lock().push(item)
-let len = queue.lock().len()
-
-// Multi-statement access (with block)
-with queue as q {
-    q.push(item_a)
-    q.push(item_b)
-}
+let counter = Shared.local(0)
+spawn(own || { counter.write() += 1 })     // compile error, SH7
 ```
 
-### API
-
-<!-- test: skip -->
-```rask
-struct Mutex<T> { }
-
-extend Mutex<T> {
-    func new(value: T) -> Mutex<T>
-    func lock(self) -> T             // inline access (MX3) — expression-scoped exclusive lock
-    func staged(self) -> T           // staged access (ST1) — exclusive lock, working copy
-    func try_lock<R>(self, f: |T| -> R) -> R?
-}
+```
+error[E0346]: this `Shared` is task-local and cannot be sent
+   |
+ 7 |             with counter.write() as c { c += 1 }
+   |             ^^^^^^^^^^^^ `counter` uses the `Local` strategy
+   |
+   = fix: drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)`
+          locks more cheaply when writes dominate
+   = why: `Local` takes no lock at all, so two tasks touching it would race. It
+          is the opt-out, not the default, and this error is what makes it safe
+          to reach for
 ```
 
-Three access patterns:
-- **Inline:** `mutex.lock().field` — single-expression access, lock scoped to expression
-- **`with` block:** `with mutex as v { ... }` — multi-statement access
-- **Non-blocking closure:** `try_lock(f)` — returns `none` if held
+## Atomics are not a strategy
 
+`Atomic<T>` keeps its own type and its own vocabulary — `add`, `load`, `store`,
+`compare_swap`, no `with` (`mem.atomics`). The whole appeal of an atomic is that
+no lock is taken, and `write()` is lock-shaped syntax: dressing a one-instruction
+operation in lock ceremony would misprice it at every use site, which is the
+opposite of what transparency asks for.
+
+An atomic is a measured optimization, reached for after benchmarking. It is not
+an answer to "where does my data live".
 ## `with`-Based Access
 
 | Rule | Description |
@@ -131,13 +158,13 @@ Three access patterns:
 <!-- test: skip -->
 ```rask
 // with-based (Rask) — reference cannot escape, control flow works
-with mutex as data {
+with account.write() as data {
     data.field = value
     try validate(data)    // propagates to enclosing function
 }
 
 // Guard-based (Rust) — reference can escape scope
-// mut guard = mutex.lock()  // NOT in Rask
+// mut guard = account.write()  // NOT in Rask
 ```
 
 ## Deadlock Prevention
@@ -147,13 +174,13 @@ with mutex as data {
 | **DL1: Direct nesting** | Nested `with` on different sync primitives is a compile error |
 | **DL2: Same lock** | `with shared.read() as v { with shared.write() as v2 { ... } }` is a compile error |
 | **DL3: Indirect — your responsibility** | Locks acquired through function calls or dynamic dispatch are NOT detected |
-| **DL4: Multiple inline accesses** | Multiple `.read()`/`.write()`/`.lock()` calls in the same expression is a compile error — same deadlock risk as DL1 |
+| **DL4: Multiple inline accesses** | Multiple `.read()`/`.write()` calls in the same expression is a compile error — same deadlock risk as DL1 |
 
 ```
 ERROR [conc.sync/DL1]: nested lock acquisition
    |
-5  |  with mutex_a as a {
-6  |      with mutex_b as b {
+5  |  with a.write() as av {
+6  |      with b.write() as bv {
    |      ^^^^ cannot acquire lock inside another with block
 
 WHY: Nested locks risk deadlock. Copy values out, then lock separately.
@@ -197,9 +224,10 @@ Panic-atomic updates, opt-in per site. A panic mid-`with` releases the lock clea
 
 | Rule | Description |
 |------|-------------|
-| **ST1: Staged access** | `with mutex.staged() as v { }` / `with shared.staged() as v { }` — takes the exclusive lock, binds `v` to a working copy of the value (clone at entry) |
+| **ST1: Staged access** | `with s.staged() as v { }` — takes the exclusive lock, binds `v` to a working copy of the value (clone at entry) |
 | **ST2: Commit on exit** | Every non-panic exit (normal, `return`, `try`, `break`/`continue`) commits the copy back as one move |
 | **ST3: Panic discards** | Unwind drops the copy uncommitted — survivors see the last committed state. Torn state impossible at staged sites |
+| **ST3a: Not on `Local`** | `staged()` under `Local` is a compile error — there is no other task to observe a torn update and no unwind boundary to protect against |
 | **ST4: Panic-only scope** | Staged is not error rollback — `try` exits commit (ST2). Rollback-on-error already has a mechanism: `ensure tx.rollback()` + explicit commit (`ctrl.ensure/C1`) |
 
 <!-- test: parse -->
@@ -234,10 +262,10 @@ Panic is the only way another task can see a half-done update. Suspension keeps 
 <!-- test: skip -->
 ```rask
 // Blocking: with
-with mutex as v { v.push(item) }
+with m.write() as v { v.push(item) }
 
 // Non-blocking: closure
-let got_it = mutex.try_lock(|v| v.push(item))
+let got_it = m.try_write(|v| v.push(item))
 ```
 
 ## Edge Cases
@@ -250,7 +278,7 @@ let got_it = mutex.try_lock(|v| v.push(item))
 | Multiple inline sync accesses in one expression | DL4 | Compile error |
 | `shared.read().field` | R5 | Expression-scoped read lock |
 | `shared.write().field = value` | R5 | Expression-scoped write lock |
-| `mutex.lock().field` | MX3 | Expression-scoped exclusive lock |
+
 | Standalone `shared.read()` without chaining | R5 | Compile error |
 | Inline access inside `with` on same primitive | DL2 | Compile error |
 | Panic inside `with` on a sync primitive | — | Lock releases cleanly, no poisoning; writes so far kept (`ctrl.panic/LK1–LK3`) |
@@ -270,9 +298,13 @@ let got_it = mutex.try_lock(|v| v.push(item))
 
 **DL3 (indirect locks):** Detecting all lock acquisition paths requires whole-program analysis, which violates local-only compilation. Syntactic detection catches the most common mistakes; ordering discipline handles the rest.
 
-**SY1 (Shared naming):** `Shared<T>` describes intent, not mechanism. `RwLock<T>` is implementation jargon.
+**Why `Readers` is the default and `Local` isn't.** The first draft had it the other way round, on the grounds that you should never accidentally pay for synchronization you didn't need. That reasoning is fine and the conclusion was still wrong, because it ignored how often each case actually turns up. A box that never leaves its task — the old `Cell` — is rare. A box several tasks reach is the ordinary reason to have one at all. A default that serves the rare case makes every common program write a word to get what it wanted, and `Shared<T>` would have meant the one thing a reader of the name least expects.
 
-**R1/R2 (explicit .read()/.write()):** With implicit lock selection via `let`, the same keyword means different things for Shared (changes lock type) vs Mutex (changes only binding mutability). Explicit `.read()`/`.write()` makes the lock type visible and removes the semantic inconsistency.
+The costs aren't symmetric either. Taking a lock you didn't need costs time you can measure and then opt out of with `Shared.local`. Skipping one you did need costs correctness and shows up as a race. Defaulting to the locked strategy puts the recoverable mistake on the default path and leaves the unrecoverable one behind a word and a compile error (SH7).
+
+**Why one type and not two.** The only thing separating the old `Shared` from the old `Mutex` was whether many readers get in at once. That is a benchmarking question — do concurrent readers matter more than write overhead here? — and it was being answered by picking a type at declaration time, before the program existed. `Cell` was the same shape again with the lock removed. One type with a defaulted strategy parameter removes a question users can't answer, and turns "I sent a task-local value to another task" from a race into a compile error. Full argument in `analysis.storage-consolidation`.
+
+**R1/R2 (explicit .read()/.write()):** The old `with mutex as v` never said whether you were reading or writing. Under one type you always say, at every use site — read/write intent becomes visible in code that used to hide it.
 
 **try_* stay as closures:** Non-blocking access is uncommon. The inconsistency is justified — `with` is inherently blocking (it's a scope, not a conditional). Could add `with try mutex as v { ... } else { ... }` later if the pattern is common enough.
 
@@ -282,8 +314,8 @@ let got_it = mutex.try_lock(|v| v.push(item))
 |----------|-----------|-----|
 | Config read by many tasks | `Shared<T>` | Read-heavy, writes rare |
 | Feature flags | `Shared<T>` | Read-heavy |
-| Connection pool | `Mutex<T>` | Checkout/checkin is write-heavy |
-| Request queue | `Mutex<T>` | Push/pop are mutations |
+| Connection pool | `Shared<T, Mutex>` | Checkout/checkin is write-heavy |
+| Request queue | `Shared<T, Mutex>` | Push/pop are mutations |
 | Metrics counter | `Atomic<u64>` | Single value, lock-free |
 | Shutdown flag | `Atomic<bool>` | Single value, lock-free |
 | Cache | `Shared<T>` or Channel | Depends on invalidation pattern |
@@ -304,16 +336,16 @@ For patterns that genuinely need multiple locks:
 <!-- test: skip -->
 ```rask
 // Lock ordering — copy out, then lock separately
-func transfer(from: Mutex<Account>, to: Mutex<Account>, amount: u64) {
-    let from_balance = from.lock().balance
-    from.lock().balance -= amount
-    to.lock().balance += amount
+func transfer(from: Shared<Account, Mutex>, to: Shared<Account, Mutex>, amount: u64) {
+    let from_balance = from.write().balance
+    from.write().balance -= amount
+    to.write().balance += amount
 }
 
 // Copy out, modify, copy back
-func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
-    let a_val = a.lock().clone()
-    let b_val = b.lock().clone()
+func swap_values(a: Shared<i32, Mutex>, b: Shared<i32, Mutex>) {
+    let a_val = a.write().clone()
+    let b_val = b.write().clone()
     with a as v { v = b_val }
     with b as v { v = a_val }
 }
@@ -324,7 +356,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 | Primitive | Uncontended | Read Contention | Write Contention |
 |-----------|-------------|-----------------|------------------|
 | `Shared<T>` | ~20ns | Scales linearly | Blocks all |
-| `Mutex<T>` | ~20ns | N/A (no read mode) | Serialized |
+| `Shared<T, Mutex>` | ~20ns | N/A (no read mode) | Serialized |
 | `Atomic<u64>` | ~1ns | ~1ns | ~10ns (CAS retry) |
 | Channel | ~50ns | N/A | Bounded: blocks, Unbounded: allocates |
 
@@ -346,13 +378,13 @@ func get_timeout() -> Duration {
 struct Metrics {
     requests: Atomic<u64>,
     errors: Atomic<u64>,
-    latencies: Mutex<Vec<Duration>>,
+    latencies: Shared<Vec<Duration>, Mutex>,
 }
 
 func record_request(latency: Duration, success: bool) {
     METRICS.requests.fetch_add(1, Relaxed)
     if !success { METRICS.errors.fetch_add(1, Relaxed) }
-    METRICS.latencies.lock().push(latency)
+    METRICS.latencies.write().push(latency)
 }
 ```
 
@@ -360,9 +392,10 @@ func record_request(latency: Duration, success: bool) {
 
 | Decision | Chosen | Rejected | Why |
 |----------|--------|----------|-----|
-| Access pattern | `with`-based blocks + inline `.read()`/`.write()`/`.lock()` | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock. Inline access for single-expression convenience |
-| Read-heavy primitive | `Shared<T>` | Just `Mutex<T>` | Common pattern deserves optimization |
+| Access pattern | `with`-based blocks + inline `.read()`/`.write()`/`.write()` | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock. Inline access for single-expression convenience |
+| Read-heavy vs write-heavy | A strategy on one type | Two types | Picking a type from an expected read/write ratio is a benchmarking decision at declaration time, before the program exists |
 | Naming | `Shared<T>` | `RwLock<T>` | Describes intent, not mechanism |
+| Task-local sharing | `Shared<T, Local>` | A separate `Cell<T>` | Same concept, different synchronization — a strategy, not a type |
 | Direct nested locks | Compile error (syntactic) | Whole-program analysis | Local analysis only |
 | Non-blocking variants | Closure-based (`try_*`) | `with try` syntax | Uncommon pattern, closures are fine |
 
