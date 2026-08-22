@@ -1330,6 +1330,9 @@ pub(crate) struct ReflectFieldConst {
     pub(crate) serial_name: String,
     pub(crate) is_skipped: bool,
     pub(crate) has_default: bool,
+    /// Raw attribute strings (`indexed(weight:3)`) — what `field.has<A>()`
+    /// answers from (type.annotations/AN6).
+    pub(crate) attrs: Vec<String>,
 }
 
 /// Where a `try` inside a `try { … } catch e => …` block sends its error.

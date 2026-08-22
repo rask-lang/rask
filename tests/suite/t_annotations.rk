@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// User annotations (type.annotations/AN1-AN6): declared data records attached
+// to fields, read back through reflect at comptime.
+//
+// The read surface tested here is `field.has<A>()` inside a comptime for —
+// it resolves per unrolled iteration, so the counts below are compile-time
+// facts that both backends must agree on. get<A>() and .annotations are not
+// implemented yet.
+
+import std.reflect
+
+annotation indexed on field {
+    weight: i64 = 1
+}
+
+annotation secret on field {
+}
+
+struct Doc {
+    @indexed(weight: 3)
+    title: string
+    body: string
+    @secret()
+    @indexed(weight: 2)
+    token: string
+}
+
+struct Plain {
+    a: i64
+    b: i64
+}
+
+func count_indexed() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func count_secret() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<secret>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func count_plain() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Plain>() {
+        comptime if field.has<indexed>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func indexed_names() -> string {
+    mut names = ""
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            names = "{names}{field.name},"
+        }
+    }
+    return names
+}
+
+test "has finds attached annotations" {
+    assert_eq(count_indexed(), 2)
+}
+
+test "has distinguishes annotations on the same field" {
+    assert_eq(count_secret(), 1)
+}
+
+test "has is false without attachments" {
+    assert_eq(count_plain(), 0)
+}
+
+test "has composes with field.name" {
+    assert_eq(indexed_names(), "title,token,")
+}

@@ -166,6 +166,10 @@ pub struct TypeChecker {
     /// SymbolId → (type param name → trait bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
     pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
+    /// Names declared as annotations (type.annotations). Registered as struct
+    /// types for `has<A>()` name resolution, but comptime-only: runtime
+    /// construction is rejected.
+    pub(super) annotation_types: std::collections::HashSet<String>,
     /// Call-site bound obligations: (type-arg var, bound trait names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
     pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
@@ -352,6 +356,7 @@ impl TypeChecker {
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
+            annotation_types: std::collections::HashSet::new(),
             pending_bound_checks: Vec::new(),
             pending_disjointness: Vec::new(),
             in_unsafe: false,
