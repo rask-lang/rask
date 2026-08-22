@@ -6745,6 +6745,30 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            // The descriptor for a struct that already sits in its storage —
+            // same (kind, offset) pairs `Rack_insert` passes, read off the same
+            // layout. Emitting the pairs at the call site keeps the runtime from
+            // needing to know anything about Rask types.
+            "Link_register_struct" => {
+                let fields = Self::link_field_descriptor(mir_args, 0, ctx);
+                args.push(builder.ins().iconst(types::I64, fields.len() as i64));
+                if fields.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
+                    ));
+                    for (i, (kind, off)) in fields.iter().enumerate() {
+                        let k = builder.ins().iconst(types::I32, *kind as i64);
+                        let o = builder.ins().iconst(types::I32, *off as i64);
+                        builder.ins().stack_store(k, ss, (i * 8) as i32);
+                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                CallAdapt::None
+            }
+
             // Rack insert: the node's bytes by address, then the shape of `T` —
             // its size, and the byte offsets of its link fields. `Rack.new()`
             // had no argument to read `T` off, so this is where the runtime

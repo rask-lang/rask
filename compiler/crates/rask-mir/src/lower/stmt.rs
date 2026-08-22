@@ -288,6 +288,29 @@ impl<'a> MirLowerer<'a> {
         None
     }
 
+    /// Record the edges a struct's own fields carry, against the storage it
+    /// just landed in.
+    ///
+    /// An assignment writes one edge and can register it as it goes. A *literal*
+    /// can't: `Cursor { at: victim }` fills the field before the value has an
+    /// address, so nothing knew which slot to record. This runs once the
+    /// destination is settled, which is the first moment there is a slot.
+    ///
+    /// Not emitted for the temporary that feeds `rack.insert(...)` — that one is
+    /// stack scratch about to be copied into a node, and registering it would
+    /// leave the rack holding the address of a dead frame. `insert` records the
+    /// node's own copy from the same descriptor.
+    pub(crate) fn emit_struct_link_registration(&mut self, dst: crate::LocalId, ty: &MirType) {
+        if !self.ctx.struct_carries_links(ty) {
+            return;
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_register_struct".to_string()),
+            args: vec![MirOperand::Local(dst)],
+        }));
+    }
+
     /// Write a link into a slot through the rack, so the target learns who
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
@@ -450,6 +473,11 @@ impl<'a> MirLowerer<'a> {
                         args: vec![val_op.clone()],
                     }));
                 }
+                // A whole struct written over a name carries whatever edges its
+                // fields hold, and a literal's fields were filled before there
+                // was a slot to record — same gap the binding path closes.
+                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
+                    && matches!(&value.kind, ExprKind::StructLit { .. });
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self
@@ -494,6 +522,12 @@ impl<'a> MirLowerer<'a> {
                                 dst: local_id,
                                 rvalue: MirRValue::Use(val_op),
                             }));
+                        }
+                        // After the write, not before: the slots have to hold the
+                        // links before there is anything to record.
+                        if struct_assigned {
+                            let dst_ty = dst_ty.clone();
+                            self.emit_struct_link_registration(local_id, &dst_ty);
                         }
                     }
                     // Field assignment: obj.field = value → Store at field offset
@@ -1232,6 +1266,10 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
+        // The struct may carry edges nothing has recorded — a literal writes its
+        // fields before the value has anywhere to live, so there was no slot to
+        // register (mem.racks/RK3). Now there is.
+        self.emit_struct_link_registration(local_id, &var_ty);
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.

@@ -200,6 +200,32 @@ void rask_link_register_entry(RaskMap *m, void *target) {
     edge_register(RACK_EDGE_MAP, m, target);
 }
 
+// Record the edges a struct's own fields carry, against the storage it is in.
+//
+// `insert` does this for a node from the rack's descriptor. Everything else that
+// holds links needs it too — `let c = Cursor { at: victim }` puts an edge in a
+// field no assignment ever wrote, so nothing had recorded it and `delete` could
+// not find the slot to null.
+void rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields) {
+    if (!base || field_count <= 0 || !fields) return;
+    char *p = (char *)base;
+    for (int64_t i = 0; i < field_count; i++) {
+        int32_t kind = fields[i * 2];
+        void **slot = (void **)(p + fields[i * 2 + 1]);
+        switch (kind) {
+        case RASK_RACK_FIELD_LINK:
+            if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
+            break;
+        case RASK_RACK_FIELD_VEC:
+            rask_link_register_vec((RaskVec *)*slot);
+            break;
+        case RASK_RACK_FIELD_MAP:
+            rask_link_register_map((RaskMap *)*slot);
+            break;
+        }
+    }
+}
+
 // Record every link already sitting in a container.
 //
 // For a container that arrives whole rather than element by element — the
@@ -630,10 +656,16 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
             void **slot = (void **)(dst + field_offset(r, f));
             switch (field_kind(r, f)) {
             case RASK_RACK_FIELD_LINK: {
-                void *mapped = snapshot_target(r, *slot, origin, n_slots);
-                if (!mapped) break;
+                void *target = *slot;
+                if (rask_link_is_none(target)) break;
+                // A cross-rack edge is not rewritten — the node it names has no
+                // copy here, and inventing one would be wrong. But it still has
+                // to be *recorded*, or the rack that owns that node can't null
+                // this slot when it deletes it (RK3), and the copy is left
+                // holding a freed address.
+                void *mapped = snapshot_target(r, target, origin, n_slots);
                 *slot = RASK_LINK_NONE;           // nothing recorded yet
-                rask_link_set(slot, mapped);
+                rask_link_set(slot, mapped ? mapped : target);
                 break;
             }
             case RASK_RACK_FIELD_VEC: {

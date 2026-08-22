@@ -994,6 +994,33 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// Does this struct have a field that can hold an edge — a `Link<T>`, or a
+    /// `Vec`/`Map` of them? Same question codegen asks to build the descriptor;
+    /// asked here to decide whether the call is worth emitting at all.
+    pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
+        let MirType::Struct(sid) = ty else { return false };
+        let Some(layout) = self.struct_layouts.get(sid.id as usize) else { return false };
+        layout.fields.iter().any(|f| Self::field_holds_links(&f.ty))
+    }
+
+    /// `Link<T>` / `Link<T>?`, or a `Vec`/`Map` whose values are links.
+    pub(crate) fn field_holds_links(ty: &Type) -> bool {
+        let bare = ty.as_option().unwrap_or(ty);
+        let Type::UnresolvedGeneric { name, args } = bare else { return false };
+        if name == "Link" {
+            return true;
+        }
+        if name != "Vec" && name != "Map" {
+            return false;
+        }
+        args.iter().rev().find_map(|a| match a {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        })
+        .is_some_and(|v| matches!(v.as_option().unwrap_or(v),
+            Type::UnresolvedGeneric { name, .. } if name == "Link"))
+    }
+
     /// Is this the `Link<T>` type, however the checker happens to spell it?
     ///
     /// A resolved `Generic` names its base by the declaration's own spelling —

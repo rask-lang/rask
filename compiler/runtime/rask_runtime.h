@@ -501,6 +501,9 @@ void      rask_link_register_entry(RaskMap *m, void *target);
 // fresh vector whose entries no push ever recorded.
 void      rask_link_register_vec(RaskVec *v);
 void      rask_link_register_map(RaskMap *m);
+// The edges a struct's own fields carry, against the storage it sits in. Same
+// (kind, byte offset) pairs `rask_rack_insert` takes.
+void      rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields);
 
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.
