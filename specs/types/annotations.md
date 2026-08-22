@@ -15,15 +15,15 @@ same `comptime for` residue mechanism that already powers encoding. Design histo
 
 | Rule | Description |
 |------|-------------|
-| **AN1: Declaration** | `annotation name { field: T, field: T = default }`. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `str`, enums and fixed arrays of these. No methods, no `extend` blocks |
-| **AN2: Targets** | Optional targets clause: `annotation validate on field`. Targets: `struct`, `enum`, `variant`, `field`, `func`, `param`. Attaching outside the declared targets is a compile error. Default: attachable anywhere |
+| **AN1: Declaration** | `annotation @name { field: T, field: T = default }`. The name keeps its `@` sigil — the declaration spells exactly what attachment sites write, so keyword and name can't blur. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `str`, enums and fixed arrays of these. No methods, no `extend` blocks |
+| **AN2: Targets** | Optional targets clause: `annotation @validate on field`. Targets: `struct`, `enum`, `variant`, `field`, `func`, `param`. Attaching outside the declared targets is a compile error. Default: attachable anywhere |
 | **AN3: Attachment checks as construction** | `@name(args)` type-checks exactly like the struct literal `name { args }` — non-defaulted fields required, names checked, values must be comptime constants |
 | **AN4: No duplicates** | Attaching the same annotation twice to one item is a compile error. Repetition wants are served by an array field: `@alias(names: ["a", "b"])` |
 | **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_site`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable |
 
 <!-- test: skip -->
 ```rask
-annotation validate on field { min: i64 = 0, max: i64 }
+annotation @validate on field { min: i64 = 0, max: i64 }
 
 struct Order {
     @validate(max: 100)
@@ -75,7 +75,7 @@ ERROR [type.annotations/AN2]: `@validate` cannot attach to a function
 
 WHY: An annotation attached where no reader looks is dead metadata.
 
-FIX: Attach it to a field, or widen the declaration: annotation validate on field, param { ... }
+FIX: Attach it to a field, or widen the declaration: annotation @validate on field, param { ... }
 ```
 
 **Unknown or missing field [AN3]:**

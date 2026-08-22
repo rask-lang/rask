@@ -1056,9 +1056,7 @@ impl Interpreter {
                                 Some(Value::Vec(v)) => v.lock().unwrap().items.iter().any(|a| {
                                     let Value::String(text) = a else { return false };
                                     let text = text.lock().unwrap();
-                                    let trimmed = text.trim();
-                                    let name = trimmed.find('(').map(|i| &trimmed[..i]).unwrap_or(trimmed);
-                                    name == annotation
+                                    rask_ast::decl::field_attrs::attachment_name(&text) == annotation
                                 }),
                                 _ => false,
                             };

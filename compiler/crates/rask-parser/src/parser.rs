@@ -454,7 +454,7 @@ impl Parser {
                     // the statement retry's generic "expected newline".
                     let is_annotation_decl =
                         matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
-                            && matches!(self.peek(1), TokenKind::Ident(_));
+                            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_));
                     if is_annotation_decl || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
@@ -630,10 +630,13 @@ impl Parser {
             self.advance();
         }
 
-        // Contextual: `annotation name { ... }` (type.annotations/AN1). Plain
-        // identifier followed by the annotation's name, so no lexer keyword.
+        // Contextual: `annotation @name { ... }` (type.annotations/AN1). Plain
+        // identifier followed by the sigiled name, so no lexer keyword. The
+        // name keeps its `@` — you declare exactly what you attach. A bare
+        // Ident is matched too so the old spelling gets a pointed error
+        // instead of the generic declaration one.
         if matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
-            && matches!(self.peek(1), TokenKind::Ident(_))
+            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_))
         {
             if is_comptime || is_unsafe || !attrs.is_empty() {
                 return Err(ParseError {
@@ -1588,11 +1591,21 @@ impl Parser {
         }))
     }
 
-    /// `annotation name [on target, ...] { field: T [= default], ... }`
-    /// (type.annotations/AN1-AN2). Fields only — no methods, no visibility
-    /// keywords: annotations are pure data records.
+    /// `annotation @name [on target, ...] { field: T [= default], ... }`
+    /// (type.annotations/AN1-AN2). The name keeps its `@` sigil — the
+    /// declaration spells exactly what attachment sites write, so keyword and
+    /// name can't blur. Fields only — no methods, no visibility keywords:
+    /// annotations are pure data records.
     fn parse_annotation_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.advance(); // 'annotation'
+        if !self.match_token(&TokenKind::At) {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "annotation names keep their `@` sigil".to_string(),
+                hint: Some("declare it the way it attaches: annotation @name { ... }".to_string()),
+                why: None,
+            });
+        }
         let name_span = self.current().span;
         let name = self.expect_ident()?;
 

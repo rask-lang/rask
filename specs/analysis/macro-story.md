@@ -233,7 +233,7 @@ annotations and read them back through reflect.
 
 <!-- test: skip -->
 ```rask
-annotation validate { min: i64 = 0, max: i64 }
+annotation @validate { min: i64 = 0, max: i64 }
 
 struct Order {
     @validate(max: 100)
@@ -263,7 +263,7 @@ mistake — behavior belongs in the library that reads the data, not in the anno
 
 **Declaration** is a restricted struct: fields with optional defaults, field types limited
 to the const-representable set (primitives, `str`, enums and fixed arrays of these —
-the CT58 splice set). Optionally declares its targets: `annotation validate on field`;
+the CT58 splice set). Optionally declares its targets: `annotation @validate on field`;
 attaching it anywhere else is a compile error, so metadata can't sit somewhere no reader
 will ever look. Default: attachable anywhere.
 

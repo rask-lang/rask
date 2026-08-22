@@ -1559,7 +1559,7 @@ mod tests {
     // AN1: annotation declarations parse — fields, defaults, visibility.
     #[test]
     fn annotation_decl_basic() {
-        let result = parse("public annotation validate {\n    min: i64 = 0\n    max: i64\n}");
+        let result = parse("public annotation @validate {\n    min: i64 = 0\n    max: i64\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Annotation(ref a) => {
@@ -1579,7 +1579,7 @@ mod tests {
     // AN2: `on` targets clause, keywords and idents mixed.
     #[test]
     fn annotation_decl_targets() {
-        let result = parse("annotation route on func, field {\n    path: str\n}");
+        let result = parse("annotation @route on func, field {\n    path: str\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Annotation(ref a) => {
@@ -1593,10 +1593,21 @@ mod tests {
     // AN1: methods are rejected — annotations are pure data.
     #[test]
     fn annotation_decl_rejects_methods() {
-        let result = parse("annotation bad {\n    func evil(self) { }\n}");
+        let result = parse("annotation @bad {\n    func evil(self) { }\n}");
         assert!(!result.is_ok());
         assert!(
             result.errors.iter().any(|e| e.message.contains("annotations cannot have methods")),
+            "got: {:?}", result.errors
+        );
+    }
+
+    // AN1: the name keeps its `@` — the bare form points at the sigiled one.
+    #[test]
+    fn annotation_decl_without_sigil_errors() {
+        let result = parse("annotation validate {\n    max: i64\n}");
+        assert!(!result.is_ok());
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("keep their `@` sigil")),
             "got: {:?}", result.errors
         );
     }
@@ -1611,7 +1622,7 @@ mod tests {
     // Comma-separated single-line form parses too.
     #[test]
     fn annotation_decl_single_line() {
-        let result = parse("annotation alias { names: [str; 4], weight: i64 = 1 }");
+        let result = parse("annotation @alias { names: [str; 4], weight: i64 = 1 }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Annotation(ref a) => assert_eq!(a.fields.len(), 2),

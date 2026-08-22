@@ -98,13 +98,15 @@ fn lit_matches(lit: Lit, ty: &str) -> bool {
     }
 }
 
-/// Split `name(args)` into the name and the raw argument text.
+/// Split `name(args)` into the name and the raw argument text. Name
+/// extraction is the shared `field_attrs::attachment_name` — same answer the
+/// backends use for `has<A>()`.
 fn split_attr(attr: &str) -> (&str, Option<&str>) {
     let attr = attr.trim();
-    match attr.find('(') {
-        Some(open) if attr.ends_with(')') => (&attr[..open], Some(&attr[open + 1..attr.len() - 1])),
-        _ => (attr, None),
-    }
+    let name = rask_ast::decl::field_attrs::attachment_name(attr);
+    let args = (name.len() < attr.len() && attr.ends_with(')'))
+        .then(|| &attr[name.len() + 1..attr.len() - 1]);
+    (name, args)
 }
 
 /// Split an argument list on top-level commas — commas inside strings and

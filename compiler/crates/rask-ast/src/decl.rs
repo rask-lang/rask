@@ -311,6 +311,15 @@ pub mod field_attrs {
         rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
     }
 
+    /// The attachment's name — `validate(max:100)` → `validate`. The one
+    /// definition all three consumers share (checker validation, native
+    /// lowering of `has<A>()`, interp's FieldInfo.has), so what counts as
+    /// "the annotation's name" can't drift between them (type.annotations).
+    pub fn attachment_name(attr: &str) -> &str {
+        let attr = attr.trim();
+        attr.find('(').map(|i| &attr[..i]).unwrap_or(attr)
+    }
+
     /// The contents of a `"…"` literal, with the usual escapes expanded.
     pub fn string_literal(text: &str) -> Option<String> {
         let inner = text.trim().strip_prefix('"')?.strip_suffix('"')?;

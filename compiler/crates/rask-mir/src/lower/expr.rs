@@ -3800,9 +3800,7 @@ impl<'a> MirLowerer<'a> {
             .find(|(name, _)| name == object_name)?
             .1;
         let has = fc.attrs.iter().any(|attr| {
-            let attr = attr.trim();
-            let name = attr.find('(').map(|i| &attr[..i]).unwrap_or(attr);
-            name == annotation
+            rask_ast::decl::field_attrs::attachment_name(attr) == annotation
         });
         Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
     }

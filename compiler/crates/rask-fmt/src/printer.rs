@@ -925,7 +925,7 @@ impl<'a> Printer<'a> {
         if a.is_pub {
             self.emit("public ");
         }
-        self.emit("annotation ");
+        self.emit("annotation @");
         self.emit(&a.name);
         if !a.targets.is_empty() {
             self.emit(" on ");
