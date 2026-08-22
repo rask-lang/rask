@@ -1,0 +1,413 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* Import Roboto Mono font */
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600;700&display=swap');
+
+/* Rask Brand Colors */
+:root {
+    --rask-primary: #0B5C38;        /* R=11 G=92 B=56 - main brand color */
+    --rask-dark: #004225;           /* R=0 G=66 B=37 - icon box background */
+    --rask-darker: #01361E;         /* R=1 G=54 B=30 - shadow */
+    --rask-light: #0F7A4A;          /* Lighter variant for hovers */
+    --rask-very-light: #E8F5F0;     /* Very light tint for backgrounds */
+    --mono-font: 'Open Sans', 'Source Code Pro', Consolas, monospace;
+}
+
+/* Light theme customization */
+.light {
+    --links: var(--rask-primary);
+    --sidebar-active: var(--rask-primary);
+}
+
+/* Dark theme (navy) customization - match landing page Nord colors */
+.navy {
+    --bg: #2E3440;
+    --fg: #ECEFF4;
+    --sidebar-bg: #2E3440;
+    --sidebar-fg: #D8DEE9;
+    --sidebar-non-existant: #81A1C1;
+    --sidebar-active: var(--rask-light);
+    --sidebar-spacer: #4C566A;
+    --scrollbar: #4C566A;
+    --icons: #D8DEE9;
+    --icons-hover: #ECEFF4;
+    --links: var(--rask-light);
+    --inline-code-color: #88C0D0;
+    --theme-popup-bg: #3B4252;
+    --theme-popup-border: #4C566A;
+    --theme-hover: #434C5E;
+    --quote-bg: #3B4252;
+    --quote-border: var(--rask-primary);
+    --table-border-color: #4C566A;
+    --table-header-bg: #3B4252;
+    --table-alternate-bg: #2E3440;
+    --searchbar-border-color: #4C566A;
+    --searchbar-bg: #3B4252;
+    --searchbar-fg: #ECEFF4;
+    --searchbar-shadow-color: rgba(0,0,0,0.3);
+    --searchresults-header-fg: #ECEFF4;
+    --searchresults-border-color: #4C566A;
+    --searchresults-li-bg: #3B4252;
+    --search-mark-bg: rgba(15, 122, 74, 0.3);
+    --inline-code-bg: #3B4252;
+}
+
+/* Links */
+a {
+    color: var(--rask-primary);
+}
+
+a:hover {
+    color: var(--rask-light);
+    text-decoration: underline;
+}
+
+/* Sidebar styling */
+.sidebar {
+    background-color: var(--bg);
+}
+
+.sidebar .sidebar-scrollbox {
+    padding-right: 15px;
+}
+
+.sidebar-active,
+.sidebar a.active {
+    background-color: var(--rask-very-light) !important;
+    color: var(--rask-dark) !important;
+    font-weight: 600;
+    border-left: 3px solid var(--rask-primary);
+}
+
+.navy .sidebar-active,
+.navy .sidebar a.active {
+    background-color: rgba(11, 92, 56, 0.15) !important;
+    color: var(--rask-light) !important;
+}
+
+/* Chapter titles in sidebar */
+.chapter li.chapter-item {
+    line-height: 1.8;
+}
+
+/* Code blocks */
+.hljs {
+    border-radius: 6px;
+    border: 1px solid var(--table-border-color);
+    font-family: var(--mono-font);
+}
+
+pre {
+    padding: 1rem;
+    font-family: var(--mono-font);
+}
+
+pre > code {
+    font-size: 0.95em;
+    line-height: 1.5;
+    font-family: var(--mono-font);
+}
+
+/* Inline code */
+:not(pre) > code {
+    background-color: var(--inline-code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: var(--mono-font);
+}
+/* Rask language syntax highlighting - using nord palette https://www.nordtheme.com*/
+.language-rask .hljs-keyword {
+    color: #81A1C1;
+    font-weight: 600;
+}
+
+.language-rask .hljs-built_in {
+    color: #88C0D0;
+    font-weight: 500;
+}
+
+.language-rask .hljs-string {
+    color: #A3BE8C;
+}
+
+.language-rask .hljs-comment {
+    color: #616E88;
+    font-style: italic;
+}
+
+.language-rask .hljs-function,
+.language-rask .hljs-title {
+    color: #88C0D0;
+}
+
+.language-rask .hljs-title\.function {
+    color: #88C0D0;
+}
+
+.language-rask .hljs-title\.class {
+    color: #8FBCBB;
+    font-weight: 500;
+}
+
+.language-rask .hljs-number {
+    color: #B48EAD;
+}
+
+.language-rask .hljs-type {
+    color: #8FBCBB;
+    font-weight: 500;
+}
+
+.language-rask .hljs-meta {
+    color: #5E81AC;
+    font-weight: 500;
+}
+
+.navy .language-rask .hljs-keyword {
+    color: #81A1C1;
+    font-weight: 600;
+}
+
+.navy .language-rask .hljs-built_in {
+    color: #88C0D0;
+    font-weight: 500;
+}
+
+.navy .language-rask .hljs-string {
+    color: #A3BE8C;
+}
+
+.navy .language-rask .hljs-comment {
+    color: #616E88;
+    font-style: italic;
+}
+
+.navy .language-rask .hljs-function,
+.navy .language-rask .hljs-title {
+    color: #88C0D0;
+}
+
+.navy .language-rask .hljs-title\.function {
+    color: #88C0D0;
+}
+
+.navy .language-rask .hljs-title\.class {
+    color: #8FBCBB;
+    font-weight: 500;
+}
+
+.navy .language-rask .hljs-number {
+    color: #B48EAD;
+}
+
+.navy .language-rask .hljs-type {
+    color: #8FBCBB;
+    font-weight: 500;
+}
+
+.navy .language-rask .hljs-meta {
+    color: #5E81AC;
+    font-weight: 500;
+}
+
+/* Headers */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--fg);
+}
+
+h1 {
+    border-bottom: 2px solid var(--rask-primary);
+    padding-bottom: 0.3em;
+}
+
+/* Navigation buttons */
+.nav-chapters {
+    font-size: 0.95em;
+}
+
+.nav-chapters a {
+    color: var(--fg);
+}
+
+.nav-chapters a:hover {
+    color: var(--rask-primary);
+}
+
+/* Search */
+#searchresults a {
+    color: var(--rask-primary);
+}
+
+#searchresults mark {
+    background-color: var(--rask-very-light);
+    color: var(--rask-dark);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.navy #searchresults mark {
+    background-color: rgba(11, 92, 56, 0.3);
+    color: var(--rask-light);
+}
+
+/* Tables */
+table thead {
+    background-color: var(--rask-very-light);
+}
+
+.navy table thead {
+    background-color: rgba(11, 92, 56, 0.15);
+}
+
+table thead th {
+    font-weight: 600;
+    color: var(--rask-dark);
+}
+
+.navy table thead th {
+    color: var(--rask-light);
+}
+
+/* Blockquotes */
+blockquote {
+    border-left: 4px solid var(--rask-primary);
+    background-color: var(--quote-bg);
+    padding: 0.5em 1em;
+    margin: 1em 0;
+}
+
+/* Status banners (for warnings/notes) */
+blockquote > p > strong:first-child {
+    color: var(--rask-primary);
+}
+
+/* Menu bar */
+.menu-title {
+    font-weight: 600;
+    font-family: var(--mono-font);
+}
+
+/* Site title */
+.sidebar .sidebar-scrollbox .chapter {
+    font-family: var(--mono-font);
+}
+
+/* Print button, theme selector */
+.icon-button {
+    color: var(--icons);
+}
+
+.icon-button:hover {
+    color: var(--rask-primary);
+}
+
+/* Mobile adjustments */
+@media only screen and (max-width: 768px) {
+    .sidebar {
+        width: 300px;
+    }
+
+    .page {
+        padding: 15px;
+    }
+}
+
+/* Logo in landing page - responsive sizing */
+img[alt="rask logo"] {
+    max-width: 100%;
+    height: auto;
+}
+
+@media only screen and (max-width: 768px) {
+    img[alt="rask logo"] {
+        width: 300px;
+    }
+}
+
+/* Content spacing improvements */
+.content {
+    max-width: none;
+}
+
+.content p,
+.content ul,
+.content ol {
+    max-width: 800px;
+    line-height: 1.7;
+}
+
+.content li {
+    line-height: 1.6;
+    margin-bottom: 0.3em;
+}
+
+/* Code example improvements */
+.content pre {
+    margin: 1.5em 0;
+}
+
+/* Footer edit link */
+.edit-url {
+    color: var(--rask-primary);
+}
+
+.edit-url:hover {
+    text-decoration: underline;
+}
+
+/* Playground iframe */
+.playground-container {
+    position: relative;
+    width: calc(100vw - 550px);
+    max-width: none;
+    min-height: 600px;
+    height: 70vh;
+    max-height: calc(100vh - 250px);
+    margin: 2em 0;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 1px solid var(--table-border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.playground-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+@media only screen and (min-width: 1440px) {
+    .playground-container {
+        width: calc(100vw - 480px);
+        max-width: 1800px;
+    }
+}
+
+/* 1920x1080/1200 */
+@media only screen and (min-width: 1920px) {
+    .playground-container {
+        width: calc(100vw - 520px);
+        max-width: 1600px;
+    }
+}
+
+/* 4K and ultra-wide */
+@media only screen and (min-width: 2560px) {
+    .playground-container {
+        width: calc(100vw - 600px);
+        max-width: 3000px;
+    }
+}
+
+@media only screen and (max-width: 768px) {
+    .playground-container {
+        width: 100%;
+        left: 0;
+        transform: none;
+        min-height: 500px;
+        height: 65vh;
+        max-height: calc(100vh - 200px);
+    }
+}
