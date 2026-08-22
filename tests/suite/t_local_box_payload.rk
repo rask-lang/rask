@@ -10,12 +10,15 @@ struct State {
     public mode: i32
 }
 
+// The strategy is part of the type, so a `Local` box has to say so. A bare
+// `Shared<i32>` here means `Readers` and would take a read-write lock on an
+// allocation that has none — which blocks forever rather than complaining.
 struct App {
-    public hits: Shared<i32>
-    public state: Shared<State>
+    public hits: Shared<i32, Local>
+    public state: Shared<State, Local>
 }
 
-func bump(c: Shared<i32>) -> i32 {
+func bump(c: Shared<i32, Local>) -> i32 {
     with c.write() as v {
         v = v + 100
         return v
@@ -56,7 +59,7 @@ test "a struct payload reads and writes through the binding" {
     }
 }
 
-test "Shared<T> works in type position" {
+test "Shared<T, S> works in type position" {
     let app = App {
         hits: Shared.local(0),
         state: Shared.local(State { count: 7, mode: 1 }),

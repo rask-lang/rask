@@ -330,7 +330,10 @@ extend Stderr {
 /// anywhere — `Buffer.new()` failed on both backends (#860).
 public struct Buffer {
     data: Vec<u8>
-    pos: Shared<i64>
+    /// `Local`, spelled out: a buffer's read position is reached by one task,
+    /// and the strategy is part of the type — a bare `Shared<i64>` would mean
+    /// `Readers`, which is a lock this doesn't need and doesn't have.
+    pos: Shared<i64, Local>
 }
 
 extend Buffer with Reader {
