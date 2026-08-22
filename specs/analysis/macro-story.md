@@ -31,6 +31,13 @@ Rask still leave unscratched?
 The scorecard says the rejection was right: most macro value is already structural in Rask.
 Three gaps are real, and none of them needs token trees.
 
+> Gaps 1 and 2 have graduated into proposed specs:
+> [control/call-site-capture.md](../control/call-site-capture.md) (`ctrl.call-site`, CS1–CS10)
+> and [types/annotations.md](../types/annotations.md) (`type.annotations`, AN1–AN7).
+> Gap 3 stays here — once accepted it amends the decided specs directly (a CT49 analog in
+> `ctrl.comptime` plus `reflect.methods<T>()` in `std.reflect`), and forking those while
+> proposed helps nobody. The sections below are the design history.
+
 ## Gap 1: Call-site capture
 
 The everyday macro itch isn't codegen — it's `assert_eq!` printing `left: 5, right: 7` with
