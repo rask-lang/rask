@@ -66,22 +66,31 @@ pub(crate) fn option_of(inner: MirType) -> MirType {
     MirType::Option(Box::new(inner))
 }
 
+
 /// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
 ///
 /// Both are one word where the value *is* the option, so neither carries a tag.
-/// They do *not* share a `none`: ask `niche_option_sentinel` for that.
+/// They do *not* share a `none`: ask for the sentinel, not just the fact.
+///
+/// By-name only. A generic the checker resolved names its base by `TypeId`, and
+/// a free function can't see the table — prefer
+/// `MirContext::niche_option_sentinel` wherever a context is in reach.
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
-    niche_option_sentinel(ty).is_some()
+    niche_option_sentinel_named(ty).is_some()
 }
 
-/// The word that means `none` for a niche option written as a checker type.
-///
-/// `MirType::niche_none` answers the same question after lowering; this is the
-/// version for the places that still only have the checker's spelling.
-pub(crate) fn niche_option_sentinel(ty: &Type) -> Option<i64> {
+/// The word that means `none` for a niche option spelled by name.
+pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
     let inner = ty.as_option()?;
     let Type::UnresolvedGeneric { name, .. } = inner else { return None };
-    match name.split('<').next().unwrap_or(name).trim() {
+    niche_sentinel_for_head(name)
+}
+
+/// The `none` word for a niche whose head name is `head`, with or without its
+/// type argument attached — a resolved generic names its base by the
+/// declaration's own spelling, `"Handle<T>"` and all.
+pub(crate) fn niche_sentinel_for_head(head: &str) -> Option<i64> {
+    match head.split('<').next().unwrap_or(head).trim() {
         "Handle" => Some(HANDLE_NONE_SENTINEL),
         "Link" => Some(LINK_NONE_SENTINEL),
         _ => None,
@@ -1080,6 +1089,23 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// The word that means `none` for a niche option, whichever way the type
+    /// is spelled.
+    ///
+    /// `Handle<T>?` reaches lowering two ways: still by name, and as a resolved
+    /// `Generic` naming its base by `TypeId`. Only the by-name form used to
+    /// count, so a `Vec<Handle<T>?>` was sized as a tagged option — 16 bytes
+    /// for an 8-byte element — while the push wrote the niche (#959).
+    pub(crate) fn niche_option_sentinel(&self, ty: &Type) -> Option<i64> {
+        let inner = ty.as_option()?;
+        let head = match inner {
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
+            _ => return None,
+        };
+        niche_sentinel_for_head(&head)
+    }
+
     /// The MIR type of a niche option, keeping *which* niche it is.
     ///
     /// `Handle<T>?` and `Link<T>?` are the same shape with different `none`
@@ -1088,8 +1114,12 @@ impl<'a> MirContext<'a> {
     /// field, and the rack then tried to register an edge from address -1.
     pub(crate) fn niche_option_mir_type(&self, ty: &Type) -> Option<MirType> {
         let inner = ty.as_option()?;
-        let Type::UnresolvedGeneric { name, args } = inner else { return None };
-        let payload = match name.split('<').next().unwrap_or(name).trim() {
+        let (name, args) = match inner {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
+            _ => return None,
+        };
+        let payload = match name.split('<').next().unwrap_or(&name).trim() {
             "Handle" => MirType::Handle,
             "Link" => self.link_mir_type(args.first()),
             _ => return None,
@@ -3882,7 +3912,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The `none` word for an expression whose checker type is a niche option.
     fn niche_sentinel_of_expr(&self, expr: &Expr) -> Option<i64> {
-        niche_option_sentinel(self.ctx.lookup_raw_type(expr.id)?)
+        self.ctx.niche_option_sentinel(self.ctx.lookup_raw_type(expr.id)?)
     }
 
     /// Same question, with the lowered type as a second opinion. A `Handle?`

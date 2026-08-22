@@ -886,11 +886,40 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            SharedStrategyMismatch { found, expected, span } => {
+                Diagnostic::error(format!(
+                    "this box uses the `{}` strategy, but `{}` is expected here",
+                    found, expected
+                ))
+                    .with_code("E0381")
+                    .with_primary(*span, format!("`Shared<_, {}>` here", found))
+                    .with_fix(format!(
+                        "build it with `Shared.{}(…)`, or write the type as \
+                         `Shared<_, {}>` if `{}` is what you meant",
+                        match expected.as_str() {
+                            "Mutex" => "mutex",
+                            "Local" => "local",
+                            _ => "new",
+                        },
+                        found, found
+                    ))
+                    .with_help(
+                        "code that works under any strategy says so: \
+                         `func serve<S>(c: Shared<Config, S>)` [conc.sync/SH4]",
+                    )
+                    .with_why(
+                        "the strategy picks which lock the accessors take, so the two \
+                         have to agree. A `Local` box read through the read-write-lock \
+                         entry points blocks forever — it has no lock for them to take \
+                         [conc.sync/SH2]",
+                    )
+            }
+
             RetiredBoxType { name, replacement, span } => {
                 Diagnostic::error(format!(
                     "`{}` is not a type any more — it's a strategy on `Shared`", name
                 ))
-                    .with_code("E0345")
+                    .with_code("E0380")
                     .with_primary(*span, format!("`{}` used as a type here", name))
                     .with_fix(format!("write `{}`", replacement))
                     .with_why(

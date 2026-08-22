@@ -2450,7 +2450,7 @@ impl<'a> MirLowerer<'a> {
                             .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty))
                     });
                     let field_niche = field_layout
-                        .and_then(|f| super::niche_option_sentinel(&f.ty));
+                        .and_then(|f| self.ctx.niche_option_sentinel(&f.ty));
                     let val_op = self.wrap_sum_field_value(
                         field_mir_ty.as_ref(), field_niche, &val_ty, val_op,
                     );
@@ -4494,7 +4494,7 @@ impl<'a> MirLowerer<'a> {
                                 .get(&expr.id)
                                 .cloned()
                                 .unwrap_or(func_name);
-                            // `Shared.new/readers/mutex` name their strategy, so
+                            // `Shared.new/mutex/local` settle the strategy, so
                             // the constructor call resolves to that strategy's
                             // runtime family (conc.sync/SH2).
                             let func_name =
@@ -5033,11 +5033,15 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Link(_)))
             }
-        } else if matches!(qualified_name.as_str(), "Cell_get" | "Cell_replace" | "Cell_into_inner") {
-            // What the cell holds — all three hand back the payload. The stub's
-            // return type is a bare `T`, which maps to i64, so a `Cell<string>`
-            // read came back as a pointer and a `Cell<i32>` got loaded eight bytes
-            // wide.
+        } else if matches!(qualified_name.as_str(),
+            "Cell_get" | "Cell_replace" | "Cell_into_inner"
+            | "Shared_get" | "Shared_replace"
+            | "Mutex_get" | "Mutex_replace")
+        {
+            // What the box holds — all of these hand back the payload. The stub's
+            // return type is a bare `T`, which maps to i64, so a `Shared<string>`
+            // read came back as a pointer and a `Shared<i32>` got loaded eight
+            // bytes wide.
             self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
         } else if matches!(qualified_name.as_str(),
             "Receiver_receive_struct" | "Receiver_try_receive")
@@ -5321,7 +5325,8 @@ impl<'a> MirLowerer<'a> {
     /// Rewrite a `Shared_*` call to the runtime family its strategy names.
     ///
     /// Constructors pick the strategy by their own name — `Shared.new` is
-    /// `Local`, `Shared.readers` and `Shared.mutex` say which lock they want.
+    /// `Shared.mutex` and `Shared.local` say which lock they want; `new` takes
+    /// the default.
     /// Everything else reads it off the receiver's type.
     fn resolve_shared_strategy_call(&self, qualified: &str, object: &Expr) -> String {
         use super::concurrency::SharedStrategy;
@@ -5329,12 +5334,12 @@ impl<'a> MirLowerer<'a> {
             return qualified.to_string();
         };
         let strategy = match rest {
-            "new" | "readers" => SharedStrategy::Readers,
+            "new" => SharedStrategy::Readers,
             "mutex" => SharedStrategy::Mutex,
             "local" => SharedStrategy::Local,
             _ => self.shared_strategy(object),
         };
-        if matches!(rest, "new" | "readers" | "mutex" | "local") {
+        if matches!(rest, "new" | "mutex" | "local") {
             return format!("{}_new", strategy.prefix());
         }
         let name = match (strategy, rest) {
@@ -5352,6 +5357,15 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Mutex, "read" | "write") => "Mutex_lock",
             (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
             (SharedStrategy::Mutex, "clone") => "Mutex_clone",
+            // `get`/`set`/`replace` exist under every strategy (CE6), not just
+            // the one that needs no lock. Left unmapped, `Shared.new(5).get()`
+            // type-checked and then failed to link on `Shared_get`.
+            (SharedStrategy::Mutex, "get") => "Mutex_get",
+            (SharedStrategy::Mutex, "set") => "Mutex_set",
+            (SharedStrategy::Mutex, "replace" | "into_inner") => "Mutex_replace",
+            (SharedStrategy::Readers, "get") => "Shared_get",
+            (SharedStrategy::Readers, "set") => "Shared_set",
+            (SharedStrategy::Readers, "replace" | "into_inner") => "Shared_replace",
             _ => return qualified.to_string(),
         };
         name.to_string()

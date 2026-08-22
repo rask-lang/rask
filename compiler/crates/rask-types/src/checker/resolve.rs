@@ -2219,10 +2219,10 @@ impl TypeChecker {
             ("Response", "status") if args.is_empty() => {
                 self.unify(ret, &Type::U16, span)
             }
-            // `Shared.new/readers/mutex(value)` — the constructor names the
+            // `Shared.new/mutex/local(value)` — the constructor settles the
             // strategy, and it lands in the type so a reader of the annotation
             // sees the same thing (conc.sync/SH2).
-            ("Shared", "new" | "readers" | "mutex" | "local") if args.len() == 1 => {
+            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
                 let inner = args[0].clone();
                 let shared_ty = Self::shared_type(inner, method);
                 self.unify(ret, &shared_ty, span)
@@ -2467,7 +2467,7 @@ impl TypeChecker {
             }
             // Written `Shared.new(0)` the element type comes from the value, so
             // pin the variable to it. The strategy comes from the constructor.
-            ("Shared", "new" | "readers" | "mutex" | "local") if args.len() == 1 => {
+            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
                 let shared_ty = Self::shared_type(inner_type.clone(), method);
                 self.unify(ret, &shared_ty, span)

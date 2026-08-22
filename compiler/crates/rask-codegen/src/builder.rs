@@ -1708,10 +1708,14 @@ impl<'a> FunctionBuilder<'a> {
             // "aggregate" here handed back the field's *address*, and a root
             // edge read as a stack address instead of the node it named.
             ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link") =>
-            {
-                false
-            }
+                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
+                => false,
+            // The same option with its payload already resolved to a `TypeId`.
+            // `Generic`/`Named` payloads are the runtime-opaque pointer types
+            // (line above), and an option over one of those is the niche — one
+            // word, no tag — so it loads like a scalar.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
+                RaskType::Generic { .. }) => false,
             // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }
@@ -3264,10 +3268,12 @@ impl<'a> FunctionBuilder<'a> {
         match ty {
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
             | MirType::Union(_) | MirType::Array { .. } => true,
-            // A `Handle<T>?` is a niche: the handle *is* the value and `none`
-            // is the all-ones sentinel, so there's no slot to walk — comparing
-            // the two handles directly is already right.
-            MirType::Option(inner) => !matches!(**inner, MirType::Handle),
+            // A niche option — `Handle<T>?` or `Link<T>?` — is one word: the
+            // value itself, with a reserved word for `none`. There's no slot to
+            // walk, and comparing the two words directly is already right.
+            // Walking one loaded a tag byte through the value, and for a `none`
+            // link that value is the null address (#959).
+            MirType::Option(inner) => !inner.is_niche_payload(),
             _ => false,
         }
     }
@@ -5788,11 +5794,11 @@ impl<'a> FunctionBuilder<'a> {
                 // Scalars are stored as 8-byte values in codegen; .max(8) prevents OOB writes.
                 Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(8).max(err_size.max(8)))
             }
-            // A `Handle?` is a niche: `none` is a sentinel handle, so the value
-            // is one word with no tag and needs no slot. Giving it the tagged
-            // layout made the local hold a slot address, and comparing that
-            // against the sentinel was always false (#438).
-            MirType::Option(inner) if **inner == MirType::Handle => None,
+            // A niche option — `Handle<T>?` or `Link<T>?` — is one word with no
+            // tag and needs no slot. Giving it the tagged layout made the local
+            // hold a slot address, and comparing that against the sentinel was
+            // always false (#438).
+            MirType::Option(inner) if inner.is_niche_payload() => None,
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
                     .unwrap_or(inner.size());
@@ -6099,6 +6105,14 @@ impl<'a> FunctionBuilder<'a> {
     /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
     /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
     fn is_boxed_payload(ty: &MirType) -> bool {
+        // A niche option is one word — the value itself, with one reserved word
+        // meaning `none` — so it loads like a scalar even though it is spelled
+        // `Option`. Handing back its address instead made every slot of a
+        // `Vec<Handle<T>?>` read as present: an address is never the sentinel,
+        // and the address was then used as the handle (#959).
+        if matches!(ty, MirType::Option(inner) if inner.is_niche_payload()) {
+            return false;
+        }
         matches!(
             ty,
             MirType::Struct(_)
@@ -6831,7 +6845,9 @@ impl<'a> FunctionBuilder<'a> {
             // first. `replace` additionally hands back the old value's address —
             // returning CallAdapt::None here would leave that pointer as the
             // result and `let old = c.replace(0)` would print an address.
-            "Cell_set" | "Cell_replace" => {
+            "Cell_set" | "Cell_replace"
+            | "Shared_set" | "Shared_replace"
+            | "Mutex_set" | "Mutex_replace" => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
@@ -6839,12 +6855,16 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                if func_name == "Cell_replace" { CallAdapt::DerefResult } else { CallAdapt::None }
+                if func_name.ends_with("_replace") {
+                    CallAdapt::DerefResult
+                } else {
+                    CallAdapt::None
+                }
             }
 
             // Shared_new / Mutex_new: ensure data is pointer, compute actual
             // data_size. The size arg may or may not already be there —
-            // `Shared.readers(v)` and `Shared.mutex(v)` reach this under a
+            // `Shared.new(v)` and `Shared.mutex(v)` reach this under a
             // signature with one parameter, and the old `Shared.new(v)` under
             // one with two.
             "Shared_new" | "Mutex_new" => {

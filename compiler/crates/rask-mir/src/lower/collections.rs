@@ -836,7 +836,16 @@ impl<'a> MirLowerer<'a> {
             Type::Var(_) => None,
             // `T?` (`T or none`) lays out as [tag:8][payload]; floor the payload
             // to a full word so scalar inners aren't truncated.
+            //
+            // Except a niche: `Handle<T>?` and `Link<T>?` are one word with no
+            // tag beside them, the value itself standing in for the option. Two
+            // computations of the element's shape disagreed here — the push
+            // wrote the 8-byte niche while `Vec.new` had reserved 16-byte slots
+            // for it, so every read came back from the wrong offset (#959).
             Type::Result { ok, err } if **err == Type::None => {
+                if self.ctx.niche_option_sentinel(ty).is_some() {
+                    return Some(rask_mono::abi::PAYLOAD_SLOT_BYTES as i64);
+                }
                 Some(8 + self.slot_size_for_type(ok)?.max(8))
             }
             _ => Some(Self::mir_slot_size(&self.ctx.type_to_mir(ty))),

@@ -185,7 +185,7 @@ got the same treatment.
 <!-- test: skip -->
 ```rask
 let counter = Shared.new(0)           // default: task-local, no lock at all
-let config  = Shared.readers(cfg)     // opt-in: many tasks, concurrent reads
+let config  = Shared.new(cfg)         // the default: many tasks, concurrent reads
 let queue   = Shared.mutex(q)         // opt-in: many tasks, one at a time
 ```
 
@@ -260,7 +260,7 @@ trace would be magic, which is the thing to avoid.
 <!-- test: skip -->
 ```rask
 let counter: Shared<i64> = Shared.new(0)                    // default: task-local
-let config:  Shared<Config, Readers> = Shared.readers(cfg)  // many tasks, concurrent reads
+let config:  Shared<Config, Readers> = Shared.new(cfg)      // many tasks, concurrent reads
 let queue:   Shared<Queue, Mutex> = Shared.mutex(q)         // many tasks, one at a time
 ```
 

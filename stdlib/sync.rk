@@ -19,27 +19,27 @@ public struct Local { }
 /// `Mutex` — a plain lock. One holder at a time, reader or writer.
 public struct Mutex { }
 
-extend Shared<T> {
+// `S` is written out here. These declarations are generic over the strategy —
+// the accessors work under all three — and the constructors each name the one
+// they build. A bare `Shared<T>` in a *user's* annotation means
+// `Shared<T, Readers>`; leaving it bare here would have pinned every method to
+// Readers and turned the other two strategies away at the door.
+extend Shared<T, S> {
     /// Many tasks, concurrent reads. The default — what you write unless you
     /// have a reason not to.
     @native("rask_shared_new_ptr")
-    public func new(value: T) -> Shared<T> {}
+    public func new(value: T) -> Shared<T, Readers> {}
 
-    /// The same thing, said out loud. For a signature or an annotation that
-    /// wants the strategy visible rather than defaulted.
-    @native("rask_shared_new_ptr")
-    public func readers(value: T) -> Shared<T> {}
-
-    /// Many tasks, one at a time — reader or writer. Cheaper than `readers`
+    /// Many tasks, one at a time — reader or writer. Cheaper than `Readers`
     /// when writes dominate, since there is no reader count to keep.
     @native("rask_mutex_new_ptr")
-    public func mutex(value: T) -> Shared<T> {}
+    public func mutex(value: T) -> Shared<T, Mutex> {}
 
     /// No lock at all. One task, several accessors — the box `Cell` used to be.
     /// Sending one is a compile error (SH7), which is what makes it safe to
     /// reach for.
     @native("rask_cell_new")
-    public func local(value: T) -> Shared<T> {}
+    public func local(value: T) -> Shared<T, Local> {}
 
     /// Shared access, scoped to the expression or the `with` block.
     /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would

@@ -1664,7 +1664,7 @@ impl Interpreter {
             // conc.sync/SH2: the constructor names the strategy, and the
             // strategy is the whole difference between the three values. `new`
             // is `Readers`, which is what bare `Shared<T>` means.
-            (TypeConstructorKind::Shared, "new" | "readers" | "mutex" | "local") => {
+            (TypeConstructorKind::Shared, "new" | "mutex" | "local") => {
                 let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
                     got: 0,

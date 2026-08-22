@@ -111,6 +111,33 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                         ));
                     }
                 }
+                // `Shared<T, S = Readers>` (conc.sync/SH2). The strategy is a
+                // defaulted type parameter, so fill it in here rather than
+                // leaving the arity short: `Shared<T>` and `Shared<T, Local>`
+                // are different types, and while one of them carried no
+                // strategy at all, unify had nothing to compare and a `Local`
+                // box flowed into a `Readers` annotation unchallenged — then
+                // deadlocked at the first access (#960).
+                //
+                // `extend Shared<T, S>` writes both parameters, so the
+                // strategy-generic declarations in `stdlib/sync.rk` are
+                // unaffected: they already have two args.
+                "Shared" if args.len() == 1 => {
+                    let mut args = args;
+                    args.push(GenericArg::Type(Box::new(
+                        Type::UnresolvedNamed("Readers".to_string()),
+                    )));
+                    // Built the same way the fallback below builds every other
+                    // generic, so `Shared<T>` and `Shared<T, Readers>` are the
+                    // same `Type` and not two spellings unify has to reconcile.
+                    if let Some(base_id) = types.get_type_id(name) {
+                        return Ok(Type::Generic { base: base_id, args });
+                    }
+                    return Ok(Type::UnresolvedGeneric {
+                        name: name.to_string(),
+                        args,
+                    });
+                }
                 "Option" if args.len() == 1 => {
                     // Option takes a single type argument
                     if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {

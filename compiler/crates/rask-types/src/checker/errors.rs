@@ -523,6 +523,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// conc.sync/SH2: two `Shared` boxes with different strategies met.
+    ///
+    /// Not a deferrable obligation like most type mismatches — the strategy
+    /// picks which lock the accessors take, so getting it wrong deadlocks
+    /// rather than misbehaving visibly (#960).
+    #[error("this box uses the `{found}` strategy, but `{expected}` is expected here")]
+    SharedStrategyMismatch {
+        found: String,
+        expected: String,
+        span: Span,
+    },
+
     /// CC1: `spawn` used outside any `using Multitasking` block
     #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
     SpawnOutsideBlock {
@@ -1029,6 +1041,7 @@ impl TypeError {
             | MutateConst { .. }
             | RetiredBoxType { .. }
             | LocalSharedSent { .. }
+            | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

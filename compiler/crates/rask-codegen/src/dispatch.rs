@@ -1347,6 +1347,38 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
         },
+        // The same three under each lock. `get` hands back the slot's address
+        // like the Cell version; `set`/`replace` take the lock around the copy.
+        StdlibEntry {
+            mir_name: "Shared_get", c_name: "rask_shared_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Shared_set", c_name: "rask_shared_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Shared_replace", c_name: "rask_shared_replace",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_get", c_name: "rask_mutex_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_set", c_name: "rask_mutex_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_replace", c_name: "rask_mutex_replace",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+        },
         // `into_inner` consumes the cell and yields what it held — the same read
         // as `get`, just the last one. Freeing the cell here would dangle the
         // pointer it returns.

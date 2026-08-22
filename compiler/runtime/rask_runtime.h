@@ -1143,6 +1143,15 @@ int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);
 void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
+
+// `get`/`set`/`replace` under each lock — the single-expression shorthand
+// (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.
+int64_t rask_shared_get(int64_t shared);
+void    rask_shared_set(int64_t shared, int64_t data_ptr);
+int64_t rask_shared_replace(int64_t shared, int64_t data_ptr);
+int64_t rask_mutex_get(int64_t mutex);
+void    rask_mutex_set(int64_t mutex, int64_t data_ptr);
+int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 
