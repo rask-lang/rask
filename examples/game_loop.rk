@@ -241,7 +241,7 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 //   #266 `using Pool<Entity>` parser rejects generic args
 //   #267 `spawn` builtin not registered in the type checker
 //   #268 `with mutex as v { ... }` doesn't unwrap to inner T
-// (Pool's internal Arc<Mutex<Vec>> threading depends on #268 too.)
+// (Pool's internal Arc<Shared<Vec, Mutex>> threading depends on #268 too.)
 //
 // Until then, run movement single-threaded. The shape stays close to
 // the aspirational form so the only delta when the gaps land is moving

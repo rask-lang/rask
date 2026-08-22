@@ -13,7 +13,7 @@
 //     config.read(|c| c.timeout)        // anyone can read simultaneously
 //     config.write(|c| c.timeout = 60)  // only one can write, blocks others
 //
-//   Mutex<T> — exclusive access (like a bathroom key)
+//   Shared<T, Mutex> — exclusive access (like a bathroom key)
 //     counter.lock(|c| c += 1)          // only one thread at a time
 //
 //   AtomicI64, AtomicBool — lock-free single values (for simple counters)

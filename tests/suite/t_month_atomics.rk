@@ -16,7 +16,7 @@
 // mem.boxes/BX1 lists Atomic as the box family's adjacent member and boxes.md's
 // decision tree routes "single counter, flag, or pointer-sized value" to it, so a
 // reader following the documented procedure for a shared counter lands here.
-// `Mutex.new(0)` with `with m.lock()` is the working answer today and is covered
+// `Shared.mutex(0)` with `with m.write()` is the working answer today and is covered
 // in `t_month_boxes.rk`.
 
 // A word-sized, padding-free, Copy struct — a legal payload per GA1.

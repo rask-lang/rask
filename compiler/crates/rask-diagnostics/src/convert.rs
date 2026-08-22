@@ -54,11 +54,46 @@ impl ToDiagnostic for rask_parser::ParseError {
 // Resolve Errors
 // ============================================================================
 
+/// Names the language used to have, and what took their place. Keeping the list
+/// here rather than in the resolver means the resolver doesn't have to know
+/// anything about renames — it just fails to find the name, as it should.
+fn retired_name(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "Cell" => Some((
+            "Shared.new(…)` / `Shared<T>",
+            "`Cell`, `Shared` and `Mutex` were one concept — one value, several \
+             accessors, a scoped view — differing only in what synchronization they \
+             took. That is a strategy, not three types, so it moved into \
+             `Shared<T, S>`, and `Cell` is the `Local` strategy \
+             [analysis.storage-consolidation]",
+        )),
+        "Owned" => Some((
+            "Heap<T>",
+            "`Owned` named single ownership, which every Rask value already has, so \
+             it distinguished nothing. What differs is the indirection: the value \
+             lives on the heap instead of inline [mem.heap]",
+        )),
+        _ => None,
+    }
+}
+
 impl ToDiagnostic for rask_resolve::ResolveError {
     fn to_diagnostic(&self) -> Diagnostic {
         use rask_resolve::ResolveErrorKind::*;
 
         match &self.kind {
+            // A name that used to exist gets told what replaced it. "Not found
+            // in this scope" is true and useless for a rename someone is
+            // meeting for the first time.
+            UndefinedSymbol { name } if retired_name(name).is_some() => {
+                let (replacement, why) = retired_name(name).unwrap();
+                Diagnostic::error(format!("`{}` is not a type any more", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, format!("`{}` was removed", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(why)
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")
@@ -834,6 +869,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("write the field as `Link<T>?` for now")
                     .with_fix("add `?` — `target: Link<Entity>?`")
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
+            }
+
+            RetiredBoxType { name, replacement, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is not a type any more — it's a strategy on `Shared`", name
+                ))
+                    .with_code("E0345")
+                    .with_primary(*span, format!("`{}` used as a type here", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(
+                        "`Cell`, `Shared` and `Mutex` were one concept — one value, \
+                         several accessors, a scoped view — differing only in what \
+                         synchronization they took. That is a strategy, not three \
+                         types, so it moved into `Shared<T, S>` \
+                         [analysis.storage-consolidation]",
+                    )
             }
 
             MutateConst { name, span } => {

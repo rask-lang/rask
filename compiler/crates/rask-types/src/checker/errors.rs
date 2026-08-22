@@ -236,6 +236,12 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
+    RetiredBoxType {
+        name: String,
+        replacement: String,
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -1014,6 +1020,7 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | RetiredBoxType { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

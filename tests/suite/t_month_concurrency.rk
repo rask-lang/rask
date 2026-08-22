@@ -117,15 +117,15 @@ test "conc.async — a handle joined after other work" {
 // deterministic shape. `t_month_boxes.rk` covers Mutex on its own.
 test "conc.sync — a thread owning a Mutex reports its result" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    mut m = Mutex.new(0)
+    mut m = Shared.mutex(0)
     Thread.spawn(own || {
-        with m.lock() as v {
+        with m.write() as v {
             v = v + 1
         }
-        with m.lock() as v {
+        with m.write() as v {
             v = v + 1
         }
-        with m.lock() as v {
+        with m.write() as v {
             let _ = tx.send(v)
         }
         return

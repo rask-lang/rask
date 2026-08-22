@@ -903,7 +903,7 @@ fn compile_error_output(name: &str) -> (bool, String) {
 fn error_annotation_against_a_container_initializer() {
     // #730: `unify` defers whenever either side is an unresolved generic, since
     // the name may still resolve — and a deferred `Equal` that never resolved
-    // was dropped in silence. So `let probe: string = m` on a `Mutex` passed.
+    // was dropped in silence. So `let probe: string = m` on a sync box passed.
     // Reported for a primitive against a stdlib container only: two *named*
     // types legitimately unify across names (union members, enum variants,
     // trait objects, nominal aliases) and judging those reported the stdlib's
@@ -911,8 +911,8 @@ fn error_annotation_against_a_container_initializer() {
     let (failed, out) = compile_error_output("annotation_vs_container.rk");
     assert!(failed, "an annotation must be checked against a container init: {}", out);
     assert!(
-        out.contains("expected `string`, found `Mutex"),
-        "should name both sides for the Mutex case: {}", out,
+        out.contains("expected `string`, found `Shared"),
+        "should name both sides for the sync-box case: {}", out,
     );
     assert!(
         out.contains("expected `i64`, found `Sender"),
@@ -1062,7 +1062,7 @@ fn error_no_auto_wrap_outside_return() {
 // block's duration, not a value of its own — returning it raw let a caller
 // keep reading through the mutex after the lock released. Struct payloads
 // are rejected; a field read, a method call, and a scalar payload (the
-// flagship example's `with counter.lock() as c { c }`) all still compile.
+// flagship example's `with counter.write() as c { c }`) all still compile.
 #[test]
 fn error_with_guard_escapes() {
     let (failed, out) = compile_error_output("with_guard_escapes.rk");
@@ -3965,7 +3965,7 @@ type UserId = u64 with (Equal, Hashable, Comparable, Debug)
         // `main.rk` sorts before `store.rk`, so the body is reached first.
         ("main.rk", r#"
 func run() -> string or StoreError {
-    let id = try store.lock().make()
+    let id = try store.write().make()
     return "value={id.value}"
 }
 
@@ -3985,7 +3985,7 @@ extend Store {
     func make(self) -> UserId or StoreError { return self.next }
 }
 
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())
 "#),
     ]);
 
@@ -4028,7 +4028,7 @@ func store_code(e: StoreError) -> string {
 struct View { public id: u64 }
 
 func handle(id: u64) -> View or ApiError {
-    let v = try store.lock().view(id)
+    let v = try store.write().view(id)
     return v
 }
 
@@ -4059,7 +4059,7 @@ extend Store {
     }
 }
 
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())
 "#),
     ]);
 

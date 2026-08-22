@@ -167,13 +167,13 @@ test "stdlib.collections — an f32 field into a Vec and back" {
     assert v[1] == 2.5
 }
 
-test "mem.boxes — a float through a Cell keeps its value" {
-    let cell = Cell.new(3.5)
-    with cell as v {
+test "mem.boxes — a float through a Local box keeps its value" {
+    let cell = Shared.new(3.5)
+    with cell.write() as v {
         assert v == 3.5
     }
-    let small = Cell.new(0.5)
-    with small as v {
+    let small = Shared.new(0.5)
+    with small.write() as v {
         assert v == 0.5
     }
 }

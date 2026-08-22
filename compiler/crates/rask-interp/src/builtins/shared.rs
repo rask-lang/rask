@@ -119,18 +119,18 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            "set" if args.len() == 1 => {
+            // Arity is checked in the body, not the arm: a guard here turns a
+            // wrong-arity call into "no such method", which is both a worse
+            // message and a drift-test failure.
+            "set" | "replace" => {
+                let Some(value) = args.into_iter().next() else {
+                    return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 });
+                };
                 let mut guard = shared.write().map_err(|e| {
-                    RuntimeError::Panic(format!("Shared.set: lock poisoned: {}", e))
+                    RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
                 })?;
-                *guard = args.into_iter().next().unwrap();
-                Ok(Value::Unit)
-            }
-            "replace" if args.len() == 1 => {
-                let mut guard = shared.write().map_err(|e| {
-                    RuntimeError::Panic(format!("Shared.replace: lock poisoned: {}", e))
-                })?;
-                Ok(std::mem::replace(&mut *guard, args.into_iter().next().unwrap()))
+                let old = std::mem::replace(&mut *guard, value);
+                Ok(if method == "replace" { old } else { Value::Unit })
             }
             "clone" => Ok(Value::Shared(Arc::clone(shared))),
             _ => Err(RuntimeError::NoSuchMethod {
@@ -368,18 +368,15 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            "set" if args.len() == 1 => {
+            "set" | "replace" => {
+                let Some(value) = args.into_iter().next() else {
+                    return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 });
+                };
                 let mut guard = mutex.lock().map_err(|e| {
-                    RuntimeError::Panic(format!("Shared.set: lock poisoned: {}", e))
+                    RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
                 })?;
-                *guard = args.into_iter().next().unwrap();
-                Ok(Value::Unit)
-            }
-            "replace" if args.len() == 1 => {
-                let mut guard = mutex.lock().map_err(|e| {
-                    RuntimeError::Panic(format!("Shared.replace: lock poisoned: {}", e))
-                })?;
-                Ok(std::mem::replace(&mut *guard, args.into_iter().next().unwrap()))
+                let old = std::mem::replace(&mut *guard, value);
+                Ok(if method == "replace" { old } else { Value::Unit })
             }
             "try_read" | "try_write" => {
                 return self.call_mutex_method(mutex, "try_lock", args);

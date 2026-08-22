@@ -1,33 +1,33 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A `with m.lock()` body runs in its own frame, and every way out of it puts
+// A `with m.write()` body runs in its own frame, and every way out of it puts
 // the value back.
 //
 // The body used to be lifted into a synthesized closure. Two things went wrong
 // there: `return` returned from the closure, so the enclosing function fell
 // through to whatever came after the `with`; and a word-sized payload is loaded
 // into a local, so it has to be written back — which only happened when the
-// body ran off its end. `with m.lock() as v { v = v + 5; return v }` therefore
+// body ran off its end. `with m.write() as v { v = v + 5; return v }` therefore
 // returned the wrong value *and* left the mutex untouched.
 
-func bump_then_return(m: Mutex<i64>) -> i64 {
-    with m.lock() as v {
+func bump_then_return(m: Shared<i64, Mutex>) -> i64 {
+    with m.write() as v {
         v = v + 5
         return v
     }
     return -1
 }
 
-func bump_and_fall_through(m: Mutex<i64>) -> i64 {
-    with m.lock() as v {
+func bump_and_fall_through(m: Shared<i64, Mutex>) -> i64 {
+    with m.write() as v {
         v = v + 5
     }
     return -1
 }
 
-func count_to(m: Mutex<i64>, target: i64) -> i64 {
+func count_to(m: Shared<i64, Mutex>, target: i64) -> i64 {
     mut i = 0
     while i < 10 {
-        with m.lock() as v {
+        with m.write() as v {
             v = v + 1
             if v == target {
                 return v * 100
@@ -44,54 +44,54 @@ struct Counter {
 }
 
 test "return inside the guard returns from the function" {
-    let m = Mutex.new(1)
+    let m = Shared.mutex(1)
     assert bump_then_return(m) == 6
 }
 
 test "the mutation survives an early return" {
-    let m = Mutex.new(1)
+    let m = Shared.mutex(1)
     let r = bump_then_return(m)
     assert r == 6
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 6
     }
 }
 
 test "falling off the end still writes back" {
-    let m = Mutex.new(1)
+    let m = Shared.mutex(1)
     assert bump_and_fall_through(m) == -1
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 6
     }
 }
 
 test "returning out of a loop releases and writes back" {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     let hit = count_to(m, 3)
     assert hit == 300
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 3
     }
 }
 
 test "the lock is free again after an early return" {
-    let m = Mutex.new(1)
+    let m = Shared.mutex(1)
     let a = bump_then_return(m)
     let b = bump_then_return(m)
     assert a == 6
     assert b == 11
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 11
     }
 }
 
 test "a struct payload is mutated in place" {
-    let m = Mutex.new(Counter { hits: 0, misses: 0 })
-    with m.lock() as c {
+    let m = Shared.mutex(Counter { hits: 0, misses: 0 })
+    with m.write() as c {
         c.hits = c.hits + 1
         c.misses = c.misses + 2
     }
-    with m.lock() as c {
+    with m.write() as c {
         assert c.hits == 1
         assert c.misses == 2
     }

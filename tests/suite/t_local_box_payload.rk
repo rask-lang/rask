@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `with cell as v` binds what the cell holds, not the cell (mem.cell/CE4).
+// `with box.write() as v` binds what the box holds, not the box (conc.sync/R2).
 // On native the binding was the box pointer, so a scalar came out as an address
 // and a struct payload segfaulted on the first field read. Also covers CE6's
 // get/set/replace and the interior mutability that lets them work through a
@@ -11,12 +11,12 @@ struct State {
 }
 
 struct App {
-    public hits: Cell<i32>
-    public state: Cell<State>
+    public hits: Shared<i32>
+    public state: Shared<State>
 }
 
-func bump(c: Cell<i32>) -> i32 {
-    with c as v {
+func bump(c: Shared<i32>) -> i32 {
+    with c.write() as v {
         v = v + 100
         return v
     }
@@ -24,67 +24,67 @@ func bump(c: Cell<i32>) -> i32 {
 }
 
 test "the binding is the value, not the box" {
-    let c = Cell.new(42)
-    with c as v {
+    let c = Shared.new(42)
+    with c.write() as v {
         assert_eq(v, 42)
     }
 }
 
 test "writes through the binding land in the cell" {
-    let c = Cell.new(42)
-    with c as v {
+    let c = Shared.new(42)
+    with c.write() as v {
         v = v + 5
     }
     assert_eq(c.get(), 47)
 }
 
 test "the block is an expression" {
-    let c = Cell.new(21)
-    let doubled: i64 = with c as v { v * 2 }
+    let c = Shared.new(21)
+    let doubled: i64 = with c.write() as v { v * 2 }
     assert_eq(doubled, 42)
 }
 
 test "a struct payload reads and writes through the binding" {
-    let s = Cell.new(State { count: 1, mode: 0 })
-    with s as st {
+    let s = Shared.new(State { count: 1, mode: 0 })
+    with s.write() as st {
         st.count = st.count + 10
         st.mode = 3
     }
-    with s as st {
+    with s.write() as st {
         assert_eq(st.count, 11)
         assert_eq(st.mode, 3)
     }
 }
 
-test "Cell<T> works in type position" {
+test "Shared<T> works in type position" {
     let app = App {
-        hits: Cell.new(0),
-        state: Cell.new(State { count: 7, mode: 1 }),
+        hits: Shared.new(0),
+        state: Shared.new(State { count: 7, mode: 1 }),
     }
-    with app.hits as h {
+    with app.hits.write() as h {
         h = h + 1
     }
-    with app.hits as h {
+    with app.hits.write() as h {
         assert_eq(h, 1)
     }
-    with app.state as st {
+    with app.state.write() as st {
         st.count = 99
     }
-    with app.state as st {
+    with app.state.write() as st {
         assert_eq(st.count, 99)
     }
 }
 
 test "an early exit still writes back on the way out" {
-    let c = Cell.new(47)
+    let c = Shared.new(47)
     assert_eq(bump(c), 147)
-    with c as v {
+    with c.write() as v {
         assert_eq(v, 147)
     }
 }
 
 test "get, set and replace work through a let binding" {
-    let counter = Cell.new(0)
+    let counter = Shared.new(0)
     assert_eq(counter.get(), 0)
     counter.set(42)
     assert_eq(counter.get(), 42)
@@ -94,11 +94,11 @@ test "get, set and replace work through a let binding" {
 }
 
 test "the mutex path shares this lowering and still agrees" {
-    let m = Mutex.new(100)
-    with m as v {
+    let m = Shared.mutex(100)
+    with m.write() as v {
         v = v + 1
     }
-    with m as v {
+    with m.write() as v {
         assert_eq(v, 101)
     }
 }
