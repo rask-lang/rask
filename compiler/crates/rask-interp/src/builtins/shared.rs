@@ -112,6 +112,26 @@ impl Interpreter {
                     }),
                 }
             }
+            // The single-expression shorthands, under every strategy.
+            "get" | "into_inner" if args.is_empty() => {
+                let guard = shared.read().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            "set" if args.len() == 1 => {
+                let mut guard = shared.write().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.set: lock poisoned: {}", e))
+                })?;
+                *guard = args.into_iter().next().unwrap();
+                Ok(Value::Unit)
+            }
+            "replace" if args.len() == 1 => {
+                let mut guard = shared.write().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.replace: lock poisoned: {}", e))
+                })?;
+                Ok(std::mem::replace(&mut *guard, args.into_iter().next().unwrap()))
+            }
             "clone" => Ok(Value::Shared(Arc::clone(shared))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Shared".to_string(),
@@ -333,6 +353,36 @@ impl Interpreter {
                         variant_index: 1, origin: None,
                     }),
                 }
+            }
+            // `read`/`write` on the `Mutex` strategy both take the one lock it
+            // has — slower than `Readers` would be there, never wrong (SH5).
+            "read" | "write" if args.is_empty() => {
+                let guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            "get" | "into_inner" if args.is_empty() => {
+                let guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            "set" if args.len() == 1 => {
+                let mut guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.set: lock poisoned: {}", e))
+                })?;
+                *guard = args.into_iter().next().unwrap();
+                Ok(Value::Unit)
+            }
+            "replace" if args.len() == 1 => {
+                let mut guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.replace: lock poisoned: {}", e))
+                })?;
+                Ok(std::mem::replace(&mut *guard, args.into_iter().next().unwrap()))
+            }
+            "try_read" | "try_write" => {
+                return self.call_mutex_method(mutex, "try_lock", args);
             }
             "clone" => Ok(Value::RaskMutex(Arc::clone(mutex))),
             _ => Err(RuntimeError::NoSuchMethod {

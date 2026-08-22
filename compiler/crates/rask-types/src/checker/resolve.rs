@@ -2219,13 +2219,12 @@ impl TypeChecker {
             ("Response", "status") if args.is_empty() => {
                 self.unify(ret, &Type::U16, span)
             }
-            // Shared static constructor: Shared.new(value) -> Shared<T>
-            ("Shared", "new") if args.len() == 1 => {
+            // `Shared.new/readers/mutex(value)` — the constructor names the
+            // strategy, and it lands in the type so a reader of the annotation
+            // sees the same thing (conc.sync/SH2).
+            ("Shared", "new" | "readers" | "mutex") if args.len() == 1 => {
                 let inner = args[0].clone();
-                let shared_ty = Type::UnresolvedGeneric {
-                    name: "Shared".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner))],
-                };
+                let shared_ty = Self::shared_type(inner, method);
                 self.unify(ret, &shared_ty, span)
             }
             // Cell static constructor: Cell.new(value) -> Cell<T>
@@ -2271,6 +2270,23 @@ impl TypeChecker {
                     span,
                 })
             }
+        }
+    }
+
+    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Local`,
+    /// which is what bare `Shared<T>` means everywhere (SH3).
+    fn shared_type(inner: Type, constructor: &str) -> Type {
+        let strategy = match constructor {
+            "readers" => "Readers",
+            "mutex" => "Mutex",
+            _ => "Local",
+        };
+        Type::UnresolvedGeneric {
+            name: "Shared".to_string(),
+            args: vec![
+                GenericArg::Type(Box::new(inner)),
+                GenericArg::Type(Box::new(Type::UnresolvedNamed(strategy.to_string()))),
+            ],
         }
     }
 
@@ -2331,6 +2347,18 @@ impl TypeChecker {
                 let result_var = self.ctx.fresh_var();
                 let opt_ty = Type::option(result_var);
                 self.unify(ret, &opt_ty, span)
+            }
+            // The single-expression shorthands `Cell` had (conc.sync API table).
+            ("Shared", "get" | "into_inner") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            ("Shared", "set") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            ("Shared", "replace") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &inner_type, span)
             }
             // Shared<T>.clone() -> Shared<T>
             ("Shared", "clone") if args.is_empty() => {
@@ -2467,14 +2495,11 @@ impl TypeChecker {
                 let tuple_ty = Type::Tuple(vec![sender, receiver]);
                 self.unify(ret, &tuple_ty, span)
             }
-            // Shared<T>.new(value) -> Shared<T>. Written `Shared.new(0)` the
-            // element type comes from the value, so pin the variable to it.
-            ("Shared", "new") if args.len() == 1 => {
+            // Written `Shared.new(0)` the element type comes from the value, so
+            // pin the variable to it. The strategy comes from the constructor.
+            ("Shared", "new" | "readers" | "mutex") if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
-                let shared_ty = Type::UnresolvedGeneric {
-                    name: "Shared".to_string(),
-                    args: inner_args.clone(),
-                };
+                let shared_ty = Self::shared_type(inner_type.clone(), method);
                 self.unify(ret, &shared_ty, span)
             }
             // Mutex<T>.new(value) -> Mutex<T>, same as Shared above.

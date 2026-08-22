@@ -6815,15 +6815,20 @@ impl<'a> FunctionBuilder<'a> {
                 if func_name == "Cell_replace" { CallAdapt::DerefResult } else { CallAdapt::None }
             }
 
-            // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size
+            // Shared_new / Mutex_new: ensure data is pointer, compute actual
+            // data_size. The size arg may or may not already be there —
+            // `Shared.readers(v)` and `Shared.mutex(v)` reach this under a
+            // signature with one parameter, and the old `Shared.new(v)` under
+            // one with two.
             "Shared_new" | "Mutex_new" => {
-                if args.len() >= 2 {
+                if !args.is_empty() {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_struct {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    args[1] = builder.ins().iconst(types::I64, data_size);
+                    let size = builder.ins().iconst(types::I64, data_size);
+                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
                 }
                 CallAdapt::None
             }

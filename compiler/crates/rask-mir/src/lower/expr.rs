@@ -3289,12 +3289,13 @@ impl<'a> MirLowerer<'a> {
                                 false
                             };
                             if is_shared {
-                                let syms = if method == "read" {
-                                    &BoxWithSyms::SHARED_READ
-                                } else {
-                                    &BoxWithSyms::SHARED_WRITE
-                                };
-                                return self.lower_box_with_block(object, &binding.name, body, syms);
+                                // Which lock the block takes is the strategy's
+                                // business (SH5) — the verb only says read or
+                                // write. A `Local` box takes none.
+                                let syms = self
+                                    .shared_strategy(object)
+                                    .with_syms(method == "write");
+                                return self.lower_box_with_block(object, &binding.name, body, &syms);
                             }
                         }
                     }
@@ -4474,6 +4475,11 @@ impl<'a> MirLowerer<'a> {
                                 .get(&expr.id)
                                 .cloned()
                                 .unwrap_or(func_name);
+                            // `Shared.new/readers/mutex` name their strategy, so
+                            // the constructor call resolves to that strategy's
+                            // runtime family (conc.sync/SH2).
+                            let func_name =
+                                self.resolve_shared_strategy_call(&func_name, object);
 
                             let ret_ty = self
                                 .func_sigs
@@ -4789,6 +4795,12 @@ impl<'a> MirLowerer<'a> {
             .get(&expr.id)
             .cloned()
             .unwrap_or(qualified_name);
+
+        // `Shared<T, S>` is one type over three runtime families (conc.sync/SH2).
+        // The strategy is a type argument, so which family a call lands in is
+        // settled here and nothing about the choice survives into the emitted
+        // code — a `Local` box calls the no-lock runtime directly.
+        let qualified_name = self.resolve_shared_strategy_call(&qualified_name, object);
 
         // A value going into a container's element slot is an argument position,
         // so it gains wrapper layers the same way any other one does. Nothing
@@ -5285,6 +5297,45 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok((MirOperand::Local(result_local), ret_ty))
+    }
+
+    /// Rewrite a `Shared_*` call to the runtime family its strategy names.
+    ///
+    /// Constructors pick the strategy by their own name — `Shared.new` is
+    /// `Local`, `Shared.readers` and `Shared.mutex` say which lock they want.
+    /// Everything else reads it off the receiver's type.
+    fn resolve_shared_strategy_call(&self, qualified: &str, object: &Expr) -> String {
+        use super::concurrency::SharedStrategy;
+        let Some(rest) = qualified.strip_prefix("Shared_") else {
+            return qualified.to_string();
+        };
+        let strategy = match rest {
+            "new" => SharedStrategy::Local,
+            "readers" => SharedStrategy::Readers,
+            "mutex" => SharedStrategy::Mutex,
+            _ => self.shared_strategy(object),
+        };
+        if matches!(rest, "new" | "readers" | "mutex") {
+            return format!("{}_new", strategy.prefix());
+        }
+        let name = match (strategy, rest) {
+            // A `Local` box takes nothing, so both verbs are the same call: the
+            // slot's address. `read` versus `write` is intent the reader can
+            // see, not a different operation here.
+            (SharedStrategy::Local, "read" | "write" | "try_read" | "try_write") => "Cell_acquire",
+            (SharedStrategy::Local, "get") => "Cell_get",
+            (SharedStrategy::Local, "set") => "Cell_set",
+            (SharedStrategy::Local, "replace") => "Cell_replace",
+            (SharedStrategy::Local, "into_inner") => "Cell_into_inner",
+            // A plain lock has one mode, so a `read()` under it takes the
+            // exclusive lock — slower than `Readers` would be there, never wrong
+            // (SH5).
+            (SharedStrategy::Mutex, "read" | "write") => "Mutex_lock",
+            (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
+            (SharedStrategy::Mutex, "clone") => "Mutex_clone",
+            _ => return qualified.to_string(),
+        };
+        name.to_string()
     }
 
     /// The edge-registration call a container mutator needs, if its value is a

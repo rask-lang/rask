@@ -26,6 +26,72 @@ pub(super) struct BoxWithSyms {
     pub release: Option<&'static str>,
 }
 
+/// Which synchronization a `Shared<T, S>` takes (`conc.sync/SH1`). The strategy
+/// is a type argument resolved here, at lowering, so nothing about it survives
+/// into the emitted code — a `Local` box calls the no-lock runtime directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SharedStrategy {
+    /// No lock at all. Several accessors, one task.
+    Local,
+    /// Read-write lock: many readers at once, or one writer.
+    Readers,
+    /// Plain lock: one holder at a time, reader or writer.
+    Mutex,
+}
+
+impl SharedStrategy {
+    /// Read it off a type argument's spelling. Anything unrecognised — a bare
+    /// `Shared<T>`, an unresolved variable — is `Local`, which is the
+    /// conservative answer (SH8): you can never accidentally skip
+    /// synchronization you needed, because sending a `Local` box doesn't
+    /// compile.
+    pub(super) fn from_name(name: &str) -> Self {
+        match name.trim() {
+            "Readers" => SharedStrategy::Readers,
+            "Mutex" => SharedStrategy::Mutex,
+            _ => SharedStrategy::Local,
+        }
+    }
+
+    /// The MIR prefix its runtime family answers to. The three families already
+    /// existed as three types; the merge is that one type now picks between
+    /// them instead of the user doing it at declaration time.
+    pub(super) fn prefix(self) -> &'static str {
+        match self {
+            SharedStrategy::Local => "Cell",
+            SharedStrategy::Readers => "Shared",
+            SharedStrategy::Mutex => "Mutex",
+        }
+    }
+
+    /// The acquire/data/release triple for a `with` block over this strategy.
+    /// `write` picks the exclusive side where the strategy has two.
+    pub(super) fn with_syms(self, write: bool) -> BoxWithSyms {
+        match self {
+            SharedStrategy::Local => BoxWithSyms::CELL,
+            SharedStrategy::Mutex => BoxWithSyms::MUTEX,
+            SharedStrategy::Readers => {
+                if write { BoxWithSyms::SHARED_WRITE } else { BoxWithSyms::SHARED_READ }
+            }
+        }
+    }
+
+    /// Acquire and release for an inline guard access.
+    pub(super) fn guard_syms(self, write: bool) -> (&'static str, &'static str) {
+        match self {
+            SharedStrategy::Local => ("Cell_acquire", "Cell_noop_release"),
+            SharedStrategy::Mutex => ("Mutex_acquire", "Mutex_release"),
+            SharedStrategy::Readers => {
+                if write {
+                    ("Shared_write_acquire", "Shared_release")
+                } else {
+                    ("Shared_read_acquire", "Shared_release")
+                }
+            }
+        }
+    }
+}
+
 impl BoxWithSyms {
     pub(super) const MUTEX: Self = Self {
         acquire: "Mutex_acquire",
@@ -87,6 +153,38 @@ impl<'a> MirLowerer<'a> {
             }
         }
         None
+    }
+
+    /// The strategy of a `Shared<T, S>` receiver — the second type argument.
+    ///
+    /// Absent means `Local`: bare `Shared<T>` is `Shared<T, Local>` in every
+    /// position (SH3), and an unresolved receiver gets the conservative answer
+    /// for the same reason the default is conservative (SH8).
+    pub(super) fn shared_strategy(&self, object: &Expr) -> SharedStrategy {
+        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
+            let args = match raw_ty {
+                rask_types::Type::UnresolvedGeneric { args, .. }
+                | rask_types::Type::Generic { args, .. } => Some(args.as_slice()),
+                _ => None,
+            };
+            if let Some(rask_types::GenericArg::Type(s)) = args.and_then(|a| a.get(1)) {
+                if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
+                    return SharedStrategy::from_name(&name);
+                }
+            }
+        }
+        // The declared spelling, when the checker's type didn't survive:
+        // "Shared<Queue, Mutex>" -> Mutex.
+        if let ExprKind::Ident(var_name) = &object.kind {
+            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_deref()) {
+                if let Some(inner) = full.split_once('<').and_then(|(_, r)| r.strip_suffix('>')) {
+                    if let Some((_, strategy)) = inner.rsplit_once(',') {
+                        return SharedStrategy::from_name(strategy);
+                    }
+                }
+            }
+        }
+        SharedStrategy::Local
     }
 
     /// The MIR type of what a sync box holds: the `T` of `Mutex<T>`/`Shared<T>`.
@@ -284,11 +382,15 @@ impl<'a> MirLowerer<'a> {
             "lock" if self.is_sync_box_expr(box_obj, "Mutex") => {
                 Some((box_obj, "Mutex_acquire", "Mutex_release"))
             }
-            "read" if self.is_sync_box_expr(box_obj, "Shared") => {
-                Some((box_obj, "Shared_read_acquire", "Shared_release"))
-            }
-            "write" if self.is_sync_box_expr(box_obj, "Shared") => {
-                Some((box_obj, "Shared_write_acquire", "Shared_release"))
+            // `read`/`write` on a `Shared<T, S>`: which lock, if any, is the
+            // strategy's business (SH5). All three answer to both verbs — a
+            // `read()` under `Mutex` takes the exclusive lock, slower than
+            // `Readers` would be there and never wrong.
+            "read" | "write" if self.is_sync_box_expr(box_obj, "Shared") => {
+                let (acquire, release) = self
+                    .shared_strategy(box_obj)
+                    .guard_syms(method == "write");
+                Some((box_obj, acquire, release))
             }
             _ => None,
         }

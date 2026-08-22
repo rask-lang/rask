@@ -1,43 +1,66 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// --- Shared (read-heavy concurrent access) ---
+// --- Shared: one value, several accessors, one scoped view (conc.sync) ---
+//
+// The strategy `S` says what synchronization the box takes, and it is a type
+// argument — so `Shared<T>` is `Shared<T, Local>` everywhere, and nothing about
+// the choice survives into the emitted code. `Cell` and `Mutex` used to be
+// separate types; they are these strategies now.
 
-/// Read-heavy concurrent access. Multiple readers, exclusive writer.
-/// Access via `with shared.read() as v { }` or `with shared.write() as v { }`.
+/// `Local` — no lock at all. Several accessors, one task. The default.
+public struct Local { }
+
+/// `Readers` — a read-write lock. Many readers at once, or one writer.
+public struct Readers { }
+
+/// `Mutex` — a plain lock. One holder at a time, reader or writer.
+public struct Mutex { }
+
 extend Shared<T> {
-    @native("rask_shared_new_ptr")
+    /// Task-local, no lock. What you write until a second task exists.
+    @native("rask_cell_new")
     public func new(value: T) -> Shared<T> {}
 
-    /// Expression-scoped read lock.
+    /// Many tasks, concurrent reads. Pays a reader count on every write.
+    @native("rask_shared_new_ptr")
+    public func readers(value: T) -> Shared<T> {}
+
+    /// Many tasks, one at a time — reader or writer.
+    @native("rask_mutex_new_ptr")
+    public func mutex(value: T) -> Shared<T> {}
+
+    /// Shared access, scoped to the expression or the `with` block.
+    /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would
+    /// be there, never wrong.
     @native("rask_shared_read_ptr")
     public func read(self) -> T {}
 
-    /// Expression-scoped write lock.
+    /// Exclusive access, scoped to the expression or the `with` block.
     @native("rask_shared_write_ptr")
     public func write(self) -> T {}
 
-    /// Non-blocking read. Returns none if contended.
+    /// Non-blocking read. `none` if contended; always succeeds under `Local`.
     @native("rask_shared_try_read_ptr")
     public func try_read(self, f: func(T)) -> Option<T> {}
 
-    /// Non-blocking write. Returns none if contended.
+    /// Non-blocking write. `none` if contended; always succeeds under `Local`.
     @native("rask_shared_try_write_ptr")
     public func try_write(self, f: func(T)) -> Option<T> {}
-}
 
-// --- Mutex (exclusive access) ---
+    /// Copy the inner value out. Copy types only — the single-expression
+    /// shorthand `Cell` had.
+    @native("rask_cell_get")
+    public func get(self) -> T {}
 
-/// Exclusive access for write-heavy patterns.
-/// Access via `with mutex as v { }` or `mutex.lock().field`.
-extend Mutex<T> {
-    @native("rask_mutex_new_ptr")
-    public func new(value: T) -> Mutex<T> {}
+    /// Replace the inner value.
+    @native("rask_cell_set")
+    public func set(self, value: T) {}
 
-    /// Expression-scoped exclusive lock.
-    @native("rask_mutex_lock_ptr")
-    public func lock(self) -> T {}
+    /// Swap in a new value, return the old one.
+    @native("rask_cell_replace")
+    public func replace(self, value: T) -> T {}
 
-    /// Non-blocking lock. Returns none if held.
-    @native("rask_mutex_try_lock_ptr")
-    public func try_lock(self, f: func(T)) -> Option<T> {}
+    /// Consume the box, return what it held.
+    @native("rask_cell_get")
+    public func into_inner(take self) -> T {}
 }
