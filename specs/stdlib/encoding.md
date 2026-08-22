@@ -199,6 +199,8 @@ struct CachedUser {
 | **E23: Single payload** | Variants with one unnamed field: `{"Circle": 1.0}` — payload directly as the value |
 | **E24: Internal tagging** | `@tag("field")` on the enum: tag is a field inside the object. `{"type": "Circle", "radius": 1.0}` |
 | **E25: Variant rename** | `@rename` on individual variants overrides the serialized variant name |
+| **E24a: @tag needs names** | `@tag` requires every payload to be named. A variant with one unnamed field has no key to pair its value with, and the tag already holds the object's only unnamed slot — compile error (`E0841`) |
+| **E24b: @tag can't shadow a field** | `@tag("k")` on an enum where a variant has a field named `k` would write `"k"` twice in one object — compile error (`E0842`) |
 
 <!-- test: skip -->
 ```rask
@@ -226,6 +228,23 @@ enum Event {
 //   Click    → {"type": "Click", "x": 10, "y": 20}
 //   KeyPress → {"type": "key_press", "code": 65}
 ```
+
+Both ways `@tag` can be malformed are caught at the declaration, not when a value reaches `json.encode` — the shape is wrong for every value, so there's nothing a runtime check would learn (`ctrl.panic/S7`):
+
+<!-- test: skip -->
+```rask
+@tag("type")
+enum Shape {
+    Circle(f64)              // E24a/E0841: unnamed payload, no key to tag it with
+}
+
+@tag("kind")
+enum Event {
+    Click { kind: string }   // E24b/E0842: `"kind"` would be written twice
+}
+```
+
+Externally tagged enums have neither problem: the variant name is the key, so an unnamed payload goes directly under it (E23) and a field named `kind` is just a field.
 
 ## Format Library Pattern
 

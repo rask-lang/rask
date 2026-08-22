@@ -19,8 +19,16 @@ Every panic source is a programmer bug by definition. Expected failures use `T o
 | **S4: Access checks** | Index out of bounds, stale/wrong-pool handle (`mem.pools`), `with` aliasing (`mem.borrowing/W3–W4`) |
 | **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), `TaskHandle` dropped unconsumed (`conc.async/H1`), non-empty `Pool<Resource>` at scope exit (`mem.resources/R5`), stack overflow via guard page (`conc.runtime`) |
 | **S6: Message + location** | Every panic carries a message and the source location of the failing operation |
+| **S7: Nothing the compiler already knows** | A condition the compiler can decide from the source alone must be a compile error, never a panic compiled into the program. This covers unimplemented paths too: "not supported yet" is a diagnostic, not a runtime message |
 
 Panic during `comptime` evaluation is not a runtime event — it's a compile error (`ctrl.comptime`).
+
+S7 is the boundary around S1–S6, not an exception to them. Every source above needs a value to go wrong: which index, whether the addition overflowed, which variant arrived, whether the channel closed. None of that is knowable without running the program, so a check at the point of use is the only place the answer exists. A malformed *declaration* is the opposite — it is wrong before anything runs, for every value, so deferring it to a panic just moves a known answer past the point where the author could act on it. Two ways this goes wrong in practice:
+
+- Emitting a panic for a shape the compiler rejected reasoning about. `@tag("kind")` on a variant that already has a field named `kind` cannot encode under any value (`std.encoding/E24`); it is `E0842` at the declaration, not a duplicate JSON key at runtime.
+- Emitting a panic because a backend hasn't implemented something. The user gets a program that builds and then dies; they cannot tell a missing feature from their own bug. Refuse at compile time and name the gap.
+
+The test is whether a *value* is needed to decide. If the answer is fixed the moment the declaration is written, S7 applies.
 
 ## The Task Is the Unit of Failure
 

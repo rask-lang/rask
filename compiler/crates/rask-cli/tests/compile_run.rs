@@ -5637,6 +5637,38 @@ fn i128_overflow_and_div_zero_panic_on_both_backends() {
     }
 }
 
+// ctrl.panic/S7: both malformed `@tag` shapes used to compile and then fail at
+// runtime — native wrote a duplicate JSON key, the interpreter dropped the tag.
+// Neither needs a value to decide, so both are rejected at the declaration.
+#[test]
+fn error_tag_shape() {
+    let (failed, out) = compile_error_output("tag_shape.rk");
+    assert!(failed, "malformed `@tag` must not compile: {}", out);
+    assert_eq!(
+        out.matches("E0841").count(), 1,
+        "one `@tag` on a variant whose payload is unnamed: {}", out,
+    );
+    assert_eq!(
+        out.matches("E0842").count(), 2,
+        "two tag/field collisions — `Event.Click` and `Mixed.Bad`: {}", out,
+    );
+    // The collision is per-variant, not per-enum: `Mixed.Fine` doesn't use the
+    // tag's name and must not be reported.
+    assert!(
+        !out.contains("Mixed.Fine") && !out.contains("`Fine`"),
+        "a sibling variant that doesn't collide should be left alone: {}", out,
+    );
+    // Both messages have to name a way out, or they just restate the check.
+    assert!(
+        out.contains("name the field") || out.contains("{ value:"),
+        "E0841 should show the named-payload fix: {}", out,
+    );
+    assert!(
+        out.contains("rename the field"),
+        "E0842 should show the rename fix: {}", out,
+    );
+}
+
 // #603: an annotation the compiler silently ignores is worse than one it
 // rejects — the wire format then differs from what the source says, and nothing
 // at the declaration or the encode site tells you. `@skip` in particular reads

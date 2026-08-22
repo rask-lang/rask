@@ -818,12 +818,11 @@ fn value_to_json(
                 return Ok(make_json_object(vec![(serial_name, payload)]));
             }
             if is_single_unnamed {
-                // Internal tagging has no field name to flatten this payload
-                // into — same gap native reports for the same shape.
+                // Rejected at the declaration as E0841, so this is an internal
+                // invariant, not a user error (ctrl.panic/S7).
                 return Err(RuntimeError::TypeError(format!(
-                    "json.encode can't write `{}.{}` yet: @tag needs a named payload to \
-                     flatten into the tagged object, and this variant's payload is unnamed \
-                     (std.encoding/E24)",
+                    "internal: `@tag` on `{}.{}` with an unnamed payload reached the \
+                     interpreter — should have been rejected as E0841",
                     name, variant
                 )));
             }
@@ -839,9 +838,9 @@ fn value_to_json(
                 Some(tf) => {
                     if entries.iter().any(|(k, _)| *k == tf) {
                         return Err(RuntimeError::TypeError(format!(
-                            "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a \
-                             payload field of the same name",
-                            name, variant, tf
+                            "internal: `@tag(\"{}\")` on `{}.{}` collides with a payload field \
+                             — should have been rejected as E0842",
+                            tf, name, variant
                         )));
                     }
                     entries.insert(0, (tf, make_json_string(&serial_name)));
@@ -871,9 +870,9 @@ fn encode_enum_variant(
         Some(tf) => {
             if entries.iter().any(|(k, _)| *k == tf) {
                 return Err(RuntimeError::TypeError(format!(
-                    "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a payload \
-                     field of the same name",
-                    enum_decl.name, variant.name, tf
+                    "internal: `@tag(\"{}\")` on `{}.{}` collides with a payload field \
+                     — should have been rejected as E0842",
+                    tf, enum_decl.name, variant.name
                 )));
             }
             entries.insert(0, (tf, make_json_string(&serial_name)));

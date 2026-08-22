@@ -1517,6 +1517,20 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("both `{}` and `{}` have value {}", first, second, value))
                     .with_why("each variant must have a unique discriminant value [type.enums/E15]")
             }
+            TagOnUnnamedPayload { enum_name, variant, tag, span } => {
+                Diagnostic::error(format!("`@tag(\"{}\")` needs a named payload, and `{}.{}` has an unnamed one", tag, enum_name, variant))
+                    .with_code("E0841")
+                    .with_primary(*span, format!("`{}` carries one unnamed value", variant))
+                    .with_fix(format!("{} {{ value: … }}   // name the field, and the tag sits beside it", variant))
+                    .with_why(format!("internal tagging writes the tag as a field inside the payload's own object, so the payload needs field names for `{}` to sit beside. An unnamed value has no key to pair it with, and the compiler will not invent one. Dropping `@tag` also works: external tagging (std.encoding/E23) puts an unnamed payload directly under the variant name [std.encoding/E24]", tag))
+            }
+            TagCollidesWithField { enum_name, variant, tag, span } => {
+                Diagnostic::error(format!("`@tag(\"{}\")` collides with a field on `{}.{}`", tag, enum_name, variant))
+                    .with_code("E0842")
+                    .with_primary(*span, format!("`{}` already has a field named `{}`", variant, tag))
+                    .with_fix(format!("rename the field to something other than `{}`, or point `@tag` at a name no variant uses", tag))
+                    .with_why(format!("the tag and the field would both be written as `\"{}\"` in the same object, so the encoded JSON would carry that key twice. Duplicate keys are not valid JSON, and a decoder reading it back keeps only one — losing either the variant or the field [std.encoding/E24]", tag))
+            }
             ResultNotDisjoint { ty, span } => {
                 Diagnostic::error(format!("`T or E` needs distinct types — both sides are `{}`", ty))
                     .with_code("E0343")

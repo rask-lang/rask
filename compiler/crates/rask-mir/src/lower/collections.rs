@@ -441,36 +441,19 @@ impl<'a> MirLowerer<'a> {
                 self.push_json_finish(buf, result);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
             } else if is_single_unnamed {
-                // Internal tagging has no field name to flatten this payload
-                // into — the object already has one job (the tag) and an
-                // unnamed value can't share it without a made-up key.
-                let msg = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(msg),
-                    func: FunctionRef::internal("panic".to_string()),
-                    args: vec![MirOperand::Constant(MirConst::String(format!(
-                        "json.encode can't write `{}.{}` yet: @tag needs a named payload to flatten into the tagged object, and this variant's payload is unnamed (std.encoding/E24)",
-                        layout.name, variant.name,
-                    )))],
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                // Both @tag shapes below are rejected at the declaration
+                // (E0841/E0842), so reaching them means the check was skipped,
+                // not that a user wrote something new. Fail the compile rather
+                // than emit a panic into the program (ctrl.panic/S7).
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "`@tag` on `{}.{}`, whose payload is unnamed — should have been rejected as E0841",
+                    layout.name, variant.name,
+                )));
             } else if tag_field.as_deref().is_some_and(|tf| variant.fields.iter().any(|f| f.name == tf)) {
-                // @tag's field name collides with one of the payload's own
-                // fields. Writing both means either a duplicate JSON key
-                // (native, pre-fix) or the tag silently overwritten by the
-                // field (interpreter, pre-fix) — refuse instead of guessing
-                // which one should win.
-                let tf = tag_field.as_deref().unwrap();
-                let msg = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(msg),
-                    func: FunctionRef::internal("panic".to_string()),
-                    args: vec![MirOperand::Constant(MirConst::String(format!(
-                        "json.encode can't write `{}.{}` yet: @tag(\"{}\") collides with a payload field of the same name",
-                        layout.name, variant.name, tf,
-                    )))],
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "`@tag(\"{}\")` on `{}.{}` collides with a payload field — should have been rejected as E0842",
+                    tag_field.as_deref().unwrap(), layout.name, variant.name,
+                )));
             } else {
                 // E22 (external) or E24 (internal): a struct-shaped payload.
                 let buf = self.new_json_buf();
