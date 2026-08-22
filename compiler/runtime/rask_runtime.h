@@ -389,6 +389,8 @@ RaskVec *rask_map_values(const RaskMap *m);
 RaskMap *rask_map_clone(const RaskMap *m);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
+// Rewrite every value in place through `f` (Rack.snapshot re-points links).
+void     rask_map_map_values_ptr(RaskMap *m, void *(*f)(void *value, void *ctx), void *ctx);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
@@ -467,11 +469,18 @@ void      rask_rack_free(RaskRack *r);
 int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);
 int64_t   rask_rack_contains(const RaskRack *r, const void *link);
+// What a link-bearing field of the node type holds. Packed into the descriptor
+// alongside the byte offset, two int32s per field.
+#define RASK_RACK_FIELD_LINK 0
+#define RASK_RACK_FIELD_VEC  1
+#define RASK_RACK_FIELD_MAP  2
+
 // The node type's shape arrives here rather than at `new`: `Rack.new()` has no
-// argument to read `T` off. `link_offsets` lists the byte offsets of `T`'s
-// `Link<T>?` fields, which is what lets the fixup find a node's own edges.
+// argument to read `T` off. `fields` is `field_count` pairs of
+// (kind, byte offset), which is what lets the fixup find a node's own edges —
+// and what lets `snapshot` re-point them.
 void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
-                           int64_t link_count, const int32_t *link_offsets);
+                           int64_t field_count, const int32_t *fields);
 void      rask_rack_delete(RaskRack *r, void *link);
 void      rask_rack_clear(RaskRack *r);
 RaskVec  *rask_rack_nodes(const RaskRack *r);

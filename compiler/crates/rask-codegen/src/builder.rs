@@ -6381,13 +6381,18 @@ impl<'a> FunctionBuilder<'a> {
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
-    /// Byte offsets of the `Link<T>` / `Link<T>?` fields of an aggregate arg.
+    /// The node type's link-bearing fields, as (kind, byte offset) pairs.
     ///
     /// This is the whole descriptor the rack needs: `insert` walks it to record
-    /// the edges a node literal already carries, and `delete` walks it to drop
-    /// the edges the dying node holds. A link is a leaf — neither walk follows
-    /// one — so nested aggregates aren't descended into.
-    fn link_field_offsets(mir_args: &[MirOperand], arg_index: usize, ctx: &CodegenCtx) -> Vec<u32> {
+    /// the edges a node literal already carries, `delete` walks it to drop the
+    /// edges the dying node holds, and `snapshot` walks it to re-point them at
+    /// the copy. A link is a leaf — no walk follows one — so nested aggregates
+    /// aren't descended into.
+    fn link_field_descriptor(
+        mir_args: &[MirOperand],
+        arg_index: usize,
+        ctx: &CodegenCtx,
+    ) -> Vec<(i32, u32)> {
         let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
         let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
@@ -6395,15 +6400,40 @@ impl<'a> FunctionBuilder<'a> {
         layout
             .fields
             .iter()
-            .filter(|f| Self::is_link_field(&f.ty))
-            .map(|f| f.offset)
+            .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
             .collect()
     }
 
-    fn is_link_field(ty: &rask_types::Type) -> bool {
-        use rask_types::Type;
+    /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
+    /// Must agree with the `RASK_RACK_FIELD_*` defines in rask_runtime.h.
+    fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
+        use rask_types::{GenericArg, Type};
         let bare = ty.as_option().unwrap_or(ty);
-        matches!(bare, Type::UnresolvedGeneric { name, .. } if name == "Link")
+        let (name, args) = match bare {
+            Type::UnresolvedGeneric { name, args } => (name.as_str(), args.as_slice()),
+            _ => return None,
+        };
+        if name == "Link" {
+            return Some(0);
+        }
+        // The value type is the last type argument: `Vec<T>`'s only one, and
+        // `Map<K, V>`'s second.
+        let value = args.iter().rev().find_map(|a| match a {
+            GenericArg::Type(t) => Some(t),
+            _ => None,
+        })?;
+        let holds_link = matches!(
+            value.as_option().unwrap_or(value),
+            Type::UnresolvedGeneric { name, .. } if name == "Link"
+        );
+        if !holds_link {
+            return None;
+        }
+        match name {
+            "Vec" => Some(1),
+            "Map" => Some(2),
+            _ => None,
+        }
     }
 
     /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).
@@ -6725,18 +6755,20 @@ impl<'a> FunctionBuilder<'a> {
                     let val = args[1];
                     args[1] = Self::value_to_ptr(builder, val);
                 }
-                let offsets = Self::link_field_offsets(mir_args, 1, ctx);
+                let fields = Self::link_field_descriptor(mir_args, 1, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
-                args.push(builder.ins().iconst(types::I64, offsets.len() as i64));
-                if offsets.is_empty() {
+                args.push(builder.ins().iconst(types::I64, fields.len() as i64));
+                if fields.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
                 } else {
                     let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, (offsets.len() * 4) as u32, 0,
+                        StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
                     ));
-                    for (i, off) in offsets.iter().enumerate() {
-                        let v = builder.ins().iconst(types::I32, *off as i64);
-                        builder.ins().stack_store(v, ss, (i * 4) as i32);
+                    for (i, (kind, off)) in fields.iter().enumerate() {
+                        let k = builder.ins().iconst(types::I32, *kind as i64);
+                        let o = builder.ins().iconst(types::I32, *off as i64);
+                        builder.ins().stack_store(k, ss, (i * 8) as i32);
+                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
                     }
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 }

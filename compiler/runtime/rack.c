@@ -71,8 +71,8 @@ struct RaskRack {
     int64_t  *free_list;
     int64_t   free_len;
     int64_t   free_cap;
-    int32_t  *link_offsets;   // byte offsets of T's link fields
-    int32_t   link_count;
+    int32_t  *fields;         // (kind, byte offset) pairs — see RASK_RACK_FIELD_*
+    int32_t   field_count;
     RackEdge *edge_pool;      // recycled edge records
     uint32_t  rack_id;
     // Set on a snapshot: which rack it copied, and slot index -> copied payload.
@@ -242,17 +242,68 @@ void rask_link_forget(void **slot) {
 // a node literal already carries, and what lets `delete` drop the edges the
 // dying node holds.
 
-static void register_own_edges(const RaskRack *r, char *payload) {
-    for (int32_t i = 0; i < r->link_count; i++) {
-        void **slot = (void **)(payload + r->link_offsets[i]);
-        if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
+static void forget_vec_edges(RaskVec *v) {
+    if (!v) return;
+    int64_t n = rask_vec_len(v);
+    for (int64_t i = 0; i < n; i++) {
+        void *elem;
+        memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
+        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_VEC, v, elem);
     }
 }
 
+static void forget_map_edges(RaskMap *m) {
+    if (!m) return;
+    RaskVec *vals = rask_map_values(m);
+    int64_t n = rask_vec_len(vals);
+    for (int64_t i = 0; i < n; i++) {
+        void *elem;
+        memcpy(&elem, rask_vec_get_unchecked(vals, i), sizeof(elem));
+        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_MAP, m, elem);
+    }
+    rask_vec_free(vals);
+}
+
+static inline int32_t field_kind(const RaskRack *r, int32_t i) { return r->fields[i * 2]; }
+static inline int32_t field_offset(const RaskRack *r, int32_t i) { return r->fields[i * 2 + 1]; }
+
+// Record the edges a node's own fields carry. `insert` runs this because a node
+// literal is built before the node has an identity — `rack.insert(Node { peer:
+// head })` names an edge nothing has recorded yet.
+static void register_own_edges(const RaskRack *r, char *payload) {
+    for (int32_t i = 0; i < r->field_count; i++) {
+        void **slot = (void **)(payload + field_offset(r, i));
+        switch (field_kind(r, i)) {
+        case RASK_RACK_FIELD_LINK:
+            if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
+            break;
+        case RASK_RACK_FIELD_VEC:
+            rask_link_register_vec((RaskVec *)*slot);
+            break;
+        case RASK_RACK_FIELD_MAP:
+            rask_link_register_map((RaskMap *)*slot);
+            break;
+        }
+    }
+}
+
+// Drop them again. A dying node's containers die with it, so every target they
+// name has to forget them — otherwise a later delete walks a record pointing at
+// a freed vector.
 static void forget_own_edges(const RaskRack *r, char *payload) {
-    for (int32_t i = 0; i < r->link_count; i++) {
-        void **slot = (void **)(payload + r->link_offsets[i]);
-        if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
+    for (int32_t i = 0; i < r->field_count; i++) {
+        void **slot = (void **)(payload + field_offset(r, i));
+        switch (field_kind(r, i)) {
+        case RASK_RACK_FIELD_LINK:
+            if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
+            break;
+        case RASK_RACK_FIELD_VEC:
+            forget_vec_edges((RaskVec *)*slot);
+            break;
+        case RASK_RACK_FIELD_MAP:
+            forget_map_edges((RaskMap *)*slot);
+            break;
+        }
     }
 }
 
@@ -296,16 +347,17 @@ static void *payload_at(const RaskRack *r, int64_t index) {
 
 // The node type's shape arrives with the first insert, not here: `Rack.new()`
 // has no argument to read `T` off, exactly as `Pool.new()` doesn't.
-static void rack_describe(RaskRack *r, int64_t elem_size, int32_t link_count,
-                          const int32_t *link_offsets) {
+static void rack_describe(RaskRack *r, int64_t elem_size, int32_t field_count,
+                          const int32_t *fields) {
     if (r->elem_size != 0) return;
     r->elem_size = elem_size > 0 ? elem_size : 8;
     r->stride = round_up16((int64_t)sizeof(RackNode) + r->elem_size);
-    if (link_count > 0 && link_offsets) {
-        r->link_offsets = (int32_t *)rask_alloc((int64_t)link_count * (int64_t)sizeof(int32_t));
-        if (r->link_offsets) {
-            memcpy(r->link_offsets, link_offsets, (size_t)link_count * sizeof(int32_t));
-            r->link_count = link_count;
+    if (field_count > 0 && fields) {
+        int64_t bytes = (int64_t)field_count * 2 * (int64_t)sizeof(int32_t);
+        r->fields = (int32_t *)rask_alloc(bytes);
+        if (r->fields) {
+            memcpy(r->fields, fields, (size_t)bytes);
+            r->field_count = field_count;
         }
     }
 }
@@ -339,9 +391,9 @@ int64_t rask_rack_contains(const RaskRack *r, const void *link) {
 }
 
 void *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
-                       int64_t link_count, const int32_t *link_offsets) {
+                       int64_t field_count, const int32_t *fields) {
     if (!r) return NULL;
-    rack_describe(r, elem_size, (int32_t)link_count, link_offsets);
+    rack_describe(r, elem_size, (int32_t)field_count, fields);
 
     int64_t index;
     if (r->free_len > 0) {
@@ -501,7 +553,7 @@ void rask_rack_free(RaskRack *r) {
     rask_free(r->chunks);
     rask_free(r->directory);
     rask_free(r->free_list);
-    rask_free(r->link_offsets);
+    rask_free(r->fields);
     rask_free(r->origin_map);
     rask_free(r);
 }
@@ -512,11 +564,42 @@ void rask_rack_free(RaskRack *r) {
 // *into* one node and nulls them, a snapshot walks the edges *out of* every node
 // and re-points them at the copies. Both work because the rack knows its graph.
 
+// The copy of the node `target` names, or NULL when there is nothing to rewrite
+// — `none`, or a link into a rack this snapshot isn't copying.
+static void *snapshot_target(const RaskRack *r, void *target, void **origin, int64_t n_slots) {
+    if (rask_link_is_none(target)) return NULL;
+    RackNode *tn = node_of(target);
+    if (tn->rack != r) return NULL;               // cross-rack: leave alone
+    if (tn->slot_index < 0 || tn->slot_index >= n_slots) return NULL;
+    return origin[tn->slot_index];
+}
+
+// Map values are reached through the map's own storage, which rack.c can't see.
+// map.c walks them and calls back for each.
+static void *snapshot_remap_cb(void *value, void *ctx);
+
+typedef struct {
+    const RaskRack *rack;
+    void          **origin;
+    int64_t         n_slots;
+} SnapshotCtx;
+
+static void *snapshot_remap_cb(void *value, void *ctx) {
+    SnapshotCtx *c = (SnapshotCtx *)ctx;
+    void *mapped = snapshot_target(c->rack, value, c->origin, c->n_slots);
+    return mapped ? mapped : value;
+}
+
+static void rask_map_remap_link_values(RaskMap *m, const RaskRack *r, void **origin, int64_t n_slots) {
+    SnapshotCtx ctx = { r, origin, n_slots };
+    rask_map_map_values_ptr(m, snapshot_remap_cb, &ctx);
+}
+
 RaskRack *rask_rack_snapshot(const RaskRack *r) {
     if (!r) return NULL;
     RaskRack *copy = rask_rack_new();
     if (!copy) return NULL;
-    rack_describe(copy, r->elem_size, r->link_count, r->link_offsets);
+    rack_describe(copy, r->elem_size, r->field_count, r->fields);
 
     // Copy every node first, so every target exists before any edge is rewritten.
     // `origin` maps original slot index -> copied payload.
@@ -531,7 +614,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // the *original* nodes at this point, and registering them would make
         // the original's deletes reach into the copy.
         char *src = (char *)r->directory[i];
-        void *dst = rask_rack_insert(copy, NULL, r->elem_size, r->link_count, r->link_offsets);
+        void *dst = rask_rack_insert(copy, NULL, r->elem_size, r->field_count, r->fields);
         if (!dst) continue;
         memcpy(dst, src, (size_t)r->elem_size);
         origin[i] = dst;
@@ -543,16 +626,38 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     for (int64_t i = 0; i < n_slots; i++) {
         char *dst = (char *)origin[i];
         if (!dst) continue;
-        for (int32_t f = 0; f < r->link_count; f++) {
-            void **slot = (void **)(dst + r->link_offsets[f]);
-            void *target = *slot;
-            if (rask_link_is_none(target)) continue;
-            RackNode *tn = node_of(target);
-            if (tn->rack != r) continue;          // cross-rack: leave alone
-            void *mapped = (tn->slot_index >= 0 && tn->slot_index < n_slots)
-                ? origin[tn->slot_index] : NULL;
-            *slot = RASK_LINK_NONE;               // nothing recorded yet
-            if (mapped) rask_link_set(slot, mapped);
+        for (int32_t f = 0; f < r->field_count; f++) {
+            void **slot = (void **)(dst + field_offset(r, f));
+            switch (field_kind(r, f)) {
+            case RASK_RACK_FIELD_LINK: {
+                void *mapped = snapshot_target(r, *slot, origin, n_slots);
+                if (!mapped) break;
+                *slot = RASK_LINK_NONE;           // nothing recorded yet
+                rask_link_set(slot, mapped);
+                break;
+            }
+            case RASK_RACK_FIELD_VEC: {
+                // The copy shares the original's vector until this runs: the
+                // memcpy above copied the pointer, not the elements.
+                RaskVec *fresh = rask_vec_clone((RaskVec *)*slot);
+                *slot = fresh;
+                int64_t n = rask_vec_len(fresh);
+                for (int64_t e = 0; e < n; e++) {
+                    void **cell = (void **)rask_vec_get_unchecked(fresh, e);
+                    void *mapped = snapshot_target(r, *cell, origin, n_slots);
+                    if (mapped) *cell = mapped;
+                }
+                rask_link_register_vec(fresh);
+                break;
+            }
+            case RASK_RACK_FIELD_MAP: {
+                RaskMap *fresh = rask_map_clone((RaskMap *)*slot);
+                *slot = fresh;
+                rask_map_remap_link_values(fresh, r, origin, n_slots);
+                rask_link_register_map(fresh);
+                break;
+            }
+            }
         }
     }
 

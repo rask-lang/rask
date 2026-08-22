@@ -1832,19 +1832,40 @@ fn rack_link_litmus_pairs_agree() {
 // The delete cost the analysis flags as the model's one regression: linear in
 // in-degree, and independent of rack size. `RASK_RACK_STATS=1` reports the
 // fixup work on stderr.
+// Both backends are checked: the numbers are what says the native fixup follows
+// incoming edges rather than scanning, and a native regression to a scan would
+// otherwise only show up as "it got slower".
 #[test]
 fn rack_link_delete_cost_follows_in_degree() {
     let rask = rask_binary();
-    let run = |name: &str| -> String {
-        let out = Command::new(&rask)
-            .args(["run", "--interp"])
+    let run_on = |name: &str, interp: bool| -> String {
+        let mut cmd = Command::new(&rask);
+        cmd.arg("run");
+        if interp {
+            cmd.arg("--interp");
+        }
+        let out = cmd
             .arg(fixture(name))
             .env("RASK_RUNTIME_DIR", runtime_dir())
             .env("RASK_RACK_STATS", "1")
             .output()
             .expect("failed to run rask");
-        assert!(out.status.success(), "{} should run", name);
+        assert!(out.status.success(), "{} should run ({})", name,
+                if interp { "interp" } else { "native" });
         String::from_utf8_lossy(&out.stderr).to_string()
+    };
+    let run = |name: &str| -> String {
+        let interp = run_on(name, true);
+        let native = run_on(name, false);
+        let line = |s: &str| s.lines()
+            .find(|l| l.starts_with("rack stats:"))
+            .unwrap_or("<no stats>")
+            .to_string();
+        assert_eq!(
+            line(&interp), line(&native),
+            "{name}: the two backends must do the same fixup work"
+        );
+        interp
     };
 
     // 200 nodes all pointing at one hub: 200 edges to fix.
