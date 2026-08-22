@@ -89,6 +89,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 
 | File | What it tests |
 |------|--------------|
+| [tag_shape.rk](tag_shape.rk) | The two malformed `@tag` shapes (E24a/E24b, E0841/E0842) — an unnamed payload with no key to tag, and a payload field that shadows the tag. Both compiled and panicked at runtime before: native wrote a duplicate JSON key, the interpreter dropped the tag (ctrl.panic/S7) |
 | [field_annotation_forms.rk](field_annotation_forms.rk) | Serialization annotations the compiler can't act on (E19/E21, E0376) — the old `@skip` spelling, and `@rename` given a bare name or a number instead of a string literal; plus an excluded field with no default, which blocks auto-`Decode` (E13a, E0377) (#603) |
 | [module_needs_import.rk](module_needs_import.rk) | A stdlib module used with no import for it (IM1, E0210) — `json` and `net` were exempt because `stdlib/http.rk` imports them into a scope shared with user code (#780) |
 | [stdlib_renames.rk](stdlib_renames.rk) | task-2b rename sweep (#302): old stdlib names are hard errors, not aliases — `recv`/`try_recv`, `as_secs`/`as_secs_f64`, `os.getpid`/`os.vars`, `fs.read_file`/`write_file`/`append_file`, removed `File.lines()` (E0313) |
