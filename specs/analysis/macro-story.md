@@ -131,6 +131,14 @@ Costs, stated honestly:
 no signature noise, but the caller's location threads through calls invisibly — hidden
 parameters, hidden cost. Rejected on transparency.
 
+**Why A's "reuses existing semantics" argument doesn't survive.** It was true only while
+captures were overridable API — that's what a default *is*. Require unforgeability and
+even the default placement needs the forward rule, at which point A and B have identical
+semantics and the same new machinery; only the surface differs. A's surface then lies
+(looks like an ordinary overridable default, isn't), B's surface says exactly what
+happens. The annotation isn't the costlier option that won on ergonomics — it's the
+honest spelling of the chosen semantics.
+
 **Wrapper propagation is forward-only.** The problem `#[track_caller]` solves: a helper
 that panics should blame the *user's* line, not its own internals. Rust threads the
 location through an invisible attribute chain. Here a wrapper declares its own capture
