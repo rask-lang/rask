@@ -13,14 +13,14 @@ One shape, one syntax, several access disciplines.
 
 | Box | Access discipline | Cross-task? | Use when |
 |-----|-------------------|-------------|----------|
-| [`Shared<T, S>`](../concurrency/sync.md) | Scoped `read()`/`write()`; `S` picks the synchronization | Depends on `S` | One mutable value several names reach |
+| [`Shared<T, S>`](../concurrency/sync.md) | Scoped `read()`/`write()`; `S` picks the synchronization | Yes, unless `S` is `Local` | One mutable value several names reach |
 | [`Rack<T>`](racks.md) + `Link<T>` | Stored references; delete nulls every incoming edge | No (copy with `snapshot()`) | Graphs, scene trees, entity systems |
 | [`Heap<T>`](heap.md) | Linear (single consumer) | Sendable | Recursive types, AST nodes |
 | [`Pool<T>`](pools.md) + `Handle<T>` | Identity-based (generation-checked) | Sendable | **Deprecated** — superseded by `Rack` + `Link` |
 
 `Atomic<T>` (see [`mem.atomics`](atomics.md)) is adjacent but not a box — its access is intrinsic operations, not `with`.
 
-`Cell<T>` and `Mutex<T>` are gone as types. They were `Shared<T>` with different synchronization, so they're strategies now: `Shared<T>` (task-local, no lock), `Shared<T, Readers>`, `Shared<T, Mutex>`. The familiar words survive; the choice of type doesn't.
+`Cell<T>` and `Mutex<T>` are gone as types. They were `Shared<T>` with different synchronization, so they're strategies now: `Shared<T>` (a read-write lock, the default), `Shared<T, Mutex>` (a plain lock), `Shared<T, Local>` (no lock, one task). The familiar words survive; the choice of type doesn't.
 
 ## The shared shape
 
@@ -77,7 +77,7 @@ Ask in this order — the answers are sequential, not simultaneous (`analysis.st
 1. **One value, held by exactly one owner?** → a plain field. Done.
 2. **Many values?** → `Vec` or `Map`, unless…
 3. **…other things reference them, and they can be deleted?** → `Rack<T>` + `Link<T>`.
-4. **Several accessors share one mutable value?** → `Shared<T>`, plus a strategy if it crosses tasks (`Readers` / `Mutex`).
+4. **Several accessors share one mutable value?** → `Shared<T>`. Name a strategy only to change the default: `Mutex` when writes dominate, `Local` when the box provably never leaves its task.
 
 Two questions sit *outside* that list, which is why mixing them in made the set unchooseable:
 
@@ -90,11 +90,11 @@ Don't nest boxes without a reason. `Shared<Shared<T>>` and similar compositions 
 
 ## Cross-cutting properties
 
-| Property | `Shared<T>` | `Shared<T, Readers>` | `Shared<T, Mutex>` | Rack + Link | Heap |
+| Property | `Shared<T>` | `Shared<T, Mutex>` | `Shared<T, Local>` | Rack + Link | Heap |
 |----------|------|--------|-------|------|------|
 | Copy | No (@unique) | No (@unique) | No (@unique) | No | No |
-| Sendable cross-task | No (SH7) | Yes | Yes | By `snapshot()` | If `T: Send` |
-| Blocking access | No | Yes (writers) | Yes | No | — |
+| Sendable cross-task | Yes | Yes | No (SH7) | By `snapshot()` | If `T: Send` |
+| Blocking access | Yes (writers) | Yes | No | No | — |
 | Linear (must consume) | No | No | No | If `T` is linear | Yes |
 | Heap-allocated inner value | Yes | Yes | Yes | Yes | Yes |
 

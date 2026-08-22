@@ -58,4 +58,4 @@ func parse_port(raw: string?) -> u16? {
 
 // Read-heavy shared state (conc.sync SY1): many request tasks read it,
 // writes are rare (reload). Module-level const — Shared owns the interior.
-const config = Shared.readers(Config.from_env())
+const config = Shared.new(Config.from_env())

@@ -36,7 +36,7 @@ const raskLanguage = StreamLanguage.define({
         }
 
         // Types
-        if (stream.match(/^(i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64|bool|string|char|void|none|Vec|Map|Set|Pool|Handle|Cell|Shared|Mutex|Owned|Atomic|StringView)\b/)) {
+        if (stream.match(/^(i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64|bool|string|char|void|none|Vec|Map|Set|Pool|Handle|Rack|Link|Shared|Heap|Atomic|StringView)\b/)) {
             return "type";
         }
 

@@ -16,7 +16,7 @@ import sync.Mutex
 func main() {}
 
 test "conc.sync — Shared get + set via interior mutability" {
-    mut c = Shared.new(0)
+    mut c = Shared.local(0)
     assert c.get() == 0
     c.set(42)
     assert c.get() == 42

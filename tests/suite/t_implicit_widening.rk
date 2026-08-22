@@ -138,7 +138,7 @@ test "mem.boxes — a widened value survives a closure and a Local box" {
     let captured: i64 = f()
     assert captured == 3000000000
 
-    let cell = Shared.new(0)
+    let cell = Shared.local(0)
     cell.set(big)
     with cell.write() as c {
         assert c == 3000000000

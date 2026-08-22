@@ -11,9 +11,9 @@ one concept, so it's one type:
 
 <!-- test: skip -->
 ```rask
-let counter = Shared.new(0)                 // task-local, no lock at all
-let config  = Shared.readers(cfg)           // many tasks, concurrent reads
+let config  = Shared.new(cfg)               // many tasks, concurrent reads
 let queue   = Shared.mutex(Vec.new())       // many tasks, one at a time
+let counter = Shared.local(0)               // one task, no lock at all
 ```
 
 `Cell<T>` and `Mutex<T>` used to be separate types. They aren't different
@@ -25,19 +25,19 @@ concepts — they're the same box with different synchronization — so they're 
 | Rule | Description |
 |------|-------------|
 | **SH1: One box** | `Shared<T, S>` holds one value that several names reach. `S` is the access strategy: `Local`, `Readers`, or `Mutex` |
-| **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Local>`, resolved at monomorphization like the allocator parameter (`mem.alloc/AL4`). Zero cost — no dispatch, no stored tag |
-| **SH3: Bare means `Local`, everywhere** | `Shared<T>` is `Shared<T, Local>` in a `let`, a parameter, a field and a return type alike. One type expression, one meaning, whatever position it sits in |
+| **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Readers>`, resolved at monomorphization like the allocator parameter (`mem.alloc/AL4`). Zero cost — no dispatch, no stored tag |
+| **SH3: Bare means `Readers`, everywhere** | `Shared<T>` is `Shared<T, Readers>` in a `let`, a parameter, a field and a return type alike. One type expression, one meaning, whatever position it sits in |
 | **SH4: Strategy-agnostic code says so** | A function that works with any strategy writes the parameter: `func serve<S>(c: Shared<Config, S>)` |
 | **SH5: Two verbs** | `read()` and `write()`, inline or as a `with` block. Both exist under every strategy — `read()` under `Mutex` takes the exclusive lock: slower than `Readers` would be, never wrong |
 | **SH6: Bare access forbidden** | `with s as v { }` is a compile error. Say `read()` or `write()`, so the page shows which one you meant |
-| **SH7: `Local` can't cross a task** | Sending a `Shared<T, Local>` to another task is a compile error. `Local` takes no lock, so two tasks touching it would race. The error names the two strategies that can |
-| **SH8: The default is the conservative one** | You can never accidentally pay for synchronization you didn't ask for, and never accidentally skip synchronization you needed. The expensive direction is opt-in; the unsafe direction doesn't compile |
+| **SH7: `Local` can't cross a task** | Sending a `Shared<T, Local>` to another task is a compile error. `Local` takes no lock, so two tasks touching it would race. This rule is what makes the opt-out safe to reach for |
+| **SH8: The default serves the common case** | Most boxes are reached by more than one task, so the default locks. Opting out is a word (`Shared.local`) and the compiler catches you if you were wrong; not opting out costs some time you can measure. The direction that can't be caught is the one that isn't the default |
 
 | Strategy | Who reaches it | Synchronization | Crosses tasks | Constructor |
 |---|---|---|---|---|
-| `Local` *(default)* | closures and scopes in one task | none | no | `Shared.new(v)` |
-| `Readers` | many tasks | read-write lock | yes | `Shared.readers(v)` |
+| `Readers` *(default)* | many tasks | read-write lock | yes | `Shared.new(v)`, or `Shared.readers(v)` to say it |
 | `Mutex` | many tasks | plain lock | yes | `Shared.mutex(v)` |
+| `Local` | closures and scopes in one task | none | no (SH7) | `Shared.local(v)` |
 
 The strategy lives in the type, so it is always writable and always inspectable.
 A constructor that silently changed behaviour with no type-level trace would be
@@ -45,9 +45,9 @@ magic:
 
 <!-- test: skip -->
 ```rask
-let counter: Shared<i64> = Shared.new(0)
-let config:  Shared<Config, Readers> = Shared.readers(cfg)
-let queue:   Shared<Queue, Mutex> = Shared.mutex(q)
+let config:  Shared<Config> = Shared.new(cfg)             // Readers, the default
+let queue:   Shared<Queue, Mutex> = Shared.mutex(q)       // writes dominate
+let counter: Shared<i64, Local> = Shared.local(0)         // never leaves this task
 ```
 
 Constructor and annotation agree, and either one alone tells a reader what they
@@ -88,12 +88,13 @@ with config.write() as c {
 
 <!-- test: skip -->
 ```rask
-struct Shared<T, S = Local> { }
+struct Shared<T, S = Readers> { }
 
 extend Shared<T, S> {
-    func new(value: T) -> Shared<T, Local>
-    func readers(value: T) -> Shared<T, Readers>
+    func new(value: T) -> Shared<T, Readers>
+    func readers(value: T) -> Shared<T, Readers>   // the same, said out loud
     func mutex(value: T) -> Shared<T, Mutex>
+    func local(value: T) -> Shared<T, Local>
 
     func read(self) -> T             // inline or `with` (R5)
     func write(self) -> T            // inline or `with` (R5)
@@ -114,9 +115,12 @@ operation.
 
 ### Sending one across a task boundary
 
+The default crosses freely. The opt-out doesn't, and that is the whole reason
+it's safe to reach for:
+
 <!-- test: skip -->
 ```rask
-let counter = Shared.new(0)
+let counter = Shared.local(0)
 spawn(own || { counter.write() += 1 })     // compile error, SH7
 ```
 
@@ -126,11 +130,11 @@ error[E0346]: this `Shared` is task-local and cannot be sent
  7 |             with counter.write() as c { c += 1 }
    |             ^^^^^^^^^^^^ `counter` uses the `Local` strategy
    |
-   = fix: declare which lock you want: `Shared.mutex(…)` for one holder at a
-          time, `Shared.readers(…)` for concurrent reads
-   = why: `Local` takes no lock, so two tasks touching it would race. It is the
-          default because you can never accidentally pay for synchronization you
-          didn't need, and never accidentally skip synchronization you did
+   = fix: drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)`
+          locks more cheaply when writes dominate
+   = why: `Local` takes no lock at all, so two tasks touching it would race. It
+          is the opt-out, not the default, and this error is what makes it safe
+          to reach for
 ```
 
 ## Atomics are not a strategy
@@ -295,7 +299,9 @@ let got_it = m.try_write(|v| v.push(item))
 
 **DL3 (indirect locks):** Detecting all lock acquisition paths requires whole-program analysis, which violates local-only compilation. Syntactic detection catches the most common mistakes; ordering discipline handles the rest.
 
-**On the name.** A `Shared<T>` whose default cannot be shared *between tasks* reads oddly, and anyone arriving from Rust or Go will assume thread-safe until told otherwise. Kept deliberately: the sharing in the name is among *accessors* — several names reaching one value through a box — and the task question is the strategy's business. What makes it a wrong assumption rather than a trap is that it fails loudly at the boundary, not quietly at runtime: sending a `Shared<T, Local>` is SH7, and the error names the fix.
+**Why `Readers` is the default and `Local` isn't.** The first draft had it the other way round, on the grounds that you should never accidentally pay for synchronization you didn't need. That reasoning is fine and the conclusion was still wrong, because it ignored how often each case actually turns up. A box that never leaves its task — the old `Cell` — is rare. A box several tasks reach is the ordinary reason to have one at all. A default that serves the rare case makes every common program write a word to get what it wanted, and `Shared<T>` would have meant the one thing a reader of the name least expects.
+
+The costs aren't symmetric either. Taking a lock you didn't need costs time you can measure and then opt out of with `Shared.local`. Skipping one you did need costs correctness and shows up as a race. Defaulting to the locked strategy puts the recoverable mistake on the default path and leaves the unrecoverable one behind a word and a compile error (SH7).
 
 **Why one type and not two.** The only thing separating the old `Shared` from the old `Mutex` was whether many readers get in at once. That is a benchmarking question — do concurrent readers matter more than write overhead here? — and it was being answered by picking a type at declaration time, before the program existed. `Cell` was the same shape again with the lock removed. One type with a defaulted strategy parameter removes a question users can't answer, and turns "I sent a task-local value to another task" from a race into a compile error. Full argument in `analysis.storage-consolidation`.
 

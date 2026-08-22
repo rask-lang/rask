@@ -3,31 +3,43 @@
 // --- Shared: one value, several accessors, one scoped view (conc.sync) ---
 //
 // The strategy `S` says what synchronization the box takes, and it is a type
-// argument — so `Shared<T>` is `Shared<T, Local>` everywhere, and nothing about
-// the choice survives into the emitted code. `Cell` and `Mutex` used to be
+// argument — so `Shared<T>` is `Shared<T, Readers>` everywhere, and nothing
+// about the choice survives into the emitted code. `Cell` and `Mutex` used to be
 // separate types; they are these strategies now.
 
-/// `Local` — no lock at all. Several accessors, one task. The default.
-public struct Local { }
-
 /// `Readers` — a read-write lock. Many readers at once, or one writer.
+/// The default: most boxes are reached by more than one task, and the ones that
+/// aren't only pay for a lock they could have opted out of.
 public struct Readers { }
+
+/// `Local` — no lock at all. Several accessors, one task. Opt in with
+/// `Shared.local(…)` when a box provably never leaves its task.
+public struct Local { }
 
 /// `Mutex` — a plain lock. One holder at a time, reader or writer.
 public struct Mutex { }
 
 extend Shared<T> {
-    /// Task-local, no lock. What you write until a second task exists.
-    @native("rask_cell_new")
+    /// Many tasks, concurrent reads. The default — what you write unless you
+    /// have a reason not to.
+    @native("rask_shared_new_ptr")
     public func new(value: T) -> Shared<T> {}
 
-    /// Many tasks, concurrent reads. Pays a reader count on every write.
+    /// The same thing, said out loud. For a signature or an annotation that
+    /// wants the strategy visible rather than defaulted.
     @native("rask_shared_new_ptr")
     public func readers(value: T) -> Shared<T> {}
 
-    /// Many tasks, one at a time — reader or writer.
+    /// Many tasks, one at a time — reader or writer. Cheaper than `readers`
+    /// when writes dominate, since there is no reader count to keep.
     @native("rask_mutex_new_ptr")
     public func mutex(value: T) -> Shared<T> {}
+
+    /// No lock at all. One task, several accessors — the box `Cell` used to be.
+    /// Sending one is a compile error (SH7), which is what makes it safe to
+    /// reach for.
+    @native("rask_cell_new")
+    public func local(value: T) -> Shared<T> {}
 
     /// Shared access, scoped to the expression or the `with` block.
     /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would

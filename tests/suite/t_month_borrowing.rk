@@ -110,14 +110,14 @@ test "mem.borrowing — borrowing a collection to read it" {
 // Cell's own accessors are direct: `get()` copies the value out, `set(v)`
 // replaces it. `with` is for the locking boxes.
 test "conc.sync — get and set" {
-    mut c = Shared.new(5)
+    mut c = Shared.local(5)
     assert c.get() == 5
     c.set(42)
     assert c.get() == 42
 }
 
 test "conc.sync — replace hands back the old value" {
-    mut c = Shared.new(1)
+    mut c = Shared.local(1)
     let old = c.replace(9)
     assert old == 1
     assert c.get() == 9

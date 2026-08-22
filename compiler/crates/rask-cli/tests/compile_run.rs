@@ -2146,10 +2146,10 @@ fn error_resource_unconsumed_in_test_body() {
     );
 }
 
-// conc.sync/SH7. This is the rule that lets the default strategy be the cheap
-// one: a `Shared.new` box takes no lock, and reaching a second task with it is a
-// compile error rather than a race. Both locking strategies pass, so the test
-// also pins down that the error is about `Local` and not about `spawn`.
+// conc.sync/SH7. `Shared.local` is the opt-out — no lock at all — and this rule
+// is what makes it safe to reach for: taking one to a second task doesn't
+// compile. The default and both explicit locks pass, so the test also pins down
+// that the error is about `Local` and not about `spawn`.
 #[test]
 fn error_a_task_local_shared_cannot_be_sent() {
     let (failed, out) = compile_error_output("local_shared_sent.rk");
@@ -2157,7 +2157,7 @@ fn error_a_task_local_shared_cannot_be_sent() {
     assert_eq!(
         out.matches("error[E0346]").count(),
         1,
-        "exactly the `Shared.new` capture, not the `mutex` or `readers` ones: {}",
+        "exactly the `Shared.local` capture, not the default or the `mutex` one: {}",
         out
     );
     assert!(
@@ -2166,8 +2166,8 @@ fn error_a_task_local_shared_cannot_be_sent() {
         out
     );
     assert!(
-        out.contains("Shared.mutex") && out.contains("Shared.readers"),
-        "and it has to name both ways out: {}",
+        out.contains("Shared.new") && out.contains("Shared.mutex"),
+        "and it has to name the ways out: {}",
         out
     );
 }

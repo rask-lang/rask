@@ -208,6 +208,7 @@ const SHARED_METHODS: &[&str] = &[
     "read", "write", "try_read", "try_write", "clone",
     "get", "set", "replace", "into_inner",
 ];
+
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
     "add", "sub", "mul", "div", "scale",

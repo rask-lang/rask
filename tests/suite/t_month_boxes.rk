@@ -34,14 +34,14 @@ struct Config {
 }
 
 test "conc.sync — a Local box holds a Copy value and hands it back" {
-    mut c = Shared.new(7)
+    mut c = Shared.local(7)
     assert c.get() == 7
     c.set(8)
     assert c.get() == 8
 }
 
 test "conc.sync — a Local box of a small struct" {
-    mut c = Shared.new(Config { retries: 3, verbose: false })
+    mut c = Shared.local(Config { retries: 3, verbose: false })
     assert c.get().retries == 3
     c.set(Config { retries: 5, verbose: true })
     assert c.get().retries == 5
@@ -49,14 +49,14 @@ test "conc.sync — a Local box of a small struct" {
 }
 
 test "conc.sync — replace returns the old value in one step" {
-    mut c = Shared.new(1)
+    mut c = Shared.local(1)
     assert c.replace(2) == 1
     assert c.replace(3) == 2
     assert c.get() == 3
 }
 
 test "conc.sync — into_inner consumes the box" {
-    let c = Shared.new(99)
+    let c = Shared.local(99)
     assert c.into_inner() == 99
 }
 

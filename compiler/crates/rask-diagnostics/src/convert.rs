@@ -875,15 +875,14 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error("this `Shared` is task-local and cannot be sent")
                     .with_code("E0346")
                     .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
-                    .with_fix(format!(
-                        "declare which lock you want: `Shared.mutex(…)` for one holder \
-                         at a time, `Shared.readers(…)` for concurrent reads"
-                    ))
+                    .with_fix(
+                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
+                         locks more cheaply when writes dominate"
+                    )
                     .with_why(
-                        "`Local` takes no lock, so two tasks touching it would race. It is \
-                         the default because you can never accidentally pay for \
-                         synchronization you didn't need, and never accidentally skip \
-                         synchronization you did [conc.sync/SH7, SH8]",
+                        "`Local` takes no lock at all, so two tasks touching it would \
+                         race. It is the opt-out, not the default, and this error is \
+                         what makes it safe to reach for [conc.sync/SH7]",
                     )
             }
 

@@ -412,12 +412,12 @@ extend Buffer with Writer {
 extend Buffer {
     /// Create an empty buffer.
     public func new() -> Buffer {
-        return Buffer { data: Vec.new(), pos: Shared.new(0) }
+        return Buffer { data: Vec.new(), pos: Shared.local(0) }
     }
 
     /// Create a buffer initialized with data, position at 0.
     public func from(data: Vec<u8>) -> Buffer {
-        return Buffer { data, pos: Shared.new(0) }
+        return Buffer { data, pos: Shared.local(0) }
     }
 
     /// Every byte written, from the start — not just what's left to read.

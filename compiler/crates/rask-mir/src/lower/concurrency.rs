@@ -41,15 +41,15 @@ pub(super) enum SharedStrategy {
 
 impl SharedStrategy {
     /// Read it off a type argument's spelling. Anything unrecognised — a bare
-    /// `Shared<T>`, an unresolved variable — is `Local`, which is the
-    /// conservative answer (SH8): you can never accidentally skip
-    /// synchronization you needed, because sending a `Local` box doesn't
-    /// compile.
+    /// `Shared<T>`, an unresolved variable — is `Readers`, which is what bare
+    /// `Shared<T>` means (SH3) and the conservative answer (SH8): a box that
+    /// turns out to cross tasks is locked, and the one that didn't need to be
+    /// only paid for it.
     pub(super) fn from_name(name: &str) -> Self {
         match name.trim() {
-            "Readers" => SharedStrategy::Readers,
+            "Local" => SharedStrategy::Local,
             "Mutex" => SharedStrategy::Mutex,
-            _ => SharedStrategy::Local,
+            _ => SharedStrategy::Readers,
         }
     }
 
@@ -157,9 +157,10 @@ impl<'a> MirLowerer<'a> {
 
     /// The strategy of a `Shared<T, S>` receiver — the second type argument.
     ///
-    /// Absent means `Local`: bare `Shared<T>` is `Shared<T, Local>` in every
-    /// position (SH3), and an unresolved receiver gets the conservative answer
-    /// for the same reason the default is conservative (SH8).
+    /// Absent means `Readers`: bare `Shared<T>` is `Shared<T, Readers>` in every
+    /// position (SH3), and an unresolved receiver gets the same answer — a lock
+    /// you didn't need costs time, and one you did need and skipped costs
+    /// correctness (SH8).
     pub(super) fn shared_strategy(&self, object: &Expr) -> SharedStrategy {
         if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
             let args = match raw_ty {
@@ -184,7 +185,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        SharedStrategy::Local
+        SharedStrategy::Readers
     }
 
     /// The MIR type of what a sync box holds: the `T` of `Mutex<T>`/`Shared<T>`.

@@ -5,10 +5,18 @@
 
 # Can the Storage Types Consolidate?
 
-> **Accepted.** The recommendation at the bottom of this page is now the design.
-> `Cell` and `Mutex` are strategies on `Shared<T, S>` (`conc.sync`), `Owned<T>`
-> is `Heap<T>` (`mem.heap`), `Atomic<T>` keeps its own type and leaves the
-> storage decision. This page is kept as the argument, not as an open question.
+> **Accepted, with one reversal.** The recommendation at the bottom of this page
+> is the design: `Cell` and `Mutex` are strategies on `Shared<T, S>`
+> (`conc.sync`), `Owned<T>` is `Heap<T>` (`mem.heap`), `Atomic<T>` keeps its own
+> type and leaves the storage decision.
+>
+> The reversal is which strategy defaults. This page argues for `Local`, on the
+> grounds that you should never accidentally pay for synchronization you didn't
+> need. `conc.sync/SH8` decided the other way: the single-task box is the rare
+> one, the costs aren't symmetric — a lock you didn't need is measurable and
+> recoverable, a lock you skipped is a race — so `Readers` defaults and `Local`
+> is `Shared.local(…)`. Read the sections below with that swap in mind; the rest
+> of the argument stands.
 
 Prompted by the sharpest usability signal available: the language's own
 designer can't reliably pick between them. If choosing is hard for the person

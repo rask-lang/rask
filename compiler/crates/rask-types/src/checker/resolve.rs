@@ -2222,7 +2222,7 @@ impl TypeChecker {
             // `Shared.new/readers/mutex(value)` — the constructor names the
             // strategy, and it lands in the type so a reader of the annotation
             // sees the same thing (conc.sync/SH2).
-            ("Shared", "new" | "readers" | "mutex") if args.len() == 1 => {
+            ("Shared", "new" | "readers" | "mutex" | "local") if args.len() == 1 => {
                 let inner = args[0].clone();
                 let shared_ty = Self::shared_type(inner, method);
                 self.unify(ret, &shared_ty, span)
@@ -2232,15 +2232,6 @@ impl TypeChecker {
                 self.errors.push(TypeError::RetiredBoxType {
                     name: "Cell".to_string(),
                     replacement: "Shared.new(…)` / `Shared<T>".to_string(),
-                    span,
-                });
-                Ok(true)
-            }
-            // `Mutex` is a strategy on `Shared` now, not a type of its own.
-            ("Mutex", "new") if args.len() == 1 => {
-                self.errors.push(TypeError::RetiredBoxType {
-                    name: "Mutex".to_string(),
-                    replacement: "Shared.mutex(…)` / `Shared<T, Mutex>".to_string(),
                     span,
                 });
                 Ok(true)
@@ -2273,13 +2264,14 @@ impl TypeChecker {
         }
     }
 
-    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Local`,
-    /// which is what bare `Shared<T>` means everywhere (SH3).
+    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Readers`,
+    /// which is what bare `Shared<T>` means everywhere (SH3) — the default
+    /// serves the common case, which is a box several tasks reach.
     fn shared_type(inner: Type, constructor: &str) -> Type {
         let strategy = match constructor {
-            "readers" => "Readers",
+            "local" => "Local",
             "mutex" => "Mutex",
-            _ => "Local",
+            _ => "Readers",
         };
         Type::UnresolvedGeneric {
             name: "Shared".to_string(),
@@ -2475,19 +2467,10 @@ impl TypeChecker {
             }
             // Written `Shared.new(0)` the element type comes from the value, so
             // pin the variable to it. The strategy comes from the constructor.
-            ("Shared", "new" | "readers" | "mutex") if args.len() == 1 => {
+            ("Shared", "new" | "readers" | "mutex" | "local") if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
                 let shared_ty = Self::shared_type(inner_type.clone(), method);
                 self.unify(ret, &shared_ty, span)
-            }
-            // `Mutex` is a strategy on `Shared` now, not a type of its own.
-            ("Mutex", "new") if args.len() == 1 => {
-                self.errors.push(TypeError::RetiredBoxType {
-                    name: "Mutex".to_string(),
-                    replacement: "Shared.mutex(…)` / `Shared<T, Mutex>".to_string(),
-                    span,
-                });
-                Ok(true)
             }
             // Unrecognized method: hand the receiver on exactly as written
             // rather than inventing an argument the solver never asked for.

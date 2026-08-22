@@ -24,14 +24,14 @@ func bump(c: Shared<i32>) -> i32 {
 }
 
 test "the binding is the value, not the box" {
-    let c = Shared.new(42)
+    let c = Shared.local(42)
     with c.write() as v {
         assert_eq(v, 42)
     }
 }
 
 test "writes through the binding land in the cell" {
-    let c = Shared.new(42)
+    let c = Shared.local(42)
     with c.write() as v {
         v = v + 5
     }
@@ -39,13 +39,13 @@ test "writes through the binding land in the cell" {
 }
 
 test "the block is an expression" {
-    let c = Shared.new(21)
+    let c = Shared.local(21)
     let doubled: i64 = with c.write() as v { v * 2 }
     assert_eq(doubled, 42)
 }
 
 test "a struct payload reads and writes through the binding" {
-    let s = Shared.new(State { count: 1, mode: 0 })
+    let s = Shared.local(State { count: 1, mode: 0 })
     with s.write() as st {
         st.count = st.count + 10
         st.mode = 3
@@ -58,8 +58,8 @@ test "a struct payload reads and writes through the binding" {
 
 test "Shared<T> works in type position" {
     let app = App {
-        hits: Shared.new(0),
-        state: Shared.new(State { count: 7, mode: 1 }),
+        hits: Shared.local(0),
+        state: Shared.local(State { count: 7, mode: 1 }),
     }
     with app.hits.write() as h {
         h = h + 1
@@ -76,7 +76,7 @@ test "Shared<T> works in type position" {
 }
 
 test "an early exit still writes back on the way out" {
-    let c = Shared.new(47)
+    let c = Shared.local(47)
     assert_eq(bump(c), 147)
     with c.write() as v {
         assert_eq(v, 147)
@@ -84,7 +84,7 @@ test "an early exit still writes back on the way out" {
 }
 
 test "get, set and replace work through a let binding" {
-    let counter = Shared.new(0)
+    let counter = Shared.local(0)
     assert_eq(counter.get(), 0)
     counter.set(42)
     assert_eq(counter.get(), 42)
