@@ -164,7 +164,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // generic on every build even though (8, 8) is the right answer.
         Type::UnresolvedGeneric { name, .. }
             if matches!(name.as_str(),
-                "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic"
+                "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
                 | "Sender" | "Receiver" | "TaskHandle") => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
@@ -222,7 +222,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
                         "Vec" | "Wide" | "Map" | "Handle" | "Pool"
-                        | "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic" | "Channel") {
+                        | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,

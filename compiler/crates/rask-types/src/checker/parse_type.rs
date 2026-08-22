@@ -100,7 +100,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let args = args?;
 
             match name {
-                "Owned" if args.len() == 1 => {
+                "Heap" if args.len() == 1 => {
                     // Owned<T> is transparent to the type checker — unwrap to T
                     if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
                         return Ok(*ty);

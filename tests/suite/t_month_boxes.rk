@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Month one: the box family — Cell, Shared, Mutex, Owned, Atomic.
+// Month one: the box family — Cell, Shared, Mutex, Heap, Atomic.
 //
 // The family is closed: these are compiler types and you can't build an
 // equivalent. Each one answers a different question, and the source shows which:
@@ -7,7 +7,7 @@
 //   Cell     interior mutability for a Copy value, no locking
 //   Mutex    exclusive access, `with m.lock() as v`
 //   Shared   many readers or one writer, `with s.read()` / `with s.write()`
-//   Owned    a single owner of a heap value, spelled `own expr`
+//   Heap     a single owner of a heap value, spelled `Heap(expr)`
 //
 // Two holes here, both deliberate:
 //
@@ -20,7 +20,7 @@
 //   them.
 
 import memory.Cell
-import memory.Owned
+import memory.Heap
 import sync.Mutex
 import sync.Shared
 
@@ -130,23 +130,23 @@ test "conc.sync — two Shared reads in a row" {
     }
 }
 
-// `own expr` heap-allocates and gives back an `Owned<T>`; `*ptr` reads through it.
-test "mem.owned — own heap-allocates and derefs back" {
-    let p: Owned<i64> = own 42
+// `Heap(expr)` heap-allocates and gives back a `Heap<T>`; `*ptr` reads through it.
+test "mem.heap — Heap() heap-allocates and derefs back" {
+    let p: Heap<i64> = Heap(42)
     assert *p == 42
 }
 
 // A struct payload really is allocated, so the box owes a drop (mem.linear/L1).
-// `Owned<i64>` above doesn't: a scalar was never allocated, so there is nothing
+// `Heap<i64>` above doesn't: a scalar was never allocated, so there is nothing
 // to free (#819).
-test "mem.owned — an Owned struct payload" {
-    let p: Owned<Counter> = own Counter { n: 5 }
+test "mem.heap — a Heap struct payload" {
+    let p: Heap<Counter> = Heap(Counter { n: 5 })
     assert (*p).n == 5
     drop(p)
 }
 
-test "mem.owned — an Owned field on a struct" {
-    let c: Owned<Counter> = own Counter { n: 7 }
+test "mem.heap — a Heap field on a struct" {
+    let c: Heap<Counter> = Heap(Counter { n: 7 })
     assert (*c).n == 7
     drop(c)
 }

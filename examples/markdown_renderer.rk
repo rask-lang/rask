@@ -2,7 +2,7 @@
 // Markdown-to-HTML Renderer — Stress Test Application
 //
 // Converts a subset of CommonMark to HTML. Exercises recursive ASTs via
-// Owned<T>, string for output assembly, trait composition (Renderable),
+// Heap<T>, string for output assembly, trait composition (Renderable),
 // user-defined generics, closures, iterator adapters, and layered error types.
 //
 // Complements package_manager.rk: that stress test covers Pool/Handle graphs
@@ -60,7 +60,7 @@ extend RenderError {
 // ─── AST Types ──────────────────────────────────────────────────────
 //
 // Two-level AST: blocks (line-oriented) and inlines (character-oriented).
-// Inlines are recursive — Bold contains Vec<Inline>, exercising Owned<T>
+// Inlines are recursive — Bold contains Vec<Inline>, exercising Heap<T>
 // inside enum variants.
 
 enum Inline {

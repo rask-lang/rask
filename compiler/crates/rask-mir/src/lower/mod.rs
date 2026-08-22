@@ -1665,7 +1665,7 @@ impl<'a> MirLowerer<'a> {
         // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
         // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
         // exactly that.
-        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Owned") {
+        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Heap") {
             let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
             return self.collection_elem_of_checker_type(inner);
         }
@@ -1890,7 +1890,7 @@ impl<'a> MirLowerer<'a> {
     /// read has to cross the boundary.
     pub(crate) fn owned_payload(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
         let (name, args) = self.generic_head(ty)?;
-        if name != "Owned" {
+        if name != "Heap" {
             return None;
         }
         match args.first()? {
@@ -1926,7 +1926,7 @@ impl<'a> MirLowerer<'a> {
     /// how `Holder { inner: p }` ended up with a box holding a box (#739).
     pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Own, .. } => true,
+            ExprKind::Unary { op: UnaryOp::Heap, .. } => true,
             ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
             ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
             _ => false,
@@ -4631,7 +4631,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::Neg => MirUnaryOp::Neg,
         UnaryOp::Not => MirUnaryOp::Not,
         UnaryOp::BitNot => MirUnaryOp::BitNot,
-        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Own => unreachable!(),
+        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => unreachable!(),
     }
 }
 

@@ -467,7 +467,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0314")
                     .with_primary(*span, "type references itself infinitely")
                     .with_help("break the cycle with an explicit type annotation")
-                    .with_fix("break the cycle with an explicit type annotation or use `Owned<T>` for indirection")
+                    .with_fix("break the cycle with an explicit type annotation or use `Heap<T>` for indirection")
                     .with_why("a type cannot contain itself without indirection")
             }
 
@@ -2117,7 +2117,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     ),
                     MoveReason::Owned => (
                         format!(
-                            "`{}` is an Owned box — it was consumed there, and its \
+                            "`{}` is a Heap box — it was consumed there, and its \
                              memory went with it",
                             name
                         ),
@@ -2149,7 +2149,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         type_name
                     ),
                     MoveReason::Owned => format!(
-                        "`{}` is an Owned box — consumed on one branch but not the other, \
+                        "`{}` is a Heap box — consumed on one branch but not the other, \
                          and after the branches join the compiler has to assume it went",
                         name
                     ),
@@ -2423,7 +2423,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
 
             OwnedNotConsumed { name } => {
                 Diagnostic::error(format!(
-                    "`{}` was allocated with `own` and never dropped",
+                    "`{}` was allocated with `Heap(…)` and never dropped",
                     name
                 ))
                 .with_code("E0837")
@@ -2435,7 +2435,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("drop({})", name))
                 .with_why(
-                    "an Owned value has one owner and must be consumed exactly once \
+                    "a Heap value has one owner and must be consumed exactly once \
                      (mem.linear/L1) — nothing else frees it",
                 )
             }

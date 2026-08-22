@@ -3481,14 +3481,14 @@ fn panic_detached_task_reports_to_stderr() {
 }
 
 #[test]
-fn deref_of_owned_is_a_safe_borrow() {
+fn deref_of_a_heap_box_is_a_safe_borrow() {
     // #737: `*x` was classified as a raw-pointer dereference by syntax alone,
-    // so `(*p).x` on an Owned needed an `unsafe` block — which made owned.md's
-    // own examples uncompilable. mem.owned/OW3 says it's an ordinary borrow.
+    // so `(*p).x` on a heap box needed an `unsafe` block — which made heap.md's
+    // own examples uncompilable. mem.heap/HP3 says it's an ordinary borrow.
     // Neither backend could evaluate it either: the interpreter had no Deref
     // arm, and native emitted a real load and segfaulted.
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "owned_deref.rk");
+        let (stdout, stderr, code) = run_capture(mode, "heap_deref.rk");
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(
             stdout,
@@ -4674,7 +4674,7 @@ fn a_recursive_type_can_be_built_with_owned() {
         "wrapped=5 (expect 5)\n",
     );
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "owned_recursive_enum.rk");
+        let (stdout, stderr, code) = run_capture(mode, "heap_recursive_enum.rk");
         assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }
@@ -5501,13 +5501,13 @@ fn error_consume_borrowed_param() {
 // no type to look at — the `own` in the source is the signal, and the box is linear
 // however small its payload.
 #[test]
-fn error_owned_not_consumed() {
-    let (failed, out) = compile_error_output("owned_not_consumed.rk");
+fn error_heap_not_consumed() {
+    let (failed, out) = compile_error_output("heap_not_consumed.rk");
     assert!(failed, "an unconsumed `own` value must be rejected: {}", out);
     assert_eq!(out.matches("E0837").count(), 2, "two leaks: {}", out);
     assert_eq!(out.matches("E0800").count(), 2, "two second-consumes: {}", out);
     assert!(
-        out.contains("allocated with `own` and never dropped"),
+        out.contains("allocated with `Heap(…)` and never dropped"),
         "should say what wasn't done: {}", out,
     );
     assert!(
@@ -5515,12 +5515,12 @@ fn error_owned_not_consumed() {
         "should suggest drop, not .close(): {}", out,
     );
     assert!(
-        out.contains("is an Owned box — it was consumed there"),
+        out.contains("is a Heap box — it was consumed there"),
         "the second consume should blame the box, not the copy threshold: {}", out,
     );
     assert!(
         !out.contains("copy threshold"),
-        "an Owned box is linear whatever its payload's size: {}", out,
+        "a Heap box is linear whatever its payload's size: {}", out,
     );
 }
 

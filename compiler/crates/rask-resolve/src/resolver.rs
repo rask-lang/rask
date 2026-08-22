@@ -138,7 +138,7 @@ impl Resolver {
             ("AtomicIsize", BuiltinTypeKind::Atomic),
             ("Shared", BuiltinTypeKind::Shared),
             ("Mutex", BuiltinTypeKind::Mutex),
-            ("Owned", BuiltinTypeKind::Owned),
+            ("Heap", BuiltinTypeKind::Heap),
         ];
 
         for (name, builtin) in builtin_types {

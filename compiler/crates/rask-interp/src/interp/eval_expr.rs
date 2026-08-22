@@ -1125,7 +1125,7 @@ impl Interpreter {
                     // values are already independent of any stack frame, so
                     // there's nothing further to do here — same OW5 transparency
                     // as Deref above.
-                    UnaryOp::Own => Ok(val),
+                    UnaryOp::Heap => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",

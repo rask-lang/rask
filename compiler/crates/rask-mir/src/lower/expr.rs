@@ -1083,7 +1083,7 @@ impl<'a> MirLowerer<'a> {
                     // A scalar already fits an `Owned<T>` slot in place (OW7),
                     // so `box_into_owned` leaves it alone; only an aggregate
                     // actually moves to the heap.
-                    UnaryOp::Own => {
+                    UnaryOp::Heap => {
                         let boxed = self.box_into_owned(operand_op, &operand_ty);
                         let result_ty = if operand_ty.passed_by_address() {
                             MirType::Ptr
