@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.context/CC4: a named context clause resolves the ambient pool by type,
+// not by the caller's own variable name (#867).
+//
+// The interpreter shares one scope stack across a whole call chain, so
+// `named.get(h)` only resolved when the *caller's* local happened to be
+// spelled `named` too — nothing ever bound the callee's own context name to
+// anything. Any other spelling hit "undefined variable `named`", even though
+// CC4 says the name is local to the callee and the caller's spelling
+// shouldn't matter at all (the same way an unnamed context already didn't).
+//
+// Test bodies call through `run_*` helpers rather than holding pools
+// directly, matching t_context_entry_point.rk — a hidden-context call from
+// inside a `test` block hits a separate, pre-existing native MIR limitation.
+
+struct Item { val: i32 }
+struct Player { score: i32 }
+
+func inner(h: Handle<Item>) -> i32 using frozen named: Pool<Item> {
+    if named.get(h)? as v {
+        return v.val
+    }
+    return -1
+}
+
+func run_named_context_ignores_caller_spelling() -> i32 {
+    // The caller's variable is deliberately NOT called `named` — CC4 says the
+    // callee's own context name has no bearing on what the caller calls it.
+    mut items: Pool<Item> = Pool.new()
+    let a = items.insert(Item { val: 42 })
+    return inner(a)
+}
+
+// Two different-typed pools in scope at once: resolution has to pick the one
+// matching the callee's declared context type, not just "the only pool".
+func award_bonus(h: Handle<Player>, amount: i32) using players: Pool<Player> {
+    players[h].score += amount
+}
+
+func item_value(h: Handle<Item>) -> i32 using items: Pool<Item> {
+    return items[h].val
+}
+
+func run_two_pools_of_different_types() -> i32 {
+    mut players: Pool<Player> = Pool.new()
+    mut items: Pool<Item> = Pool.new()
+    let p = players.insert(Player { score: 10 })
+    let it = items.insert(Item { val: 7 })
+    award_bonus(p, 5)
+    return players[p].score + item_value(it)
+}
+
+// CC4 priority 3: a pool reached through `self`'s own field.
+struct Game { players: Pool<Player> }
+
+func read_score(h: Handle<Player>) -> i32 using named: Pool<Player> {
+    return named[h].score
+}
+
+extend Game {
+    func total_score(self) -> i32 {
+        mut sum: i32 = 0
+        for h in self.players {
+            sum += read_score(h)
+        }
+        return sum
+    }
+}
+
+func run_context_through_self_field() -> i32 {
+    mut g: Game = Game { players: Pool.new() }
+    g.players.insert(Player { score: 3 })
+    g.players.insert(Player { score: 4 })
+    return g.total_score()
+}
+
+test "mem.context/CC4 — named context resolves by type, not the caller's spelling" {
+    assert run_named_context_ignores_caller_spelling() == 42
+}
+
+test "mem.context/CC4 — two different-typed pools in scope resolve independently" {
+    assert run_two_pools_of_different_types() == 22
+}
+
+test "mem.context/CC4 — a pool reached through self.field satisfies a named context" {
+    assert run_context_through_self_field() == 7
+}
+
+func main() {}

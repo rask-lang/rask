@@ -130,6 +130,22 @@ impl Interpreter {
             self.env.define(param.name.clone(), arg);
         }
 
+        // mem.context/CC1, CC4: bind each named context clause to the ambient
+        // `Pool<T>` of matching type. Nothing did this before — the shared
+        // scope stack made `named.get(h)` resolve anyway whenever the
+        // *caller's* own variable happened to be spelled `named` too, since
+        // that binding was just still sitting on the stack. Any other name
+        // hit `undefined variable` (#867). Unnamed clauses need no binding:
+        // they only enable `h.field` auto-deref, which already resolves by
+        // the handle's own pool id (`pool_for_handle`), not by name.
+        for clause in &func.context_clauses {
+            if let Some(name) = &clause.name {
+                if let Some(pool) = self.pool_for_context(&clause.ty) {
+                    self.env.define(name.clone(), Value::Pool(pool));
+                }
+            }
+        }
+
         let result = self.exec_stmts(&func.body);
 
         let scope_depth = self.env.scope_depth();
