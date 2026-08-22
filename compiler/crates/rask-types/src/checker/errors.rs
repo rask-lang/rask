@@ -729,6 +729,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.annotations/AN1-AN5: a user annotation declared or attached wrong —
+    /// reserved name, bad field type, wrong target, unknown/missing/duplicate
+    /// argument.
+    #[error("annotation `{name}`: {problem}")]
+    BadAnnotation {
+        name: String,
+        problem: String,
+        fix: String,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -1057,6 +1068,7 @@ impl TypeError {
             | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
+            | BadAnnotation { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

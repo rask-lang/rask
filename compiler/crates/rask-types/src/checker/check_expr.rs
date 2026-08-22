@@ -876,6 +876,17 @@ impl TypeChecker {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
                 let base_name = name.split('<').next().unwrap_or(name);
+                // Annotations are comptime data — attached with @name(...),
+                // read through reflect, never constructed as runtime values.
+                if self.annotation_types.contains(base_name) {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: base_name.to_string(),
+                        problem: "annotations cannot be constructed as runtime values".to_string(),
+                        fix: format!("attach it instead: @{}(...) — readers get the values through reflect", base_name),
+                        span: expr.span,
+                    });
+                    return Type::Error;
+                }
                 let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
                     match parse_type_string(name, &self.types) {
                         Ok(Type::Generic { args, .. }) => Some(args),

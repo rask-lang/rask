@@ -1072,6 +1072,7 @@ impl<'a> MirLowerer<'a> {
                     is_skipped: field_attrs::is_skipped(&fl.attrs),
                     has_default: fl.has_declared_default
                         || field_attrs::default_literal(&fl.attrs).is_some(),
+                    attrs: fl.attrs.clone(),
                 }
             })
             .collect())

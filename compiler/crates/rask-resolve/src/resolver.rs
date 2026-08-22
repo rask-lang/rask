@@ -881,6 +881,23 @@ impl Resolver {
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
                 DeclKind::Package(_) => {}
+                // Annotations register as struct symbols so the name resolves
+                // — `has<A>()` names it as a type argument, and a runtime
+                // construction attempt reaches the checker's tailored
+                // rejection instead of dying here as "undefined symbol".
+                // Attachment validation (AN2-AN5) reads the AST directly.
+                DeclKind::Annotation(ann) => {
+                    let sym_id = self.symbols.insert(
+                        ann.name.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        decl.span,
+                        ann.is_pub,
+                    );
+                    if let Err(e) = self.scopes.define(ann.name.clone(), sym_id, decl.span) {
+                        self.errors.push(e);
+                    }
+                }
                 DeclKind::CImport(c_import) => {
                     self.resolve_c_import(c_import, decl.span);
                 }
@@ -1624,6 +1641,14 @@ impl Resolver {
                 DeclKind::Package(_) | DeclKind::CImport(_) => {}
                 DeclKind::Union(_) => {}
                 DeclKind::TypeAlias(_) => {}
+                DeclKind::Annotation(ann) => {
+                    // Field defaults are expressions; resolve so they can name consts.
+                    for field in &ann.fields {
+                        if let Some(default) = &field.default {
+                            self.resolve_expr(default);
+                        }
+                    }
+                }
             }
         }
     }

@@ -18,6 +18,13 @@ public struct FieldInfo {
     public has_default: bool
 }
 
+extend FieldInfo {
+    /// Whether the user annotation A is attached to this field
+    /// (type.annotations/AN6). Resolves at compile time inside comptime for.
+    @native
+    public func has<A>(self) -> bool {}
+}
+
 /// Metadata for a method on a type. Returned by reflect.methods<T>().
 public struct MethodInfo {
     public name: string

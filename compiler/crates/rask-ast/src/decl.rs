@@ -46,6 +46,48 @@ pub enum DeclKind {
     TypeAlias(TypeAliasDecl),
     /// C header import: `import c "header.h"`
     CImport(CImportDecl),
+    /// User annotation declaration (type.annotations/AN1)
+    Annotation(AnnotationDecl),
+}
+
+/// A user annotation declaration (type.annotations/AN1).
+///
+/// A restricted struct: const-representable fields with optional defaults, no
+/// methods. Attachments (`@name(args)`) type-check like construction (AN3).
+#[derive(Debug, Clone)]
+pub struct AnnotationDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub fields: Vec<Field>,
+    /// `on field, param` — empty means attachable anywhere (AN2).
+    pub targets: Vec<AnnotationTarget>,
+    pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
+}
+
+/// What an annotation may attach to (type.annotations/AN2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationTarget {
+    Struct,
+    Enum,
+    Variant,
+    Field,
+    Func,
+    Param,
+}
+
+impl AnnotationTarget {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Variant => "variant",
+            Self::Field => "field",
+            Self::Func => "func",
+            Self::Param => "param",
+        }
+    }
 }
 
 /// A type declaration: nominal by default, transparent with `type alias`.
@@ -267,6 +309,15 @@ pub mod field_attrs {
     fn call_arg<'a>(attr: &'a str, name: &str) -> Option<&'a str> {
         let rest = attr.trim().strip_prefix(name)?.trim_start();
         rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
+    }
+
+    /// The attachment's name — `validate(max:100)` → `validate`. The one
+    /// definition all three consumers share (checker validation, native
+    /// lowering of `has<A>()`, interp's FieldInfo.has), so what counts as
+    /// "the annotation's name" can't drift between them (type.annotations).
+    pub fn attachment_name(attr: &str) -> &str {
+        let attr = attr.trim();
+        attr.find('(').map(|i| &attr[..i]).unwrap_or(attr)
     }
 
     /// The contents of a `"…"` literal, with the usual escapes expanded.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AnnotationTarget, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -449,7 +449,13 @@ impl Parser {
 
                     // Declaration-only keywords can never start a statement.
                     // Use the original decl error (more specific) and synchronize.
-                    if matches!(self.current_kind(),
+                    // `annotation name` is contextual but just as declaration-only:
+                    // without it, an error inside an annotation body was replaced by
+                    // the statement retry's generic "expected newline".
+                    let is_annotation_decl =
+                        matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
+                            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_));
+                    if is_annotation_decl || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
@@ -622,6 +628,27 @@ impl Parser {
             && matches!(self.peek(1), TokenKind::Extend);
         if is_scoped {
             self.advance();
+        }
+
+        // Contextual: `annotation @name { ... }` (type.annotations/AN1). Plain
+        // identifier followed by the sigiled name, so no lexer keyword. The
+        // name keeps its `@` — you declare exactly what you attach. A bare
+        // Ident is matched too so the old spelling gets a pointed error
+        // instead of the generic declaration one.
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
+            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_))
+        {
+            if is_comptime || is_unsafe || !attrs.is_empty() {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "annotation declarations cannot have modifiers".to_string(),
+                    hint: Some("remove 'comptime', 'unsafe', or attributes".to_string()),
+                    why: None,
+                });
+            }
+            let kind = self.parse_annotation_decl(is_pub, doc)?;
+            let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+            return Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) });
         }
 
         // Detect common Rust keywords
@@ -1562,6 +1589,91 @@ impl Parser {
             attrs,
             doc,
         }))
+    }
+
+    /// `annotation @name [on target, ...] { field: T [= default], ... }`
+    /// (type.annotations/AN1-AN2). The name keeps its `@` sigil — the
+    /// declaration spells exactly what attachment sites write, so keyword and
+    /// name can't blur. Fields only — no methods, no visibility keywords:
+    /// annotations are pure data records.
+    fn parse_annotation_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        self.advance(); // 'annotation'
+        if !self.match_token(&TokenKind::At) {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "annotation names keep their `@` sigil".to_string(),
+                hint: Some("declare it the way it attaches: annotation @name { ... }".to_string()),
+                why: None,
+            });
+        }
+        let name_span = self.current().span;
+        let name = self.expect_ident()?;
+
+        // AN2: optional targets clause. Empty = attachable anywhere.
+        let mut targets = Vec::new();
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "on") {
+            self.advance();
+            loop {
+                let target = match self.current_kind() {
+                    TokenKind::Struct => AnnotationTarget::Struct,
+                    TokenKind::Enum => AnnotationTarget::Enum,
+                    TokenKind::Func => AnnotationTarget::Func,
+                    TokenKind::Ident(s) if s == "field" => AnnotationTarget::Field,
+                    TokenKind::Ident(s) if s == "variant" => AnnotationTarget::Variant,
+                    TokenKind::Ident(s) if s == "param" => AnnotationTarget::Param,
+                    _ => {
+                        return Err(ParseError::expected(
+                            "annotation target (struct, enum, variant, field, func, param)",
+                            self.current_kind(),
+                            self.current().span,
+                        ));
+                    }
+                };
+                self.advance();
+                targets.push(target);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            if self.check(&TokenKind::Func) {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "annotations cannot have methods".to_string(),
+                    hint: Some("annotations are pure data; behavior belongs in the code that reads them".to_string()),
+                    why: None,
+                });
+            }
+            let field_name_span = self.current().span;
+            let field_name = self.expect_ident_or_keyword()?;
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type_name()?;
+            let default = if self.match_token(&TokenKind::Eq) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            fields.push(Field {
+                name: field_name,
+                name_span: field_name_span,
+                ty,
+                visibility: FieldVisibility::Package,
+                attrs: vec![],
+                default,
+            });
+            self.match_token(&TokenKind::Comma);
+            self.skip_newlines();
+        }
+        self.expect(&TokenKind::RBrace)?;
+
+        Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, targets, is_pub, doc }))
     }
 
     fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {

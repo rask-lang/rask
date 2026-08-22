@@ -3778,6 +3778,33 @@ impl<'a> MirLowerer<'a> {
         })
     }
 
+    /// `binding.has<A>()` where `binding` is an active `comptime for` binding —
+    /// answered at compile time from the field's attachments
+    /// (type.annotations/AN6). Returns `None` for anything else so the caller
+    /// falls through to ordinary method dispatch.
+    fn comptime_field_method_const(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        type_args: &Option<Vec<String>>,
+    ) -> Option<TypedOperand> {
+        let ExprKind::Ident(object_name) = &object.kind else { return None };
+        if method != "has" {
+            return None;
+        }
+        let annotation = type_args.as_ref()?.first()?;
+        let fc = &self
+            .comptime_for_bindings
+            .iter()
+            .rev()
+            .find(|(name, _)| name == object_name)?
+            .1;
+        let has = fc.attrs.iter().any(|attr| {
+            rask_ast::decl::field_attrs::attachment_name(attr) == annotation
+        });
+        Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
+    }
+
     /// CT53: the expression in `value.(expr)` must be comptime-known. The
     /// only source implemented so far is a `comptime for` loop binding's
     /// string-valued FieldInfo members (`field.name`, `.serial_name`, `.type_name`).
@@ -3813,6 +3840,10 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let method = method.to_string();
         let method = &method;
+        // AN6: `field.has<A>()` on a comptime-for binding is a constant.
+        if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
+            return Ok(r);
+        }
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }

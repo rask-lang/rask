@@ -1042,6 +1042,29 @@ impl Interpreter {
                     }
                 }
 
+                // AN6: `field.has<A>()` on a reflect FieldInfo answers from
+                // the field's raw attachments (hidden `__attrs`), matched by
+                // annotation name. Mirrors the native lowering's constant.
+                if let Value::Struct(s) = &receiver {
+                    let is_field_info = s.lock().unwrap().name == "FieldInfo";
+                    if is_field_info && method == "has" {
+                        if let Some(annotation) =
+                            type_args.as_ref().and_then(|ta| ta.first()).map(|t| self.resolve_type_param(t))
+                        {
+                            let guard = s.lock().unwrap();
+                            let has = match guard.fields.get("__attrs") {
+                                Some(Value::Vec(v)) => v.lock().unwrap().items.iter().any(|a| {
+                                    let Value::String(text) = a else { return false };
+                                    let text = text.lock().unwrap();
+                                    rask_ast::decl::field_attrs::attachment_name(&text) == annotation
+                                }),
+                                _ => false,
+                            };
+                            return Ok(Value::Bool(has));
+                        }
+                    }
+                }
+
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
