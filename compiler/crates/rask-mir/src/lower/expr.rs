@@ -2790,7 +2790,6 @@ impl<'a> MirLowerer<'a> {
             ExprKind::IsPresent { expr: inner, .. } => {
                 let (val, _ty) = self.lower_expr(inner)?;
                 let niche = self.option_niche(inner, &_ty);
-                let is_niche = niche.is_some();
                 let tag = self.emit_option_tag(&val, niche);
                 let result = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -6069,7 +6068,6 @@ impl<'a> MirLowerer<'a> {
                 .map_or(false, |ty| ty.is_option());
         if is_option_none_cmp {
             let niche = self.option_operand_niche(object, obj_op);
-            let is_niche = niche.is_some();
             let tag_local = self.emit_option_tag(obj_op, niche);
             let result = self.builder.alloc_temp(MirType::Bool);
             // tag == 1 means None; tag == 0 means Some.
