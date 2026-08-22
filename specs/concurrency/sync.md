@@ -121,15 +121,16 @@ spawn(own || { counter.write() += 1 })     // compile error, SH7
 ```
 
 ```
-ERROR [conc.sync/SH7]: this `Shared` is task-local and cannot be sent
+error[E0346]: this `Shared` is task-local and cannot be sent
    |
- 8 |  spawn(own || { counter.write() += 1 })
-   |                 ^^^^^^^ `Shared<i64>` uses the `Local` strategy
+ 7 |             with counter.write() as c { c += 1 }
+   |             ^^^^^^^^^^^^ `counter` uses the `Local` strategy
    |
-WHY: `Local` takes no lock, so two tasks touching it would race.
-FIX: declare which lock you want:
-
-  let counter: Shared<i64, Mutex> = Shared.mutex(0)
+   = fix: declare which lock you want: `Shared.mutex(…)` for one holder at a
+          time, `Shared.readers(…)` for concurrent reads
+   = why: `Local` takes no lock, so two tasks touching it would race. It is the
+          default because you can never accidentally pay for synchronization you
+          didn't need, and never accidentally skip synchronization you did
 ```
 
 ## Atomics are not a strategy

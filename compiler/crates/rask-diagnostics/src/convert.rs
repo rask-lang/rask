@@ -871,6 +871,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
+            LocalSharedSent { name, span } => {
+                Diagnostic::error("this `Shared` is task-local and cannot be sent")
+                    .with_code("E0346")
+                    .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
+                    .with_fix(format!(
+                        "declare which lock you want: `Shared.mutex(…)` for one holder \
+                         at a time, `Shared.readers(…)` for concurrent reads"
+                    ))
+                    .with_why(
+                        "`Local` takes no lock, so two tasks touching it would race. It is \
+                         the default because you can never accidentally pay for \
+                         synchronization you didn't need, and never accidentally skip \
+                         synchronization you did [conc.sync/SH7, SH8]",
+                    )
+            }
+
             RetiredBoxType { name, replacement, span } => {
                 Diagnostic::error(format!(
                     "`{}` is not a type any more — it's a strategy on `Shared`", name

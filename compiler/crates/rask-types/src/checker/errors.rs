@@ -516,6 +516,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// conc.sync/SH7: a task-local `Shared` sent to another task.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+        span: Span,
+    },
+
     /// CC1: `spawn` used outside any `using Multitasking` block
     #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
     SpawnOutsideBlock {
@@ -1021,6 +1028,7 @@ impl TypeError {
             | FrozenContextWrite { .. }
             | MutateConst { .. }
             | RetiredBoxType { .. }
+            | LocalSharedSent { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

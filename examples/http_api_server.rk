@@ -134,7 +134,7 @@ func delete_user(id: i64) -> Response {
 // ─── Main ────────────────────────────────────────────────────────
 
 // Module-level shared database
-const db = Shared.new(Database.new())
+const db = Shared.mutex(Database.new())
 
 func main() -> void or Error {
     using Multitasking {

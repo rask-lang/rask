@@ -2146,6 +2146,32 @@ fn error_resource_unconsumed_in_test_body() {
     );
 }
 
+// conc.sync/SH7. This is the rule that lets the default strategy be the cheap
+// one: a `Shared.new` box takes no lock, and reaching a second task with it is a
+// compile error rather than a race. Both locking strategies pass, so the test
+// also pins down that the error is about `Local` and not about `spawn`.
+#[test]
+fn error_a_task_local_shared_cannot_be_sent() {
+    let (failed, out) = compile_error_output("local_shared_sent.rk");
+    assert!(failed, "sending a `Local` box must be rejected: {}", out);
+    assert_eq!(
+        out.matches("error[E0346]").count(),
+        1,
+        "exactly the `Shared.new` capture, not the `mutex` or `readers` ones: {}",
+        out
+    );
+    assert!(
+        out.contains("uses the `Local` strategy"),
+        "the message has to name the strategy, since that's what the fix changes: {}",
+        out
+    );
+    assert!(
+        out.contains("Shared.mutex") && out.contains("Shared.readers"),
+        "and it has to name both ways out: {}",
+        out
+    );
+}
+
 #[test]
 fn error_rack_link_use_after_delete() {
     let (failed, out) = compile_error_output("rack_link_use_after_delete.rk");
