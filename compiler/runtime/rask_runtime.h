@@ -454,14 +454,15 @@ RaskVec    *rask_pool_drain(RaskPool *p);
 
 typedef struct RaskRack RaskRack;
 
-// `none` for a link. Shares the handle sentinel so the niche machinery in MIR
-// lowering needs one constant, not two — a link is a pointer into a chunk the
-// rack allocated, so all-ones can't collide with a real one. Zero is treated as
-// `none` too, so a slot that was never written can't be dereferenced.
-#define RASK_LINK_NONE ((void *)(intptr_t)-1)
+// `none` for a link is the null address — the one address that can never name
+// a node. A pool handle is index+generation and uses all-ones instead; the two
+// niches don't share a sentinel, they each pick what their own domain can't
+// produce. Null buys two things here: a rack chunk arrives zeroed, so a node's
+// links start out absent with nothing written, and the check is `if (!link)`.
+#define RASK_LINK_NONE ((void *)0)
 
 static inline int rask_link_is_none(const void *p) {
-    return p == NULL || p == RASK_LINK_NONE;
+    return p == NULL;
 }
 
 RaskRack *rask_rack_new(void);

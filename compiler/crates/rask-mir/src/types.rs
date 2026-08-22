@@ -119,11 +119,26 @@ impl MirType {
 
     /// True for the two one-word niche payloads: a pool handle and a link.
     ///
-    /// `T?` for either of these is the same word, with the all-ones sentinel
-    /// standing for `none` — no tag, no separate payload slot. Everywhere that
-    /// asks "is this option a niche?" is asking this.
+    /// `T?` for either of these is the same word — no tag, no separate payload
+    /// slot — with one value of the word reserved to mean `none`. Everywhere
+    /// that asks "is this option a niche?" is asking this.
     pub fn is_niche_payload(&self) -> bool {
         matches!(self, MirType::Handle | MirType::Link(_))
+    }
+
+    /// The word that means `none` for this type, if it is a niche.
+    ///
+    /// Each niche picks a value its own domain can't produce, and they are not
+    /// the same value: a handle is index+generation, so all-ones is impossible;
+    /// a link is an address, so null is. Asking the type is what keeps the two
+    /// apart — nothing downstream should reach for a sentinel constant directly.
+    pub fn niche_none(&self) -> Option<i64> {
+        match self {
+            MirType::Handle => Some(rask_mono::abi::HANDLE_NONE_SENTINEL),
+            MirType::Link(_) => Some(rask_mono::abi::LINK_NONE_SENTINEL),
+            MirType::Option(inner) => inner.niche_none(),
+            _ => None,
+        }
     }
 
     /// Byte size of this type. Structs/enums use pointer size as fallback.

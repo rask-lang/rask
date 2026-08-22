@@ -91,8 +91,14 @@ allocations, locks and I/O the principle reserves visibility for.
 Natively, a node lives in a fixed-size chunk the rack never reallocates, with its
 header immediately *before* the payload. So a link is the node's address and
 nothing else, and `l.health` is the same base+offset load any aggregate field
-gets — no lookup, no adjustment. `Link<T>?` is that same word with all-ones for
-`none`. The delete cost is measured, and the two backends agree on it:
+gets — no lookup, no adjustment. `Link<T>?` is that same word with the null
+address for `none` — one word, no tag. That's a different sentinel from
+`Handle<T>?`, which uses all-ones, and deliberately so: each niche picks the
+value its own domain can't produce. A handle is index+generation, so all-ones is
+impossible; a link is an address, so null is. Null also means a rack chunk
+arrives with every link already reading as `none`, since chunks are zeroed.
+
+The delete cost is measured, and the two backends agree on it:
 `RASK_RACK_STATS=1` reports the same `edges_fixed`/`holders_visited` on both.
 
 An edge write touches the target's *header*, not any field the target declares.

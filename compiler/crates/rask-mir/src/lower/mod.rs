@@ -34,10 +34,27 @@ type TypedOperand = (MirOperand, MirType);
 /// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
 pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
+/// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+
+/// The `none` word for a lowered type that is a niche *option*.
+///
+/// Not the same question as `MirType::niche_none`: a bare `MirType::Handle` is
+/// a handle, not a `Handle?`, and reading it as an option would test it against
+/// the sentinel. `Link` is the exception — `Link<T>?` collapses to `Link`, so
+/// there the value and the option really are one type.
+pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
+    match ty {
+        MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
+        MirType::Link(_) => ty.niche_none(),
+        _ => None,
+    }
+}
+
 /// `T?`, collapsing the link niche. `Link<T>?` *is* one word — the address,
-/// with all-ones for `none` — so wrapping it in an `Option` would give the local
-/// a tagged-union shape codegen then reads a tag byte out of. That read is
-/// through the sentinel itself, which is address -1.
+/// with null for `none` — so wrapping it in an `Option` would give the local a
+/// tagged-union shape codegen then reads a tag byte out of. That read goes
+/// through the sentinel itself, which is not an address you may load from.
 ///
 /// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
 /// collapses it and `resolve_type_str` doesn't, and the checks downstream accept
@@ -51,15 +68,23 @@ pub(crate) fn option_of(inner: MirType) -> MirType {
 
 /// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
 ///
-/// Both are one word where the value *is* the option and `none` is the all-ones
-/// sentinel, so neither carries a tag. They share the sentinel deliberately: a
-/// link points into a chunk the rack allocated, so all-ones can't collide with
-/// a real one, and one constant is easier to keep right than two.
+/// Both are one word where the value *is* the option, so neither carries a tag.
+/// They do *not* share a `none`: ask `niche_option_sentinel` for that.
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
-    if let Some(inner) = ty.as_option() {
-        matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
-    } else {
-        false
+    niche_option_sentinel(ty).is_some()
+}
+
+/// The word that means `none` for a niche option written as a checker type.
+///
+/// `MirType::niche_none` answers the same question after lowering; this is the
+/// version for the places that still only have the checker's spelling.
+pub(crate) fn niche_option_sentinel(ty: &Type) -> Option<i64> {
+    let inner = ty.as_option()?;
+    let Type::UnresolvedGeneric { name, .. } = inner else { return None };
+    match name.split('<').next().unwrap_or(name).trim() {
+        "Handle" => Some(HANDLE_NONE_SENTINEL),
+        "Link" => Some(LINK_NONE_SENTINEL),
+        _ => None,
     }
 }
 
@@ -1053,6 +1078,23 @@ impl<'a> MirContext<'a> {
             MirType::Struct(sid) => MirType::Link(sid),
             _ => MirType::Ptr,
         }
+    }
+
+    /// The MIR type of a niche option, keeping *which* niche it is.
+    ///
+    /// `Handle<T>?` and `Link<T>?` are the same shape with different `none`
+    /// words. Collapsing both to `Option(Handle)` — which is what a struct
+    /// field's type used to do — put the handle's all-ones `none` into a link
+    /// field, and the rack then tried to register an edge from address -1.
+    pub(crate) fn niche_option_mir_type(&self, ty: &Type) -> Option<MirType> {
+        let inner = ty.as_option()?;
+        let Type::UnresolvedGeneric { name, args } = inner else { return None };
+        let payload = match name.split('<').next().unwrap_or(name).trim() {
+            "Handle" => MirType::Handle,
+            "Link" => self.link_mir_type(args.first()),
+            _ => return None,
+        };
+        Some(MirType::Option(Box::new(payload)))
     }
 
     /// Convert a Type from the type checker to MirType.
@@ -3835,9 +3877,12 @@ impl<'a> MirLowerer<'a> {
 
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.
     fn is_niche_option_expr(&self, expr: &Expr) -> bool {
-        self.ctx.lookup_raw_type(expr.id)
-            .map(|ty| is_niche_option_handle(ty))
-            .unwrap_or(false)
+        self.niche_sentinel_of_expr(expr).is_some()
+    }
+
+    /// The `none` word for an expression whose checker type is a niche option.
+    fn niche_sentinel_of_expr(&self, expr: &Expr) -> Option<i64> {
+        niche_option_sentinel(self.ctx.lookup_raw_type(expr.id)?)
     }
 
     /// Same question, with the lowered type as a second opinion. A `Handle?`
@@ -3850,29 +3895,28 @@ impl<'a> MirLowerer<'a> {
     /// spell this out inline instead, which is how the checker-only version
     /// kept getting used where a MIR type was sitting right there.
     pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
-        self.is_niche_option_expr(expr)
-            || matches!(ty, MirType::Option(inner)
-                if matches!(**inner, MirType::Handle | MirType::Link(_)))
-            // The collapsed spelling: a `Link<T>?` local is typed `Link`, since
-            // the option and the value are the same word.
-            || matches!(ty, MirType::Link(_))
+        self.option_niche(expr, ty).is_some()
+    }
+
+    /// `option_is_niche`, and which word means `none` when it is one.
+    ///
+    /// The lowered type answers first. It knows whether this is a handle or a
+    /// link, and those have different sentinels; the checker type is the
+    /// fallback for the case `option_is_niche` exists for, where there is no
+    /// useful MIR type at the use site.
+    pub(crate) fn option_niche(&self, expr: &Expr, ty: &MirType) -> Option<i64> {
+        mir_niche_none(ty).or_else(|| self.niche_sentinel_of_expr(expr))
     }
 
     /// `option_is_niche` for a value that's already lowered — reads the MIR
     /// type off the operand's local.
-    pub(crate) fn option_operand_is_niche(&self, expr: &Expr, op: &MirOperand) -> bool {
-        if self.is_niche_option_expr(expr) {
-            return true;
+    pub(crate) fn option_operand_niche(&self, expr: &Expr, op: &MirOperand) -> Option<i64> {
+        if let MirOperand::Local(id) = op {
+            if let Some(s) = self.builder.local_type(*id).as_ref().and_then(mir_niche_none) {
+                return Some(s);
+            }
         }
-        match op {
-            MirOperand::Local(id) => self
-                .builder
-                .local_type(*id)
-                .is_some_and(|t| matches!(&t, MirType::Option(inner)
-                    if matches!(*inner.as_ref(), MirType::Handle | MirType::Link(_)))
-                    || matches!(&t, MirType::Link(_))),
-            _ => false,
-        }
+        self.niche_sentinel_of_expr(expr)
     }
 
     /// Emit a tag-equivalent check for an option value.
@@ -3880,15 +3924,15 @@ impl<'a> MirLowerer<'a> {
     /// Returns a local that is 0 for Some, non-zero for None — matching
     /// the tag convention used by branches. Works for both niche-optimized
     /// (compare-to-sentinel) and tagged union (EnumTag load) options.
-    fn emit_option_tag(&mut self, value: &MirOperand, is_niche: bool) -> LocalId {
-        if is_niche {
+    fn emit_option_tag(&mut self, value: &MirOperand, niche: Option<i64>) -> LocalId {
+        if let Some(sentinel) = niche {
             let result = self.builder.alloc_temp(MirType::U8);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::BinaryOp {
                     op: crate::operand::BinOp::Eq,
                     left: value.clone(),
-                    right: MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
+                    right: MirOperand::Constant(MirConst::Int(sentinel)),
                 },
             }));
             result

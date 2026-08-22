@@ -544,6 +544,15 @@ impl<'a> MirLowerer<'a> {
                             // which is also what makes re-pointing an edge forget
                             // its old target.
                             if matches!(fty, MirType::Link(_)) {
+                                // A bare `none` on the right lowers as a tagged
+                                // option whenever the checker hasn't settled its
+                                // type, and the field is a niche — it wants the
+                                // sentinel word. Without this, `n.peer = none`
+                                // stored the *address* of the tagged local and
+                                // the rack recorded an edge to the stack.
+                                let val_op = self.wrap_sum_field_value(
+                                    Some(&fty), fty.niche_none(), &val_ty, val_op,
+                                );
                                 self.emit_link_store(base, offset, val_op);
                                 return Ok(());
                             }
@@ -1812,8 +1821,9 @@ impl<'a> MirLowerer<'a> {
         let bind_in_body = match presence {
             Some((inner, name)) => {
                 let (val, scrutinee_ty) = self.lower_expr(inner)?;
-                let is_niche = self.option_is_niche(inner, &scrutinee_ty);
-                let tag = self.emit_option_tag(&val, is_niche);
+                let niche = self.option_niche(inner, &scrutinee_ty);
+                let is_niche = niche.is_some();
+                let tag = self.emit_option_tag(&val, niche);
                 // Tag 0 is present (Some/Ok); anything else ends the loop.
                 let is_present = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
