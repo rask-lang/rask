@@ -28,11 +28,21 @@
 
 #define RACK_CHUNK_SLOTS 64
 
-// One incoming edge: the address of the link word, and who it currently names.
-// `target` is kept so a stale record can be recognised rather than trusted —
-// see `fix_incoming`.
+// One incoming edge, and where it lives.
+//
+// A struct field names its slot exactly, so an overwrite unlinks the old target
+// precisely and nothing accumulates however many times the field is written. A
+// container names the container and no position — positions shift under
+// insertion and rehashing — so it is one record per (container, target) pair and
+// the fixup drops every match it finds. `target` is kept so a record that no
+// longer describes reality can be recognised rather than trusted.
+#define RACK_EDGE_SLOT 0
+#define RACK_EDGE_VEC  1
+#define RACK_EDGE_MAP  2
+
 typedef struct RackEdge {
-    void           **slot;
+    int32_t          kind;
+    void            *holder;   // void** slot, RaskVec*, or RaskMap*
     void            *target;
     struct RackEdge *next;
 } RackEdge;
@@ -121,25 +131,36 @@ static void edge_release(RaskRack *r, RackEdge *e) {
     r->edge_pool = e;
 }
 
-// Record that `slot` now points at `target`.
-static void edge_register(void **slot, void *target) {
+static int edge_recorded(void *target, int32_t kind, void *holder) {
+    for (RackEdge *e = node_of(target)->incoming; e; e = e->next) {
+        if (e->kind == kind && e->holder == holder) return 1;
+    }
+    return 0;
+}
+
+// Record that `holder` now points at `target`.
+static void edge_register(int32_t kind, void *holder, void *target) {
     RackNode *n = node_of(target);
     RaskRack *r = n->rack;
+    if (kind != RACK_EDGE_SLOT && edge_recorded(target, kind, holder)) {
+        return;   // one record per (container, target), however many entries match
+    }
     RackEdge *e = edge_alloc(r);
-    e->slot = slot;
+    e->kind = kind;
+    e->holder = holder;
     e->target = target;
     e->next = n->incoming;
     n->incoming = e;
 }
 
-// Forget the edge `slot` -> `target`. A no-op if it was never recorded, which
+// Forget the edge `holder` -> `target`. A no-op if it was never recorded, which
 // keeps `rask_link_set` safe to call on a slot the rack has never seen.
-static void edge_unregister(void **slot, void *target) {
+static void edge_unregister(int32_t kind, void *holder, void *target) {
     RackNode *n = node_of(target);
     RaskRack *r = n->rack;
     RackEdge **cur = &n->incoming;
     while (*cur) {
-        if ((*cur)->slot == slot) {
+        if ((*cur)->kind == kind && (*cur)->holder == holder) {
             RackEdge *dead = *cur;
             *cur = dead->next;
             edge_release(r, dead);
@@ -160,9 +181,50 @@ void rask_link_set(void **slot, void *target) {
         // Self-assignment must not drop the backlink it would re-add.
         return;
     }
-    if (!rask_link_is_none(old)) edge_unregister(slot, old);
+    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
     *slot = target;
-    if (!rask_link_is_none(target)) edge_register(slot, target);
+    if (!rask_link_is_none(target)) edge_register(RACK_EDGE_SLOT, slot, target);
+}
+
+// A link stored in a `Vec<Link<T>>`. The record names the vector, not the
+// position: `push`, `remove` and `sort` all move elements around, and a record
+// that named an index would be wrong by the next call.
+void rask_link_register_element(RaskVec *v, void *target) {
+    if (!v || rask_link_is_none(target)) return;
+    edge_register(RACK_EDGE_VEC, v, target);
+}
+
+// Same for a `Map<K, Link<T>>` value.
+void rask_link_register_entry(RaskMap *m, void *target) {
+    if (!m || rask_link_is_none(target)) return;
+    edge_register(RACK_EDGE_MAP, m, target);
+}
+
+// Record every link already sitting in a container.
+//
+// For a container that arrives whole rather than element by element — the
+// classic being `h.list = h.list.filter(…)`, where `filter` builds a fresh
+// vector whose entries no push ever recorded.
+void rask_link_register_vec(RaskVec *v) {
+    if (!v) return;
+    int64_t n = rask_vec_len(v);
+    for (int64_t i = 0; i < n; i++) {
+        void *elem;
+        memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
+        if (!rask_link_is_none(elem)) edge_register(RACK_EDGE_VEC, v, elem);
+    }
+}
+
+void rask_link_register_map(RaskMap *m) {
+    if (!m) return;
+    RaskVec *vals = rask_map_values(m);
+    int64_t n = rask_vec_len(vals);
+    for (int64_t i = 0; i < n; i++) {
+        void *elem;
+        memcpy(&elem, rask_vec_get_unchecked(vals, i), sizeof(elem));
+        if (!rask_link_is_none(elem)) edge_register(RACK_EDGE_MAP, m, elem);
+    }
+    rask_vec_free(vals);
 }
 
 // Forget whatever edge `slot` holds, without writing it. Emitted where a holder
@@ -170,7 +232,7 @@ void rask_link_set(void **slot, void *target) {
 // storage that is going away.
 void rask_link_forget(void **slot) {
     void *old = *slot;
-    if (!rask_link_is_none(old)) edge_unregister(slot, old);
+    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
 }
 
 // ─── Descriptor walks ──────────────────────────────────────────────────────
@@ -183,14 +245,14 @@ void rask_link_forget(void **slot) {
 static void register_own_edges(const RaskRack *r, char *payload) {
     for (int32_t i = 0; i < r->link_count; i++) {
         void **slot = (void **)(payload + r->link_offsets[i]);
-        if (!rask_link_is_none(*slot)) edge_register(slot, *slot);
+        if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
     }
 }
 
 static void forget_own_edges(const RaskRack *r, char *payload) {
     for (int32_t i = 0; i < r->link_count; i++) {
         void **slot = (void **)(payload + r->link_offsets[i]);
-        if (!rask_link_is_none(*slot)) edge_unregister(slot, *slot);
+        if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
     }
 }
 
@@ -323,14 +385,34 @@ static void fix_incoming(RaskRack *r, char *payload) {
     while (e) {
         RackEdge *next = e->next;
         if (stats_enabled()) g_holders_visited++;
-        // The record names the slot *and* what it should contain. A slot whose
-        // holder died without unregistering no longer holds this node, so the
-        // mismatch is caught here rather than scribbling on storage that has
-        // moved on.
-        if (*e->slot == payload) {
-            *e->slot = RASK_LINK_NONE;
-            if (stats_enabled()) g_edges_fixed++;
+        int64_t fixed = 0;
+        switch (e->kind) {
+        case RACK_EDGE_SLOT: {
+            // The record names the slot *and* what it should contain. A slot
+            // whose holder died without unregistering no longer holds this
+            // node, so the mismatch is caught here rather than scribbling on
+            // storage that has moved on.
+            void **slot = (void **)e->holder;
+            if (*slot == payload) { *slot = RASK_LINK_NONE; fixed = 1; }
+            break;
         }
+        case RACK_EDGE_VEC: {
+            // A list of live things loses the entry rather than holding a
+            // `none`. Every match goes, not just the first: one record covers
+            // the whole vector however many entries point here.
+            RaskVec *v = (RaskVec *)e->holder;
+            for (int64_t i = rask_vec_len(v) - 1; i >= 0; i--) {
+                void *elem;
+                memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
+                if (elem == payload) { rask_vec_remove_at(v, i, NULL); fixed++; }
+            }
+            break;
+        }
+        case RACK_EDGE_MAP:
+            fixed = rask_map_drop_value_ptr((RaskMap *)e->holder, payload);
+            break;
+        }
+        if (stats_enabled()) g_edges_fixed += fixed;
         edge_release(r, e);
         e = next;
     }

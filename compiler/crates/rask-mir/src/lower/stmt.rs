@@ -434,6 +434,22 @@ impl<'a> MirLowerer<'a> {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
                     None => (val_op, val_ty),
                 };
+                // A container of links that arrived whole — a `filter` result,
+                // say — carries edges nothing recorded. Register them here; the
+                // records dedupe per (container, target), so this is free where
+                // the pushes already did it.
+                if let Some(func) = self
+                    .ctx
+                    .lookup_raw_type(value.id)
+                    .cloned()
+                    .and_then(|t| self.ctx.container_link_registration(&t))
+                {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(func.to_string()),
+                        args: vec![val_op.clone()],
+                    }));
+                }
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self

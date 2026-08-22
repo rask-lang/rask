@@ -4890,7 +4890,7 @@ impl<'a> MirLowerer<'a> {
             let elem = self.extract_payload_type(expr)
                 .or(tracked_elem)
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3750"));
-            Some(MirType::Option(Box::new(elem)))
+            Some(super::option_of(elem))
         } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
             // Same reasoning as Vec_get: these answer `T?`, and the payload type
             // sizes the result slot. From the stub metadata the result came back
@@ -4905,7 +4905,7 @@ impl<'a> MirLowerer<'a> {
             // concrete one after monomorphization.
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3765"));
-            Some(MirType::Option(Box::new(elem)))
+            Some(super::option_of(elem))
         } else if qualified_name == "Random_choice" {
             // `choice(v)` answers `T?`, and the payload type sizes the slot the
             // DerefOption adapter copies into. From the stub metadata it came
@@ -4917,7 +4917,7 @@ impl<'a> MirLowerer<'a> {
                 .first()
                 .and_then(|a| self.collection_elem_of_expr(&a.expr))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:random_choice"));
-            Some(MirType::Option(Box::new(vec_slot_type(elem))))
+            Some(super::option_of(vec_slot_type(elem)))
         } else if qualified_name == "Map_get" {
             // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies
@@ -4929,7 +4929,7 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.map_value_mir(object))
                 .or_else(|| self.collection_elem_of_expr(object))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:map_get_value"));
-            Some(MirType::Option(Box::new(payload)))
+            Some(super::option_of(payload))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             //
@@ -4960,7 +4960,7 @@ impl<'a> MirLowerer<'a> {
             // took 8 of a string's 16 bytes and reading it segfaulted.
             tracked_elem
                 .or_else(|| self.extract_payload_type(expr))
-                .map(|elem| MirType::Option(Box::new(vec_slot_type(elem))))
+                .map(|elem| super::option_of(vec_slot_type(elem)))
         } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
             // Both return T? — extract T from the tracked element type. Without
             // this `remove` answered `i64?` regardless of what the pool held,
@@ -4978,7 +4978,7 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.collection_elem_of_expr(object)
                     .filter(|t| !matches!(t, MirType::Ptr)))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
-            Some(MirType::Option(Box::new(elem_ty)))
+            Some(super::option_of(elem_ty))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
             // without `T`'s layout attached — and a link without its layout
@@ -5226,11 +5226,23 @@ impl<'a> MirLowerer<'a> {
         };
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
+        let container_edge = self.container_edge_call(&final_name, &final_args);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(final_name.clone()),
             args: final_args,
         }));
+        // A link put into a container is an edge like any other, so the target
+        // has to learn about it (mem.racks/RK3). The record names the container
+        // rather than a position — a push or a rehash moves entries around, and
+        // a record naming an index would be wrong by the next call.
+        if let Some((func, args)) = container_edge {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(func.to_string()),
+                args,
+            }));
+        }
         self.flush_elem_writebacks(wb_mark);
 
         // An `f32` receiver dispatches to the `f64` symbol — there's one `sqrt`
@@ -5273,6 +5285,30 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok((MirOperand::Local(result_local), ret_ty))
+    }
+
+    /// The edge-registration call a container mutator needs, if its value is a
+    /// link. `None` for everything else, which is almost every call.
+    fn container_edge_call(
+        &self,
+        name: &str,
+        args: &[MirOperand],
+    ) -> Option<(&'static str, Vec<MirOperand>)> {
+        let (value_index, func) = match name {
+            "Vec_push" => (1, "Link_register_element"),
+            "Vec_set" | "Vec_insert_at" => (2, "Link_register_element"),
+            "Map_insert" => (2, "Link_register_entry"),
+            _ => return None,
+        };
+        let value = args.get(value_index)?;
+        let container = args.first()?;
+        let is_link = match value {
+            MirOperand::Local(id) => {
+                matches!(self.builder.local_type(*id), Some(MirType::Link(_)))
+            }
+            _ => false,
+        };
+        is_link.then(|| (func, vec![container.clone(), value.clone()]))
     }
 
     /// `v.try_push(x)` — lowered here rather than called, because the element

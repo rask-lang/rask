@@ -900,6 +900,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Edge maintenance, emitted by lowering rather than written by anyone.
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
+        StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
+        StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
 
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),

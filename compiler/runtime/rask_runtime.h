@@ -387,6 +387,8 @@ void     rask_map_clear(RaskMap *m);
 RaskVec *rask_map_keys(const RaskMap *m);
 RaskVec *rask_map_values(const RaskMap *m);
 RaskMap *rask_map_clone(const RaskMap *m);
+// mem.racks/RK3: drop every entry whose value is this link.
+int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
@@ -482,6 +484,14 @@ void      rask_rack_print_stats(void);
 // going away while its target stays alive.
 void      rask_link_set(void **slot, void *target);
 void      rask_link_forget(void **slot);
+// A link stored in a container. The record names the container, not a position:
+// pushes, removals and rehashing all move entries around.
+void      rask_link_register_element(RaskVec *v, void *target);
+void      rask_link_register_entry(RaskMap *m, void *target);
+// A container that arrived whole rather than entry by entry — `filter` builds a
+// fresh vector whose entries no push ever recorded.
+void      rask_link_register_vec(RaskVec *v);
+void      rask_link_register_map(RaskMap *m);
 
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.

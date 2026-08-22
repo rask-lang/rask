@@ -34,6 +34,21 @@ type TypedOperand = (MirOperand, MirType);
 /// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
 pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
+/// `T?`, collapsing the link niche. `Link<T>?` *is* one word — the address,
+/// with all-ones for `none` — so wrapping it in an `Option` would give the local
+/// a tagged-union shape codegen then reads a tag byte out of. That read is
+/// through the sentinel itself, which is address -1.
+///
+/// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
+/// collapses it and `resolve_type_str` doesn't, and the checks downstream accept
+/// either. Not worth churning while fixing something else.
+pub(crate) fn option_of(inner: MirType) -> MirType {
+    if matches!(inner, MirType::Link(_)) {
+        return inner;
+    }
+    MirType::Option(Box::new(inner))
+}
+
 /// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
 ///
 /// Both are one word where the value *is* the option and `none` is the all-ones
@@ -873,11 +888,11 @@ impl<'a> MirContext<'a> {
                 }
                 // "Option<T>" → MirType::Option
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return Self::option_of(self.resolve_type_str(inner));
+                    return option_of(self.resolve_type_str(inner));
                 }
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
-                    return Self::option_of(self.resolve_type_str(inner));
+                    return option_of(self.resolve_type_str(inner));
                 }
                 // "any TraitName" → TraitObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
@@ -951,19 +966,32 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// `T?`, collapsing the link niche. `Link<T>?` *is* one word — the address,
-    /// with all-ones for `none` — so wrapping it in an `Option` would give the
-    /// local a tagged-union shape codegen then reads a tag byte out of. That
-    /// read is through the sentinel itself, which is address -1.
+    /// The registration a whole container of links needs, or `None`.
     ///
-    /// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
-    /// collapses it and this path doesn't, and the checks downstream have been
-    /// written to accept either. Not worth churning while fixing something else.
-    fn option_of(inner: MirType) -> MirType {
-        if matches!(inner, MirType::Link(_)) {
-            return inner;
+    /// A container filled entry by entry has each `push` record its edge. One
+    /// that arrives whole doesn't: `h.list = h.list.filter(…)` builds a fresh
+    /// vector, and no push ever ran over it. Registering the container's
+    /// contents is idempotent — a record is one per (container, target) — so
+    /// doing it at every such assignment costs nothing where the pushes already
+    /// did the work.
+    pub(crate) fn container_link_registration(&self, ty: &Type) -> Option<&'static str> {
+        let head = self.generic_head(ty)?;
+        let args = match ty {
+            Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+            _ => return None,
+        };
+        let value = args.iter().rev().find_map(|a| match a {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        })?;
+        if !self.is_link_type(value) {
+            return None;
         }
-        MirType::Option(Box::new(inner))
+        match head.as_str() {
+            "Vec" => Some("Link_register_vec"),
+            "Map" => Some("Link_register_map"),
+            _ => None,
+        }
     }
 
     /// Is this the `Link<T>` type, however the checker happens to spell it?
