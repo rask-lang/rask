@@ -4992,6 +4992,13 @@ impl<'a> MirLowerer<'a> {
             tracked_elem
                 .or_else(|| self.extract_payload_type(expr))
                 .map(|elem| super::option_of(vec_slot_type(elem)))
+        } else if qualified_name == "Pool_try_insert" {
+            // `try_insert` answers `Handle<T>?`, not `T?` — a niche, one word
+            // with the all-ones handle for `none`. Without this the local came
+            // back as a tagged `i64?` while the checker knew it was a niche, and
+            // `r is none` was lowered from whichever of the two the reader
+            // consulted (#959-adjacent).
+            Some(MirType::Option(Box::new(MirType::Handle)))
         } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
             // Both return T? — extract T from the tracked element type. Without
             // this `remove` answered `i64?` regardless of what the pool held,

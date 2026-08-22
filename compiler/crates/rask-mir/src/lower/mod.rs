@@ -3935,7 +3935,21 @@ impl<'a> MirLowerer<'a> {
     /// fallback for the case `option_is_niche` exists for, where there is no
     /// useful MIR type at the use site.
     pub(crate) fn option_niche(&self, expr: &Expr, ty: &MirType) -> Option<i64> {
-        mir_niche_none(ty).or_else(|| self.niche_sentinel_of_expr(expr))
+        if let Some(sentinel) = mir_niche_none(ty) {
+            return Some(sentinel);
+        }
+        // A lowered `Option` whose payload is a settled non-niche type has
+        // already answered: it carries a tag, and the checker must not talk us
+        // out of reading it. The two can disagree — a stub whose MIR return
+        // type is a tagged `i64?` where the checker says `Handle<T>?` — and
+        // taking the checker's word there emitted a sentinel compare against a
+        // slot address.
+        if matches!(ty, MirType::Option(inner)
+            if !inner.is_niche_payload() && !matches!(**inner, MirType::Ptr))
+        {
+            return None;
+        }
+        self.niche_sentinel_of_expr(expr)
     }
 
     /// `option_is_niche` for a value that's already lowered — reads the MIR
