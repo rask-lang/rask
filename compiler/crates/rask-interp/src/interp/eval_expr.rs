@@ -362,21 +362,41 @@ impl Interpreter {
     /// Searches struct fields too, so a pool held in `self` (CC4 priority 3) is
     /// reached from a method body.
     pub(crate) fn pool_for_handle(&self, pool_id: u32) -> Option<Arc<Mutex<crate::value::PoolData>>> {
-        self.env.find_map(|v| Self::search_pool(v, pool_id, 0))
+        self.env.find_map(|v| Self::search_pool(v, &|p| p.pool_id == pool_id, 0))
     }
 
-    fn search_pool(v: &Value, pool_id: u32, depth: usize) -> Option<Arc<Mutex<crate::value::PoolData>>> {
+    /// Find the `Pool<T>` matching a named context clause's declared type
+    /// (mem.context/CC1, CC4). There's no handle here to read a pool id off
+    /// of, so this matches by the pool's own type parameter instead — the
+    /// same identity search `pool_for_handle` does, just keyed differently.
+    /// CC8 (ambiguity is a compile error) guarantees at most one candidate is
+    /// in scope, so the first match is the only one.
+    pub(crate) fn pool_for_context(&self, clause_ty: &str) -> Option<Arc<Mutex<crate::value::PoolData>>> {
+        if clause_ty != "Pool" && !clause_ty.starts_with("Pool<") {
+            return None;
+        }
+        let elem = clause_ty.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>'));
+        self.env.find_map(|v| {
+            Self::search_pool(v, &|p| elem.is_none_or(|e| p.type_param.as_deref() == Some(e)), 0)
+        })
+    }
+
+    fn search_pool(
+        v: &Value,
+        matches: &impl Fn(&crate::value::PoolData) -> bool,
+        depth: usize,
+    ) -> Option<Arc<Mutex<crate::value::PoolData>>> {
         // Bound the walk so a cyclic struct graph can't loop forever.
         if depth > 8 {
             return None;
         }
         match v {
-            Value::Pool(p) => (p.lock().unwrap().pool_id == pool_id).then(|| p.clone()),
+            Value::Pool(p) => matches(&p.lock().unwrap()).then(|| p.clone()),
             Value::Struct(s) => {
                 // Clone field values out before recursing so a self-referential
                 // struct can't deadlock on its own lock.
                 let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
-                fields.iter().find_map(|fv| Self::search_pool(fv, pool_id, depth + 1))
+                fields.iter().find_map(|fv| Self::search_pool(fv, matches, depth + 1))
             }
             _ => None,
         }
@@ -1402,6 +1422,16 @@ impl Interpreter {
                         ),
                         None => value,
                     };
+                    // A `Pool<T>` field built from a bare `Pool.new()` needs the
+                    // same element-type stamp a `let`/`mut` annotation gives it
+                    // (mem.context/CC4 "fields of self" — #867), or a named
+                    // context resolved through `self.field` can never tell it
+                    // apart from another pool of a different type in scope.
+                    if let Some((_, ty)) = field_types.as_ref()
+                        .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
+                    {
+                        super::exec_stmt::backfill_pool_type_param(&value, ty);
+                    }
                     field_values.insert(field.name.clone(), value);
                 }
 
