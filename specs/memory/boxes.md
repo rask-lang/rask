@@ -118,7 +118,7 @@ Every box heap-allocates its contents — that's part of being a box. The `with`
 
 ### Why name the family?
 
-Before this spec, Cell, Shared, Mutex, Pool, and Owned each stood alone with their own "when to use what" tables duplicated across specs. Readers had to cross-reference five pages to build a mental model.
+Before this spec, Cell, Shared, Mutex, Pool and Owned each stood alone with their own "when to use what" tables duplicated across specs. Readers had to cross-reference five pages to build a mental model. Three of those five have since collapsed into one, which is what naming the family made visible.
 
 They're one family with one syntax. Naming it collapses five decisions ("which type do I pick?") into one (`with` access is the common shape; pick the access discipline that fits your problem). The individual specs still own their details — this page just makes the family visible.
 

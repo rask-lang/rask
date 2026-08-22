@@ -56,7 +56,7 @@ All C files live in `compiler/runtime/`.
 |------|----------|-------|
 | `thread.c` | `rask_spawn`, `rask_join`, `rask_detach`, `rask_cancel`, `rask_sleep` | pthreads, refcounted `TaskState` |
 | `channel.c` | `rask_channel_*` | Ring buffer + mutex/condvar; capacity=0 for unbuffered rendezvous |
-| `sync.c` | `rask_mutex_*`, `rask_shared_*` | `Mutex<T>` and `Shared<T>` wrappers |
+| `sync.c` | `rask_mutex_*`, `rask_shared_*` | The `Mutex` and `Readers` strategies of `Shared<T, S>` |
 | `atomic.c` | `rask_atomic_*` | `Atomic<T>` load/store/CAS |
 | `green.c` | (stub) | Phase B target — work-stealing scheduler, not active |
 
