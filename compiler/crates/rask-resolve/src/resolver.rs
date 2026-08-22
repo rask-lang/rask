@@ -881,6 +881,9 @@ impl Resolver {
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
                 DeclKind::Package(_) => {}
+                // Annotation declarations are pure data records; attachment
+                // validation (AN2-AN5) reads them from the AST directly.
+                DeclKind::Annotation(_) => {}
                 DeclKind::CImport(c_import) => {
                     self.resolve_c_import(c_import, decl.span);
                 }
@@ -1624,6 +1627,14 @@ impl Resolver {
                 DeclKind::Package(_) | DeclKind::CImport(_) => {}
                 DeclKind::Union(_) => {}
                 DeclKind::TypeAlias(_) => {}
+                DeclKind::Annotation(ann) => {
+                    // Field defaults are expressions; resolve so they can name consts.
+                    for field in &ann.fields {
+                        if let Some(default) = &field.default {
+                            self.resolve_expr(default);
+                        }
+                    }
+                }
             }
         }
     }
