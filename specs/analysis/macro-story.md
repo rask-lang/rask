@@ -39,15 +39,15 @@ function can't see its own call site. C# solved it without macros:
 `[CallerArgumentExpression]` / `[CallerLineNumber]` — plain parameters whose defaults the
 compiler fills in per call site.
 
-Proposal: `@call_site` builtins, legal **only as parameter defaults**.
+Proposal: `@call_site` parameter annotations — the compiler fills these at every call
+site; callers never do.
 
 <!-- test: skip -->
 ```rask
-func assert_eq<T: Equal + Debug>(
-    a: T, b: T,
-    a_text: str = @call_site.text(a),
-    b_text: str = @call_site.text(b),
-    loc: SourceLoc = @call_site.location(),
+func assert_eq<T: Equal + Debug>(a: T, b: T,
+    @call_site(text: a) a_text: str,
+    @call_site(text: b) b_text: str,
+    @call_site(location) loc: SourceLoc,
 ) {
     if a != b {
         panic("{loc.file}:{loc.line}: {a_text} != {b_text}\n  left:  {a:?}\n  right: {b:?}")
@@ -57,7 +57,7 @@ func assert_eq<T: Equal + Debug>(
 assert_eq(parse("1+1"), 2)
 // failure: "eval.rk:14: parse("1+1") != 2   left: 3  right: 2"
 
-func dbg<T: Debug>(v: T, text: str = @call_site.text(v)) -> T {
+func dbg<T: Debug>(v: T, @call_site(text: v) text: str) -> T {
     print("{text} = {v:?}")
     return v
 }
@@ -87,59 +87,76 @@ Rules sketch — written to keep the blast radius small:
 - Source text ends up in the binary as string constants, same as the file:line panics
   embed today. A release strip flag can blank them if that ever matters.
 
-### Where the capture lives: three placements
+### Where the capture lives: the placement decision
 
-The `@` builtin family is existing syntax (`@embed_file`, `@comptime_quota`); the open
-question is where a capture may appear.
+Three placements were on the table; the parameter annotation won.
 
-**A. Default expression** (shown above). A default argument is *already* an expression
-the compiler inserts per call site — capture in default position reuses that semantics
-exactly; the only new thing is the two builtins. Add one rule to cut the noise: a
-parameter whose default captures the call site is **named-only** — it can't be filled
-positionally, so `assert_eq(a, b, oops)` can't land in `a_text` by accident.
+**A. Default expression** — `a_text: str = @call_site.text(a)`. Its strength: a default
+argument is *already* an expression the compiler inserts per call site, so the semantics
+exist. Its flaw is the same fact: anything in default position is a caller-overridable
+part of the API. People *will* populate it — a positional slip lands in `a_text`, a
+"helpful" caller passes their own text, and the diagnostic lies. A named-only rule
+patches the slip, not the spoof. Rejected for that: captured facts shouldn't be
+populatable at all.
 
-**B. Parameter annotation**, reusing gap 2's annotation syntax:
+**B. Parameter annotation** (chosen, shown above) — `@call_site(text: a) a_text: str`.
 
-<!-- test: skip -->
-```rask
-func assert_eq<T: Equal + Debug>(a: T, b: T,
-    @call_site(text: a) a_text: str,
-    @call_site(location) loc: SourceLoc)
-```
+Pros:
+- **Unpopulatable by construction.** The parameter is outside the call's arity: callers
+  never pass it, positionally or by name. The only explicit fill is the forward rule
+  (same-kind capture parameter), so text and locations are unforgeable.
+- **Low noise at both ends.** `assert_eq(a, b)` at the call site; in the signature the
+  captures read as metadata on trailing parameters, and IDEs can dim them.
+- **In-family syntax.** Rask's `@` annotations already carry compiler behavior —
+  `@native`, `@test`, `@resource`, `@rename` — this isn't stretching a data-only
+  mechanism. (Gap 2's user annotations are the inert-data cousins; `@call_site` is a
+  compiler-known one like `@native`.)
 
-Reads cleaner, and gap 2 introduces `annotation` anyway. But it's surface reuse only:
-it needs a brand-new semantic ("compiler-supplied parameter"), and wrappers still must
-be able to pass the value explicitly — which reintroduces default-argument behavior
-under an annotation costume.
+Costs, stated honestly:
+- **One new semantic: the compiler-supplied parameter.** A parameter class that exists in
+  the signature but not in the call arity. It's new machinery — the price of
+  unpopulatable.
+- **Function values need a rule.** An indirect call (through a closure or function value)
+  has no meaningful callee-declared capture — the compiler at the indirect call site
+  doesn't know the target wants one. v1 rule: referencing a function with `@call_site`
+  parameters as a value is a compile error naming the parameter; wrap it in a closure
+  (which then captures at the closure's own call site of the real function). Option A
+  shares this problem — defaults don't exist in function types either — so it's a cost
+  of the feature, not of the placement.
+- **Capture kinds are closed.** `text` and `location` (maybe `function` later) are
+  compiler builtins; users can't define new capture kinds. That's deliberate — each kind
+  is a fact only the compiler has.
 
 **C. Body builtin with implicit propagation** (Zig's `@src`, Rust's `#[track_caller]`):
 no signature noise, but the caller's location threads through calls invisibly — hidden
 parameters, hidden cost. Rejected on transparency.
 
-I recommend A: it's the placement where the semantics already exist, and named-only
-handles the accident risk. B is a defensible surface if signature noise ends up mattering
-more in practice.
-
-**Wrapper propagation is explicit.** The problem `#[track_caller]` solves: a helper that
-panics should blame the *user's* line, not its own internals. Rust threads the location
-through an invisible attribute chain. Here the location is an ordinary parameter, so a
-wrapper keeps the original caller by declaring its own capture and handing it down:
+**Wrapper propagation is forward-only.** The problem `#[track_caller]` solves: a helper
+that panics should blame the *user's* line, not its own internals. Rust threads the
+location through an invisible attribute chain. Here a wrapper declares its own capture
+and forwards it — and forwarding is the *only* way to fill a captured parameter
+explicitly:
 
 <!-- test: skip -->
 ```rask
-func expect<T>(v: T?, msg: str, loc: SourceLoc = @call_site.location()) -> T {
+func expect<T>(v: T?, msg: str, @call_site(location) loc: SourceLoc) -> T {
     let x = v is Some else { panic("{loc.file}:{loc.line}: {msg}") }
     return x
 }
 
-// Wants failures blamed on ITS caller, not on line 3 below:
-func env_or_die(key: str, loc: SourceLoc = @call_site.location()) -> string {
-    return expect(os.env(key), "missing env {key}", loc: loc)   // hand it down
+// Wants failures blamed on ITS caller, not on the expect() line below:
+func env_or_die(key: str, @call_site(location) loc: SourceLoc) -> string {
+    return expect(os.env(key), "missing env {key}", loc: loc)   // forward
 }
 ```
 
-Each hop is a visible parameter. Forget to pass `loc` and the report points one level
-deeper — annoying, but inspectable in the signature, which an attribute chain never is.
+The forward rule: a captured parameter of kind K (text / location) may be filled only by
+naming a captured parameter of the same kind K. Anything else — a literal, a computed
+string, a stored value — is a compile error. So captured facts are unforgeable: a `str`
+that arrived through `@call_site(text: ...)` is always genuinely what some caller wrote,
+and a `SourceLoc` always names a real call site. Diagnostics built on them can't lie.
+Each hop is still a visible parameter; forget to forward and the report points one level
+too deep — inspectable in the signature, which an attribute chain never is.
 
 Cost: a couple of interned strings per call site — bounds-check tier, implicit is fine.
 Tooling: call sites are ordinary calls; nothing to expand. Rides the existing
