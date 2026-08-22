@@ -103,7 +103,7 @@ Ask in order (`analysis.storage-consolidation`):
 
 Step 3 is plural by construction. A one-node graph has no edges — a single node
 can only point at itself — so there is nothing for RK3 to maintain and no reason
-to reach for a rack. `Owned<T>` if it needs the heap, `Shared<T>` if it's shared.
+to reach for a rack. `Heap<T>` if it needs the heap, `Shared<T>` if it's shared.
 
 ## Deferred
 

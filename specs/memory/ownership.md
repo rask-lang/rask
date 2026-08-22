@@ -116,7 +116,7 @@ IDE shows move/copy at each use site and borrow scopes.
 
 - [Value Semantics](value-semantics.md) — Copy threshold, move-only types (`mem.value`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)
-- [Linearity](linear.md) — Consume-exactly-once rules for `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
+- [Linearity](linear.md) — Consume-exactly-once rules for `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Closures](closures.md) — Capture semantics (`mem.closures`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)

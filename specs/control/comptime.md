@@ -145,7 +145,7 @@ struct Bad {
     buf: [u8; comptime reflect.size_of<Bad>()]  // ERROR: layout of Bad
 }                                               // depends on itself (CT67)
 
-// Fine: encode<Node> calling encode<Owned<Node>?> calling encode<Node>
+// Fine: encode<Node> calling encode<Heap<Node>?> calling encode<Node>
 // is runtime recursion across instantiations — signatures only, no cycle (CT67)
 ```
 

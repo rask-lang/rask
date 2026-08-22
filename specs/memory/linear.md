@@ -1,13 +1,13 @@
 <!-- id: mem.linear -->
 <!-- status: decided -->
-<!-- summary: Values that must be consumed exactly once — one rule set shared by @resource, Owned<T>, and Pool<Linear> -->
+<!-- summary: Values that must be consumed exactly once — one rule set shared by @resource, Heap<T>, and Pool<Linear> -->
 <!-- depends: memory/ownership.md -->
 
 # Linearity
 
 A value is *linear* when the compiler requires it to be consumed exactly once before its binding goes out of scope. Not zero times (can't silently drop it), not twice (can't double-use it). Exactly once.
 
-The everyday version: a paper concert ticket. The gate takes it and tears it — you can't leave without handing it over (can't skip consumption), and you can't hand it over twice (can't double-spend). A file handle, a database transaction, an `Owned<T>` — they all behave the same way.
+The everyday version: a paper concert ticket. The gate takes it and tears it — you can't leave without handing it over (can't skip consumption), and you can't hand it over twice (can't double-spend). A file handle, a database transaction, an `Heap<T>` — they all behave the same way.
 
 "Affine" is the cousin term: *at most once* — consume it, or drop it, either is fine. Rust's default ownership is affine (dropping a value runs its `Drop` impl). Rask's linear values are strictly linear: dropping without an explicit consumption is a compile error.
 
@@ -43,7 +43,7 @@ Three ways a value acquires the linear property:
 | Mechanism | Applies to | Specified in |
 |-----------|------------|--------------|
 | `@resource` annotation | Struct types (File, Connection, Transaction) | [resource-types.md](resource-types.md) |
-| `Owned<T>` type constructor | Any T, heap-allocated | [owned.md](owned.md) |
+| `Heap<T>` type constructor | Any T, heap-allocated | [heap.md](heap.md) |
 | `Pool<Linear>` | Pool holding any linear element type | [pools.md](pools.md) |
 
 Rules L1–L6 apply identically in all three cases. The individual specs cite them instead of restating.
@@ -139,7 +139,7 @@ WHY: Linear values can be consumed exactly once. A second consumption
 ## See Also
 
 - [Resource Types](resource-types.md) — `@resource` struct annotation (`mem.resources`)
-- [Owned Pointers](owned.md) — Linear heap box (`mem.owned`)
+- [Owned Pointers](heap.md) — Linear heap box (`mem.heap`)
 - [Ensure](../control/ensure.md) — Deferred consumption (`ctrl.ensure`)
 - [Pools](pools.md) — `Pool<Linear>` cleanup rules (`mem.pools`)
 - [Ownership](ownership.md) — Single-owner model that linearity refines (`mem.ownership`)
@@ -151,9 +151,9 @@ WHY: Linear values can be consumed exactly once. A second consumption
 
 ### Why one spec for linearity?
 
-Before this spec, the same rule set was restated in `resource-types.md` (R1–R4) and `owned.md` (OW1–OW4) with different identifiers. A reader learning about `Owned<T>` had no reason to connect it to `@resource` — the rules looked parallel but separate. They were the same rules.
+Before this spec, the same rule set was restated in `resource-types.md` (R1–R4) and `heap.md` (OW1–OW4) with different identifiers. A reader learning about `Heap<T>` had no reason to connect it to `@resource` — the rules looked parallel but separate. They were the same rules.
 
-Pulling the rule set up into one spec and citing it from both contexts makes the shared idea visible. `@resource` and `Owned<T>` stop being two concepts and become two applications of one concept.
+Pulling the rule set up into one spec and citing it from both contexts makes the shared idea visible. `@resource` and `Heap<T>` stop being two concepts and become two applications of one concept.
 
 ### What linearity does not cover
 

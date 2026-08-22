@@ -1,9 +1,14 @@
 <!-- id: analysis.storage-consolidation -->
-<!-- status: exploration -->
+<!-- status: accepted -->
 <!-- summary: Can the storage types merge? One real merge, two false ones, and a decision procedure for what's left -->
 <!-- depends: memory/boxes.md, analysis/fourth-option.md -->
 
 # Can the Storage Types Consolidate?
+
+> **Accepted.** The recommendation at the bottom of this page is now the design.
+> `Cell` and `Mutex` are strategies on `Shared<T, S>` (`conc.sync`), `Owned<T>`
+> is `Heap<T>` (`mem.heap`), `Atomic<T>` keeps its own type and leaves the
+> storage decision. This page is kept as the argument, not as an open question.
 
 Prompted by the sharpest usability signal available: the language's own
 designer can't reliably pick between them. If choosing is hard for the person
@@ -332,7 +337,7 @@ let hits: Atomic<i64> = Atomic.new(0)
 
 hits.add(1)                          // one instruction, no lock, no block
 let n = hits.load()
-hits.rack(0)
+hits.store(0)
 let won = hits.compare_swap(old, new)
 ```
 
@@ -451,7 +456,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
-  (`add`, `load`, `rack`, `compare_swap`) and no `with` blocks. Folding it
+  (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
   into `Shared` would have dressed a one-instruction operation in lock
   ceremony. It still leaves the *storage* decision — it's a measured
   optimization, documented under concurrency.

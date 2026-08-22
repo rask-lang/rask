@@ -368,7 +368,7 @@ Visibility in patterns: `extend` blocks see all fields; same package sees packag
 |------|------|----------|
 | Empty struct | S1 | Valid (unit struct), size 0 |
 | Single field | S1 | Valid, no special treatment |
-| Recursive field | S2 | MUST use `Owned<T>` or `Handle<T>` for indirection |
+| Recursive field | S2 | MUST use `Heap<T>` or `Handle<T>` for indirection |
 | Self-referential | S2 | Use `Handle<Self>` using Pool |
 | Large struct (>16 bytes) | — | Move semantics; explicit `.clone()` for copy |
 | Struct in Vec | — | Allowed if non-linear |
