@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.filter()`/`.map()` on a Vec reached through field access, natively (#866).
+//
+// `is_iterable_source` only recognized a Vec by its *unresolved* type form
+// (`UnresolvedGeneric`/`UnresolvedNamed`, from a source annotation). A field
+// access resolves through the checker's `HasField` constraint to the
+// registered form instead (`Generic { base, .. }`), so it was never
+// recognized as a chain source — `t.deps.filter(...)` and
+// `pool[h].field.filter(...)` both fell through to the raw `Vec_filter`/
+// `Vec_map` runtime calls, which don't carry the closure's env pointer and
+// segfault on native as soon as the vec has an element.
+
+struct Task {
+    deps: Vec<i64>
+}
+
+test "std.collections — filter on a plain struct field" {
+    mut t: Task = Task { deps: [1, 2, 3] }
+    let filtered = t.deps.filter(|x| {
+        return x > 1
+    })
+    assert_eq(filtered.len(), 2)
+    assert_eq(filtered[0], 2)
+    assert_eq(filtered[1], 3)
+}
+
+test "std.collections — map on a plain struct field" {
+    mut t: Task = Task { deps: [1, 2, 3] }
+    let mapped = t.deps.map(|x| {
+        return x * 10
+    })
+    assert_eq(mapped.len(), 3)
+    assert_eq(mapped[0], 10)
+    assert_eq(mapped[2], 30)
+}
+
+test "std.collections — filter on a Vec field reached through a pool element" {
+    mut tasks: Pool<Task> = Pool.new()
+    let a = tasks.insert(Task { deps: [] })
+    tasks[a].deps.push(1)
+    tasks[a].deps.push(2)
+    tasks[a].deps.push(3)
+
+    let filtered = tasks[a].deps.filter(|x| {
+        return x != 2
+    })
+    assert_eq(filtered.len(), 2)
+    assert_eq(filtered[0], 1)
+    assert_eq(filtered[1], 3)
+}
+
+test "std.collections — map on a Vec field reached through a with-block binding" {
+    mut tasks: Pool<Task> = Pool.new()
+    let a = tasks.insert(Task { deps: [1, 2, 3] })
+
+    with tasks[a] as t {
+        let mapped = t.deps.map(|x| {
+            return x + 1
+        })
+        assert_eq(mapped.len(), 3)
+        assert_eq(mapped[0], 2)
+        assert_eq(mapped[2], 4)
+    }
+}
+
+func main() {}
