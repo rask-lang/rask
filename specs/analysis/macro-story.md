@@ -95,7 +95,8 @@ Rules sketch — written to keep the blast radius small:
 - **A function sees its own call site only** — nothing upstream, nothing about other
   calls.
 - Source text ends up in the binary as string constants, same as the file:line panics
-  embed today. A release strip flag can blank them if that ever matters.
+  embed today. If size ever matters, a general diagnostics-strip build option covers
+  both together — no capture-specific flag.
 
 ### Where the capture lives: the placement decision
 
@@ -176,7 +177,8 @@ comptime story above); the rest get rules or honest caps here.
   captures are for diagnostics, not storage, and unbounded capture of a huge closure
   argument is binary bloat for nothing.
 - **Binary-size pressure is real but boring.** Every capturing call site embeds a string.
-  Identical texts intern; the strip flag (above) zeroes them for size-critical builds.
+  Identical texts intern; stripping belongs to a general build-level diagnostics-strip
+  option shared with panic locations, not a per-feature flag.
 
 Gap 2, poked: repeated annotations stay forbidden — the `@alias("a") @alias("b")` want is
 served by an array field, `@alias(names: ["a", "b"])`. And removing a public annotation

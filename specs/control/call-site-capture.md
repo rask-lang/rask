@@ -54,7 +54,7 @@ func env_or_die(key: str, @call_site(location) loc: SourceLoc) -> string {
 |------|-------------|
 | **CS8: Filled defaults** | When the caller omitted a defaulted argument, `text` captures the default expression's text as written at the declaration |
 | **CS9: Normalization and cap** | Runs of whitespace collapse to one space. Text over 256 bytes truncates with a trailing `…` |
-| **CS10: Binary footprint** | Identical texts intern. `--strip-call-site` replaces text with `""` and locations with zeros for size-critical release builds |
+| **CS10: Binary footprint** | Identical texts intern. Captured strings are the same class of data as the file:line strings panics already embed — a future build-level diagnostics-strip option covers both together; no capture-specific flag |
 
 ## Edge Cases
 
