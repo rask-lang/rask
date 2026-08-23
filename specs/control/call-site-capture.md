@@ -1,6 +1,6 @@
 <!-- id: ctrl.call-site -->
 <!-- status: proposed -->
-<!-- summary: @call_site parameter annotations — compiler-filled argument text and location, unforgeable, forward-only propagation -->
+<!-- summary: @call_text and @call_location parameter annotations — compiler-filled argument text and call location, unforgeable, forward-only propagation -->
 <!-- depends: control/comptime.md, analysis/macro-story.md -->
 
 # Call-Site Capture
@@ -10,22 +10,22 @@ the source text of an argument, the call's location. Callers never fill them. Th
 what `assert_eq!`, `dbg!`, and `#[track_caller]` need macros for in Rust, with plain
 typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.md).
 
-## Capture Kinds and Placement
+## The Two Annotations
 
 | Rule | Description |
 |------|-------------|
-| **CS1: Two kinds** | `@call_site(text: param)` yields `str` — the source text of the argument for `param`. `@call_site(location)` yields `SourceLoc { file: str, line: u32, column: u32 }` — the call expression's position. Kinds are compiler builtins; the set is closed |
-| **CS2: Named functions only** | `@call_site` annotates parameters of named functions. Illegal in closure literals and in trait method signatures |
+| **CS1: Two compiler annotations** | `@call_text(param)` on a `str` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc { file: str, line: u32, column: u32 }` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No capture-kind vocabulary: these are two annotation names, and the set is closed |
+| **CS2: Named functions only** | Both annotate parameters of named functions. Illegal in closure literals and in trait method signatures |
 | **CS3: Outside arity** | A captured parameter is not part of the call's argument list. Callers cannot fill it positionally or by name — except by forwarding (CS5) |
-| **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants. `text` refers to the caller's argument expression for the named parameter; `location` to the call expression itself |
-| **CS5: Forward-only fill** | The only explicit fill: a named argument whose value is a captured parameter of the same kind in the calling function. Any other expression — literal, computed, stored — is a compile error. Captured values are unforgeable: a text is always something some caller wrote, a location always names a real call site |
+| **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants: `@call_text(p)` from the caller's argument expression for `p`, `@call_location` from the call expression itself |
+| **CS5: Forward-only fill** | The only explicit fill: a named argument whose value is a parameter carrying the *same* annotation in the calling function. Any other expression — literal, computed, stored — is a compile error. Captured values are unforgeable: a text is always something some caller wrote, a location always names a real call site |
 
 <!-- test: skip -->
 ```rask
 func assert_eq<T: Equal + Debug>(a: T, b: T,
-    @call_site(text: a) a_text: str,
-    @call_site(text: b) b_text: str,
-    @call_site(location) loc: SourceLoc,
+    @call_text(a) a_text: str,
+    @call_text(b) b_text: str,
+    @call_location loc: SourceLoc,
 ) {
     if a != b {
         panic("{loc.file}:{loc.line}: {a_text} != {b_text}\n  left:  {a:?}\n  right: {b:?}")
@@ -36,7 +36,7 @@ assert_eq(parse("1+1"), 2)
 // failure: "eval.rk:14: parse("1+1") != 2   left: 3  right: 2"
 
 // Wrapper keeps blaming ITS caller by forwarding:
-func env_or_die(key: str, @call_site(location) loc: SourceLoc) -> string {
+func env_or_die(key: str, @call_location loc: SourceLoc) -> string {
     return expect(os.env(key), "missing env {key}", loc: loc)
 }
 ```
@@ -63,10 +63,10 @@ func env_or_die(key: str, @call_site(location) loc: SourceLoc) -> string {
 | Recursive call inside the capturing function | CS4 | Captures the recursive call's own line unless forwarded |
 | Named argument at the call site | CS4 | Text is the argument expression only, label excluded |
 | Wrapper forgets to forward | CS5 | Not an error — the report points one level deeper, visible in the signature |
-| Forwarding text-of-`a` into a slot documented as text-of-`b` | CS5 | Allowed — kinds match. Forwarding guarantees provenance, not correspondence; mislabeling is a wrapper bug, fabrication stays impossible |
+| Forwarding text-of-`a` into a slot documented as text-of-`b` | CS5 | Allowed — same annotation. Forwarding guarantees provenance, not correspondence; mislabeling is a wrapper bug, fabrication stays impossible |
 | Captured value stored in a struct, passed on later | CS5 | Degrades to an ordinary `str`/`SourceLoc` — printable, no longer forwardable |
 | Captured value in `comptime if` / `value.()` | CS6 | Compile error via CT8 — it is a runtime parameter |
-| `@call_site` on a closure parameter | CS2 | Compile error |
+| `@call_text` / `@call_location` on a closure parameter | CS2 | Compile error |
 | Trait declares a capturing method | CS2 | Compile error at the trait declaration |
 
 ## Error Messages
@@ -76,13 +76,13 @@ func env_or_die(key: str, @call_site(location) loc: SourceLoc) -> string {
 ERROR [ctrl.call-site/CS5]: cannot fill captured parameter `loc` with an ordinary value
    |
 9  |  expect(v, "boom", loc: SourceLoc { file: "fake.rk", line: 1, column: 1 })
-   |                         ^^^^^^^^^ only a captured parameter of the same kind can be forwarded here
+   |                         ^^^^^^^^^ only a `@call_location` parameter can be forwarded here
 
 WHY: Captured values are unforgeable — diagnostics built on them must not lie.
 
 FIX: Declare your own capture and forward it:
 
-  func my_helper(v: T?, @call_site(location) loc: SourceLoc) {
+  func my_helper(v: T?, @call_location loc: SourceLoc) {
       expect(v, "boom", loc: loc)
   }
 ```
@@ -120,8 +120,23 @@ guarantee the fences were for. If per-call-site comptime ever earns its keep, a 
 parameter marked `comptime` riding CT4 is the extension point — opt-in, visibly paying
 the instantiation cost.
 
-**CS1 (closed kinds):** Each kind is a fact only the compiler has. A `function` kind
-(enclosing function name) can join later without touching the machinery.
+**CS1 (two annotations, not one with kinds):** The first draft was
+`@call_site(text: a)` / `@call_site(location)` — one umbrella annotation with a
+kind argument. Review killed it: `text:` there is an ordinary named argument, a
+feature Rask already has, so it was never new syntax — but `location` was a bare
+word sitting in a named-argument position, which is not a shape the language has
+at all. The two captures aren't two values of one field; one references a
+parameter and one references nothing. So they are two annotation names, each
+matching a shape already in the language: `@call_text(a)` like `@rename("x")`,
+`@call_location` like `@no_serialize`. Nothing capture-specific to learn. A
+third (`@call_function`, the enclosing function's name) could join the same way.
+
+**Signature noise is a tooling problem, not a syntax one:** captured parameters
+are the last ones in a signature and always compiler-filled, so an IDE can dim
+them or fold them behind the visible arity — and it hints `@call_text`'s argument
+like any other named argument. That is Principle 5 doing its job: the
+information stays in the source, the presentation is the editor's business. This
+is why the design does not chase a terser spelling.
 
 ### See Also
 
