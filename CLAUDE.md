@@ -287,7 +287,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Area | Status |
 |------|--------|
 | Build system | Working, including cross-package symbol export |
-| Macros/attributes | No macro system (rejected). Call-site capture proposed ([call-site-capture.md](specs/control/call-site-capture.md)), user annotations proposed ([annotations.md](specs/types/annotations.md)); gap analysis in [macro-story.md](specs/analysis/macro-story.md) |
+| Macros/attributes | No macro system (rejected). Call information proposed ([call-info.md](specs/control/call-info.md)), user annotations proposed ([annotations.md](specs/types/annotations.md)); gap analysis in [macro-story.md](specs/analysis/macro-story.md) |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
 | Phase B fiber implementation | Decided: stackful fibers with mmap'd virtual stacks, pluggable reactor (io_uring/epoll/kqueue/IOCP), signal-based preemption. Still to prototype: `fiber_switch` assembly, safe-point instrumentation, reactor backends |

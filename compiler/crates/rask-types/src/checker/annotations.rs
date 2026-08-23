@@ -20,7 +20,7 @@ const RESERVED: &[&str] = &[
     "resource", "unique", "binary", "message",
     "entry", "no_alloc", "inline", "native", "unimplemented",
     "allow", "test", "benchmark", "derive",
-    "call_site", "comptime_quota", "embed_file", "comptime_print", "comptime_assert",
+    "call_text", "call_location", "comptime_quota", "embed_file", "comptime_print", "comptime_assert",
 ];
 
 /// Field types an annotation may declare (AN1) — the const-representable set

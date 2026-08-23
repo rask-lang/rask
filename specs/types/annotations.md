@@ -18,7 +18,7 @@ same `comptime for` residue mechanism that already powers encoding. Design histo
 | **AN1: Declaration** | `annotation @name { field: T, field: T = default }` — a keyword, a sigiled name, a field body, nothing else. The name keeps its `@` so the declaration spells exactly what attachment sites write. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `str`, enums and fixed arrays of these. No methods, no `extend` blocks |
 | **AN3: Attachment checks as construction** | `@name(args)` type-checks exactly like the struct literal `name { args }` — non-defaulted fields required, names checked, values must be comptime constants |
 | **AN4: No duplicates** | Attaching the same annotation twice to one item is a compile error. Repetition wants are served by an array field: `@alias(names: ["a", "b"])` |
-| **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_site`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable |
+| **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_text`, `@call_location`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable |
 
 <!-- test: skip -->
 ```rask

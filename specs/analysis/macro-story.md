@@ -1,6 +1,6 @@
 <!-- id: analysis.macro-story -->
 <!-- status: proposed -->
-<!-- summary: What macros actually buy Rust users, mapped against Rask. Most of it is already covered; three gaps remain, each closable without a macro layer: call-site capture, user annotations, comptime method dispatch -->
+<!-- summary: What macros actually buy Rust users, mapped against Rask. Most of it is already covered; three gaps remain, each closable without a macro layer: call information, user annotations, comptime method dispatch -->
 <!-- depends: control/comptime.md, stdlib/reflect.md, rejected-features.md -->
 
 # The Macro Story, Without Macros
@@ -32,13 +32,13 @@ The scorecard says the rejection was right: most macro value is already structur
 Three gaps are real, and none of them needs token trees.
 
 > Gaps 1 and 2 have graduated into proposed specs:
-> [control/call-site-capture.md](../control/call-site-capture.md) (`ctrl.call-site`, CS1–CS10)
+> [control/call-info.md](../control/call-info.md) (`ctrl.call-info`, CS1–CS10)
 > and [types/annotations.md](../types/annotations.md) (`type.annotations`, AN1–AN7).
 > Gap 3 stays here — once accepted it amends the decided specs directly (a CT49 analog in
 > `ctrl.comptime` plus `reflect.methods<T>()` in `std.reflect`), and forking those while
 > proposed helps nobody. The sections below are the design history.
 
-## Gap 1: Call-site capture
+## Gap 1: Call information
 
 The everyday macro itch isn't codegen — it's `assert_eq!` printing `left: 5, right: 7` with
 the source expression, and `dbg!(x)` echoing `x = ...`. Rust needs macros for this because a
@@ -49,7 +49,7 @@ compiler fills in per call site.
 Proposal: two compiler-known parameter annotations — `@call_text(param)` and
 `@call_location` — filled at every call site; callers never do. Each matches a
 shape the language already has (`@rename("x")` takes an argument, `@no_serialize`
-is a bare marker), so there is no capture vocabulary to learn.
+is a bare marker), so there is no new vocabulary to learn.
 
 <!-- test: skip -->
 ```rask
@@ -79,28 +79,28 @@ Rules sketch — written to keep the blast radius small:
   constants.
 - **Data, never code.** No AST, no token access, no evaluation. The text can only flow
   where any other `str` flows.
-- **Runtime parameters, and that falls out for free.** An earlier draft made captures
+- **Runtime parameters, and that falls out for free.** An earlier draft made these values
   comptime-known with fences against steering compilation. Poking at it broke it: comptime
-  code in a callee evaluates once per *instantiation* (CT63), but captured values differ
+  code in a callee evaluates once per *instantiation* (CT63), but the values differ
   per *call site* — a callee observing them at comptime would force one instantiation per
   call site (500 asserts = 500 monomorphized bodies). The annotation placement dissolves
-  the whole question: the only place a captured value is ever visible is inside the
+  the whole question: the only place such a value is ever visible is inside the
   callee, as a parameter — and parameters are runtime values (CT8 already bars them from
-  comptime). No fences needed; spelling can't steer compilation because captures can't
+  comptime). No fences needed; spelling can't steer compilation because these values can't
   reach comptime at all. The values are still compile-time-produced constants at each
   call site, and message fusion (`assert_eq` is small and inlines) happens through
   ordinary constant folding — an optimization, not a semantics. If per-call-site comptime
   ever earns its keep, the existing comptime-parameter machinery (CT4) is the extension
-  point: a capture param marked `comptime` would opt into per-call-site instantiation,
-  visibly. Deferred — it needs taint rules to keep capture-derived values out of staging,
+  point: a filled param marked `comptime` would opt into per-call-site instantiation,
+  visibly. Deferred — it needs taint rules to keep the derived values out of staging,
   and the instantiation bloat is real.
 - **A function sees its own call site only** — nothing upstream, nothing about other
   calls.
 - Source text ends up in the binary as string constants, same as the file:line panics
   embed today. If size ever matters, a general diagnostics-strip build option covers
-  both together — no capture-specific flag.
+  both together — no flag specific to this feature.
 
-### Where the capture lives: the placement decision
+### Where the information lives: the placement decision
 
 Three placements were on the table; the parameter annotation won.
 
@@ -109,7 +109,7 @@ argument is *already* an expression the compiler inserts per call site, so the s
 exist. Its flaw is the same fact: anything in default position is a caller-overridable
 part of the API. People *will* populate it — a positional slip lands in `a_text`, a
 "helpful" caller passes their own text, and the diagnostic lies. A named-only rule
-patches the slip, not the spoof. Rejected for that: captured facts shouldn't be
+patches the slip, not the spoof. Rejected for that: these facts shouldn't be
 populatable at all.
 
 **B. Parameter annotation** (chosen, shown above) — `@call_text(a) a_text: str`.
@@ -119,7 +119,7 @@ Pros:
   never pass it, positionally or by name. The only explicit fill is the forward rule
   (a parameter carrying the same annotation), so text and locations are unforgeable.
 - **Low noise at both ends.** `assert_eq(a, b)` at the call site; in the signature the
-  captures read as metadata on trailing parameters. They are always compiler-filled, so an
+  filled parameters read as metadata on trailing parameters. They are always compiler-filled, so an
   IDE can dim them or fold them behind the visible arity, and hints `@call_text`'s argument
   like any other — presentation is the editor's job (Principle 5).
 - **In-family syntax.** Rask's `@` annotations already carry compiler behavior —
@@ -133,7 +133,7 @@ Costs, stated honestly:
   unpopulatable.
 - **Function values need a rule.** An indirect call (through a closure or function value)
   has no meaningful callee-declared capture — the compiler at the indirect call site
-  doesn't know the target wants one. v1 rule: referencing a function with `@call_site`
+  doesn't know the target wants one. v1 rule: referencing a function with compiler-filled
   parameters as a value is a compile error naming the parameter; wrap it in a closure
   (which then captures at the closure's own call site of the real function). Option A
   shares this problem — defaults don't exist in function types either — so it's a cost
