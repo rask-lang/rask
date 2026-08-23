@@ -179,3 +179,63 @@ test "get reads bool fields" {
 test "a negated guard folds as well" {
     assert_eq(count_unindexed(), 1)
 }
+
+// Two annotations on one field, read independently.
+struct Tagged {
+    @indexed(weight: 4, label: "both")
+    @secret()
+    key: string
+    @indexed(weight: 1)
+    open: string
+}
+
+func tagged_pairs() -> string {
+    mut out = ""
+    comptime for field in reflect.fields<Tagged>() {
+        comptime if field.has<indexed>() {
+            comptime if field.has<secret>() {
+                out = "{out}{field.name}={field.get<indexed>().weight}/{field.get<indexed>().label};"
+            }
+        }
+    }
+    return out
+}
+
+// `&&` and `||` fold the same way `!` does.
+func combined() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Tagged>() {
+        comptime if field.has<indexed>() && field.has<secret>() {
+            n += 100
+        }
+        comptime if field.has<indexed>() || field.has<secret>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+// Read through a generic function: the written type argument is the only thing
+// naming the struct (#968).
+func total<T>() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<T>() {
+        comptime if field.has<indexed>() {
+            n += field.get<indexed>().weight
+        }
+    }
+    return n
+}
+
+test "two annotations on one field, read independently" {
+    assert_eq(tagged_pairs(), "key=4/both;")
+}
+
+test "and/or fold like the negation does" {
+    assert_eq(combined(), 102)
+}
+
+test "annotations read through a generic function" {
+    assert_eq(total<Doc>(), 5)
+    assert_eq(total<Tagged>(), 5)
+}

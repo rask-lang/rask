@@ -810,8 +810,22 @@ impl Interpreter {
                 // Clear any writebacks left by sub-calls during arg evaluation, so
                 // only this call's `mutate` finals are applied below.
                 self.mutate_writebacks.clear();
+                // #968: `count<Plain>()` — the written type arguments are folded
+                // into the callee's name by the parser, and nothing had read them
+                // back, so a call with no arguments to infer from left `T`
+                // unbound. Set after the arguments are evaluated so a nested call
+                // can't consume it, and cleared after so a callee that never
+                // reaches `call_function` — a builtin, a closure — doesn't leave
+                // them for whatever calls next.
+                let outer_type_args = self.pending_type_args.take();
+                self.pending_type_args = match &func.kind {
+                    ExprKind::Ident(written) => written_type_args(written),
+                    _ => None,
+                };
                 let result = self.call_value(func_val, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                self.pending_type_args = outer_type_args;
+                let result = result?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
                 // to its argument place. For a plain call, param index i is args[i].
                 self.apply_mutate_writebacks(args)
@@ -3105,4 +3119,21 @@ fn annotation_value(text: &str, ty: &str) -> Value {
             Err(_) => Value::String(Arc::new(Mutex::new(text.to_string()))),
         },
     }
+}
+
+/// The type arguments written at a call, read off the callee's name.
+///
+/// The parser folds them in — `count<Plain>()` arrives as the identifier
+/// `count<Plain>` — so this is where they still exist by the time the
+/// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
+/// `None` when the name carries none.
+fn written_type_args(name: &str) -> Option<Vec<String>> {
+    let open = name.find('<')?;
+    let inner = name[open + 1..].strip_suffix('>')?;
+    let args = rask_ast::decl::field_attrs::split_top_level(inner, ',')
+        .into_iter()
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect::<Vec<_>>();
+    (!args.is_empty()).then_some(args)
 }
