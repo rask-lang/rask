@@ -1214,7 +1214,7 @@ impl<'a> MirLowerer<'a> {
                         let expected = Self::expected_closure_param_tys(&callee_params, i);
                         self.lower_closure_expecting(
                             params, ret_ty.as_deref(), body,
-                            *is_own || spawns_closure, &expected, Some(a.expr.id),
+                            *is_own || spawns_closure, spawns_closure, &expected, Some(a.expr.id),
                         )?
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
@@ -4372,7 +4372,7 @@ impl<'a> MirLowerer<'a> {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                                     self.lower_closure_expecting(
                                         params, ret_ty.as_deref(), body,
-                                        *is_own || spawns_closure, &expected,
+                                        *is_own || spawns_closure, spawns_closure, &expected,
                                         Some(arg.expr.id),
                                     )?
                                 } else {
@@ -4619,7 +4619,7 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
+                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, false, &expected, Some(arg.expr.id))?
             } else {
                 let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
                 let declared = callee_params

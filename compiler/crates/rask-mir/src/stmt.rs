@@ -137,6 +137,21 @@ pub enum MirStmtKind {
     RcDec {
         local: LocalId,
     },
+    /// Heap-box an aggregate local: allocate `size` bytes and copy `src`'s
+    /// stack storage into them. `dst` becomes a plain pointer to the copy.
+    ///
+    /// Built for a spawned closure's aggregate return (#883). The closure
+    /// gets called through a bare `int64_t(*)(void*)` C function pointer with
+    /// nothing on the other side to copy into right away, so the wrapper
+    /// (see `lower_spawn_box_wrapper`) boxes the value itself, right after
+    /// calling the real closure — while `src` is still the wrapper's own
+    /// live stack slot — and hands back a pointer that survives until
+    /// `join()`'s codegen copies out of it and frees it.
+    BoxValue {
+        dst: LocalId,
+        src: LocalId,
+        size: u32,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

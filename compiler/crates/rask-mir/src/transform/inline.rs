@@ -748,6 +748,11 @@ fn remap_stmt(
                 .collect(),
         },
         MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
+        MirStmtKind::BoxValue { dst, src, size } => MirStmtKind::BoxValue {
+            dst: local_map.get(dst).copied().unwrap_or(*dst),
+            src: local_map.get(src).copied().unwrap_or(*src),
+            size: *size,
+        },
     };
 
     // IN4: preserve original spans from callee

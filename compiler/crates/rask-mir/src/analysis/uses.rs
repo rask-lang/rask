@@ -93,6 +93,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
         MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => f(*local),
+        MirStmtKind::BoxValue { src, .. } => f(*src),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
@@ -144,7 +145,8 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
         | MirStmtKind::LoadCapture { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
-        | MirStmtKind::TraitBox { dst, .. } => Some(*dst),
+        | MirStmtKind::TraitBox { dst, .. }
+        | MirStmtKind::BoxValue { dst, .. } => Some(*dst),
         MirStmtKind::Call { dst: Some(d), .. }
         | MirStmtKind::ClosureCall { dst: Some(d), .. }
         | MirStmtKind::TraitCall { dst: Some(d), .. } => Some(*d),

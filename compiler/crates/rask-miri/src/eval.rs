@@ -312,6 +312,14 @@ impl MiriEngine {
 
             // RC ops are no-ops at comptime — strings are GC'd by the interpreter.
             MirStmtKind::RcInc { .. } | MirStmtKind::RcDec { .. } => {}
+
+            // Only ever synthesized for a spawned closure's return (#883);
+            // spawn itself isn't reachable from comptime.
+            MirStmtKind::BoxValue { .. } => {
+                return Err(MiriError::UnsupportedOperation(
+                    "spawn is not available at compile time".to_string(),
+                ));
+            }
         }
         Ok(())
     }

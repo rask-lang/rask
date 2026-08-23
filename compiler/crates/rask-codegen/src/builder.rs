@@ -1105,6 +1105,8 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
                 builder.ins().call(*free_ref, &[val]);
             }
+
+            MirStmtKind::BoxValue { dst, src, size } => Self::lower_box_value(builder, dst, src, *size, ctx)?,
         }
         Ok(())
     }
@@ -2727,6 +2729,39 @@ impl<'a> FunctionBuilder<'a> {
                 "TraitBox destination variable not found".to_string()
             ))?;
         builder.def_var(*var, dst_addr);
+        Ok(())
+    }
+
+    /// Heap-box an aggregate local (#883): allocate `size` bytes and copy
+    /// `src`'s stack storage into them. `src`'s SSA var already holds its
+    /// address (same convention `TraitBox` reads its aggregate source
+    /// through) — the copy is plain loads/stores, no further calls, so it
+    /// runs while that storage is still whatever the caller left it as.
+    fn lower_box_value(
+        builder: &mut ClifFunctionBuilder,
+        dst: &LocalId,
+        src: &LocalId,
+        size: u32,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let alloc_ref = ctx.func_refs.get("rask_alloc")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+        let alloc_size = std::cmp::max(size, 8) as i64;
+        let size_val = builder.ins().iconst(types::I64, alloc_size);
+        let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
+        let heap_ptr = builder.inst_results(call_inst)[0];
+
+        let src_ptr = builder.use_var(*ctx.var_map.get(src)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "BoxValue: source variable not found".to_string()
+            ))?);
+        Self::copy_bytes(builder, src_ptr, 0, heap_ptr, 0, size);
+
+        let var = ctx.var_map.get(dst)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                "BoxValue destination variable not found".to_string()
+            ))?;
+        builder.def_var(*var, heap_ptr);
         Ok(())
     }
 
@@ -6039,13 +6074,20 @@ impl<'a> FunctionBuilder<'a> {
         builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
         if ok_size > 8 {
-            // The task handed back an address. Copy through it — nothing in the
-            // slot survives the callee otherwise.
+            // The task handed back a heap pointer — its closure's own
+            // `__boxret` wrapper allocated it for exactly this handoff (#883),
+            // since nothing on the runtime's side of the raw `int64_t(*)(void*)`
+            // call could copy an aggregate out of a callee frame that's dead by
+            // the time we get here. Copy out of it, then free it: it has no
+            // other owner.
             let src = builder.ins().stack_load(types::I64, value_ss, 0);
             let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
             Self::copy_bytes(
                 builder, src, 0, dst_addr, crate::layouts::RESULT_PAYLOAD_OFFSET, ok_size,
             );
+            if let Some(free_ref) = ctx.func_refs.get("rask_free") {
+                builder.ins().call(*free_ref, &[src]);
+            }
         } else {
             let load_ty = mir_to_cranelift_type(&ok_ty).unwrap_or(types::I64);
             let value = builder.ins().stack_load(load_ty, value_ss, 0);

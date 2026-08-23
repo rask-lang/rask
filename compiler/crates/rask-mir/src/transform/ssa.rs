@@ -477,6 +477,17 @@ fn rename_stmt(
             }
         }
         MirStmtKind::EnsureHookPop => {}
+        MirStmtKind::BoxValue { dst, src, .. } => {
+            *src = current_version(*src, version_stack, num_orig_locals);
+            let orig = dst.0 as usize;
+            if orig < num_orig_locals {
+                *dst = new_version(
+                    LocalId(orig as u32), func, version_counter, version_stack,
+                    orig_local_info, num_orig_locals,
+                );
+                return Some(orig);
+            }
+        }
     }
     None
 }

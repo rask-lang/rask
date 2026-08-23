@@ -176,7 +176,7 @@ impl<'a> MirLowerer<'a> {
         is_own: bool,
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, is_own, &[], closure_id)
+        self.lower_closure_expecting(params, ret_ty, body, is_own, false, &[], closure_id)
     }
 
     /// As `lower_closure`, with the parameter types the callee declares for this
@@ -184,12 +184,19 @@ impl<'a> MirLowerer<'a> {
     /// there — otherwise it defaults to i64 and field access and method dispatch
     /// inside the body run against the wrong type (`|req| req.method` on a
     /// `func(Request) -> Response` parameter read a pointer instead of the tag).
+    ///
+    /// `for_spawn` marks a closure handed straight to `spawn`/`Thread.spawn`/
+    /// `ThreadPool.spawn`: the task runtime calls it through a bare
+    /// `int64_t(*)(void*)` C function pointer, with nothing on the other side
+    /// to copy an aggregate return into right away (#883) — see the boxing
+    /// wrapper built below.
     pub(super) fn lower_closure_expecting(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
         ret_ty: Option<&str>,
         body: &Expr,
         is_own: bool,
+        for_spawn: bool,
         expected_param_tys: &[String],
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
@@ -370,7 +377,7 @@ impl<'a> MirLowerer<'a> {
         let closure_fn = closure_builder.finish();
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            ret_ty: closure_ret,
+            ret_ty: closure_ret.clone(),
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
@@ -379,13 +386,56 @@ impl<'a> MirLowerer<'a> {
 
         self.synthesized_functions.push(closure_fn);
 
+        // A closure spawned as a task returns through a bare
+        // `int64_t(*)(void*)` C function pointer (green.c's closure_poll_fn,
+        // thread.c's closure_spawn_entry) — there's no stack slot on the
+        // caller's side to copy an aggregate return into right away, so the
+        // pointer it hands back points into a frame that's dead by the time
+        // `join()` reads it (#883). Route the spawn through a wrapper that
+        // calls the real closure — a normal call, still copied into a live
+        // slot immediately, same as any other aggregate-returning call — and
+        // boxes that slot's bytes onto the heap before handing back a plain
+        // pointer `join()`'s codegen already knows how to read and free.
+        let spawn_target = if for_spawn && closure_ret.size() > 8 {
+            let box_name = format!("{}__boxret", closure_name);
+            let mut box_builder = BlockBuilder::new(box_name.clone(), MirType::Ptr);
+            let env_id = box_builder.add_param("__env".to_string(), MirType::Ptr);
+            let call_dst = box_builder.alloc_local("__ret".to_string(), closure_ret.clone());
+            box_builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(call_dst),
+                func: FunctionRef::internal(closure_name.clone()),
+                args: vec![MirOperand::Local(env_id)],
+            }));
+            let boxed = box_builder.alloc_local("__boxed".to_string(), MirType::Ptr);
+            box_builder.push_stmt(MirStmt::dummy(MirStmtKind::BoxValue {
+                dst: boxed,
+                src: call_dst,
+                size: closure_ret.size(),
+            }));
+            box_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(MirOperand::Local(boxed)),
+            }));
+
+            self.func_sigs.insert(box_name.clone(), super::FuncSig {
+                ret_ty: MirType::Ptr,
+                scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            });
+            self.synthesized_functions.push(box_builder.finish());
+            box_name
+        } else {
+            closure_name
+        };
+
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can
         // decide whether to downgrade. Scope-limited closures never escape; stack only.
         let result_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
-            func_name: closure_name,
+            func_name: spawn_target,
             captures,
             heap: is_own,
         }));

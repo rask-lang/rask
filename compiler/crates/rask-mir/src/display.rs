@@ -268,6 +268,9 @@ impl fmt::Display for MirStmt {
             MirStmtKind::RcDec { local } => {
                 write!(f, "rc_dec(_{})", local.0)
             }
+            MirStmtKind::BoxValue { dst, src, size } => {
+                write!(f, "_{} = box_value(_{}, size={})", dst.0, src.0, size)
+            }
         }
     }
 }
