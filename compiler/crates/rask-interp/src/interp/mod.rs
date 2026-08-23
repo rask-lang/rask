@@ -114,6 +114,18 @@ pub struct Interpreter {
     /// Inferred from the runtime argument bound to a parameter declared as that
     /// bare name, and scoped like `env`.
     pub(crate) type_bindings: Vec<HashMap<String, String>>,
+    /// Type arguments written at the call about to be made, in order.
+    ///
+    /// `type_bindings` is inferred from the arguments, which answers nothing for
+    /// a call that has none: `count<Plain>()` left `T` unbound, so
+    /// `reflect.name_of<T>()` returned the string "T" while native said "Plain"
+    /// (#968). The parser folds written type arguments into the callee's name,
+    /// so they're read off there and parked here for the callee to bind.
+    ///
+    /// Taken, not read — set immediately before the call, after the arguments
+    /// are evaluated, so a nested call during argument evaluation can't pick it
+    /// up and the next call can't inherit a stale one.
+    pub(crate) pending_type_args: Option<Vec<String>>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -166,6 +178,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             type_bindings: Vec::new(),
+            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -190,6 +203,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             type_bindings: Vec::new(),
+            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -220,6 +234,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             type_bindings: Vec::new(),
+            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),

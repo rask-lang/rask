@@ -463,6 +463,7 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
             DeclKind::TypeAlias(_) => {}
+            DeclKind::Annotation(_) => {}
         }
     }
 

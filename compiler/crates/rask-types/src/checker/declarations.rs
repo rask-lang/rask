@@ -45,6 +45,24 @@ impl TypeChecker {
                     self.check_declared_type_name(&u.name, "union", decl.span);
                     self.register_union(u);
                 }
+                // AN6: annotations register as nominal struct types so
+                // `field.has<validate>()` can name them as type arguments.
+                // The restricted shape (AN1) is enforced in annotations.rs.
+                DeclKind::Annotation(a) => {
+                    self.check_declared_type_name(&a.name, "annotation", decl.span);
+                    self.annotation_types.insert(a.name.clone());
+                    let s = rask_ast::decl::StructDecl {
+                        name: a.name.clone(),
+                        type_params: vec![],
+                        fields: a.fields.clone(),
+                        methods: vec![],
+                        is_pub: a.is_pub,
+                        attrs: vec![],
+                        doc: a.doc.clone(),
+                    };
+                    let id = self.register_struct(&s);
+                    self.types.record_method_decl(id, decl.id);
+                }
                 DeclKind::TypeAlias(a) => {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);

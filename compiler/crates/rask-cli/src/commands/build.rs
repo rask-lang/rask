@@ -599,7 +599,9 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                         }
 
                         let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
-                        rask_desugar::desugar(&mut all_decls);
+                        let dep_annotations =
+                            rask_compiler::dependency_annotations(registry, pkg_id);
+                        rask_desugar::desugar_package(&mut all_decls, &dep_annotations);
 
                         let pkg_source_files: Vec<_> = pkg.files.iter()
                             .map(|f| (f.path.clone(), f.source.clone()))

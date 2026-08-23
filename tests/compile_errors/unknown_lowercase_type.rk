@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an unknown type name is unknown whatever its case (#966)
+//
+// The check used to require a leading capital, standing in for "could this be
+// an implicit type parameter?" — but that rule is about length, not case
+// (type.gradual/PC2: single letters are type parameters, longer names must be
+// declared). So a lowercase name that named nothing sailed through the
+// signature and failed later at the use site, on a type that was never real.
+//
+// `str` is the one that motivated this: it isn't a Rask type — the string type
+// is `string` — and it reached two spec drafts because nothing rejected it.
+
+// ERROR: unknown type `str`
+func takes_str(s: str) -> i64 {
+    return 1
+}
+
+// ERROR: unknown type `uszie`
+func typo(n: uszie) -> i64 {
+    return 2
+}
+
+// ERROR: unknown type `zqzq`
+func returns_nothing_real() -> zqzq {
+    return 3
+}
+
+// The real primitives are all lowercase and must keep working.
+func primitives(a: i64, b: f64, c: bool, d: string, e: char, g: usize) -> i64 {
+    return a
+}
+
+func main() {
+    println("{primitives(1, 2.0, true, "x", 'c', 3)}")
+}

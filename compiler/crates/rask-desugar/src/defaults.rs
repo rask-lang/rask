@@ -359,7 +359,7 @@ impl DefaultDesugarer {
             }
             DeclKind::Import(_) | DeclKind::Export(_) | DeclKind::Extern(_)
             | DeclKind::Package(_) | DeclKind::Union(_) | DeclKind::TypeAlias(_)
-            | DeclKind::CImport(_) => {}
+            | DeclKind::CImport(_) | DeclKind::Annotation(_) => {}
         }
     }
 

@@ -887,6 +887,18 @@ impl TypeChecker {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
                 let base_name = name.split('<').next().unwrap_or(name);
+                // Annotations are comptime data — attached with @name(...),
+                // read through reflect, never constructed as runtime values.
+                if self.annotation_types.contains(base_name) {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: base_name.to_string(),
+                        problem: "annotations cannot be constructed as runtime values".to_string(),
+                        fix: format!("attach it instead: @{}(...) — readers get the values through reflect", base_name),
+                        why: "an annotation is metadata, not a value: nothing constructs one, so nothing at runtime can hold one either [type.annotations/AN3, AN8]",
+                        span: expr.span,
+                    });
+                    return Type::Error;
+                }
                 let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
                     match parse_type_string(name, &self.types) {
                         Ok(Type::Generic { args, .. }) => Some(args),
@@ -2692,6 +2704,25 @@ impl TypeChecker {
         type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
+        // AN8: a `get<A>()` that reaches here wasn't field-projected — the
+        // projection is handled in `check_field_access` and never recurses into
+        // the receiver. So this is a bare read: a binding, an argument, a
+        // returned value. There is no annotation value to be any of those.
+        if method == "get" {
+            if let Some(name) = type_args.and_then(|ta| ta.first()) {
+                if self.annotation_types.contains(name) {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: name.clone(),
+                        problem: "an annotation read has to name a field".to_string(),
+                        fix: format!("read one field: `.get<{}>().<field>`", name),
+                        why: "there is no annotation value to hold — `get` splices the field's constant, so a read that names no field has no result [type.annotations/AN6, AN8]",
+                        span,
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+
         // Check if this is a builtin module method call (e.g., fs.open). A local
         // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
         // and routing `fs.len()` to the filesystem module reported "no method
@@ -3356,7 +3387,56 @@ impl TypeChecker {
         }
     }
 
+    /// The declared type of `field` on the annotation `get<A>()` names, when
+    /// `object` is such a call (type.annotations/AN6). `None` for anything else.
+    ///
+    /// An unknown field errors here rather than falling through, so the message
+    /// names the annotation instead of blaming a missing method on a value that
+    /// was never going to exist.
+    fn annotation_projection_type(&mut self, object: &Expr, field: &str, span: Span) -> Option<Type> {
+        let ExprKind::MethodCall { method, type_args, .. } = &object.kind else { return None };
+        if method != "get" {
+            return None;
+        }
+        let name = type_args.as_ref()?.first()?;
+        if !self.annotation_types.contains(name) {
+            return None;
+        }
+        let id = match self.types.lookup(name) {
+            Some(Type::Named(id)) => id,
+            _ => return Some(Type::Error),
+        };
+        let fields = match self.types.get(id) {
+            Some(TypeDef::Struct { fields, .. }) => fields.clone(),
+            _ => return Some(Type::Error),
+        };
+        match fields.iter().find(|(n, _)| n == field) {
+            Some((_, ty)) => Some(ty.clone()),
+            None => {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: name.clone(),
+                    problem: format!("no field `{}` to read", field),
+                    fix: format!(
+                        "fields: {}",
+                        fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                    why: "an annotation read names one of the fields the declaration lists — there is no value to look anything else up on [type.annotations/AN6]",
+                    span,
+                });
+                Some(Type::Error)
+            }
+        }
+    }
+
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
+        // AN6/AN8: `item.get<A>().weight` — the one legal shape for `get`. The
+        // field's type comes straight from the annotation's declaration, and
+        // the receiver is deliberately not checked: reaching `check_method_call`
+        // for a `get<A>()` means it wasn't projected, which AN8 rejects.
+        if let Some(ty) = self.annotation_projection_type(object, field, span) {
+            return ty;
+        }
+
         // Primitive type constants: u64.MAX, i32.MIN, etc.
         if let ExprKind::Ident(name) = &object.kind {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
