@@ -99,11 +99,11 @@ impl<'a> MirLowerer<'a> {
         // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
         // raw `i64` an insert returns), which would spuriously skip the wrap.
         if let MirType::Option(inner) = place_ty {
-            // `Option<Handle>` (and `WeakHandle`) is niche-optimized in the layout
-            // (mem.pools): a live handle *is* `Some`, the sentinel is `None`. So a
-            // bare handle stored straight in is already the `Some` repr — a tag +
-            // payload wrap would be both wrong and 8 bytes too big for the slot.
-            let niche = matches!(**inner, MirType::Handle);
+            // A niche option is niche-optimized in the layout: the value *is*
+            // `Some`, the reserved word is `None`. So a bare handle or link
+            // stored straight in is already the `Some` repr — a tag + payload
+            // wrap would be both wrong and 8 bytes too big for the slot.
+            let niche = inner.is_niche_payload();
             if !niche && !matches!(val_ty, MirType::Option(_)) {
                 let wrap_local = self.builder.alloc_temp(place_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -543,7 +543,7 @@ impl<'a> MirLowerer<'a> {
                             // runtime does the recording and the store together,
                             // which is also what makes re-pointing an edge forget
                             // its old target.
-                            if matches!(fty, MirType::Link(_)) {
+                            if fty.is_link_slot() {
                                 // A bare `none` on the right lowers as a tagged
                                 // option whenever the checker hasn't settled its
                                 // type, and the field is a niche — it wants the

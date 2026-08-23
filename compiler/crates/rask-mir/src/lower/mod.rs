@@ -60,9 +60,6 @@ pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
 /// collapses it and `resolve_type_str` doesn't, and the checks downstream accept
 /// either. Not worth churning while fixing something else.
 pub(crate) fn option_of(inner: MirType) -> MirType {
-    if matches!(inner, MirType::Link(_)) {
-        return inner;
-    }
     MirType::Option(Box::new(inner))
 }
 
@@ -1200,12 +1197,18 @@ impl<'a> MirContext<'a> {
             },
             // Slice → fat pointer (ptr + len)
             Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
-            // Option (T or none): niche-optimized Handle or tagged union
+            // Option (T or none): niche-optimized handle, or a tagged union.
+            //
+            // A handle keeps the collapsed spelling — `type_to_mir` gives bare
+            // `Handle` where `resolve_type_str` gives `Option(Handle)`, and
+            // everything downstream accepts either. A *link* does not: it used
+            // to collapse the same way, and then `Vec<Link<T>?>.get()` collapsed
+            // twice and lost the outer option's tag (#959). `Option(Link)` is a
+            // niche by `MirType::is_niche_payload`, which is what the checks
+            // ask, so the spelling costs nothing.
             Type::Result { ok: inner, err } if **err == Type::None => {
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                     MirType::Handle
-                } else if self.is_link_type(inner) {
-                    self.type_to_mir(inner)
                 } else {
                     MirType::Option(Box::new(self.type_to_mir(inner)))
                 }
@@ -2408,9 +2411,10 @@ impl<'a> MirLowerer<'a> {
             return val;
         }
 
-        // A `Handle<T>?` is a niche: the handle is the value and `none` is the
-        // all-ones sentinel, so there's no tag to write.
-        if matches!(dst_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+        // A niche option — `Handle<T>?` or `Link<T>?` — is one word: the value
+        // itself, with a reserved word for `none`. There's no tag to write, and
+        // wrapping anyway built a 16-byte `Some(v)` for an 8-byte slot.
+        if matches!(dst_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return val;
         }
 

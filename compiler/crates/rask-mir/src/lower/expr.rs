@@ -351,8 +351,15 @@ impl<'a> MirLowerer<'a> {
             .filter(|t| matches!(t, MirType::Option(_)))
             .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
         if let Some(sentinel) = self.option_niche(expr, &option_ty) {
+            // The type this operand carries has to be the one `type_to_mir`
+            // would give, or the next coercion sees a layer missing and wraps
+            // the sentinel: `v.push(none)` into a `Vec<Link<T>?>` built
+            // `Some(0)` in a 16-byte slot instead of writing the one word.
+            //
+            // A link keeps the option spelling; a handle collapses to bare
+            // `Handle`, which is what `type_to_mir` still does for it.
             let repr = match &option_ty {
-                MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => (**inner).clone(),
+                MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => option_ty.clone(),
                 _ => MirType::Handle,
             };
             return Ok((MirOperand::Constant(MirConst::Int(sentinel)), repr));
@@ -5038,7 +5045,12 @@ impl<'a> MirLowerer<'a> {
                     eprintln!("[link] {} raw={:?} {} mir={:?}", qualified_name,
                         raw, base_name, self.ctx.lookup_node_type(expr.id));
                 }
-                self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Link(_)))
+                // `insert` answers a bare `Link<T>`; `corresponding` answers
+                // `Link<T>?`, which is the same word with the null address for
+                // `none`. Accept both spellings — filtering to the bare one
+                // dropped the return type for `corresponding` entirely, and its
+                // `?` test then read a tag that isn't there.
+                self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
             }
         } else if matches!(qualified_name.as_str(),
             "Cell_get" | "Cell_replace" | "Cell_into_inner"

@@ -126,6 +126,29 @@ impl MirType {
         matches!(self, MirType::Handle | MirType::Link(_))
     }
 
+    /// The node layout a link names, whether the link is spelled bare or as a
+    /// niche option.
+    ///
+    /// `Link<T>` and `Link<T>?` are the same word and the same edge — a store
+    /// to either has to be registered with the rack, or `delete` has no slot to
+    /// null. Matching only the bare form is what made `w.focus = n` a plain
+    /// store and left a root edge live past its target (#959).
+    pub fn as_link(&self) -> Option<StructLayoutId> {
+        match self {
+            MirType::Link(sid) => Some(*sid),
+            MirType::Option(inner) => match inner.as_ref() {
+                MirType::Link(sid) => Some(*sid),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// True when a store to a slot of this type is an edge write.
+    pub fn is_link_slot(&self) -> bool {
+        self.as_link().is_some()
+    }
+
     /// The word that means `none` for this type, if it is a niche.
     ///
     /// Each niche picks a value its own domain can't produce, and they are not
