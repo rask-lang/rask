@@ -36,9 +36,22 @@ struct Order {
 
 | Rule | Description |
 |------|-------------|
-| **AN6: Three operations** | On reflect items (fields, variants, methods, the type itself), all comptime-only: `item.has<A>()` → `bool`; `item.get<A>().field` reads one field of the attached value; `item.annotations` → comptime array of `AnnotationInfo { name: string }`, for tooling that walks by name instead of asking for a type it already knows |
+| **AN6: Two operations** | On reflect items (fields, variants, methods, the type itself), both comptime-only: `item.has<A>()` → `bool`, and `item.get<A>().field`, which reads one field of the attached value. Both name the annotation as a type argument — a reader asks about an annotation it knows |
 | **AN7: Pure data** | Annotations carry no behavior — no conformances, no dispatch, no processor hooks. Whatever an annotation "does" is ordinary code in the library that walks it |
 | **AN8: A projection, not a value** | An annotation name is not a type: `indexed` in a parameter, field, return, `let` or type-argument position is a compile error. `get<A>()` therefore has no result you can bind — only `.field` on it, which splices as a constant. Reading an annotation an item doesn't carry is an error at the read, naming `has<A>()` as the guard |
+
+**The third operation is cut.** AN6 used to also list `item.annotations`, a
+comptime array of everything attached, "for generic tooling". It can't do
+anything. Enumerating gives you names, and a name can't be turned back into the
+type argument `has`/`get` need — types reach comptime code only as generic
+arguments (`ctrl.comptime/CT66`), which is what keeps reflection answers stable
+while evaluation runs. So a walker gets a list of handles it cannot dereference;
+the only thing left is printing the names. Acting on an enumerated annotation
+needs the loop to bind a *type* per iteration and re-check the body against it —
+comptime dispatch, Gap 3 in [macro-story.md](../analysis/macro-story.md). If the
+enumeration is ever wanted it arrives with that, not before. AN6 keeps its ID;
+it's a narrower rule, not a retired one.
+
 
 <!-- test: skip -->
 ```rask

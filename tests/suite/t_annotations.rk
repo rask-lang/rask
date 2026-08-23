@@ -7,7 +7,8 @@
 // a compile-time fact — and one both backends have to agree on, since native
 // splices constants while the interpreter walks real values.
 //
-// `.annotations` (AN6's third operation) is not implemented yet.
+// AN6 has exactly these two operations — an earlier draft's third one,
+// enumerating everything attached, was cut as unusable (see the spec).
 
 import std.reflect
 
@@ -124,10 +125,8 @@ func count_on() -> i64 {
     mut n: i64 = 0
     comptime for field in reflect.fields<Tuned>() {
         comptime if field.has<scaled>() {
-            comptime if field.has<scaled>() {
-                if field.get<scaled>().on {
-                    n += 1
-                }
+            if field.get<scaled>().on {
+                n += 1
             }
         }
     }

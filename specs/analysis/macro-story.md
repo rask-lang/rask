@@ -33,7 +33,7 @@ Three gaps are real, and none of them needs token trees.
 
 > Gaps 1 and 2 have graduated into proposed specs:
 > [control/call-info.md](../control/call-info.md) (`ctrl.call-info`, CS1–CS10)
-> and [types/annotations.md](../types/annotations.md) (`type.annotations`, AN1–AN7).
+> and [types/annotations.md](../types/annotations.md) (`type.annotations`, AN1–AN8).
 > Gap 3 stays here — once accepted it amends the decided specs directly (a CT49 analog in
 > `ctrl.comptime` plus `reflect.methods<T>()` in `std.reflect`), and forking those while
 > proposed helps nobody. The sections below are the design history.
@@ -282,13 +282,20 @@ type itself), all comptime:
 
 <!-- test: skip -->
 ```rask
-field.has<validate>()   // -> bool
-field.get<validate>()   // -> validate?   (the record, or none)
-field.annotations       // comptime array of all attached, for generic tooling
+field.has<validate>()        // -> bool
+field.get<validate>().max    // -> the attached value's `max`, spliced
 ```
 
-That's the entire surface: declare, attach, `has`, `get`, enumerate. Anything an
-annotation "does" is written as ordinary code in whatever walks it.
+That's the entire surface: declare, attach, ask, read. Anything an annotation
+"does" is written as ordinary code in whatever walks it.
+
+An earlier draft had `get` returning the whole record (`validate?`) and a third
+operation, `field.annotations`, enumerating everything attached. Both are gone.
+The record can't exist — nothing constructs an annotation, so a type that holds
+one is a slot nothing fills — and the enumeration hands you names you can't do
+anything with: a name doesn't convert back into the type argument `has`/`get`
+need (`ctrl.comptime/CT66`). Enumerating usefully means binding a *type* per
+iteration, which is Gap 3 below.
 
 ## Gap 3: Comptime method dispatch
 
