@@ -282,6 +282,13 @@ pub struct TypeChecker {
     /// variable during the walk — a field, a loop variable, an inferred local.
     /// Validated after solving, so `const q = self.url[i..]` is caught too.
     pub(super) pending_view_bindings: Vec<borrow::PendingViewBinding>,
+    /// ER14a: `catch` bodies that yield nothing while the scrutinee's success
+    /// type is still open. Unifying the guess eagerly let whichever such catch
+    /// ran first decide the type, so a later, better-typed use of the same
+    /// value failed instead of the catch that's actually wrong (#876).
+    /// Checked once solving (and literal defaulting) is done, against
+    /// whatever the success type actually settled to.
+    pub(super) pending_catch_void_checks: Vec<(Type, rask_ast::Span)>,
 }
 
 impl TypeChecker {
@@ -385,6 +392,7 @@ impl TypeChecker {
             channel_send_sites: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
             frozen_context_elems: Vec::new(),
+            pending_catch_void_checks: Vec::new(),
         }
     }
 
@@ -500,6 +508,12 @@ impl TypeChecker {
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
+
+        // ER14a: a void-bodied `catch` whose scrutinee's success type was still
+        // open when it ran — check it against whatever that type settled to
+        // (from another catch, a `try`, literal defaults, anything else),
+        // instead of having decided it on the spot.
+        self.validate_pending_catch_void_checks();
 
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).

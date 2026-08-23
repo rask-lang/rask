@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER14a: a void-bodied `catch` is only a fallback when the success type
+// really is void. When the type is still open at the catch site (a generic
+// stub like `parse()`), the checker used to lock the type in from whichever
+// catch it saw first, right or wrong. This covers what should keep working:
+// a genuinely void success type, and a value only ever consulted through
+// void-bodied catches with nothing else to disagree with — #876's bug was
+// specifically about *mis-blaming* a real conflict, not these legitimate
+// cases.
+//
+// Spec: type.errors (ER14a)
+
+func maybe_fail(ok: bool) -> void or ParseError {
+    if ok {
+        return
+    }
+    return ParseError.Invalid
+}
+
+func run_it(ok: bool) -> string {
+    maybe_fail(ok) catch e => {
+        return "caught: {e.message()}"
+    }
+    return "ran clean"
+}
+
+// Nothing but void-bodied catches ever look at `n` — no other use to
+// disagree with, so void is a safe, unforced default.
+func parse_and_log(s: string) -> string {
+    let n = s.parse()
+    n catch e => {
+        println("first catch: {e.message()}")
+    }
+    return "done"
+}
+
+test "type.errors/ER14a — a real void success type still catches cleanly" {
+    assert_eq(run_it(true), "ran clean")
+    assert_eq(run_it(false), "caught: non-numeric character")
+}
+
+test "type.errors/ER14a — an open type with only void-bodied catches defaults fine" {
+    assert_eq(parse_and_log("abc"), "done")
+    assert_eq(parse_and_log("3"), "done")
+}
+
+func main() {
+    println(run_it(true))
+    println(run_it(false))
+    println(parse_and_log("abc"))
+}

@@ -1334,6 +1334,20 @@ impl TypeChecker {
                     self.fallback_keeps_shape.insert(expr.id);
                     return resolved_body;
                 }
+                // A void body only fits a void success type, but here the
+                // success type is still a guess (`resolved` was a `Type::Var`
+                // above) — unifying eagerly would let this catch *decide* the
+                // type instead of being checked against it. Whichever catch
+                // ran first won that decision regardless of which one was
+                // actually right, so a later catch or use of the same value
+                // with a real type failed there instead (#876). Defer: settle
+                // this once everything else that could pin the type has run.
+                if matches!(resolved_body, Type::Unit)
+                    && matches!(self.ctx.apply(&ok_ty), Type::Var(_))
+                {
+                    self.pending_catch_void_checks.push((ok_ty.clone(), expr.span));
+                    return ok_ty;
+                }
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     ok_ty.clone(),
                     body_ty,
@@ -3887,6 +3901,28 @@ impl TypeChecker {
             Type::Generic { base, .. } => self.types.type_name(base) == "Shared",
             Type::UnresolvedGeneric { name, .. } => name == "Shared",
             _ => false,
+        }
+    }
+
+    /// Check every void-bodied `catch` whose scrutinee's success type was
+    /// still open when it ran, now that solving and literal defaulting have
+    /// had a chance to pin that type down some other way (another catch on
+    /// the same value, a `try`, an annotation). If nothing ever did, void is
+    /// a safe default — there was no other evidence to contradict it.
+    pub(super) fn validate_pending_catch_void_checks(&mut self) {
+        let pending = std::mem::take(&mut self.pending_catch_void_checks);
+        for (ok_ty, span) in pending {
+            match self.ctx.apply(&ok_ty) {
+                Type::Var(id) => self.ctx.bind_var(id, Type::Unit),
+                Type::Unit | Type::Error => {}
+                other => {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: other,
+                        found: Type::Unit,
+                        span,
+                    });
+                }
+            }
         }
     }
 
