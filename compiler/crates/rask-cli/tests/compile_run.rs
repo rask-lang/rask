@@ -2369,6 +2369,41 @@ fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");
 }
 
+/// #966: the unknown-type check required a leading capital, so a lowercase
+/// name that named nothing was accepted at the signature and only failed at
+/// the use site, on a type that was never real. Asserts the error names each
+/// one — a bare non-zero exit would also pass if the file broke some other way.
+#[test]
+fn error_unknown_lowercase_type() {
+    let (failed, out) = compile_error_output("unknown_lowercase_type.rk");
+    assert!(failed, "should reject unknown lowercase type names (#966)");
+    for name in ["str", "uszie", "zqzq"] {
+        assert!(
+            out.contains(&format!("unknown type `{}`", name)),
+            "expected `{}` to be reported as unknown, got:\n{}",
+            name,
+            out
+        );
+    }
+    // The real primitives are lowercase too and must not be swept up.
+    for prim in ["i64", "f64", "bool", "string", "char", "usize"] {
+        assert!(
+            !out.contains(&format!("unknown type `{}`", prim)),
+            "primitive `{}` was reported unknown, got:\n{}",
+            prim,
+            out
+        );
+    }
+    // `str` is an abbreviation of the real name, so the suggestion has to be
+    // `string`. Pure edit distance answered `std` — one character away, and a
+    // module rather than a type, so useless where a type belongs.
+    assert!(
+        out.contains("did you mean `string`?"),
+        "expected `str` to suggest `string`, got:\n{}",
+        out
+    );
+}
+
 #[test]
 fn error_cast_rules() {
     assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
