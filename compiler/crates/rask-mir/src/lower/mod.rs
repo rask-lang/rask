@@ -617,6 +617,26 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// AN1: the declared type of one field of a user annotation.
+    ///
+    /// Annotations register as nominal structs in the checker's table but never
+    /// get a layout — nothing constructs one (AN3), so mono has no reason to
+    /// lay it out. The table is where the declaration still is.
+    pub fn annotation_field_type(&self, annotation: &str, field: &str) -> Option<MirType> {
+        use rask_types::TypeDef;
+        let id = match self.type_defs.lookup(annotation)? {
+            rask_types::Type::Named(id) => id,
+            _ => return None,
+        };
+        let TypeDef::Struct { fields, .. } = self.type_defs.get(id)? else {
+            return None;
+        };
+        fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, ty)| self.type_to_mir(ty))
+    }
+
     /// The type of one payload field of an enum variant, read off the checker's
     /// declaration with the scrutinee's type arguments substituted in.
     ///

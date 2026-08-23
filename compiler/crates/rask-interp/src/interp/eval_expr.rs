@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -1047,20 +1047,31 @@ impl Interpreter {
                 // annotation name. Mirrors the native lowering's constant.
                 if let Value::Struct(s) = &receiver {
                     let is_field_info = s.lock().unwrap().name == "FieldInfo";
-                    if is_field_info && method == "has" {
+                    if is_field_info && matches!(method.as_str(), "has" | "get") {
                         if let Some(annotation) =
                             type_args.as_ref().and_then(|ta| ta.first()).map(|t| self.resolve_type_param(t))
                         {
-                            let guard = s.lock().unwrap();
-                            let has = match guard.fields.get("__attrs") {
-                                Some(Value::Vec(v)) => v.lock().unwrap().items.iter().any(|a| {
-                                    let Value::String(text) = a else { return false };
-                                    let text = text.lock().unwrap();
-                                    rask_ast::decl::field_attrs::attachment_name(&text) == annotation
-                                }),
-                                _ => false,
+                            let attrs = field_info_attrs(s);
+                            let found = attrs.iter().find(|a| {
+                                rask_ast::decl::field_attrs::attachment_name(a) == annotation
+                            });
+                            if method == "has" {
+                                return Ok(Value::Bool(found.is_some()));
+                            }
+                            // AN6/AN8: `get<A>()` exists only to be
+                            // field-projected. The record is built here so the
+                            // projection reads it; nothing may bind it, and
+                            // that part is the checker's to enforce.
+                            let Some(attr) = found else {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::Generic(format!(
+                                        "`{}` has no `@{}` to read — guard the read with `comptime if field.has<{}>()`",
+                                        field_info_name(s), annotation, annotation
+                                    )),
+                                    expr.span,
+                                ));
                             };
-                            return Ok(Value::Bool(has));
+                            return Ok(self.annotation_record(&annotation, attr));
                         }
                     }
                 }
@@ -3004,3 +3015,94 @@ impl Interpreter {
 
 }
 
+
+/// The raw attachment strings a reflect FieldInfo carries in its hidden
+/// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
+/// `ReflectFieldConst.attrs`.
+fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
+    let guard = s.lock().unwrap();
+    match guard.fields.get("__attrs") {
+        Some(Value::Vec(v)) => v
+            .lock()
+            .unwrap()
+            .items
+            .iter()
+            .filter_map(|a| match a {
+                Value::String(text) => Some(text.lock().unwrap().clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The field's own name, for a diagnostic that says which field went wrong.
+fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
+    let guard = s.lock().unwrap();
+    match guard.fields.get("name") {
+        Some(Value::String(text)) => text.lock().unwrap().clone(),
+        _ => "field".to_string(),
+    }
+}
+
+impl Interpreter {
+    /// The attachment `indexed(weight: 3, label: "t")` as a struct value, so a
+    /// projection off `get<A>()` reads it like any other field access
+    /// (type.annotations/AN6).
+    ///
+    /// Desugar already filled the declared defaults into the attachment text,
+    /// so what's written here is the whole record — the same text native
+    /// lowering splices from, which is what keeps the two backends agreeing on
+    /// what a default was. The declaration is consulted only for field types:
+    /// `3` is an integer for `weight: i64` and a float for `scale: f64`, and
+    /// the text alone can't say which.
+    fn annotation_record(&self, annotation: &str, attr: &str) -> Value {
+        use rask_ast::decl::field_attrs;
+
+        let declared: Vec<(String, String)> = self
+            .struct_decls
+            .get(annotation)
+            .map(|d| d.fields.iter().map(|f| (f.name.clone(), f.ty.trim().to_string())).collect())
+            .unwrap_or_default();
+
+        let mut fields = IndexMap::new();
+        for (name, value) in field_attrs::attachment_args(attr) {
+            let ty = declared
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| t.as_str())
+                .unwrap_or("");
+            fields.insert(name.to_string(), annotation_value(value, ty));
+        }
+        Value::Struct(Arc::new(Mutex::new(StructData {
+            name: annotation.to_string(),
+            fields,
+            resource_id: None,
+        })))
+    }
+}
+
+/// One attachment argument's text as a value, read against its declared type.
+/// The native side does the same in `rask-mir`'s `annotation_const`; both are
+/// driven off the declared type so `weight: f64 = 1` isn't an integer on one
+/// backend and a float on the other.
+fn annotation_value(text: &str, ty: &str) -> Value {
+    use rask_ast::decl::field_attrs;
+    let text = text.trim();
+    match ty {
+        "bool" => Value::Bool(text == "true"),
+        "f32" | "f64" => text
+            .parse::<f64>()
+            .map(|f| Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 }))
+            .unwrap_or(Value::Unit),
+        "str" | "string" => Value::String(Arc::new(Mutex::new(
+            field_attrs::string_literal(text).unwrap_or_else(|| text.to_string()),
+        ))),
+        _ => match text.parse::<i64>() {
+            Ok(n) => Value::int(n),
+            // An enum variant (`Color.Red`) or an array — kept as text until
+            // annotation fields of those types are read back.
+            Err(_) => Value::String(Arc::new(Mutex::new(text.to_string()))),
+        },
+    }
+}

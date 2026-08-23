@@ -23,6 +23,13 @@ extend FieldInfo {
     /// (type.annotations/AN6). Resolves at compile time inside comptime for.
     @native
     public func has<A>(self) -> bool {}
+
+    /// The attachment of annotation A on this field (type.annotations/AN6).
+    /// Only ever field-projected — `field.get<indexed>().weight` splices that
+    /// constant. There is no annotation value to bind (AN8), so the result of
+    /// a bare `get<A>()` is a compile error.
+    @native
+    public func get<A>(self) -> A {}
 }
 
 /// Metadata for a method on a type. Returned by reflect.methods<T>().

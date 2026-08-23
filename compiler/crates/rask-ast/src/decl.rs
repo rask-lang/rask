@@ -294,6 +294,72 @@ pub mod field_attrs {
         attr.find('(').map(|i| &attr[..i]).unwrap_or(attr)
     }
 
+    /// The attachment's named arguments, in written order: `validate(min: 1,
+    /// max: 100)` → `[("min", "1"), ("max", "100")]`. Values stay verbatim
+    /// text; a caller that needs one as a value runs it through
+    /// `annotation_value`.
+    ///
+    /// Attachments are stored as source text, so every consumer that wants the
+    /// arguments has to split them the same way — the checker validating them,
+    /// desugar filling defaults, and both backends answering
+    /// `get<A>()` (type.annotations/AN3, AN6). One definition, here.
+    pub fn attachment_args(attr: &str) -> Vec<(&str, &str)> {
+        let attr = attr.trim();
+        let name = attachment_name(attr);
+        if name.len() >= attr.len() || !attr.ends_with(')') {
+            return Vec::new();
+        }
+        split_top_level(&attr[name.len() + 1..attr.len() - 1], ',')
+            .into_iter()
+            .filter_map(|arg| split_top_level_once(arg, ':'))
+            .collect()
+    }
+
+    /// Split on a separator that isn't inside a string or a bracket — commas
+    /// and colons inside `["a,b"]` or `"x: y"` belong to the value.
+    pub fn split_top_level(text: &str, sep: char) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        for (i, c) in scan_top_level(text) {
+            if c == sep {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+        }
+        if !text[start..].trim().is_empty() {
+            out.push(&text[start..]);
+        }
+        out
+    }
+
+    /// First top-level `sep`, splitting into the two trimmed halves.
+    pub fn split_top_level_once(text: &str, sep: char) -> Option<(&str, &str)> {
+        scan_top_level(text)
+            .find(|(_, c)| *c == sep)
+            .map(|(i, _)| (text[..i].trim(), text[i + 1..].trim()))
+    }
+
+    /// Byte offsets of characters at nesting depth zero, outside strings.
+    fn scan_top_level(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+        let mut depth = 0usize;
+        let mut in_str = false;
+        text.char_indices().filter(move |(_, c)| match c {
+            '"' => {
+                in_str = !in_str;
+                false
+            }
+            '[' | '(' if !in_str => {
+                depth += 1;
+                false
+            }
+            ']' | ')' if !in_str => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => !in_str && depth == 0,
+        })
+    }
+
     /// The contents of a `"…"` literal, with the usual escapes expanded.
     pub fn string_literal(text: &str) -> Option<String> {
         let inner = text.trim().strip_prefix('"')?.strip_suffix('"')?;

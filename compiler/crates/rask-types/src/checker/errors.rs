@@ -762,6 +762,10 @@ pub enum TypeError {
         name: String,
         problem: String,
         fix: String,
+        /// Which annotation rule this violates, in words. One shared reason
+        /// can't cover "you can't construct one" and "that's not a type" —
+        /// each site says why its own rule exists.
+        why: &'static str,
         span: Span,
     },
 

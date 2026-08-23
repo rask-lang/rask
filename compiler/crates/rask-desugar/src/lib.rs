@@ -12,6 +12,7 @@
 //!
 //! These passes run before type checking.
 
+mod annotation_defaults;
 mod defaults;
 mod trait_defaults;
 pub use defaults::is_valid_default_expr;
@@ -74,6 +75,10 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
     // Defaults need the full declaration list to build their lookup table,
     // so they run as a second sweep rather than inline with the operators.
     defaults::desugar_default_args(decls);
+
+    // AN3: an annotation attachment gets its declared defaults filled the same
+    // way a struct literal does, so every later reader sees a complete one.
+    annotation_defaults::fill_annotation_defaults(decls);
 
     errors
 }

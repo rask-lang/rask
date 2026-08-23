@@ -14,7 +14,7 @@ typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.
 
 | Rule | Description |
 |------|-------------|
-| **CS1: Two compiler annotations** | `@call_text(param)` on a `str` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc { file: str, line: u32, column: u32 }` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No kind vocabulary: these are two annotation names, and the set is closed |
+| **CS1: Two compiler annotations** | `@call_text(param)` on a `string` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc { file: string, line: u32, column: u32 }` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No kind vocabulary: these are two annotation names, and the set is closed |
 | **CS2: Named functions only** | Both annotate parameters of named functions. Illegal in closure literals and in trait method signatures |
 | **CS3: Outside arity** | A compiler-filled parameter is not part of the call's argument list. Callers cannot fill it positionally or by name — except by forwarding (CS5) |
 | **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants: `@call_text(p)` from the caller's argument expression for `p`, `@call_location` from the call expression itself |
@@ -23,8 +23,8 @@ typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.
 <!-- test: skip -->
 ```rask
 func assert_eq<T: Equal + Debug>(a: T, b: T,
-    @call_text(a) a_text: str,
-    @call_text(b) b_text: str,
+    @call_text(a) a_text: string,
+    @call_text(b) b_text: string,
     @call_location loc: SourceLoc,
 ) {
     if a != b {
@@ -36,7 +36,7 @@ assert_eq(parse("1+1"), 2)
 // failure: "eval.rk:14: parse("1+1") != 2   left: 3  right: 2"
 
 // Wrapper keeps blaming ITS caller by forwarding:
-func env_or_die(key: str, @call_location loc: SourceLoc) -> string {
+func env_or_die(key: string, @call_location loc: SourceLoc) -> string {
     return expect(os.env(key), "missing env {key}", loc: loc)
 }
 ```
@@ -64,7 +64,7 @@ func env_or_die(key: str, @call_location loc: SourceLoc) -> string {
 | Named argument at the call site | CS4 | Text is the argument expression only, label excluded |
 | Wrapper forgets to forward | CS5 | Not an error — the report points one level deeper, visible in the signature |
 | Forwarding text-of-`a` into a slot documented as text-of-`b` | CS5 | Allowed — same annotation. Forwarding guarantees provenance, not correspondence; mislabeling is a wrapper bug, fabrication stays impossible |
-| Filled value stored in a struct, passed on later | CS5 | Degrades to an ordinary `str`/`SourceLoc` — printable, no longer forwardable |
+| Filled value stored in a struct, passed on later | CS5 | Degrades to an ordinary `string`/`SourceLoc` — printable, no longer forwardable |
 | Filled value in `comptime if` / `value.()` | CS6 | Compile error via CT8 — it is a runtime parameter |
 | `@call_text` / `@call_location` on a closure parameter | CS2 | Compile error |
 | Trait declares a method with filled parameters | CS2 | Compile error at the trait declaration |

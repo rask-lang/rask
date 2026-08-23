@@ -142,6 +142,26 @@ fn vec_slot_type(ty: MirType) -> MirType {
     }
 }
 
+/// An annotation attachment's value text as a MIR constant
+/// (type.annotations/AN1, AN6). The declared type decides how the text reads —
+/// `3` is an integer for `weight: i64` and a float for `scale: f64` — so this
+/// takes the checker's answer rather than guessing from the digits.
+fn annotation_const(value: &str, ty: &MirType) -> Option<MirConst> {
+    use rask_ast::decl::field_attrs;
+    let value = value.trim();
+    match ty {
+        MirType::Bool => match value {
+            "true" => Some(MirConst::Bool(true)),
+            "false" => Some(MirConst::Bool(false)),
+            _ => None,
+        },
+        MirType::F32 | MirType::F64 => value.parse::<f64>().ok().map(MirConst::Float),
+        MirType::String => field_attrs::string_literal(value).map(MirConst::String),
+        _ if ty.is_int_like() => value.parse::<i64>().ok().map(MirConst::Int),
+        _ => None,
+    }
+}
+
 /// Resolve primitive type associated constants (type.primitives/NT1):
 /// `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type.
 fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
@@ -1642,6 +1662,12 @@ impl<'a> MirLowerer<'a> {
                     if let Some(op) = self.comptime_field_const(name, field) {
                         return Ok(op);
                     }
+                }
+
+                // AN6/AN8: `field.get<A>().weight` — the attachment's value for
+                // one field, spliced. The annotation itself is never built.
+                if let Some(op) = self.comptime_annotation_const(expr, object, field)? {
+                    return Ok(op);
                 }
 
                 // Primitive type constants: i64.MAX, i32.MIN, etc.
@@ -3818,7 +3844,7 @@ impl<'a> MirLowerer<'a> {
     /// answered at compile time from the field's attachments
     /// (type.annotations/AN6). Returns `None` for anything else so the caller
     /// falls through to ordinary method dispatch.
-    fn comptime_field_method_const(
+    pub(super) fn comptime_field_method_const(
         &mut self,
         object: &Expr,
         method: &str,
@@ -3839,6 +3865,76 @@ impl<'a> MirLowerer<'a> {
             rask_ast::decl::field_attrs::attachment_name(attr) == annotation
         });
         Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
+    }
+
+    /// `binding.get<A>().field` where `binding` is an active `comptime for`
+    /// binding — the attached annotation's value for `field`, spliced as a
+    /// constant (type.annotations/AN6). Nothing of the annotation reaches
+    /// MIR: there is no annotation value to build (AN8), only this projection.
+    ///
+    /// Attachment text arrived complete — desugar filled the declared defaults
+    /// (`annotation_defaults`) — so this reads what's written and never looks
+    /// the declaration up. `Ok(None)` means "not this form", so the caller
+    /// falls through to ordinary field-access lowering; `Err` means it *was*
+    /// this form and something about it was wrong.
+    fn comptime_annotation_const(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        field: &str,
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        use rask_ast::decl::field_attrs;
+
+        let ExprKind::MethodCall { object: recv, method, type_args, .. } = &object.kind else {
+            return Ok(None);
+        };
+        if method != "get" {
+            return Ok(None);
+        }
+        let ExprKind::Ident(binding) = &recv.kind else { return Ok(None) };
+        let Some(annotation) = type_args.as_ref().and_then(|ta| ta.first()) else {
+            return Ok(None);
+        };
+        let Some((_, fc)) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == binding)
+        else {
+            return Ok(None);
+        };
+
+        let Some(attr) = fc
+            .attrs
+            .iter()
+            .find(|a| field_attrs::attachment_name(a) == annotation.as_str())
+        else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
+                fc.name, annotation, field, binding, annotation
+            )));
+        };
+        let Some((_, value)) = field_attrs::attachment_args(attr)
+            .into_iter()
+            .find(|(name, _)| *name == field)
+        else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "`@{}` on `{}` has no field `{}`",
+                annotation, fc.name, field
+            )));
+        };
+        // The attachment text says `3`, not whether that's an i64, a u8 or an
+        // f64 — the declaration does. Not the checker's type for this node:
+        // inference has nothing to pin `get<A>()`'s result to when the read
+        // feeds an interpolation, and it stayed an open type variable there.
+        let ty = self
+            .ctx
+            .annotation_field_type(annotation, field)
+            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
+                "`@{}` declares no field `{}`", annotation, field
+            )))?;
+        annotation_const(value, &ty)
+            .map(|c| Some((MirOperand::Constant(c), ty)))
+            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
+                "`@{}({}: {})` is not a constant this backend can splice",
+                annotation, field, value
+            )))
     }
 
     /// CT53: the expression in `value.(expr)` must be comptime-known. The

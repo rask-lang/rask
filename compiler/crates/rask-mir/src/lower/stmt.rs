@@ -1047,6 +1047,16 @@ impl<'a> MirLowerer<'a> {
 
             // Comptime (compile-time evaluated)
             StmtKind::Comptime(stmts) => {
+                // A condition the comptime interpreter can't see, because the
+                // fact lives in lowering: `field.has<A>()` inside an unrolled
+                // `comptime for` (type.annotations/AN6). Asked first — the
+                // interpreter would only fail on it.
+                if let Some(taken) = self.try_eval_comptime_if_locally(stmts) {
+                    for s in taken {
+                        self.lower_stmt(s)?;
+                    }
+                    return Ok(());
+                }
                 // Try to evaluate comptime if at compile time (CC1)
                 if let Some(ref interp_cell) = self.ctx.comptime_interp {
                     if let Some(taken) = self.try_eval_comptime_if(stmts, interp_cell)? {
@@ -1175,6 +1185,89 @@ impl<'a> MirLowerer<'a> {
                 }
             })
             .collect())
+    }
+
+    /// A `comptime if` whose condition only lowering can answer.
+    ///
+    /// `field.has<A>()` is a fact about the loop iteration being unrolled, and
+    /// that state lives here, not in the comptime interpreter — so the
+    /// interpreter reports "unknown method" and the branch used to survive as a
+    /// runtime `if` on a constant. Cranelift folded the test, but both branches
+    /// were still lowered, and lowering the untaken one is not harmless:
+    /// `field.get<A>().weight` in the body has no annotation to read on a field
+    /// that doesn't carry it (type.annotations/AN6). Folding here is what makes
+    /// `comptime if` actually remove the branch.
+    ///
+    /// Returns the taken branch's statements, or `None` when the condition
+    /// isn't one of these — the caller then tries the comptime interpreter.
+    fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
+        let (cond, then_branch, else_branch) = Self::as_comptime_if(stmts)?;
+        let taken = self.eval_local_comptime_cond(cond)?;
+        Self::comptime_branch(taken, then_branch, else_branch)
+    }
+
+    /// `comptime { if cond { … } else { … } }` — the only shape either
+    /// evaluator handles.
+    fn as_comptime_if(stmts: &[Stmt]) -> Option<(&Expr, &Expr, &Option<Box<Expr>>)> {
+        if stmts.len() != 1 {
+            return None;
+        }
+        let StmtKind::Expr(inner) = &stmts[0].kind else { return None };
+        let ExprKind::If { cond, then_branch, else_branch, .. } = &inner.kind else {
+            return None;
+        };
+        Some((cond, then_branch, else_branch))
+    }
+
+    /// The statements of whichever branch a decided condition selects. An
+    /// undecidable branch shape gives `None`, and a false condition with no
+    /// `else` gives an empty slice — the branch is gone, not un-lowered.
+    fn comptime_branch<'b>(
+        taken: bool,
+        then_branch: &'b Expr,
+        else_branch: &'b Option<Box<Expr>>,
+    ) -> Option<&'b [Stmt]> {
+        let chosen = if taken {
+            then_branch
+        } else {
+            match else_branch {
+                Some(e) => e,
+                None => return Some(&[]),
+            }
+        };
+        match &chosen.kind {
+            ExprKind::Block(block_stmts) => Some(block_stmts),
+            _ => None,
+        }
+    }
+
+    /// A condition lowering can decide on its own: `binding.has<A>()`, and `!`
+    /// / `&&` / `||` over those. Anything else is `None`.
+    fn eval_local_comptime_cond(&mut self, cond: &Expr) -> Option<bool> {
+        match &cond.kind {
+            ExprKind::MethodCall { object, method, type_args, .. } => {
+                let (op, _) = self.comptime_field_method_const(object, method, type_args)?;
+                match op {
+                    MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                    _ => None,
+                }
+            }
+            ExprKind::Unary { op: rask_ast::expr::UnaryOp::Not, operand } => {
+                Some(!self.eval_local_comptime_cond(operand)?)
+            }
+            ExprKind::Binary { op, left, right } => {
+                let (l, r) = (
+                    self.eval_local_comptime_cond(left)?,
+                    self.eval_local_comptime_cond(right)?,
+                );
+                match op {
+                    rask_ast::expr::BinOp::And => Some(l && r),
+                    rask_ast::expr::BinOp::Or => Some(l || r),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Try to evaluate a `comptime if` block at compile time.

@@ -15,7 +15,7 @@ same `comptime for` residue mechanism that already powers encoding. Design histo
 
 | Rule | Description |
 |------|-------------|
-| **AN1: Declaration** | `annotation @name { field: T, field: T = default }` — a keyword, a sigiled name, a field body, nothing else. The name keeps its `@` so the declaration spells exactly what attachment sites write. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `str`, enums and fixed arrays of these. No methods, no `extend` blocks |
+| **AN1: Declaration** | `annotation @name { field: T, field: T = default }` — a keyword, a sigiled name, a field body, nothing else. The name keeps its `@` so the declaration spells exactly what attachment sites write. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `string`, enums and fixed arrays of these. No methods, no `extend` blocks |
 | **AN3: Attachment checks as construction** | `@name(args)` type-checks exactly like the struct literal `name { args }` — non-defaulted fields required, names checked, values must be comptime constants |
 | **AN4: No duplicates** | Attaching the same annotation twice to one item is a compile error. Repetition wants are served by an array field: `@alias(names: ["a", "b"])` |
 | **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_text`, `@call_location`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable |
@@ -36,17 +36,18 @@ struct Order {
 
 | Rule | Description |
 |------|-------------|
-| **AN6: Three operations** | On reflect items (fields, variants, methods, the type itself), all comptime-only: `item.has<A>()` → `bool`; `item.get<A>()` → `A?`; `item.annotations` → comptime array of all attached annotations, for generic tooling |
+| **AN6: Three operations** | On reflect items (fields, variants, methods, the type itself), all comptime-only: `item.has<A>()` → `bool`; `item.get<A>().field` reads one field of the attached value; `item.annotations` → comptime array of `AnnotationInfo { name: string }`, for tooling that walks by name instead of asking for a type it already knows |
 | **AN7: Pure data** | Annotations carry no behavior — no conformances, no dispatch, no processor hooks. Whatever an annotation "does" is ordinary code in the library that walks it |
+| **AN8: A projection, not a value** | An annotation name is not a type: `indexed` in a parameter, field, return, `let` or type-argument position is a compile error. `get<A>()` therefore has no result you can bind — only `.field` on it, which splices as a constant. Reading an annotation an item doesn't carry is an error at the read, naming `has<A>()` as the guard |
 
 <!-- test: skip -->
 ```rask
 func check<T>(value: T) -> void or ValidationError {
     comptime for field in reflect.fields<T>() {
         comptime if field.has<validate>() {
-            let rule = comptime field.get<validate>()
-            if value.(field.name) as i64 > rule.max {
-                return ValidationError.new("{field.name} over {rule.max}")
+            let max = field.get<validate>().max
+            if value.(field.name) as i64 > max {
+                return ValidationError.new("{field.name} over {max}")
             }
         }
     }
@@ -60,8 +61,10 @@ func check<T>(value: T) -> void or ValidationError {
 |------|------|----------|
 | Annotation on a generic struct's field | AN3 | Values are constants — identical across instantiations, read per monomorphized type (`std.reflect/R5`) |
 | `comptime if` around an attachment | AN3 | Not allowed — annotations are source-declared facts (`ctrl.comptime/CT65` spirit), not conditional |
-| Two packages declare `validate` | AN5 | No clash — resolution is by type, `get<pkg_a.validate>()` vs `get<pkg_b.validate>()` |
-| `get<A>()` on an item without `A` | AN6 | Returns none — pair with `has`, or match the optional |
+| `comptime if item.has<A>()` guarding a `get<A>()` | AN6 | The guard has to be *comptime* — a runtime `if` on the same test leaves the untaken branch's reads to be resolved, and a field without `A` has nothing to read |
+| Two packages declare `validate` | AN5 | No clash — the name in `get<...>` resolves in the ordinary way, so `pkg_a.validate` and `pkg_b.validate` stay distinct |
+| `get<A>()` on an item without `A` | AN8 | Error at the read — guard with `comptime if item.has<A>()`. Not catchable when the item is written: which item a `comptime for` binding is on is only known once the loop unrolls |
+| `let r = field.get<A>()` | AN8 | Compile error — there is no type to bind it to. Project a field instead: `field.get<A>().max` |
 | Annotation field of annotation type | AN1 | Compile error — not in the CT58 set |
 
 ## Error Messages
@@ -90,6 +93,16 @@ ambiguity; deleting AN2's targets clause removes the rest. The CT58 field-type
 limit is what lets attached values splice as constants and read identically in
 every instantiation, and forbidding methods keeps annotations inert — a method
 on an annotation is behavior sneaking back in.
+
+**AN8 (why there is no annotation value):** AN3 says you can't construct one, so
+a variable of annotation type is a slot nothing can ever fill — the type checker was
+happily accepting `func peek(a: indexed)`, a function that could never be called. Two
+ways out: let annotations materialize as ordinary structs, or let them not exist at
+runtime at all. Materializing them means a type users can't construct but can copy,
+store in a Vec and return — the non-construction rule would be a formality. So they
+don't exist: `get<A>()` is a projection, `field.get<A>().max` splices the constant `3`,
+and the annotation itself never reaches MIR. This also matches how `field.name` already
+works — no FieldInfo struct is ever built natively either; the members splice.
 
 **AN7 (not traits, no processors):** A trait is a behavior contract; an annotation is a
 data record. Java's annotation processors put behavior in the metadata layer and got a

@@ -1703,12 +1703,12 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a serialization annotation the compiler can't act on is worse than one it rejects — the wire format would differ from what the source says [std.encoding/E19, E21]")
             }
 
-            BadAnnotation { name, problem, fix, span } => {
+            BadAnnotation { name, problem, fix, why, span } => {
                 Diagnostic::error(format!("annotation `{}`: {}", name, problem))
                     .with_code("E0843")
                     .with_primary(*span, format!("`{}` here", name))
                     .with_fix(fix.clone())
-                    .with_why("attachments check like construction of the annotation's declared record, so readers can trust every value they get back [type.annotations/AN2-AN5]")
+                    .with_why(*why)
             }
 
             LegacyWrapperConstructor { name, span } => {
