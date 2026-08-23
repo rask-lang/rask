@@ -66,6 +66,41 @@ pub struct PackageContext {
     pub all_decls: Vec<Decl>,
 }
 
+impl PackageContext {
+    /// See [`dependency_annotations`].
+    pub fn dependency_annotations(&self) -> Vec<(String, Decl)> {
+        dependency_annotations(&self.registry, self.root_id)
+    }
+}
+
+/// Public annotation declarations from every package other than `root_id`,
+/// each paired with the name of the package that declares it.
+///
+/// Desugar fills an annotation's declared defaults into the attachment text, and
+/// it runs before name resolution — so a dependency's declarations can't be
+/// looked up later and have to be handed in. Without them an attachment of an
+/// imported annotation lost every defaulted field (type.annotations/AN3).
+///
+/// The package name travels with the declaration because the name alone isn't
+/// enough: two dependencies may both declare `validate`, and filling from
+/// whichever came last is silently the wrong value. Desugar matches these
+/// against the file's own imports.
+pub fn dependency_annotations(
+    registry: &PackageRegistry,
+    root_id: PackageId,
+) -> Vec<(String, Decl)> {
+    registry
+        .packages()
+        .iter()
+        .filter(|p| p.id != root_id)
+        .flat_map(|p| {
+            p.all_decls()
+                .filter(|d| matches!(&d.kind, DeclKind::Annotation(a) if a.is_pub))
+                .map(move |d| (p.name.clone(), d.clone()))
+        })
+        .collect()
+}
+
 /// Result of the frontend pipeline (through ownership + effects).
 pub struct CheckResult {
     pub typed: TypedProgram,
@@ -364,7 +399,12 @@ pub fn check_package(
     rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);
 
     // --- Desugar ---
-    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut pkg_ctx.all_decls);
+    // A dependency's public annotations come along: defaults are filled into
+    // attachment text here, before name resolution, so they can't be looked up
+    // later (type.annotations/AN3).
+    let dep_annotations = pkg_ctx.dependency_annotations();
+    let desugar_errors =
+        rask_desugar::desugar_package(&mut pkg_ctx.all_decls, &dep_annotations);
     for e in &desugar_errors {
         diags.push(
             Diagnostic::error(e.message.clone())
@@ -623,6 +663,8 @@ fn finalize_compile(
     // --- Merge dependency declarations ---
     if !dep_decls.is_empty() {
         let mut dep_decls_desugared = dep_decls;
+        // A dependency's own attachments are filled from its own declarations —
+        // that's the same compilation unit, so nothing extra is needed here.
         rask_desugar::desugar(&mut dep_decls_desugared);
         check.decls.extend(dep_decls_desugared);
     }

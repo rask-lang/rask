@@ -75,11 +75,11 @@ func check<T>(value: T) -> void or ValidationError {
 | Annotation on a generic struct's field | AN3 | Values are constants — identical across instantiations, read per monomorphized type (`std.reflect/R5`) |
 | `comptime if` around an attachment | AN3 | Not allowed — annotations are source-declared facts (`ctrl.comptime/CT65` spirit), not conditional |
 | `comptime if item.has<A>()` guarding a `get<A>()` | AN6 | The guard has to be *comptime* — a runtime `if` on the same test leaves the untaken branch's reads to be resolved, and a field without `A` has nothing to read |
-| Two packages declare `validate` | AN5 | Should stay distinct — but doesn't yet. `has<A>()` matches the attachment's written name, so the two are indistinguishable in a package importing both. Telling them apart means carrying resolved identity in the attachment rather than the name as typed (#967) |
+| Two packages declare `validate` | AN5 | Importing both is a compile error naming them — an attachment records the name as written, not which package it resolved to, so `@validate` would be ambiguous. Declaring `validate` locally settles it. Making them coexist means carrying resolved identity in the attachment (#967) |
 | `get<A>()` on an item without `A` | AN8 | Error at the read — guard with `comptime if item.has<A>()`. Not catchable when the item is written: which item a `comptime for` binding is on is only known once the loop unrolls |
 | `let r = field.get<A>()` | AN8 | Compile error — there is no type to bind it to. Project a field instead: `field.get<A>().max` |
 | Annotation field of annotation type | AN1 | Compile error — not in the CT58 set |
-| Annotation declared `public` in a dependency | AN5 | Importable and readable — the attachment travels with the exported type. One gap: a defaulted field can't be left out at an attachment written in the importing package, because defaults are filled before name resolution runs (#967) |
+| Annotation declared `public` in a dependency | AN5 | Importable, attachable and readable, defaults included. Defaults are filled before name resolution runs, so the importing package's dependencies are matched against its own `import` lines to find the declaration |
 
 ## Error Messages
 

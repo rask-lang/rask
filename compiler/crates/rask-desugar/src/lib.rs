@@ -49,6 +49,18 @@ pub fn desugar(decls: &mut [Decl]) {
     desugar_with_diagnostics(decls);
 }
 
+/// Desugar a package whose dependencies are known.
+///
+/// Only annotation defaults need this: they're filled into attachment text
+/// here, before name resolution, so a dependency's declarations can't be looked
+/// up later — they have to be handed in (type.annotations/AN3).
+pub fn desugar_package(
+    decls: &mut [Decl],
+    dep_annotations: &[(String, Decl)],
+) -> Vec<DesugarError> {
+    desugar_inner(decls, dep_annotations)
+}
+
 /// ER26 coverage error from @message desugaring.
 #[derive(Debug, Clone)]
 pub struct DesugarError {
@@ -58,6 +70,10 @@ pub struct DesugarError {
 
 /// Desugar phase, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
+    desugar_inner(decls, &[])
+}
+
+fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<DesugarError> {
     // TD2: a trait method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
@@ -78,7 +94,7 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
-    annotation_defaults::fill_annotation_defaults(decls);
+    annotation_defaults::fill_annotation_defaults(decls, dep_annotations);
 
     errors
 }
