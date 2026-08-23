@@ -764,6 +764,9 @@ impl Parser {
                         }
                         TokenKind::Ident(s) => attr.push_str(s),
                         TokenKind::Int(n, _) => attr.push_str(&n.to_string()),
+                        TokenKind::Float(f, _) => attr.push_str(&format!("{:?}", f)),
+                        TokenKind::Bool(b) => attr.push_str(if *b { "true" } else { "false" }),
+                        TokenKind::Char(c) => attr.push_str(&format!("'{}'", c)),
                         TokenKind::Comma => attr.push_str(", "),
                         // Keywords, operators, and delimiters keep their source
                         // text. Debug output here would mangle anything with
@@ -771,6 +774,13 @@ impl Parser {
                         // `@allow(idiom/duck-trait)` came out as
                         // `allow(idiomSlashduck-Trait)` and matched nothing,
                         // breaking per-rule suppression (tool.lint/SU1).
+                        //
+                        // Literals must be listed above, not left to this arm:
+                        // `display_name` is prose for diagnostics, so `@default(1.5)`
+                        // was stored as `default(a number)` and `@default(true)` as
+                        // `default(true' or 'false)` — the value simply gone (#965).
+                        // A token kind added later lands here and gets prose too;
+                        // #965 tracks giving TokenKind a real source_text().
                         k => attr.push_str(k.display_name().trim_matches('\'')),
                     }
                 }
