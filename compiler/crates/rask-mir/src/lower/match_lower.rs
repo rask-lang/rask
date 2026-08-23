@@ -82,7 +82,7 @@ impl<'a> MirLowerer<'a> {
 
         // leaf = 2 on the error side, otherwise the inner option's own tag.
         let leaf = self.builder.alloc_temp(MirType::U8);
-        let outer_tag = self.emit_option_tag(&scrutinee_op, false);
+        let outer_tag = self.emit_option_tag(&scrutinee_op, None);
         let err_blk = self.builder.create_block();
         let ok_blk = self.builder.create_block();
         let disc_blk = self.builder.create_block();
@@ -98,7 +98,7 @@ impl<'a> MirLowerer<'a> {
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: disc_blk }));
         self.builder.switch_to_block(ok_blk);
-        let inner_tag = self.emit_option_tag(&MirOperand::Local(inner_local), false);
+        let inner_tag = self.emit_option_tag(&MirOperand::Local(inner_local), None);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: leaf,
             rvalue: MirRValue::Use(MirOperand::Local(inner_tag)),
@@ -229,7 +229,8 @@ impl<'a> MirLowerer<'a> {
             return self.lower_scalar_chain_match(scrutinee_op, scrutinee_ty, arms);
         }
 
-        let is_niche = self.is_niche_option_expr(scrutinee);
+        let niche = self.niche_sentinel_of_expr(scrutinee);
+        let is_niche = niche.is_some();
         let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
 
         // String match
@@ -338,7 +339,7 @@ impl<'a> MirLowerer<'a> {
         let two_level = err_variant_tags.iter().any(|t| t.is_some());
 
         let switch_val = if has_tag {
-            let tag_local = self.emit_option_tag(&scrutinee_op, is_niche);
+            let tag_local = self.emit_option_tag(&scrutinee_op, niche);
             MirOperand::Local(tag_local)
         } else {
             scrutinee_op.clone()
@@ -500,7 +501,7 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
             err_value_local = Some(err_local);
-            let inner_tag = self.emit_option_tag(&MirOperand::Local(err_local), false);
+            let inner_tag = self.emit_option_tag(&MirOperand::Local(err_local), None);
             let inner_cases: Vec<(u64, BlockId)> = err_variant_tags
                 .iter()
                 .enumerate()

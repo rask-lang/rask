@@ -460,6 +460,19 @@ impl TypeChecker {
         let Some(ty) = self.lookup_local(var_name) else { return false };
         let resolved = self.resolve_named(&self.ctx.apply(&ty));
 
+        // A box mutates through its heap slot, not through the binding
+        // (conc.sync, and `mem.cell/CE2` before it) — `let c = Shared.new(0)`
+        // followed by `c.write()` is the point of the type, not a mistake. This
+        // has to be said explicitly because `write` *is* `mutate self` on
+        // other stdlib types, and an unresolved receiver falls through to the
+        // union of every mutating method name.
+        if self.is_shared_box(&resolved)
+            && matches!(method_name,
+                "read" | "write" | "try_read" | "try_write" | "get" | "set" | "replace")
+        {
+            return false;
+        }
+
         // `any Trait` values: the trait's own declared self mode is known —
         // no need for the unresolved-type name heuristic below, which would
         // flag every trait's `write`/`read` as mutating regardless of how it
@@ -519,7 +532,27 @@ impl TypeChecker {
         // Receiver type unresolved: fall back to the set of method names that
         // are `mutate self` across all stdlib stubs. `add`/`mul`/`eq` aren't
         // in the set, so desugared arithmetic/comparison don't false-positive.
+        //
+        // `read` and `write` are held out. They are the sync box's two verbs
+        // (conc.sync/SH5) and a box mutates through its slot, not its binding —
+        // but `Writer.write` is `mutate self`, so the union claims the name and
+        // `let c = Shared.mutex(0)` then `with c.write() as v` was rejected for
+        // mutating a `let`. Holding them out only affects an *unresolved*
+        // receiver: a real `Writer` answers from its stub above, and the one
+        // stdlib `write` that mutates takes an argument, which no box verb does.
+        if matches!(method_name, "read" | "write") {
+            return false;
+        }
         rask_stdlib::any_builtin_method_mutates(method_name)
+    }
+
+    /// Is this the `Shared<T, S>` box, however the checker spells it?
+    fn is_shared_box(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Generic { base, .. } => self.types.type_name(*base) == "Shared",
+            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => name == "Shared",
+            _ => false,
+        }
     }
 
     /// Determine borrow mode for a method call by looking up the method signature.

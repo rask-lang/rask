@@ -236,6 +236,12 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
+    RetiredBoxType {
+        name: String,
+        replacement: String,
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -507,6 +513,25 @@ pub enum TypeError {
         alias: Option<String>,
         /// Context type as written: `Pool<Player>`.
         ty: String,
+        span: Span,
+    },
+
+    /// conc.sync/SH7: a task-local `Shared` sent to another task.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+        span: Span,
+    },
+
+    /// conc.sync/SH2: two `Shared` boxes with different strategies met.
+    ///
+    /// Not a deferrable obligation like most type mismatches — the strategy
+    /// picks which lock the accessors take, so getting it wrong deadlocks
+    /// rather than misbehaving visibly (#960).
+    #[error("this box uses the `{found}` strategy, but `{expected}` is expected here")]
+    SharedStrategyMismatch {
+        found: String,
+        expected: String,
         span: Span,
     },
 
@@ -1025,6 +1050,9 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | RetiredBoxType { .. }
+            | LocalSharedSent { .. }
+            | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

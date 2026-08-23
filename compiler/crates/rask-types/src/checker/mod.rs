@@ -254,6 +254,14 @@ pub struct TypeChecker {
     /// through a `Handle`/`Link` bound by optional narrowing is recognised for
     /// what it is instead of being reported as mutating a `let`.
     pub(super) pending_mutations: Vec<PendingMutation>,
+    /// Every use of a name that might turn out to be a `Shared`, with its type
+    /// and span. Checked after constraint solving for SH7 — during the walk the
+    /// type is usually still a variable, since `let c = Shared.new(0)` is solved
+    /// later.
+    pub(super) local_shared_uses: Vec<(String, Type, rask_ast::Span)>,
+    /// The argument spans of every `spawn` call seen. A use inside one of these
+    /// is a use in another task.
+    pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
     /// mem.pools/PF5 frozen-context write sites, deferred for the same reason as
     /// `pending_mutations` — the check needs the handle's element type.
     pub(super) pending_frozen_writes: Vec<PendingFrozenWrite>,
@@ -385,6 +393,8 @@ impl TypeChecker {
             deferred_methods: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
+            local_shared_uses: Vec::new(),
+            spawn_arg_spans: Vec::new(),
             pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
@@ -489,6 +499,7 @@ impl TypeChecker {
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
         self.validate_pending_mutations();
+        self.validate_spawn_captures();
         self.validate_pending_frozen_writes();
 
         // #314: verify generic call type args satisfy their declared bounds.

@@ -86,7 +86,7 @@ pub struct OwnershipChecker<'a> {
     /// wrapper with one resource can't be written at all, because there is no
     /// `w.close()` to call (#828).
     resource_field_debts: HashMap<String, Vec<Vec<String>>>,
-    /// Of those, the ones `own` allocated. They follow the same rules — L1–L6 are
+    /// Of those, the ones `Heap(…)` allocated. They follow the same rules — L1–L6 are
     /// shared between `@resource` and `Owned<T>` — but the fix is `drop(name)`,
     /// so the diagnostic differs (#819).
     owned_bindings: HashSet<String>,
@@ -4441,7 +4441,7 @@ impl<'a> OwnershipChecker<'a> {
     /// type to look at. A scalar is excluded — it was never allocated, so
     /// `Owned<i32>` really is an `i32` and there is nothing to free (#819).
     fn track_owned_binding(&mut self, name: &str, init: &Expr) {
-        if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Own, .. }) {
+        if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Heap, .. }) {
             return;
         }
         let Some(ty) = self.program.node_types.get(&init.id) else { return };

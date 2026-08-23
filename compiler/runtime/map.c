@@ -431,3 +431,40 @@ RaskMap *rask_map_clone(const RaskMap *m) {
     }
     return dst;
 }
+
+// mem.racks/RK3: drop every entry whose value is this link.
+//
+// The index-maintenance move a database makes when a row goes away — the entry
+// leaves, it does not become a `none` under a live key. Values are compared as
+// whole pointers because a link is one; nothing else in the map can match.
+int64_t rask_map_drop_value_ptr(RaskMap *m, const void *target) {
+    map_check_no_borrows(m, "drop_value_ptr");
+    if (!m || m->val_size != (int64_t)sizeof(void *)) return 0;
+    int64_t dropped = 0;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] != MAP_OCCUPIED) continue;
+        void *v;
+        memcpy(&v, m->vals + i * m->val_size, sizeof(v));
+        if (v != target) continue;
+        m->states[i] = MAP_TOMBSTONE;
+        m->len--;
+        m->tombstones++;
+        dropped++;
+    }
+    return dropped;
+}
+
+// Rewrite every value in place through `f`. For `Rack.snapshot()`, where a
+// `Map<K, Link<T>>` field's values have to be re-pointed at the copied nodes:
+// the values live in the map's own storage, which the caller can't reach.
+void rask_map_map_values_ptr(RaskMap *m, void *(*f)(void *value, void *ctx), void *ctx) {
+    map_check_no_borrows(m, "map_values_ptr");
+    if (!m || m->val_size != (int64_t)sizeof(void *)) return;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] != MAP_OCCUPIED) continue;
+        void *v;
+        memcpy(&v, m->vals + i * m->val_size, sizeof(v));
+        void *next = f(v, ctx);
+        memcpy(m->vals + i * m->val_size, &next, sizeof(next));
+    }
+}

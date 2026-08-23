@@ -1168,7 +1168,7 @@ impl Interpreter {
                     // values are already independent of any stack frame, so
                     // there's nothing further to do here — same OW5 transparency
                     // as Deref above.
-                    UnaryOp::Own => Ok(val),
+                    UnaryOp::Heap => Ok(val),
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "unhandled unary op {:?}",
@@ -2633,10 +2633,17 @@ impl Interpreter {
                 } else if let ExprKind::MethodCall { object, method, .. } = &binding.source.kind {
                     // shared.read() or shared.write()
                     let obj = self.eval_expr(object)?;
+                    // `read`/`write` are the verbs on every strategy
+                    // (conc.sync/SH5); which lock they take — if any — is the
+                    // strategy's business. `lock` is the `Mutex` strategy's
+                    // older spelling.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
                         (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock") => WithSource::Mutex(Arc::clone(m)),
+                        (Value::RaskMutex(m), "lock" | "read" | "write") => {
+                            WithSource::Mutex(Arc::clone(m))
+                        }
+                        (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),
                         _ => {
                             return Err(RuntimeDiagnostic::new(
                                 RuntimeError::TypeError(format!(

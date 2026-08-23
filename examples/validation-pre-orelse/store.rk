@@ -375,4 +375,4 @@ extend TaskTx {
 }
 
 // Module-level store — write-heavy, so Mutex (conc.sync). Handlers lock it.
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())

@@ -8,20 +8,20 @@
 // silent.
 struct Ctr { n: usize }
 
-const shared = Mutex.new(Vec.new())
+const shared = Shared.mutex(Vec.new())
 
 func grow_while_borrowed(mutate c: Ctr) {
     c.n += 1
     mut i = 0
     while i < 64 {
-        shared.lock().push(Ctr { n: 99 })
+        shared.write().push(Ctr { n: 99 })
         i += 1
     }
 }
 
 func main() {
-    shared.lock().push(Ctr { n: 0 })
+    shared.write().push(Ctr { n: 0 })
     println("borrowing")
-    grow_while_borrowed(mutate shared.lock()[0])
+    grow_while_borrowed(mutate shared.write()[0])
     println("UNREACHABLE — the push above should have panicked")
 }

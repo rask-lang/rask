@@ -1933,6 +1933,13 @@ impl<'a> Printer<'a> {
                     self.emit(")");
                 }
             }
+            // Heap allocation is a call, not a prefix operator — it parses as
+            // `Heap(expr)` and has to print back that way.
+            ExprKind::Unary { op: UnaryOp::Heap, operand } => {
+                self.emit("Heap(");
+                self.format_expr(operand);
+                self.emit(")");
+            }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
                 // A prefix operator binds tighter than every binary one, so a
@@ -2907,7 +2914,8 @@ fn unaryop_str(op: &UnaryOp) -> &'static str {
         UnaryOp::BitNot => "~",
         UnaryOp::Ref => "&",
         UnaryOp::Deref => "*",
-        UnaryOp::Own => "own ",
+        // Never reached: `Heap(expr)` prints as the call it is.
+        UnaryOp::Heap => "Heap",
     }
 }
 

@@ -1703,11 +1703,19 @@ impl<'a> FunctionBuilder<'a> {
             // Instant) have empty layouts and stay pointer-sized scalars.
             RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
             RaskType::Named(_) => false,
-            // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
-            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
-            {
-                false
-            }
+            // The niche options — `Handle<T>?` and `Link<T>?` — are one word
+            // with a sentinel for `none`, so they load like a scalar. Answering
+            // "aggregate" here handed back the field's *address*, and a root
+            // edge read as a stack address instead of the node it named.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
+                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
+                => false,
+            // The same option with its payload already resolved to a `TypeId`.
+            // `Generic`/`Named` payloads are the runtime-opaque pointer types
+            // (line above), and an option over one of those is the niche — one
+            // word, no tag — so it loads like a scalar.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
+                RaskType::Generic { .. }) => false,
             // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }
@@ -3260,10 +3268,12 @@ impl<'a> FunctionBuilder<'a> {
         match ty {
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
             | MirType::Union(_) | MirType::Array { .. } => true,
-            // A `Handle<T>?` is a niche: the handle *is* the value and `none`
-            // is the all-ones sentinel, so there's no slot to walk — comparing
-            // the two handles directly is already right.
-            MirType::Option(inner) => !matches!(**inner, MirType::Handle),
+            // A niche option — `Handle<T>?` or `Link<T>?` — is one word: the
+            // value itself, with a reserved word for `none`. There's no slot to
+            // walk, and comparing the two words directly is already right.
+            // Walking one loaded a tag byte through the value, and for a `none`
+            // link that value is the null address (#959).
+            MirType::Option(inner) => !inner.is_niche_payload(),
             _ => false,
         }
     }
@@ -4778,11 +4788,15 @@ impl<'a> FunctionBuilder<'a> {
                         // Return dummy value — real data is in the stack slot
                         builder.ins().iconst(types::I64, 0)
                     } else {
-                        // No slot means a niche `Handle?`: the handle itself is
-                        // the value and `none` is the all-ones sentinel. A miss
-                        // still comes back NULL, so answer with the sentinel
-                        // instead of loading through it — `Map<K, Handle<T>>`
-                        // segfaulted on every lookup that found nothing (#561).
+                        // No slot means a niche `Handle?` or `Link<T>?`: the
+                        // value itself is the option. A miss still comes back
+                        // NULL, so answer with that type's `none` instead of
+                        // loading through it — `Map<K, Handle<T>>` segfaulted
+                        // on every lookup that found nothing (#561).
+                        let none_word = ctx.locals.iter()
+                            .find(|l| l.id == *dst_id)
+                            .and_then(|l| l.ty.niche_none())
+                            .unwrap_or(crate::layouts::HANDLE_NONE_SENTINEL);
                         let miss_block = builder.create_block();
                         let hit_block = builder.create_block();
                         let merge_block = builder.create_block();
@@ -4793,8 +4807,7 @@ impl<'a> FunctionBuilder<'a> {
 
                         builder.switch_to_block(miss_block);
                         builder.seal_block(miss_block);
-                        let sentinel = builder.ins()
-                            .iconst(types::I64, crate::layouts::HANDLE_NONE_SENTINEL);
+                        let sentinel = builder.ins().iconst(types::I64, none_word);
                         builder.ins().jump(merge_block, &[sentinel]);
 
                         builder.switch_to_block(hit_block);
@@ -5781,11 +5794,11 @@ impl<'a> FunctionBuilder<'a> {
                 // Scalars are stored as 8-byte values in codegen; .max(8) prevents OOB writes.
                 Some(crate::layouts::RESULT_PAYLOAD_OFFSET as u32 + ok_size.max(8).max(err_size.max(8)))
             }
-            // A `Handle?` is a niche: `none` is a sentinel handle, so the value
-            // is one word with no tag and needs no slot. Giving it the tagged
-            // layout made the local hold a slot address, and comparing that
-            // against the sentinel was always false (#438).
-            MirType::Option(inner) if **inner == MirType::Handle => None,
+            // A niche option — `Handle<T>?` or `Link<T>?` — is one word with no
+            // tag and needs no slot. Giving it the tagged layout made the local
+            // hold a slot address, and comparing that against the sentinel was
+            // always false (#438).
+            MirType::Option(inner) if inner.is_niche_payload() => None,
             MirType::Option(inner) => {
                 let inner_size = Self::resolve_type_alloc_size(inner, struct_layouts, enum_layouts)
                     .unwrap_or(inner.size());
@@ -6092,6 +6105,14 @@ impl<'a> FunctionBuilder<'a> {
     /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
     /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
     fn is_boxed_payload(ty: &MirType) -> bool {
+        // A niche option is one word — the value itself, with one reserved word
+        // meaning `none` — so it loads like a scalar even though it is spelled
+        // `Option`. Handing back its address instead made every slot of a
+        // `Vec<Handle<T>?>` read as present: an address is never the sentinel,
+        // and the address was then used as the handle (#959).
+        if matches!(ty, MirType::Option(inner) if inner.is_niche_payload()) {
+            return false;
+        }
         matches!(
             ty,
             MirType::Struct(_)
@@ -6375,6 +6396,61 @@ impl<'a> FunctionBuilder<'a> {
             ))
             .unwrap_or(false);
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
+    }
+
+    /// The node type's link-bearing fields, as (kind, byte offset) pairs.
+    ///
+    /// This is the whole descriptor the rack needs: `insert` walks it to record
+    /// the edges a node literal already carries, `delete` walks it to drop the
+    /// edges the dying node holds, and `snapshot` walks it to re-point them at
+    /// the copy. A link is a leaf — no walk follows one — so nested aggregates
+    /// aren't descended into.
+    fn link_field_descriptor(
+        mir_args: &[MirOperand],
+        arg_index: usize,
+        ctx: &CodegenCtx,
+    ) -> Vec<(i32, u32)> {
+        let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
+        let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
+        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
+        let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) else { return Vec::new() };
+        layout
+            .fields
+            .iter()
+            .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
+            .collect()
+    }
+
+    /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
+    /// Must agree with the `RASK_RACK_FIELD_*` defines in rask_runtime.h.
+    fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
+        use rask_types::{GenericArg, Type};
+        let bare = ty.as_option().unwrap_or(ty);
+        let (name, args) = match bare {
+            Type::UnresolvedGeneric { name, args } => (name.as_str(), args.as_slice()),
+            _ => return None,
+        };
+        if name == "Link" {
+            return Some(0);
+        }
+        // The value type is the last type argument: `Vec<T>`'s only one, and
+        // `Map<K, V>`'s second.
+        let value = args.iter().rev().find_map(|a| match a {
+            GenericArg::Type(t) => Some(t),
+            _ => None,
+        })?;
+        let holds_link = matches!(
+            value.as_option().unwrap_or(value),
+            Type::UnresolvedGeneric { name, .. } if name == "Link"
+        );
+        if !holds_link {
+            return None;
+        }
+        match name {
+            "Vec" => Some(1),
+            "Map" => Some(2),
+            _ => None,
+        }
     }
 
     /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).
@@ -6686,6 +6762,60 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            // The descriptor for a struct that already sits in its storage —
+            // same (kind, offset) pairs `Rack_insert` passes, read off the same
+            // layout. Emitting the pairs at the call site keeps the runtime from
+            // needing to know anything about Rask types.
+            "Link_register_struct" => {
+                let fields = Self::link_field_descriptor(mir_args, 0, ctx);
+                args.push(builder.ins().iconst(types::I64, fields.len() as i64));
+                if fields.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
+                    ));
+                    for (i, (kind, off)) in fields.iter().enumerate() {
+                        let k = builder.ins().iconst(types::I32, *kind as i64);
+                        let o = builder.ins().iconst(types::I32, *off as i64);
+                        builder.ins().stack_store(k, ss, (i * 8) as i32);
+                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                CallAdapt::None
+            }
+
+            // Rack insert: the node's bytes by address, then the shape of `T` —
+            // its size, and the byte offsets of its link fields. `Rack.new()`
+            // had no argument to read `T` off, so this is where the runtime
+            // learns what it is holding (mem.racks).
+            "Rack_insert" => {
+                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
+                if args.len() >= 2 && !is_struct {
+                    let val = args[1];
+                    args[1] = Self::value_to_ptr(builder, val);
+                }
+                let fields = Self::link_field_descriptor(mir_args, 1, ctx);
+                args.push(builder.ins().iconst(types::I64, elem_size));
+                args.push(builder.ins().iconst(types::I64, fields.len() as i64));
+                if fields.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
+                    ));
+                    for (i, (kind, off)) in fields.iter().enumerate() {
+                        let k = builder.ins().iconst(types::I32, *kind as i64);
+                        let o = builder.ins().iconst(types::I32, *off as i64);
+                        builder.ins().stack_store(k, ss, (i * 8) as i32);
+                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                CallAdapt::None
+            }
+
             // Pool insert: wrap value as pointer, append elem_size
             "Pool_insert" | "Pool_try_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
@@ -6715,7 +6845,9 @@ impl<'a> FunctionBuilder<'a> {
             // first. `replace` additionally hands back the old value's address —
             // returning CallAdapt::None here would leave that pointer as the
             // result and `let old = c.replace(0)` would print an address.
-            "Cell_set" | "Cell_replace" => {
+            "Cell_set" | "Cell_replace"
+            | "Shared_set" | "Shared_replace"
+            | "Mutex_set" | "Mutex_replace" => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
@@ -6723,18 +6855,27 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                if func_name == "Cell_replace" { CallAdapt::DerefResult } else { CallAdapt::None }
+                if func_name.ends_with("_replace") {
+                    CallAdapt::DerefResult
+                } else {
+                    CallAdapt::None
+                }
             }
 
-            // Shared_new / Mutex_new: ensure data is pointer, compute actual data_size
+            // Shared_new / Mutex_new: ensure data is pointer, compute actual
+            // data_size. The size arg may or may not already be there —
+            // `Shared.new(v)` and `Shared.mutex(v)` reach this under a
+            // signature with one parameter, and the old `Shared.new(v)` under
+            // one with two.
             "Shared_new" | "Mutex_new" => {
-                if args.len() >= 2 {
+                if !args.is_empty() {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_struct {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    args[1] = builder.ins().iconst(types::I64, data_size);
+                    let size = builder.ins().iconst(types::I64, data_size);
+                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
                 }
                 CallAdapt::None
             }

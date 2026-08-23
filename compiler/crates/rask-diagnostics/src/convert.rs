@@ -54,11 +54,46 @@ impl ToDiagnostic for rask_parser::ParseError {
 // Resolve Errors
 // ============================================================================
 
+/// Names the language used to have, and what took their place. Keeping the list
+/// here rather than in the resolver means the resolver doesn't have to know
+/// anything about renames — it just fails to find the name, as it should.
+fn retired_name(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "Cell" => Some((
+            "Shared.new(…)` / `Shared<T>",
+            "`Cell`, `Shared` and `Mutex` were one concept — one value, several \
+             accessors, a scoped view — differing only in what synchronization they \
+             took. That is a strategy, not three types, so it moved into \
+             `Shared<T, S>`, and `Cell` is the `Local` strategy \
+             [analysis.storage-consolidation]",
+        )),
+        "Owned" => Some((
+            "Heap<T>",
+            "`Owned` named single ownership, which every Rask value already has, so \
+             it distinguished nothing. What differs is the indirection: the value \
+             lives on the heap instead of inline [mem.heap]",
+        )),
+        _ => None,
+    }
+}
+
 impl ToDiagnostic for rask_resolve::ResolveError {
     fn to_diagnostic(&self) -> Diagnostic {
         use rask_resolve::ResolveErrorKind::*;
 
         match &self.kind {
+            // A name that used to exist gets told what replaced it. "Not found
+            // in this scope" is true and useless for a rename someone is
+            // meeting for the first time.
+            UndefinedSymbol { name } if retired_name(name).is_some() => {
+                let (replacement, why) = retired_name(name).unwrap();
+                Diagnostic::error(format!("`{}` is not a type any more", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, format!("`{}` was removed", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(why)
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")
@@ -467,7 +502,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0314")
                     .with_primary(*span, "type references itself infinitely")
                     .with_help("break the cycle with an explicit type annotation")
-                    .with_fix("break the cycle with an explicit type annotation or use `Owned<T>` for indirection")
+                    .with_fix("break the cycle with an explicit type annotation or use `Heap<T>` for indirection")
                     .with_why("a type cannot contain itself without indirection")
             }
 
@@ -834,6 +869,66 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("write the field as `Link<T>?` for now")
                     .with_fix("add `?` — `target: Link<Entity>?`")
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
+            }
+
+            LocalSharedSent { name, span } => {
+                Diagnostic::error("this `Shared` is task-local and cannot be sent")
+                    .with_code("E0346")
+                    .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
+                    .with_fix(
+                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
+                         locks more cheaply when writes dominate"
+                    )
+                    .with_why(
+                        "`Local` takes no lock at all, so two tasks touching it would \
+                         race. It is the opt-out, not the default, and this error is \
+                         what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+
+            SharedStrategyMismatch { found, expected, span } => {
+                Diagnostic::error(format!(
+                    "this box uses the `{}` strategy, but `{}` is expected here",
+                    found, expected
+                ))
+                    .with_code("E0381")
+                    .with_primary(*span, format!("`Shared<_, {}>` here", found))
+                    .with_fix(format!(
+                        "build it with `Shared.{}(…)`, or write the type as \
+                         `Shared<_, {}>` if `{}` is what you meant",
+                        match expected.as_str() {
+                            "Mutex" => "mutex",
+                            "Local" => "local",
+                            _ => "new",
+                        },
+                        found, found
+                    ))
+                    .with_help(
+                        "code that works under any strategy says so: \
+                         `func serve<S>(c: Shared<Config, S>)` [conc.sync/SH4]",
+                    )
+                    .with_why(
+                        "the strategy picks which lock the accessors take, so the two \
+                         have to agree. A `Local` box read through the read-write-lock \
+                         entry points blocks forever — it has no lock for them to take \
+                         [conc.sync/SH2]",
+                    )
+            }
+
+            RetiredBoxType { name, replacement, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is not a type any more — it's a strategy on `Shared`", name
+                ))
+                    .with_code("E0380")
+                    .with_primary(*span, format!("`{}` used as a type here", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(
+                        "`Cell`, `Shared` and `Mutex` were one concept — one value, \
+                         several accessors, a scoped view — differing only in what \
+                         synchronization they took. That is a strategy, not three \
+                         types, so it moved into `Shared<T, S>` \
+                         [analysis.storage-consolidation]",
+                    )
             }
 
             MutateConst { name, span } => {
@@ -2125,7 +2220,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     ),
                     MoveReason::Owned => (
                         format!(
-                            "`{}` is an Owned box — it was consumed there, and its \
+                            "`{}` is a Heap box — it was consumed there, and its \
                              memory went with it",
                             name
                         ),
@@ -2157,7 +2252,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         type_name
                     ),
                     MoveReason::Owned => format!(
-                        "`{}` is an Owned box — consumed on one branch but not the other, \
+                        "`{}` is a Heap box — consumed on one branch but not the other, \
                          and after the branches join the compiler has to assume it went",
                         name
                     ),
@@ -2431,7 +2526,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
 
             OwnedNotConsumed { name } => {
                 Diagnostic::error(format!(
-                    "`{}` was allocated with `own` and never dropped",
+                    "`{}` was allocated with `Heap(…)` and never dropped",
                     name
                 ))
                 .with_code("E0837")
@@ -2443,7 +2538,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("drop({})", name))
                 .with_why(
-                    "an Owned value has one owner and must be consumed exactly once \
+                    "a Heap value has one owner and must be consumed exactly once \
                      (mem.linear/L1) — nothing else frees it",
                 )
             }

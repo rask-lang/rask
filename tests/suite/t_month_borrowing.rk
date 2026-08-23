@@ -14,7 +14,7 @@
 // it. `with` is for the locking boxes: Mutex and Shared. The full box family is
 // in `t_month_boxes.rk`.
 
-import memory.Cell
+import sync.Shared
 import sync.Mutex
 
 struct Health {
@@ -109,55 +109,55 @@ test "mem.borrowing — borrowing a collection to read it" {
 
 // Cell's own accessors are direct: `get()` copies the value out, `set(v)`
 // replaces it. `with` is for the locking boxes.
-test "mem.cell — get and set" {
-    mut c = Cell.new(5)
+test "conc.sync — get and set" {
+    mut c = Shared.local(5)
     assert c.get() == 5
     c.set(42)
     assert c.get() == 42
 }
 
-test "mem.cell — replace hands back the old value" {
-    mut c = Cell.new(1)
+test "conc.sync — replace hands back the old value" {
+    mut c = Shared.local(1)
     let old = c.replace(9)
     assert old == 1
     assert c.get() == 9
 }
 
-test "conc.sync — with on a Mutex takes the lock for the block" {
-    mut m = Mutex.new(0)
-    with m.lock() as v {
+test "conc.sync — with on a Mutex-strategy box takes the lock for the block" {
+    mut m = Shared.mutex(0)
+    with m.write() as v {
         v = v + 7
     }
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 7
     }
 }
 
 test "conc.sync — several with blocks accumulate" {
-    mut m = Mutex.new(0)
-    with m.lock() as v { v += 5 }
-    with m.lock() as v { v += 3 }
-    with m.lock() as v { assert v == 8 }
+    mut m = Shared.mutex(0)
+    with m.write() as v { v += 5 }
+    with m.write() as v { v += 3 }
+    with m.write() as v { assert v == 8 }
 }
 
 test "conc.sync — a with block that mutates several times" {
-    mut m = Mutex.new(0)
-    with m.lock() as v {
+    mut m = Shared.mutex(0)
+    with m.write() as v {
         v = v + 1
         v = v + 2
         v = v + 3
     }
-    with m.lock() as v {
+    with m.write() as v {
         assert v == 6
     }
 }
 
-test "conc.sync — a Mutex guarding a struct" {
-    mut m = Mutex.new(Health { hp: 10 })
-    with m.lock() as h {
+test "conc.sync — the Mutex strategy guarding a struct" {
+    mut m = Shared.mutex(Health { hp: 10 })
+    with m.write() as h {
         h.hp = h.hp + 5
     }
-    with m.lock() as h {
+    with m.write() as h {
         assert h.hp == 15
     }
 }

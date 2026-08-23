@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `Vec` whose element is itself a niche option (#959).
+//
+// `Handle<T>?` is one word — the handle, with all-ones for `none` — and four
+// separate places decided that by matching the type's *name*. A resolved
+// generic names its base by id instead, so each of them fell through to the
+// tagged-option answer: `Vec.new` reserved 16-byte slots for an 8-byte element,
+// the element read handed back its own address, and `== none` walked the value
+// as an aggregate. Every slot read as present, and the address was then used as
+// the handle.
+
+struct Item {
+    public hp: i32
+}
+
+func main() {}
+
+test "an empty slot in a Vec of optional handles is empty" {
+    mut pool: Pool<Item> = Pool.new()
+    let _live = pool.insert(Item { hp: 5 })
+    mut v: Vec<Handle<Item>?> = Vec.new()
+    v.push(none)
+
+    assert_eq(v.len(), 1)
+    if v.get(0)? as slot {
+        if slot? as _h {
+            assert false           // the empty slot read as a handle
+        }
+    } else {
+        assert false               // index 0 of a 1-element Vec exists
+    }
+}
+
+test "a filled slot in a Vec of optional handles reads back" {
+    mut pool: Pool<Item> = Pool.new()
+    let h = pool.insert(Item { hp: 9 })
+    mut v: Vec<Handle<Item>?> = Vec.new()
+    v.push(h)
+    v.push(none)
+
+    assert_eq(v.len(), 2)
+    if v.get(0)? as slot {
+        if slot? as live {
+            assert_eq(pool[live].hp, 9)
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+    if v.get(1)? as slot {
+        if slot? as _h {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+// Past the end is `none` at the outer layer — a different `none` from an empty
+// slot, and the two have to stay distinguishable.
+test "out of range and an empty slot are different answers" {
+    mut v: Vec<Handle<Item>?> = Vec.new()
+    v.push(none)
+
+    if v.get(0)? as _slot {
+        // an empty slot: the outer option is present
+    } else {
+        assert false
+    }
+    if v.get(5)? as _slot {
+        assert false               // past the end: the outer option is absent
+    }
+}

@@ -472,6 +472,17 @@ impl TypeChecker {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
+                    // SH7 needs to know which names reached a task-local box and
+                    // where. Recorded here rather than re-walked at the `spawn`,
+                    // which would have to know every expression shape to be
+                    // right; judged after solving, because right now the type of
+                    // a `let c = Shared.new(0)` is usually still a variable.
+                    let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    if matches!(resolved, Type::Var(_))
+                        || Self::type_is_shared(&resolved, &self.types)
+                    {
+                        self.local_shared_uses.push((name.clone(), ty.clone(), expr.span));
+                    }
                     ty
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
@@ -2250,6 +2261,11 @@ impl TypeChecker {
 
         // Extern and unsafe function calls require unsafe context
         // Also: CC1 — spawn() must be inside a `using Multitasking { }` block
+        // conc.sync/SH7 applies to any call named `spawn`, however it reached
+        // scope — a builtin, or the `async.spawn` import. Judged after solving.
+        if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n.ends_with(".spawn")) {
+            self.spawn_arg_spans.extend(args.iter().map(|a| a.expr.span));
+        }
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
@@ -2260,6 +2276,10 @@ impl TypeChecker {
                         if self.multitasking_depth == 0 {
                             self.errors.push(TypeError::SpawnOutsideBlock { span });
                         }
+                        // conc.sync/SH7: `Local` takes no lock, so a box using it
+                        // must not reach a second task. This is the whole reason
+                        // the default can be the cheap one — the unsafe direction
+                        // doesn't compile.
                     }
 
                     let unsafe_category = match &sym.kind {
@@ -3871,6 +3891,60 @@ impl TypeChecker {
     /// been inferred already — with-binding sources are.)
     /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
     /// for a place that already has the type in hand.
+    /// Report every task-local `Shared` a spawned closure reaches (SH7).
+    ///
+    /// The box is captured by naming it, so the names checked inside a `spawn`
+    /// argument's span are exactly the boxes that task can touch. Matching on
+    /// span containment beats re-walking the body, which would have to know
+    /// every expression and statement shape to be right.
+    ///
+    /// Runs after constraint solving for the same reason
+    /// `validate_pending_mutations` does: during the walk, the type of a
+    /// `let c = Shared.new(0)` is usually still a variable.
+    pub(super) fn validate_spawn_captures(&mut self) {
+        if self.spawn_arg_spans.is_empty() {
+            return;
+        }
+        let spans = std::mem::take(&mut self.spawn_arg_spans);
+        let uses = std::mem::take(&mut self.local_shared_uses);
+        let mut reported: std::collections::HashSet<(String, usize)> =
+            std::collections::HashSet::new();
+        for (name, ty, span) in uses {
+            let Some(i) = spans.iter().position(|s| {
+                s.file_id == span.file_id && span.start >= s.start && span.end <= s.end
+            }) else {
+                continue;
+            };
+            let resolved = self.resolve_named(&self.ctx.apply(&ty));
+            if !Self::type_is_shared(&resolved, &self.types) {
+                continue;
+            }
+            if self.shared_strategy_name(&resolved) != "Local" {
+                continue;
+            }
+            if reported.insert((name.clone(), i)) {
+                self.errors.push(TypeError::LocalSharedSent { name, span });
+            }
+        }
+    }
+
+    /// The strategy argument's name, or `"Local"` when there isn't one — bare
+    /// `Shared<T>` is `Shared<T, Local>` in every position (SH3).
+    fn shared_strategy_name(&self, ty: &Type) -> String {
+        let args = match ty {
+            Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
+            _ => return "Local".to_string(),
+        };
+        match args.get(1) {
+            Some(GenericArg::Type(s)) => match self.resolve_named(s) {
+                Type::UnresolvedNamed(n) => n,
+                Type::Named(id) => self.types.type_name(id),
+                _ => "Local".to_string(),
+            },
+            _ => "Local".to_string(),
+        }
+    }
+
     fn type_is_shared(ty: &Type, types: &crate::TypeTable) -> bool {
         match ty {
             Type::Generic { base, .. } => types.type_name(*base) == "Shared",

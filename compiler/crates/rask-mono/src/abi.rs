@@ -35,6 +35,18 @@ pub const UNION_PAYLOAD_OFFSET: u32 = 8;
 /// (index=UINT32_MAX, gen=UINT32_MAX), which no live slot can ever produce.
 pub const HANDLE_NONE_SENTINEL: i64 = -1;
 
+/// `none` for a niche-optimized `Link<T>?`. Same trick, different impossible
+/// value: a link is the node's machine address, and the address that can never
+/// name a node is the null one.
+///
+/// This used to borrow the handle's -1, which worked but hid two things. A rack
+/// chunk arrives zeroed, so with null as `none` a node's links start out absent
+/// with nothing written — a field codegen forgets reads as `none` instead of as
+/// a live link to address 0. And a runtime check is `if (!link)`, the check C
+/// already writes everywhere, instead of a comparison against a magic constant.
+/// The sentinel belongs to the type, not to the niche mechanism.
+pub const LINK_NONE_SENTINEL: i64 = 0;
+
 /// A scalar payload occupies the whole slot, whatever its own width.
 pub const PAYLOAD_SLOT_BYTES: u32 = 8;
 

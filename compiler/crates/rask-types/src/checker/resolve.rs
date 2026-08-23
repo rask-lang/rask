@@ -2219,32 +2219,22 @@ impl TypeChecker {
             ("Response", "status") if args.is_empty() => {
                 self.unify(ret, &Type::U16, span)
             }
-            // Shared static constructor: Shared.new(value) -> Shared<T>
-            ("Shared", "new") if args.len() == 1 => {
+            // `Shared.new/mutex/local(value)` — the constructor settles the
+            // strategy, and it lands in the type so a reader of the annotation
+            // sees the same thing (conc.sync/SH2).
+            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
                 let inner = args[0].clone();
-                let shared_ty = Type::UnresolvedGeneric {
-                    name: "Shared".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner))],
-                };
+                let shared_ty = Self::shared_type(inner, method);
                 self.unify(ret, &shared_ty, span)
             }
-            // Cell static constructor: Cell.new(value) -> Cell<T>
-            ("Cell", "new") if args.len() == 1 => {
-                let inner = args[0].clone();
-                let cell_ty = Type::UnresolvedGeneric {
+            // `Cell` is the `Local` strategy now (analysis.storage-consolidation).
+            ("Cell", _) => {
+                self.errors.push(TypeError::RetiredBoxType {
                     name: "Cell".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner))],
-                };
-                self.unify(ret, &cell_ty, span)
-            }
-            // Mutex static constructor: Mutex.new(value) -> Mutex<T>
-            ("Mutex", "new") if args.len() == 1 => {
-                let inner = args[0].clone();
-                let mutex_ty = Type::UnresolvedGeneric {
-                    name: "Mutex".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner))],
-                };
-                self.unify(ret, &mutex_ty, span)
+                    replacement: "Shared.new(…)` / `Shared<T>".to_string(),
+                    span,
+                });
+                Ok(true)
             }
             _ => {
                 // Try stub registry before falling through
@@ -2271,6 +2261,24 @@ impl TypeChecker {
                     span,
                 })
             }
+        }
+    }
+
+    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Readers`,
+    /// which is what bare `Shared<T>` means everywhere (SH3) — the default
+    /// serves the common case, which is a box several tasks reach.
+    fn shared_type(inner: Type, constructor: &str) -> Type {
+        let strategy = match constructor {
+            "local" => "Local",
+            "mutex" => "Mutex",
+            _ => "Readers",
+        };
+        Type::UnresolvedGeneric {
+            name: "Shared".to_string(),
+            args: vec![
+                GenericArg::Type(Box::new(inner)),
+                GenericArg::Type(Box::new(Type::UnresolvedNamed(strategy.to_string()))),
+            ],
         }
     }
 
@@ -2332,6 +2340,18 @@ impl TypeChecker {
                 let opt_ty = Type::option(result_var);
                 self.unify(ret, &opt_ty, span)
             }
+            // The single-expression shorthands `Cell` had (conc.sync API table).
+            ("Shared", "get" | "into_inner") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            ("Shared", "set") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            ("Shared", "replace") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &inner_type, span)
+            }
             // Shared<T>.clone() -> Shared<T>
             ("Shared", "clone") if args.is_empty() => {
                 let shared_ty = Type::UnresolvedGeneric {
@@ -2340,46 +2360,24 @@ impl TypeChecker {
                 };
                 self.unify(ret, &shared_ty, span)
             }
-            // Cell<T>.get() -> T (CE6: Copy types only, not enforced in type checker)
-            ("Cell", "get") if args.is_empty() => {
-                self.unify(ret, &inner_type, span)
+            // `Cell` and `Mutex` are strategies now, not types
+            // (analysis.storage-consolidation). Say so where the old spelling
+            // is used, rather than letting it fail as an unknown name.
+            ("Cell", _) => {
+                self.errors.push(TypeError::RetiredBoxType {
+                    name: "Cell".to_string(),
+                    replacement: format!("Shared.new(…)` / `Shared<T>"),
+                    span,
+                });
+                Ok(true)
             }
-            // Cell<T>.set(value: T) -> ()
-            ("Cell", "set") if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-            // Cell<T>.replace(value: T) -> T
-            ("Cell", "replace") if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                self.unify(ret, &inner_type, span)
-            }
-            // Cell<T>.into_inner() -> T (consumes cell)
-            ("Cell", "into_inner") if args.is_empty() => {
-                self.unify(ret, &inner_type, span)
-            }
-            // Mutex<T>.lock() -> T  (inline access, E5/MX3)
-            ("Mutex", "lock") if args.is_empty() => {
-                self.unify(ret, &inner_type, span)
-            }
-            // Mutex<T>.lock(|T| -> R) -> R  (closure-based)
-            ("Mutex", "lock") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                self.unify(ret, &result_var, span)
-            }
-            // Mutex<T>.try_lock(|T| -> R) -> Option<R>
-            ("Mutex", "try_lock") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::option(result_var);
-                self.unify(ret, &opt_ty, span)
-            }
-            // Mutex<T>.clone() -> Mutex<T>
-            ("Mutex", "clone") if args.is_empty() => {
-                let mutex_ty = Type::UnresolvedGeneric {
+            ("Mutex", "lock" | "try_lock" | "clone" | "new") => {
+                self.errors.push(TypeError::RetiredBoxType {
                     name: "Mutex".to_string(),
-                    args: inner_args.clone(),
-                };
-                self.unify(ret, &mutex_ty, span)
+                    replacement: format!("Shared.mutex(…)` / `Shared<T, Mutex>"),
+                    span,
+                });
+                Ok(true)
             }
             // Sender<T>.send(value: T) -> () or string
             ("Sender", "send") if args.len() == 1 => {
@@ -2467,24 +2465,12 @@ impl TypeChecker {
                 let tuple_ty = Type::Tuple(vec![sender, receiver]);
                 self.unify(ret, &tuple_ty, span)
             }
-            // Shared<T>.new(value) -> Shared<T>. Written `Shared.new(0)` the
-            // element type comes from the value, so pin the variable to it.
-            ("Shared", "new") if args.len() == 1 => {
+            // Written `Shared.new(0)` the element type comes from the value, so
+            // pin the variable to it. The strategy comes from the constructor.
+            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
-                let shared_ty = Type::UnresolvedGeneric {
-                    name: "Shared".to_string(),
-                    args: inner_args.clone(),
-                };
+                let shared_ty = Self::shared_type(inner_type.clone(), method);
                 self.unify(ret, &shared_ty, span)
-            }
-            // Mutex<T>.new(value) -> Mutex<T>, same as Shared above.
-            ("Mutex", "new") if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                let mutex_ty = Type::UnresolvedGeneric {
-                    name: "Mutex".to_string(),
-                    args: inner_args.clone(),
-                };
-                self.unify(ret, &mutex_ty, span)
             }
             // Unrecognized method: hand the receiver on exactly as written
             // rather than inventing an argument the solver never asked for.
@@ -3275,7 +3261,10 @@ impl TypeChecker {
             "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
                 Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, span))
             }
-            name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
+            // `Cell` and `Mutex` are here to be *rejected* with a message that
+            // names the strategy that replaced them — without the arm they fall
+            // through to "couldn't work out the type", which says nothing.
+            name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex" | "Cell")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some() => {
                 Some(self.resolve_runtime_method(name, method, args, ret, span))
             }

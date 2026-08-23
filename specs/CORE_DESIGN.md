@@ -24,7 +24,7 @@ I enforce memory safety through the type system and scope rules without requirin
 
 ### 2. Everything is a Value
 
-Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope. There is no user-facing "reference type" category to learn alongside it: no reference-typed field, no `Box<T>`/`Rc<T>` split at the type level. A few built-ins — `string`, `Shared<T>`, `Mutex<T>`, `Atomic<T>`, and that list is closed — obey the ownership rules but share their *insides*; the carve-out below spells that out.
+Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope. There is no user-facing "reference type" category to learn alongside it: no reference-typed field, no `Box<T>`/`Rc<T>` split at the type level. A few built-ins — `string`, `Shared<T, S>`, `Atomic<T>`, and that list is closed — obey the ownership rules but share their *insides*; the carve-out below spells that out.
 
 **What this means:**
 - Assigning or passing a value either copies it (for small types) or moves it (transfers ownership)
@@ -38,15 +38,14 @@ Every type in Rask is a value — it has a single owner, it copies or moves on a
 - Collections (`Vec<T>`, `Map<K,V>`) — values that own heap buffers
 - Strings (`string`) — immutable refcounted values (Copy)
 - `any Trait` — values that own heap-allocated concrete data
-- `Cell<T>` — values that own a heap-allocated inner value
-- `Shared<T>`, `Mutex<T>` — values that own thread-safe inner data
+- `Shared<T, S>` — one value several accessors reach; `S` says what synchronization it takes
 - Closures — values that own their captured data
 
-There's no `Box<T>` because there's no need to distinguish "heap-allocated value" from "value." Some values happen to own heap memory internally — that's an implementation detail, not a type-system concept. The allocation is visible at creation (`Vec.new()`, `Cell.new()`), not in the type's behavior.
+There's no `Box<T>` because there's no need to distinguish "heap-allocated value" from "value." Some values happen to own heap memory internally — that's an implementation detail, not a type-system concept. The allocation is visible at creation (`Vec.new()`, `Shared.new()`, `Heap(…)`), not in the type's behavior.
 
 **Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model for owned data — the uniform rule.
 
-**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T>`, `Mutex<T>`, and `Atomic<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Pool`, `Cell`, `Shared`, `Mutex`, `Owned`, plus `Atomic` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
+**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T, S>`, and `Atomic<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [the Box family](memory/boxes.md) for the disciplines (`Shared`, `Rack`+`Link`, `Heap`, the deprecated `Pool`, plus `Atomic` as adjacent) and for why I don't hand out a way to build more of them (`mem.boxes/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
 **Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
 
@@ -249,7 +248,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Pattern matching.** `match` for multiple branches, `if x is Pattern` for single checks. Compiler infers binding modes (borrow vs take) from usage. See [enums.md](types/enums.md), [control-flow.md](control/control-flow.md).
 
-**Closures.** Closures capture what they use. If captured data is owned, the closure can go anywhere. If captured data is borrowed, the closure is limited to that scope. Mutable captures use explicit `mutate` annotation. The compiler optimizes inline closures (iterator chains) to access the outer scope directly. IDE shows capture list as ghost annotation. `Cell<T>` provides single-value mutable containers for sharing across closures without Pool+Handle ceremony — accessed via `with cell as v { ... }` (mutable by default). See [closures.md](memory/closures.md), [cell.md](memory/cell.md).
+**Closures.** Closures capture what they use. If captured data is owned, the closure can go anywhere. If captured data is borrowed, the closure is limited to that scope. Mutable captures use explicit `mutate` annotation. The compiler optimizes inline closures (iterator chains) to access the outer scope directly. IDE shows capture list as ghost annotation. `Shared<T>` provides a single-value mutable container for sharing across closures without arena ceremony — accessed via `with box.write() as v { ... }`. See [closures.md](memory/closures.md), [sync.md](concurrency/sync.md).
 
 **Traits.** Nominal by default — conformance is declared with `extend Type with Trait` (one header can claim several: `with A, B, C`), because conformance is a semantic claim, not just a shape. `duck trait` opts into shape-matching for scratchpad work, and it stops at the package: `public duck trait` is a compile error, because a shape-matched contract crossing a package boundary is a versioning trap — your type could start or stop satisfying a stranger's trait with neither author touching a line they'd notice. Inside a package there's no stranger to protect, so staying sketched is your call: lint and `rask publish` report duck traits, neither blocks. Delete the keyword to harden; the compiler lists the types that already match and generates the conformance declarations. Runtime polymorphism via `any Trait` for heterogeneous collections; conversion is explicit (`value as any Trait`) — it allocates, and the cast marks where. Conformance and generic constraints are in [generics.md](types/generics.md); `any Trait` runtime dispatch is in [traits.md](types/traits.md).
 
@@ -365,7 +364,7 @@ I'm upfront about what Rask doesn't do well:
 
 1. **Explicit cloning:** Collections and large values require explicit cloning to share access (strings are Copy — no cloning needed)
 2. **Key-based indirection:** Graphs and self-referential structures use handles, not pointers
-3. **No shared mutable references:** Cross-task data sharing uses channels (ownership transfer), `Shared<T>` / `Mutex<T>` (`with`-based scoped access), or explicit synchronization
+3. **No shared mutable references:** Cross-task data sharing uses channels (ownership transfer), `Shared<T, S>` (`with`-based scoped access), or explicit synchronization
 4. **Unsafe for low-level code:** OS/kernel work requires unsafe blocks with raw pointers
 
 These aren't accidents—they're deliberate tradeoffs to achieve safety without annotations.
