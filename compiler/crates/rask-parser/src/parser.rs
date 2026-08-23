@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AnnotationTarget, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -1591,11 +1591,11 @@ impl Parser {
         }))
     }
 
-    /// `annotation @name [on target, ...] { field: T [= default], ... }`
-    /// (type.annotations/AN1-AN2). The name keeps its `@` sigil — the
-    /// declaration spells exactly what attachment sites write, so keyword and
-    /// name can't blur. Fields only — no methods, no visibility keywords:
-    /// annotations are pure data records.
+    /// `annotation @name { field: T [= default], ... }`
+    /// (type.annotations/AN1). The name keeps its `@` sigil — the declaration
+    /// spells exactly what attachment sites write, so keyword and name can't
+    /// blur. Fields only — no methods, no visibility keywords: annotations are
+    /// pure data records. Reads exactly like a struct; nothing else to learn.
     fn parse_annotation_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.advance(); // 'annotation'
         if !self.match_token(&TokenKind::At) {
@@ -1608,34 +1608,6 @@ impl Parser {
         }
         let name_span = self.current().span;
         let name = self.expect_ident()?;
-
-        // AN2: optional targets clause. Empty = attachable anywhere.
-        let mut targets = Vec::new();
-        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "on") {
-            self.advance();
-            loop {
-                let target = match self.current_kind() {
-                    TokenKind::Struct => AnnotationTarget::Struct,
-                    TokenKind::Enum => AnnotationTarget::Enum,
-                    TokenKind::Func => AnnotationTarget::Func,
-                    TokenKind::Ident(s) if s == "field" => AnnotationTarget::Field,
-                    TokenKind::Ident(s) if s == "variant" => AnnotationTarget::Variant,
-                    TokenKind::Ident(s) if s == "param" => AnnotationTarget::Param,
-                    _ => {
-                        return Err(ParseError::expected(
-                            "annotation target (struct, enum, variant, field, func, param)",
-                            self.current_kind(),
-                            self.current().span,
-                        ));
-                    }
-                };
-                self.advance();
-                targets.push(target);
-                if !self.match_token(&TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
 
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
@@ -1673,7 +1645,7 @@ impl Parser {
         }
         self.expect(&TokenKind::RBrace)?;
 
-        Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, targets, is_pub, doc }))
+        Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, is_pub, doc }))
     }
 
     fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {

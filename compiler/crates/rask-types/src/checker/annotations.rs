@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! User annotation validation (type.annotations/AN2-AN5).
+//! User annotation validation (type.annotations/AN3-AN5).
 //!
 //! Attachments arrive as verbatim strings (`validate(max:100)`, same storage
 //! as the serialization annotations), so argument checking re-parses that
 //! text. Values are literals for now — the full "any comptime constant" form
 //! wants structured attr storage, tracked separately.
 
-use rask_ast::decl::{AnnotationDecl, AnnotationTarget, Decl, DeclKind};
+use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
 use rask_ast::Span;
 use std::collections::HashMap;
 
@@ -148,7 +148,7 @@ fn split_named(arg: &str) -> Option<(&str, &str)> {
 }
 
 impl TypeChecker {
-    /// AN2-AN5 over the whole program. Runs after type declarations are
+    /// AN3-AN5 over the whole program. Runs after type declarations are
     /// collected; attachment sites are struct/enum/func decls and struct
     /// fields (variants and params carry no attrs yet).
     pub(super) fn check_user_annotations(&mut self, decls: &[Decl]) {
@@ -196,26 +196,30 @@ impl TypeChecker {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
-                    self.check_attachment_site(&s.attrs, AnnotationTarget::Struct, decl.span, &declared);
+                    self.check_attachment_site(&s.attrs, "struct", decl.span, &declared);
                     for field in &s.fields {
-                        self.check_attachment_site(&field.attrs, AnnotationTarget::Field, field.name_span, &declared);
+                        self.check_attachment_site(&field.attrs, "field", field.name_span, &declared);
                     }
                 }
                 DeclKind::Enum(e) => {
-                    self.check_attachment_site(&e.attrs, AnnotationTarget::Enum, decl.span, &declared);
+                    self.check_attachment_site(&e.attrs, "enum", decl.span, &declared);
                 }
                 DeclKind::Fn(f) => {
-                    self.check_attachment_site(&f.attrs, AnnotationTarget::Func, decl.span, &declared);
+                    self.check_attachment_site(&f.attrs, "func", decl.span, &declared);
                 }
                 _ => {}
             }
         }
     }
 
+    /// `site` is only used for message wording ("attached twice to the same
+    /// field") — placement itself is not constrained: an annotation is data,
+    /// and where it is useful is the reader's business, not the compiler's
+    /// (Principle 5). A misplaced attachment is lint territory.
     fn check_attachment_site(
         &mut self,
         attrs: &[String],
-        site: AnnotationTarget,
+        site: &str,
         span: Span,
         declared: &HashMap<&str, &AnnotationDecl>,
     ) {
@@ -228,25 +232,13 @@ impl TypeChecker {
             if seen.contains(&name) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: name.to_string(),
-                    problem: format!("attached twice to the same {}", site.as_str()),
+                    problem: format!("attached twice to the same {}", site),
                     fix: "one attachment per item — repetition wants an array field".to_string(),
                     span,
                 });
                 continue;
             }
             seen.push(name);
-
-            // AN2: declared targets bound where the annotation may sit.
-            if !ann.targets.is_empty() && !ann.targets.contains(&site) {
-                let targets: Vec<&str> = ann.targets.iter().map(|t| t.as_str()).collect();
-                self.errors.push(TypeError::BadAnnotation {
-                    name: name.to_string(),
-                    problem: format!("cannot attach to a {} — declared `on {}`", site.as_str(), targets.join(", ")),
-                    fix: format!("attach it to a {}, or widen the declaration's `on` clause", targets.join(" or ")),
-                    span,
-                });
-                continue;
-            }
 
             self.check_attachment_args(ann, args, span);
         }

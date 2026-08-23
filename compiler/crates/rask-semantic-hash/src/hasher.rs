@@ -233,9 +233,6 @@ impl Hasher {
                 self.feed_tag(16);
                 self.feed_str(&a.name);
                 self.feed_bool(a.is_pub);
-                for t in &a.targets {
-                    self.feed_str(t.as_str());
-                }
                 self.hash_fields(&a.fields);
             }
         }

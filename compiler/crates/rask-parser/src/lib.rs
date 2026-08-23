@@ -1565,7 +1565,6 @@ mod tests {
             DeclKind::Annotation(ref a) => {
                 assert_eq!(a.name, "validate");
                 assert!(a.is_pub);
-                assert!(a.targets.is_empty(), "no targets clause means empty");
                 assert_eq!(a.fields.len(), 2);
                 assert_eq!(a.fields[0].name, "min");
                 assert!(a.fields[0].default.is_some());
@@ -1576,18 +1575,12 @@ mod tests {
         }
     }
 
-    // AN2: `on` targets clause, keywords and idents mixed.
+    // AN1: a declaration is a keyword, a sigiled name, and a field body —
+    // nothing else. `on` was a targets clause once; it is gone (AN2 deleted).
     #[test]
-    fn annotation_decl_targets() {
-        let result = parse("annotation @route on func, field {\n    path: str\n}");
-        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
-        match result.decls[0].kind {
-            DeclKind::Annotation(ref a) => {
-                use rask_ast::decl::AnnotationTarget;
-                assert_eq!(a.targets, vec![AnnotationTarget::Func, AnnotationTarget::Field]);
-            }
-            _ => panic!("expected annotation declaration"),
-        }
+    fn annotation_decl_has_no_targets_clause() {
+        let result = parse("annotation @route on func {\n    path: str\n}");
+        assert!(!result.is_ok(), "`on` should no longer parse as a targets clause");
     }
 
     // AN1: methods are rejected — annotations are pure data.

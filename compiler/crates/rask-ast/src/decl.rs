@@ -59,35 +59,9 @@ pub struct AnnotationDecl {
     pub name: String,
     pub name_span: Span,
     pub fields: Vec<Field>,
-    /// `on field, param` — empty means attachable anywhere (AN2).
-    pub targets: Vec<AnnotationTarget>,
     pub is_pub: bool,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
-}
-
-/// What an annotation may attach to (type.annotations/AN2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnotationTarget {
-    Struct,
-    Enum,
-    Variant,
-    Field,
-    Func,
-    Param,
-}
-
-impl AnnotationTarget {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Struct => "struct",
-            Self::Enum => "enum",
-            Self::Variant => "variant",
-            Self::Field => "field",
-            Self::Func => "func",
-            Self::Param => "param",
-        }
-    }
 }
 
 /// A type declaration: nominal by default, transparent with `type alias`.

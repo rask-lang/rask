@@ -9,11 +9,11 @@
 
 import std.reflect
 
-annotation @indexed on field {
+annotation @indexed {
     weight: i64 = 1
 }
 
-annotation @secret on field {
+annotation @secret {
 }
 
 struct Doc {

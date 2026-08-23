@@ -927,11 +927,6 @@ impl<'a> Printer<'a> {
         }
         self.emit("annotation @");
         self.emit(&a.name);
-        if !a.targets.is_empty() {
-            self.emit(" on ");
-            let names: Vec<&str> = a.targets.iter().map(|t| t.as_str()).collect();
-            self.emit(&names.join(", "));
-        }
         self.emit(" {");
         self.emit_newline();
         self.indent += 1;

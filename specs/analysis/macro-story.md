@@ -263,9 +263,8 @@ mistake — behavior belongs in the library that reads the data, not in the anno
 
 **Declaration** is a restricted struct: fields with optional defaults, field types limited
 to the const-representable set (primitives, `str`, enums and fixed arrays of these —
-the CT58 splice set). Optionally declares its targets: `annotation @validate on field`;
-attaching it anywhere else is a compile error, so metadata can't sit somewhere no reader
-will ever look. Default: attachable anywhere.
+the CT58 splice set). No targets clause: where an annotation is useful is the reader's
+business, not the compiler's, and a misplacement guard is lint territory (Principle 5).
 
 **Attachment is checked as construction.** `@validate(max: 100)` type-checks exactly like
 the struct literal `validate { max: 100 }` — non-defaulted fields required, names checked,
