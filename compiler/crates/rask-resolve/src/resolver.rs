@@ -120,7 +120,6 @@ impl Resolver {
             ("Error", BuiltinTypeKind::Error),
             ("Channel", BuiltinTypeKind::Channel),
             ("Pool", BuiltinTypeKind::Pool),
-            ("Cell", BuiltinTypeKind::Cell),
             ("Handle", BuiltinTypeKind::Handle),
             ("Rack", BuiltinTypeKind::Rack),
             ("Link", BuiltinTypeKind::Link),
@@ -138,7 +137,7 @@ impl Resolver {
             ("AtomicIsize", BuiltinTypeKind::Atomic),
             ("Shared", BuiltinTypeKind::Shared),
             ("Mutex", BuiltinTypeKind::Mutex),
-            ("Owned", BuiltinTypeKind::Owned),
+            ("Heap", BuiltinTypeKind::Heap),
         ];
 
         for (name, builtin) in builtin_types {

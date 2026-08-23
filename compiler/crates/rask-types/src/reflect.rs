@@ -238,7 +238,7 @@ fn is_heap_backed(name: &str) -> bool {
                 | "Cell"
                 | "Shared"
                 | "Mutex"
-                | "Owned"
+                | "Heap"
                 | "Channel"
                 | "Sender"
                 | "Receiver"

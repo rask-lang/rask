@@ -8,7 +8,7 @@ const backend_pool = BackendPool {
         Backend { url: "localhost:8081" },
         Backend { url: "localhost:8082" } 
     ]), 
-    index: Mutex<usize>.new(0) 
+    index: Shared.mutex(0) 
 }
 
 func routes() -> Vec<Route> {

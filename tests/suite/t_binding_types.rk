@@ -116,14 +116,14 @@ test "a struct-shaped variant's fields are typed" {
     assert Outer.Named { code: 7, kind: Inner.B }.describe() == "7/b"
 }
 
-// Lowering rebuilds `box.lock().method(…)` with the guard as the receiver, and
+// Lowering rebuilds `box.write().method(…)` with the guard as the receiver, and
 // it used to stamp the rebuilt call `NodeId::DUMMY` — which threw away the
 // record for the *original* call.
-const shared = Mutex.new(Store.new())
+const shared = Shared.mutex(Store.new())
 
 test "a method call through a lock guard keeps its dispatch target" {
-    let a = shared.lock().bump()
-    let b = shared.lock().bump()
+    let a = shared.write().bump()
+    let b = shared.write().bump()
     assert a == 1
     assert b == 2
 }

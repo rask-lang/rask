@@ -1,0 +1,154 @@
+// `Link<T>?` and `Handle<T>?` are the same shape and not the same `none`.
+//
+// Both are one word with no tag. A handle is index+generation, so all-ones is
+// the value it can't produce; a link is an address, so null is. The first native
+// pass gave links the handle's all-ones, and every absent edge in a fresh node
+// was the address -1 — which `rack.insert` then walked, looking for edges to
+// record. It only stayed upright because the runtime also accepted -1 as
+// absent, i.e. two wrongs.
+
+struct Item {
+    hp: i32
+}
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+    owner: Handle<Item>?
+}
+
+struct Cursor {
+    at: Link<Node>?
+}
+
+func main() {}
+
+test "a fresh node's absent edge is absent, not an address" {
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { id: 1, peer: none, owner: none })
+
+    if n.peer? as _p {
+        assert false
+    }
+    if n.owner? as _h {
+        assert false
+    }
+    assert_eq(n.id, 1)
+}
+
+// The two niches sitting in one struct is what catches a shared sentinel: give
+// links the handle's word and the link field reads as present, or the pool reads
+// a null handle as a live slot.
+test "the two niches keep their own none side by side" {
+    mut pool: Pool<Item> = Pool.new()
+    mut rack: Rack<Node> = Rack.new()
+
+    let it = pool.insert(Item { hp: 9 })
+    let a = rack.insert(Node { id: 1, peer: none, owner: it })
+    let b = rack.insert(Node { id: 2, peer: a, owner: none })
+
+    if b.peer? as p {
+        assert_eq(p.id, 1)
+    } else {
+        assert false
+    }
+    if a.owner? as h {
+        assert_eq(pool[h].hp, 9)
+    } else {
+        assert false
+    }
+    if a.peer? as _p {
+        assert false
+    }
+    if b.owner? as _h {
+        assert false
+    }
+}
+
+test "clearing an edge to none leaves the node reachable" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { id: 1, peer: none, owner: none })
+    mut b = rack.insert(Node { id: 2, peer: a, owner: none })
+
+    b.peer = none
+
+    if b.peer? as _p {
+        assert false
+    }
+    assert_eq(rack.len(), 2)
+
+    // The target survives losing its last incoming edge — a rack is not
+    // reference counted (RK5).
+    rack.delete(b)
+    assert_eq(rack.len(), 1)
+    assert_eq(a.id, 1)
+}
+
+// A container of *nodes carrying* edges, which is the shape programs write.
+test "a none inside a struct in a container stays none" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { id: 1, peer: none, owner: none })
+    mut v: Vec<Cursor> = Vec.new()
+    v.push(Cursor { at: none })
+    v.push(Cursor { at: a })
+
+    if v.get(0)? as first {
+        if first.at? as _p {
+            assert false           // the literal's `none` read as an address
+        }
+    } else {
+        assert false
+    }
+    if v.get(1)? as second {
+        if second.at? as p {
+            assert_eq(p.id, 1)
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+// A container whose *element* is itself the niche. This is the shape #959 was
+// about: two computations of the element disagreed, one writing the 8-byte word
+// and the other reserving a 16-byte tagged slot. Past-the-end and an empty slot
+// are different answers and both have to survive.
+test "a Vec of optional links keeps its slots apart" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node { id: 1, peer: none, owner: none })
+    mut v: Vec<Link<Node>?> = Vec.new()
+    v.push(a)
+    v.push(none)
+
+    assert_eq(v.len(), 2)
+    if v.get(0)? as slot {
+        if slot? as live {
+            assert_eq(live.id, 1)
+        } else {
+            assert false           // a filled slot read as empty
+        }
+    } else {
+        assert false
+    }
+    if v.get(1)? as slot {
+        if slot? as _p {
+            assert false           // an empty slot read as an address
+        }
+    } else {
+        assert false               // index 1 of a 2-element Vec exists
+    }
+    if v.get(9)? as _slot {
+        assert false               // past the end is absent at the outer layer
+    }
+
+    // The delete reaches into the container and nulls the entry (RK3).
+    rack.delete(a)
+    if v.get(0)? as slot {
+        if slot? as _p {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}

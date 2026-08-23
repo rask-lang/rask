@@ -731,7 +731,7 @@ extend Observable<T> {
 - [Boxes](boxes.md) — The container family Pool belongs to (`mem.boxes`)
 - [Linearity](linear.md) — Rules for `Pool<Linear>` cleanup (`mem.linear`)
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
-- [Owned Pointers](owned.md) — Handle alternative for single-owner recursive types (`mem.owned`)
+- [Owned Pointers](heap.md) — Handle alternative for single-owner recursive types (`mem.heap`)
 - [Context Clauses](context-clauses.md) — Handle auto-resolution (`mem.context`)
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)
 - [Collections](../stdlib/collections.md) — Vec and Map types (`std.collections`)

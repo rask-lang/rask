@@ -31,8 +31,8 @@ func main() -> void or Error {
 // main task receives them and inserts. Exercises spawn / channel send /
 // receive / join within the runtime block.
 func seed_store() {
-    let owner = store.lock().create_user("alice", EmailAddress { raw: "alice@example.com" })!
-    let proj = store.lock().create_project("bootstrap", owner)!
+    let owner = store.write().create_user("alice", EmailAddress { raw: "alice@example.com" })!
+    let proj = store.write().create_project("bootstrap", owner)!
 
     mut (tx, rx) = Channel<SeedSpec>.buffered(8)
     let total = seed_specs().len()
@@ -48,7 +48,7 @@ func seed_store() {
     while count < total {
         let r = rx.receive()
         if r? as spec {
-            store.lock().create_task(spec.title, proj, spec.priority)!
+            store.write().create_task(spec.title, proj, spec.priority)!
             count += 1
         } else {
             break

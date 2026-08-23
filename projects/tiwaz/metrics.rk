@@ -7,7 +7,10 @@ struct Metrics {
     bytes_received: u64
 }
 
-const metrics = Shared<Metrics>.new(Metrics {
+// Every request writes it (middleware) and the /metrics endpoint reads it, both
+// from spawned handlers — so it needs a lock, and `mutex` is the honest one for
+// a write-per-request counter block (conc.sync/SH7).
+const metrics = Shared<Metrics, Mutex>.mutex(Metrics {
     request_count: 0,
     error_count: 0,
     bytes_sent: 0,

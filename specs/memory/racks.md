@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Rack<T> holds nodes with stable identity; Link<T> is a reference storable in a field. Delete nulls every edge pointing at the node -->
 <!-- depends: memory/boxes.md, memory/linear.md, memory/parameters.md, memory/borrowing.md -->
-<!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
+<!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/, compiler/crates/rask-mir/, compiler/crates/rask-codegen/, compiler/runtime/rack.c -->
 
 # Racks and Links
 
@@ -88,6 +88,19 @@ That is a small implicit cost of the kind `CORE_DESIGN` principle 1 permits — 
 allocation, no unbounded work, in the same tier as a bounds check rather than the
 allocations, locks and I/O the principle reserves visibility for.
 
+Natively, a node lives in a fixed-size chunk the rack never reallocates, with its
+header immediately *before* the payload. So a link is the node's address and
+nothing else, and `l.health` is the same base+offset load any aggregate field
+gets — no lookup, no adjustment. `Link<T>?` is that same word with the null
+address for `none` — one word, no tag. That's a different sentinel from
+`Handle<T>?`, which uses all-ones, and deliberately so: each niche picks the
+value its own domain can't produce. A handle is index+generation, so all-ones is
+impossible; a link is an address, so null is. Null also means a rack chunk
+arrives with every link already reading as `none`, since chunks are zeroed.
+
+The delete cost is measured, and the two backends agree on it:
+`RASK_RACK_STATS=1` reports the same `edges_fixed`/`holders_visited` on both.
+
 An edge write touches the target's *header*, not any field the target declares.
 So a link lent for reading (PM10) stays valid for reading: nothing observable
 through it changes.
@@ -103,7 +116,7 @@ Ask in order (`analysis.storage-consolidation`):
 
 Step 3 is plural by construction. A one-node graph has no edges — a single node
 can only point at itself — so there is nothing for RK3 to maintain and no reason
-to reach for a rack. `Owned<T>` if it needs the heap, `Shared<T>` if it's shared.
+to reach for a rack. `Heap<T>` if it needs the heap, `Shared<T>` if it's shared.
 
 ## Deferred
 
@@ -112,10 +125,12 @@ Named here so the gaps are on the record rather than discovered:
 - **Required edges** (RK7) and, with them, a delete policy. Set-to-`none` is
   complete only while every edge is optional; admitting `Link<T>` makes one of
   cascade or restrict mandatory. Both wait on batch construction.
-- **Native lowering.** The implementation is interpreter-only, so the cost above
-  is measured against boxed nodes rather than inline ones. `mem.pools` stays
-  `deprecated`-but-present until native lands — retiring it sooner would leave
-  the language with no shipping graph story (rask-lang/rask#908).
+- **`filter` on an edge list.** `old.children = old.children.filter(…)` segfaults
+  natively — not a rack bug: filtering a `Vec` reached through a *field* crashes
+  for a plain `Vec<i32>` too (rask-lang/rask#866). It's the last native gap in
+  the rack corpus, and the reparent path of the scene-tree prototype needs it.
+- **Retiring `mem.pools`.** Native lowering has landed, which was the condition
+  (rask-lang/rask#908), but the pool corpus hasn't been converted yet.
 - **Slab affordances.** The backing store is a slab already; whether to promise
   contiguous iteration, or offer an explicit `compact()`, wants measurement
   first (`analysis.fourth-option`).

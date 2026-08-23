@@ -401,11 +401,11 @@ When a value needs cross-scope access — shared ownership, identity-based refer
 
 | Need | Pick | Discipline |
 |------|------|------------|
-| One mutable value shared across closures in one task | `Cell<T>` | Exclusive, single-task |
+| One mutable value shared across closures in one task | `Shared<T>` | `Local` strategy — no lock |
 | Graph / ECS / entity table / anything identity-shaped | `Pool<T>` + `Handle<T>` | Generation-checked, sendable |
 | Read-heavy config / feature flags across tasks | `Shared<T>` | Many readers XOR one writer |
-| Queue / state machine / exclusive mutation across tasks | `Mutex<T>` | Exclusive lock |
-| Recursive types / single-owner heap value | `Owned<T>` | Linear, single consumer |
+| Queue / state machine / exclusive mutation across tasks | `Shared<T, Mutex>` | Plain lock |
+| Recursive types / single-owner heap value | `Heap<T>` | Linear, single consumer |
 | Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops (not a box) |
 
 **Rule of thumb:** scope grows from left to right. `Cell` stays in one task; `Owned` is linear and moves; `Pool` is identity-durable and sendable; `Shared`/`Mutex` cross task boundaries. Start with the smallest discipline that fits.
@@ -427,11 +427,11 @@ func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
 ```
 
 **Anti-patterns:**
-- Reaching for `Shared<T>` when `Cell<T>` or passing a `mutate` parameter would do — adds cross-task machinery for single-task code.
+- Reaching for `Shared<T, Readers>` when bare `Shared<T>` or a `mutate` parameter would do — adds cross-task machinery for single-task code.
 - Using `Pool<T>` for simple containers where `Vec<T>` suffices — pools are for identity, not storage.
-- Using `Owned<T>` where a plain value works — `Owned` is for recursion or explicit heap placement, not a default.
+- Using `Heap<T>` where a plain value works — `Owned` is for recursion or explicit heap placement, not a default.
 
-See [memory/boxes.md](memory/boxes.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/owned.md](memory/owned.md).
+See [memory/boxes.md](memory/boxes.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
 
 ---
 

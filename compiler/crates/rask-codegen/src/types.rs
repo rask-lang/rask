@@ -67,6 +67,7 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::Array { .. } => Ok(types::I64), // Pointer to array
         MirType::FuncPtr(_) => Ok(types::I64), // Function pointer
         MirType::Handle => Ok(types::I64),     // Packed handle (index:32 | gen:32)
+        MirType::Link(_) => Ok(types::I64),    // Node address (mem.racks/RK2)
         MirType::Tuple(_) => Ok(types::I64),   // Pointer to tuple on stack
         MirType::Slice(_) => Ok(types::I64),   // Pointer to (ptr, len) pair
         MirType::Option(_) => Ok(types::I64),  // Pointer to tagged union

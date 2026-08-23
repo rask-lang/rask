@@ -3750,17 +3750,26 @@ impl Parser {
                             span: self.span(start, end),
                         })
                     }
-                    // `own expr` allocates. Keeping the operator in the tree is
-                    // what makes that possible: it used to be dropped here, so
-                    // `let p = own Node { … }` left `p` an ordinary stack struct
-                    // and there was nothing for `drop` to free (#739).
+                    // `own expr` used to allocate. It doesn't any more: `own`
+                    // means move, and only move (mem.heap). The two readings
+                    // were indistinguishable at a call site — `f(own x)` moved,
+                    // `Node(own x)` allocated — which is what cost it the job.
+                    //
+                    // A move marker is consumed by `parse_args`, so anything
+                    // reaching here is the old allocation form.
                     _ => {
                         let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                         let end = operand.span.end;
-                        Ok(Expr {
-                            id: self.next_id(),
-                            kind: ExprKind::Unary { op: UnaryOp::Own, operand: Box::new(operand) },
+                        Err(ParseError {
                             span: self.span(start, end),
+                            message: "`own` no longer allocates".to_string(),
+                            hint: Some("write `Heap(...)` to put a value on the heap".to_string()),
+                            why: Some(
+                                "`own` marks a move and nothing else now. It used to mean \
+                                 both, and the two were indistinguishable at a call site: \
+                                 `f(own x)` moved, `Node(own x)` allocated."
+                                    .to_string(),
+                            ),
                         })
                     }
                 }
@@ -4237,6 +4246,21 @@ impl Parser {
                 let args = self.parse_args_with(raw_template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
+                // `Heap(expr)` allocates (mem.heap). It reads as an ordinary
+                // call and parses as one, which is the point — it replaced a
+                // keyword, and the keyword is what made `f(own x)` and
+                // `Node(own x)` look alike while meaning different things.
+                if matches!(&lhs.kind, ExprKind::Ident(n) if n == "Heap") && args.len() == 1 {
+                    let arg = args.into_iter().next().unwrap();
+                    return Ok(Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Unary {
+                            op: UnaryOp::Heap,
+                            operand: Box::new(arg.expr),
+                        },
+                        span: self.span(start, end),
+                    });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Call { func: Box::new(lhs), args }, span: self.span(start, end) })
             }
 

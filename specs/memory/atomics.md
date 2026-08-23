@@ -292,7 +292,7 @@ Per AT7 and GA2, these payloads only compile on platforms with native hardware s
 comptime if target.has_atomic128 {
     static TAGGED_PTR: Atomic<u128> = Atomic<u128>.new(0)
 } else {
-    static TAGGED_PTR: Mutex<u128> = Mutex.new(0)
+    static TAGGED_PTR: Shared<u128, Mutex> = Shared.mutex(0)
 }
 ```
 
@@ -598,7 +598,7 @@ func spin_release<T>(lock: *SpinLockInner<T>) {
 }
 ```
 
-These patterns use raw pointers and unsafe blocks. The stdlib provides safe wrappers (`Mutex<T>`, `Arc<T>`) that encapsulate the unsafe implementation.
+These patterns use raw pointers and unsafe blocks. The stdlib provides a safe wrapper (`Shared<T, Mutex>`) that encapsulates the unsafe implementation.
 
 **Lock-free stack (sketch using `Atomic<Handle<T>?>`):**
 
@@ -640,7 +640,7 @@ This sketch shows the push path — CAS on handles with generation-based ABA pro
 
 ### See Also
 
-- [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data (`conc.sync`)
+- [Synchronization Primitives](../concurrency/sync.md) — `Shared<T, S>` for compound data (`conc.sync`)
 - [Boxes](boxes.md) — Why atomics sit adjacent to the box family (`mem.boxes`)
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `Atomic<*T>` results (`mem.unsafe`)
