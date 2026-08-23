@@ -24,6 +24,8 @@ const RESERVED_WHY: &str =
     "the compiler already acts on this name, so a user annotation would either be shadowed or silently change what the compiler does [type.annotations/AN5]";
 const CONST_WHY: &str =
     "attached values are embedded as constants and read identically in every instantiation, which only works for the comptime-constant types [type.annotations/AN1, ctrl.comptime/CT58]";
+const IMPORTED_DEFAULT_WHY: &str =
+    "an attachment's values are filled in before name resolution runs, so at that point only this package's annotation declarations are known — a dependency's defaults aren't reachable yet [type.annotations/AN3]";
 const TYPE_POSITION_WHY: &str =
     "an annotation value cannot be constructed, so a slot typed as one could never be filled — annotations are read at comptime, never held [type.annotations/AN8]";
 
@@ -169,6 +171,52 @@ fn split_named(arg: &str) -> Option<(&str, &str)> {
 }
 
 impl TypeChecker {
+    /// Public annotations from the packages this file imports, registered into
+    /// the type table on the way through so `has`/`get` can name them.
+    ///
+    /// Without this the importer's checker didn't know the annotation existed:
+    /// `has<A>()` still answered (it matches attachment text, which travels
+    /// with the struct), but an attachment written here wasn't validated at all
+    /// — `@validate(bogus: 1)` was accepted with a field that doesn't exist —
+    /// and `get<A>().max` reached MIR with no declaration to read `max` from.
+    fn imported_annotations(&mut self, decls: &[Decl]) -> Vec<AnnotationDecl> {
+        let mut found: Vec<AnnotationDecl> = Vec::new();
+        for decl in decls {
+            let DeclKind::Import(imp) = &decl.kind else { continue };
+            let Some(pkg) = imp.path.first() else { continue };
+            let Some(ext) = self.resolved.external_decls.get(pkg).cloned() else { continue };
+            // `import pkg.Member` names one member; `import pkg` takes the lot.
+            let wanted = (imp.path.len() > 1).then(|| imp.path[1].clone());
+            for ext_decl in &ext {
+                let DeclKind::Annotation(ann) = &ext_decl.kind else { continue };
+                if !ann.is_pub || wanted.as_deref().is_some_and(|w| w != ann.name) {
+                    continue;
+                }
+                if found.iter().any(|a| a.name == ann.name) {
+                    continue;
+                }
+                found.push(ann.clone());
+            }
+        }
+        for ann in &found {
+            if self.annotation_types.contains(&ann.name) {
+                continue;
+            }
+            self.annotation_types.insert(ann.name.clone());
+            let s = rask_ast::decl::StructDecl {
+                name: ann.name.clone(),
+                type_params: vec![],
+                fields: ann.fields.clone(),
+                methods: vec![],
+                is_pub: true,
+                attrs: vec![],
+                doc: ann.doc.clone(),
+            };
+            self.register_struct(&s);
+        }
+        found
+    }
+
     /// AN8 at a binding's declared type. Declaration syntax is swept in
     /// `check_user_annotations`, but a `let`/`mut` annotation lives in a
     /// statement, and the sweep never gets there.
@@ -199,6 +247,15 @@ impl TypeChecker {
     /// collected; attachment sites are struct/enum/func decls and struct
     /// fields (variants and params carry no attrs yet).
     pub(super) fn check_user_annotations(&mut self, decls: &[Decl]) {
+        // An annotation a dependency declares `public` is one this package can
+        // attach and read, so it has to be in the table before either happens.
+        // Registering it here rather than with the other external types: that
+        // runs in a later pass, and both the attachment check below and
+        // `get<A>()`'s field lookup need it now.
+        let imported = self.imported_annotations(decls);
+        let imported_names: std::collections::HashSet<String> =
+            imported.iter().map(|a| a.name.clone()).collect();
+
         // Collect declarations; duplicates and reserved names error here.
         let mut declared: HashMap<&str, &AnnotationDecl> = HashMap::new();
         for decl in decls {
@@ -235,6 +292,13 @@ impl TypeChecker {
                 });
             }
         }
+        // A dependency's annotation fills in only where this package hasn't
+        // declared the name itself — a local declaration wins, and two
+        // *packages* sharing a name is a separate problem (see AN5's note).
+        for ann in &imported {
+            declared.entry(ann.name.as_str()).or_insert(ann);
+        }
+
         if declared.is_empty() {
             return;
         }
@@ -242,14 +306,14 @@ impl TypeChecker {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
-                    self.check_attachment_site(&s.attrs, "struct", decl.span, &declared);
+                    self.check_attachment_site(&s.attrs, "struct", decl.span, &declared, &imported_names);
                     for field in &s.fields {
-                        self.check_attachment_site(&field.attrs, "field", field.name_span, &declared);
+                        self.check_attachment_site(&field.attrs, "field", field.name_span, &declared, &imported_names);
                         self.reject_annotation_type(&field.ty, "field type", field.name_span, &declared);
                     }
                 }
                 DeclKind::Enum(e) => {
-                    self.check_attachment_site(&e.attrs, "enum", decl.span, &declared);
+                    self.check_attachment_site(&e.attrs, "enum", decl.span, &declared, &imported_names);
                     for variant in &e.variants {
                         for field in &variant.fields {
                             self.reject_annotation_type(&field.ty, "variant field type", variant.name_span, &declared);
@@ -257,7 +321,7 @@ impl TypeChecker {
                     }
                 }
                 DeclKind::Fn(f) => {
-                    self.check_attachment_site(&f.attrs, "func", decl.span, &declared);
+                    self.check_attachment_site(&f.attrs, "func", decl.span, &declared, &imported_names);
                     self.check_signature_types(f, &declared);
                 }
                 DeclKind::Impl(i) => {
@@ -330,6 +394,7 @@ impl TypeChecker {
         site: &str,
         span: Span,
         declared: &HashMap<&str, &AnnotationDecl>,
+        imported: &std::collections::HashSet<String>,
     ) {
         let mut seen: Vec<&str> = Vec::new();
         for attr in attrs {
@@ -349,14 +414,20 @@ impl TypeChecker {
             }
             seen.push(name);
 
-            self.check_attachment_args(ann, args, span);
+            self.check_attachment_args(ann, args, span, imported);
         }
     }
 
     /// AN3: `@name(args)` checks like the struct literal `name { args }` —
     /// named form, every non-defaulted field present, names and literal kinds
     /// checked against the declaration.
-    fn check_attachment_args(&mut self, ann: &AnnotationDecl, args: Option<&str>, span: Span) {
+    fn check_attachment_args(
+        &mut self,
+        ann: &AnnotationDecl,
+        args: Option<&str>,
+        span: Span,
+        imported: &std::collections::HashSet<String>,
+    ) {
         let mut given: Vec<&str> = Vec::new();
         for arg in args.map(split_args).unwrap_or_default() {
             let arg = arg.trim();
@@ -405,6 +476,40 @@ impl TypeChecker {
                     problem: format!("`{}` is not a `{}` for field `{}`", value.trim(), field.ty, arg_name),
                     fix: "annotation values are comptime constants matching the declared field type".to_string(),
                     why: CONST_WHY,
+                    span,
+                });
+            }
+        }
+
+        // A defaulted field of an annotation declared in *another* package
+        // can't be left out yet. Defaults are filled into the attachment text
+        // in desugar, which runs before resolve and so only sees this package's
+        // declarations — so the value would simply be absent, and the read of
+        // it failed in the backend with no source location. Say it here, at the
+        // attachment, until the defaults live somewhere both are sure of (#967).
+        if imported.contains(&ann.name) {
+            let unfilled: Vec<&str> = ann
+                .fields
+                .iter()
+                .filter(|f| f.default.is_some() && !given.contains(&f.name.as_str()))
+                .map(|f| f.name.as_str())
+                .collect();
+            if !unfilled.is_empty() {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: ann.name.clone(),
+                    problem: format!(
+                        "`{}` is declared in another package, so the default{} for {} can't be filled in here",
+                        ann.name,
+                        if unfilled.len() > 1 { "s" } else { "" },
+                        unfilled.join(", "),
+                    ),
+                    fix: format!(
+                        "give {} explicitly: @{}({})",
+                        unfilled.join(", "),
+                        ann.name,
+                        unfilled.iter().map(|f| format!("{}: ...", f)).collect::<Vec<_>>().join(", ")
+                    ),
+                    why: IMPORTED_DEFAULT_WHY,
                     span,
                 });
             }

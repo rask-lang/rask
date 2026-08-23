@@ -682,6 +682,12 @@ impl Resolver {
                         DeclKind::Enum(e) => e.is_pub,
                         DeclKind::Trait(t) => t.is_pub,
                         DeclKind::TypeAlias(a) => a.is_pub,
+                        // A reader in another package needs the declaration,
+                        // not just the attachment: `has<A>()` matches the
+                        // attachment text and works without it, but
+                        // `get<A>().max` has to know what `max` is declared as
+                        // (type.annotations/AN6).
+                        DeclKind::Annotation(a) => a.is_pub,
                         _ => false,
                     })
                     .cloned()
@@ -3216,6 +3222,72 @@ mod tests {
         let has_db_error = lsm_decls.iter().any(|d| matches!(&d.kind, DeclKind::Enum(e) if e.name == "DbError"));
         assert!(has_config, "Config struct should be in external_decls");
         assert!(has_db_error, "DbError enum should be in external_decls");
+    }
+
+    fn make_pub_annotation_decl(name: &str, is_pub: bool) -> Decl {
+        use rask_ast::decl::{AnnotationDecl, Field, FieldVisibility};
+        Decl {
+            id: NodeId(240),
+            kind: DeclKind::Annotation(AnnotationDecl {
+                name: name.to_string(),
+                name_span: Span::new(0, 0),
+                fields: vec![Field {
+                    name: "max".to_string(),
+                    name_span: Span::new(0, 0),
+                    ty: "i64".to_string(),
+                    visibility: FieldVisibility::Public,
+                    attrs: vec![],
+                    default: None,
+                }],
+                is_pub,
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        }
+    }
+
+    /// A `public annotation` has to cross the package boundary. Without it the
+    /// importer's checker doesn't know the annotation exists: an attachment
+    /// written there isn't validated at all — `@validate(bogus: 1)` was accepted
+    /// with a field that doesn't exist — and `get<A>().max` has no declaration
+    /// to read `max`'s type from (type.annotations/AN6).
+    #[test]
+    fn test_public_annotation_is_exported() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+        let _lib = registry.add_package_with_decls(
+            "liba".to_string(),
+            vec!["liba".to_string()],
+            PathBuf::from("/liba"),
+            vec![
+                make_pub_annotation_decl("validate", true),
+                make_pub_annotation_decl("internal_only", false),
+            ],
+        );
+        let app = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            make_import_decl(vec!["liba"], None, false, false),
+            make_fn_decl("main"),
+        ];
+        let resolved = Resolver::resolve_package(&decls, &registry, app)
+            .expect("should resolve");
+
+        let ext = resolved.external_decls.get("liba").expect("liba exports");
+        let exported: Vec<&str> = ext
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Annotation(a) => Some(a.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(exported, vec!["validate"], "public only, not the private one");
     }
 
     #[test]
