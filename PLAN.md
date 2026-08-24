@@ -195,6 +195,32 @@ them, and the 3–7% becomes a short list of expression kinds to fix at the chok
 delete fallback sites as their inputs become reliable. That kills the class instead of the
 instance.
 
+**B2. One place decides how wide a slot is.** Four sites in this branch alone disagreed with a
+convention that has been settled since #629 — a float in a word-wide slot lives there as an
+`f64`, promoted going in, demoted coming out:
+
+| Site | How it disagreed | Issue |
+|---|---|---|
+| array element store | stored at the value's width, not the slot's | #902 |
+| generic struct field read | honoured the caller's `F32` request | #972 |
+| `match` result local | typed `i64` before the arms reported | #973 |
+| enum payload read | never set a width at all | #973 |
+
+`#629` wrote the rule into a doc comment and paired `value_to_ptr` with `load_scalar_slot`;
+`slot_storage_type` is very nearly the chokepoint. Nothing makes anyone call them, so each new
+slot read or write is a fresh chance to answer the question differently — and the failures are
+all quiet, because a wrong width reads back as a plausible number rather than a crash. `2.5`
+printing as `2` looks like rounding.
+
+The fix is a helper every slot access goes through, with the raw `load`/`store` unavailable to
+lowering. It is a refactor, not a bug fix, and it belongs here rather than in a burn-down
+commit — but there will be a fifth site otherwise.
+
+**B3. The `match` retype is a patch.** `set_local_type` after the arms report works and is
+gated, but the type was knowable before the local was allocated: MIR has the match
+expression's `NodeId` and the checker has its type. Reading it there is B1's whole thesis, and
+it would have prevented #973 outright. Redo it that way when B1 lands.
+
 ## Track C — hold the new surface
 
 Annotations and call information are proposed specs with fresh implementations. Rack/Link
