@@ -218,57 +218,46 @@ That settles which of the two failures matters: **missing, not open.** Inference
 the checker simply never records a type for some nodes. So the fix is at the checker, not in
 the solver.
 
-**B1a. Which kinds — measured.** The miss counter could say how many but not which kinds, so
-lowering now stamps the expression form it is walking and a miss records that. One assignment
-in `lower_expr_inner`, no-op unless `RASK_TRACE_TYPE_COVERAGE=1`. The answer is the same in
-every program, and it is not a spread:
+**B1a. Which kinds — measured, after one wrong answer.** The miss counter could say how many
+lookups came back empty but not what was being lowered when they did. Lowering stamps the
+expression form now, and a miss records it — one assignment at the top of `lower_expr_inner`,
+no-op unless `RASK_TRACE_TYPE_COVERAGE=1`.
+
+The first version of this stamped on entry only, and reported `Ident` as 95% of every miss.
+That was wrong: a lookup made outside any expression's lowering still read whatever the last
+expression had set, and identifiers are the commonest leaf, so everything unattributed looked
+like one. A scope guard clears the stamp when an expression's lowering ends, however it ends,
+and the same programs then say something quite different — with the name attached:
 
 ```
-text_editor        149 missing: 142 Ident,  4 Field,  3 None
-game_loop          153 missing: 149 Ident,  4 Field
-markdown_renderer  157 missing: 151 Ident,  4 Field,  2 Int
-package_manager    324 missing: 319 Ident,  4 Field,  1 Int
-http_api_server    225 missing: 217 Ident,  4 Field,  3 String, 1 Block
+game_loop          81 <outside>,  34 Ident `other`,  34 Ident `self`,  4 Field `value`
+text_editor        81 <outside>,  32 Ident `other`,  32 Ident `self`,  4 Field `value`
+markdown_renderer  85 <outside>,  34 Ident `other`,  34 Ident `self`,  4 Field `value`
+package_manager   176 <outside>,  72 Ident `other`,  72 Ident `self`,  4 Field `value`
+http_api_server   124 <outside>,  48 Ident `other`,  48 Ident `self`,  4 Field `value`
 ```
 
-**`Ident` is 95%+ of every miss.** Everything else is single digits and flat — `Field` is
-exactly 4 in all five programs, which smells like one shared cause rather than something that
-scales with the code.
+Not "identifiers" at all. Three populations, and every one of them is narrow:
 
-That is not the obvious kind to be missing. `infer_expr`'s `Ident` arm falls through to the
-general `node_types.insert` at the end; only two rare paths return early (use-after-discard,
-and a spelled-out enum name). A nine-line program does 1077 lookups with **one** miss, so it
-isn't stdlib bodies going untyped either — the misses scale with the program's own complexity.
+- **`self` and `other`, always in equal counts.** That is the shape of a binary operator
+  method — `func add(self, other: T)`. Operators desugar to method calls (`a + b` →
+  `a.add(b)`), so these are stdlib operator bodies whose parameters the checker never typed at
+  the instantiation lowering asks about.
+- **`Field 'value'`, exactly 4 in all five programs.** Flat means one fixed cause, not
+  something that scales with the code.
+- **`<outside>`, roughly 2.4× the `self`+`other` count.** Lookups from outside any expression
+  — statement or function-setup paths. It tracks the operator bodies, so it is plausibly the
+  same cause seen from the statement side; that wants confirming rather than assuming.
 
-**B1b, the next step:** record the span alongside the kind and print a few, so the missing
-`Ident`s can be read in source. One expression form at 95% is a single cause, and naming it
-should retire most of the 49 fallback sites at once.
+**B1b, the next step:** take one operator body and find why its `self` has no recorded type.
+Three narrow populations that all point at stdlib generic method bodies is a much smaller
+target than "the checker misses identifiers", and it should retire most of the 49 fallback
+sites together.
 
-**B2. One place decides how wide a slot is.** Four sites in this branch alone disagreed with a
-convention that has been settled since #629 — a float in a word-wide slot lives there as an
-`f64`, promoted going in, demoted coming out:
-
-| Site | How it disagreed | Issue |
-|---|---|---|
-| array element store | stored at the value's width, not the slot's | #902 |
-| generic struct field read | honoured the caller's `F32` request | #972 |
-| `match` result local | typed `i64` before the arms reported | #973 |
-| enum payload read | never set a width at all | #973 |
-
-`#629` wrote the rule into a doc comment and paired `value_to_ptr` with `load_scalar_slot`;
-`slot_storage_type` is very nearly the chokepoint. Nothing makes anyone call them, so each new
-slot read or write is a fresh chance to answer the question differently — and the failures are
-all quiet, because a wrong width reads back as a plausible number rather than a crash. `2.5`
-printing as `2` looks like rounding.
-
-The fix is a helper every slot access goes through, with the raw `load`/`store` unavailable to
-lowering. It is a refactor, not a bug fix, and it belongs here rather than in a burn-down
-commit — but there will be a fifth site otherwise.
-
-**B3. The `match` retype is a patch.** `set_local_type` after the arms report works and is
-gated, but the type was knowable before the local was allocated: MIR has the match
-expression's `NodeId` and the checker has its type. Reading it there is B1's whole thesis, and
-it would have prevented #973 outright. Redo it that way when B1 lands.
+**The lesson worth keeping:** instrumentation that reports a *stale* value doesn't look
+broken, it looks like a finding. The first numbers were confident, consistent across five
+programs, and wrong. What caught it was asking for one more field (the identifier's name) and
+getting nothing back — a detail that should have been there and wasn't.
 
 ## Track C — hold the new surface
 

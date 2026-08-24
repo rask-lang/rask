@@ -876,6 +876,16 @@ impl<'a> MirLowerer<'a> {
         // says which forms the checker doesn't record rather than only how
         // many (#725). No-op unless that variable is set.
         crate::fallback::set_current_kind(rask_ast::expr::expr_kind_name(&expr.kind));
+        crate::fallback::set_current_detail(match &expr.kind {
+            ExprKind::Ident(name) => name.as_str(),
+            ExprKind::Field { field, .. } => field.as_str(),
+            ExprKind::MethodCall { method, .. } => method.as_str(),
+            _ => "",
+        });
+        // Cleared when this expression's lowering ends, however it ends, so a
+        // lookup from outside any expression is reported as `<outside>` rather
+        // than inheriting the last one walked.
+        let _kind_scope = crate::fallback::KindScope;
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => {
