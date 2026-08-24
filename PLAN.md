@@ -97,10 +97,22 @@ got a per-instantiation layout, so `Pair<i32, string>` kept the *shared* one —
 parameter is a single word — and its 16-byte string field was written into an 8-byte slot.
 `Pair<i32, i64>` worked, which is what made it look like a string bug.
 
-Still open: a declared type parameter loses to a stdlib type of the same name (#915). A
-method returning the receiver's own parameter isn't monomorphized, so floats come back as bit
-patterns (#916). An inferred signature is pinned to `i32` by a literal in its body, so the
-spec's own `func double(x) { x * 2 }` won't take an `f64` (#904, #905).
+#916 was the same rule missing one layer up. `extend Wrapper<T>` writes its parameters in the
+header; `extend Wrapper` doesn't, and the owning declaration is where they live. Reading only
+the header left such a method with nothing to bind, so it never got a per-receiver body: one
+shared `Wrapper_get` returning a word served `Wrapper<f64>` (which read the double's bits as
+an integer) and `Wrapper<string>` (which segfaulted on a 16-byte value in a one-word return
+slot) alike. It falls back to the type's own parameter list now, and each instantiation gets
+`Wrapper_get$f64`, `Wrapper_get$string`.
+
+That left the probe 6/7 on native, and the last one is a different defect: an `f32` in a
+generic field reads back as 0 whether or not a method is involved, because the store leaves it
+demoted and the read takes it as the low half of a double. Filed as #972; the probe stays
+registered against that.
+
+Still open: a declared type parameter loses to a stdlib type of the same name (#915). An
+inferred signature is pinned to `i32` by a literal in its body, so the spec's own
+`func double(x) { x * 2 }` won't take an `f64` (#904, #905).
 
 **A3. Optional chains — #909, #917, #938, #939.** `?.` onto an optional-typed field: both
 runtimes flatten `T?`, the checker says `T??`, so `chain ?? "default"` won't compile. The
