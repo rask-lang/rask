@@ -2240,9 +2240,21 @@ impl Interpreter {
                     (Value::Int(n, _), "char") => {
                         Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
                     }
-                    // i128 conversions
-                    (Value::Int(n, _), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
+                    // i128 conversions. Widening reads the source's signedness,
+                    // not just its bits: an unsigned value is carried as its bit
+                    // pattern in an i64, so `u64::MAX` sits there as -1 and a
+                    // plain `as u128` sign-extends it to `u128::MAX` (#934).
+                    // Same two-step `auto_wrap_for_annotation` uses on a literal.
+                    (Value::Int(n, kind), "i128") => Ok(Value::Int128(if kind.signed() {
+                        n as i128
+                    } else {
+                        n as u64 as i128
+                    })),
+                    (Value::Int(n, kind), "u128") => Ok(Value::Uint128(if kind.signed() {
+                        n as u128
+                    } else {
+                        n as u64 as u128
+                    })),
                     (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),

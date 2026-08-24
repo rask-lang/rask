@@ -1170,7 +1170,16 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().fpromote(to_ty, val)
             }
         } else if from_ty.is_int() && to_ty.is_float() {
-            builder.ins().fcvt_from_sint(to_ty, val)
+            // Signedness decides this the same way it decides the widening
+            // above — and for the same reason, since Cranelift's integer types
+            // carry a width and not a sign. Converting unsigned bits as signed
+            // read `u8 255` as -1 and `u32 4000000000` as -294967296 (#907).
+            // `lower_convert` has always asked; this one didn't.
+            if from_mir.is_some_and(|t| t.is_unsigned()) {
+                builder.ins().fcvt_from_uint(to_ty, val)
+            } else {
+                builder.ins().fcvt_from_sint(to_ty, val)
+            }
         } else if from_ty.is_float() && to_ty.is_int() {
             builder.ins().fcvt_to_sint_sat(to_ty, val)
         } else {
