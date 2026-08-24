@@ -147,8 +147,29 @@ one that took two attempts: a callee's signature is parsed at the *call site*, s
 effect is the caller's — the callee's own parameters have to be pushed there too, out of the
 registration pass's record.
 
-Still open: an inferred signature is pinned to `i32` by a literal in its body, so the spec's
-own `func double(x) { x * 2 }` won't take an `f64` (#904, #905).
+**#904/#905 are a missing feature, not a bug — attempted and reverted.** The trigger is an
+unresolved receiver, not two call sites: one float call is enough, and every neighbouring form
+works.
+
+| Program | Result |
+|---|---|
+| `func double(x) { x * 2 }`, int calls only | 42 ✓ |
+| `func annotated(x: f64) -> f64 { x * 2 }` | 3 ✓ |
+| `let x: f64 = 1.5` then `x * 2` | 3 ✓ |
+| `func double<T: Numeric>(x: T) -> T { x * 2 }`, int *and* float | 42, 3 ✓ |
+| `func double(x) { x * 2 }`, one float call | **E0371** |
+
+`resolve.rs` already ties a *literal receiver* to a settled numeric argument, so the obvious
+fix is the mirror — open receiver, literal argument, tie them. It compiles, and `double(1.5)`
+returns **2**: the literal's `i32` default flows into the parameter rather than the other way,
+and the float is truncated at the call. A silent wrong answer where there was a compile error
+is strictly worse, so it is reverted.
+
+The fourth row is the tell. The explicitly-generic form works completely, so the fix is to
+*produce* it: `func double(x) { x * 2 }` must infer `<T: Numeric>(x: T) -> T`, which
+`type.gradual/IN3` already specifies and `gradual-constraints.md` gives as its first example.
+Any fix that settles the parameter to one concrete type is either wrong or right for one call
+only. That is generalization — a feature, and the same one #905 needs.
 
 **A3. Optional chains — #917, #938, #939 done; #909 open.** All three were one decision made
 too early and one type shared by two shapes.
