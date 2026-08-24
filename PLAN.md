@@ -218,46 +218,41 @@ That settles which of the two failures matters: **missing, not open.** Inference
 the checker simply never records a type for some nodes. So the fix is at the checker, not in
 the solver.
 
-**B1a. Which kinds — measured, after one wrong answer.** The miss counter could say how many
-lookups came back empty but not what was being lowered when they did. Lowering stamps the
-expression form now, and a miss records it — one assignment at the top of `lower_expr_inner`,
-no-op unless `RASK_TRACE_TYPE_COVERAGE=1`.
+**B1a. What is actually missing — measured.** Every `node_types` miss lowering makes is inside
+an **auto-derived `compare` body**. Not one is in ordinary user or stdlib code.
 
-The first version of this stamped on entry only, and reported `Ident` as 95% of every miss.
-That was wrong: a lookup made outside any expression's lowering still read whatever the last
-expression had set, and identifiers are the commonest leaf, so everything unattributed looked
-like one. A scope guard clears the stamp when an expression's lowering ends, however it ends,
-and the same programs then say something quite different — with the name attached:
+Getting there took two wrong answers, both worth recording. Stamping the expression kind on
+entry and never clearing it reported `Ident` as 95% of misses — an artifact, because a lookup
+from outside any expression read whatever the last one set, and identifiers are the commonest
+leaf. A scope guard fixed the attribution; adding the identifier's name and the enclosing
+function gave the real picture:
 
 ```
-game_loop          81 <outside>,  34 Ident `other`,  34 Ident `self`,  4 Field `value`
-text_editor        81 <outside>,  32 Ident `other`,  32 Ident `self`,  4 Field `value`
-markdown_renderer  85 <outside>,  34 Ident `other`,  34 Ident `self`,  4 Field `value`
-package_manager   176 <outside>,  72 Ident `other`,  72 Ident `self`,  4 Field `value`
-http_api_server   124 <outside>,  48 Ident `other`,  48 Ident `self`,  4 Field `value`
+×89: <outside> (no name)
+×6:  Ident `JsonParser_compare :: other`     ×6: Ident `JsonParser_compare :: self`
+×6:  Ident `Metadata_compare :: other`       ×6: Ident `Metadata_compare :: self`
+×4:  Ident `Pt_compare :: other`             ×4: Ident `Pt_compare :: self`
+×4:  Field `Path_compare :: value`
 ```
 
-Not "identifiers" at all. Three populations, and every one of them is narrow:
+`self` and `other` in equal pairs is a binary method's shape, and every named function is a
+`<Type>_compare`. `auto_derive_traits` (`declarations.rs:830`) registers a `MethodSig` for
+`compare` and no body; the body is synthesized after checking, so the checker never visits it
+and none of its nodes get an entry.
 
-- **`self` and `other`, always in equal counts.** That is the shape of a binary operator
-  method — `func add(self, other: T)`. Operators desugar to method calls (`a + b` →
-  `a.add(b)`), so these are stdlib operator bodies whose parameters the checker never typed at
-  the instantiation lowering asks about.
-- **`Field 'value'`, exactly 4 in all five programs.** Flat means one fixed cause, not
-  something that scales with the code.
-- **`<outside>`, roughly 2.4× the `self`+`other` count.** Lookups from outside any expression
-  — statement or function-setup paths. It tracks the operator bodies, so it is plausibly the
-  same cause seen from the statement side; that wants confirming rather than assuming.
+**This deflates the number.** The 3–7% is fixed overhead per derived type, not a scaling gap.
+A ten-line program with one struct reports 1105 lookups and 161 missing — **14.6%**, a worse
+rate than any real program, because the derived bodies are a constant and there is no user code
+to dilute them. game_loop, text_editor and markdown_renderer all sit near 150 regardless of
+size.
 
-**B1b, the next step:** take one operator body and find why its `self` has no recorded type.
-Three narrow populations that all point at stdlib generic method bodies is a much smaller
-target than "the checker misses identifiers", and it should retire most of the 49 fallback
-sites together.
+So the checker's coverage of ordinary code is fine, and "fix the checker's node_types
+coverage" would have been a sweep against a phantom. The fix here is narrower: synthesize
+derive bodies before checking, or record their node types as they are built.
 
-**The lesson worth keeping:** instrumentation that reports a *stale* value doesn't look
-broken, it looks like a finding. The first numbers were confident, consistent across five
-programs, and wrong. What caught it was asking for one more field (the identifier's name) and
-getting nothing back — a detail that should have been there and wasn't.
+**B1b, the next step:** that leaves the 49 `i64_fallback` sites reached by *something else*,
+and their inputs now unaccounted for — the missing-lookup population doesn't explain them.
+Run the trace against a program that actually reaches one and see what feeds it.
 
 ## Track C — hold the new surface
 

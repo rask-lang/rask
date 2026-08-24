@@ -152,11 +152,13 @@ impl Drop for KindScope {
 
 /// Note what the current expression is, beyond its form. Cleared by the next
 /// expression that has nothing to add.
-pub fn set_current_detail(detail: &str) {
+pub fn set_current_detail(function: &str, detail: &str) {
     if trace_coverage() {
         CURRENT_DETAIL.with(|d| {
             let mut d = d.borrow_mut();
             d.clear();
+            d.push_str(function);
+            d.push_str(" :: ");
             d.push_str(detail);
         });
     }
