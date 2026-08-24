@@ -195,64 +195,69 @@ has expected/found swapped — is a different defect in the same area and still 
 Exit condition per cluster: the probe file leaves `tests/known_divergences.txt` and rejoins
 the green gate.
 
-## Track B — #725, the thing that generates Track A
+## Track B — #725, measured, and smaller than it looked
 
-MIR re-derives types the checker already worked out. When #725 was filed there were 41 sites
-that gave up and guessed `i64`; **there are 49 today.** It is drifting the wrong way while
-its symptoms get patched one miscompile at a time.
+This track was ordered second on the strength of two numbers in #725: 41 `i64_fallback` sites
+that "give up and guess" (49 today, drifting the wrong way), and 3–7% of MIR's type lookups
+coming back empty. Both have now been measured, and neither means what it was taken to mean.
 
-Two of the three mechanisms named in that issue are gone — `ambiguous_method_prefix`, the
-name→type table that could return a *wrong* answer, no longer exists, and `node_types` is now
-written at a choke point rather than opportunistically. The instrumentation asked for in step 1
-is built. Run it on real programs:
-
-```
-text_editor        4178 lookups: 96.4% resolved, 0.0% open, 3.6% missing
-game_loop          2134 lookups: 92.8% resolved, 0.0% open, 7.2% missing
-markdown_renderer  6076 lookups: 97.4% resolved, 0.0% open, 2.6% missing
-package_manager   10957 lookups: 96.9% resolved, 0.1% open, 3.0% missing
-http_api_server    5477 lookups: 95.6% resolved, 0.3% open, 4.1% missing
-```
-
-That settles which of the two failures matters: **missing, not open.** Inference converges;
-the checker simply never records a type for some nodes. So the fix is at the checker, not in
-the solver.
-
-**B1a. What is actually missing — measured.** Every `node_types` miss lowering makes is inside
-an **auto-derived `compare` body**. Not one is in ordinary user or stdlib code.
-
-Getting there took two wrong answers, both worth recording. Stamping the expression kind on
-entry and never clearing it reported `Ident` as 95% of misses — an artifact, because a lookup
-from outside any expression read whatever the last one set, and identifiers are the commonest
-leaf. A scope guard fixed the attribution; adding the identifier's name and the enclosing
-function gave the real picture:
+**B1. The missing lookups are all auto-derived `compare` bodies.** Stamping the expression
+form during lowering, then the identifier's name, then the enclosing function, walks it down
+to one answer:
 
 ```
 ×89: <outside> (no name)
 ×6:  Ident `JsonParser_compare :: other`     ×6: Ident `JsonParser_compare :: self`
-×6:  Ident `Metadata_compare :: other`       ×6: Ident `Metadata_compare :: self`
 ×4:  Ident `Pt_compare :: other`             ×4: Ident `Pt_compare :: self`
 ×4:  Field `Path_compare :: value`
 ```
 
 `self` and `other` in equal pairs is a binary method's shape, and every named function is a
-`<Type>_compare`. `auto_derive_traits` (`declarations.rs:830`) registers a `MethodSig` for
-`compare` and no body; the body is synthesized after checking, so the checker never visits it
-and none of its nodes get an entry.
+`<Type>_compare`. `auto_derive_traits` (`declarations.rs:830`) registers a `MethodSig` and no
+body; the body is synthesized after checking, so the checker never visits it and none of its
+nodes get an entry. A user's own derived compare misses exactly like the stdlib's.
 
-**This deflates the number.** The 3–7% is fixed overhead per derived type, not a scaling gap.
-A ten-line program with one struct reports 1105 lookups and 161 missing — **14.6%**, a worse
-rate than any real program, because the derived bodies are a constant and there is no user code
-to dilute them. game_loop, text_editor and markdown_renderer all sit near 150 regardless of
-size.
+It is fixed overhead per derived type, not a scaling gap. A ten-line program with one struct
+reports 1105 lookups and 161 missing — **14.6%**, worse than any real program, because the
+derived bodies are a constant and there is no user code to dilute them. The checker's coverage
+of ordinary expressions is fine.
 
-So the checker's coverage of ordinary code is fine, and "fix the checker's node_types
-coverage" would have been a sweep against a phantom. The fix here is narrower: synthesize
-derive bodies before checking, or record their node types as they are built.
+**B2. Not one of the 49 fallback sites is reachable.** They are fatal by default, so a program
+that reaches one fails to compile. Run with `RASK_ALLOW_TYPE_FALLBACK=1` and
+`RASK_TRACE_TYPE_FALLBACK=1` so a hit is recorded instead:
 
-**B1b, the next step:** that leaves the 49 `i64_fallback` sites reached by *something else*,
-and their inputs now unaccounted for — the missing-lookup population doesn't explain them.
-Run the trace against a program that actually reaches one and see what feeds it.
+```
+36 examples          0 hits
+328 suite files      0 hits   (the 21 that fail are the registered expected-red ones)
+```
+
+Zero. `fallback.rs`'s own doc comment predicted this — "sites that no program reaches don't
+need a fallback at all; this module is how you find out which those are" — and the answer is
+all of them. The growth from 41 to 49 is untidy, not dangerous: it is dead scaffolding
+accumulating, not guessing spreading.
+
+**So #725's three mechanisms are all resolved or inert.** `ambiguous_method_prefix`, the one
+that could return a *wrong* answer rather than none, was deleted some time ago. The fallback
+sites are unreachable. The missing lookups are one category the checker never visits by design.
+Nothing here is causing a miscompile today.
+
+**What is left, and it is cleanup, not a track:**
+
+- Delete the unreachable fallback sites and make the unknown-type case say plainly that the
+  type is unknown, per that doc comment.
+- Give derive bodies node types — synthesize them before checking, or record as they are
+  built — so the coverage number measures something.
+- **B3. One place decides how wide a slot is.** Four sites in this branch disagreed with the
+  rule #629 settled — a float in a word-wide slot lives there as an `f64`. The array element
+  store (#902), the generic struct field read (#972), the `match` result local and the enum
+  payload read (both #973). The rule lives in a doc comment and a pair of helpers nobody is
+  required to call. This one is still worth doing: it is the only item in this track with
+  evidence behind it, four bugs' worth, all of them quiet wrong answers rather than crashes.
+
+**Reorder.** Track B was placed above the rest of Track A because it was believed to generate
+those bugs. The evidence for that is gone — the fallback machinery generates nothing, because
+nothing reaches it. B3 stands on its own evidence; the rest of Track B is tidying. Track A's
+remaining singles come first.
 
 ## Track C — hold the new surface
 
