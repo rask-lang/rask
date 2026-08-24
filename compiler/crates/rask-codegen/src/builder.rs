@@ -4023,9 +4023,20 @@ impl<'a> FunctionBuilder<'a> {
                         // `f64_to_string` printed `wrap(3.14).value` as
                         // 4614253070214988800 (#820). The MIR local at the read knows
                         // the real type, so keep what the caller asked for.
+                        // Keeping the caller's type is right for an integer and
+                        // wrong for a float: the slot holds a float as an f64
+                        // whatever the parameter turned out to be, so honouring
+                        // an F32 request loaded the double's zero low half and
+                        // `G<f32> { value: 0.5 }.value` read back as 0 (#972).
+                        // Read at the slot's width and let the narrowing tail
+                        // below demote — the same pair `value_to_ptr` and
+                        // `load_scalar_slot` agree on, and the Option and Result
+                        // payload paths already use.
                         load_ty = match &field.ty {
                             RaskType::F64 | RaskType::F32 => types::F64,
-                            _ if field.is_type_param => load_ty,
+                            _ if field.is_type_param => {
+                                if load_ty.is_float() { types::F64 } else { load_ty }
+                            }
                             _ => types::I64,
                         };
                         field.offset as i32

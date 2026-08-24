@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      321 green, 27 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      322 green, 26 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 27 files in the suite are registered red: 20
+**What is left is a backlog, not a frontier.** 26 files in the suite are registered red: 19
 tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, half of
-A4, and the first of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
+A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,7 +36,7 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first eight came off
+annotations + call-information specs. **None of the 40 were fixed** — the first ten came off
 in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
@@ -105,10 +105,22 @@ an integer) and `Wrapper<string>` (which segfaulted on a 16-byte value in a one-
 slot) alike. It falls back to the type's own parameter list now, and each instantiation gets
 `Wrapper_get$f64`, `Wrapper_get$string`.
 
-That left the probe 6/7 on native, and the last one is a different defect: an `f32` in a
-generic field reads back as 0 whether or not a method is involved, because the store leaves it
-demoted and the read takes it as the low half of a double. Filed as #972; the probe stays
-registered against that.
+That left the probe 6/7, and the last one was a different defect: an `f32` in a generic field
+read back as 0. The struct arm's `is_type_param` branch kept whatever type the caller asked
+for, which is right for an integer and wrong for a float — a float in a word-wide slot lives
+there as an `f64` (the convention #629 settled), so honouring an `F32` request loaded the
+double's zero low half. It reads at the slot's width and lets the existing narrowing tail
+demote (#972). Probe is 7/7 on both now.
+
+Then a sweep of every position a float can occupy in a word slot, because the same question —
+promoted or demoted? — had now been answered wrongly at three separate sites. Eight of nine
+agree: generic struct field, optional, result, `Vec` element, `Map` value, fixed-array
+element, tuple element, and a value through a generic function. The ninth is worse than the
+one that started it: **every** float in a user enum's payload is wrong on native, concrete
+types included, and an `f64` comes back *truncated to an integer* — `2.5` prints as `2`, which
+reads as a rounding bug rather than a miscompile. Filed as #973 with the matrix. The enum arm
+of `lower_field_access` never touches the load width at all, while the struct, option and
+result arms all do.
 
 Still open: a declared type parameter loses to a stdlib type of the same name (#915). An
 inferred signature is pinned to `i32` by a literal in its body, so the spec's own

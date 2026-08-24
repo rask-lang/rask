@@ -6,7 +6,7 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). All five validation programs run on both backends. What is left is a registered backlog — 20 tracked bugs and 7 unbuilt features, each with a probe file in the suite. See [PLAN.md](PLAN.md) for the work order.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). All five validation programs run on both backends. What is left is a registered backlog — 19 tracked bugs and 7 unbuilt features, each with a probe file in the suite. See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
