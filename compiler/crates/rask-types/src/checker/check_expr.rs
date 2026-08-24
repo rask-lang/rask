@@ -1958,13 +1958,19 @@ impl TypeChecker {
                     span: expr.span,
                     self_type: self.current_self_type.clone(),
                 });
-                // Flatten: if field is already T?, return T? not (T?)?
-                let resolved_field = self.ctx.apply(&field_ty);
-                if resolved_field.is_option() {
-                    resolved_field
-                } else {
-                    Type::option(field_ty)
-                }
+                // Flatten: a field that is already `T?` stays one layer deep
+                // (OPT10). That can't be decided here — `field_ty` is the fresh
+                // variable the `HasField` above will fill in, so asking "is it
+                // an option?" now always answers no and the chain came out
+                // `T??` (#938). Defer it: `OptionalChain` settles once the
+                // field's type does.
+                let result = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                    field: field_ty,
+                    result: result.clone(),
+                    span: expr.span,
+                });
+                result
             }
 
             ExprKind::Select { arms, .. } => {

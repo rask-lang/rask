@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      323 green, 26 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      325 green, 24 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 26 files in the suite are registered red: 19
-tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, half of
-A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
+**What is left is a backlog, not a frontier.** 24 files in the suite are registered red: 17
+tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, most of
+A3, half of A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,8 +36,8 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first ten came off
-in this branch.
+annotations + call-information specs. **None of the 40 were fixed** — the first fourteen came
+off in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
 compile. `Map.insert` hands back a flag instead of the displaced value. A named-payload enum
@@ -138,9 +138,34 @@ Still open: a declared type parameter loses to a stdlib type of the same name (#
 inferred signature is pinned to `i32` by a literal in its body, so the spec's own
 `func double(x) { x * 2 }` won't take an `f64` (#904, #905).
 
-**A3. Optional chains — #909, #917, #938, #939.** `?.` onto an optional-typed field: both
-runtimes flatten `T?`, the checker says `T??`, so `chain ?? "default"` won't compile. The
-E0308 that results suggests `try` and talks about "the error" — there is no error.
+**A3. Optional chains — #917, #938, #939 done; #909 open.** All three were one decision made
+too early and one type shared by two shapes.
+
+`?.` onto an optional-typed field: both runtimes flatten, the checker said `T??`. The flatten
+test existed and read the field's type at the access — where it is still the fresh variable a
+deferred `HasField` will fill in, so "is it already an option?" always answered no. It is a
+deferred constraint now, `OptionalChain`, settled once the field's type is; same shape as the
+`Index` constraint beside it and for the same reason (#938). #917 went green with it.
+
+The E0308 that used to result suggested `try` and talked about "the error" — on an optional,
+where there is no error (#939). An optional *is* `Result { ok: T, err: None }` underneath, so
+the Result branch of the diagnostic caught it too. It now says what an absent value can do,
+as code:
+
+```
+= fix: say what an absent value should do:
+      x ?? default      // supply one
+      x!                // assert it's there, panic if not
+      if x? as v { … }  // handle both
+```
+
+The corrected flattening turned one probe's assertions into compile errors — correctly.
+`a.inner?.v! ?? "X"` was written against the buggy `T??`, where `!` peeled one of two layers
+and left something `??` could still take. E0831 rejects it now, and says why. The test asserted
+the bug; it asserts the shape instead.
+
+Still open: a bare element in a `Vec<T?>` literal never acquires the optional tag on the
+interpreter (#909).
 
 **A4. Enum payloads — #910, #911 done; #922 open.** Named-payload variants were unreliable
 on both backends for two unrelated reasons, and both were one missing case.

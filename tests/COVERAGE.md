@@ -71,8 +71,8 @@ surface stays gated instead of hiding behind a known-fail line.
 | imports | `t_week_imports.rk` | 13/13 | 13/13 | |
 | named-payload enum variants | `t_week_enum_named_payloads.rk` | 7/7 | 7/7 | |
 | **probe** — `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 2/5 | 5/5 | #909 |
-| **probe** — `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 0/2 | #917 |
-| **probe** — `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | BUILD-FAIL | BUILD-FAIL | #938 #939 |
+| `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 6/6 | |
+| `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | 5/5 | 5/5 | |
 | **probe** — inferred signatures | `t_week_gradual_generics.rk` | BUILD-FAIL | BUILD-FAIL | #904 #905 |
 | implicit-param generic structs | `t_week_generic_struct_naming.rk` | 5/5 | 5/5 | |
 | **probe** — type param vs stdlib name | `t_week_generic_param_shadowing.rk` | BUILD-FAIL | BUILD-FAIL | #915 |
@@ -180,15 +180,18 @@ probe files already: `p09_simd.rk`, `p10_binary.rk`, `p08_sequence.rk`.
 
 ## Spec questions
 
-**Nested optionals through `?.` — answered.** `a.inner?.v` where `v: string?` is a
-`string?`, not a `string??`: the chain unwraps, and both absences mean the same
-thing to the caller, so there's nothing to keep apart. The nesting rules still
-apply to a `T??` that comes from a generic — `Vec<Config?>.first()`, where the two
-absences are different facts — and OPT10 now says a chain isn't that shape.
+**Nested optionals through `?.` — answered, and implemented.** `a.inner?.v` where
+`v: string?` is a `string?`, not a `string??`: the chain unwraps, and both
+absences mean the same thing to the caller, so there's nothing to keep apart.
+The nesting rules still apply to a `T??` that comes from a generic —
+`Vec<Config?>.first()`, where the two absences are different facts — and OPT10
+says a chain isn't that shape.
 
-Both runtimes already flatten. The type checker doesn't, so `chain ?? "default"`
-and every other position that names the type won't compile: #938, probed by
-`t_week_optional_chain_flatten.rk`.
+Both runtimes always flattened; the checker didn't, because it decided at the
+access, where the field's type is still the fresh variable a deferred
+`HasField` will fill in. "Is it already an option?" asked of a bare variable
+always answers no. It's a deferred constraint now, settled once the field's
+type is (#938), and #917 went green with it.
 
 **`mutate` on a Copy type — still open.** `mem.parameters` says two different things — PM2's
 prose promises the caller sees the write, the edge-case table says a Copy type's

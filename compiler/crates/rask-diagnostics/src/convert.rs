@@ -323,6 +323,31 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
                     .with_why("Rask is statically typed — every expression must match its expected type");
 
+                // An optional is `Result { ok: T, err: None }` underneath, so the
+                // Result branch below catches it too unless it's split off
+                // first. It used to say "wrap with `try` to propagate the
+                // error" for a `T?` — there is no error, and `try` is not the
+                // fix a reader wants here: it only works at all inside a
+                // function that itself returns an optional, and it throws the
+                // absent case away at the call (#939).
+                if found.is_option() {
+                    if let Some(inner) = found.as_option() {
+                        if *inner == *expected {
+                            return diag
+                                .with_fix(format!(
+                                    "say what an absent value should do:\n\
+                                     x ?? default      // supply one\n\
+                                     x!                // assert it's there, panic if not\n\
+                                     if x? as v {{ … }}  // handle both"
+                                ))
+                                .with_help(format!(
+                                    "this is a `{}` — it may hold nothing, and a `{}` can't",
+                                    found, expected
+                                ));
+                        }
+                    }
+                }
+
                 // Suggest `try` when found is Result<T, E> and expected is T
                 if let rask_types::Type::Result { ok, .. } = found {
                     if **ok == *expected {
