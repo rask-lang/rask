@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      328 green, 21 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      329 green, 20 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 21 files in the suite are registered red: 14
+**What is left is a backlog, not a frontier.** 20 files in the suite are registered red: 13
 tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, A3, half
-of A4, three of A2, and two of A5 came off. Nothing is untracked and nothing has silently started passing. Every red file
+of A4, three of A2, and three of A5 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,7 +36,7 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first eighteen came
+annotations + call-information specs. **None of the 40 were fixed** — the first nineteen came
 off in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't

@@ -79,7 +79,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | a method returning its own type parameter | `t_week_generic_method_return.rk` | 7/7 | 7/7 | |
 | **probe** — `parse<T>` target range | `t_week_parse_range.rk` | 2/6 | 2/6 | #919 |
 | **probe** — `import X as Y` | `t_week_import_alias.rk` | BUILD-FAIL | BUILD-FAIL | #923 |
-| **probe** — opaque handles as struct fields | `t_week_opaque_struct_fields.rk` | 8/8 | 0/0 | #924 |
+| opaque handles as struct fields | `t_week_opaque_struct_fields.rk` | 8/8 | 8/8 | |
 | **pending** — declared-but-unbuilt collection API | `t_week_collection_stubs.rk` | BUILD-FAIL | BUILD-FAIL | #912 |
 | **pending** — range terminals and adapters | `t_week_range_adapters.rk` | BUILD-FAIL | BUILD-FAIL | #920 |
 

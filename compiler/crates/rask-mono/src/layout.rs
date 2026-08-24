@@ -206,6 +206,13 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
                 | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
+                // A word, but not for the reason the line above is: these two
+                // are an `int64_t` of nanoseconds in the runtime, not a pointer
+                // to anything. Their Rask declarations are empty structs, so
+                // without an entry here the layout cache answered with the
+                // declaration's size — zero — and a struct holding one gave the
+                // field no room at all (#924).
+                "Duration" | "Instant" => (8, 8),
                 _ => {
                     // Look up user-defined types from the layout cache first — a user
                     // struct can be named the same as a builtin container (e.g. `Wide`),
