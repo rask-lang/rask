@@ -1,312 +1,153 @@
-# Compiler–Spec Alignment Plan
+# Plan
 
-The specs moved ahead of the compiler — the trait-system review, the stdlib consistency pass (#303),
-the comptime staging model, and the panic/ensure work all landed as spec-only changes. This plan maps
-the full gap and orders the work. Sourced from a spec-by-spec audit of the implementation
-(2026-07-21, at 6153d73) plus empirical runs.
+**Measured 2026-08-24 at `60678a7`.** Every number below came from running the thing, not
+from reading the previous version of this file. Re-measure before planning off it — the last
+three times this document went wrong, it was because a state column outlived its evidence.
 
-**Read this before trusting any number below.** The status lines in this plan were measured on
-2026-07-21 and 324 commits have landed since. Several issues cited here as open are fixed; the suite
-has grown from 31 files to 158. **Re-run `tests/differential.sh` and `tests/examples_gate.sh` and
-write the numbers down before planning off this document.** Every stale claim in here got that way
-because someone read it instead of measuring.
+```
+tests/differential.sh      317 green, 31 expected-red, 0 untracked, 0 unexpected-pass
+tests/examples_gate.sh     34 ok, 0 failed, 0 pending
+tests/projects_gate.sh     21 ok, 0 failed
+tests/fmt_roundtrip_gate.sh 430 round-tripped, 566 reformatted, 0 failures
+tests/http_api_harness.sh  ok on both backends
+cargo test --release --workspace   green
+```
 
-**Last measured 2026-08-08** (at `da34410` plus this round's fixes): `tests/differential.sh`
-**147 green, 19 expected-red, 0 untracked**; `tests/examples_gate.sh` **21 ok, 0 failed, 0 pending**.
-Write your own numbers here when you re-measure — the paragraph below is from July and is kept only
-because its *structure* still holds.
+## Where things stand
 
-**Where things stand (numbers as of 2026-07-21, structure still current):**
+**The five validation programs all pass.** Sensor processor, grep clone, game loop and text
+editor are enrolled in the examples gate with goldens; the HTTP JSON API server serves a CRUD
+sequence on both backends through its own harness. ROADMAP's "two of five" table was from
+2026-08-08 and is now fixed. That milestone is met — it is no longer the thing to steer by.
 
-- `rask test-specs` only checks that spec snippets *parse* — weak conformance signal, still true.
-- Validation programs: `tests/known_fail_examples.txt` is the live registry, not this list. As of
-  2026-07-26 it had game_loop and sensor_processor native-red, grep_clone and http_api_server red on
-  both — but `fa5e30e` claims game_loop's native bugs since. Re-measure.
-- The optimization/analysis passes claimed in TODO genuinely exist and run (clone elision, RC elision,
-  generation coalescing, typestate, intervals). The lag is elsewhere: soundness holes, the spec
-  delta, interp/native divergence, and stdlib wiring.
-- The interpreter masks native gaps: `@binary`, trait dispatch, typed JSON, and `os.env` all "work" under
-  `rask run` and fail or miscompile natively. Interpreter success must not be read as conformance.
+**The soundness track is closed.** Spot-checked today, all four rejecting correctly with the
+fix shown as code: consuming a value on one branch and using it after the join (E0813),
+consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
+and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-Tracks are ordered. Within a track, items are ordered by impact. Bugs get filed as issues when work
-starts; items marked **(file)** aren't tracked yet.
+**What is left is a backlog, not a frontier.** 31 files in the suite are registered red: 24
+tracked bugs and 7 unbuilt features. Nothing is untracked and nothing has silently started
+passing. Every red file has a probe and an issue.
 
----
+## The one thing worth deciding
 
-## Track 0 — The error family (added 2026-08-07; re-measured 2026-08-08, second pass)
+The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
+what a person meets in their first hour, first week, first month. In the five days since,
+the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
+annotations + call-information specs. **None of the 40 were fixed.**
 
-Written when none of the August spec wave existed in the compiler — no `catch` token, 464 `.rk`
-files on the old spelling. Almost all of it has since landed.
+Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
+compile. `Map.insert` hands back a flag instead of the displaced value. A named-payload enum
+variant never matches. A struct with implicit type parameters can't be named at an
+instantiation — SYNTAX.md's own `Pair` example doesn't compile. NORTH_STAR says the
+instrument is models writing Rask against the compiler and measuring convergence; a model
+writing Rask reaches these inside ten minutes, and the examples that pass the gate pass
+because they happen to route around them.
 
-**Every row below was re-verified by running its repro**, not by reading the previous table. That
-caught one row claiming more than it had: A4 said "done" and ER16a isn't implemented at all. Five
-rows were right and their issues are now closed with the evidence attached (#597, #599, #601, #586,
-#600, #602). The lesson is the one this file keeps re-learning — a state column is a claim, and a
-claim nobody re-runs drifts.
-
-| # | Item | State | Issue |
-|---|------|-------|-------|
-| A1 | Split the fallback: `??` optionals-only, results get `catch e => …` | **done** — `catch e =>` and `catch _ =>` parse, check and run on both backends | #597 |
-| A2 | Cut every method from `T?` and `T or E` | **done** — no `unwrap_or` / `.ok()` anywhere in the tree | #599 |
-| A3 | Delete scrutinee flow typing | **done** — all four functions gone from `check_expr.rs` | #601 |
-| A4 | Shape-agnostic `try`, plus the flat `T? or E` operand error | **mostly** — `try` on optionals works and ER47 fires; ER16a (`try` in a postfix chain) is not implemented, split to #647. The flat composite is right on interp and blocked on native by #644. | #598 |
-| A5 | `x is none` + the `== none` lint | **done** — I5 fires and names `x is none` as the fix | #600 |
-| A6 | `take <place>` | **done** — `take slot` yields the payload and leaves `none`, both backends | #586 |
-| A7 | `while expr? as v` binder never enters scope | **done** (2026-08-08) — four layers, see below | #593 |
-| A8 | Migrate the corpus | **done** — only `validation-pre-orelse/` still uses the old spellings, and it's a frozen snapshot by design | #602 |
-
-**Track 0 is closed.** A7 was never the one-line resolver patch the original table implied, and the
-E0369 stopgap that stood here briefly (a hard error at the form, with a negative test) has been
-replaced by the real thing. It took four layers, which is why defining the binder alone made things
-worse: the resolver defines it in the loop scope, the checker gives it the payload type, MIR binds the
-payload at the top of the body, and the interpreter does the same. The route was the one recorded on
-the issue — `while expr is T as v` already lowered exactly that shape, so the `?` form copies it, and
-the payload read is now one helper shared with the `if` form so a loop and a branch can't drift.
-
-What the wave left behind, all three now fixed:
-
-- **#634** — `catch _ => none` on a flat `T? or E` gained an optional layer (`string??` in MIR).
-  The checker had the right type but still flagged the site "keeps its shape", which both backends
-  read as "re-wrap"; on a flat shape the success side is already the `T?`.
-- **#635** — retitled, because the `continue` was never the problem. A `return` at the end of *any*
-  loop body was discarded on native: each loop form terminated the body block with "goto next
-  iteration" unconditionally, overwriting the `Return` the body had just put there. `for x in xs
-  { return x }` ran the loop out and fell through.
-- **#632** — a container reached through a field lost its element type, at both the `for` and the
-  index. Fixed twice, independently, and the merge keeps the better half of each: main's bounded
-  retry pass in the solver (a constraint that defers reports no progress, so a substitution landing
-  later in the same pass was thrown away) and this branch's shape modelling, which names every
-  container the language can walk and reports E0827 on one it can't.
-
-Two bugs filed on the way: #650 (`return` out of a `for mutate` body skips that iteration's
-writeback — both backends) and a native `for h in pool` mistyping fixed here, which had the loop
-binding taking the pool's *value* type instead of `Handle<T>`.
-
-Still open from the same sweep, neither part of the error family but both filed against it:
-
-- **#647** — ER16a is unimplemented: `try f().len()` parses as `try (f().len())` instead of
-  `(try f()).len()`, then errors that the wrapper has no method. The message is correct on its own
-  terms, which is what makes it confusing — nothing hints the fix is moving the implied parens.
-- **#642** — a string literal inside an interpolation hole ends the outer string early, and the
-  leftovers can re-parse as a comparison chain, so `println("hit: {r ?? "<none>"}")` prints `false`
-  on native and exits 0. It will waste the time of anyone debugging anything, because the wrong
-  value comes from the line you added to observe the bug.
-
-Every rule above needs a conformance test tagged with the rule it witnesses — positive in
-`tests/suite/`, negative in `tests/compile_errors/`. That's what keeps this delta from recurring.
-
-Diagnostics are half the work, not a follow-up: `r?`, `r ?? v` and each removed method name must
-error with the replacement shown as code.
-
-## Track 1 — Soundness: make the safety guarantees true
-
-These are cases where the compiler *accepts wrong programs* or *miscompiles correct ones*. They
-undermine the core promise (mechanical safety) and get fixed before feature work.
-
-| # | Item | Spec | Status / evidence | Issue |
-|---|------|------|-------------------|-------|
-| 1.1 | Ownership branch merge is unsound: a value moved/consumed in one branch is treated as live after the join. Defeats conditional use-after-move and linear-consumption checking. | mem.ownership/O3, mem.linear/L1 | `rask-ownership/src/lib.rs:1241-1256` keeps the not-moved state on merge | #294 is the visible symptom; widen it to the general merge bug |
-| 1.2 | Integer overflow semantics unimplemented: `+ - * -x` wrap silently in both backends; native also skips the divide-by-zero check the interp has; no shift-width check. | type.overflow/OV1–OV4, SH1 | `rask-codegen/src/builder.rs:2199-2217` raw `iadd/imul/sdiv` | #325 (OV1–OV4/SH1 done both backends + comptime; narrow-width comptime + Wrapping/Saturating follow-ups) |
-| 1.3 | `as` casts unchecked: narrowing, sign reinterpret, float↔int, `n as char`, `1 as bool` all silently accepted. And the sanctioned lossy forms (`truncate to`, `saturate to`, `convert to T?`) don't exist — no correct path, wrong path open. | type.primitives/CV1–CV10, CH5, BL3 | `rask-types/src/checker/check_expr.rs:948-970` only validates `as any Trait` | **(file)** |
-| 1.4 | Trait-object dispatch miscompiles: vtable offset computed from position among *all* trait methods, but vtable stores compatible methods only — wrong slot when an incompatible method precedes. TR3 (reject generic methods through `any`) unenforced. | type.traits/TR1, TR3 | `rask-mir/src/lower/expr.rs:1467` | related: #194 |
-| 1.5 | Panic path in compiled code runs no ensures and aborts the process; interp gets multi-ensure panics wrong (first ensure-panic skips the rest, secondary panic dropped). | ctrl.panic/P1, P4, U1, E2–E3 | `runtime/panic.c:118` aborts | #299 tracking (#287, #288, #289, #290, #291, #298) |
-| 1.6 | Generic layout miscompile: Cranelift verifier errors on generic struct methods (f64 treated as pointer). | — | **No live repro.** sensor_processor was the evidence and it now runs identically on both backends — goldened and gated. The crash was `try_receive` narrowing on the Err tag (#631), not layout. The float-payload work (#608/#629) closed the "f64 read back as a pointer-sized 0" family and is covered by `t_float_payloads.rk` (13 tests, both backends) and the `f32`/`f64` columns of `tests/matrix`. Either produce a failing case or close #272. | #272, #259 family |
-| 1.7 | Index expression types never checked (`vec[string]` typechecks). | stdlib.collections | — | #310 |
-| 1.8 | Linear values in containers unenforced: `Vec<@resource>` / `Map<_, @resource>` accepted; values silently droppable. `Pool<Resource>` drop-non-empty panic unverified. | mem.resource-types/RC1, RC3, R5 | RC1/RC3 now enforced in checker (E0820) | #355 (RC1/RC3 done); #356 (R5 + take_all, split); #357 (native `Pool.remove!` codegen, blocks RC2 native) |
-| 1.9 | Cross-task ownership rules unimplemented: channel send doesn't consume, borrows can cross task boundaries. | mem.ownership/T1–T3 | T1 send-consumption + take-param consumption now enforced; T3 borrow-capture already rejected by SL2; T2 structural | #359 (done, folds in #296); #360 (native non-scalar channel recv) |
-| 1.10 | ensure cancellation is runtime drop-flags, spec requires static definiteness. | ctrl.ensure/C3–C5 | C4 enforced (E0821); maybe-consumed merges rejected. Runtime flag kept as per-exit mechanism, backstopped by the static guarantee | #293 (done), #295 (mooted), #296 (done) |
-| 1.11 | **Native binding forms extract payloads at the wrong representation.** `with cell as v` hands back the box pointer instead of the value; `if opt? as s` hands back a trait object whose vtable half is lost, then segfaults on the call. Non-binding reads are correct — for-loop, direct index, and `with mutex as v` all work — which is what made these look like separate bugs. Probed 2026-08-07: one defect, two issues. | — | #558, #552 (mistitled: nothing to do with Map) |
-
-Exit criteria: each item has a compile-error (or panic) conformance test in `tests/compile_errors/` or
-`tests/suite/`, passing on both backends. Ready-to-use session prompts: [PLAN_PROMPTS.md](PLAN_PROMPTS.md).
-
-## Track 2 — Recent spec delta: catch the compiler up to decided design
-
-The trait review and consistency passes are decided design; the compiler still implements the old world.
-One epic, several mechanical sweeps. (Of the July spec wave, only PC1 — single-letter auto-generics —
-landed compiler-side.)
-
-**2a. Nominal trait flip (the epic).** Trait satisfaction is now nominal for user
-traits (`rask-types/src/traits.rs`). Progress by dependency order:
-
-1. ✅ `where` clause parsing (#313).
-2. ✅ Nominal conformance registry: `extend T with Trait` declares, checker consults declarations
-   (G1, #283); explicit bounds grant methods + call-site bound checking (#314); conformance is
-   verified at the `extend` declaration. Registry is a side table in `TypeTable`; the gate is scoped
-   to user-declared, non-`duck` traits (core auto-derived traits keep the eligibility path).
-3. ✅ Comma-list conformance `extend T with A, B, C` (CD1) parses and records each conformance.
-   Block semantics (CD2/CD3) inherited (methods are ordinary methods, MN1).
-4. ⬜ Explicit `as any` at conversion sites; drop TR5 implicit boxing (#284).
-5. 🟡 `duck trait` keyword (structural opt-in) — done. `scoped extend` parses (MN4 marker); scoped
-   namespace exclusion + trait-qualified calls (MN2/MN3/MN5) not yet enforced.
-6. ⬜ Auto-derive roster: remove `Default` derive (blocked on struct field defaults, FD1–FD6/#311);
-   auto-derive Error for enums.
-7. 🟡 Conditional conformance `where` (CC1/CC2) parses + records + checks (unit-tested); end-to-end
-   blocked on generic-user-struct method resolution (#374). Override coherence (OC1–OC3) not started
-   (would require gating the core traits nominally; zero corpus occurrences today).
-8. ⬜ Cross-package conformance — needs a decision first (#312).
-
-**2b. Rename/name-drift sweep.** Programs written to spec fail to typecheck where implementations
-exist under old names. One reconciliation pass over stubs + interp + runtime + examples (#302).
-Hard renames — old names are rejected, not aliased — across `.rk` stubs, the registry drift list,
-type-checker resolution, interp dispatch, the derived MIR names + codegen dispatch (C ABI symbols
-kept), effects sources, examples, tests, tutorials, and the playground:
-
-- ✅ `recv`/`try_recv`/`RecvError` → `receive`/`try_receive`/`ReceiveError` (plus `TryRecvError`
-  → `TryReceiveError` for consistency)
-- ✅ `{:?}` → `{:debug}` (multi-char type token in `format.rs`; `{x:debug}` interpolation wired too)
-- ✅ `fs.read_file/write_file/append_file` → `read_text/write_text/append_text`; `io.write_str` → `write_text`
-- ✅ `Duration.as_secs`/`as_secs_f32`/`as_secs_f64` → `as_seconds`/…; `Rng` → `Random`;
-  `os.getpid` → `os.pid`; `os.vars` → `os.env_vars`
-- ✅ #276/#277/#278: `File.lines()` dropped (`fs.read_lines` eager stays); TcpConnection gains
-  `read_text/write_text` (interp; native deferred with the rest of the net stubs); `SysError` added
-  to `os.rk`, `time.sleep -> void or SysError`
-- ⬜ `vec.extend` → `push_all`: no-op — no `extend`/`ExtendError` ever existed in code; `push_all`
-  is a missing feature (add stub+interp), not a rename. Left for the collections/C2 work.
-- ⬜ `BufReader`/`BufWriter` → `BufferedReader`/`BufferedWriter`: no-op — the buffered type is
-  spec-only, unimplemented; nothing to rename.
-- ⬜ Growth ops panic on alloc failure; `try_` variants return the rejected value (std.collections/C2)
-  — semantics change, not name drift; tracked with the collections work.
-
-**2c. Origin tracking opt-in.** Spec revised to `@traced` + `any Error`; compiler still captures origin
-on every error, 16 bytes on every `T or E` (ER33/ER34; `rask-mir/src/lower/errors.rs:56-66`).
-Transparency-of-cost violation.
-
-**2d. Comptime staging model.** CT55–CT68 (staging classifier, demand-driven per-instantiation eval,
-memoization, cycle/depth limits) — nothing exists yet. Sequenced with Track 3's comptime work.
-
-## Track 3 — Validation-program path: HTTP JSON API server end to end
-
-The litmus programs are the design's own success metric. Program 1 (HTTP server) exercises the longest
-dependency chain; clearing it clears most of the stdlib gaps for the others.
-
-1. **Load the orphaned stubs.** `encoding.rk`, `fmt.rk`, `reflect.rk` exist on disk but are not in
-   `STUB_SOURCES` (`rask-stdlib/src/registry.rs:13-39`) — the typechecker never sees them. **(file)**
-2. **Comptime foundations:** `comptime for` over `reflect.fields<T>()` with `value.(field)` access
-   (CT48–CT54) — comptime-for is also broken on native (#317, mono never unrolls); comptime failures
-   silently swallowed (#318); `.freeze()` (CT17–CT19); `@embed_file` (CT40–CT44).
-3. **Encode/Decode derivation** on top of 1+2: auto-derive, field annotations (`@rename`, `@skip`,
-   `@default`), enum tagging (spec.encoding E22–E25). This replaces the interp's ad-hoc runtime
-   reflection for typed JSON and gives natively-compiled struct round-trips.
-4. **`http.serve` / `listen_and_serve`** — stub bodies are empty (`stdlib/http.rk:727`); Phase A can
-   back them with OS threads (conc.runtime-strategy/RS1) without waiting for fibers.
-5. **Supporting stdlib for the other four programs:** CLI builder API + `CliError`; IO Reader/Writer
-   traits + BufferedReader (the checker also never registers Reader/Writer, #320); Duration/Instant
-   arithmetic operators + `SystemTime`; integer bit methods (bits.rk claims they're registered — they
-   aren't); `Random.shuffle/choice`; UDP + `net.resolve`.
-6. **Fix the three broken examples** (game_loop spawn capture, sensor_processor = 1.6,
-   http_api_server import shadowing) and wire all five validation programs into CI as native-compile
-   gates. Re-scope #203 to current failures.
-
-## Track 4 — Backend parity: one language, two backends, same answers
-
-Divergence table (each row: bring the lagging backend up, add a dual-backend test):
-
-| Feature | Interp | Native |
-|---------|--------|--------|
-| `@binary` parse/build | works | missing entirely (no MIR lowering) |
-| Typed JSON encode/decode | works (runtime reflection) | missing (C runtime is primitive-only) |
-| `select` | works | missing (no MIR/codegen handling) |
-| `os.env/platform/arch/pid` | works | missing (no C symbols) |
-| Atomics | load/store on 3 types only | full int set + CAS + fences |
-| Raw pointers / transmute / unions | typechecked, no runtime | works |
-| `comptime` evaluation | deferred to runtime | comptime crate (correct model) |
-| Trait objects | dynamic dispatch (masks bugs) | vtables (1.4 bug) |
-| Overflow/div-zero checks | div-zero only | neither |
-| Map iteration order | diverges from native | diverges from interp — spec wants per-process seeded hash order (determinism/D7, #285); neither conforms |
-
-Rule going forward: a feature isn't done until both backends pass the same test. The suite runner
-should exercise check + interp + native for every suite file (it currently can — the gap is
-coverage: zero suite tests for panics, ensure, channels, select, spawn, comptime, ranges, overflow,
-casts, SIMD, `@binary`).
-
-## Track 5 — Concurrency runtime
-
-Phase A (OS threads) is the decided stopgap; make it *complete* before Phase B (fibers):
-
-1. Cancellation is stubbed: `cancel()` no-op, `cancelled()` always false (H4, CN1–CN3). Timeouts and
-   graceful shutdown are impossible today. **(file)**
-2. `select` completeness: send-arm ownership (OW1–OW2), `Timer.after` arms, proper `Closed` error
-   (currently a string), native support (Track 4).
-3. Deadlock prevention checks (conc.sync/DL1–DL4) and `staged()` (ST1–ST4, #292).
-4. Runtime-slot / io-context model (CTX1–CTX4): spawn-outside-runtime should be a compile error
-   (CC1/CC2), not just the runtime panic it is now.
-5. Phase B: `green.c` (798 lines, full scheduler) exists but **isn't in the Makefile**, while codegen
-   emits `rask_green_spawn` calls for yielding bodies — that symbol can't link. Either wire green.c in
-   behind the decided fiber design or stop emitting the call. **(file the link hole now)**
-6. `join` on a panicked task: `JoinError.Panicked`, not re-panic (#288); drain semantics for detached
-   tasks at `using` exit (C4).
-
-## Track 6 — Language completeness (post-validation)
-
-Spec'd, absent, and not blocking the validation programs — schedule after Tracks 1–3:
-
-- **Sequence protocol** (type.sequence SEQ1–SEQ24): user types can't be iterated at all; interp ships
-  a pull-iterator with `zip`, which the spec forbids. This is an architectural replacement, not a patch.
-  Also fixes the t25 fold-inference failure class.
-- **Ranges:** `.rev()` and `.step()` don't exist (ctrl.ranges RV1–RV2, SP1–SP4); inclusive-range-at-max
-  overflow handling (OV3).
-- **`Owned<T>` linearity** (mem.owned OW1–OW4): `own` is a parse-time no-op; no consume-exactly-once,
-  no drop path. Spec'd as Phase 4, but boxes.md/linear.md reference it as working — align the specs'
-  cross-references or build it.
-- **SIMD** (type.simd): stub end to end; only 6 hardcoded type names, no vector instructions. Needs its
-  own plan when prioritized.
-- **Wrapping/Saturating + `checked_*`/`wrapping_*` methods** (type.overflow W1–W5, M1) — pairs with 1.2.
-- **Inline `asm`** — reserved token only.
-- **Loop constraint rules** (ctrl.loops LP4, LP8, LP14) and custom-sequence for-loop desugar (LP18–LP23,
-  lands with the Sequence protocol).
-- **Determinism contract / sim mode** (determinism/D1–D14, proposed): `rask test --sim` — seeded
-  scheduler, virtual clock, fault injection. The only always-on semantic piece is D7 (seeded Map hash
-  order), which is in Track 4 now; the rest waits on the Phase B runtime it virtualizes.
-
-## Track 7 — Tooling, DX, performance
-
-Real but not blocking language correctness:
-
-- Analyses don't run in `check`/LSP — typestate/stale-handle detection (the headline safety feature)
-  only fires at build time (`rask-compiler/src/lib.rs` check path stops after ownership+effects).
-- IDE ghost text: all of it is missing (effects `[io]`/`[pure]`, `[clone elided]`, `[rc elided]`,
-  `[coalesced]`) — `inlay_hints.rs` emits only types. Effects engine already runs; surfacing is the gap.
-- Purity lint P1–P3 (`@pure` teeth) and frozen-suggestion lint FL1–FL4 — missing from rask-lint;
-  canonical-patterns says lint enforces its naming rules (now incl. the name-provenance check) — audit
-  rask-lint against that list.
-- Incremental compilation: `rask-semantic-hash` crate is built but wired to nothing; cache is a coarse
-  per-package content hash. ROADMAP Phase 4 stands; MIR serde derives are the first prerequisite.
-- `compile_rust()` (struct.build PM10) — only `compile_c` exists.
-- `--emit-header` C export (EX3); DWARF emits `DW_LANG_C99` (debuggers see C).
-- Dead code to reconcile: duplicate `rask-hidden-params` crate (the wired copy lives in
-  `rask-mir/src/hidden_params/`).
+So: **stop adding surface until the backlog shrinks.** Every new shape is another place a
+bug in these clusters can hide.
 
 ---
 
-## Test strategy (cross-cutting)
+## Track A — burn down the coverage backlog
 
-- `rask test-specs` proves snippets parse; it doesn't prove semantics. Add per-rule conformance tests
-  in `tests/suite/` (positive) and `tests/compile_errors/` (negative) as each track lands, tagged with
-  the rule ID they witness (`ctrl.panic/E2` etc.).
-- Every suite test runs check + interp + native; divergence is a failure even when both "pass". This is
-  now enforced by `tests/differential.sh` (parity gate) — see [docs/TESTING.md](docs/TESTING.md). Known
-  divergences live in `tests/known_divergences.txt`; the harness fails on any new untracked one.
-- The five validation programs become CI gates at `rask compile` level, not just `check`. Started:
-  `tests/examples_gate.sh` golden-diffs runnable examples on both backends (`tests/known_fail_examples.txt`
-  lists the rest). CI runs cargo test + both gates via `.github/workflows/test.yml`.
+Fix by cluster, not by issue number. Several issues share a root cause, and the clusters are
+cheaper together than the issues are apart.
 
-## Issue hygiene
+**A1. Fixed-size arrays `[T; N]` — #895, #901, #902, #906, #946.** The biggest cluster and
+the most day-one of them. `[T; N]` isn't in the layout pass, so a struct field holding one is
+sized at a pointer:
 
-Existing issues cover ~half the plan (refs inline above). Items marked **(file)** need issues before
-work starts: ownership branch-merge unsoundness (generalizing #294), overflow semantics, `as`-cast
-holes + missing conversions, linear-in-containers, cross-task ownership, orphaned stdlib stubs,
-cancellation stubs, the green.c link hole, and the t25 fold-inference bug.
+```
+$ rask run arr.rk
+warning: unknown type '[i32; 4]' in layout, defaulting to pointer size (8, 8)
+error: MIR lowering 'main': field `cells` holds 16 bytes but its slot is 8 — this
+       instantiation is using the shared layout of a generic type …
+```
 
-Found while probing 2026-08-07, needs filing:
+`Grid` is not generic. The diagnostic is guessing too, and it sends the reader somewhere
+there is nothing to find — fix the message with the layout. `ArrayStore` in
+`rask-codegen/src/builder.rs:849` is the same family: it computes the address from
+`elem_size` and then stores a full word into it, so writing one element of a sub-word array
+clobbers its neighbours.
 
-- `rask run` swallows a segfault: the compiled binary dies with SIGSEGV and `rask run` prints
-  *nothing* and exits 1, which reads exactly like a silent compile failure. Mechanical safety says
-  memory unsafety becomes a named failure — this is the surface where that promise gets kept.
-- `(any Shape)?` doesn't parse as a return type, so an optional trait object can't be spelled in a
-  signature.
-- `Pool.insert` returns a bare `Handle`, not a result — so `ROADMAP.md`'s "Pool.insert returns Result
-  now" is stale, and a bounded pool (#435, PL2/PL8) has no way to report a rejected insert.
+**A2. Naming and inferring generics — #904, #905, #913, #915, #916, #961, #968, #970.** A
+declared type parameter loses to a stdlib type of the same name. A method returning the
+receiver's own parameter isn't monomorphized, so floats come back as bit patterns. An
+inferred signature is pinned to `i32` by a literal in its body, so the spec's own
+`func double(x) { x * 2 }` won't take an `f64`.
 
-Close on sight: **#554 is fixed** — `4bd68b8` fixed it while fixing #567 and nobody closed it
-(probed, both backends agree).
+**A3. Optional chains — #909, #917, #938, #939.** `?.` onto an optional-typed field: both
+runtimes flatten `T?`, the checker says `T??`, so `chain ?? "default"` won't compile. The
+E0308 that results suggests `try` and talks about "the error" — there is no error.
+
+**A4. Enum payloads — #910, #911, #922.** A named-payload variant never matches on the
+interpreter, and native matches by the arm's position rather than the variant's tag — wrong
+arm, or a segfault.
+
+**A5. The singles.** #899 `mutate` on a primitive parameter drops the write (and
+`mem.parameters` contradicts itself about whether it should — settle the spec first, #881).
+#903, #907, #919, #923, #924, #928, #929, #930, #931, #932, #933, #934, #935.
+
+Exit condition per cluster: the probe file leaves `tests/known_divergences.txt` and rejoins
+the green gate.
+
+## Track B — #725, the thing that generates Track A
+
+MIR re-derives types the checker already worked out. When #725 was filed there were 41 sites
+that gave up and guessed `i64`; **there are 49 today.** It is drifting the wrong way while
+its symptoms get patched one miscompile at a time.
+
+Two of the three mechanisms named in that issue are gone — `ambiguous_method_prefix`, the
+name→type table that could return a *wrong* answer, no longer exists, and `node_types` is now
+written at a choke point rather than opportunistically. The instrumentation asked for in step 1
+is built. Run it on real programs:
+
+```
+text_editor        4178 lookups: 96.4% resolved, 0.0% open, 3.6% missing
+game_loop          2134 lookups: 92.8% resolved, 0.0% open, 7.2% missing
+markdown_renderer  6076 lookups: 97.4% resolved, 0.0% open, 2.6% missing
+package_manager   10957 lookups: 96.9% resolved, 0.1% open, 3.0% missing
+http_api_server    5477 lookups: 95.6% resolved, 0.3% open, 4.1% missing
+```
+
+That settles which of the two failures matters: **missing, not open.** Inference converges;
+the checker simply never records a type for some nodes. So the fix is at the checker, not in
+the solver.
+
+Next step, and it is small: the miss counter takes a `NodeId` and nothing else, so it can say
+*how many* were missing but not *which kinds*. Record the AST kind alongside the miss, rank
+them, and the 3–7% becomes a short list of expression kinds to fix at the choke point. Then
+delete fallback sites as their inputs become reliable. That kills the class instead of the
+instance.
+
+## Track C — hold the new surface
+
+Annotations and call information are proposed specs with fresh implementations. Rack/Link
+just landed natively and #908 sequences retiring Pool/Handle behind it. None of that is wrong
+work; it is the wrong week for it. Revisit when Track A is under ten files.
+
+## Track D — what is genuinely not built
+
+The 7 pending-feature probes, in the order they block real programs:
+
+| Probe | Feature | Issue |
+|---|---|---|
+| `t_week_collection_stubs.rk` | 11 declared Vec/Map methods with no implementation on either backend | #912 |
+| `t_week_range_adapters.rk` | a range has no terminals or adapters — no `to_vec`, `sum`, `map` | #920 |
+| `p08_sequence.rk` | the sequence protocol; user types can't be iterated at all | — |
+| `t_month_atomics.rk` | `Atomic<T>` has no operations on any spelling | #927 |
+| `p10_binary.rk` | `@binary` parse/build — native has none of it | — |
+| `p09_simd.rk` | vector types are six names and no instructions | — |
+| `p12_rack_link_churn.rk` | not a rack gap: native `filter` on a Vec reached through a field | #866 |
+
+Ranges and the collection stubs are declared API that doesn't exist, which is worse than a
+missing feature — the signature promises and the call fails. Those two first. The sequence
+protocol is the architectural one and range adapters route through it, so it is the real
+prerequisite rather than a parallel track.
+
+## Beyond this
+
+ROADMAP Phase 2 (stdlib breadth), Phase 3 (runtime trait dispatch, cross-compilation) and
+Phase 4 (incremental compilation) stand as written. They were waiting on the validation
+programs, which no longer block them — but Track A does.

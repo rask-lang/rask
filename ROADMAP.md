@@ -6,23 +6,26 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). Two of the five validation programs run on both backends; the rest are down to one named bug each, not a general regression.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). All five validation programs run on both backends. What is left is a registered backlog — 24 tracked bugs and 7 unbuilt features, each with a probe file in the suite. See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
-Re-measured 2026-08-08 by running all five. Every blocker below is a live
-symptom with an issue; the previous table had drifted badly — it blamed
-`Pool.insert returns Result` (it returns a bare `Handle<T>`), a string-slice
-error in grep clone (which works), and type mismatches in the text editor
-(which type-checks).
+Re-measured 2026-08-24 by running all five. All pass. The four that print and
+exit are enrolled in `tests/examples_gate.sh` with goldens diffed on both
+backends; the server never exits, so it has its own harness driving a CRUD
+request sequence.
 
-| Program | Status | Blocker |
-|---------|--------|---------|
-| Sensor processor | **Works** | — enrolled in the gate with a golden |
-| grep clone | **Works** | not gated: the gate can't pass argv (#658) |
-| Game loop with entities | Native only | native rejects handles from `for h in pool` (#652) |
-| Text editor with undo | Hangs | spins forever at EOF instead of quitting (#659) |
-| HTTP JSON API server | Blocked | needs `json.encode`/`decode` (Phase 1) |
+| Program | Status | Gate |
+|---------|--------|------|
+| Sensor processor | **Works** | examples gate, golden |
+| grep clone | **Works** | examples gate, golden + argv |
+| Game loop with entities | **Works** | examples gate, golden (seeded RNG) |
+| Text editor with undo | **Works** | examples gate, golden + stdin |
+| HTTP JSON API server | **Works** | `tests/http_api_harness.sh`, both backends |
+
+This milestone is met, so it is no longer what to steer by. The next instrument
+is the one NORTH_STAR names: models writing Rask against the compiler, with the
+failure transcripts read.
 
 ## Stdlib architecture
 
@@ -41,10 +44,11 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 The real test of multi-file compilation, stdlib imports, and native codegen on real code.
 
-- HTTP/1.1 request parser in Rask (method, path, headers, body)
-- HTTP response serialization in Rask (status line, headers, body)
-- JSON parser rewrite in Rask (current C version only handles flat objects)
-- Validate `http_api_server.rk` compiles and runs natively
+- [x] HTTP/1.1 request parser in Rask (method, path, headers, body) — `stdlib/http.rk`, 816 lines, nothing stubbed
+- [x] HTTP response serialization in Rask (status line, headers, body)
+- [x] JSON parser rewrite in Rask — `stdlib/json.rk`, 689 lines
+- [x] Validate `http_api_server.rk` compiles and runs natively — serves on both backends under `tests/http_api_harness.sh`
+- [ ] `json.to_value` / `json.from_value` are still `@unimplemented`; the tree↔typed bridge waits on Encode/Decode derivation
 
 ## Phase 2: Stdlib breadth
 
