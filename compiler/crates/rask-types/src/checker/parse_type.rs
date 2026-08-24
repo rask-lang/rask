@@ -191,6 +191,16 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
     }
 
+    // A declared type parameter wins over a type of the same name. Without
+    // this, `struct Holder<Output>` resolved `Output` to the stdlib's
+    // `os.Output` and every use of the field mismatched against a type nobody
+    // wrote (#915). Single letters never reach the lookup at all (PC1), so this
+    // is about the descriptive names — `Output`, `Item`, `Error` — which are
+    // exactly the ones likely to collide.
+    if types.is_type_param_in_scope(s) {
+        return Ok(Type::UnresolvedNamed(s.to_string()));
+    }
+
     if let Some(ty) = types.lookup(s) {
         return Ok(ty);
     }

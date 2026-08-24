@@ -283,6 +283,10 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
+        // The declaration's own parameters win over types of the same name for
+        // as long as its field types are being parsed (#915).
+        let type_params = struct_type_param_names(s);
+        let outer_params = self.types.push_type_params(type_params.clone());
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -291,6 +295,7 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
+        self.types.pop_type_params(outer_params);
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
@@ -344,8 +349,6 @@ impl TypeChecker {
 
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
-        // PC1: explicit `<T>` plus single letters appearing in field types.
-        let type_params = struct_type_param_names(s);
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");

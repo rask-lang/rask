@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      326 green, 23 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      327 green, 22 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 23 files in the suite are registered red: 16
+**What is left is a backlog, not a frontier.** 22 files in the suite are registered red: 15
 tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, A3, half
-of A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
+of A4, and three of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,7 +36,7 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first fifteen came
+annotations + call-information specs. **None of the 40 were fixed** — the first sixteen came
 off in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
@@ -134,9 +134,21 @@ promoted double. f64 was right by coincidence.
 `t_week_enums.rk` stayed green through the whole thing because none of its variants carry a
 float — an area file only gates the shapes it happens to use.
 
-Still open: a declared type parameter loses to a stdlib type of the same name (#915). An
-inferred signature is pinned to `i32` by a literal in its body, so the spec's own
-`func double(x) { x * 2 }` won't take an `f64` (#904, #905).
+#915 was name resolution having no notion of a type parameter being in scope.
+`parse_type_string` ended at `types.lookup(name)`, so `struct Holder<Output>` and
+`func first<Output>(…)` both meant the stdlib's `os.Output`, and every use of the parameter
+mismatched against a type nobody wrote. Single letters never reach that lookup (PC1), so this
+only ever bit the descriptive names — `Output`, `Item`, `Error` — which are the ones likely to
+collide in the first place.
+
+`TypeTable` carries a scoped parameter set now, consulted before the lookup, pushed around a
+declaration's field types and around a function's signature and body. The third place was the
+one that took two attempts: a callee's signature is parsed at the *call site*, so the scope in
+effect is the caller's — the callee's own parameters have to be pushed there too, out of the
+registration pass's record.
+
+Still open: an inferred signature is pinned to `i32` by a literal in its body, so the spec's
+own `func double(x) { x * 2 }` won't take an `f64` (#904, #905).
 
 **A3. Optional chains — #917, #938, #939 done; #909 open.** All three were one decision made
 too early and one type shared by two shapes.

@@ -47,7 +47,6 @@ t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, poi
 # out so the working surface stays gated; only the bug lives here.
 t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
-t_week_generic_param_shadowing.rk # a declared type parameter loses to a stdlib type of that name — #915 (both)
 t_month_i128_aggregates.rk    # an i128 as a Vec element or struct field fails the Cranelift verifier — #933 (native)
 t_month_u128_widening.rk      # `u64 as u128` sign-extends — #934 (interp)
 t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)

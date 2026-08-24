@@ -75,7 +75,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | 5/5 | 5/5 | |
 | **probe** — inferred signatures | `t_week_gradual_generics.rk` | BUILD-FAIL | BUILD-FAIL | #904 #905 |
 | implicit-param generic structs | `t_week_generic_struct_naming.rk` | 5/5 | 5/5 | |
-| **probe** — type param vs stdlib name | `t_week_generic_param_shadowing.rk` | BUILD-FAIL | BUILD-FAIL | #915 |
+| type param vs stdlib name | `t_week_generic_param_shadowing.rk` | 4/4 | 4/4 | |
 | a method returning its own type parameter | `t_week_generic_method_return.rk` | 7/7 | 7/7 | |
 | **probe** — `parse<T>` target range | `t_week_parse_range.rk` | 2/6 | 2/6 | #919 |
 | **probe** — `import X as Y` | `t_week_import_alias.rk` | BUILD-FAIL | BUILD-FAIL | #923 |
