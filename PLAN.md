@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      322 green, 26 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      323 green, 26 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -115,12 +115,24 @@ demote (#972). Probe is 7/7 on both now.
 Then a sweep of every position a float can occupy in a word slot, because the same question —
 promoted or demoted? — had now been answered wrongly at three separate sites. Eight of nine
 agree: generic struct field, optional, result, `Vec` element, `Map` value, fixed-array
-element, tuple element, and a value through a generic function. The ninth is worse than the
-one that started it: **every** float in a user enum's payload is wrong on native, concrete
-types included, and an `f64` comes back *truncated to an integer* — `2.5` prints as `2`, which
-reads as a rounding bug rather than a miscompile. Filed as #973 with the matrix. The enum arm
-of `lower_field_access` never touches the load width at all, while the struct, option and
-result arms all do.
+element, tuple element, and a value through a generic function. The ninth was worse than the one
+that started it, and wasn't what it looked like. Filed as #973, then found and fixed:
+
+A `match` used as an expression allocates its result local *before* any arm has been lowered,
+at a placeholder word, and nothing retypes it once the arms report. Assigning a float arm into
+an `i64` local converts rather than reinterprets, so `match n { 1 => 2.5, _ => 0.0 }` was `2` —
+a rounding bug to look at, a miscompile in fact. Six sites in `match_lower.rs`. No enum
+involved: `if/else` was right all along, which is exactly why it read as an enum-payload
+problem, since every repro reached its payload through a `match`. Using the binding inside the
+arm was always correct, and that was the clue to follow first.
+
+Underneath it, the smaller one the issue had guessed at: the enum arm of `lower_field_access`
+never set the load width, so an f32 payload was read four bytes wide out of a slot holding a
+promoted double. f64 was right by coincidence.
+
+`tests/suite/t_week_float_slots.rk` gates all nine positions on both backends now.
+`t_week_enums.rk` stayed green through the whole thing because none of its variants carry a
+float — an area file only gates the shapes it happens to use.
 
 Still open: a declared type parameter loses to a stdlib type of the same name (#915). An
 inferred signature is pinned to `i32` by a literal in its body, so the spec's own

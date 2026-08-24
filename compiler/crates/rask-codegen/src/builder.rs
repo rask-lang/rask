@@ -4048,6 +4048,16 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             Some(MirType::Enum(id)) => {
+                // A float payload sits in its slot as an f64, same as anywhere
+                // else a float occupies a word (#629). This arm never said so,
+                // so an f32 payload was read four bytes wide and came back as
+                // the double's zero low half — `Has(1.5)` printed 0. The
+                // narrowing tail below demotes it. f64 was right by coincidence:
+                // the width the caller asked for happened to be the storage
+                // width (#973).
+                if load_ty == types::F32 {
+                    load_ty = types::F64;
+                }
                 // Prefer the exact payload offset match_lower computed for this
                 // arm's variant. Guessing "first variant with enough fields"
                 // picks the wrong payload shape when variants differ at the same

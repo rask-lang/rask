@@ -109,6 +109,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — `u64 as u128` | `t_month_u128_widening.rk` | 4/6 | 6/6 | #934 |
 | **probe** — unsafe blocks and raw pointers | `t_month_unsafe.rk` | 1/6 | 6/6 | #935 |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
+| floats in word-wide slots | `t_week_float_slots.rk` | 9/9 | 9/9 | |
 
 ---
 
@@ -154,6 +155,14 @@ have are in `t_day_arrays.rk` and `t_day_array_writes.rk`.
 shape where consuming exactly once is legal — because a test can't assert on a
 compile error. The rejections (forgot to close, closed twice, consumed on one arm
 only) belong in `tests/compile_errors/`.
+
+**A float in a word-wide slot.** `t_week_float_slots.rk` sweeps the nine positions
+a float can occupy in one — match-expression result, concrete and generic enum
+payload, generic struct field, optional, result, `Vec` element, `Map` value,
+array element, tuple element, and through a generic function. Three of them
+disagreed with the one convention (#972, #973), and `t_week_enums.rk` stayed
+green through all of it because none of its variants carry a float. That is the
+lesson the file records: an area file only gates the shapes it happens to use.
 
 **Panics and unwinding.** A test that panics fails, so a suite file can't assert
 on a panic's behaviour without failing. `specs/control/panics.md` describes
