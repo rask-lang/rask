@@ -413,13 +413,19 @@ fn split_type_args(s: &str) -> Vec<&str> {
 }
 
 /// Build a substitution map from type param names to concrete types.
+///
+/// Names come from PC1, not from the explicit `<T>` list: a single letter in a
+/// field or payload type is a parameter whether or not it was declared, and the
+/// type arguments are ordered by that same list. Reading only the explicit list
+/// left an implicit-param struct with an empty map, so its fields kept their
+/// placeholder types and the layout came out wrong (#913).
 fn build_subst<'a>(
-    type_params: &'a [rask_ast::decl::TypeParam],
+    param_names: &'a [String],
     type_args: &'a [Type],
 ) -> std::collections::HashMap<&'a str, &'a Type> {
     let mut subst = std::collections::HashMap::new();
-    for (param, arg) in type_params.iter().zip(type_args.iter()) {
-        subst.insert(param.name.as_str(), arg);
+    for (name, arg) in param_names.iter().zip(type_args.iter()) {
+        subst.insert(name.as_str(), arg);
     }
     subst
 }
@@ -484,7 +490,8 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         _ => panic!("Expected struct declaration"),
     };
 
-    let subst = build_subst(&struct_decl.type_params, type_args);
+    let param_names = rask_types::struct_type_param_names(struct_decl);
+    let subst = build_subst(&param_names, type_args);
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
@@ -645,7 +652,8 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
         _ => panic!("Expected enum declaration"),
     };
 
-    let subst = build_subst(&enum_decl.type_params, type_args);
+    let param_names = rask_types::enum_type_param_names(enum_decl);
+    let subst = build_subst(&param_names, type_args);
 
     let variant_count = enum_decl.variants.len();
 

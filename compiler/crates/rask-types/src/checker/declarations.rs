@@ -344,7 +344,8 @@ impl TypeChecker {
 
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
-        let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+        // PC1: explicit `<T>` plus single letters appearing in field types.
+        let type_params = struct_type_param_names(s);
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");
@@ -506,7 +507,8 @@ impl TypeChecker {
             })
             .collect();
 
-        let type_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        // PC1: explicit `<T>` plus single letters appearing in payload types.
+        let type_params = enum_type_param_names(e);
         let enum_id = self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
             type_params,
@@ -1500,6 +1502,53 @@ pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
         }
     }
     names
+}
+
+/// PC1 for a type declaration: explicit `<T>` declarations plus every single
+/// uppercase letter appearing in its field or payload types, in declaration
+/// order.
+///
+/// `gradual-constraints` lists struct fields and enum payloads as signature
+/// positions alongside function parameters, but only the function side was
+/// wired up — so `struct Pair { first: T  second: U }` registered with no type
+/// parameters at all, and `Pair<i64, string>` had nothing to match against.
+/// SYNTAX.md's own `Pair` example didn't compile (#913).
+pub fn declared_type_param_names<'a>(
+    explicit: &[rask_ast::decl::TypeParam],
+    member_types: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    use std::sync::OnceLock;
+    static EMPTY_TABLE: OnceLock<super::type_table::TypeTable> = OnceLock::new();
+    let table = EMPTY_TABLE.get_or_init(super::type_table::TypeTable::new);
+
+    let mut names: Vec<String> = explicit.iter().map(|p| p.name.clone()).collect();
+    let mut add = |n: &str| {
+        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    };
+    for ty_str in member_types {
+        if ty_str.is_empty() {
+            continue;
+        }
+        if let Ok(ty) = parse_type_string(ty_str, table) {
+            for_each_unresolved_name(&ty, &mut add);
+        }
+    }
+    names
+}
+
+/// PC1 for a struct: explicit `<T>` plus single letters in its field types.
+pub fn struct_type_param_names(s: &StructDecl) -> Vec<String> {
+    declared_type_param_names(&s.type_params, s.fields.iter().map(|f| f.ty.as_str()))
+}
+
+/// PC1 for an enum: explicit `<T>` plus single letters in its payload types.
+pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
+    declared_type_param_names(
+        &e.type_params,
+        e.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.as_str())),
+    )
 }
 
 /// Walk a parsed type tree, calling `f` on every unresolved base name.

@@ -6,10 +6,10 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      320 green, 28 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      321 green, 27 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
-tests/fmt_roundtrip_gate.sh 430 round-tripped, 567 reformatted, 0 failures
+tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
 tests/http_api_harness.sh  ok on both backends
 cargo test --release --workspace   52 binaries, 0 failures
 ```
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 28 files in the suite are registered red: 21
-tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1 and half
-of A4 came off. Nothing is untracked and nothing has silently started passing. Every red file
+**What is left is a backlog, not a frontier.** 27 files in the suite are registered red: 20
+tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, half of
+A4, and the first of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,7 +36,7 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first seven came off
+annotations + call-information specs. **None of the 40 were fixed** — the first eight came off
 in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
@@ -81,11 +81,26 @@ had its own hole.
   array doesn't have (#946, native). An array local is its own buffer, so its address is the
   answer. The interpreter has no raw-pointer surface at all — that half is #935.
 
-**A2. Naming and inferring generics — #904, #905, #913, #915, #916, #961, #968, #970.** A
-declared type parameter loses to a stdlib type of the same name. A method returning the
-receiver's own parameter isn't monomorphized, so floats come back as bit patterns. An
-inferred signature is pinned to `i32` by a literal in its body, so the spec's own
-`func double(x) { x * 2 }` won't take an `f64`.
+**A2. Naming and inferring generics — #913 done; #904, #905, #915, #916, #961, #968, #970
+open.**
+
+#913 was PC1 half-built. `gradual-constraints` says the signature positions are "function
+parameters, return types, struct fields, enum payloads" — and only the function half was ever
+wired up. So `struct Pair { first: T  second: U }` registered with no type parameters, and
+four separate places asked the same wrong question: the checker's `register_struct`/
+`register_enum`, mono's `type_param_names` and `instantiate_function_from`, the layout pass's
+`build_subst`, and the `generic_decls` filter that decides which declarations are generic at
+all. Each read the explicit `<T>` list; each now asks PC1.
+
+The last one was the interesting failure. Without an entry in `generic_decls` the type never
+got a per-instantiation layout, so `Pair<i32, string>` kept the *shared* one — where every
+parameter is a single word — and its 16-byte string field was written into an 8-byte slot.
+`Pair<i32, i64>` worked, which is what made it look like a string bug.
+
+Still open: a declared type parameter loses to a stdlib type of the same name (#915). A
+method returning the receiver's own parameter isn't monomorphized, so floats come back as bit
+patterns (#916). An inferred signature is pinned to `i32` by a literal in its body, so the
+spec's own `func double(x) { x * 2 }` won't take an `f64` (#904, #905).
 
 **A3. Optional chains — #909, #917, #938, #939.** `?.` onto an optional-typed field: both
 runtimes flatten `T?`, the checker says `T??`, so `chain ?? "default"` won't compile. The

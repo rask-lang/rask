@@ -50,7 +50,6 @@ t_week_optional_chain_flatten.rk # `?.` onto a `T?` field types as `T??`, so `??
 # out so the working surface stays gated; only the bug lives here.
 t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
-t_week_generic_struct_naming.rk # a struct with implicit single-letter params can't be named at an instantiation — #913 (both)
 t_week_generic_param_shadowing.rk # a declared type parameter loses to a stdlib type of that name — #915 (both)
 t_week_generic_method_return.rk # a method returning the receiver's type parameter isn't monomorphized — #916 (native)
 t_month_i128_aggregates.rk    # an i128 as a Vec element or struct field fails the Cranelift verifier — #933 (native)
