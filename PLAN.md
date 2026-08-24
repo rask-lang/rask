@@ -6,7 +6,7 @@ before planning off it — the last three times this document went wrong, it was
 state column outlived its evidence.
 
 ```
-tests/differential.sh      325 green, 24 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      326 green, 23 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
@@ -26,9 +26,9 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 24 files in the suite are registered red: 17
-tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, most of
-A3, half of A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
+**What is left is a backlog, not a frontier.** 23 files in the suite are registered red: 16
+tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, A3, half
+of A4, and two of A2 came off. Nothing is untracked and nothing has silently started passing. Every red file
 has a probe and an issue.
 
 ## The one thing worth deciding
@@ -36,7 +36,7 @@ has a probe and an issue.
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first fourteen came
+annotations + call-information specs. **None of the 40 were fixed** — the first fifteen came
 off in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
@@ -164,8 +164,12 @@ The corrected flattening turned one probe's assertions into compile errors — c
 and left something `??` could still take. E0831 rejects it now, and says why. The test asserted
 the bug; it asserts the shape instead.
 
-Still open: a bare element in a `Vec<T?>` literal never acquires the optional tag on the
-interpreter (#909).
+#909 closed A3. `auto_wrap_for_annotation` gave a binding's value the shape its annotation
+asked for, but only ever looked at the outer type — so `let xs: Vec<i64?> = [1, none, 3]`
+bound the 1 and the 3 bare, and `xs[0]!` failed with "! requires Option or Result, got i64"
+while native handled it. It descends into a sequence annotation now (`Vec<T>`, `[T; N]`,
+`[]T`); the depth count already there stops a `none` element double-wrapping. A `Map`'s values
+want the same and are their own case — two type arguments, and the value isn't a `Value::Vec`.
 
 **A4. Enum payloads — #910, #911 done; #922 open.** Named-payload variants were unreliable
 on both backends for two unrelated reasons, and both were one missing case.

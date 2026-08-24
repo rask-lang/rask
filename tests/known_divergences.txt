@@ -34,7 +34,6 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
-t_week_optional_vec_literal.rk # a bare element in a `Vec<T?>` literal never acquires the optional tag — #909 (interp)
 t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, pointer methods missing — #935 (interp)
 
 # --- shared / both-backend bugs ---

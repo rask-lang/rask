@@ -70,7 +70,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `test` blocks and the assertion forms | `t_week_test_blocks.rk` | 14/14 | 14/14 | |
 | imports | `t_week_imports.rk` | 13/13 | 13/13 | |
 | named-payload enum variants | `t_week_enum_named_payloads.rk` | 7/7 | 7/7 | |
-| **probe** — `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 2/5 | 5/5 | #909 |
+| `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 5/5 | 5/5 | |
 | `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 6/6 | |
 | `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | 5/5 | 5/5 | |
 | **probe** — inferred signatures | `t_week_gradual_generics.rk` | BUILD-FAIL | BUILD-FAIL | #904 #905 |
