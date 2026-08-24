@@ -871,6 +871,11 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_expr_inner(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
+        // Which expression form we're walking, for the type-coverage report.
+        // A `node_types` miss records this, so `RASK_TRACE_TYPE_COVERAGE=1`
+        // says which forms the checker doesn't record rather than only how
+        // many (#725). No-op unless that variable is set.
+        crate::fallback::set_current_kind(rask_ast::expr::expr_kind_name(&expr.kind));
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => {

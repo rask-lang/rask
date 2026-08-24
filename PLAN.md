@@ -218,11 +218,31 @@ That settles which of the two failures matters: **missing, not open.** Inference
 the checker simply never records a type for some nodes. So the fix is at the checker, not in
 the solver.
 
-Next step, and it is small: the miss counter takes a `NodeId` and nothing else, so it can say
-*how many* were missing but not *which kinds*. Record the AST kind alongside the miss, rank
-them, and the 3–7% becomes a short list of expression kinds to fix at the choke point. Then
-delete fallback sites as their inputs become reliable. That kills the class instead of the
-instance.
+**B1a. Which kinds — measured.** The miss counter could say how many but not which kinds, so
+lowering now stamps the expression form it is walking and a miss records that. One assignment
+in `lower_expr_inner`, no-op unless `RASK_TRACE_TYPE_COVERAGE=1`. The answer is the same in
+every program, and it is not a spread:
+
+```
+text_editor        149 missing: 142 Ident,  4 Field,  3 None
+game_loop          153 missing: 149 Ident,  4 Field
+markdown_renderer  157 missing: 151 Ident,  4 Field,  2 Int
+package_manager    324 missing: 319 Ident,  4 Field,  1 Int
+http_api_server    225 missing: 217 Ident,  4 Field,  3 String, 1 Block
+```
+
+**`Ident` is 95%+ of every miss.** Everything else is single digits and flat — `Field` is
+exactly 4 in all five programs, which smells like one shared cause rather than something that
+scales with the code.
+
+That is not the obvious kind to be missing. `infer_expr`'s `Ident` arm falls through to the
+general `node_types.insert` at the end; only two rare paths return early (use-after-discard,
+and a spelled-out enum name). A nine-line program does 1077 lookups with **one** miss, so it
+isn't stdlib bodies going untyped either — the misses scale with the program's own complexity.
+
+**B1b, the next step:** record the span alongside the kind and print a few, so the missing
+`Ident`s can be read in source. One expression form at 95% is a single cause, and naming it
+should retire most of the 49 fallback sites at once.
 
 **B2. One place decides how wide a slot is.** Four sites in this branch alone disagreed with a
 convention that has been settled since #629 — a float in a word-wide slot lives there as an
