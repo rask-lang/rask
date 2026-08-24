@@ -865,6 +865,12 @@ impl<'a> FunctionBuilder<'a> {
                         MirType::Array { elem, .. } if elem.stored_inline_in_array()));
                 if elem_is_inline {
                     Self::copy_bytes(builder, val, 0, addr, 0, *elem_size);
+                } else if let 1 | 2 | 4 = *elem_size {
+                    // The address above already accounts for `elem_size`; the
+                    // store has to as well. A full-word store into a 4-byte
+                    // element wrote over the next one, so `a[1] = 9` on a
+                    // `[i32; 4]` blanked `a[2]` (#902).
+                    Self::store_narrow(builder, val, addr, 0, *elem_size);
                 } else {
                     let flags = MemFlags::new();
                     builder.ins().store(flags, val, addr, 0);
@@ -2184,6 +2190,47 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    /// Store a scalar into a slot narrower than a word.
+    ///
+    /// A slot the layout packed into 1, 2 or 4 bytes gets a store that wide. An
+    /// 8-byte store into a 4-byte slot walks into whatever follows: as a struct
+    /// field it took the return address with it (#548), and as an array element
+    /// it silently overwrote the next element (#902). Both callers share this so
+    /// the two can't drift apart again.
+    fn store_narrow(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        addr: Value,
+        offset: i32,
+        size: u32,
+    ) {
+        let narrow = match size {
+            1 => types::I8,
+            2 => types::I16,
+            _ => types::I32,
+        };
+        let val_ty = builder.func.dfg.value_type(val);
+        let val = if val_ty.is_float() {
+            // f32 is the only float narrower than a word. It can arrive already
+            // demoted, or still as the f64 a word-wide slot would have held —
+            // an array of f32 keeps its elements at 4 bytes, so the promoted
+            // form has to come back down before its bits are stored.
+            let val = if val_ty.bits() > 32 {
+                builder.ins().fdemote(types::F32, val)
+            } else {
+                val
+            };
+            builder.ins().bitcast(types::I32, MemFlags::new(), val)
+        } else if val_ty.bits() > narrow.bits() {
+            builder.ins().ireduce(narrow, val)
+        } else if val_ty.bits() < narrow.bits() {
+            builder.ins().uextend(narrow, val)
+        } else {
+            val
+        };
+        builder.ins().store(MemFlags::new(), val, addr, offset);
+    }
+
     fn lower_store(
         builder: &mut ClifFunctionBuilder,
         addr: &LocalId,
@@ -2251,23 +2298,7 @@ impl<'a> FunctionBuilder<'a> {
                 // element across the frame's edge and took the return address
                 // with it, so the test binary jumped into nowhere (#548).
                 if let Some(size @ (1 | 2 | 4)) = *store_size {
-                    let narrow = match size {
-                        1 => types::I8,
-                        2 => types::I16,
-                        _ => types::I32,
-                    };
-                    let val = if val_ty.is_float() {
-                        // Only f32 is narrower than a word, and it's already
-                        // the right width — store its bits.
-                        builder.ins().bitcast(types::I32, MemFlags::new(), val)
-                    } else if val_ty.bits() > narrow.bits() {
-                        builder.ins().ireduce(narrow, val)
-                    } else if val_ty.bits() < narrow.bits() {
-                        builder.ins().uextend(narrow, val)
-                    } else {
-                        val
-                    };
-                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                    Self::store_narrow(builder, val, addr_val, *offset as i32, size);
                     return Ok(());
                 }
 

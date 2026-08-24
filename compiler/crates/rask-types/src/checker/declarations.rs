@@ -67,6 +67,16 @@ impl TypeChecker {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);
                 }
+                // `const W = 4` then `[i32; W]`. The length has to be known
+                // before any declared type is parsed, so it's recorded in this
+                // pass rather than where the const is checked (#906).
+                DeclKind::Const(c) => {
+                    if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
+                        if let Ok(len) = usize::try_from(*n) {
+                            self.types.register_const_length(c.name.clone(), len);
+                        }
+                    }
+                }
                 DeclKind::Fn(f) => {
                     // Find this function's SymbolId by matching name + Function kind.
                     // Strip generic suffix: parser stores "foo<T: Trait>" but resolver

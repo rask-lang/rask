@@ -880,10 +880,22 @@ impl<'a> MirContext<'a> {
                     let inner = &name[1..name.len() - 1];
                     if let Some(semi) = inner.rfind(';') {
                         let elem = self.resolve_type_str(inner[..semi].trim());
-                        // A symbolic length (a comptime parameter) has no value
-                        // here; 0 keeps the element type intact, which is what
-                        // the checker does with the same shape.
-                        let len = inner[semi + 1..].trim().parse::<u32>().unwrap_or(0);
+                        // A literal length, then a module-level `const` naming
+                        // one — read from the checker's table rather than
+                        // re-derived here, so the two can't disagree about how
+                        // long the array is (#906). Anything still symbolic (a
+                        // comptime parameter) keeps 0, which preserves the
+                        // element type and matches what the checker does.
+                        let len_str = inner[semi + 1..].trim();
+                        let len = len_str
+                            .parse::<u32>()
+                            .ok()
+                            .or_else(|| {
+                                self.type_defs
+                                    .const_length(len_str)
+                                    .and_then(|n| u32::try_from(n).ok())
+                            })
+                            .unwrap_or(0);
                         return MirType::Array { elem: Box::new(elem), len };
                     }
                     return MirType::Slice(Box::new(self.resolve_type_str(inner)));

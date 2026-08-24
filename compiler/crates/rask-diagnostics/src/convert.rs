@@ -1948,6 +1948,28 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
+            FixedArrayGrowth { method, array, span } => {
+                let (elem, len) = match array {
+                    rask_types::Type::Array { elem, len } => (elem.to_string(), *len),
+                    other => (other.to_string(), 0),
+                };
+                let label = format!("`{}` doesn't exist on a fixed array", method);
+                Diagnostic::error(label.clone())
+                    .with_code("E0843")
+                    .with_primary(
+                        *span,
+                        format!("`[{}; {}]` always holds {} element{}",
+                            elem, len, len, if len == 1 { "" } else { "s" }),
+                    )
+                    .with_fix(format!(
+                        "let it grow: `mut a: Vec<{}> = […]` — the same literal builds one",
+                        elem
+                    ))
+                    .with_why(
+                        "a fixed array's length is part of its type, and its storage is exactly that wide — there is nowhere for another element to go [std.collections/V1]"
+                            .to_string(),
+                    )
+            }
         }
     }
 }

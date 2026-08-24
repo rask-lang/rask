@@ -37,6 +37,15 @@ pub struct TypeTable {
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target type string.
     pub(super) type_aliases: HashMap<String, String>,
+    /// Module-level `const` names whose initializer is an integer literal,
+    /// mapped to that value.
+    ///
+    /// Only array lengths read this. `[i32; W]` names a length that has to be
+    /// known to give the type a size, and without the value the length came out
+    /// 0 — `len()` folded to zero and `for x in a` ran no iterations (#906).
+    /// A computed initializer (`const W = 2 * 2`) isn't here; that wants
+    /// comptime evaluation, and a symbolic length still falls back to 0.
+    pub(super) const_lengths: HashMap<String, usize>,
     /// TypeId for the builtin Option<T> enum.
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
@@ -80,6 +89,7 @@ impl TypeTable {
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
+            const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
@@ -923,5 +933,17 @@ impl TypeTable {
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
         error.map_types(&|ty| self.resolve_type_names(ty));
         error
+    }
+}
+
+impl TypeTable {
+    /// Record a module-level const's integer value, for array lengths.
+    pub fn register_const_length(&mut self, name: String, value: usize) {
+        self.const_lengths.insert(name, value);
+    }
+
+    /// The value of a const usable as an array length, if there is one.
+    pub fn const_length(&self, name: &str) -> Option<usize> {
+        self.const_lengths.get(name).copied()
     }
 }

@@ -1438,6 +1438,45 @@ impl Interpreter {
                     name.clone()
                 };
 
+                // `A4.N { v: 5 }` is an enum variant with a named payload, not a
+                // struct — it just shares the literal's syntax. Built as a
+                // struct named "A4.N" it was the wrong kind of value everywhere
+                // downstream: a `N { v }` arm compares against the variant name
+                // and never matched, so every such arm fell through (#910).
+                if let Some((enum_name, variant_name)) = concrete_name.split_once('.') {
+                    if let Some(decl) = self.enums.get(enum_name) {
+                        if let Some((idx, variant)) = decl
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .find(|(_, v)| v.name == variant_name)
+                        {
+                            // Payload order is the declaration's, whatever order
+                            // the literal wrote the fields in.
+                            let decl_fields: Vec<String> =
+                                variant.fields.iter().map(|f| f.name.clone()).collect();
+                            let mut payload = Vec::with_capacity(decl_fields.len());
+                            for field_name in &decl_fields {
+                                let Some(f) = fields.iter().find(|f| f.name == *field_name) else {
+                                    return Err(RuntimeDiagnostic::new(
+                                        RuntimeError::Generic(format!(
+                                            "`{enum_name}.{variant_name}` needs a value for `{field_name}`"
+                                        )),
+                                        expr.span,
+                                    ));
+                                };
+                                payload.push(self.eval_owned(&f.value)?);
+                            }
+                            return Ok(Value::enum_with_index(
+                                enum_name.to_string(),
+                                variant_name.to_string(),
+                                payload,
+                                idx as u32,
+                            ));
+                        }
+                    }
+                }
+
                 let mut field_values = IndexMap::new();
 
                 if let Some(spread_expr) = spread {

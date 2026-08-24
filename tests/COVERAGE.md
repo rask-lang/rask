@@ -9,8 +9,9 @@ file doesn't compile on that backend at all — which for a probe file is the po
 
 A count marked **crashes** is worse than it looks: the test binary segfaults
 part-way through, so the denominator is the tests that got to report, not the
-tests in the file. `t_day_const_array.rk` is the one — 3 of its 5 tests report a
-failure and the other 2 never run.
+tests in the file. No file is in that state right now — `t_day_const_array.rk`
+was, until the element-store width fix took the segfault away and the const
+length made the rest pass.
 
 Two kinds of file:
 
@@ -45,9 +46,9 @@ surface stays gated instead of hiding behind a known-fail line.
 | structs, literals, field access, defaults | `t_day_structs.rk` | 12/12 | 12/12 | |
 | module-level const | `t_day_const.rk` | 9/9 | 9/9 | |
 | numeric conversions and casts | `t_day_casts.rk` | 11/11 | 11/11 | |
-| **probe** — `[T; N]` writes and growth | `t_day_array_writes.rk` | 5/7 | 1/6 | #902 #901 |
+| `[T; N]` element writes | `t_day_array_writes.rk` | 6/6 | 6/6 | |
 | **probe** — `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 5/5 | 0/3 | #903 |
-| **probe** — `[T; const]` length, then SIGSEGV | `t_day_const_array.rk` | 5/5 | 0/3, crashes | #906 #902 |
+| arrays sized by a named const | `t_day_const_array.rk` | 5/5 | 5/5 | |
 | **probe** — `unsigned as f64` | `t_day_unsigned_to_float.rk` | 6/6 | 1/6 | #907 |
 
 ## Week one
@@ -68,7 +69,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | nested data structures | `t_week_nested_data.rk` | 13/13 | 13/13 | #922 #925 |
 | `test` blocks and the assertion forms | `t_week_test_blocks.rk` | 14/14 | 14/14 | |
 | imports | `t_week_imports.rk` | 13/13 | 13/13 | |
-| **probe** — named-payload enum variants | `t_week_enum_named_payloads.rk` | 2/7 | 3/7 | #910 #911 |
+| named-payload enum variants | `t_week_enum_named_payloads.rk` | 7/7 | 7/7 | |
 | **probe** — `Vec<T?>` literal elements | `t_week_optional_vec_literal.rk` | 2/5 | 5/5 | #909 |
 | **probe** — `?.` onto an optional field | `t_week_optional_field_chains.rk` | 6/6 | 0/2 | #917 |
 | **probe** — `?.` flattening a `T?` field | `t_week_optional_chain_flatten.rk` | BUILD-FAIL | BUILD-FAIL | #938 #939 |
@@ -143,6 +144,11 @@ backend, so `as_ptr()` is the only way to get a pointer today.
 **The build system and multi-package projects.** `tests/projects_gate.sh` and
 `tests/examples_gate.sh` are the right harnesses for this — a suite file can't
 have a second package.
+
+**A fixed array's growth operations.** `push`, `pop` and `clear` on a `[T; N]`
+are a compile error (E0843), and a test can't assert on one. They live in
+`tests/compile_errors/fixed_array_growth.rk`; the reads and writes an array does
+have are in `t_day_arrays.rk` and `t_day_array_writes.rk`.
 
 **Linearity's rejections.** `t_month_linearity.rk` pins the positive side — every
 shape where consuming exactly once is legal — because a test can't assert on a

@@ -303,6 +303,32 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
         };
     }
 
+    // Slice: []T
+    if let Some(elem) = s.strip_prefix("[]") {
+        return Type::Slice(Box::new(parse_field_type(elem)));
+    }
+
+    // Fixed array `[T; N]`, and `[T]` for a slice written the other way. Without
+    // this the whole bracket form fell through to the unknown-name branch below
+    // and every fixed array field was sized as a pointer (#895).
+    if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        match inner.split_once(';') {
+            Some((elem, len)) => {
+                // A symbolic length (`[T; SIZE]`) has no value here — there is no
+                // const table in this pass. Falling through to the unknown-name
+                // branch keeps its warning rather than sizing the field at zero,
+                // which is what pretending the length is 0 would do (#906).
+                if let Ok(len) = len.trim().parse::<usize>() {
+                    return Type::Array {
+                        elem: Box::new(parse_field_type(elem)),
+                        len,
+                    };
+                }
+            }
+            None => return Type::Slice(Box::new(parse_field_type(inner))),
+        }
+    }
+
     // Generic types: Name<Args>
     if let Some(angle) = s.find('<') {
         if s.ends_with('>') {

@@ -1,16 +1,17 @@
 # Plan
 
-**Measured 2026-08-24 at `60678a7`.** Every number below came from running the thing, not
-from reading the previous version of this file. Re-measure before planning off it — the last
-three times this document went wrong, it was because a state column outlived its evidence.
+**Measured 2026-08-24, at `60678a7` and again after this branch's fixes.** Every number below
+came from running the thing, not from reading the previous version of this file. Re-measure
+before planning off it — the last three times this document went wrong, it was because a
+state column outlived its evidence.
 
 ```
-tests/differential.sh      317 green, 31 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      320 green, 28 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
-tests/fmt_roundtrip_gate.sh 430 round-tripped, 566 reformatted, 0 failures
+tests/fmt_roundtrip_gate.sh 430 round-tripped, 567 reformatted, 0 failures
 tests/http_api_harness.sh  ok on both backends
-cargo test --release --workspace   green
+cargo test --release --workspace   52 binaries, 0 failures
 ```
 
 ## Where things stand
@@ -25,16 +26,18 @@ fix shown as code: consuming a value on one branch and using it after the join (
 consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
 and `i32::MAX + 1` panicking at runtime instead of wrapping.
 
-**What is left is a backlog, not a frontier.** 31 files in the suite are registered red: 24
-tracked bugs and 7 unbuilt features. Nothing is untracked and nothing has silently started
-passing. Every red file has a probe and an issue.
+**What is left is a backlog, not a frontier.** 28 files in the suite are registered red: 21
+tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1 and half
+of A4 came off. Nothing is untracked and nothing has silently started passing. Every red file
+has a probe and an issue.
 
 ## The one thing worth deciding
 
 The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
 what a person meets in their first hour, first week, first month. In the five days since,
 the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed.**
+annotations + call-information specs. **None of the 40 were fixed** — the first seven came off
+in this branch.
 
 Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
 compile. `Map.insert` hands back a flag instead of the displaced value. A named-payload enum
@@ -54,22 +57,29 @@ bug in these clusters can hide.
 Fix by cluster, not by issue number. Several issues share a root cause, and the clusters are
 cheaper together than the issues are apart.
 
-**A1. Fixed-size arrays `[T; N]` — #895, #901, #902, #906, #946.** The biggest cluster and
-the most day-one of them. `[T; N]` isn't in the layout pass, so a struct field holding one is
-sized at a pointer:
+**A1. Fixed-size arrays `[T; N]` — #895, #901, #902, #906, #946. Done.** All five were one
+half-built feature, and the shape of it is the argument for Track B: the type-string parser
+exists three times — in the checker, in mono's layout pass, and again in MIR — and each copy
+had its own hole.
 
-```
-$ rask run arr.rk
-warning: unknown type '[i32; 4]' in layout, defaulting to pointer size (8, 8)
-error: MIR lowering 'main': field `cells` holds 16 bytes but its slot is 8 — this
-       instantiation is using the shared layout of a generic type …
-```
-
-`Grid` is not generic. The diagnostic is guessing too, and it sends the reader somewhere
-there is nothing to find — fix the message with the layout. `ArrayStore` in
-`rask-codegen/src/builder.rs:849` is the same family: it computes the address from
-`elem_size` and then stores a full word into it, so writing one element of a sub-word array
-clobbers its neighbours.
+- mono's copy had no bracket case at all, so a `[T; N]` struct field became an unknown name
+  and was sized at a pointer (#895). The error then blamed a generic instantiation on a
+  struct with no type parameters; it says that now only when the field's slot really did
+  come from a substituted parameter.
+- `ArrayStore` computed the address from `elem_size` and then stored a full word into it, so
+  `a[1] = 9` on a `[i32; 4]` blanked `a[2]` (#902). The struct-field path had already solved
+  this for #548 — both share one helper now.
+- The array literal asked `stored_inline_in_array` — a question about whether the element is
+  copied by address — and used the answer for the store's *width*. Integer elements got away
+  with it because writing in ascending order paints over each spill; an f32 promoted to f64
+  does not, so `[1.5, 2.5, 3.5]` read back as zeroes.
+- `push`/`pop`/`clear` resolved through the `Vec` method table and are E0843 now, with the
+  rejections in `tests/compile_errors/fixed_array_growth.rk`.
+- `[T; W]` for a named const resolved to `[T; 0]` in the checker *and* again in MIR (#906).
+  Both read the value from one table on the checker's side now.
+- `as_ptr()` on an array dispatched to `rask_vec_as_ptr`, which reads a `RaskVec` header an
+  array doesn't have (#946, native). An array local is its own buffer, so its address is the
+  answer. The interpreter has no raw-pointer surface at all — that half is #935.
 
 **A2. Naming and inferring generics — #904, #905, #913, #915, #916, #961, #968, #970.** A
 declared type parameter loses to a stdlib type of the same name. A method returning the
@@ -81,9 +91,22 @@ inferred signature is pinned to `i32` by a literal in its body, so the spec's ow
 runtimes flatten `T?`, the checker says `T??`, so `chain ?? "default"` won't compile. The
 E0308 that results suggests `try` and talks about "the error" — there is no error.
 
-**A4. Enum payloads — #910, #911, #922.** A named-payload variant never matches on the
-interpreter, and native matches by the arm's position rather than the variant's tag — wrong
-arm, or a segfault.
+**A4. Enum payloads — #910, #911 done; #922 open.** Named-payload variants were unreliable
+on both backends for two unrelated reasons, and both were one missing case.
+
+- Native built the switch case from the arm's *position* whenever it couldn't resolve a tag,
+  and `resolve_pattern_tag` only answers for a qualified `Enum.Variant` — which is never how
+  a match arm is written. The positional-payload arm right above it has had the
+  scrutinee-based fallback all along, which is exactly why `N(i64)` worked and `N { v }` did
+  not (#911).
+- The interpreter built `A4.N { v: 5 }` as a *struct* named `A4.N`, because a named payload
+  shares the struct literal's syntax. Every `N { v }` arm then compared a struct name against
+  a variant name and fell through to the wildcard (#910). It builds a `Value::Enum` with the
+  payload in declaration order now, so the value is the right kind everywhere and not just
+  inside `match`.
+
+#922 — an enum payload isn't a C4 slot, so `Node.Branch([1, 2, 3])` is rejected and the error
+has expected/found swapped — is a different defect in the same area and still open.
 
 **A5. The singles.** #899 `mutate` on a primitive parameter drops the write (and
 `mem.parameters` contradicts itself about whether it should — settle the spec first, #881).

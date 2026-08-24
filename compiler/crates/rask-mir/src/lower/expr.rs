@@ -2223,11 +2223,20 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
-                        // `MirType::stored_inline_in_array` owns this rule, paired
-                        // with the read in codegen's `ArrayIndex`. A value that
-                        // occupies its slot is copied in whole; a `string` or a
-                        // niche `Handle<T>?` is a pointer and keeps the word store.
-                        store_size: if elem_ty_for_store.stored_inline_in_array() {
+                        // Two separate questions, and reusing one answer for both
+                        // is what broke `[f32; 3]`. `stored_inline_in_array` says
+                        // the element occupies its slot and is copied in whole; a
+                        // `string` or a niche `Handle<T>?` is a pointer and keeps
+                        // the word store. *Width* is the other question: an
+                        // element narrower than a word needs a store that narrow,
+                        // or each write spills over the elements after it. The
+                        // integer cases got away with it because writing in
+                        // ascending order overwrites the spill with the right
+                        // bytes — an f32 promoted to f64 does not, so `[1.5, 2.5,
+                        // 3.5]` read back as zeroes (#902).
+                        store_size: if elem_ty_for_store.stored_inline_in_array()
+                            || elem_size < 8
+                        {
                             Some(elem_size)
                         } else {
                             None
@@ -2456,15 +2465,30 @@ impl<'a> MirLowerer<'a> {
                             && !matches!(val_ty, MirType::String)
                             && value_size > fl.size
                         {
+                            // Only a field whose slot came from a substituted
+                            // type parameter has the generic explanation. Saying
+                            // it either way sent anyone reading it looking for a
+                            // generic that isn't there — a plain `[i32; 4]`
+                            // field the layout pass couldn't size reported
+                            // itself as a generic instantiation problem (#895).
+                            let cause = if fl.is_type_param {
+                                " — this instantiation is using the shared layout of a \
+                                 generic type, which gives every type parameter one word, \
+                                 and an aggregate that size doesn't fit. A settled \
+                                 instantiation gets a layout of its own; this one wasn't \
+                                 settled at the point the layout was picked. Hold the \
+                                 aggregate behind a field of its own, or use a concrete \
+                                 type here (#781, #814)"
+                            } else {
+                                ". The layout gave this field a slot too small for the \
+                                 value being stored, so the store would run past it into \
+                                 the next field. That is a compiler bug, not something \
+                                 the program can be rewritten around — please report it \
+                                 with this declaration"
+                            };
                             return Err(LoweringError::InvalidConstruct(format!(
-                                "field `{}` holds {} bytes but its slot is {} — this \
-                                 instantiation is using the shared layout of a generic \
-                                 type, which gives every type parameter one word, and an \
-                                 aggregate that size doesn't fit. A settled instantiation \
-                                 gets a layout of its own; this one wasn't settled at the \
-                                 point the layout was picked. Hold the aggregate behind a \
-                                 field of its own, or use a concrete type here (#781, #814)",
-                                field.name, value_size, fl.size
+                                "field `{}` holds {} bytes but its slot is {}{}",
+                                field.name, value_size, fl.size, cause
                             )));
                         }
                     }
@@ -4139,10 +4163,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        // .clone(): dispatch to type-specific clone (Vec_clone, string_clone, etc.)
-        // Value types (integers, bools) fall through to generic rask_clone.
-        // Heap types (Vec, Map, string) need deep copy via their runtime functions.
-        if let Some(r) = self.try_lower_array_len(method, args, &obj_ty)? {
+        if let Some(r) = self.try_lower_array_intrinsic(method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -7511,23 +7532,44 @@ impl<'a> MirLowerer<'a> {
         Ok(None)
     }
 
-    /// `Array.len()` -> compile-time constant.
-    fn try_lower_array_len(
+    /// The `[T; N]` methods that need no call — the answer is in the type or is
+    /// the array itself.
+    ///
+    /// Everything not caught here falls through to the shared `Vec` lowering,
+    /// which is right for the read-only surface and wrong for anything that
+    /// reads a `RaskVec` header: an array local *is* its buffer, with no header
+    /// in front of it, so `Vec_as_ptr` handed back whatever the first element
+    /// spelled and dereferencing it segfaulted (#946).
+    fn try_lower_array_intrinsic(
         &mut self,
         method: &String,
         args: &[CallArg],
+        obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // Array.len() → compile-time constant (no runtime call)
-        if method == "len" && args.is_empty() {
-            if let MirType::Array { len, .. } = obj_ty {
-                return Ok(Some((
-                    MirOperand::Constant(MirConst::Int(*len as i64)),
-                    MirType::I64,
-                )));
-            }
+        let MirType::Array { len, .. } = obj_ty else {
+            return Ok(None);
+        };
+        if !args.is_empty() {
+            return Ok(None);
         }
-        Ok(None)
+        match method.as_str() {
+            // Length is in the type — a compile-time constant, no runtime call.
+            "len" => Ok(Some((
+                MirOperand::Constant(MirConst::Int(*len as i64)),
+                MirType::I64,
+            ))),
+            "is_empty" => Ok(Some((
+                MirOperand::Constant(MirConst::Bool(*len == 0)),
+                MirType::Bool,
+            ))),
+            // The array's own address is the pointer to its first element.
+            "as_ptr" | "as_mut_ptr" => Ok(Some((
+                obj_op.clone(),
+                MirType::Ptr,
+            ))),
+            _ => Ok(None),
+        }
     }
 
     /// Method call on `any Trait` -> vtable dispatch.

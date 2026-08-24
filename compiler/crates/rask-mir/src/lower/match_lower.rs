@@ -429,8 +429,23 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 Pattern::Struct { name, .. } => {
+                    // `resolve_pattern_tag` only answers for a *qualified*
+                    // `Enum.Variant`, and a match arm is written unqualified —
+                    // so a `N { v }` arm fell through to "case = arm index" and
+                    // matched only where the arm's position happened to equal
+                    // the variant's tag. Written first for a variant declared
+                    // second, it silently didn't match, or the switch reached an
+                    // arm whose payload wasn't there and the program died
+                    // (#911). Same fallback the positional-payload arm above has
+                    // had all along, which is why `N(i64)` worked and `N { v }`
+                    // did not.
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
+                    } else if has_tag {
+                        let tag = self
+                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
+                            .unwrap_or_else(|| self.variant_tag(name));
+                        cases.push((tag as u64, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
