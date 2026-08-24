@@ -68,9 +68,15 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let elem_str = inner[..semi_pos].trim();
             let len_str = inner[semi_pos + 1..].trim();
             let elem = parse_type_string(elem_str, types)?;
-            // Numeric size or comptime param name — use placeholder 0 for symbolic sizes
-            // so element type checking proceeds. Actual size resolves at comptime.
-            let len: usize = len_str.parse().unwrap_or(0);
+            // A literal size, then a module-level `const` naming one. Anything
+            // still symbolic (a comptime parameter, a computed const) keeps the
+            // 0 placeholder so element checking can proceed — the length then
+            // resolves at comptime.
+            let len: usize = len_str
+                .parse()
+                .ok()
+                .or_else(|| types.const_length(len_str))
+                .unwrap_or(0);
             return Ok(Type::Array {
                 elem: Box::new(elem),
                 len,
@@ -183,6 +189,16 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
     // Trait object: "any TraitName".
     if let Some(trait_name) = rask_ast::traits::trait_object_name(s) {
         return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
+    }
+
+    // A declared type parameter wins over a type of the same name. Without
+    // this, `struct Holder<Output>` resolved `Output` to the stdlib's
+    // `os.Output` and every use of the field mismatched against a type nobody
+    // wrote (#915). Single letters never reach the lookup at all (PC1), so this
+    // is about the descriptive names — `Output`, `Item`, `Error` — which are
+    // exactly the ones likely to collide.
+    if types.is_type_param_in_scope(s) {
+        return Ok(Type::UnresolvedNamed(s.to_string()));
     }
 
     if let Some(ty) = types.lookup(s) {

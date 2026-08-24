@@ -83,6 +83,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::OptionalChain { .. }
                     | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
             ) {
@@ -362,6 +363,10 @@ impl TypeChecker {
                 self.resolve_index(object, index, result, is_range, span)
             }
 
+            TypeConstraint::OptionalChain { field, result, span } => {
+                self.resolve_optional_chain(field, result, span)
+            }
+
             TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span } => {
                 self.resolve_coalesce(node, value, default, result, value_span, default_span, span)
             }
@@ -562,6 +567,34 @@ impl TypeChecker {
     /// Settle `object[index]` once the container's shape is known. Defers while
     /// the container is still a variable — a Pool behind a struct field only
     /// gets its type when that field's own constraint resolves.
+    /// `a?.b` — the chain's result once `b`'s type is known.
+    ///
+    /// A field that is already optional stays one layer deep; anything else
+    /// gains the layer the chain adds. Deferred rather than decided at the
+    /// access, because at that point the field's type is a bare variable and
+    /// the answer would always be "not an option" (#938).
+    fn resolve_optional_chain(
+        &mut self,
+        field: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let field = self.ctx.apply(&field);
+        // Still open — nothing to decide from. Re-defer; the bounded retry
+        // gives it one more chance, and a variable that never settles is
+        // reported by the leftover-constraint pass like any other.
+        if matches!(field, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                field,
+                result,
+                span,
+            });
+            return Ok(false);
+        }
+        let chained = if field.is_option() { field } else { Type::option(field) };
+        self.unify(&result, &chained, span)
+    }
+
     fn resolve_index(
         &mut self,
         object: Type,

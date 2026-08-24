@@ -865,6 +865,12 @@ impl<'a> FunctionBuilder<'a> {
                         MirType::Array { elem, .. } if elem.stored_inline_in_array()));
                 if elem_is_inline {
                     Self::copy_bytes(builder, val, 0, addr, 0, *elem_size);
+                } else if let 1 | 2 | 4 = *elem_size {
+                    // The address above already accounts for `elem_size`; the
+                    // store has to as well. A full-word store into a 4-byte
+                    // element wrote over the next one, so `a[1] = 9` on a
+                    // `[i32; 4]` blanked `a[2]` (#902).
+                    Self::store_narrow(builder, val, addr, 0, *elem_size);
                 } else {
                     let flags = MemFlags::new();
                     builder.ins().store(flags, val, addr, 0);
@@ -1164,7 +1170,16 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().fpromote(to_ty, val)
             }
         } else if from_ty.is_int() && to_ty.is_float() {
-            builder.ins().fcvt_from_sint(to_ty, val)
+            // Signedness decides this the same way it decides the widening
+            // above — and for the same reason, since Cranelift's integer types
+            // carry a width and not a sign. Converting unsigned bits as signed
+            // read `u8 255` as -1 and `u32 4000000000` as -294967296 (#907).
+            // `lower_convert` has always asked; this one didn't.
+            if from_mir.is_some_and(|t| t.is_unsigned()) {
+                builder.ins().fcvt_from_uint(to_ty, val)
+            } else {
+                builder.ins().fcvt_from_sint(to_ty, val)
+            }
         } else if from_ty.is_float() && to_ty.is_int() {
             builder.ins().fcvt_to_sint_sat(to_ty, val)
         } else {
@@ -2184,6 +2199,50 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    /// Store a scalar into a slot narrower than a word.
+    ///
+    /// A slot the layout packed into 1, 2 or 4 bytes gets a store that wide. An
+    /// 8-byte store into a 4-byte slot walks into whatever follows: as a struct
+    /// field it took the return address with it (#548), and as an array element
+    /// it silently overwrote the next element (#902). Both callers share this so
+    /// the two can't drift apart again.
+    fn store_narrow(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        addr: Value,
+        offset: i32,
+        size: u32,
+    ) {
+        let narrow = match size {
+            1 => types::I8,
+            2 => types::I16,
+            _ => types::I32,
+        };
+        let val_ty = builder.func.dfg.value_type(val);
+        let val = if val_ty.is_float() {
+            // How wide this slot holds a float is `rask_mono::abi`'s to say, not
+            // this function's — a word takes the promoted f64, anything narrower
+            // takes the f32. The value can arrive either way, so bring it to
+            // whichever the slot wants before storing its bits.
+            let want_bytes = rask_mono::abi::slot_scalar_bytes(
+                true, val_ty.bytes(), size,
+            );
+            let val = if want_bytes < 8 && val_ty.bits() > 32 {
+                builder.ins().fdemote(types::F32, val)
+            } else {
+                val
+            };
+            builder.ins().bitcast(types::I32, MemFlags::new(), val)
+        } else if val_ty.bits() > narrow.bits() {
+            builder.ins().ireduce(narrow, val)
+        } else if val_ty.bits() < narrow.bits() {
+            builder.ins().uextend(narrow, val)
+        } else {
+            val
+        };
+        builder.ins().store(MemFlags::new(), val, addr, offset);
+    }
+
     fn lower_store(
         builder: &mut ClifFunctionBuilder,
         addr: &LocalId,
@@ -2251,23 +2310,7 @@ impl<'a> FunctionBuilder<'a> {
                 // element across the frame's edge and took the return address
                 // with it, so the test binary jumped into nowhere (#548).
                 if let Some(size @ (1 | 2 | 4)) = *store_size {
-                    let narrow = match size {
-                        1 => types::I8,
-                        2 => types::I16,
-                        _ => types::I32,
-                    };
-                    let val = if val_ty.is_float() {
-                        // Only f32 is narrower than a word, and it's already
-                        // the right width — store its bits.
-                        builder.ins().bitcast(types::I32, MemFlags::new(), val)
-                    } else if val_ty.bits() > narrow.bits() {
-                        builder.ins().ireduce(narrow, val)
-                    } else if val_ty.bits() < narrow.bits() {
-                        builder.ins().uextend(narrow, val)
-                    } else {
-                        val
-                    };
-                    builder.ins().store(flags, val, addr_val, *offset as i32);
+                    Self::store_narrow(builder, val, addr_val, *offset as i32, size);
                     return Ok(());
                 }
 
@@ -3992,10 +4035,34 @@ impl<'a> FunctionBuilder<'a> {
                         // `f64_to_string` printed `wrap(3.14).value` as
                         // 4614253070214988800 (#820). The MIR local at the read knows
                         // the real type, so keep what the caller asked for.
-                        load_ty = match &field.ty {
-                            RaskType::F64 | RaskType::F32 => types::F64,
-                            _ if field.is_type_param => load_ty,
-                            _ => types::I64,
+                        // Keeping the caller's type is right for an integer and
+                        // wrong for a float: the slot holds a float as an f64
+                        // whatever the parameter turned out to be, so honouring
+                        // an F32 request loaded the double's zero low half and
+                        // `G<f32> { value: 0.5 }.value` read back as 0 (#972).
+                        // Read at the slot's width and let the narrowing tail
+                        // below demote — the same pair `value_to_ptr` and
+                        // `load_scalar_slot` agree on, and the Option and Result
+                        // payload paths already use.
+                        // What width the slot holds this in is the ABI's
+                        // answer, whether the field's declared type says
+                        // `float` or the type parameter it was substituted
+                        // from does. Deciding it here is how a `G<f32>` field
+                        // came to be read four bytes wide out of a slot holding
+                        // a promoted double (#972).
+                        let field_is_float = matches!(
+                            &field.ty,
+                            RaskType::F64 | RaskType::F32
+                        ) || (field.is_type_param && load_ty.is_float());
+                        load_ty = if field_is_float {
+                            match rask_mono::abi::slot_scalar_bytes(true, 8, field.size) {
+                                8 => types::F64,
+                                _ => types::F32,
+                            }
+                        } else if field.is_type_param {
+                            load_ty
+                        } else {
+                            types::I64
                         };
                         field.offset as i32
                     } else {
@@ -4006,6 +4073,21 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             Some(MirType::Enum(id)) => {
+                // A float payload sits in its slot as an f64, same as anywhere
+                // else a float occupies a word (#629). This arm never said so,
+                // so an f32 payload was read four bytes wide and came back as
+                // the double's zero low half — `Has(1.5)` printed 0. The
+                // narrowing tail below demotes it. f64 was right by coincidence:
+                // the width the caller asked for happened to be the storage
+                // width (#973).
+                if load_ty.is_float() {
+                    load_ty = match rask_mono::abi::slot_scalar_bytes(
+                        true, load_ty.bytes(), rask_mono::abi::PAYLOAD_SLOT_BYTES,
+                    ) {
+                        8 => types::F64,
+                        _ => types::F32,
+                    };
+                }
                 // Prefer the exact payload offset match_lower computed for this
                 // arm's variant. Guessing "first variant with enough fields"
                 // picks the wrong payload shape when variants differ at the same

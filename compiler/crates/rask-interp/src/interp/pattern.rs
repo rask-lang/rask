@@ -184,6 +184,37 @@ impl Interpreter {
                         return Some(bindings);
                     }
                 }
+                // An enum variant with a named payload — `N { v }` — is written
+                // the same way but isn't a struct value: the payload is stored
+                // positionally on `Value::Enum` and the names live on the
+                // declaration. Only `Value::Struct` was handled here, so such an
+                // arm never matched at all and every one of them fell to the
+                // wildcard (#910).
+                if let Value::Enum { name: enum_name, variant, fields: payload, .. } = value {
+                    let (pat_enum, pat_variant) = match pat_name.split_once('.') {
+                        Some((e, v)) => (Some(e), v),
+                        None => (None, pat_name.as_str()),
+                    };
+                    if variant != pat_variant
+                        || pat_enum.is_some_and(|e| e != enum_name)
+                    {
+                        return None;
+                    }
+                    // Field order comes from the declaration; the pattern may
+                    // name a subset, in any order.
+                    let decl_fields = self
+                        .enums
+                        .get(enum_name)
+                        .and_then(|e| e.variants.iter().find(|v| v.name == *variant))
+                        .map(|v| &v.fields)?;
+                    let mut bindings = HashMap::new();
+                    for (field_name, field_pattern) in pat_fields {
+                        let idx = decl_fields.iter().position(|f| f.name == *field_name)?;
+                        let field_val = payload.get(idx)?;
+                        bindings.extend(self.match_pattern(field_pattern, field_val)?);
+                    }
+                    return Some(bindings);
+                }
                 None
             }
 

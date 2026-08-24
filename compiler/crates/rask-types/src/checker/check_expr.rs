@@ -1958,13 +1958,19 @@ impl TypeChecker {
                     span: expr.span,
                     self_type: self.current_self_type.clone(),
                 });
-                // Flatten: if field is already T?, return T? not (T?)?
-                let resolved_field = self.ctx.apply(&field_ty);
-                if resolved_field.is_option() {
-                    resolved_field
-                } else {
-                    Type::option(field_ty)
-                }
+                // Flatten: a field that is already `T?` stays one layer deep
+                // (OPT10). That can't be decided here — `field_ty` is the fresh
+                // variable the `HasField` above will fill in, so asking "is it
+                // an option?" now always answers no and the chain came out
+                // `T??` (#938). Defer it: `OptionalChain` settles once the
+                // field's type does.
+                let result = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                    field: field_ty,
+                    result: result.clone(),
+                    span: expr.span,
+                });
+                result
             }
 
             ExprKind::Select { arms, .. } => {
@@ -3518,7 +3524,28 @@ impl TypeChecker {
         Some(ty)
     }
 
+    /// A symbol's type, with its own type parameters in scope while it parses.
+    ///
+    /// A callee's signature is parsed here — at the *call site* — so without
+    /// this the scope in effect is the caller's, and a parameter named like a
+    /// real type resolves to that type: `func first<Output>(…)` was read as the
+    /// stdlib's `os.Output` from every call, and the argument mismatched
+    /// against a type nobody wrote (#915). Wrapping rather than pushing inline
+    /// because the scope has to come back off on every path out, and there are
+    /// a dozen.
     pub(super) fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {
+        let callee_params: Vec<String> =
+            self.fn_type_params.get(&sym_id).cloned().unwrap_or_default();
+        if callee_params.is_empty() {
+            return self.get_symbol_type_scoped(sym_id);
+        }
+        let outer = self.types.push_type_params(callee_params);
+        let ty = self.get_symbol_type_scoped(sym_id);
+        self.types.pop_type_params(outer);
+        ty
+    }
+
+    fn get_symbol_type_scoped(&mut self, sym_id: SymbolId) -> Type {
         if let Some(ty) = self.symbol_types.get(&sym_id) {
             return ty.clone();
         }

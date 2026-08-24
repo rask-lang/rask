@@ -21,6 +21,21 @@ thread_local! {
     static HITS: RefCell<BTreeMap<&'static str, u32>> = RefCell::new(BTreeMap::new());
     static LOOKUPS: RefCell<LookupStats> = RefCell::new(LookupStats::default());
     static OPEN_SHAPES: RefCell<BTreeMap<String, u32>> = RefCell::new(BTreeMap::new());
+    /// The AST kind of the expression lowering is currently walking, and a
+    /// tally of the kinds that were being walked when a lookup came back empty.
+    ///
+    /// A `NodeId` on its own carries no shape, and lowering has no tree to look
+    /// one up in — but it does know what it is walking, because
+    /// `lower_expr_inner` matches on the kind at the top. Stamping it there
+    /// costs one assignment and turns "3-7% missing" into a ranked list of
+    /// expression forms to fix at the checker's choke point (#725).
+    static CURRENT_KIND: RefCell<&'static str> = const { RefCell::new("<none>") };
+    static MISSING_KINDS: RefCell<BTreeMap<&'static str, u32>> = RefCell::new(BTreeMap::new());
+    /// What the current expression *is*, when the kind alone doesn't say —
+    /// an identifier's name. `Ident` being 95% of the misses is a fact with no
+    /// work attached until you can see which identifiers.
+    static CURRENT_DETAIL: RefCell<String> = const { RefCell::new(String::new()) };
+    static MISSING_DETAILS: RefCell<BTreeMap<String, u32>> = RefCell::new(BTreeMap::new());
 }
 
 fn trace() -> bool {
@@ -69,6 +84,17 @@ fn type_is_open(ty: &rask_types::Type) -> bool {
 
 /// Record the outcome of one `node_types` lookup.
 pub fn record_lookup(found: Option<&rask_types::Type>) {
+    if found.is_none() && trace_coverage() {
+        let kind = CURRENT_KIND.with(|k| *k.borrow());
+        MISSING_KINDS.with(|m| *m.borrow_mut().entry(kind).or_insert(0) += 1);
+        let detail = CURRENT_DETAIL.with(|d| d.borrow().clone());
+        let label = if detail.is_empty() {
+            format!("{kind} (no name)")
+        } else {
+            format!("{kind} `{detail}`")
+        };
+        MISSING_DETAILS.with(|m| *m.borrow_mut().entry(label).or_insert(0) += 1);
+    }
     LOOKUPS.with(|l| {
         let mut l = l.borrow_mut();
         match found {
@@ -96,6 +122,46 @@ pub fn record_lookup(found: Option<&rask_types::Type>) {
 /// Lookup outcomes so far.
 pub fn lookup_stats() -> LookupStats {
     LOOKUPS.with(|l| *l.borrow())
+}
+
+/// Note which expression kind lowering is walking. Cheap enough for the hot
+/// path: one thread-local write, and only read when a lookup misses.
+pub fn set_current_kind(kind: &'static str) {
+    if trace_coverage() {
+        CURRENT_KIND.with(|k| *k.borrow_mut() = kind);
+    }
+}
+
+/// A scope guard that makes "which kind was being lowered" mean it.
+///
+/// Setting the kind on entry only is not enough: a lookup that happens outside
+/// any expression's lowering still reads whatever the last expression set, and
+/// identifiers are the commonest leaf, so everything unattributed would look
+/// like `Ident`. Clearing on the way out turns that into `<outside>`, which is
+/// a finding of its own rather than a wrong answer.
+pub struct KindScope;
+
+impl Drop for KindScope {
+    fn drop(&mut self) {
+        if trace_coverage() {
+            CURRENT_KIND.with(|k| *k.borrow_mut() = "<outside>");
+            CURRENT_DETAIL.with(|d| d.borrow_mut().clear());
+        }
+    }
+}
+
+/// Note what the current expression is, beyond its form. Cleared by the next
+/// expression that has nothing to add.
+pub fn set_current_detail(function: &str, detail: &str) {
+    if trace_coverage() {
+        CURRENT_DETAIL.with(|d| {
+            let mut d = d.borrow_mut();
+            d.clear();
+            d.push_str(function);
+            d.push_str(" :: ");
+            d.push_str(detail);
+        });
+    }
 }
 
 /// True when a coverage summary was asked for.
@@ -176,4 +242,17 @@ pub fn report_coverage() {
     for (shape, n) in shapes.iter().take(10) {
         eprintln!("[type-coverage]   open ×{n}: {shape}");
     }
+    let mut kinds: Vec<(&str, u32)> =
+        MISSING_KINDS.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect());
+    kinds.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    for (kind, n) in kinds.iter().take(15) {
+        eprintln!("[type-coverage]   missing ×{n}: while lowering {kind}");
+    }
+    let mut details: Vec<(String, u32)> =
+        MISSING_DETAILS.with(|m| m.borrow().iter().map(|(k, v)| (k.clone(), *v)).collect());
+    details.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (detail, n) in details.iter().take(20) {
+        eprintln!("[type-coverage]     ×{n}: {detail}");
+    }
 }
+

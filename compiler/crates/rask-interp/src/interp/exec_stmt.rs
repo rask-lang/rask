@@ -689,6 +689,24 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
         }
         return out;
     }
+    // A container's elements need the same treatment its binding got. Only the
+    // outer type was ever looked at, so `let xs: Vec<i64?> = [1, none, 3]`
+    // bound the 1 and the 3 bare — `xs[0]!` then failed with "! requires Option
+    // or Result, got i64" while native handled it (#909). The element type is
+    // right there in the annotation.
+    if let Some(elem_ty) = container_element_type(ty) {
+        if let Value::Vec(items) = &value {
+            let mut guard = items.lock().unwrap();
+            for item in guard.items.iter_mut() {
+                // `false` for the none-literal flag: an element that already is
+                // `none` carries its layer, and `value_option_depth` counts it,
+                // so nothing double-wraps.
+                let taken = std::mem::replace(item, Value::Unit);
+                *item = auto_wrap_for_annotation(taken, &elem_ty, false);
+            }
+        }
+        return value;
+    }
     if ty.starts_with("Result<") && ty.ends_with('>') {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
             return value;
@@ -711,6 +729,27 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
         };
     }
     value
+}
+
+/// The element type of a sequence annotation — `Vec<T>`, `[T; N]`, `[]T`.
+///
+/// `None` for anything else, including a `Map`: a map literal's values would
+/// want the same treatment, but its annotation carries two type arguments and
+/// the interpreter's map value isn't a `Value::Vec`, so that's its own case
+/// rather than a widening of this one.
+fn container_element_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = ty.strip_prefix("[]") {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        let elem = inner.split_once(';').map_or(inner, |(e, _)| e);
+        return Some(elem.trim().to_string());
+    }
+    None
 }
 
 /// OPT29: is this expression a bare `none` literal?

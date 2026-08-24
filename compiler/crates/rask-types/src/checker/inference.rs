@@ -91,6 +91,23 @@ pub enum TypeConstraint {
         is_range: bool,
         span: Span,
     },
+    /// `a?.b` — the chain's result, once `b`'s own type is known.
+    ///
+    /// A chain unwraps: `a.inner?.v` where `v: string?` is a `string?`, not a
+    /// `string??`. Both absences mean the same thing to the caller, so there is
+    /// nothing to keep apart (`type.optionals/OPT10`). Deciding that at the
+    /// access doesn't work — the field's type comes from a `HasField` that
+    /// hasn't been solved yet, so "is it already an option?" was asked of a
+    /// bare variable and always answered no. The result then said `T??` while
+    /// both runtimes handed back a `T?`, and every position that names the
+    /// type — `chain ?? "default"` — refused to compile (#938). Same shape as
+    /// `Index` above, and the same fix: carry the question until the input
+    /// settles.
+    OptionalChain {
+        field: Type,
+        result: Type,
+        span: Span,
+    },
     Coalesce {
         /// The `??` expression itself, so the settled case can be recorded
         /// for the backends — a still-wrapped `??` yields the left operand

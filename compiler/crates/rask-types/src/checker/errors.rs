@@ -876,6 +876,18 @@ pub enum TypeError {
         kind: IndexErrorKind,
         span: Span,
     },
+
+    /// std.collections (#901): a length-changing method called on `[T; N]`.
+    /// The length is part of the type, so there is nowhere for the element to
+    /// go — and the `Vec` method table used to answer these calls anyway.
+    #[error("`{method}` doesn't exist on a fixed array")]
+    FixedArrayGrowth {
+        /// The method that was called — named in the message and the fix.
+        method: String,
+        /// The receiver's type, so the message can print its length.
+        array: Type,
+        span: Span,
+    },
 }
 
 /// What went wrong at an index site — drives the E0819 diagnostic.
@@ -952,6 +964,8 @@ impl TypeError {
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
             | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+
+            FixedArrayGrowth { array, .. } => *array = f(array),
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
